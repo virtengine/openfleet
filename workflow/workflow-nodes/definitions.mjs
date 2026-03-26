@@ -41,6 +41,7 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
   return Math.max(20, Math.min(500, Math.trunc(raw)));
 })();
 const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
+const BOSUN_CREATED_PR_LABEL = "bosun-pr-bosun-created";
 
 const _builtinNodeDefinitions = new Map();
 function registerNodeType(type, handler) {
@@ -1212,6 +1213,7 @@ function buildWorkflowAgentToolContract(rootDir, agentProfileId = "") {
 export { registerNodeType };
 export {
   BOSUN_ATTACHED_PR_LABEL,
+  BOSUN_CREATED_PR_LABEL,
   PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND,
   PORTABLE_WORKTREE_COUNT_COMMAND,
   TAG,

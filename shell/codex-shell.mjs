@@ -129,6 +129,7 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
   const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
+  const hasCustomBaseUrl = Boolean(String(baseUrl || "").trim());
   const env = { ...resolvedEnv };
   const unsetEnvKeys = [];
 
@@ -182,13 +183,17 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
           remote_models: false,
         },
       }
-    : {};
+    : hasCustomBaseUrl
+      ? {
+          model_providers: {
+            [providerSectionName]: {
+              ...streamProviderOverrides,
+            },
+          },
+        }
+      : {};
 
   Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
-
-  if (!isAzure && Object.keys(streamProviderOverrides || {}).length > 0) {
-    config.model_provider = providerSectionName;
-  }
 
   if (isAzure && env.CODEX_MODEL) {
     config.model_provider = providerSectionName;
@@ -1303,4 +1308,3 @@ export async function initCodexShell() {
     );
   }
 }
-

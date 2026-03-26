@@ -34,6 +34,7 @@ import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { CONFIG_FILES } from "./config-file-names.mjs";
 import { ExecutorScheduler, loadExecutorConfig } from "./executor-config.mjs";
 import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
+import { getOAuthUserLogin } from "../github/github-app-auth.mjs";
 import { resolveMarkdownSafetyPolicy } from "../lib/skill-markdown-safety.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -104,6 +105,45 @@ function isWslInteropRuntime() {
         .trim()
         .startsWith("/home/")),
   );
+}
+
+function parseListEntries(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+  }
+  return String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parseListSetting(value) {
+  return parseListEntries(value);
+}
+
+export function resolveTrustedAuthorList(value, options = {}) {
+  const {
+    includeOAuthTrustedAuthor = false,
+    oauthTrustedAuthor,
+  } = options;
+  const merged = [];
+  const seen = new Set();
+  const addEntry = (entry) => {
+    const normalized = String(entry || "").trim();
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(normalized);
+  };
+
+  parseListEntries(value).forEach(addEntry);
+
+  if (includeOAuthTrustedAuthor) {
+    addEntry(oauthTrustedAuthor ?? getOAuthUserLogin());
+  }
+
+  return merged;
 }
 
 function resolveConfigDir(repoRoot) {
@@ -643,6 +683,9 @@ function resolveWorktreeBootstrapConfig(configData = {}) {
       1000,
       60 * 60 * 1000,
     ),
+    setupScript: String(
+      process.env.WORKTREE_BOOTSTRAP_SETUP_SCRIPT ?? raw.setupScript ?? "",
+    ).trim(),
     commandsByStack: Object.freeze(commandsByStack),
     sharedPathsByStack: freezeNestedStringListMap(raw.sharedPathsByStack),
   });
@@ -2024,15 +2067,6 @@ export function loadConfig(argv = process.argv, options = {}) {
     .map((a) => a.trim())
     .filter(Boolean);
 
-  const parseListSetting = (value) => {
-    if (Array.isArray(value)) {
-      return value.map((entry) => String(entry || "").trim()).filter(Boolean);
-    }
-    return String(value || "")
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-  };
   const prAutomationData =
     configData.prAutomation && typeof configData.prAutomation === "object"
       ? configData.prAutomation
@@ -2045,8 +2079,9 @@ export function loadConfig(argv = process.argv, options = {}) {
     )
       .trim()
       .toLowerCase(),
-    trustedAuthors: parseListSetting(
+    trustedAuthors: resolveTrustedAuthorList(
       process.env.BOSUN_PR_TRUSTED_AUTHORS ?? prAutomationData.trustedAuthors ?? [],
+      { includeOAuthTrustedAuthor: true },
     ),
     allowTrustedFixes: isEnvEnabled(
       process.env.BOSUN_PR_ALLOW_TRUSTED_FIXES ?? prAutomationData.allowTrustedFixes,
@@ -2079,10 +2114,21 @@ export function loadConfig(argv = process.argv, options = {}) {
     gatesData.execution && typeof gatesData.execution === "object"
       ? gatesData.execution
       : {};
+  const gatesWorktreesData =
+    gatesData.worktrees && typeof gatesData.worktrees === "object"
+      ? gatesData.worktrees
+      : {};
   const gatesRuntimeData =
     gatesData.runtime && typeof gatesData.runtime === "object"
       ? gatesData.runtime
       : {};
+  const hasExplicitWorktreeBootstrapEnabled =
+    configData.worktreeBootstrap &&
+    typeof configData.worktreeBootstrap === "object" &&
+    Object.prototype.hasOwnProperty.call(configData.worktreeBootstrap, "enabled");
+  const managedWorktreeDefault = hasExplicitWorktreeBootstrapEnabled
+    ? worktreeBootstrap.enabled
+    : true;
   const repoVisibilityRaw = String(
     process.env.BOSUN_GATES_REPO_VISIBILITY ||
       gatesPrsData.repoVisibility ||
@@ -2179,6 +2225,23 @@ export function loadConfig(argv = process.argv, options = {}) {
       )
         .trim()
         .toLowerCase(),
+    }),
+    worktrees: Object.freeze({
+      requireBootstrap: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_REQUIRE_BOOTSTRAP ??
+          gatesWorktreesData.requireBootstrap,
+        managedWorktreeDefault,
+      ),
+      requireReadiness: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_REQUIRE_READINESS ??
+          gatesWorktreesData.requireReadiness,
+        managedWorktreeDefault,
+      ),
+      enforcePushHook: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_ENFORCE_PUSH_HOOK ??
+          gatesWorktreesData.enforcePushHook,
+        true,
+      ),
     }),
     runtime: Object.freeze({
       enforceBacklog: isEnvEnabled(

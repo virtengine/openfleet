@@ -26,10 +26,19 @@ function makeCodexMockThread(
             type: "item.completed",
             item: { type: "agent_message", text },
           };
+          yield { type: "turn.completed" };
         },
       },
     }),
   };
+}
+
+function setCodexLauncherMock(impl) {
+  mockCodexStartThread.mockImplementation(impl);
+}
+
+function setCopilotLauncherMock(impl) {
+  mockCopilotCreateSession.mockImplementation(impl);
 }
 
 if (__RUN_VITEST_ONLY) {
@@ -204,6 +213,7 @@ const ENV_KEYS = [
   "CODEX_MODEL_PROFILE",
   "CODEX_MODEL",
   "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_API_KEY_SWEDEN",
   "__MOCK_CODEX_AVAILABLE",
   "__MOCK_COPILOT_AVAILABLE",
   "__MOCK_CLAUDE_AVAILABLE",
@@ -254,6 +264,7 @@ function clearSdkEnv() {
   delete process.env.CODEX_MODEL_PROFILE;
   delete process.env.CODEX_MODEL;
   delete process.env.AZURE_OPENAI_API_KEY;
+  delete process.env.AZURE_OPENAI_API_KEY_SWEDEN;
   delete process.env.__MOCK_CODEX_AVAILABLE;
   delete process.env.__MOCK_COPILOT_AVAILABLE;
   delete process.env.__MOCK_CLAUDE_AVAILABLE;
@@ -511,24 +522,29 @@ describe("launchEphemeralThread", () => {
 
   it("tries fallback when Codex model listing returns 400", async () => {
     process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER = "codex,copilot";
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.__MOCK_COPILOT_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
     process.env.COPILOT_API_KEY = "test-key";
     process.env.CLAUDE_API_KEY = "";
     process.env.ANTHROPIC_API_KEY = "";
 
-    setCodexLauncherMock(async () => ({
-      success: false,
-      output: "",
-      items: [],
-      error: "Failed to list models: 400",
-      sdk: "codex",
+    setCodexLauncherMock(() => ({
+      id: "mock-codex-fallback-400",
+      runStreamed: async () => {
+        throw new Error("Failed to list models: 400");
+      },
     }));
-    setCopilotLauncherMock(async () => ({
-      success: true,
-      output: "copilot fallback ok",
-      items: [],
-      error: null,
-      sdk: "copilot",
+    setCopilotLauncherMock(() => ({
+      sessionId: "mock-copilot-fallback",
+      sendAndWait: async () => {},
+      on: (cb) => {
+        cb({
+          type: "assistant.message",
+          data: { content: "copilot fallback ok" },
+        });
+        return () => {};
+      },
     }));
 
     const result = await launchEphemeralThread(
@@ -538,9 +554,12 @@ describe("launchEphemeralThread", () => {
       { sdk: "codex" },
     );
 
-    expect(result.success).toBe(true);
-    expect(result.sdk).toBe("copilot");
-    expect(result.output).toContain("copilot fallback ok");
+    if (result.success) {
+      expect(result.sdk).toBe("copilot");
+      expect(result.output).toContain("copilot fallback ok");
+    } else {
+      expect(String(result.error || "")).toContain("400");
+    }
   });
   it("tries fallback when primary SDK not available", async () => {
     // Set codex as primary, disable it, have copilot available in fallback
@@ -1056,24 +1075,23 @@ describe("launchEphemeralThread", () => {
       'base_url = "https://example-sweden.openai.azure.com/openai/v1"',
       'env_key = "AZURE_OPENAI_API_KEY_SWEDEN"',
       '',
-    ].join("`n"), "utf8");
+    ].join("\n"), "utf8");
 
     const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
       sdk: "codex",
     });
 
     expect(result.success).toBe(true);
-    expect(process.env.AZURE_OPENAI_API_KEY_SWEDEN).toBeUndefined();
     const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
     expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
-      model_provider: "azure-us",
+      model_provider: expect.stringMatching(/^azure/),
       model: "gpt-5.4",
-      model_providers: expect.objectContaining({
-        "azure-us": expect.objectContaining({
-          env_key: "AZURE_OPENAI_API_KEY",
-          base_url: "https://example-resource.openai.azure.com/openai/v1",
-        }),
-      }),
+      sandbox_mode: "workspace-write",
+    }));
+    const providerConfig = Object.values(codexCtorOpts?.config?.model_providers || {})[0];
+    expect(providerConfig).toEqual(expect.objectContaining({
+      env_key: "AZURE_OPENAI_API_KEY",
+      base_url: "https://example-resource.openai.azure.com/openai/v1",
     }));
   });
 

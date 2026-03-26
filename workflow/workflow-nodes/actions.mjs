@@ -71,6 +71,7 @@ import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 import {
   registerNodeType,
   BOSUN_ATTACHED_PR_LABEL,
+  BOSUN_CREATED_PR_LABEL,
   PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND,
   PORTABLE_WORKTREE_COUNT_COMMAND,
   TAG,
@@ -1780,6 +1781,7 @@ registerNodeType("action.create_pr", {
     const labels = Array.from(new Set([
       ...toList(ctx.resolve(node.config?.labels || "")),
       BOSUN_ATTACHED_PR_LABEL,
+      BOSUN_CREATED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
     const execOptions = {
