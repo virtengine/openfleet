@@ -32,6 +32,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
+const ensureWorktreeRuntimeSetupMock = vi.hoisted(() => vi.fn(() => ({ ok: true })));
+
+vi.mock("../workspace/worktree-setup.mjs", () => ({
+  ensureWorktreeRuntimeSetup: ensureWorktreeRuntimeSetupMock,
+}));
+
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync, symlinkSync } from "node:fs";
 
@@ -411,6 +417,7 @@ describe("worktree-manager", () => {
           owner: "monitor",
         });
 
+        expect(ensureWorktreeRuntimeSetupMock).toHaveBeenCalled();
         const bootstrapCall = spawnSync.mock.calls.find(([cmd]) => cmd === "npm ci");
         expect(bootstrapCall).toBeTruthy();
       } finally {
@@ -432,6 +439,7 @@ describe("worktree-manager", () => {
 
       bootstrapWorktreeForPath(REPO_ROOT, worktreePath);
 
+      expect(ensureWorktreeRuntimeSetupMock).toHaveBeenCalledWith(REPO_ROOT, worktreePath);
       expect(symlinkSync).toHaveBeenCalledTimes(1);
       const [targetPath, linkPath] = symlinkSync.mock.calls[0];
       expect(String(targetPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/node_modules$/);

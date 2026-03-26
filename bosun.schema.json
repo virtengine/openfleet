@@ -85,6 +85,10 @@
           "default": 600000,
           "description": "Maximum time to allow each bootstrap command to run inside a managed worktree."
         },
+        "setupScript": {
+          "type": "string",
+          "description": "Optional repo-specific shell command to run inside every managed worktree before stack bootstrap commands. Useful for local environment setup, SDK hook scaffolding, or repository-specific bootstrap fixes."
+        },
         "commandsByStack": {
           "type": "object",
           "additionalProperties": {
