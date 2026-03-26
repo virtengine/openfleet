@@ -1,4 +1,21 @@
 {
   "version": "0.2.0",
-  "configurations": []
+  "configurations": [
+    {
+      "name": "Serve Bosun Site",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/site-serve.mjs",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "serverReadyAction": {
+        "pattern": "Bosun site server listening on (http://127\\.0\\.0\\.1:4173)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    }
+  ]
 }
