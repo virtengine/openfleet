@@ -34,7 +34,7 @@ describe("GitHub PR trust regressions", () => {
     expect(ciSignalWorkflow).toContain("const sharedFailureMarker = \"<!-- bosun-ci-shared-failure -->\";");
     expect(ciSignalWorkflow).toContain("const detectSharedFailure = async");
     expect(ciSignalWorkflow).toContain("detected shared CI incident");
-    expect(ciSignalWorkflow).toContain("suppressed 'bosun-needs-fix'");
+    expect(ciSignalWorkflow).toContain("suppressed '${needsFixLabel}'");
   });
 
   it("documents operator PR automation trust settings", () => {
@@ -102,7 +102,7 @@ describe("GitHub PR trust regressions", () => {
 
     expect(serverSource).toContain('if (path === "/api/gates" && req.method === "GET")');
     expect(serverSource).toContain('if (path === "/api/gates" && req.method === "POST")');
-    expect(serverSource).toContain("normalizeGatesPolicy(configData?.gates)");
+    expect(serverSource).toContain("normalizeGatesPolicy(configData?.gates, {");
     expect(serverSource).toContain('if (path === "/api/pr-automation" && req.method === "GET")');
     expect(serverSource).toContain('if (path === "/api/pr-automation" && req.method === "POST")');
     expect(serverSource).toContain("normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true })");

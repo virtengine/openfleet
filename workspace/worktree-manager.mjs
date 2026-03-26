@@ -30,6 +30,7 @@ import { loadConfig } from "../config/config.mjs";
 import { sanitizeGitEnv } from "../git/git-safety.mjs";
 import { detectProjectStack } from "../workflow/project-detection.mjs";
 import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
+import { ensureWorktreeRuntimeSetup } from "./worktree-setup.mjs";
 
 // ── Path Setup ──────────────────────────────────────────────────────────────
 
@@ -65,6 +66,7 @@ const DEFAULT_WORKTREE_BOOTSTRAP = Object.freeze({
   enabled: true,
   linkSharedPaths: true,
   commandTimeoutMs: 10 * 60 * 1000,
+  setupScript: "",
   commandsByStack: Object.freeze({}),
   sharedPathsByStack: Object.freeze({}),
 });
@@ -250,6 +252,10 @@ function resolveDefaultBootstrapCommand(stack, worktreePath) {
 function buildBootstrapPlan(worktreePath, policy, detection, repoRoot) {
   const sharedPaths = [];
   const commands = [];
+  const setupScript = String(policy?.setupScript || "").trim();
+  if (setupScript) {
+    commands.push(setupScript);
+  }
   for (const stack of detection?.stacks || []) {
     const stackSharedPaths = policy?.linkSharedPaths
       ? resolveWorktreeSharedPaths(policy, stack.id)
@@ -603,6 +609,8 @@ class WorktreeManager {
   }
 
   bootstrapWorktree(worktreePath, record = null) {
+    ensureWorktreeRuntimeSetup(this.repoRoot, worktreePath);
+
     const policy = this.getWorktreeBootstrapConfig();
     if (!policy?.enabled) return;
     const detection = detectProjectStack(worktreePath);
@@ -1553,6 +1561,7 @@ function bootstrapWorktreeForPath(repoRoot, worktreePath) {
   if (!worktreePath) return;
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedWorktreePath = resolve(worktreePath);
+  ensureWorktreeRuntimeSetup(resolvedRepoRoot, resolvedWorktreePath);
   const detection = detectProjectStack(resolvedWorktreePath);
   if (!detection?.primary) return;
 
