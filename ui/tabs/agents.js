@@ -38,49 +38,7 @@ import {
 import { ICONS } from "../modules/icons.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 
-function formatDurationMs(value) {
-  const ms = Number(value || 0);
-  if (!Number.isFinite(ms) || ms <= 0) return "0s";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const sec = Math.round(ms / 1000);
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
-}
 
-function formatTokenCount(value) {
-  const n = Number(value || 0);
-  if (!Number.isFinite(n) || n <= 0) return "0";
-  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
-}
-
-function SessionTurnsTimeline({ session }) {
-  const turns = Array.isArray(session?.insights?.turns) ? session.insights.turns : [];
-  if (!turns.length) {
-    return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon">${resolveIcon(":repeat:")}</div>
-      <div class="session-empty-text">No completed turns recorded yet</div>
-    </div>`;
-  }
-  return html`<div class="fleet-turns-timeline">
-    ${turns.map((turn) => html`
-      <div class="fleet-turn-row" key=${`turn-${turn.index}-${turn.startedAt || ""}`}>
-        <div class="fleet-turn-row-head">
-          <div class="fleet-turn-row-title">Turn ${turn.index || "?"}</div>
-          <div class="fleet-turn-row-meta">
-            ${formatDurationMs(turn.durationMs || 0)} · ${formatTokenCount(turn.tokenCount || turn.tokenUsage?.totalTokens || 0)} tokens
-          </div>
-        </div>
-        <div class="fleet-turn-row-submeta">
-          In ${formatTokenCount(turn.inputTokens || turn.tokenUsage?.inputTokens || 0)} · Out ${formatTokenCount(turn.outputTokens || turn.tokenUsage?.outputTokens || 0)}
-          ${turn.toolCalls ? ` · ${turn.toolCalls} tools` : ""}
-          ${turn.errors ? ` · ${turn.errors} errors` : ""}
-        </div>
-        <div class="fleet-turn-row-preview">${truncate(turn.preview || `Turn ${turn.index || "?"}`, 180)}</div>
-      </div>
-    `)}
-  </div>`;
-}
 import { resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import {
   Card,
@@ -1924,7 +1882,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
     setError(null);
     setCtx(null);
     fetchContext();
-    fetchRunHistory();
+
     intervalRef.current = setInterval(fetchContext, 10000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [fetchContext]);
