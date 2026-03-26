@@ -98,16 +98,13 @@ async function initStore() {
   }
   const storePath = resolveKanbanStorePath();
   const normalizedStorePath = normalizeStorePath(storePath);
-  if (!_storeReady || normalizedStorePath !== _resolvedStorePath) {
-    await flushStoreWrites(_taskStoreModule);
-    _taskStoreModule.configureTaskStore({ storePath });
-    _taskStoreModule.loadStore();
-    _storeReady = true;
-    _resolvedStorePath = normalizedStorePath;
-  }
+  await flushStoreWrites(_taskStoreModule);
+  _taskStoreModule.configureTaskStore({ storePath });
+  _taskStoreModule.loadStore();
+  _storeReady = true;
+  _resolvedStorePath = normalizedStorePath;
   return _taskStoreModule;
 }
-
 async function flushStoreWrites(store) {
   if (typeof store?.waitForStoreWrites === "function") {
     await store.waitForStoreWrites();
