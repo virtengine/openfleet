@@ -3344,9 +3344,11 @@ registerBuiltinNodeType("action.run_agent", {
           ? Math.max(0, Math.min(10, Math.floor(parsedMaxContinues)))
           : 2;
         const sdkOverride = sdk === "auto" ? undefined : sdk;
-        const modelOverride = node.config?.model
-          ? String(ctx.resolve(node.config.model) || "").trim() || undefined
-          : undefined;
+        const resolvedModelOverride = String(ctx.resolve(node.config?.model || "") || "").trim();
+        const modelOverride =
+          resolvedModelOverride && !/^\{\{.+\}\}$/.test(resolvedModelOverride)
+            ? resolvedModelOverride
+            : undefined;
         const resolvedMaxRetainedEvents = Number(ctx.resolve(node.config?.maxRetainedEvents));
         const maxRetainedEvents = Number.isFinite(resolvedMaxRetainedEvents)
           ? Math.max(10, Math.min(500, Math.trunc(resolvedMaxRetainedEvents)))
