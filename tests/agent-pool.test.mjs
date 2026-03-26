@@ -26,6 +26,7 @@ function makeCodexMockThread(
             type: "item.completed",
             item: { type: "agent_message", text },
           };
+          yield { type: "turn.completed" };
         },
       },
     }),

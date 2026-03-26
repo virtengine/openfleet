@@ -12,6 +12,7 @@
     "enabled": true,
     "linkSharedPaths": true,
     "commandTimeoutMs": 600000,
+    "setupScript": "node tools/install-git-hooks.mjs",
     "commandsByStack": {
       "node": ["npm install"],
       "python": ["poetry install --no-interaction"],

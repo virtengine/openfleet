@@ -1,3 +1,7 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCodexCtor = vi.fn();
@@ -501,34 +505,38 @@ describe("codex-shell stream safeguards", () => {
     }));
   });
   it("prefers the Azure provider whose endpoint matches OPENAI_BASE_URL", async () => {
-    const {
-      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
-      readCodexConfigRuntimeDefaults: freshReadCodexConfigRuntimeDefaults,
-    } = await loadFreshCodexShell();
+    const previousUserProfile = process.env.USERPROFILE;
+    const tempHome = mkdtempSync(join(tmpdir(), "bosun-codex-profile-"));
+    const codexDir = join(tempHome, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(join(codexDir, "config.toml"), [
+      'model = "gpt-5.4"',
+      'model_provider = "azure-sweden"',
+      '',
+      '[model_providers.azure-sweden]',
+      'base_url = "https://example-sweden.openai.azure.com/openai/v1"',
+      'env_key = "AZURE_OPENAI_API_KEY_SWEDEN"',
+      '',
+      '[model_providers.azure-us]',
+      'base_url = "https://example-resource.openai.azure.com/openai/v1"',
+      'env_key = "AZURE_OPENAI_API_KEY"',
+      '',
+    ].join("\n"), "utf8");
+    process.env.USERPROFILE = tempHome;
 
-    freshReadCodexConfigRuntimeDefaults.mockImplementation(() => ({
-      model: "gpt-5.4",
-      modelProvider: "azure-sweden",
-      providers: {
-        "azure-sweden": {
-          name: "azure-sweden",
-          baseUrl: "https://example-sweden.openai.azure.com/openai/v1",
-          envKey: "AZURE_OPENAI_API_KEY_SWEDEN",
-        },
-        "azure-us": {
-          name: "azure-us",
-          baseUrl: "https://example-resource.openai.azure.com/openai/v1",
-          envKey: "AZURE_OPENAI_API_KEY",
-        },
-      },
-    }));
-
-    const resolved = freshResolveCodexProfileRuntime({
+    const actualProfiles = await vi.importActual("../shell/codex-model-profiles.mjs");
+    const resolved = actualProfiles.resolveCodexProfileRuntime({
       OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
       OPENAI_API_KEY: "azure-key",
       AZURE_OPENAI_API_KEY: "azure-key",
       AZURE_OPENAI_API_KEY_SWEDEN: "sweden-key",
     });
+
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = previousUserProfile;
+    }
 
     expect(resolved.provider).toBe("azure");
     expect(resolved.configProvider).toEqual(expect.objectContaining({

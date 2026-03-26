@@ -717,6 +717,26 @@ function handleWebhookEvent(eventType, payload) {
       webhookEvents.emit("github:push", { payload });
       break;
 
+    case "check_run":
+      webhookEvents.emit("github:check_run", { action, payload });
+      break;
+
+    case "check_suite":
+      webhookEvents.emit("github:check_suite", { action, payload });
+      break;
+
+    case "status":
+      webhookEvents.emit("github:status", { action, payload });
+      break;
+
+    case "workflow_job":
+      webhookEvents.emit("github:workflow_job", { action, payload });
+      break;
+
+    case "workflow_run":
+      webhookEvents.emit("github:workflow_run", { action, payload });
+      break;
+
     default:
       webhookEvents.emit(`github:${eventType}`, { action, payload });
   }

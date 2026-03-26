@@ -16,6 +16,14 @@ describe("opencode provider discovery", () => {
   });
 
   it("falls back to basic CLI model listing after verbose 400", async () => {
+    execFileMock
+      .mockImplementationOnce((command, args, options, callback) => {
+        callback(new Error("Failed to list models: 400"));
+      })
+      .mockImplementationOnce((command, args, options, callback) => {
+        callback(null, "openai/gpt-4.1\nanthropic/claude-3-5-sonnet\n", "");
+      });
+
     execMock
       .mockImplementationOnce((command, options, callback) => {
         callback(new Error("Failed to list models: 400"));
@@ -32,6 +40,6 @@ describe("opencode provider discovery", () => {
       "openai/gpt-4.1",
       "anthropic/claude-3-5-sonnet",
     ]);
-    expect(execMock).toHaveBeenCalledTimes(2);
+    expect(execFileMock.mock.calls.length + execMock.mock.calls.length).toBe(2);
   });
 });

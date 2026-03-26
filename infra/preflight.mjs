@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import os from "node:os";
 import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
+import { inspectWorktreeRuntimeSetup } from "../workspace/worktree-setup.mjs";
 
 const isWindows = process.platform === "win32";
 const MIN_FREE_GB = Number(process.env.BOSUN_MIN_FREE_GB || "10");
@@ -85,6 +87,13 @@ function checkWorktreeClean(repoRoot) {
     ok: dirtyFiles.length === 0,
     dirtyFiles,
   };
+}
+
+function checkWorktreeRuntimeSetup(repoRoot) {
+  if (!existsSync(resolve(repoRoot, ".githooks"))) {
+    return { ok: true, issues: [], hooksPath: "", missingFiles: [] };
+  }
+  return inspectWorktreeRuntimeSetup(repoRoot, repoRoot);
 }
 
 /**
@@ -334,6 +343,18 @@ export function runPreflightChecks(options = {}) {
       message:
         `Consider committing or stashing changes.${os.EOL}` +
         `${sample}${suffix}`,
+    });
+  }
+
+  const runtimeSetup = checkWorktreeRuntimeSetup(repoRoot);
+  if (!runtimeSetup.ok) {
+    errors.push({
+      title: "Worktree runtime setup is incomplete",
+      message:
+        runtimeSetup.issues.join(os.EOL) +
+        (runtimeSetup.missingFiles.length > 0
+          ? `${os.EOL}Run Bosun setup or bootstrap the repo so worktrees include the required hook/config files.`
+          : ""),
     });
   }
 
