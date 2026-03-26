@@ -17,15 +17,22 @@ describe("GitHub PR trust regressions", () => {
     expect(attachWorkflow).toContain("const classLabels = {");
     expect(attachWorkflow).toContain("const attachMode = [\"all\", \"trusted-only\", \"disabled\"].includes(attachModeRaw)");
     expect(attachWorkflow).toContain("const labelNames = (pr.labels || [])");
-    expect(attachWorkflow).toContain("const isBosunCreated = labelNames.includes(classLabels.bosun);");
+    expect(attachWorkflow).toContain("const bosunCreatedMarker = \"<!-- bosun-created -->\";");
+    expect(attachWorkflow).toContain("const hasBosunCreatedText = (value) => {");
+    expect(attachWorkflow).toContain("automated pr for task");
+    expect(attachWorkflow).toContain("const isBosunCreated = hasBosunCreatedLabel || hasBosunCreatedText(prBody);");
     expect(attachWorkflow).toContain("const shouldAttach = isBosunCreated || attachMode === \"all\" || (attachMode === \"trusted-only\" && isTrustedAuthor);");
     expect(attachWorkflow).toContain("bosun-pr-bosun-created");
     expect(attachWorkflow).toContain("bosun-pr-trusted-author");
     expect(attachWorkflow).toContain("bosun-pr-public");
     expect(attachWorkflow).toContain("Bosun PR classification:");
+    expect(attachWorkflow).toContain("Bosun-created provenance detected:");
 
     expect(ciSignalWorkflow).toContain("const bosunCreatedLabel = \"bosun-pr-bosun-created\";");
-    expect(ciSignalWorkflow).toContain("const isBosunCreated = labels.includes(bosunCreatedLabel);");
+    expect(ciSignalWorkflow).toContain("const bosunCreatedMarker = \"<!-- bosun-created -->\";");
+    expect(ciSignalWorkflow).toContain("const hasBosunCreatedText = (value) => {");
+    expect(ciSignalWorkflow).toContain("automated pr for task");
+    expect(ciSignalWorkflow).toContain("const isBosunCreated = labels.includes(bosunCreatedLabel)");
     expect(ciSignalWorkflow).toContain("const trustedAuthors = new Set(normalizeList(prAutomation.trustedAuthors));");
     expect(ciSignalWorkflow).toContain("const canSignalFix = isBosunCreated || (allowTrustedFixes && isTrustedAuthor);");
     expect(ciSignalWorkflow).toContain("const isBosunCreated =");
@@ -35,6 +42,21 @@ describe("GitHub PR trust regressions", () => {
     expect(ciSignalWorkflow).toContain("const detectSharedFailure = async");
     expect(ciSignalWorkflow).toContain("detected shared CI incident");
     expect(ciSignalWorkflow).toContain("suppressed '${needsFixLabel}'");
+  });
+
+  it("keeps same-repo PR branches synced with the default branch", () => {
+    const branchSyncWorkflow = read(".github/workflows/bosun-pr-branch-sync.yml");
+
+    expect(branchSyncWorkflow).toContain('pull_request_target:');
+    expect(branchSyncWorkflow).toContain('push:');
+    expect(branchSyncWorkflow).toContain('schedule:');
+    expect(branchSyncWorkflow).toContain('workflow_dispatch:');
+    expect(branchSyncWorkflow).toContain('pull-requests: write');
+    expect(branchSyncWorkflow).toContain('compareCommitsWithBasehead');
+    expect(branchSyncWorkflow).toContain('pulls.updateBranch');
+    expect(branchSyncWorkflow).toContain('expected_head_sha: pr.head.sha');
+    expect(branchSyncWorkflow).toContain('head branch is from a fork');
+    expect(branchSyncWorkflow).toContain('already up to date with ${defaultBranch}');
   });
 
   it("documents operator PR automation trust settings", () => {

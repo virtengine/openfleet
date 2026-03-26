@@ -3,7 +3,10 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import os from "node:os";
 import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
-import { inspectWorktreeRuntimeSetup } from "../workspace/worktree-setup.mjs";
+import {
+  ensureGitHooksPath,
+  inspectWorktreeRuntimeSetup,
+} from "../workspace/worktree-setup.mjs";
 
 const isWindows = process.platform === "win32";
 const MIN_FREE_GB = Number(process.env.BOSUN_MIN_FREE_GB || "10");
@@ -92,9 +95,35 @@ function checkWorktreeClean(repoRoot) {
 
 function checkWorktreeRuntimeSetup(repoRoot) {
   if (!existsSync(resolve(repoRoot, ".githooks"))) {
-    return { ok: true, issues: [], hooksPath: "", missingFiles: [] };
+    return {
+      ok: true,
+      issues: [],
+      hooksPath: "",
+      missingFiles: [],
+      repairedHooksPath: false,
+      repairError: "",
+    };
   }
-  return inspectWorktreeRuntimeSetup(repoRoot, repoRoot);
+  const initial = inspectWorktreeRuntimeSetup(repoRoot, repoRoot);
+  const needsHooksPathRepair = initial.issues.some((issue) =>
+    /core\.hooksPath/i.test(String(issue || "")),
+  );
+
+  if (!needsHooksPathRepair) {
+    return {
+      ...initial,
+      repairedHooksPath: false,
+      repairError: "",
+    };
+  }
+
+  const repair = ensureGitHooksPath(repoRoot);
+  const final = inspectWorktreeRuntimeSetup(repoRoot, repoRoot);
+  return {
+    ...final,
+    repairedHooksPath: repair.changed === true,
+    repairError: repair.error || "",
+  };
 }
 
 /**
@@ -348,11 +377,20 @@ export function runPreflightChecks(options = {}) {
   }
 
   const runtimeSetup = checkWorktreeRuntimeSetup(repoRoot);
+  if (runtimeSetup.repairedHooksPath) {
+    warnings.push({
+      title: "Git hooks path auto-repaired",
+      message: 'Reset git core.hooksPath to ".githooks" during preflight.',
+    });
+  }
   if (!runtimeSetup.ok) {
     errors.push({
       title: "Worktree runtime setup is incomplete",
       message:
         runtimeSetup.issues.join(os.EOL) +
+        (runtimeSetup.repairError
+          ? `${os.EOL}Repair attempt failed: ${runtimeSetup.repairError}`
+          : "") +
         (runtimeSetup.missingFiles.length > 0
           ? `${os.EOL}Run Bosun setup or bootstrap the repo so worktrees include the required hook/config files.`
           : ""),
@@ -388,6 +426,7 @@ export function runPreflightChecks(options = {}) {
       worktree,
       ghAuth,
       disk,
+      runtimeSetup,
       minFreeBytes: MIN_FREE_BYTES,
     },
   };
@@ -432,6 +471,12 @@ export function formatPreflightReport(result, options = {}) {
     lines.push(
       `Worktree: ${worktree.ok ? "clean" : `${worktree.dirtyFiles.length} change(s)`}`,
     );
+  }
+
+  const runtimeSetup = result.details?.runtimeSetup;
+  if (runtimeSetup) {
+    const suffix = runtimeSetup.repairedHooksPath ? " (auto-repaired)" : "";
+    lines.push(`Git hooks: ${runtimeSetup.hooksPath || "missing"}${suffix}`);
   }
 
   if (result.errors.length) {

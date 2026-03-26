@@ -121,6 +121,14 @@ describe("hook-library", () => {
       expect(results.some((h) => h.id === "safety-block-force-push")).toBe(true);
     });
 
+    it("includes the agent direct push blocker as a default safety hook", () => {
+      const hook = getHookById("safety-block-agent-direct-push");
+      expect(hook).toBeDefined();
+      expect(hook.defaultEnabled).toBe(true);
+      expect(hook.category).toBe("safety");
+      expect(String(hook.command)).toContain("git\\s+push\\b");
+    });
+
     it("returns empty for nonexistent category", () => {
       expect(getHookCatalog({ category: "nonexistent" })).toEqual([]);
     });

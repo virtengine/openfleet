@@ -489,6 +489,7 @@ const BenchmarksTab = lazyTab("./tabs/benchmarks.js", "BenchmarksTab", () => imp
 const AgentsTab = lazyTab("./tabs/agents.js", "AgentsTab", () => import("./tabs/agents.js"));
 const FleetSessionsTab = lazyTab("./tabs/agents.js", "FleetSessionsTab", () => import("./tabs/agents.js"));
 const InfraTab = lazyTab("./tabs/infra.js", "InfraTab", () => import("./tabs/infra.js"));
+const GuardrailsTab = lazyTab("./tabs/guardrails.js", "GuardrailsTab", () => import("./tabs/guardrails.js"));
 const ControlTab = lazyTab("./tabs/control.js", "ControlTab", () => import("./tabs/control.js"));
 const LogsTab = lazyTab("./tabs/logs.js", "LogsTab", () => import("./tabs/logs.js"));
 const TelemetryTab = lazyTab("./tabs/telemetry.js", "TelemetryTab", () => import("./tabs/telemetry.js"));
@@ -778,6 +779,7 @@ const TAB_COMPONENTS = {
   agents: AgentsTab,
   "fleet-sessions": FleetSessionsTab,
   infra: InfraTab,
+  guardrails: GuardrailsTab,
   control: ControlTab,
   logs: LogsTab,
   telemetry: TelemetryTab,
@@ -2977,6 +2979,7 @@ const remountApp = () => {
     root.replaceChildren();
   }
   preactRender(html`<${App} />`, root);
+  signalAppMounted();
 };
 globalThis.__veRemountApp = remountApp;
 mountApp();

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,7 +93,6 @@ async function loadFreshCodexShell() {
 
 const ENV_KEYS = [
   "BOSUN_HOST_PLATFORM",
-  "HOME",
   "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
@@ -106,7 +105,6 @@ const ENV_KEYS = [
   "CODEX_MODEL",
   "TEMP",
   "TMP",
-  "USERPROFILE",
 ];
 
 let savedEnv = {};
@@ -348,10 +346,17 @@ describe("codex-shell stream safeguards", () => {
 
     expect(result.finalResponse).toContain("openai ok");
     expect(mockCodexCtor).toHaveBeenCalledTimes(1);
-    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
-      config: expect.not.objectContaining({
-        model_providers: expect.anything(),
+    const ctorOptions = mockCodexCtor.mock.calls.at(-1)?.[0] || {};
+    expect(ctorOptions.config?.model_provider).toBe("openai");
+    expect(ctorOptions.config?.model_providers).toEqual(expect.objectContaining({
+      openai: expect.objectContaining({
+        stream_idle_timeout_ms: 3600000,
+        stream_max_retries: 15,
+        request_max_retries: 6,
       }),
+    }));
+    expect(ctorOptions.config?.model_providers).not.toEqual(expect.objectContaining({
+      azure: expect.anything(),
     }));
   });
 
@@ -553,9 +558,8 @@ describe("codex-shell stream safeguards", () => {
     }));
   });
   it("prefers the Azure provider whose endpoint matches OPENAI_BASE_URL", async () => {
-    const previousHome = process.env.HOME;
-    const previousUserProfile = process.env.USERPROFILE;
-    const tempHome = mkdtempSync(join(tmpdir(), "bosun-codex-profile-"));
+    const profileModule = await vi.importActual("../shell/codex-model-profiles.mjs");
+    const tempHome = mkdtempSync(join(tmpdir(), "bosun-codex-home-"));
     const codexDir = join(tempHome, ".codex");
     mkdirSync(codexDir, { recursive: true });
     writeFileSync(join(codexDir, "config.toml"), [
@@ -571,31 +575,27 @@ describe("codex-shell stream safeguards", () => {
       'env_key = "AZURE_OPENAI_API_KEY"',
       '',
     ].join("\n"), "utf8");
-    process.env.HOME = tempHome;
-    process.env.USERPROFILE = tempHome;
 
-    const actualProfiles = await vi.importActual("../shell/codex-model-profiles.mjs");
-    const resolved = actualProfiles.resolveCodexProfileRuntime({
-      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
-      OPENAI_API_KEY: "azure-key",
-      AZURE_OPENAI_API_KEY: "azure-key",
-      AZURE_OPENAI_API_KEY_SWEDEN: "sweden-key",
-    });
-
-    if (previousHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = previousHome;
-    }
-    if (previousUserProfile === undefined) {
-      delete process.env.USERPROFILE;
-    } else {
-      process.env.USERPROFILE = previousUserProfile;
+    let resolved;
+    try {
+      resolved = profileModule.resolveCodexProfileRuntime({
+        HOME: tempHome,
+        USERPROFILE: tempHome,
+        OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+        OPENAI_API_KEY: "azure-key",
+        AZURE_OPENAI_API_KEY: "azure-key",
+        AZURE_OPENAI_API_KEY_SWEDEN: "sweden-key",
+      });
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true });
     }
 
     expect(resolved.provider).toBe("azure");
-    expect(resolved.env.OPENAI_BASE_URL).toBe("https://example-resource.openai.azure.com/openai/v1");
-    expect(resolved.env.AZURE_OPENAI_API_KEY).toBe("azure-key");
+    expect(resolved.configProvider).toEqual(expect.objectContaining({
+      name: "azure-us",
+      envKey: "AZURE_OPENAI_API_KEY",
+      baseUrl: "https://example-resource.openai.azure.com/openai/v1",
+    }));
   });
   it("matches Azure config providers when OPENAI_BASE_URL is a bare endpoint", async () => {
     const previousHome = process.env.HOME;
@@ -729,6 +729,12 @@ describe("codex-shell stream safeguards", () => {
   });
 
   it("injects sandbox workspace roots into Codex runtime config", async () => {
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
     process.env.BOSUN_HOST_PLATFORM = "win32";
     process.env.TEMP = process.cwd();
 
@@ -747,17 +753,18 @@ describe("codex-shell stream safeguards", () => {
       }),
     }));
 
-    const result = await execCodexPrompt("verify sandbox injection", {
+    const result = await freshExecCodexPrompt("verify sandbox injection", {
       timeoutMs: 5000,
     });
 
     expect(result.finalResponse).toContain("sandbox ok");
-    const ctorOptions = mockCodexCtor.mock.calls.at(-1)?.[0] || {};
-    const startThreadOptions = mockStartThread.mock.calls.at(-1)?.[0] || {};
-    expect(startThreadOptions.sandboxMode).toBe("workspace-write");
-    const writableRoots = ctorOptions.config?.sandbox_workspace_write?.writable_roots || [];
-    expect(Array.isArray(writableRoots)).toBe(true);
-    expect(writableRoots).not.toContain("/tmp");
+    const ctorOptions = [...mockCodexCtor.mock.calls]
+      .map((call) => call?.[0] || {})
+      .findLast((options) => options?.config?.sandbox_mode === "workspace-write") || {};
+    expect(ctorOptions.config?.sandbox_mode).toBe("workspace-write");
+    expect(Array.isArray(ctorOptions.config?.sandbox_workspace_write?.writable_roots)).toBe(true);
+    expect(ctorOptions.config?.sandbox_workspace_write?.writable_roots).toContain(process.cwd());
+    expect(ctorOptions.config?.sandbox_workspace_write?.writable_roots).not.toContain("/tmp");
   });
 
 });
