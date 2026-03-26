@@ -522,6 +522,8 @@ describe("launchEphemeralThread", () => {
 
   it("tries fallback when Codex model listing returns 400", async () => {
     process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER = "codex,copilot";
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.__MOCK_COPILOT_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
     process.env.COPILOT_API_KEY = "test-key";
     process.env.CLAUDE_API_KEY = "";
@@ -1067,7 +1069,7 @@ describe("launchEphemeralThread", () => {
       'base_url = "https://example-sweden.openai.azure.com/openai/v1"',
       'env_key = "AZURE_OPENAI_API_KEY_SWEDEN"',
       '',
-    ].join("`n"), "utf8");
+    ].join("\n"), "utf8");
 
     const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
       sdk: "codex",

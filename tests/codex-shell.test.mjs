@@ -89,6 +89,7 @@ async function loadFreshCodexShell() {
 
 const ENV_KEYS = [
   "BOSUN_HOST_PLATFORM",
+  "HOME",
   "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
@@ -101,6 +102,7 @@ const ENV_KEYS = [
   "CODEX_MODEL",
   "TEMP",
   "TMP",
+  "USERPROFILE",
 ];
 
 let savedEnv = {};
@@ -505,6 +507,7 @@ describe("codex-shell stream safeguards", () => {
     }));
   });
   it("prefers the Azure provider whose endpoint matches OPENAI_BASE_URL", async () => {
+    const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
     const tempHome = mkdtempSync(join(tmpdir(), "bosun-codex-profile-"));
     const codexDir = join(tempHome, ".codex");
@@ -522,6 +525,7 @@ describe("codex-shell stream safeguards", () => {
       'env_key = "AZURE_OPENAI_API_KEY"',
       '',
     ].join("\n"), "utf8");
+    process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
 
     const actualProfiles = await vi.importActual("../shell/codex-model-profiles.mjs");
@@ -532,6 +536,11 @@ describe("codex-shell stream safeguards", () => {
       AZURE_OPENAI_API_KEY_SWEDEN: "sweden-key",
     });
 
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
     if (previousUserProfile === undefined) {
       delete process.env.USERPROFILE;
     } else {
