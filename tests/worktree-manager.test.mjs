@@ -13,6 +13,8 @@ vi.mock("node:fs", async (importOriginal) => {
       ...actual,
       existsSync: vi.fn(() => false),
       mkdirSync: vi.fn(),
+      readdirSync: vi.fn(() => []),
+      statSync: vi.fn(() => ({ mtimeMs: Date.now(), isDirectory: () => true })),
       symlinkSync: vi.fn(),
       writeFileSync: vi.fn(),
       readFileSync: vi.fn(() => "{}"),
@@ -30,17 +32,25 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
+const ensureWorktreeRuntimeSetupMock = vi.hoisted(() => vi.fn(() => ({ ok: true })));
+
+vi.mock("../workspace/worktree-setup.mjs", () => ({
+  ensureWorktreeRuntimeSetup: ensureWorktreeRuntimeSetupMock,
+}));
+
 import { spawnSync } from "node:child_process";
-import { existsSync, symlinkSync } from "node:fs";
+import { existsSync, readdirSync, statSync, symlinkSync } from "node:fs";
 
 import {
   WorktreeManager,
+  bootstrapWorktreeForPath,
   getWorktreeManager,
   resetWorktreeManager,
   sanitizeBranchName,
   gitEnv,
   TAG,
   DEFAULT_BASE_DIR,
+  DEFAULT_MANAGED_TASK_BASE_DIR,
   MAX_WORKTREE_AGE_MS,
   COPILOT_WORKTREE_MAX_AGE_MS,
   GIT_ENV,
@@ -90,6 +100,8 @@ describe("worktree-manager", () => {
     vi.clearAllMocks();
     resetWorktreeManager();
     existsSync.mockReturnValue(false);
+    readdirSync.mockReturnValue([]);
+    statSync.mockReturnValue({ mtimeMs: Date.now(), isDirectory: () => true });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -405,6 +417,7 @@ describe("worktree-manager", () => {
           owner: "monitor",
         });
 
+        expect(ensureWorktreeRuntimeSetupMock).toHaveBeenCalled();
         const bootstrapCall = spawnSync.mock.calls.find(([cmd]) => cmd === "npm ci");
         expect(bootstrapCall).toBeTruthy();
       } finally {
@@ -413,6 +426,24 @@ describe("worktree-manager", () => {
         if (previousCommand === undefined) delete process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND;
         else process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND = previousCommand;
       }
+    });
+
+    it("bootstraps arbitrary managed worktree paths with shared node_modules", () => {
+      const worktreePath = `${REPO_ROOT}/.bosun/worktrees/task-abc123`;
+      existsSync.mockImplementation((path) => {
+        const normalized = String(path).replace(/\\/g, "/");
+        return normalized.endsWith("/.bosun/worktrees/task-abc123")
+          || normalized.endsWith("/package.json")
+          || normalized.endsWith(`${REPO_ROOT}/node_modules`);
+      });
+
+      bootstrapWorktreeForPath(REPO_ROOT, worktreePath);
+
+      expect(ensureWorktreeRuntimeSetupMock).toHaveBeenCalledWith(REPO_ROOT, worktreePath);
+      expect(symlinkSync).toHaveBeenCalledTimes(1);
+      const [targetPath, linkPath] = symlinkSync.mock.calls[0];
+      expect(String(targetPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/node_modules$/);
+      expect(String(linkPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123\/node_modules$/);
     });
 
     it("returns existing worktree when one exists for branch", async () => {
@@ -1109,6 +1140,37 @@ describe("worktree-manager", () => {
       expect(result).toHaveProperty("evicted");
       expect(typeof result.pruned).toBe("number");
       expect(typeof result.evicted).toBe("number");
+    });
+
+    it("removes orphan managed task worktree dirs under .bosun/worktrees", async () => {
+      const orphanPath = `/fake/repo/${DEFAULT_MANAGED_TASK_BASE_DIR}/task-abc123-deadbeef`;
+
+      spawnSync.mockReturnValue({
+        status: 0,
+        stdout: porcelainOutput([
+          { path: mgr.repoRoot, branch: "refs/heads/main" },
+        ]),
+        stderr: "",
+      });
+      existsSync.mockImplementation((p) => {
+        const normalized = String(p).replace(/\\/g, "/");
+        return normalized === `/fake/repo/${DEFAULT_MANAGED_TASK_BASE_DIR}`;
+      });
+      readdirSync.mockImplementation((dirPath) => {
+        if (String(dirPath).replace(/\\/g, "/") === `/fake/repo/${DEFAULT_MANAGED_TASK_BASE_DIR}`) {
+          return [{ name: "task-abc123-deadbeef", isDirectory: () => true }];
+        }
+        return [];
+      });
+      statSync.mockImplementation((targetPath) => ({
+        mtimeMs: String(targetPath).replace(/\\/g, "/") === orphanPath
+          ? Date.now() - MAX_WORKTREE_AGE_MS - 10_000
+          : Date.now(),
+        isDirectory: () => true,
+      }));
+
+      const result = await mgr.pruneStaleWorktrees();
+      expect(result.pruned).toBeGreaterThanOrEqual(1);
     });
   });
 

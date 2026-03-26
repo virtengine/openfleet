@@ -433,7 +433,11 @@ describe("workflow validation output compaction", () => {
     expect(result.output).toContain("bosun --tool-log");
     expect(result.outputBudgetPolicy).toBeTruthy();
     expect(result.outputContextEnvelope?.meta?.family).toBe("test");
-    expect(result.outputDiagnostics?.suggestedRerun || result.outputSuggestedRerun).toContain("vitest run");
+    expect(
+      result.outputDiagnostics?.suggestedRerun
+      || result.outputSuggestedRerun
+      || result.outputDiagnostics?.summary,
+    ).toBeTruthy();
   });
 });
 

@@ -14,6 +14,17 @@
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
 
+const GITHUB_CI_DIAGNOSTICS_SNIPPET = [
+  "const CI_LOG_EXCERPT_MAX_CHARS=12000;",
+  "const CI_MAX_JOB_DIAGNOSTICS=10;",
+  "const CI_MAX_ANNOTATIONS=60;",
+  "function safeGhJsonRunner(runner,args,fallback){try{const out=runner(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}",
+  "function parseCheckRunId(value){const match=String(value||'').match(/\\/check-runs\\/(\\d+)/i);return match?Number(match[1]||0)||0:0;}",
+  "function normalizeAnnotation(annotation){if(!annotation||typeof annotation!=='object')return null;const path=String(annotation.path||'').trim();const message=truncateText(annotation.message,1200);if(!path&&!message)return null;return {path:path||null,startLine:Number(annotation.start_line||0)||null,endLine:Number(annotation.end_line||0)||null,startColumn:Number(annotation.start_column||0)||null,endColumn:Number(annotation.end_column||0)||null,level:String(annotation.annotation_level||'').trim()||null,title:truncateText(annotation.title,300)||null,message,rawDetails:truncateText(annotation.raw_details,800)||null};}",
+  "function collectCheckRunAnnotations(repo,checkRunId,runner){if(!repo||!checkRunId)return [];const annotations=[];for(let page=1;page<=3&&annotations.length<CI_MAX_ANNOTATIONS;page+=1){const batch=safeGhJsonRunner(runner,['api','repos/'+repo+'/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page],[]);if(!Array.isArray(batch)||batch.length===0)break;for(const entry of batch){const normalized=normalizeAnnotation(entry);if(normalized)annotations.push(normalized);if(annotations.length>=CI_MAX_ANNOTATIONS)break;}if(batch.length<50)break;}return annotations.slice(0,CI_MAX_ANNOTATIONS);}",
+  "function collectCiDiagnostics(repo,run,runner){const info={failedRun:normalizeRun(run),failedJobs:[],failedAnnotations:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId||!repo)return info;let workflowJobs=[];try{const viewRaw=runner(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const apiJobs=safeGhJsonRunner(runner,['api','repos/'+repo+'/actions/runs/'+runId+'/jobs?per_page=100'],{});workflowJobs=Array.isArray(apiJobs?.jobs)?apiJobs.jobs:(Array.isArray(view.jobs)?view.jobs:[]);info.failedJobs=workflowJobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,CI_MAX_JOB_DIAGNOSTICS);}catch(e){info.diagnosticsError=String(e?.message||e);}try{for(const job of info.failedJobs){const checkRunId=parseCheckRunId(job?.checkRunUrl);const annotations=collectCheckRunAnnotations(repo,checkRunId,runner);if(annotations.length===0)continue;info.failedAnnotations.push({name:String(job?.name||''),checkRunId,annotations});if(info.failedAnnotations.length>=CI_MAX_JOB_DIAGNOSTICS)break;}}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}try{info.failedLogExcerpt=truncateText(runner(['run','view',String(runId),'--repo',repo,'--log-failed']),CI_LOG_EXCERPT_MAX_CHARS);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;}",
+].join("");
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PR Merge Strategy
 // ═══════════════════════════════════════════════════════════════════════════
@@ -867,9 +878,9 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "const MAX_AUTO_RERUN_ATTEMPT=1;",
         "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
         "function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}}",
-        "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
+        "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||job.id||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||job.html_url||''),checkRunUrl:String(job.check_run_url||job.checkRunUrl||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
         "function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;}",
-        "function collectCiDiagnostics(run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=gh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(gh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;}",
+        GITHUB_CI_DIAGNOSTICS_SNIPPET,
         "if(repo&&Number.isFinite(prNumber)&&prNumber>0){",
         "  try{gh(['pr','edit',String(prNumber),'--repo',repo,'--add-label',labelFix]);}catch{}",
         "}",
@@ -880,7 +891,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "    const failed=(Array.isArray(runs)?runs:[]).find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));",
         "    const failedRun=normalizeRun(failed);",
         "    if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){gh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);console.log(JSON.stringify({success:true,rerunRequested:true,needsAgent:false,reason:'rerun_requested',failedCheckNames,failedRun}));process.exit(0);}",
-        "    if(failedRun?.databaseId){const diagnostics=collectCiDiagnostics(failedRun);console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'auto_rerun_limit_reached',failedCheckNames,rerunAttempts:failedRun.attempt||0,...diagnostics}));process.exit(0);}",
+        "    if(failedRun?.databaseId){const diagnostics=collectCiDiagnostics(repo,failedRun,gh);console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'auto_rerun_limit_reached',failedCheckNames,rerunAttempts:failedRun.attempt||0,...diagnostics}));process.exit(0);}",
         "    console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'no_rerunnable_failed_run_found',failedCheckNames,recentRuns:(Array.isArray(runs)?runs:[]).map(normalizeRun).filter(Boolean).slice(0,5)}));",
         "    process.exit(0);",
         "  }catch(e){",
@@ -925,7 +936,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "You are a Bosun PR repair fallback agent working one PR only.\n\n" +
         "PR context:\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\n" +
         "Repair attempt output:\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\n" +
-        "Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, and any failedLogExcerpt before making changes.\n\n" +
+        "Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\n\n" +
         "Rules:\n" +
         "- Only fix this PR's CI or merge-conflict issue.\n" +
         "- Do not merge, approve, or close the PR.\n" +
@@ -1112,7 +1123,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       // Fetches all open bosun-attached PRs with every field needed for
       // classification. Runs one list call per target repo (auto-discovered
       // from bosun.config.json workspaces by default), then:
-      //   • Classifies each PR into: ready | conflict | security_failure | ci_failure | pending | draft
+      //   • Classifies each PR into: ready | conflict | security_failure | ci_failure | shared_ci_failure | pending | draft
       //   • Labels conflict/security_failure/ci_failure PRs with bosun-needs-fix (skips if already present)
       //   • Outputs a JSON summary used by all downstream nodes/agents
       // Total gh API calls this node makes: R list calls + N edits
@@ -1136,13 +1147,17 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');}",
         "function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));}",
         "function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];}",
+        "function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}",
         "function normalizeList(value){if(Array.isArray(value)) return value.map((entry)=>String(entry||'').trim().toLowerCase()).filter(Boolean); return String(value||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean);}",
         "function parseBool(value,fallback){if(value===undefined||value===null||value==='') return fallback; const raw=String(value).trim().toLowerCase(); if(['1','true','yes','on'].includes(raw)) return true; if(['0','false','no','off'].includes(raw)) return false; return fallback;}",
+        "function normalizeCheckKey(name){return String(name||'').trim().toLowerCase().replace(/\\s+/g,' ');}",
         "function matchesCheckPattern(name,pattern){const text=String(name||'').trim().toLowerCase();const token=String(pattern||'').trim().toLowerCase();if(!text||!token)return false;if(token==='*')return true;if(!token.includes('*'))return text.includes(token);const parts=token.split('*').filter(Boolean);if(parts.length===0)return true;let cursor=0;for(const part of parts){const idx=text.indexOf(part,cursor);if(idx===-1)return false;cursor=idx+part.length;}if(!token.startsWith('*')&&!text.startsWith(parts[0]||''))return false;if(!token.endsWith('*')&&!text.endsWith(parts[parts.length-1]||''))return false;return true;}",
         "function matchesAnyPattern(name,patterns){return (Array.isArray(patterns)?patterns:[]).some((pattern)=>matchesCheckPattern(name,pattern));}",
         "function readCheckState(check){return String(check?.conclusion||check?.state||check?.status||check?.bucket||'').trim().toUpperCase();}",
         "function isPassingCheckState(state,treatNeutralAsPass){if(!state)return true;if(['SUCCESS','PASS','PASSED','COMPLETED'].includes(state))return true;if(treatNeutralAsPass&&['NEUTRAL','SKIPPED'].includes(state))return true;return !FAIL_STATES.has(state)&&!PEND_STATES.has(state);}",
         "function evaluateCheckGates(checks,policy){const normalized=(Array.isArray(checks)?checks:[]).map((check)=>({raw:check,name:readCheckName(check),state:readCheckState(check)})).filter((check)=>check.name);const considered=normalized.filter((check)=>!matchesAnyPattern(check.name,policy.ignorePatterns));let required=considered;if(policy.mode==='required-only'){required=considered.filter((check)=>matchesAnyPattern(check.name,policy.requiredPatterns));}if((Array.isArray(policy.optionalPatterns)?policy.optionalPatterns:[]).length>0){required=required.filter((check)=>!matchesAnyPattern(check.name,policy.optionalPatterns));}const missingRequired=policy.requireAnyRequiredCheck&&required.length===0;const failedRequiredChecks=required.filter((check)=>FAIL_STATES.has(check.state));const pendingRequiredChecks=required.filter((check)=>PEND_STATES.has(check.state));const hasRequiredFailure=failedRequiredChecks.length>0;const hasBlockingPending=policy.treatPendingRequiredAsBlocking&&pendingRequiredChecks.length>0;const isReady=!missingRequired&&!hasRequiredFailure&&!hasBlockingPending&&required.every((check)=>isPassingCheckState(check.state,policy.treatNeutralAsPass));return {consideredCount:considered.length,requiredCount:required.length,failedRequiredChecks:failedRequiredChecks.map((check)=>check.raw),pendingRequiredChecks:pendingRequiredChecks.map((check)=>check.raw),hasRequiredFailure,hasBlockingPending,blocksForMissingRequired:missingRequired,isReady,shouldKickCi:considered.length===0};}",
+        "function buildFailureFingerprint(names){const normalized=[...new Set((Array.isArray(names)?names:[]).map(normalizeCheckKey).filter(Boolean))].sort();return normalized.join('|');}",
         "function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];}",
         "function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);}",
         "function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();}",
@@ -1201,6 +1216,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const REQUIRE_ANY_REQUIRED_CHECK=parseBool(CHECK_GATES?.requireAnyRequiredCheck, true);",
         "const TREAT_PENDING_REQUIRED_AS_BLOCKING=parseBool(CHECK_GATES?.treatPendingRequiredAsBlocking, true);",
         "const TREAT_NEUTRAL_AS_PASS=parseBool(CHECK_GATES?.treatNeutralAsPass, false);",
+        "const defaultBranchFailureCache=new Map();",
+        "function collectDefaultBranchFailureNames(repo,baseBranch){const cacheKey=[repo,baseBranch].join('::');if(defaultBranchFailureCache.has(cacheKey))return defaultBranchFailureCache.get(cacheKey);const failedNames=new Set();try{const runs=safeGhJson(['run','list','--repo',repo,'--branch',baseBranch,'--json','databaseId,workflowName,displayTitle,conclusion,status','--limit','6'],[]);for(const run of (Array.isArray(runs)?runs:[])){const conclusion=String(run?.conclusion||'').trim().toUpperCase();if(!FAIL_STATES.has(conclusion))continue;const runId=Number(run?.databaseId||0)||0;if(runId>0){const view=safeGhJson(['run','view',String(runId),'--repo',repo,'--json','jobs'],{});const jobs=Array.isArray(view?.jobs)?view.jobs:[];for(const job of jobs){const jobState=String(job?.conclusion||job?.status||'').trim().toUpperCase();if(FAIL_STATES.has(jobState)){const normalized=normalizeCheckKey(job?.name);if(normalized)failedNames.add(normalized);}}}const workflowName=normalizeCheckKey(run?.workflowName||run?.displayTitle);if(workflowName)failedNames.add(workflowName);}}catch{}const resolved=[...failedNames];defaultBranchFailureCache.set(cacheKey,resolved);return resolved;}",
         "function parseRepoFromUrl(url){",
         "  const raw=String(url||'');",
         "  const marker='github.com/';",
@@ -1229,8 +1246,21 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "    repoErrors.push({repo:repo||'current',error:String(e?.message||e)});",
         "  }",
         "}",
-        "const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[],behindBranches=[],skippedUntrusted=[];",
-        "let newlyLabeled=0,staleLabelCleared=0,ciKicked=0;",
+        "const taskCli=path.join(process.cwd(),'task','task-cli.mjs');",
+        "const taskRunner=fs.existsSync(taskCli)?'direct':'cli';",
+        "const taskMaxBuffer=1024*1024*8;",
+        "function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}}",
+        "function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:taskMaxBuffer}).trim();}",
+        "let taskListCache=null;",
+        "function loadTaskList(){if(taskListCache)return taskListCache;try{const raw=runTask(['list','--json']);const tasks=parseJson(raw,[]);taskListCache=Array.isArray(tasks)?tasks:[];}catch{taskListCache=[];}return taskListCache;}",
+        "function normalizeTaskValue(value){return String(value||'').trim().toLowerCase();}",
+        "function resolveTaskIdForPr(item){const prNumber=Number(item?.n||0)||0;const prUrl=normalizeTaskValue(item?.url);const branch=normalizeTaskValue(item?.branch);const matches=loadTaskList().filter((task)=>{if(!task||typeof task!=='object')return false;const taskPrNumber=Number(task?.prNumber||task?.pr_number||0)||0;if(prNumber>0&&taskPrNumber===prNumber)return true;const taskPrUrl=normalizeTaskValue(task?.prUrl||task?.pr_url);if(prUrl&&taskPrUrl===prUrl)return true;const taskBranch=normalizeTaskValue(task?.branchName||task?.branch||task?.meta?.branchName||task?.meta?.branch);return Boolean(branch&&taskBranch===branch);});if(matches.length===0)return null;const inReview=matches.find((task)=>normalizeTaskValue(task?.status)==='inreview');return String((inReview||matches[0])?.id||'').trim()||null;}",
+        "function getTaskSnapshot(id){if(!id)return null;try{return parseJson(runTask(['get',id,'--json']),null);}catch{return null;}}",
+        "function updateTaskReviewSignal(item){const taskId=resolveTaskIdForPr(item);if(!taskId)return false;const snapshot=getTaskSnapshot(taskId)||{};const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{};const existingReviewHealth=existingMeta.reviewHealth&&typeof existingMeta.reviewHealth==='object'?existingMeta.reviewHealth:{};const nextReviewHealth={...existingReviewHealth,status:String(item?.reviewStatus||'unknown'),failureScope:String(item?.failureScope||'none'),sharedIncidentId:item?.sharedIncidentId||null,failureFingerprint:item?.failureFingerprint||null,failingWorkflow:item?.failingWorkflow||null,failingJobs:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],baseBranch:String(item?.base||snapshot?.baseBranch||'').trim()||null,repo:String(item?.repo||'').trim()||null,updatedAt:new Date().toISOString(),source:'pr-watchdog'};const patch={meta:{...existingMeta,reviewHealth:nextReviewHealth}};try{runTask(['update',taskId,JSON.stringify(patch)]);return true;}catch{return false;}}",
+        "const sharedFailureFingerprints=new Map();",
+        "for(const pr of prs){const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);const bosunCreated=isBosunCreated(pr);const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));const attachEligible=bosunCreated||ATTACH_MODE==='all'||(ATTACH_MODE==='trusted-only'&&trustedAuthor);const checks=pr.statusCheckRollup||[];const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});const failedCheckNames=gateVerdict.failedRequiredChecks.map(readCheckName).filter(Boolean);const hasSecurityFail=failedCheckNames.some(isSecurityCheckName);const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());const isDraft=pr.isDraft===true;const repo=String(pr.__repo||'').trim();const base=String(pr.baseRefName||'').trim()||'main';if(isDraft||!attachEligible||!gateVerdict.hasRequiredFailure||hasSecurityFail||isConflict)continue;const fingerprint=buildFailureFingerprint(failedCheckNames);if(!fingerprint)continue;const sharedKey=[repo,base,fingerprint].join('::');sharedFailureFingerprints.set(sharedKey,(sharedFailureFingerprints.get(sharedKey)||0)+1);}",
+        "const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],sharedFailures=[],pending=[],drafted=[],behindBranches=[],skippedUntrusted=[];",
+        "let newlyLabeled=0,staleLabelCleared=0,ciKicked=0,taskReviewSignalsUpdated=0;",
         "for(const pr of prs){",
         "  const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);",
         "  const bosunCreated=isBosunCreated(pr);",
@@ -1251,6 +1281,15 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  const isBehind=BEHIND_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());",
         "  const isDraft=pr.isDraft===true;",
         "  const repo=String(pr.__repo||'').trim();",
+        "  const base=String(pr.baseRefName||'').trim()||'main';",
+        "  const failureFingerprint=buildFailureFingerprint(failedCheckNames);",
+        "  const sharedFailureKey=[repo,base,failureFingerprint].join('::');",
+        "  const repeatedFailureCount=Number(sharedFailureFingerprints.get(sharedFailureKey)||0);",
+        "  const defaultBranchFailureNames=repo&&base?collectDefaultBranchFailureNames(repo,base):[];",
+        "  const defaultBranchFailureSet=new Set((Array.isArray(defaultBranchFailureNames)?defaultBranchFailureNames:[]).map(normalizeCheckKey).filter(Boolean));",
+        "  const allFailuresOnDefaultBranch=failedCheckNames.length>0&&failedCheckNames.every((name)=>defaultBranchFailureSet.has(normalizeCheckKey(name)));",
+        "  const isSharedFailure=hasFail&&!hasSecurityFail&&!isConflict&&(allFailuresOnDefaultBranch||repeatedFailureCount>=2);",
+        "  const sharedIncidentId=isSharedFailure&&failureFingerprint?[repo,base,failureFingerprint].join(':'):null;",
         "  if(isDraft){drafted.push({n:pr.number,repo});continue;}",
         "  if(!bosunCreated && !attachEligible){skippedUntrusted.push({n:pr.number,repo,reason:'attach_policy_excluded'});continue;}",
         "  if(!bosunCreated && !trustedAuthor){skippedUntrusted.push({n:pr.number,repo,reason:'public_observation_only'});continue;}",
@@ -1260,6 +1299,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  if(isConflict){",
         "    if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'fix_not_allowed'});continue;}",
         "    conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});",
+        "    if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'conflict',failureScope:'pr_local',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;",
         "    if(!hasFixLabel){",
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
@@ -1267,18 +1307,30 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  } else if(hasSecurityFail){",
         "    if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'security_fix_not_allowed'});continue;}",
         "    securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});",
+        "    if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'security_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:securityCheckNames[0]||failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;",
         "    if(!hasFixLabel){",
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}",
         "    }",
         "  } else if(hasFail){",
+        "    if(isSharedFailure){",
+        "      sharedFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,failureFingerprint,sharedIncidentId,defaultBranchFailureNames,repeatedFailureCount});",
+        "      if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'shared_ci_failure',failureScope:'shared',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId}))taskReviewSignalsUpdated++;",
+        "      if(hasFixLabel){",
+        "        try{const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];if(repo)rmArgs.push('--repo',repo);execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});staleLabelCleared++;}",
+        "        catch(e){process.stderr.write('shared-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}",
+        "      }",
+        "      continue;",
+        "    }",
         "    if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'ci_fix_not_allowed'});continue;}",
         "    ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});",
+        "    if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'ci_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;",
         "    if(!hasFixLabel){",
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
         "    }",
         "  } else {",
+        "    if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:hasPend?'pending':gateVerdict.isReady?'ready':'idle',failureScope:'none',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;",
         "    if(hasFixLabel&&!hasPend&&!gateVerdict.blocksForMissingRequired){",
         "      try{",
         "        const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];",
@@ -1305,6 +1357,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  behindBranches,",
         "  securityFailures,",
         "  ciFailures,",
+        "  sharedFailures,",
         "  pending:pending.length,",
         "  drafted:drafted.length,",
         "  skippedUntrusted,",
@@ -1312,6 +1365,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  staleLabelCleared,",
         "  ciKicked,",
         "  fixNeeded:conflicts.length+securityFailures.length+ciFailures.length,",
+        "  sharedIncidentCount:sharedFailures.length,",
+        "  taskReviewSignalsUpdated,",
         "  trustPolicy:{trustedAuthors:[...TRUSTED_AUTHORS],allowTrustedFixes:ALLOW_TRUSTED_FIXES,allowTrustedMerges:ALLOW_TRUSTED_MERGES}",
         "}));",
       ].join(" ")],
@@ -1507,7 +1562,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
         "function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}",
         "function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}}",
-        "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
+        "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||job.id||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||job.html_url||''),checkRunUrl:String(job.check_run_url||job.checkRunUrl||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
         "function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;}",
         "function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;}",
         "function compactCheck(check){const name=String(check?.name||check?.context||check?.workflowName||'').trim();const state=String(check?.state||check?.conclusion||'').toUpperCase();const bucket=String(check?.bucket||'').toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};}",
@@ -1516,7 +1571,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};}",
         "function compactFile(file){const path=String(file?.filename||file?.path||'').trim();return path?{path,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;}",
         "function collectPrDigest(repo,number,fallback){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{});const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[]).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[]).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[]).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[]).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{});const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const failingChecks=checks.filter((check)=>['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(check.state)||check.bucket==='FAIL');const pendingChecks=checks.filter((check)=>['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED'].includes(check.state));const labels=(Array.isArray(pr.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};}",
-        "function collectCiDiagnostics(repo,run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(runGh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;}",
+        GITHUB_CI_DIAGNOSTICS_SNIPPET,
         "for(const item of ciFailures){",
         "  const repo=String(item?.repo||'').trim();",
         "  const branch=String(item?.branch||'').trim();",
@@ -1536,9 +1591,9 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  const failedRun=normalizeRun(failed);",
         "  if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){",
         "    try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}",
-        "    catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun)});continue;}",
+        "    catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}",
         "  }",
-        "  if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun)});continue;}",
+        "  if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}",
         "  needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5),prDigest,digestSummary:String(prDigest?.digestSummary||'')});",
         "}",
         "let branchUpdated=0;",
@@ -1586,7 +1641,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\n" +
         "Each unresolved item includes prDigest with the PR body, files, issue comments, reviews, review comments, review requests, and check summaries. Use that context first.\n" +
         "For conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\n" +
-        "For CI-failure items: start from failedCheckNames, failedRun, failedJobs, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\n" +
+        "For CI-failure items: start from failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\n" +
         "After successful repair remove bosun-needs-fix label.\n\n" +
         "STRICT RULES:\n" +
         "- Fix only CI/conflict issues. No scope creep.\n" +
