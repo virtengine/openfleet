@@ -3492,6 +3492,62 @@ describe("ui-server mini app", () => {
 
     vi.useRealTimers();
   });
+
+  it("resets provider 24h counts once events fall outside the rolling window", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const { createAgentEventBus } = await import("../agent/agent-event-bus.mjs");
+    const bus = createAgentEventBus();
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse("2026-03-26T15:30:00.000Z"));
+
+    bus.emit("rateLimitHit", "task-old", {
+      provider: "codex",
+      sessionId: "session-old",
+      retryAfterMs: 10000,
+      statusCode: 429,
+      timestamp: "2026-03-25T15:29:59.000Z",
+    });
+    bus.emit("rateLimitHit", "task-new", {
+      provider: "codex",
+      sessionId: "session-new",
+      retryAfterMs: 20000,
+      statusCode: 429,
+      timestamp: "2026-03-26T15:25:00.000Z",
+    });
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      getAgentEventBus: () => bus,
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.rateLimits.today429s).toBe(1);
+    expect(payload.rateLimits.hits).toEqual([
+      expect.objectContaining({
+        provider: "codex",
+        sessionId: "session-new",
+        hitCount24h: 1,
+      }),
+    ]);
+
+    vi.useRealTimers();
+  });
   it("returns a diagnosticId on task detail failures and logs the raw backend cause", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 

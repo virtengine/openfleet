@@ -12277,6 +12277,53 @@ function summarizeProviderRateLimits(eventBus, options = {}) {
   };
 }
 
+let _providerCapacityWarningState = {
+  active: false,
+  signature: "",
+};
+
+function maybeQueueProviderCapacityWarning(rateLimits, queueWorkflowEventFn) {
+  if (!rateLimits || typeof queueWorkflowEventFn !== "function") return;
+
+  const thresholdExceeded = rateLimits.thresholdExceeded === true;
+  if (!thresholdExceeded) {
+    _providerCapacityWarningState = {
+      active: false,
+      signature: "",
+    };
+    return;
+  }
+
+  const latestHit = Array.isArray(rateLimits.hits) && rateLimits.hits.length > 0
+    ? rateLimits.hits[0]
+    : null;
+  const signature = JSON.stringify({
+    thresholdPerHour: rateLimits.thresholdPerHour || 0,
+    today429s: rateLimits.today429s || 0,
+    sparklineValues: Array.isArray(rateLimits.sparklineValues) ? rateLimits.sparklineValues : [],
+    latestTimestamp: latestHit?.timestamp || null,
+    latestProvider: latestHit?.provider || null,
+    latestSessionId: latestHit?.sessionId || null,
+  });
+
+  if (_providerCapacityWarningState.active && _providerCapacityWarningState.signature === signature) {
+    return;
+  }
+
+  _providerCapacityWarningState = {
+    active: true,
+    signature,
+  };
+
+  queueWorkflowEventFn("provider-capacity-warning", {
+    source: "telemetry.rate-limits",
+    thresholdPerHour: rateLimits.thresholdPerHour,
+    sparklineValues: rateLimits.sparklineValues,
+    today429s: rateLimits.today429s,
+    hits: Array.isArray(rateLimits.hits) ? rateLimits.hits.slice(0, 20) : [],
+  });
+}
+
 function summarizeTelemetry(metrics, days) {
   const filtered = metrics.filter((m) => withinDays(m, days));
   if (filtered.length === 0) return null;
@@ -17152,15 +17199,7 @@ async function handleApi(req, res, url) {
       summary.rateLimits = summarizeProviderRateLimits(uiDeps.getAgentEventBus?.(), {
         now: Date.now(),
       });
-      if (summary.rateLimits?.thresholdExceeded && typeof uiDeps.queueWorkflowEvent === "function") {
-        uiDeps.queueWorkflowEvent("provider-capacity-warning", {
-          source: "telemetry.rate-limits",
-          thresholdPerHour: summary.rateLimits.thresholdPerHour,
-          sparklineValues: summary.rateLimits.sparklineValues,
-          today429s: summary.rateLimits.today429s,
-          hits: summary.rateLimits.hits.slice(0, 20),
-        });
-      }
+      maybeQueueProviderCapacityWarning(summary.rateLimits, uiDeps.queueWorkflowEvent);
       summary.repoAreaContention = summarizeRepoAreaLockContention(
         uiDeps.getInternalExecutor?.()?.getStatus?.()?.repoAreaLocks || null,
         { now: "2026-03-24T12:00:00.000Z" },
@@ -23724,3 +23763,5 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+

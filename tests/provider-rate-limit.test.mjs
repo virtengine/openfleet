@@ -82,4 +82,15 @@ describe("provider rate-limit helpers", () => {
     expect(onProviderEvent).not.toHaveBeenCalled();
     expect(bus.getEventLog({ type: "rateLimitHit" })).toEqual([]);
   });
+
+  it("parses retry-after from message text when headers are absent", () => {
+    const info = detectRateLimitInfo({
+      message: "Provider rejected request: 429 quota exceeded, retry-after=2.5",
+    });
+
+    expect(info).toMatchObject({
+      statusCode: 429,
+      retryAfterMs: 2500,
+    });
+  });
 });
