@@ -2,9 +2,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const spawnSyncMock = vi.hoisted(() => vi.fn());
 
-vi.mock("node:child_process", () => ({
-  spawnSync: spawnSyncMock,
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    spawnSync: spawnSyncMock,
+  };
+});
 
 const { cleanupStaleBranches } = await import("../infra/maintenance.mjs");
 

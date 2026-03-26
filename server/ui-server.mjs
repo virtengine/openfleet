@@ -2096,6 +2096,11 @@ function buildTaskBlockedContext(task, options = {}) {
     6,
   );
   const hasPlannerCorruption = /planner payload corrupted/i.test(explicitReason);
+  const repairArtifacts =
+    currentTask?.meta?.worktreeFailure?.repairArtifacts
+    && typeof currentTask.meta.worktreeFailure.repairArtifacts === "object"
+      ? currentTask.meta.worktreeFailure.repairArtifacts
+      : null;
   const hasWorktreeFailure =
     Boolean(currentTask?.meta?.worktreeFailure) ||
     logDiagnostics.counts.worktreeFailed > 0 ||
@@ -2117,7 +2122,9 @@ function buildTaskBlockedContext(task, options = {}) {
     headline = "Task Lifecycle blocked this task after worktree acquisition failed.";
     summary = explicitReason
       || "Bosun could not acquire or refresh a clean managed worktree for this task.";
-    recommendation = "If the worktree guard fix is now deployed, move the task back to todo to retry it on a fresh lifecycle run.";
+    recommendation = repairArtifacts?.summaryPath
+      ? "Review the saved repair artifacts, then move the task back to todo to retry it on a fresh lifecycle run."
+      : "If the worktree guard fix is now deployed, move the task back to todo to retry it on a fresh lifecycle run.";
   } else if (isDependencyBlocked) {
     category = "dependency_blocked";
     headline = "This task cannot start because one or more dependencies are not done yet.";
@@ -2151,6 +2158,7 @@ function buildTaskBlockedContext(task, options = {}) {
     createPrFailureCount: logDiagnostics.counts.createPrFailed,
     blockedBy: Array.isArray(canStart?.blockedBy) ? canStart.blockedBy : [],
     blockingTaskIds: Array.isArray(canStart?.blockingTaskIds) ? canStart.blockingTaskIds : [],
+    repairArtifacts,
     timelineEvidence,
     logEvidence: logDiagnostics.entries,
   };
@@ -6315,11 +6323,17 @@ function normalizePrAutomationPolicy(raw = {}, options = {}) {
   };
 }
 
-function normalizeGatesPolicy(raw = {}) {
+function normalizeGatesPolicy(raw = {}, options = {}) {
   const prsRaw = raw?.prs && typeof raw.prs === "object" ? raw.prs : {};
   const checksRaw = raw?.checks && typeof raw.checks === "object" ? raw.checks : {};
   const executionRaw = raw?.execution && typeof raw.execution === "object" ? raw.execution : {};
+  const worktreesRaw = raw?.worktrees && typeof raw.worktrees === "object" ? raw.worktrees : {};
   const runtimeRaw = raw?.runtime && typeof raw.runtime === "object" ? raw.runtime : {};
+  const worktreeBootstrapRaw =
+    options?.worktreeBootstrap && typeof options.worktreeBootstrap === "object"
+      ? options.worktreeBootstrap
+      : {};
+  const bootstrapEnabledDefault = parseBooleanLike(worktreeBootstrapRaw.enabled, true);
   const repoVisibilityRaw = String(prsRaw.repoVisibility || "unknown").trim().toLowerCase();
   const automationPreferenceRaw = String(prsRaw.automationPreference || "runtime-first").trim().toLowerCase();
   const githubActionsBudgetRaw = String(prsRaw.githubActionsBudget || "ask-user").trim().toLowerCase();
@@ -6354,6 +6368,11 @@ function normalizeGatesPolicy(raw = {}) {
       containerIsolationEnabled: parseBooleanLike(executionRaw.containerIsolationEnabled, false),
       containerRuntime: String(executionRaw.containerRuntime || "auto").trim().toLowerCase() || "auto",
       networkAccess: String(executionRaw.networkAccess || "default").trim().toLowerCase() || "default",
+    },
+    worktrees: {
+      requireBootstrap: parseBooleanLike(worktreesRaw.requireBootstrap, bootstrapEnabledDefault),
+      requireReadiness: parseBooleanLike(worktreesRaw.requireReadiness, bootstrapEnabledDefault),
+      enforcePushHook: parseBooleanLike(worktreesRaw.enforcePushHook, true),
     },
     runtime: {
       enforceBacklog: parseBooleanLike(runtimeRaw.enforceBacklog, true),
@@ -19716,7 +19735,9 @@ if (path === "/api/agent-logs/context") {
       kanbanBackend: runtimeKanbanBackend,
       regions,
       prAutomation: normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true }),
-      gates: normalizeGatesPolicy(configData?.gates),
+      gates: normalizeGatesPolicy(configData?.gates, {
+        worktreeBootstrap: configData?.worktreeBootstrap,
+      }),
       tunnel: getTunnelStatus(),
       fallbackAuth: getFallbackAuthStatus(),
     });
@@ -19798,7 +19819,9 @@ if (path === "/api/agent-logs/context") {
       const { configData } = readConfigDocument();
       jsonResponse(res, 200, {
         ok: true,
-        gates: normalizeGatesPolicy(configData?.gates),
+        gates: normalizeGatesPolicy(configData?.gates, {
+          worktreeBootstrap: configData?.worktreeBootstrap,
+        }),
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -19809,8 +19832,10 @@ if (path === "/api/agent-logs/context") {
   if (path === "/api/gates" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const gates = normalizeGatesPolicy(body?.gates || {});
       const { configPath, configData } = readConfigDocument();
+      const gates = normalizeGatesPolicy(body?.gates || {}, {
+        worktreeBootstrap: configData?.worktreeBootstrap,
+      });
       configData.gates = gates;
       writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
       broadcastUiEvent(["settings", "overview"], "invalidate", {
