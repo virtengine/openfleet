@@ -63,13 +63,38 @@ export function toggleLogSource(filterState, sourceKey) {
 
 export function normalizeLogEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
-  return {
-    ts: entry.ts || new Date().toISOString(),
-    level: String(entry.level || "info").toLowerCase(),
-    source: String(entry.source || "monitor"),
+
+  // Support both legacy shape { ts, source, sessionId, message }
+  // and WebSocket payload shape { logType, line/raw, level, timestamp, filePath, query }.
+  const ts = entry.ts || entry.timestamp || new Date().toISOString();
+  const level = String(entry.level || "info").toLowerCase();
+  const source = String(entry.source || entry.logType || "monitor");
+
+  let message = "";
+  if (entry.message != null && entry.message !== "") {
+    message = String(entry.message);
+  } else if (entry.line != null && entry.line !== "") {
+    message = String(entry.line);
+  } else if (entry.raw != null && entry.raw !== "") {
+    message = String(entry.raw);
+  } else if (entry.filePath != null && entry.filePath !== "") {
+    // Last-resort fallback so the row is not completely empty.
+    message = String(entry.filePath);
+  }
+
+  const normalized = {
+    ts,
+    level,
+    source,
     sessionId: entry.sessionId || null,
-    message: String(entry.message || ""),
+    message,
   };
+
+  // Preserve extra metadata for consumers that care about it.
+  if (entry.filePath !== undefined) normalized.filePath = entry.filePath;
+  if (entry.query !== undefined) normalized.query = entry.query;
+
+  return normalized;
 }
 
 export function appendLogEntry(entries = [], entry) {
@@ -188,10 +213,25 @@ export function getLogSourceOptions(filterState, entries = []) {
     .sort()
     .map((sessionId) => ({ key: `session:${sessionId}`, label: sessionId }));
   const builtinOptions = BUILTIN_LOG_SOURCES.map((source) => ({ key: source, label: source }));
-  return [...builtinOptions, ...sessionOptions].map((option) => ({
-    ...option,
-    enabled: (filterState?.sources || {})[option.key] !== false,
-  }));
+  const sources = filterState?.sources || {};
+  const hasSessionFilters = Object.keys(sources).some((key) => key.startsWith("session:"));
+  return [...builtinOptions, ...sessionOptions].map((option) => {
+    const explicit = sources[option.key];
+    let enabled;
+
+    if (option.key.startsWith("session:") && hasSessionFilters) {
+      // When any session filters exist, missing session keys are treated as excluded.
+      enabled = explicit === undefined ? false : explicit !== false;
+    } else {
+      // Default behavior: enabled unless explicitly set to false.
+      enabled = explicit !== false;
+    }
+
+    return {
+      ...option,
+      enabled,
+    };
+  });
 }
 
 export function wrapText(text, width) {

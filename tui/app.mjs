@@ -168,11 +168,18 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       setTasks((previous) => previous.filter((task) => task.id !== taskId));
     });
     on("logs:stream", (entry) => {
-      setLogs((previous) => appendLogEntry(previous, entry));
+      const logEntry = {
+        ...entry,
+        source: entry?.source ?? entry?.logType,
+        ts: entry?.ts ?? entry?.timestamp,
+        message: entry?.message ?? entry?.line ?? entry?.raw,
+      };
+
+      setLogs((previous) => appendLogEntry(previous, logEntry));
       setLogsFilterState((previous) => {
-        let next = ensureLogSource(previous, entry?.source, true);
-        if (entry?.sessionId) {
-          next = ensureLogSource(next, `session:${entry.sessionId}`, true);
+        let next = ensureLogSource(previous, logEntry.source, true);
+        if (logEntry.sessionId) {
+          next = ensureLogSource(next, `session:${logEntry.sessionId}`, true);
         }
         return next;
       });
