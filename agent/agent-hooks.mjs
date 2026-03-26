@@ -643,7 +643,7 @@ export function registerBuiltinHooks(options = {}) {
 
   // ── PrePush: agent preflight quality gate ──
   if (!skipPrePush) {
-    const preflightScript = "node preflight.mjs";
+    const preflightScript = "node infra/preflight.mjs";
 
     registerHook("PrePush", {
       id: "builtin-prepush-preflight",

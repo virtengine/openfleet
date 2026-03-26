@@ -327,7 +327,7 @@ describe("agent-hooks", () => {
       const builtin = prePush.find((h) => h.id === "builtin-prepush-preflight");
       expect(builtin.blocking).toBe(true);
       expect(builtin.builtin).toBe(true);
-      expect(builtin.command).toBe("node preflight.mjs");
+      expect(builtin.command).toBe("node infra/preflight.mjs");
     });
 
     it("should be idempotent (no duplicates on re-call)", () => {
