@@ -3593,6 +3593,42 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
 
+  it("ignores unresolved model placeholders when launching an agent", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-no-model",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "a-unresolved-model",
+      type: "action.run_agent",
+      config: {
+        prompt: "Test prompt",
+        model: "{{resolvedModel}}",
+        autoRecover: false,
+      },
+    };
+
+    await handler.execute(node, ctx, mockEngine);
+
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).not.toHaveProperty("model");
+  });
+
   it("fails fast in strict cache anchor mode when system prompt includes task markers", async () => {
     const previous = process.env.BOSUN_CACHE_ANCHOR_MODE;
     process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
