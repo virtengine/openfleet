@@ -7,9 +7,15 @@ import { getNextScreenForInput } from "./lib/navigation.mjs";
 import StatusHeader from "./components/status-header.mjs";
 import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
+import LogsScreen from "./screens/logs.mjs";
 import StatusScreen from "./screens/status.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
+import {
+  appendLogEntry,
+  createDefaultLogsFilterState,
+  ensureLogSource,
+} from "../ui/tui/logs-screen-helpers.js";
 
 const html = htm.bind(React.createElement);
 
@@ -17,6 +23,7 @@ const SCREENS = {
   status: StatusScreen,
   tasks: TasksScreen,
   agents: AgentsScreen,
+  logs: LogsScreen,
 };
 
 function ScreenTabs({ screen }) {
@@ -24,6 +31,7 @@ function ScreenTabs({ screen }) {
     { key: "status", num: "1", label: "Status" },
     { key: "tasks", num: "2", label: "Tasks" },
     { key: "agents", num: "3", label: "Agents" },
+    { key: "logs", num: "4", label: "Logs" },
   ];
 
   return html`
@@ -58,6 +66,8 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [stats, setStats] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [logsFilterState, setLogsFilterState] = useState(createDefaultLogsFilterState());
   const [error, setError] = useState(null);
   const [screenInputLocked, setScreenInputLocked] = useState(false);
   const [refreshCountdownSec, setRefreshCountdownSec] = useState(
@@ -157,6 +167,23 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     on("task:delete", (taskId) => {
       setTasks((previous) => previous.filter((task) => task.id !== taskId));
     });
+    on("logs:stream", (entry) => {
+      const logEntry = {
+        ...entry,
+        source: entry?.source ?? entry?.logType,
+        ts: entry?.ts ?? entry?.timestamp,
+        message: entry?.message ?? entry?.line ?? entry?.raw,
+      };
+
+      setLogs((previous) => appendLogEntry(previous, logEntry));
+      setLogsFilterState((previous) => {
+        let next = ensureLogSource(previous, logEntry.source, true);
+        if (logEntry.sessionId) {
+          next = ensureLogSource(next, `session:${logEntry.sessionId}`, true);
+        }
+        return next;
+      });
+    });
     on("retry:update", (retryQueue) => {
       setStats((previous) => ({ ...(previous || {}), retryQueue }));
     });
@@ -226,12 +253,15 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           stats=${screenStats}
           sessions=${sessions}
           tasks=${tasks}
+          logs=${logs}
+          logsFilterState=${logsFilterState}
           wsBridge=${bridge}
           host=${host}
           port=${port}
           connectOnly=${connectOnly}
           refreshMs=${refreshMs}
           onTasksChange=${setTasks}
+          onLogsFilterStateChange=${setLogsFilterState}
           onInputCaptureChange=${setScreenInputLocked}
         />
       <//>
