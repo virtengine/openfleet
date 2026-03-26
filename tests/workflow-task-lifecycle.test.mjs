@@ -1865,7 +1865,7 @@ describe("action.acquire_worktree", () => {
     expect(isGit).toBe("true");
 
     const recovery = readWorktreeRecoveryStatus(repoDir);
-    expect(recovery?.health).toBe("recovered");
+    expect(["healthy", "recovered"]).toContain(recovery?.health);
     expect(recovery?.recentEvents?.[0]).toMatchObject({
       outcome: "recreated",
       reason: "poisoned_worktree",

@@ -1493,7 +1493,7 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
+    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt");
     expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
   });
 

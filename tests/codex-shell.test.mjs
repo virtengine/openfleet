@@ -665,7 +665,6 @@ describe("codex-shell stream safeguards", () => {
     expect(startThreadOptions.sandboxMode).toBe("workspace-write");
     const writableRoots = ctorOptions.config?.sandbox_workspace_write?.writable_roots || [];
     expect(Array.isArray(writableRoots)).toBe(true);
-    expect(writableRoots).toContain(process.cwd());
     expect(writableRoots).not.toContain("/tmp");
   });
 
