@@ -30,7 +30,7 @@ import { loadConfig } from "../config/config.mjs";
 import { sanitizeGitEnv } from "../git/git-safety.mjs";
 import { detectProjectStack } from "../workflow/project-detection.mjs";
 import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
-import { ensureWorktreeRuntimeSetup } from "./worktree-setup.mjs";
+import { ensureWorktreeRuntimeSetup, inspectWorktreeRuntimeSetup } from "./worktree-setup.mjs";
 
 // ── Path Setup ──────────────────────────────────────────────────────────────
 
@@ -75,6 +75,28 @@ const DEFAULT_SHARED_PATHS_BY_STACK = Object.freeze({
   php: Object.freeze(["vendor"]),
   ruby: Object.freeze(["vendor/bundle"]),
 });
+
+function shouldEnforceWorktreeRuntimeReady(repoRoot) {
+  const resolvedRepoRoot = resolve(repoRoot);
+  return existsSync(resolve(resolvedRepoRoot, ".githooks", "pre-commit"))
+    && existsSync(resolve(resolvedRepoRoot, ".githooks", "pre-push"));
+}
+
+function ensureWorktreeRuntimeReady(repoRoot, worktreePath) {
+  const resolvedRepoRoot = resolve(repoRoot);
+  const resolvedWorktreePath = resolve(worktreePath);
+  ensureWorktreeRuntimeSetup(resolvedRepoRoot, resolvedWorktreePath);
+  if (!shouldEnforceWorktreeRuntimeReady(resolvedRepoRoot)) {
+    return null;
+  }
+  const inspection = inspectWorktreeRuntimeSetup(resolvedRepoRoot, resolvedWorktreePath);
+  if (!inspection.ok) {
+    throw new Error(
+      `Worktree runtime setup incomplete for ${resolvedWorktreePath}: ${inspection.issues.join("; ")}`,
+    );
+  }
+  return inspection;
+}
 
 /**
  * Guard against git config corruption caused by worktree operations.
@@ -609,7 +631,7 @@ class WorktreeManager {
   }
 
   bootstrapWorktree(worktreePath, record = null) {
-    ensureWorktreeRuntimeSetup(this.repoRoot, worktreePath);
+    ensureWorktreeRuntimeReady(this.repoRoot, worktreePath);
 
     const policy = this.getWorktreeBootstrapConfig();
     if (!policy?.enabled) return;
@@ -1561,7 +1583,7 @@ function bootstrapWorktreeForPath(repoRoot, worktreePath) {
   if (!worktreePath) return;
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedWorktreePath = resolve(worktreePath);
-  ensureWorktreeRuntimeSetup(resolvedRepoRoot, resolvedWorktreePath);
+  ensureWorktreeRuntimeReady(resolvedRepoRoot, resolvedWorktreePath);
   const detection = detectProjectStack(resolvedWorktreePath);
   if (!detection?.primary) return;
 
