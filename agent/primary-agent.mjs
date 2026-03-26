@@ -68,6 +68,7 @@ import {
   createSession as createGeminiSession,
 } from "../shell/gemini-shell.mjs";
 import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
+import { createAgentEventBus } from "./agent-event-bus.mjs";
 
 /** Valid agent interaction modes */
 const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
@@ -208,6 +209,20 @@ function summarizeContextCompressionItems(items) {
     budgetPolicies: envelope.meta?.budgetPolicies || {},
     lowSignalToolCount: envelope.meta?.lowSignalToolCount || 0,
     content: envelope.content,
+  };
+}
+
+function createProviderEventReporter(options = {}) {
+  const eventBus = options.eventBus && typeof options.eventBus.emit === "function"
+    ? options.eventBus
+    : createAgentEventBus();
+  const taskId = options.taskId || options.statusData?.taskId || "system";
+  return (payload) => {
+    if (!payload || typeof payload !== "object") return;
+    try {
+      eventBus.emit(payload.type || "provider-event", taskId, payload);
+    } catch {
+    }
   };
 }
 
@@ -365,7 +380,7 @@ const ADAPTERS = {
     name: "codex-sdk",
     provider: "CODEX",
     displayName: "Codex",
-    exec: (msg, opts) => execCodexPrompt(msg, { persistent: true, ...opts }),
+    exec: (msg, opts) => execCodexPrompt(msg, { persistent: true, onProviderEvent: createProviderEventReporter(opts), ...opts }),
     steer: steerCodexPrompt,
     isBusy: isCodexBusy,
     getInfo: () => {
@@ -404,7 +419,7 @@ const ADAPTERS = {
     name: "copilot-sdk",
     provider: "COPILOT",
     displayName: "Copilot",
-    exec: (msg, opts) => execCopilotPrompt(msg, { persistent: true, ...opts }),
+    exec: (msg, opts) => execCopilotPrompt(msg, { persistent: true, onProviderEvent: createProviderEventReporter(opts), ...opts }),
     steer: steerCopilotPrompt,
     isBusy: isCopilotBusy,
     getInfo: () => getCopilotSessionInfo(),
@@ -456,7 +471,7 @@ const ADAPTERS = {
     name: "gemini-sdk",
     provider: "GEMINI",
     displayName: "Gemini",
-    exec: (msg, opts) => execGeminiPrompt(msg, { persistent: true, ...opts }),
+    exec: (msg, opts) => execGeminiPrompt(msg, { persistent: true, onProviderEvent: createProviderEventReporter(opts), ...opts }),
     steer: steerGeminiPrompt,
     isBusy: isGeminiBusy,
     getInfo: () => getGeminiSessionInfo(),
@@ -485,7 +500,7 @@ const ADAPTERS = {
     name: "opencode-sdk",
     provider: "OPENCODE",
     displayName: "OpenCode",
-    exec: (msg, opts) => execOpencodePrompt(msg, { persistent: true, ...opts }),
+    exec: (msg, opts) => execOpencodePrompt(msg, { persistent: true, onProviderEvent: createProviderEventReporter(opts), ...opts }),
     steer: steerOpencodePrompt,
     isBusy: isOpencodeBusy,
     getInfo: () => getOpencodeSessionInfo(),
@@ -1505,7 +1520,3 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
-
-
-
-

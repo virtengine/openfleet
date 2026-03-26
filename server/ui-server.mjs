@@ -52,6 +52,7 @@ async function compressAndSend(req, res, statusCode, headers, body) {
 
 // Lightweight TTL cache for expensive API responses
 const _apiCache = new Map();
+const _providerCapacityWarningState = new Map();
 function getCachedApiResponse(key, ttlMs) {
   const entry = _apiCache.get(key);
   if (!entry) return undefined;
@@ -23723,8 +23724,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-
-
-
-

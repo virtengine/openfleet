@@ -3341,6 +3341,89 @@ describe("ui-server mini app", () => {
     });
   });
 
+  it("queues provider-capacity-warning once when hourly rate-limit threshold is exceeded", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_PROVIDER_RATE_LIMIT_THRESHOLD_PER_HOUR = "2";
+
+    const { createAgentEventBus } = await import("../agent/agent-event-bus.mjs");
+    const bus = createAgentEventBus();
+    const queued = [];
+    const now = Date.parse("2026-03-26T15:30:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+
+    bus.emit("rateLimitHit", "task-1", {
+      provider: "codex",
+      sessionId: "session-a",
+      retryAfterMs: 15000,
+      statusCode: 429,
+      timestamp: "2026-03-26T15:05:00.000Z",
+    });
+    bus.emit("rateLimitHit", "task-2", {
+      provider: "claude",
+      sessionId: "session-b",
+      retryAfterMs: 30000,
+      statusCode: 429,
+      timestamp: "2026-03-26T15:25:00.000Z",
+    });
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      getAgentEventBus: () => bus,
+      queueWorkflowEvent: (type, payload) => queued.push({ type, payload }),
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const firstResponse = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
+    const firstPayload = await firstResponse.json();
+    expect(firstResponse.status).toBe(200);
+    expect(firstPayload.rateLimits.thresholdExceeded).toBe(true);
+    expect(queued).toEqual([
+      expect.objectContaining({
+        type: "provider-capacity-warning",
+        payload: expect.objectContaining({
+          thresholdPerHour: 2,
+          today429s: 2,
+        }),
+      }),
+    ]);
+
+    const secondResponse = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
+    expect(secondResponse.status).toBe(200);
+    expect(queued).toHaveLength(1);
+
+    vi.setSystemTime(Date.parse("2026-03-26T16:30:00.000Z"));
+    bus.emit("rateLimitHit", "task-3", {
+      provider: "codex",
+      sessionId: "session-c",
+      retryAfterMs: 45000,
+      statusCode: 429,
+      timestamp: "2026-03-26T16:10:00.000Z",
+    });
+
+    const thirdResponse = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
+    expect(thirdResponse.status).toBe(200);
+    expect(queued).toHaveLength(2);
+    expect(queued[1]).toEqual(expect.objectContaining({
+      type: "provider-capacity-warning",
+      payload: expect.objectContaining({
+        today429s: 3,
+      }),
+    }));
+
+    vi.useRealTimers();
+  });
   it("surfaces provider rate-limit telemetry and hourly sparkline buckets on /api/telemetry/summary", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -4928,9 +5011,3 @@ describe("ui-server mini app", () => {
   });
 
 });
-
-
-
-
-
-
