@@ -59,6 +59,11 @@ export async function renderInk(element, options = {}) {
     text() {
       return stripAnsi(buffer).replace(/\r/g, "");
     },
+    latestText() {
+      const cleaned = stripAnsi(buffer).replace(/\r/g, "");
+      const lastIndex = cleaned.lastIndexOf("Agents:");
+      return lastIndex >= 0 ? cleaned.slice(lastIndex) : cleaned;
+    },
     async press(chars, waitMs = 40) {
       stdin.write(chars);
       await delay(waitMs);

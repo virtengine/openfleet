@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import htm from "htm";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 
 import wsBridgeFactory from "./lib/ws-bridge.mjs";
 import { getNextScreenForInput } from "./lib/navigation.mjs";
@@ -10,6 +10,7 @@ import AgentsScreen from "./screens/agents.mjs";
 import StatusScreen from "./screens/status.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
+import HelpScreen, { getFooterHints } from "../ui/tui/HelpScreen.js";
 
 const html = htm.bind(React.createElement);
 
@@ -52,6 +53,7 @@ function upsertById(items = [], nextItem) {
 
 export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const [screen, setScreen] = useState(initialScreen || "status");
   const [connected, setConnected] = useState(false);
   const [connectionState, setConnectionState] = useState("offline");
@@ -60,6 +62,9 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [tasks, setTasks] = useState([]);
   const [error, setError] = useState(null);
   const [screenInputLocked, setScreenInputLocked] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpScrollOffset, setHelpScrollOffset] = useState(0);
+  const [footerHints, setFooterHints] = useState(() => getFooterHints(initialScreen || "status"));
   const [refreshCountdownSec, setRefreshCountdownSec] = useState(
     Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)),
   );
@@ -181,27 +186,52 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [bridge, refreshMs]);
 
   useEffect(() => {
+    setFooterHints((current) => (current?.length ? current : getFooterHints(screen)));
+  }, [screen]);
+
+  useEffect(() => {
     const intervalId = setInterval(() => {
       setRefreshCountdownSec((previous) => Math.max(0, previous - 1));
     }, 1000);
     return () => clearInterval(intervalId);
   }, []);
 
-  const handleInput = useCallback((input) => {
+  const handleInput = useCallback((input, key) => {
+    if (input === "?") {
+      setHelpOpen((current) => !current);
+      return;
+    }
+    if (helpOpen) {
+      if (key?.escape) {
+        setHelpOpen(false);
+        return;
+      }
+      if (key?.upArrow) {
+        setHelpScrollOffset((current) => Math.max(0, current - 1));
+        return;
+      }
+      if (key?.downArrow) {
+        setHelpScrollOffset((current) => current + 1);
+        return;
+      }
+      return;
+    }
     if (input === "q") {
       exit();
       return;
     }
     setScreen((current) => getNextScreenForInput(current, input));
-  }, [exit]);
+  }, [exit, helpOpen]);
 
-  useInput((input) => {
-    if (screenInputLocked) return;
-    handleInput(input);
+  useInput((input, key) => {
+    if (screenInputLocked && !helpOpen) return;
+    handleInput(input, key);
   });
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
   const screenStats = screen === "status" ? stats : undefined;
+  const footerText = (footerHints || []).map(([keysLabel, description]) => `${keysLabel} ${description}`).join("  |  ");
+  const helpRows = Math.max(6, (stdout?.rows || 24) - 5);
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
@@ -233,7 +263,18 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           refreshMs=${refreshMs}
           onTasksChange=${setTasks}
           onInputCaptureChange=${setScreenInputLocked}
+          onFooterHintsChange=${setFooterHints}
         />
+        ${helpOpen
+          ? html`
+              <${Box} flexDirection="column" marginTop=${1}>
+                <${HelpScreen} scrollOffset=${helpScrollOffset} maxRows=${helpRows} />
+              <//>
+            `
+          : null}
+      <//>
+      <${Box} paddingX=${1}>
+        <${Text} dimColor>${footerText}<//>
       <//>
     <//>
   `;
