@@ -475,7 +475,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         setSteerValue("");
         return;
       }
-      if (key.return) {
+      if (key.return || input === "`r") {
         void sendSteer();
         return;
       }
@@ -534,7 +534,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       moveSelection(1);
       return;
     }
-    if (key.return) {
+    if (key.return || input === "`r") {
       void openDetail();
       return;
     }
@@ -704,4 +704,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     <//>
   `;
 }
+
+
 
