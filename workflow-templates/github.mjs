@@ -50,7 +50,7 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
 
     node("automation-eligible", "condition.expression", "Bosun-Created PR?", {
       expression:
-        "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()",
+        "(() => { /* <!-- bosun-created --> */ if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || ').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()",
     }, { x: 400, y: 230, outputs: ["yes", "no"] }),
 
     node("check-ci", "validation.build", "Check CI Status", {
@@ -381,7 +381,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       key: "targetPrNumber",
       value:
         "(() => {" +
-        "  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  /* <!-- bosun-created --> */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
         "  let prs = [];" +
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
         "  if (!Array.isArray(prs)) return '';" +
@@ -404,7 +404,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       key: "targetPrBranch",
       value:
         "(() => {" +
-        "  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  /* <!-- bosun-created --> */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
         "  let prs = [];" +
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
         "  if (!Array.isArray(prs)) return '';" +
@@ -418,7 +418,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       key: "targetPrBase",
       value:
         "(() => {" +
-        "  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  /* <!-- bosun-created --> */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
         "  let prs = [];" +
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }" +
         "  if (!Array.isArray(prs)) return 'main';" +
