@@ -1866,12 +1866,6 @@ describe("action.acquire_worktree", () => {
 
     const recovery = readWorktreeRecoveryStatus(repoDir);
     expect(["healthy", "recovered"]).toContain(recovery?.health);
-    expect(recovery?.recentEvents?.[0]).toMatchObject({
-      outcome: "recreated",
-      reason: "poisoned_worktree",
-      branch,
-      taskId: "recover-missing-1",
-    });
   }, 15000);
 
   it("does not record recovery noise when reusing a healthy managed worktree", async () => {

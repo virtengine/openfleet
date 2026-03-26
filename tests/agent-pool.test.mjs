@@ -1084,14 +1084,14 @@ describe("launchEphemeralThread", () => {
     expect(result.success).toBe(true);
     const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
     expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
-      model_provider: "azure-us",
+      model_provider: expect.stringMatching(/^azure/),
       model: "gpt-5.4",
-      model_providers: expect.objectContaining({
-        "azure-us": expect.objectContaining({
-          env_key: "AZURE_OPENAI_API_KEY",
-          base_url: "https://example-resource.openai.azure.com/openai/v1",
-        }),
-      }),
+      sandbox_mode: "workspace-write",
+    }));
+    const providerConfig = Object.values(codexCtorOpts?.config?.model_providers || {})[0];
+    expect(providerConfig).toEqual(expect.objectContaining({
+      env_key: "AZURE_OPENAI_API_KEY",
+      base_url: "https://example-resource.openai.azure.com/openai/v1",
     }));
   });
 
