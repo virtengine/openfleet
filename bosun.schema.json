@@ -191,7 +191,7 @@
             { "type": "array", "items": { "type": "string" } },
             { "type": "string" }
           ],
-          "description": "GitHub logins that Bosun may treat as trusted for optional non-Bosun PR automation."
+          "description": "GitHub logins that Bosun may treat as trusted for optional non-Bosun PR automation. The currently connected GitHub OAuth login is also trusted automatically when present."
         },
         "allowTrustedFixes": {
           "type": "boolean",

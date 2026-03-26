@@ -22,7 +22,7 @@
       "php": ["vendor"]
     }
   },
-  "_comment_prAutomation": "High-risk PR automation stays Bosun-created-only unless you explicitly trust specific authors.",
+  "_comment_prAutomation": "High-risk PR automation stays Bosun-created-only unless you explicitly trust specific authors. Bosun also auto-trusts the currently connected GitHub OAuth login.",
   "prAutomation": {
     "attachMode": "all",
     "trustedAuthors": ["your-github-login"],

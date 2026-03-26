@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { loadConfig } from "../config/config.mjs";
+import { loadConfig, resolveTrustedAuthorList } from "../config/config.mjs";
 
 const ENV_KEYS = [
   "TELEGRAM_INTERVAL_MIN",
@@ -12,6 +12,7 @@ const ENV_KEYS = [
   "BOSUN_HOME",
   "BOSUN_DIR",
   "BOSUN_GITHUB_CLIENT_ID",
+  "BOSUN_PR_TRUSTED_AUTHORS",
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_CHAT_ID",
   "INTERNAL_EXECUTOR_SDK",
@@ -34,6 +35,11 @@ const ENV_KEYS = [
   "WATCH_PATH",
   "ORCHESTRATOR_SCRIPT",
   "PRIMARY_AGENT",
+  "HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "XDG_CONFIG_HOME",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "GEMINI_SDK_DISABLED",
@@ -222,6 +228,22 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.configDir).toBe(repoConfigDir);
     expect(config.telegramIntervalMin).toBe(42);
     expect(process.env.BOSUN_GITHUB_CLIENT_ID).toBe("test-client-id");
+  });
+
+  it("auto-trusts the connected GitHub OAuth login for PR automation", () => {
+    expect(
+      resolveTrustedAuthorList(["release-bot", "Jaeko44"], {
+        includeOAuthTrustedAuthor: true,
+        oauthTrustedAuthor: "jaeko44",
+      }),
+    ).toEqual(["release-bot", "Jaeko44"]);
+
+    expect(
+      resolveTrustedAuthorList("ops-bot", {
+        includeOAuthTrustedAuthor: true,
+        oauthTrustedAuthor: "jaeko44",
+      }),
+    ).toEqual(["ops-bot", "jaeko44"]);
   });
 
   it("accepts valid env overrides", () => {

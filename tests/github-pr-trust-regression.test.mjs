@@ -77,6 +77,8 @@ describe("GitHub PR trust regressions", () => {
     expect(configSource).toContain("BOSUN_PR_ALLOW_TRUSTED_FIXES");
     expect(configSource).toContain("BOSUN_PR_ALLOW_TRUSTED_MERGES");
     expect(configSource).toContain("BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP");
+    expect(configSource).toContain("resolveTrustedAuthorList(");
+    expect(configSource).toContain("includeOAuthTrustedAuthor: true");
 
     expect(setupWebSource).toContain("function detectRepoVisibility(slug = detectRepoSlug())");
     expect(setupWebSource).toContain('automationPreference: recommendedAutomationPreference');
@@ -99,7 +101,7 @@ describe("GitHub PR trust regressions", () => {
     expect(serverSource).toContain("normalizeGatesPolicy(configData?.gates)");
     expect(serverSource).toContain('if (path === "/api/pr-automation" && req.method === "GET")');
     expect(serverSource).toContain('if (path === "/api/pr-automation" && req.method === "POST")');
-    expect(serverSource).toContain("normalizePrAutomationPolicy(configData?.prAutomation)");
+    expect(serverSource).toContain("normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true })");
     expect(serverSource).toContain("assistiveActions");
 
     for (const source of [settingsSource, siteSettingsSource]) {

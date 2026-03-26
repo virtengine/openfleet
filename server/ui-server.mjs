@@ -241,7 +241,7 @@ import {
   SETTINGS_SCHEMA,
   validateSetting,
 } from "../ui/modules/settings-schema.js";
-import { loadConfig } from "../config/config.mjs";
+import { loadConfig, resolveTrustedAuthorList } from "../config/config.mjs";
 import {
   getAvailableAgents,
   getAgentMode,
@@ -2299,7 +2299,9 @@ function collectTaskWorkflowRunEntries(task) {
     ...(Array.isArray(task?.workflowRuns) ? task.workflowRuns : []),
     ...(Array.isArray(task?.workflowHistory) ? task.workflowHistory : []),
     ...(Array.isArray(task?.workflows) ? task.workflows : []),
+    ...(Array.isArray(task?.runs) ? task.runs : []),
     ...(Array.isArray(task?.meta?.workflowRuns) ? task.meta.workflowRuns : []),
+    ...(Array.isArray(task?.meta?.runs) ? task.meta.runs : []),
   ];
 }
 
@@ -2322,6 +2324,32 @@ function collectTaskDiffSessionIds(task) {
     push(entry?.agentSessionId);
     push(entry?.meta?.sessionId);
     push(entry?.meta?.threadId);
+  }
+
+  return [...ids];
+}
+
+function collectTaskLinkedSessionIds(task, tracker = null) {
+  const ids = new Set(collectTaskDiffSessionIds(task));
+  const taskKeys = [
+    task?.id,
+    task?.taskId,
+    task?.meta?.taskId,
+  ]
+    .map((value) => normalizeDiffTaskRef(value))
+    .filter(Boolean);
+  if (!taskKeys.length) return [...ids];
+
+  const taskKeySet = new Set(taskKeys);
+  const sessionTracker = tracker || getSessionTracker();
+  const sessions = typeof sessionTracker?.listAllSessions === "function"
+    ? sessionTracker.listAllSessions()
+    : [];
+  for (const session of sessions) {
+    const sessionTaskId = normalizeDiffTaskRef(session?.taskId);
+    if (!sessionTaskId || !taskKeySet.has(sessionTaskId)) continue;
+    const sessionId = normalizeDiffTaskRef(session?.id || session?.sessionId || sessionTaskId);
+    if (sessionId) ids.add(sessionId);
   }
 
   return [...ids];
@@ -2462,14 +2490,12 @@ async function buildTaskDiffPayload(task, workspaceContext = {}) {
   }
 
   const baseBranch = pickTaskDiffBaseBranch(task);
+  const tracker = getSessionTracker();
 
-  for (const sessionId of collectTaskDiffSessionIds(task)) {
-    try {
-      const session = tracker.getSession(sessionId);
-      if (!session) continue;
-      const worktreePath = await resolveSessionWorktreePath(session);
-      if (!worktreePath || !existsSync(worktreePath)) continue;
-      const diff = collectDiffStats(worktreePath, {
+  try {
+    const linkedWorktreePath = await resolveTaskLinkedWorktreePath(task, tracker);
+    if (linkedWorktreePath && existsSync(linkedWorktreePath)) {
+      const diff = collectDiffStats(linkedWorktreePath, {
         baseBranch,
         includePatch: true,
       });
@@ -2477,17 +2503,17 @@ async function buildTaskDiffPayload(task, workspaceContext = {}) {
         return {
           diff,
           summary: diff.formatted,
-          commits: getRecentCommits(worktreePath),
+          commits: getRecentCommits(linkedWorktreePath),
           source: {
-            kind: "session",
-            label: diff.sourceRange || "session worktree",
-            detail: worktreePath,
+            kind: "worktree",
+            label: diff.sourceRange || "linked worktree",
+            detail: linkedWorktreePath,
           },
         };
       }
-    } catch {
-      // Fall through to branch or commit resolution.
     }
+  } catch {
+    // Fall through to repository or commit resolution.
   }
 
   const repoPath = resolveTaskRepositoryDir(task, workspaceContext);
@@ -6269,21 +6295,18 @@ function parseBooleanLike(value, fallback = false) {
   return fallback;
 }
 
-function normalizePrAutomationPolicy(raw = {}) {
+function normalizePrAutomationPolicy(raw = {}, options = {}) {
   const attachModeRaw = String(raw?.attachMode || "all").trim().toLowerCase();
   const attachMode = ["all", "trusted-only", "disabled"].includes(attachModeRaw)
     ? attachModeRaw
     : "all";
-  const trustedAuthors = Array.isArray(raw?.trustedAuthors)
-    ? raw.trustedAuthors
-    : String(raw?.trustedAuthors || "")
-      .split(/[\n,]/)
-      .map((entry) => entry.trim())
-      .filter(Boolean);
+  const trustedAuthors = resolveTrustedAuthorList(raw?.trustedAuthors, {
+    includeOAuthTrustedAuthor: options.includeOAuthTrustedAuthor === true,
+  });
 
   return {
     attachMode,
-    trustedAuthors: [...new Set(trustedAuthors.map((entry) => String(entry || "").trim()).filter(Boolean))],
+    trustedAuthors,
     allowTrustedFixes: parseBooleanLike(raw?.allowTrustedFixes, false),
     allowTrustedMerges: parseBooleanLike(raw?.allowTrustedMerges, false),
     assistiveActions: {
@@ -10090,7 +10113,7 @@ function buildTaskRunSummary(steps = [], fallback = "Run recorded.") {
 }
 
 async function buildReplayableTaskRuns(task, tracker = null, limit = 5) {
-  const sessionIds = collectTaskDiffSessionIds(task);
+  const sessionIds = collectTaskLinkedSessionIds(task, tracker);
   const { value: storedRunsRaw } = await callTaskStoreFunction(TASK_STORE_RUN_EXPORTS.list, [task?.id]);
   const storedRuns = storedRunsRaw;
   const runs = Array.isArray(storedRuns) ? storedRuns.map((run) => ({
@@ -12826,6 +12849,50 @@ async function resolveSessionWorktreePath(session) {
   }
 }
 
+async function resolveTaskLinkedWorktreePath(task, tracker = null) {
+  const directCandidates = [
+    task?.worktreePath,
+    task?.workspacePath,
+    task?.meta?.worktreePath,
+    task?.meta?.workspacePath,
+    task?.meta?.execution?.worktreePath,
+    task?.runtimeSnapshot?.slot?.worktreePath,
+  ]
+    .map((value) => normalizeCandidatePath(value))
+    .filter(Boolean);
+
+  for (const candidate of directCandidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  try {
+    const active = await listActiveWorktrees(repoRoot);
+    const matched = findWorktreeMatch(active || [], {
+      path: directCandidates[0] || "",
+      branch:
+        task?.branchName ||
+        task?.branch ||
+        task?.meta?.branchName ||
+        task?.meta?.branch ||
+        "",
+      taskKey: task?.id || task?.taskId || "",
+    });
+    const matchedPath = normalizeCandidatePath(matched?.path);
+    if (matchedPath && existsSync(matchedPath)) return matchedPath;
+  } catch {
+    /* best effort */
+  }
+
+  const sessionTracker = tracker || getSessionTracker();
+  for (const sessionId of collectTaskLinkedSessionIds(task, sessionTracker)) {
+    const session = sessionTracker?.getSession?.(sessionId);
+    const worktreePath = await resolveSessionWorktreePath(session);
+    if (worktreePath && existsSync(worktreePath)) return worktreePath;
+  }
+
+  return null;
+}
+
 async function ensurePresenceLoaded() {
   const loaded = await loadWorkspaceRegistry().catch(() => null);
   const registry = loaded?.registry || loaded || null;
@@ -13548,15 +13615,19 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/tasks/diff") {
     try {
+      const body = req.method === "POST" ? await readJsonBody(req).catch(() => ({})) : null;
+      const taskFromBody = body?.task && typeof body.task === "object" ? body.task : null;
       const taskId =
-        url.searchParams.get("taskId") || url.searchParams.get("id") || "";
+        url.searchParams.get("taskId")
+        || url.searchParams.get("id")
+        || String(taskFromBody?.id || taskFromBody?.taskId || "").trim();
       if (!taskId) {
         jsonResponse(res, 400, { ok: false, error: "taskId required" });
         return;
       }
       const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
       const adapter = getKanbanAdapter();
-      const task = await adapter.getTask(taskId);
+      const task = taskFromBody || await adapter.getTask(taskId);
       const payload = await buildTaskDiffPayload(task, workspaceContext);
       jsonResponse(res, 200, { ok: true, ...payload });
     } catch (err) {
@@ -13614,7 +13685,8 @@ async function handleApi(req, res, url) {
           workspaceDir: workspaceContext?.workspaceDir || repoRoot,
         });
         const diagnostics = buildTaskDiagnostics(detailTask, supervisorDiagnostics);
-        const replayRuns = await buildReplayableTaskRuns(detailTask, getSessionTracker(), 8);
+        const tracker = getSessionTracker();
+        const replayRuns = await buildReplayableTaskRuns(detailTask, tracker, 8);
         if (replayRuns.length > 0) {
           detailTask.runs = replayRuns;
           detailTask.meta = {
@@ -13624,23 +13696,33 @@ async function handleApi(req, res, url) {
           };
         }
 
+        const linkedSessionIds = collectTaskLinkedSessionIds(detailTask, tracker);
+        const primarySessionId = linkedSessionIds[0] || null;
+        const linkedWorktreePath = await resolveTaskLinkedWorktreePath(detailTask, tracker);
+
         detailTask.meta = {
           ...(detailTask.meta || {}),
           workflowRuns: mergedWorkflowRuns,
           historyCount: Array.isArray(detailTask.statusHistory) ? detailTask.statusHistory.length : 0,
           timelineCount: Array.isArray(detailTask.timeline) ? detailTask.timeline.length : 0,
+          linkedSessionIds,
+          primarySessionId,
           canStart,
           blockedContext,
           ...(diagnostics ? { diagnostics } : {}),
           ...(sprintId ? { sprintId } : {}),
           ...(sprintDag ? { sprintDag: sprintDag.data } : {}),
           ...(globalDag ? { dagOfDags: globalDag.data } : {}),
+          ...(linkedWorktreePath ? { worktreePath: linkedWorktreePath } : {}),
         };
         if (sprintDag) detailTask.sprintDag = sprintDag.data;
         if (globalDag) detailTask.dagOfDags = globalDag.data;
         detailTask.canStart = canStart;
         detailTask.blockedContext = blockedContext;
         if (diagnostics) detailTask.diagnostics = diagnostics;
+        if (primarySessionId && !detailTask.sessionId) detailTask.sessionId = primarySessionId;
+        if (primarySessionId && !detailTask.primarySessionId) detailTask.primarySessionId = primarySessionId;
+        if (linkedWorktreePath) detailTask.worktreePath = linkedWorktreePath;
         detailTask = withTaskRuntimeSnapshot(detailTask);
       }
       jsonResponse(res, 200, { ok: true, data: detailTask });
@@ -19607,7 +19689,7 @@ if (path === "/api/agent-logs/context") {
       sdk: process.env.EXECUTOR_SDK || "auto",
       kanbanBackend: runtimeKanbanBackend,
       regions,
-      prAutomation: normalizePrAutomationPolicy(configData?.prAutomation),
+      prAutomation: normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true }),
       gates: normalizeGatesPolicy(configData?.gates),
       tunnel: getTunnelStatus(),
       fallbackAuth: getFallbackAuthStatus(),
@@ -19656,7 +19738,7 @@ if (path === "/api/agent-logs/context") {
       const { configData } = readConfigDocument();
       jsonResponse(res, 200, {
         ok: true,
-        prAutomation: normalizePrAutomationPolicy(configData?.prAutomation),
+        prAutomation: normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true }),
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -19674,7 +19756,11 @@ if (path === "/api/agent-logs/context") {
       broadcastUiEvent(["settings", "overview"], "invalidate", {
         reason: "pr-automation-updated",
       });
-      jsonResponse(res, 200, { ok: true, configPath, prAutomation });
+      jsonResponse(res, 200, {
+        ok: true,
+        configPath,
+        prAutomation: normalizePrAutomationPolicy(prAutomation, { includeOAuthTrustedAuthor: true }),
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -23548,13 +23634,6 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-
-
-
-
-
-
 
 
 

@@ -421,6 +421,12 @@ export function loadOAuthState() {
   }
 }
 
+export function getOAuthUserLogin() {
+  const state = loadOAuthState();
+  const login = String(state?.user?.login || "").trim();
+  return login || null;
+}
+
 /**
  * Returns the current user access token.
  * Preference order: saved state → BOSUN_GITHUB_USER_TOKEN env var → null.
