@@ -1333,7 +1333,7 @@
           "label": "Pick Conflict PR",
           "config": {
             "key": "targetPrNumber",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
+            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
             "isExpression": true
           },
           "position": {
@@ -1350,7 +1350,7 @@
           "label": "Capture Conflict Branch",
           "config": {
             "key": "targetPrBranch",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
+            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
             "isExpression": true
           },
           "position": {
@@ -1367,7 +1367,7 @@
           "label": "Capture Base Branch",
           "config": {
             "key": "targetPrBase",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
+            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
             "isExpression": true
           },
           "position": {
@@ -1639,7 +1639,7 @@
           "type": "condition.expression",
           "label": "Bosun-Created PR?",
           "config": {
-            "expression": "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
+            "expression": "(() => { /* <!-- bosun-created --> */ if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
           },
           "position": {
             "x": 400,
@@ -21809,7 +21809,7 @@
           "label": "Pick Conflict PR",
           "config": {
             "key": "targetPrNumber",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
+            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
             "isExpression": true
           },
           "position": {
@@ -21826,7 +21826,7 @@
           "label": "Capture Conflict Branch",
           "config": {
             "key": "targetPrBranch",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
+            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
             "isExpression": true
           },
           "position": {
@@ -21843,7 +21843,7 @@
           "label": "Capture Base Branch",
           "config": {
             "key": "targetPrBase",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
+            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
             "isExpression": true
           },
           "position": {
@@ -22091,7 +22091,7 @@
           "type": "condition.expression",
           "label": "Bosun-Created PR?",
           "config": {
-            "expression": "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
+            "expression": "(() => { /* <!-- bosun-created --> */ if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
           },
           "position": {
             "x": 400,
