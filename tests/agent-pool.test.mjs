@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,7 +26,6 @@ function makeCodexMockThread(
             type: "item.completed",
             item: { type: "agent_message", text },
           };
-          yield { type: "turn.completed" };
         },
       },
     }),
@@ -525,24 +524,24 @@ describe("launchEphemeralThread", () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.__MOCK_COPILOT_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
-    process.env.COPILOT_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
     process.env.CLAUDE_API_KEY = "";
     process.env.ANTHROPIC_API_KEY = "";
 
     setCodexLauncherMock(() => ({
-      id: "mock-codex-fallback-400",
+      id: "codex-model-list-400",
       runStreamed: async () => {
         throw new Error("Failed to list models: 400");
       },
     }));
     setCopilotLauncherMock(() => ({
-      sessionId: "mock-copilot-fallback",
-      sendAndWait: async () => {},
+      send: async () => {},
       on: (cb) => {
         cb({
           type: "assistant.message",
           data: { content: "copilot fallback ok" },
         });
+        cb({ type: "session.idle" });
         return () => {};
       },
     }));
@@ -554,11 +553,54 @@ describe("launchEphemeralThread", () => {
       { sdk: "codex" },
     );
 
-    if (result.success) {
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("copilot");
+    expect(result.output).toContain("copilot fallback ok");
+  });
+
+  it("skips codex before launch when the Windows SDK runtime binary is missing", async () => {
+    if (process.platform !== "win32") return;
+
+    process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER = "codex,copilot";
+    process.env.__MOCK_COPILOT_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const sdkPkgDir = join(process.cwd(), "node_modules", "@openai", "codex-sdk");
+    const runtimePkgDir = join(process.cwd(), "node_modules", "@openai", "codex-win32-x64");
+    mkdirSync(sdkPkgDir, { recursive: true });
+    writeFileSync(join(sdkPkgDir, "package.json"), JSON.stringify({ name: "@openai/codex-sdk" }));
+    rmSync(runtimePkgDir, { recursive: true, force: true });
+
+    setCopilotLauncherMock(() => ({
+      send: async () => {},
+      on: (cb) => {
+        cb({
+          type: "assistant.message",
+          data: { content: "copilot fallback ok" },
+        });
+        cb({ type: "session.idle" });
+        return () => {};
+      },
+    }));
+
+    try {
+      const result = await launchEphemeralThread(
+        "test prompt",
+        process.cwd(),
+        5000,
+        { sdk: "codex" },
+      );
+
+      expect(result.success).toBe(true);
       expect(result.sdk).toBe("copilot");
       expect(result.output).toContain("copilot fallback ok");
-    } else {
-      expect(String(result.error || "")).toContain("400");
+      expect(mockCodexStartThread).not.toHaveBeenCalled();
+    } finally {
+      rmSync(join(process.cwd(), "node_modules", "@openai"), {
+        recursive: true,
+        force: true,
+      });
     }
   });
   it("tries fallback when primary SDK not available", async () => {
@@ -810,6 +852,36 @@ describe("launchEphemeralThread", () => {
     expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
 
     nowSpy.mockRestore();
+
+  });
+
+  it("does not retry deterministic SDK failures in execWithRetry", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementation(() => ({
+      id: "missing-runtime-thread",
+      runStreamed: async () => {
+        throw new Error("spawn codex.exe ENOENT");
+      },
+    }));
+
+    const result = await execWithRetry("test prompt", {
+      taskKey: "task-deterministic-sdk-failure",
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      sdk: "codex",
+      maxRetries: 2,
+      maxContinues: 0,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/enoent/i);
+    expect(result.attempts).toBe(1);
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
   });
 
   it("bypasses primary prerequisite gate during cooldown when no fallback SDK is eligible", async () => {
@@ -1059,8 +1131,6 @@ describe("launchEphemeralThread", () => {
     process.env.CODEX_MODEL = "gpt-5.4";
     setPoolSdk("codex");
 
-    const { writeFileSync, mkdirSync } = await import("node:fs");
-    const { join } = await import("node:path");
     const codexDir = join(isolatedHomeDir, ".codex");
     mkdirSync(codexDir, { recursive: true });
     writeFileSync(join(codexDir, "config.toml"), [
@@ -1075,7 +1145,7 @@ describe("launchEphemeralThread", () => {
       'base_url = "https://example-sweden.openai.azure.com/openai/v1"',
       'env_key = "AZURE_OPENAI_API_KEY_SWEDEN"',
       '',
-    ].join("\n"), "utf8");
+    ].join("`n"), "utf8");
 
     const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
       sdk: "codex",
@@ -1083,15 +1153,19 @@ describe("launchEphemeralThread", () => {
 
     expect(result.success).toBe(true);
     const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
-    expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
-      model_provider: expect.stringMatching(/^azure/),
-      model: "gpt-5.4",
-      sandbox_mode: "workspace-write",
+    expect(codexCtorOpts?.env).toEqual(expect.objectContaining({
+      AZURE_OPENAI_API_KEY: "azure-key",
     }));
-    const providerConfig = Object.values(codexCtorOpts?.config?.model_providers || {})[0];
-    expect(providerConfig).toEqual(expect.objectContaining({
-      env_key: "AZURE_OPENAI_API_KEY",
-      base_url: "https://example-resource.openai.azure.com/openai/v1",
+    expect(codexCtorOpts?.env?.AZURE_OPENAI_API_KEY_SWEDEN).toBeUndefined();
+    expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
+      model_provider: "azure-us",
+      model: "gpt-5.4",
+      model_providers: expect.objectContaining({
+        "azure-us": expect.objectContaining({
+          env_key: "AZURE_OPENAI_API_KEY",
+          base_url: "https://example-resource.openai.azure.com/openai/v1",
+        }),
+      }),
     }));
   });
 

@@ -77,6 +77,7 @@ describe("ui-server mini app", () => {
     "FLEET_SYNC_INTERVAL_MS",
     "OPENAI_API_KEY",
     "STATUS_FILE",
+    "BOSUN_FLOW_REQUIRE_REVIEW",
     "BOSUN_ENV_NO_OVERRIDE",
   ];
   let envSnapshot = {};
@@ -638,6 +639,73 @@ describe("ui-server mini app", () => {
     expect(json.sources?.GITHUB_PROJECT_MODE).toBe("default");
 
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("serves and updates guardrails policy and runtime state", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "bosun-guardrails-workspace-"));
+    const configDir = mkdtempSync(join(tmpdir(), "bosun-guardrails-config-"));
+    const configPath = join(configDir, "bosun.config.json");
+    process.env.BOSUN_HOME = workspaceDir;
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    delete process.env.BOSUN_FLOW_REQUIRE_REVIEW;
+    writeFileSync(
+      configPath,
+      JSON.stringify({ $schema: "./bosun.schema.json" }, null, 2) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+    });
+    const port = server.address().port;
+
+    const overviewRes = await fetch(`http://127.0.0.1:${port}/api/guardrails`);
+    const overviewJson = await overviewRes.json();
+    expect(overviewRes.status).toBe(200);
+    expect(overviewJson.ok).toBe(true);
+    expect(overviewJson.snapshot.INPUT.policy.enabled).toBe(true);
+    expect(overviewJson.snapshot.push.policy.blockAgentPushes).toBe(true);
+    expect(overviewJson.snapshot.push.policy.requireManagedPrePush).toBe(true);
+    expect(existsSync(resolve(workspaceDir, ".bosun", "guardrails.json"))).toBe(true);
+
+    const policyRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/policy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ INPUT: { warnThreshold: 75, blockThreshold: 45 }, push: { blockAgentPushes: false } }),
+    });
+    const policyJson = await policyRes.json();
+    expect(policyRes.status).toBe(200);
+    expect(policyJson.INPUT.policy.warnThreshold).toBe(75);
+    expect(policyJson.INPUT.policy.blockThreshold).toBe(45);
+    expect(policyJson.push.policy.blockAgentPushes).toBe(false);
+
+    const runtimeRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/runtime`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ preflightEnabled: false, requireReview: false }),
+    });
+    const runtimeJson = await runtimeRes.json();
+    expect(runtimeRes.status).toBe(200);
+    expect(runtimeJson.runtime.preflightEnabled).toBe(false);
+    expect(runtimeJson.runtime.requireReview).toBe(false);
+    expect(JSON.parse(readFileSync(configPath, "utf8")).preflightEnabled).toBe(false);
+    expect(readFileSync(join(configDir, ".env"), "utf8")).toContain("BOSUN_FLOW_REQUIRE_REVIEW=false");
+
+    const assessRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/assess`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: { title: "fix", description: "" } }),
+    });
+    const assessJson = await assessRes.json();
+    expect(assessRes.status).toBe(200);
+    expect(assessJson.assessment.blocked).toBe(true);
+    expect(assessJson.assessment.status).toBe("block");
+
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(configDir, { recursive: true, force: true });
   });
 
   it("reflects runtime kanban backend switches via config update", async () => {

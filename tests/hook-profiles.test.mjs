@@ -108,7 +108,7 @@ describe("hook-profiles", () => {
     expect(copilotJoined).toContain("agent-hook-bridge.mjs");
     expect(Array.isArray(copilotCmd)).toBe(true);
     expect(copilotCmd[0]).toBe("node");
-    expect(String(copilotCmd[1])).toContain("agent-hook-bridge.mjs");
+    expect(String(copilotCmd[1])).toBe("agent/agent-hook-bridge.mjs");
   });
 
   it("auto-migrates non-portable copilot bridge commands", async () => {
@@ -153,7 +153,29 @@ describe("hook-profiles", () => {
     );
     const migratedCommand = migratedConfig.sessionStart?.[0]?.command || [];
     expect(migratedCommand[0]).toBe("node");
-    expect(String(migratedCommand[1])).toContain("agent-hook-bridge.mjs");
+    expect(String(migratedCommand[1])).toBe("agent/agent-hook-bridge.mjs");
+  });
+
+  it("generates portable bridge commands for gemini and opencode", async () => {
+    scaffoldAgentHookFiles(rootDir, {
+      profile: "balanced",
+      targets: ["gemini", "opencode"],
+      enabled: true,
+    });
+
+    const geminiConfig = JSON.parse(
+      await readFile(resolve(rootDir, ".gemini", "settings.json"), "utf8"),
+    );
+    const openCodeConfig = JSON.parse(
+      await readFile(resolve(rootDir, ".opencode", "hooks.json"), "utf8"),
+    );
+
+    expect(String(geminiConfig.hooks.SessionStart?.[0]?.command || "")).toContain(
+      "node agent/agent-hook-bridge.mjs --agent gemini --event SessionStart",
+    );
+    expect(String(openCodeConfig.hooks.TaskComplete?.[0]?.command || "")).toContain(
+      "node agent/agent-hook-bridge.mjs --agent opencode --event TaskComplete",
+    );
   });
 
   it("merges with existing claude settings", async () => {

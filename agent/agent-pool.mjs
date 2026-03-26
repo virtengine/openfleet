@@ -100,6 +100,67 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 const TAG = "[agent-pool]";
 const require = createRequire(import.meta.url);
 const MODULE_PRESENCE_CACHE = new Map();
+function resolveCodexWindowsRuntime() {
+  if (process.platform !== "win32") {
+    return { supported: false, packageName: null, binaryPath: null };
+  }
+
+  const runtimeMap = {
+    x64: {
+      packageName: "@openai/codex-win32-x64",
+      binaryParts: ["vendor", "x86_64-pc-windows-msvc", "codex", "codex.exe"],
+    },
+    arm64: {
+      packageName: "@openai/codex-win32-arm64",
+      binaryParts: ["vendor", "aarch64-pc-windows-msvc", "codex", "codex.exe"],
+    },
+  };
+
+  const runtimeInfo = runtimeMap[process.arch];
+  if (!runtimeInfo) {
+    return { supported: false, packageName: null, binaryPath: null };
+  }
+
+  try {
+    const runtimePkgJson = require.resolve(`${runtimeInfo.packageName}/package.json`);
+    return {
+      supported: true,
+      packageName: runtimeInfo.packageName,
+      binaryPath: resolve(dirname(runtimePkgJson), ...runtimeInfo.binaryParts),
+    };
+  } catch {
+    return {
+      supported: true,
+      packageName: runtimeInfo.packageName,
+      binaryPath: null,
+    };
+  }
+}
+
+function getCodexRuntimePrerequisiteFailure() {
+  const runtime = resolveCodexWindowsRuntime();
+  if (!runtime.supported) return null;
+  if (!runtime.binaryPath) {
+    return `${runtime.packageName} not installed`;
+  }
+  if (!existsSync(runtime.binaryPath)) {
+    return `Codex SDK runtime missing at ${runtime.binaryPath}`;
+  }
+  return null;
+}
+
+function isDeterministicSdkFailure(errorValue) {
+  const message = String(errorValue || "").toLowerCase();
+  if (!message) return false;
+  if (message.includes("failed to list models") && message.includes("400")) {
+    return true;
+  }
+  if (message.includes("enoent")) return true;
+  if (message.includes("sdk runtime missing")) return true;
+  if (message.includes("sdk not available")) return true;
+  if (message.includes("not installed")) return true;
+  return false;
+}
 
 function hasOptionalModule(specifier) {
   if (MODULE_PRESENCE_CACHE.has(specifier)) {
@@ -527,6 +588,9 @@ function shouldFallbackForSdkError(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (message.includes("failed to list models") && (message.includes("400") || message.includes("bad request"))) {
+    return true;
+  }
   if (message.includes("protocol version mismatch")) return true;
   if (message.includes("sdk expects version") && message.includes("server reports version")) {
     return true;
@@ -605,6 +669,10 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   if (name === "codex") {
     if (!hasOptionalModule("@openai/codex-sdk")) {
       return { ok: false, reason: "@openai/codex-sdk not installed" };
+    }
+    const runtimeFailure = getCodexRuntimePrerequisiteFailure();
+    if (runtimeFailure) {
+      return { ok: false, reason: runtimeFailure };
     }
     // Codex auth can come from env vars, config env_key mappings, or persisted
     // CLI login state (for example ~/.codex/auth.json). Because login-based
@@ -845,6 +913,12 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
       }
     } catch {
       // best effort — if config reading fails, don't block execution
+    }
+
+    for (const key of Object.keys(env)) {
+      if (!key.startsWith("AZURE_OPENAI_API_KEY") || key === providerEnvKey) continue;
+      delete env[key];
+      if (!unsetEnvKeys.includes(key)) unsetEnvKeys.push(key);
     }
 
     return {
@@ -3952,6 +4026,12 @@ export async function execWithRetry(prompt, options = {}) {
 
     // Failed — should we retry?
     const retriesLeft = totalAttempts + continuesUsed - attempt;
+    if (isDeterministicSdkFailure(lastResult.error)) {
+      console.warn(
+        `${TAG} attempt ${attempt} hit deterministic SDK failure; retry suppressed: ${lastResult.error}`,
+      );
+      return { ...lastResult, attempts: attempt, continues: continuesUsed };
+    }
     if (retriesLeft > 0) {
       if (typeof shouldRetry === "function" && !shouldRetry(lastResult)) {
         // Custom predicate says don't retry

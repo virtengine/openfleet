@@ -12,10 +12,30 @@
  */
 
 import { execFile, exec } from "node:child_process";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
-const execAsync = promisify(exec);
+function execFileAsync(file, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+function execAsync(command, options = {}) {
+  return new Promise((resolve, reject) => {
+    exec(command, options, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
 
 // ── Module-scope cache (lives at module scope per AGENTS.md) ──────────────────
 
@@ -765,6 +785,7 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
 
 
 

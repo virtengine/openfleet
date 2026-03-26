@@ -159,6 +159,14 @@ import {
   getHooksAsLibraryEntries,
 } from "../agent/hook-library.mjs";
 import {
+  assessInputQuality,
+  detectRepoGuardrails,
+  ensureGuardrailsPolicy,
+  getGuardrailsPolicyPath,
+  loadGuardrailsPolicy,
+  saveGuardrailsPolicy,
+} from "../infra/guardrails.mjs";
+import {
   listCatalog,
   getCatalogEntry,
   installMcpServer,
@@ -6377,6 +6385,149 @@ function normalizeGatesPolicy(raw = {}, options = {}) {
     runtime: {
       enforceBacklog: parseBooleanLike(runtimeRaw.enforceBacklog, true),
       agentTriggerControl: parseBooleanLike(runtimeRaw.agentTriggerControl, true),
+    },
+  };
+}
+
+function hasGuardrailsOverride(input = {}) {
+  if (!input || typeof input !== "object") return false;
+  return [
+    input?.guardrailsOverride,
+    input?.overrideGuardrails,
+    input?.INPUTOverride,
+    input?.guardrails?.override,
+    input?.override?.guardrails,
+  ].some((value) => parseBooleanLike(value, false) === true);
+}
+
+function resolveRequireReviewGuardrail() {
+  const explicit = process.env.BOSUN_FLOW_REQUIRE_REVIEW;
+  if (explicit !== undefined && String(explicit).trim() !== "") {
+    return parseBooleanLike(explicit, true);
+  }
+  return true;
+}
+
+function resolvePreflightGuardrail(configData = {}) {
+  if (configData?.preflightEnabled !== undefined) {
+    return parseBooleanLike(configData.preflightEnabled, true);
+  }
+  return true;
+}
+
+function buildHookGuardrailsOverview(rootDir) {
+  const catalog = getHookCatalog();
+  const coreHooks = getCoreHooks();
+  const defaultHooks = getDefaultHooks();
+  const persistedState = loadHookState(rootDir);
+  const explicitStateKeys = Object.keys(persistedState?.enabled || {});
+  const effectiveEnabledIds = explicitStateKeys.length > 0
+    ? new Set(getEnabledHookIds(rootDir))
+    : new Set(defaultHooks.map((hook) => hook.id));
+
+  return {
+    total: catalog.length,
+    coreCount: coreHooks.length,
+    defaultCount: defaultHooks.length,
+    enabledCount: effectiveEnabledIds.size,
+    enabledIds: [...effectiveEnabledIds].sort(),
+    hasPersistedState: explicitStateKeys.length > 0,
+    updatedAt: persistedState?.updatedAt || null,
+    categories: getHookCategories().map((category) => ({
+      ...category,
+      enabledCount: catalog.filter((hook) => hook.category === category.id && effectiveEnabledIds.has(hook.id)).length,
+    })),
+  };
+}
+
+function buildTaskGuardrailsInput(body = {}, context = {}) {
+  return {
+    title: body?.title,
+    description: body?.description,
+    metadata: {
+      project: context.projectId || body?.project || "",
+      workspace: context.workspace || body?.workspace || "",
+      repository: context.repository || body?.repository || "",
+      repositories: context.repositories || body?.repositories || [],
+      priority: body?.priority || "",
+      status: body?.status || "",
+      type: body?.type || "",
+      tags: context.tags || body?.tags || [],
+      ...context.metadataTopLevel,
+      ...context.metadata,
+      ...(body?.meta && typeof body.meta === "object" ? body.meta : {}),
+      ...(body?.metadata && typeof body.metadata === "object" ? body.metadata : {}),
+    },
+  };
+}
+
+function buildManualFlowGuardrailsInput(template, templateId, formValues = {}, executionContext = {}) {
+  return {
+    title: template?.name || templateId || "manual-flow",
+    description: template?.description || "",
+    metadata: {
+      templateId,
+      category: template?.category || "",
+      tags: Array.isArray(template?.tags) ? template.tags : [],
+      executionContext,
+    },
+    formValues,
+  };
+}
+
+function buildGuardrailsSnapshot() {
+  const workspaceContext = resolveActiveWorkspaceExecutionContext();
+  const workspaceDir = String(workspaceContext?.workspaceDir || repoRoot).trim() || repoRoot;
+  const { configData } = readConfigDocument();
+  const guardrailsPolicy = ensureGuardrailsPolicy(workspaceDir);
+  const hooks = buildHookGuardrailsOverview(workspaceDir);
+  const repoGuardrails = detectRepoGuardrails(workspaceDir);
+  const runtime = {
+    preflightEnabled: resolvePreflightGuardrail(configData),
+    requireReview: resolveRequireReviewGuardrail(),
+    gates: normalizeGatesPolicy(configData?.gates, {
+      worktreeBootstrap: configData?.worktreeBootstrap,
+    }),
+    prAutomation: normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true }),
+  };
+
+  const warnings = [];
+  if (!runtime.preflightEnabled) warnings.push("Preflight checks are disabled.");
+  if (!runtime.requireReview) warnings.push("Review requirement is disabled.");
+  if (!guardrailsPolicy.INPUT.enabled) warnings.push("INPUT enforcement is disabled.");
+  if (!guardrailsPolicy.push.workflowOnly) warnings.push("Workflow-only push ownership is disabled.");
+  if (!guardrailsPolicy.push.blockAgentPushes) warnings.push("Agents are allowed to push directly.");
+  if (!guardrailsPolicy.push.requireManagedPrePush) warnings.push("Managed worktree pre-push validation is not required.");
+  if (!repoGuardrails.categories.prepush.detected) warnings.push("No prepush package script detected.");
+  if (!repoGuardrails.categories.ci.detected) warnings.push("No CI-like package scripts detected.");
+
+  return {
+    workspace: {
+      workspaceId: workspaceContext?.workspaceId || "",
+      workspaceDir,
+      workspaceRoot: workspaceContext?.workspaceRoot || workspaceDir,
+    },
+    summary: {
+      status: warnings.length === 0 ? "guarded" : warnings.length <= 2 ? "partial" : "needs-attention",
+      counts: {
+        hooksEnabled: hooks.enabledCount,
+        hooksTotal: hooks.total,
+        repoGuardrailsDetected: repoGuardrails.detectedCount,
+        runtimeEnabled: Number(runtime.preflightEnabled) + Number(runtime.requireReview),
+        INPUTEnabled: guardrailsPolicy.INPUT.enabled ? 1 : 0,
+      },
+      warnings,
+    },
+    hooks,
+    runtime,
+    repoGuardrails,
+    INPUT: {
+      policyPath: getGuardrailsPolicyPath(workspaceDir),
+      policy: guardrailsPolicy.INPUT,
+    },
+    push: {
+      policyPath: getGuardrailsPolicyPath(workspaceDir),
+      policy: guardrailsPolicy.push,
     },
   };
 }
@@ -15456,6 +15607,33 @@ async function handleApi(req, res, url) {
         ? body.repositories.filter((value) => typeof value === "string" && value.trim())
         : [];
       const metadataFields = buildTaskMetadataPatch(body || {});
+      const workspaceContext = resolveActiveWorkspaceExecutionContext();
+      const guardrailsRootDir = String(workspaceContext?.workspaceDir || repoRoot).trim() || repoRoot;
+      const INPUTPolicy = loadGuardrailsPolicy(guardrailsRootDir);
+      const taskAssessment = assessInputQuality(
+        buildTaskGuardrailsInput(body, {
+          projectId,
+          workspace,
+          repository,
+          repositories,
+          tags,
+          metadataTopLevel: metadataFields.topLevel,
+          metadata: metadataFields.meta,
+        }),
+        INPUTPolicy.INPUT,
+      );
+      const taskAssessmentPayload = taskAssessment.blocked && hasGuardrailsOverride(body || {})
+        ? { ...taskAssessment, overrideAccepted: true }
+        : taskAssessment;
+      if (taskAssessment.blocked && taskAssessmentPayload.overrideAccepted !== true) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "Input blocked by INPUT guardrails",
+          code: "guardrails_INPUT_blocked",
+          assessment: taskAssessmentPayload,
+        });
+        return;
+      }
       const taskData = {
         title: String(title).trim(),
         description: body?.description || "",
@@ -15481,7 +15659,7 @@ async function handleApi(req, res, url) {
       };
       const createdRaw = await adapter.createTask(projectId, taskData);
       const created = withTaskMetadataTopLevel(createdRaw);
-      jsonResponse(res, 200, { ok: true, data: created });
+      jsonResponse(res, 200, { ok: true, data: created, assessment: taskAssessmentPayload });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-created",
         taskId: created?.id || null,
@@ -16231,13 +16409,35 @@ async function handleApi(req, res, url) {
         }
         if (action === "enable") {
           const result = enableHook(rootDir, hookId);
+          if (result.success) {
+            broadcastUiEvent(["guardrails", "library", "overview"], "invalidate", {
+              reason: "hook-state-updated",
+              action,
+              hookId,
+              workspaceId: workspaceContext.workspaceId || "",
+            });
+          }
           jsonResponse(res, result.success ? 200 : 400, { ok: result.success, ...result });
         } else if (action === "disable") {
           const force = body?.force === true;
           const result = disableHook(rootDir, hookId, force);
+          if (result.success) {
+            broadcastUiEvent(["guardrails", "library", "overview"], "invalidate", {
+              reason: "hook-state-updated",
+              action,
+              hookId,
+              workspaceId: workspaceContext.workspaceId || "",
+            });
+          }
           jsonResponse(res, result.success ? 200 : 400, { ok: result.success, ...result });
         } else if (action === "initialize") {
           const state = initializeHookState(rootDir);
+          broadcastUiEvent(["guardrails", "library", "overview"], "invalidate", {
+            reason: "hook-state-initialized",
+            action,
+            hookId,
+            workspaceId: workspaceContext.workspaceId || "",
+          });
           jsonResponse(res, 200, { ok: true, data: state });
         } else {
           jsonResponse(res, 400, { ok: false, error: `Unknown action: ${action}. Use enable, disable, or initialize.` });
@@ -19535,6 +19735,24 @@ if (path === "/api/agent-logs/context") {
       }
       const mf = await import("../workflow/manual-flows.mjs");
       const ctx = resolveActiveWorkspaceExecutionContext();
+      const template = mf.getFlowTemplate(templateId, ctx.workspaceDir);
+      const INPUTPolicy = loadGuardrailsPolicy(ctx.workspaceDir || repoRoot);
+      const flowAssessment = assessInputQuality(
+        buildManualFlowGuardrailsInput(template, templateId, formValues || {}, executionContext || {}),
+        INPUTPolicy.INPUT,
+      );
+      const flowAssessmentPayload = flowAssessment.blocked && hasGuardrailsOverride(body || {})
+        ? { ...flowAssessment, overrideAccepted: true }
+        : flowAssessment;
+      if (flowAssessment.blocked && flowAssessmentPayload.overrideAccepted !== true) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "Input blocked by INPUT guardrails",
+          code: "guardrails_INPUT_blocked",
+          assessment: flowAssessmentPayload,
+        });
+        return;
+      }
       const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       const repository = String(
         executionContext?.repository ||
@@ -19571,7 +19789,7 @@ if (path === "/api/agent-logs/context") {
         },
       };
       const run = await mf.executeFlow(templateId, formValues || {}, ctx.workspaceDir, flowContext);
-      jsonResponse(res, 200, { ok: true, run });
+      jsonResponse(res, 200, { ok: true, run, assessment: flowAssessmentPayload });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -19655,6 +19873,142 @@ if (path === "/api/agent-logs/context") {
       lanIp: getLocalLanIp(),
       url: getTelegramUiUrl(),
     });
+    return;
+  }
+
+  if (path === "/api/guardrails" && req.method === "GET") {
+    try {
+      const snapshot = buildGuardrailsSnapshot();
+      jsonResponse(res, 200, { ok: true, snapshot });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/guardrails/policy" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const INPUTPatch = body?.INPUT && typeof body.INPUT === "object" ? body.INPUT : null;
+      const pushPatch = body?.push && typeof body.push === "object" ? body.push : null;
+      const directPatch = body && typeof body === "object" && !Array.isArray(body)
+        ? body
+        : null;
+      const nextINPUTPatch = INPUTPatch || (directPatch && !Object.prototype.hasOwnProperty.call(directPatch, "push") ? directPatch : null);
+      if (!nextINPUTPatch && !pushPatch) {
+        jsonResponse(res, 400, { ok: false, error: "INPUT or push policy object is required" });
+        return;
+      }
+
+      const workspaceContext = resolveActiveWorkspaceExecutionContext();
+      const workspaceDir = String(workspaceContext?.workspaceDir || repoRoot).trim() || repoRoot;
+      const currentPolicy = ensureGuardrailsPolicy(workspaceDir);
+      const nextPolicy = saveGuardrailsPolicy(workspaceDir, {
+        ...currentPolicy,
+        INPUT: nextINPUTPatch
+          ? {
+            ...currentPolicy.INPUT,
+            ...nextINPUTPatch,
+          }
+          : currentPolicy.INPUT,
+        push: pushPatch
+          ? {
+            ...currentPolicy.push,
+            ...pushPatch,
+          }
+          : currentPolicy.push,
+      });
+      const snapshot = buildGuardrailsSnapshot();
+      broadcastUiEvent(["guardrails", "settings", "overview"], "invalidate", {
+        reason: "guardrails-policy-updated",
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        INPUT: {
+          policyPath: getGuardrailsPolicyPath(workspaceDir),
+          policy: nextPolicy.INPUT,
+        },
+        push: {
+          policyPath: getGuardrailsPolicyPath(workspaceDir),
+          policy: nextPolicy.push,
+        },
+        snapshot,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/guardrails/runtime" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const runtimePatch = body?.runtime && typeof body.runtime === "object"
+        ? body.runtime
+        : body && typeof body === "object"
+          ? body
+          : null;
+      const preflightProvided = runtimePatch && hasOwn(runtimePatch, "preflightEnabled");
+      const requireReviewProvided = runtimePatch && hasOwn(runtimePatch, "requireReview");
+      if (!preflightProvided && !requireReviewProvided) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "preflightEnabled or requireReview must be provided",
+        });
+        return;
+      }
+
+      let configPath = resolveConfigPath();
+      if (preflightProvided) {
+        const { configPath: nextConfigPath, configData } = readConfigDocument();
+        configPath = nextConfigPath;
+        configData.preflightEnabled = parseBooleanLike(runtimePatch.preflightEnabled, true);
+        writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      }
+
+      const envPath = resolve(resolveUiConfigDir(), ".env");
+      if (requireReviewProvided) {
+        const requireReview = parseBooleanLike(runtimePatch.requireReview, true);
+        process.env.BOSUN_FLOW_REQUIRE_REVIEW = requireReview ? "true" : "false";
+        updateEnvFile({ BOSUN_FLOW_REQUIRE_REVIEW: process.env.BOSUN_FLOW_REQUIRE_REVIEW });
+      }
+
+      const snapshot = buildGuardrailsSnapshot();
+      broadcastUiEvent(["guardrails", "settings", "overview"], "invalidate", {
+        reason: "guardrails-runtime-updated",
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        configPath,
+        envPath,
+        runtime: snapshot.runtime,
+        snapshot,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/guardrails/assess" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const workspaceContext = resolveActiveWorkspaceExecutionContext();
+      const workspaceDir = String(workspaceContext?.workspaceDir || repoRoot).trim() || repoRoot;
+      const policy = ensureGuardrailsPolicy(workspaceDir);
+      const assessmentInput = body?.input ?? body?.payload ?? body?.assessmentInput ?? body;
+      const assessment = assessInputQuality(assessmentInput, policy.INPUT);
+      jsonResponse(res, 200, {
+        ok: true,
+        assessment,
+        INPUT: {
+          policyPath: getGuardrailsPolicyPath(workspaceDir),
+          policy: policy.INPUT,
+        },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
     return;
   }
 
@@ -22683,7 +23037,9 @@ export async function startTelegramUiServer(options = {}) {
   const isTestRun =
     Boolean(process.env.VITEST) ||
     process.env.NODE_ENV === "test" ||
-    Boolean(process.env.JEST_WORKER_ID);
+    Boolean(process.env.JEST_WORKER_ID) ||
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.execArgv.includes("--test");
   if (isTestRun && typeof taskStoreModule?.configureTaskStore === "function") {
     const cacheDir = sandbox?.cacheDir || resolve(repoRoot, ".bosun", ".cache");
     const isolatedStorePath = resolve(
@@ -23526,7 +23882,11 @@ export async function startTelegramUiServer(options = {}) {
   //  - skip during Vitest / Jest test runs (avoids opening 20+ tabs during `npm test`)
   //  - only open ONCE per process (singleton guard — prevents loops on server restart)
   const isTestRunRuntime =
-    process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
+    process.env.VITEST ||
+    process.env.NODE_ENV === "test" ||
+    process.env.JEST_WORKER_ID ||
+    process.env.NODE_TEST_CONTEXT ||
+    process.execArgv.includes("--test");
   const restartReason = String(
     options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
   ).trim();

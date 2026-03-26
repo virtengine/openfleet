@@ -2962,9 +2962,36 @@ describe("action.push_branch", () => {
     const nt = getNodeType("action.push_branch");
     expect(nt.schema.properties.rebaseBeforePush).toBeDefined();
     expect(nt.schema.properties.skipHooks).toBeDefined();
-    expect(nt.schema.properties.skipHooks.default).toBe(true);
+    expect(nt.schema.properties.skipHooks.default).toBe(false);
     expect(nt.schema.properties.emptyDiffGuard).toBeDefined();
     expect(nt.schema.properties.syncMainForModuleBranch).toBeDefined();
+  });
+
+  it("blocks skipHooks for managed Bosun worktrees", async () => {
+    const nt = getNodeType("action.push_branch");
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-push-guardrail-"));
+    const worktreePath = join(repoRoot, ".bosun", "worktrees", "task-123");
+    mkdirSync(join(repoRoot, ".bosun"), { recursive: true });
+    mkdirSync(join(repoRoot, ".githooks"), { recursive: true });
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(repoRoot, ".bosun", "guardrails.json"), JSON.stringify({
+      INPUT: { enabled: true },
+      push: { workflowOnly: true, blockAgentPushes: true, requireManagedPrePush: true },
+    }, null, 2));
+    writeFileSync(join(repoRoot, ".githooks", "pre-commit"), "#!/usr/bin/env bash\nexit 0\n");
+    writeFileSync(join(repoRoot, ".githooks", "pre-push"), "#!/usr/bin/env bash\nexit 0\n");
+
+    const ctx = makeCtx({ repoRoot });
+    const node = makeNode("action.push_branch", {
+      worktreePath,
+      branch: "feature/test-branch",
+      skipHooks: true,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("must run local pre-push validation");
+    rmSync(repoRoot, { recursive: true, force: true });
   });
 });
 

@@ -5,6 +5,9 @@ const existsSyncMock = vi.hoisted(() => vi.fn(() => true));
 const resolvePwshRuntimeMock = vi.hoisted(() =>
   vi.fn(() => ({ command: "pwsh" })),
 );
+const ensureGitHooksPathMock = vi.hoisted(() =>
+  vi.fn(() => ({ changed: false, hooksPath: ".githooks", error: "" })),
+);
 const inspectWorktreeRuntimeSetupMock = vi.hoisted(() =>
   vi.fn(() => ({ ok: true, issues: [], missingFiles: [], hooksPath: ".githooks" })),
 );
@@ -22,6 +25,7 @@ vi.mock("../shell/pwsh-runtime.mjs", () => ({
 }));
 
 vi.mock("../workspace/worktree-setup.mjs", () => ({
+  ensureGitHooksPath: ensureGitHooksPathMock,
   inspectWorktreeRuntimeSetup: inspectWorktreeRuntimeSetupMock,
 }));
 
@@ -120,6 +124,8 @@ describe("preflight interactive git editor warnings", () => {
     existsSyncMock.mockReset();
     existsSyncMock.mockReturnValue(true);
     inspectWorktreeRuntimeSetupMock.mockReset();
+    ensureGitHooksPathMock.mockReset();
+    ensureGitHooksPathMock.mockReturnValue({ changed: false, hooksPath: ".githooks", error: "" });
     inspectWorktreeRuntimeSetupMock.mockReturnValue({
       ok: true,
       issues: [],
@@ -213,5 +219,34 @@ describe("preflight interactive git editor warnings", () => {
 
     expect(result.ok).toBe(false);
     expect(result.errors.some((entry) => /worktree runtime setup is incomplete/i.test(entry.title))).toBe(true);
+  });
+
+  it("auto-repairs git hooksPath drift during preflight", () => {
+    inspectWorktreeRuntimeSetupMock
+      .mockReturnValueOnce({
+        ok: false,
+        issues: ["git core.hooksPath points to .husky instead of .githooks"],
+        missingFiles: [],
+        hooksPath: ".husky",
+      })
+      .mockReturnValueOnce({
+        ok: true,
+        issues: [],
+        missingFiles: [],
+        hooksPath: ".githooks",
+      });
+    ensureGitHooksPathMock.mockReturnValue({
+      changed: true,
+      hooksPath: ".githooks",
+      error: "",
+    });
+
+    const result = runPreflightChecks({ repoRoot: "C:\\repo" });
+    const report = formatPreflightReport(result);
+
+    expect(result.ok).toBe(true);
+    expect(ensureGitHooksPathMock).toHaveBeenCalledWith("C:\\repo");
+    expect(result.warnings.some((entry) => /git hooks path auto-repaired/i.test(entry.title))).toBe(true);
+    expect(report).toContain("Git hooks: .githooks (auto-repaired)");
   });
 });

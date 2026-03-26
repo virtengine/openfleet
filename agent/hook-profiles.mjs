@@ -8,7 +8,7 @@ const __dirname = dirname(__filename);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_HOOK_SCHEMA = "https://json-schema.org/draft/2020-12/schema";
 const LEGACY_BRIDGE_SNIPPET = "scripts/bosun/agent-hook-bridge.mjs";
-const DEFAULT_BRIDGE_SCRIPT_PATH = resolve(__dirname, "agent-hook-bridge.mjs");
+const DEFAULT_BRIDGE_SCRIPT_PATH = "agent/agent-hook-bridge.mjs";
 
 function getHookNodeBinary() {
   const configured = String(process.env.BOSUN_HOOK_NODE_BIN || "").trim();
@@ -153,8 +153,8 @@ function isPortableNodeCommandToken(token) {
 }
 
 function isPortableBridgeScriptToken(token) {
-  const raw = String(token || "");
-  return raw === DEFAULT_BRIDGE_SCRIPT_PATH || raw === LEGACY_BRIDGE_SNIPPET;
+  const raw = String(token || "").trim().replace(/\\/g, "/");
+  return raw === DEFAULT_BRIDGE_SCRIPT_PATH || raw === `./${DEFAULT_BRIDGE_SCRIPT_PATH}`;
 }
 
 function isCopilotBridgeCommandPortable(commandTokens) {
@@ -657,10 +657,10 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
     const geminiPath = resolve(root, ".gemini", "settings.json");
     const geminiConfig = {
       hooks: {
-        SessionStart: [{ command: "node agent-hook-bridge.mjs --agent gemini --event SessionStart" }],
-        SessionStop: [{ command: "node agent-hook-bridge.mjs --agent gemini --event SessionStop" }],
-        PreToolUse: [{ command: "node agent-hook-bridge.mjs --agent gemini --event PreToolUse" }],
-        PostToolUse: [{ command: "node agent-hook-bridge.mjs --agent gemini --event PostToolUse" }],
+        SessionStart: [{ command: buildShellCommand(makeBridgeCommandTokens("gemini", "SessionStart")) }],
+        SessionStop: [{ command: buildShellCommand(makeBridgeCommandTokens("gemini", "SessionStop")) }],
+        PreToolUse: [{ command: buildShellCommand(makeBridgeCommandTokens("gemini", "PreToolUse")) }],
+        PostToolUse: [{ command: buildShellCommand(makeBridgeCommandTokens("gemini", "PostToolUse")) }],
       },
       _bosun: { managed: true, profile: result.profile, generated: new Date().toISOString() },
     };
@@ -682,11 +682,11 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
     const opencodePath = resolve(root, ".opencode", "hooks.json");
     const opencodeConfig = {
       hooks: {
-        SessionStart: [{ command: "node agent-hook-bridge.mjs --agent opencode --event SessionStart" }],
-        SessionStop: [{ command: "node agent-hook-bridge.mjs --agent opencode --event SessionStop" }],
-        PreToolUse: [{ command: "node agent-hook-bridge.mjs --agent opencode --event PreToolUse" }],
-        PostToolUse: [{ command: "node agent-hook-bridge.mjs --agent opencode --event PostToolUse" }],
-        TaskComplete: [{ command: "node agent-hook-bridge.mjs --agent opencode --event TaskComplete" }],
+        SessionStart: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "SessionStart")) }],
+        SessionStop: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "SessionStop")) }],
+        PreToolUse: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "PreToolUse")) }],
+        PostToolUse: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "PostToolUse")) }],
+        TaskComplete: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "TaskComplete")) }],
       },
       _bosun: { managed: true, profile: result.profile, generated: new Date().toISOString() },
     };

@@ -306,6 +306,18 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
+  it("template-pr-review-quality-striker: runs review-quality workflow without crash", async () => {
+    const { harness, fixtures } = setupHarness("template-pr-review-quality-striker");
+    const { ctx } = await harness.run(fixtures.inputVars);
+    harness.assertions.noEngineErrors(ctx);
+  });
+
+  it("template-sonarqube-pr-striker: runs sonar quality workflow without crash", async () => {
+    const { harness, fixtures } = setupHarness("template-sonarqube-pr-striker");
+    const { ctx } = await harness.run(fixtures.inputVars);
+    harness.assertions.noEngineErrors(ctx);
+  });
+
   // ── Agent templates ───────────────────────────────────────────────────
 
   it("template-review-agent: launches review agent on a PR", async () => {

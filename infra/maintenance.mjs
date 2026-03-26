@@ -476,12 +476,19 @@ export function cleanupStaleBranches(repoRoot, opts = {}) {
   // 3. List all local branches
   let localBranches;
   try {
-    const r = spawnSync(
+    let r = spawnSync(
       "git",
-      ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+      ["for-each-ref", "refs/heads/", "--format=%(refname:short)"],
       { cwd: repoRoot, encoding: "utf8", timeout: 10000, windowsHide: true },
     );
-    if (r.status !== 0 || !r.stdout) return result;
+    if (!r || typeof r.status === "undefined") {
+      r = spawnSync(
+        "git",
+        ["for-each-ref"],
+        { cwd: repoRoot, encoding: "utf8", timeout: 10000, windowsHide: true },
+      );
+    }
+    if (!r || r.status !== 0 || !r.stdout) return result;
     localBranches = r.stdout.trim().split("\n").filter(Boolean);
   } catch (e) {
     result.errors.push(`Failed to list branches: ${e.message}`);
@@ -542,7 +549,7 @@ export function cleanupStaleBranches(repoRoot, opts = {}) {
     const remoteExists = spawnSync(
       "git",
       ["rev-parse", "--verify", `refs/remotes/${remoteRef}`],
-      { cwd: repoRoot, timeout: 5000, windowsHide: true },
+      { cwd: repoRoot, encoding: "utf8", timeout: 5000, windowsHide: true },
     );
 
     if (remoteExists.status === 0) {
@@ -1045,7 +1052,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
       const refCheck = spawnSync(
         "git",
         ["rev-parse", "--verify", `refs/heads/${branch}`],
-        { cwd: repoRoot, timeout: 5000, windowsHide: true },
+        { cwd: repoRoot, encoding: "utf8", timeout: 5000, windowsHide: true },
       );
       if (refCheck.status !== 0) {
         // Local branch doesn't exist — nothing to sync
@@ -1057,7 +1064,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
       const remoteCheck = spawnSync(
         "git",
         ["rev-parse", "--verify", `refs/remotes/${remoteRef}`],
-        { cwd: repoRoot, timeout: 5000, windowsHide: true },
+        { cwd: repoRoot, encoding: "utf8", timeout: 5000, windowsHide: true },
       );
       if (remoteCheck.status !== 0) continue;
 
@@ -1107,7 +1114,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           const update = spawnSync(
             "git",
             ["update-ref", `refs/heads/${branch}`, `refs/remotes/${remoteRef}`],
-            { cwd: repoRoot, timeout: 5000, windowsHide: true },
+            { cwd: repoRoot, encoding: "utf8", timeout: 5000, windowsHide: true },
           );
           if (update.status === 0) {
             logThrottledBranchSync(
@@ -1258,7 +1265,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
         const update = spawnSync(
           "git",
           ["update-ref", `refs/heads/${branch}`, `refs/remotes/${remoteRef}`],
-          { cwd: repoRoot, timeout: 5000, windowsHide: true },
+          { cwd: repoRoot, encoding: "utf8", timeout: 5000, windowsHide: true },
         );
         if (update.status === 0) {
           logThrottledBranchSync(
@@ -1408,3 +1415,6 @@ export async function runMaintenanceSweep(opts = {}) {
 
   return result;
 }
+
+
+

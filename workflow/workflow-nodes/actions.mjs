@@ -1,3 +1,5 @@
+import { bootstrapWorktreeForPath, fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
+import { shouldRequireManagedPrePush } from "../../infra/guardrails.mjs";
 /**
  * workflow-nodes.mjs — Built-in Workflow Node Types for Bosun
  *
@@ -320,7 +322,19 @@ registerNodeType("action.run_agent", {
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const resolvedCwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const cwdFallback = [ctx.data?.worktreePath, ctx.data?.repoRoot, process.cwd()]
+      .map((value) => String(value || "").trim())
+      .find((value) => value && !isUnresolvedTemplateToken(value)) || process.cwd();
+    const cwd = isUnresolvedTemplateToken(resolvedCwd) ? cwdFallback : resolvedCwd;
+    if (cwd !== resolvedCwd) {
+      ctx.log(
+        node.id,
+        `Agent cwd resolved from unresolved template (${resolvedCwd}) to ${cwd}`,
+        "warn",
+      );
+    }
+      const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId);
     const trackedTaskId = String(
       ctx.data?.taskId ||
         ctx.data?.task?.id ||
@@ -419,6 +433,10 @@ registerNodeType("action.run_agent", {
         [],
       cwd,
       repoRoot: ctx.data?.repoRoot || cwd,
+      repoRoot:
+        String(ctx.data?.repoRoot || "").trim() && !isUnresolvedTemplateToken(ctx.data?.repoRoot)
+          ? ctx.data.repoRoot
+          : cwd,
     }, effectiveMode);
     if (
       architectEditorFrame &&
@@ -6124,6 +6142,7 @@ registerNodeType("action.push_branch", {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
     const branch = cfgOrCtx(node, ctx, "branch", "");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || ctx.data.repoRoot || process.cwd();
     const remote = node.config?.remote || "origin";
     const forceWithLease = node.config?.forceWithLease !== false;
     const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
@@ -6134,6 +6153,10 @@ registerNodeType("action.push_branch", {
       || ["main", "master", "develop", "production"];
 
     if (!worktreePath) throw new Error("action.push_branch: worktreePath is required");
+
+    if (isManagedBosunWorktree(worktreePath, repoRoot) && shouldRequireManagedPrePush(repoRoot)) {
+      bootstrapWorktreeForPath(repoRoot, worktreePath);
+    }
 
     // Safety check: don't push to protected branches
     const cleanBranch = branch.replace(/^origin\//, "");

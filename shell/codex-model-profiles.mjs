@@ -130,9 +130,20 @@ function profileRecord(env, profileName, globalProvider) {
   };
 }
 
-export function readCodexConfigRuntimeDefaults() {
+function resolveRuntimeHomeDir(env = process.env) {
+  const home = clean(env?.HOME);
+  if (home) return home;
+  const userProfile = clean(env?.USERPROFILE);
+  if (userProfile) return userProfile;
+  const homeDrive = clean(env?.HOMEDRIVE);
+  const homePath = clean(env?.HOMEPATH);
+  if (homeDrive && homePath) return `${homeDrive}${homePath}`;
+  return homedir();
+}
+
+export function readCodexConfigRuntimeDefaults(env = process.env) {
   try {
-    const configPath = resolve(homedir(), ".codex", "config.toml");
+    const configPath = resolve(resolveRuntimeHomeDir(env), ".codex", "config.toml");
     if (!existsSync(configPath)) {
       return { model: "", modelProvider: "", providers: {} };
     }
@@ -164,8 +175,8 @@ export function readCodexConfigRuntimeDefaults() {
   }
 }
 
-function readCodexConfigTopLevelModel() {
-  return readCodexConfigRuntimeDefaults().model;
+function readCodexConfigTopLevelModel(env = process.env) {
+  return readCodexConfigRuntimeDefaults(env).model;
 }
 
 function selectConfigProviderForRuntime(configDefaults, env, preferredProvider = "") {
@@ -241,7 +252,7 @@ function inferGlobalProvider(env, configDefaults = null) {
  */
 export function resolveCodexProfileRuntime(envInput = process.env) {
   const sourceEnv = { ...envInput };
-  const configDefaults = readCodexConfigRuntimeDefaults();
+  const configDefaults = readCodexConfigRuntimeDefaults(sourceEnv);
   const activeProfile = normalizeProfileName(
     sourceEnv.CODEX_MODEL_PROFILE,
     DEFAULT_ACTIVE_PROFILE,
@@ -257,7 +268,7 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
 
   const env = { ...sourceEnv };
 
-  const configModel = readCodexConfigTopLevelModel();
+  const configModel = readCodexConfigTopLevelModel(sourceEnv);
 
   if (active.model) {
     env.CODEX_MODEL = active.model;

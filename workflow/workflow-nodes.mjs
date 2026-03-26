@@ -71,6 +71,7 @@ import {
   recordMarkdownSafetyAuditEvent,
   resolveMarkdownSafetyPolicy,
 } from "../lib/skill-markdown-safety.mjs";
+import { shouldRequireManagedPrePush } from "../infra/guardrails.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
@@ -848,6 +849,7 @@ function ensureManagedTaskWorktreeReady(repoRoot, worktreePath) {
 
 function shouldEnforceManagedPushHook(repoRoot, worktreePath) {
   if (!isManagedBosunWorktree(worktreePath, repoRoot)) return false;
+  if (!shouldRequireManagedPrePush(repoRoot)) return false;
   const gatePolicy = resolveManagedWorktreeGatePolicy(repoRoot);
   if (!gatePolicy) return true;
   return gatePolicy.enforcePushHook !== false;
@@ -14871,7 +14873,7 @@ registerBuiltinNodeType("action.push_branch", {
       baseBranch: { type: "string", description: "Base branch to rebase onto" },
       remote: { type: "string", default: "origin", description: "Remote name" },
       forceWithLease: { type: "boolean", default: true, description: "Use --force-with-lease" },
-      skipHooks: { type: "boolean", default: true, description: "Skip git pre-push hooks (--no-verify)" },
+      skipHooks: { type: "boolean", default: false, description: "Skip git pre-push hooks (--no-verify) for non-managed repos only" },
       rebaseBeforePush: { type: "boolean", default: true, description: "Rebase onto base before push" },
       emptyDiffGuard: { type: "boolean", default: true, description: "Abort if no files changed vs base" },
       syncMainForModuleBranch: { type: "boolean", default: false, description: "Also sync base with main" },
@@ -14891,9 +14893,10 @@ registerBuiltinNodeType("action.push_branch", {
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || ctx.data.repoRoot || process.cwd();
     const remote = node.config?.remote || "origin";
     const forceWithLease = node.config?.forceWithLease !== false;
+    const managedPushHooksRequired = shouldEnforceManagedPushHook(repoRoot, worktreePath);
     const skipHooks = typeof node.config?.skipHooks === "boolean"
       ? node.config.skipHooks
-      : !shouldEnforceManagedPushHook(repoRoot, worktreePath);
+      : false;
     const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
     const emptyDiffGuard = node.config?.emptyDiffGuard !== false;
     const syncMain = node.config?.syncMainForModuleBranch === true;
@@ -14903,7 +14906,16 @@ registerBuiltinNodeType("action.push_branch", {
 
     if (!worktreePath) throw new Error("action.push_branch: worktreePath is required");
 
-    if (shouldEnforceManagedPushHook(repoRoot, worktreePath)) {
+    if (managedPushHooksRequired && skipHooks) {
+      ctx.log(node.id, "Managed worktree push blocked: skipHooks is forbidden by guardrails");
+      return {
+        success: false,
+        pushed: false,
+        error: "Managed Bosun worktrees must run local pre-push validation before push",
+      };
+    }
+
+    if (managedPushHooksRequired) {
       bootstrapWorktreeForPath(repoRoot, worktreePath);
     }
 

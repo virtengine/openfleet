@@ -12,7 +12,7 @@
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
  *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine
  *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
- *   workflow-templates/code-quality.mjs — Code Quality Striker
+ *   workflow-templates/code-quality.mjs — Code Quality Striker, PR Review Quality Striker, SonarQube PR Striker
  *
  * To add a new template:
  *   1. Choose the appropriate category file (or create a new one)
@@ -103,6 +103,8 @@ import {
 // Code Quality (structural refactor, agentic maintenance)
 import {
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
 } from "../workflow-templates/code-quality.mjs";
 
 // Task Execution (task-type-specific workflows)
@@ -203,6 +205,8 @@ export {
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
   FULLSTACK_TASK_TEMPLATE,
   BACKEND_TASK_TEMPLATE,
   FRONTEND_TASK_TEMPLATE,
@@ -297,6 +301,8 @@ const BUILTIN_WORKFLOW_TEMPLATES = [
   SECRET_SCANNER_TEMPLATE,
   // ── Maintenance (structural quality, agentic dev) ──
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
   // ── Task Execution (task-type workflows + core lifecycle) ──
   FULLSTACK_TASK_TEMPLATE,
   BACKEND_TASK_TEMPLATE,

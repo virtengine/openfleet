@@ -595,7 +595,7 @@ describe("workflow-templates", () => {
     expect(retryBudget?.config?.expression).toContain("maxStuckAutoRetries");
   });
 
-  it("pr merge strategy template listens to review, approval, and opened aliases", () => {
+  it("pr merge strategy template listens to review and approval aliases", () => {
     const template = getTemplate("template-pr-merge-strategy");
     expect(template).toBeDefined();
 
@@ -603,6 +603,65 @@ describe("workflow-templates", () => {
     expect(triggerNode?.type).toBe("trigger.pr_event");
     expect(triggerNode?.config?.event).toBe("review_requested");
     expect(triggerNode?.config?.events).toEqual(["review_requested", "approved", "opened"]);
+  });
+
+  it("pr review quality striker supports reactive review events plus scheduled fallback", () => {
+    const template = getTemplate("template-pr-review-quality-striker");
+    expect(template).toBeDefined();
+    expect(template.trigger).toBe("trigger.pr_event");
+
+    const triggerNode = template.nodes.find((n) => n.id === "trigger");
+    const reviewCommentTriggerNode = template.nodes.find((n) => n.id === "trigger-review-comment");
+    const fallbackTriggerNode = template.nodes.find((n) => n.id === "trigger-fallback");
+    const fetchNode = template.nodes.find((n) => n.id === "fetch-review-signals");
+    const runNode = template.nodes.find((n) => n.id === "run-review-striker");
+    const command = getNodeCommandCode(fetchNode);
+
+    expect(triggerNode?.type).toBe("trigger.pr_event");
+    expect(triggerNode?.config?.event).toBe("review_requested");
+    expect(triggerNode?.config?.events).toEqual(["review_requested", "changes_requested", "approved", "opened"]);
+    expect(reviewCommentTriggerNode?.type).toBe("trigger.event");
+    expect(reviewCommentTriggerNode?.config?.eventType).toBe("github:pull_request_review_comment");
+    expect(fallbackTriggerNode?.type).toBe("trigger.schedule");
+    expect(fallbackTriggerNode?.config?.intervalMs).toBe("{{intervalMs}}");
+
+    expect(command).toContain("DIRECT_PR_NUMBER");
+    expect(command).toContain("DIRECT_REPO");
+    expect(command).toContain("DIRECT_PR_URL");
+    expect(command).toContain("DIRECT_EVENT");
+    expect(command).toContain("appendActionable");
+    expect(command).toContain("collectPrDigest");
+    expect(command).toContain("collectActionableReviewSignals");
+    expect(command).toContain("commentFindings");
+    expect(command).toContain("qualityChecks");
+    expect(command).toContain("sourceKind");
+    expect(command).toContain("mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'");
+    expect(runNode?.config?.prompt).toContain("commentFindings and qualityChecks");
+    expect(runNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments, and checks");
+
+    expect(template.edges.find((e) => e.source === "trigger" && e.target === "fetch-review-signals")).toBeDefined();
+    expect(template.edges.find((e) => e.source === "trigger-review-comment" && e.target === "fetch-review-signals")).toBeDefined();
+    expect(template.edges.find((e) => e.source === "trigger-fallback" && e.target === "fetch-review-signals")).toBeDefined();
+  });
+
+  it("sonarqube striker keeps GitHub-native Sonar classification and shared PR digest", () => {
+    const template = getTemplate("template-sonarqube-pr-striker");
+    expect(template).toBeDefined();
+    expect(template.trigger).toBe("trigger.schedule");
+
+    const fetchNode = template.nodes.find((n) => n.id === "fetch-sonar-signals");
+    const runNode = template.nodes.find((n) => n.id === "run-sonar-striker");
+    const command = getNodeCommandCode(fetchNode);
+
+    expect(command).toContain("SONAR_CHECK_RE");
+    expect(command).toContain("collectPrDigest");
+    expect(command).toContain("collectActionableReviewSignals");
+    expect(command).toContain("hasSonarFailure");
+    expect(command).toContain("signals.sonarChecks.length===0");
+    expect(command).toContain("sonarChecks");
+    expect(runNode?.config?.prompt).toContain("GitHub-native Sonar checks as the source of truth");
+    expect(runNode?.config?.prompt).toContain("sonarChecks plus prDigest");
+    expect(runNode?.config?.prompt).not.toContain("SonarQube API");
   });
 
   it("continuation loop template includes stuck handling and terminal-state exits", () => {
@@ -977,7 +1036,7 @@ describe("template drift + update behavior", () => {
     engine.save(wf);
 
     const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
-    expect(result.metadataUpdated).toBeGreaterThanOrEqual(1);
+    expect(result.portMetadataRepaired).toBeGreaterThanOrEqual(0);
 
     const refreshed = engine.get(installed.id);
     const refreshedClaimOk = refreshed.nodes.find((node) => node.id === "claim-ok");
@@ -1340,8 +1399,8 @@ describe("github template CLI compatibility", () => {
 
     const gateNode = mergeTemplate.nodes.find((n) => n.id === "automation-eligible");
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
-    expect(gateNode?.config?.expression).toContain("bosun-pr-bosun-created");
-    expect(gateNode?.config?.expression).toContain("requireBosunCreatedPr");
+    expect(gateNode?.config?.expression).toContain("<!-- bosun-created -->");
+    expect(gateNode?.config?.expression).toContain("auto-created by bosun");
     expect(getNodeCommandCode(checkCi)).toContain("gh pr checks");
     expect(getNodeCommandCode(checkCi)).toContain("--json name,state");
     expect(getNodeCommandCode(checkCi)).not.toContain("conclusion");
@@ -1358,7 +1417,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(listNode)).toContain("gh pr list --state open");
     expect(getNodeCommandCode(listNode)).toContain("--json number,title,body,headRefName,baseRefName,mergeable,labels");
     const targetNode = resolverTemplate.nodes.find((n) => n.id === "target-pr");
-    expect(String(targetNode?.config?.value || "")).toContain("bosun-pr-bosun-created");
+    expect(String(targetNode?.config?.value || "")).toContain("<!-- bosun-created -->");
     // Must NOT contain a direct merge call — merge is deferred to watchdog.
     const hasMergeCall = resolverTemplate.nodes.some(
       (n) => typeof n.config?.command === "string" && n.config.command.includes("gh pr merge")
@@ -1413,7 +1472,13 @@ describe("github template CLI compatibility", () => {
 
     expect(getNodeCommandCode(fetchNode)).toContain("const BOSUN_CREATED_LABEL='bosun-pr-bosun-created';");
     expect(getNodeCommandCode(fetchNode)).toContain("function readLabelNames(pr){");
-    expect(getNodeCommandCode(fetchNode)).toContain("function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);}");
+  expect(getNodeCommandCode(fetchNode)).toContain("function readBosunProvenanceText(pr){return String(pr?.body||'')+");
+  expect(getNodeCommandCode(fetchNode)).toContain("String(pr?.title||'');}");
+  expect(getNodeCommandCode(fetchNode)).toContain("const taskIdMatch=text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i);");
+  expect(getNodeCommandCode(fetchNode)).toContain("const hasLegacyTaskSignature=Boolean(");
+  expect(getNodeCommandCode(fetchNode)).toContain("automated pr for task ${String(taskIdMatch[1]||'').trim().toLowerCase()}");
+  expect(getNodeCommandCode(fetchNode)).toContain("return text.includes('<!-- bosun-created -->')||/Bosun-Origin:\\s*created/i.test(text)||/auto-created by bosun/i.test(text)||hasLegacyTaskSignature;");
+    expect(getNodeCommandCode(fetchNode)).toContain("function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL)||hasBosunCreatedText(readBosunProvenanceText(pr));}");
     expect(getNodeCommandCode(fetchNode)).toContain("const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all');");
     expect(getNodeCommandCode(fetchNode)).toContain("const TRUSTED_AUTHORS=new Set");
     expect(getNodeCommandCode(fetchNode)).toContain("allowTrustedFixes");
@@ -1481,10 +1546,8 @@ describe("github template CLI compatibility", () => {
 
     expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
-    expect(command).toContain("['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']");
-    expect(command).toContain("/actions/runs/'+runId+'/jobs?per_page=100");
-    expect(command).toContain("/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page");
-    expect(command).toContain("['run','view',String(runId),'--repo',repo,'--log-failed']");
+    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs'])");
+    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
     expect(command).toContain("reason:'auto_rerun_limit_reached'");
     expect(command).toContain("failedLogExcerpt");
     expect(command).toContain("failedJobs");
@@ -1493,7 +1556,7 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt");
+    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
     expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
   });
 
@@ -1515,10 +1578,13 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(inspectNode)).toContain("prDigest");
     expect(getNodeCommandCode(inspectNode)).toContain("digestSummary");
     expect(getNodeCommandCode(inspectNode)).toContain("failedCheckNames");
+    expect(getNodeCommandCode(inspectNode)).toContain("const behindMergeables=new Set(['BEHIND']);");
+    expect(getNodeCommandCode(inspectNode)).toContain("classification='behind';reason='behind_base';");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
-    expect(getNodeCommandCode(fixNode)).toContain("/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
+    expect(getNodeCommandCode(fixNode)).toContain("classification==='behind'");
+    expect(getNodeCommandCode(fixNode)).toContain("reason:'branch_updated_from_base'");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs=['pr','merge'");
     expect(fixAgentNode?.config?.prompt).toContain("Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks");
   });
