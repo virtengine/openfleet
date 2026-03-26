@@ -225,7 +225,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [exit, helpOpen]);
 
   useInput((input, key) => {
-    if (screenInputLocked && !helpOpen) return;
+    if (screenInputLocked && !helpOpen && input !== "?") return;
     handleInput(input, key);
   });
 
