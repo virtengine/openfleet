@@ -33,9 +33,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 const ensureWorktreeRuntimeSetupMock = vi.hoisted(() => vi.fn(() => ({ ok: true })));
+const inspectWorktreeRuntimeSetupMock = vi.hoisted(() => vi.fn(() => ({
+  ok: true,
+  issues: [],
+  hooksPath: ".githooks",
+  missingFiles: [],
+})));
 
 vi.mock("../workspace/worktree-setup.mjs", () => ({
   ensureWorktreeRuntimeSetup: ensureWorktreeRuntimeSetupMock,
+  inspectWorktreeRuntimeSetup: inspectWorktreeRuntimeSetupMock,
 }));
 
 import { spawnSync } from "node:child_process";
@@ -102,6 +109,12 @@ describe("worktree-manager", () => {
     existsSync.mockReturnValue(false);
     readdirSync.mockReturnValue([]);
     statSync.mockReturnValue({ mtimeMs: Date.now(), isDirectory: () => true });
+    inspectWorktreeRuntimeSetupMock.mockReturnValue({
+      ok: true,
+      issues: [],
+      hooksPath: ".githooks",
+      missingFiles: [],
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -440,10 +453,24 @@ describe("worktree-manager", () => {
       bootstrapWorktreeForPath(REPO_ROOT, worktreePath);
 
       expect(ensureWorktreeRuntimeSetupMock).toHaveBeenCalledWith(REPO_ROOT, worktreePath);
+      expect(inspectWorktreeRuntimeSetupMock).toHaveBeenCalledWith(REPO_ROOT, worktreePath);
       expect(symlinkSync).toHaveBeenCalledTimes(1);
       const [targetPath, linkPath] = symlinkSync.mock.calls[0];
       expect(String(targetPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/node_modules$/);
       expect(String(linkPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123\/node_modules$/);
+    });
+
+    it("fails closed when runtime setup inspection reports missing hook state", () => {
+      const worktreePath = `${REPO_ROOT}/.bosun/worktrees/task-broken`;
+      inspectWorktreeRuntimeSetupMock.mockReturnValue({
+        ok: false,
+        issues: ["git core.hooksPath is not configured"],
+        hooksPath: "",
+        missingFiles: [".githooks/pre-push"],
+      });
+
+      expect(() => bootstrapWorktreeForPath(REPO_ROOT, worktreePath))
+        .toThrow(/runtime setup incomplete/i);
     });
 
     it("returns existing worktree when one exists for branch", async () => {
