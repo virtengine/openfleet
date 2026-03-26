@@ -30,7 +30,7 @@ import {
   _skipUntil,
   MAX_NO_COMMIT_ATTEMPTS,
 } from "./workflow-nodes/transforms.mjs";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -57,7 +57,12 @@ import {
 import { resolveAutoCommand } from "./project-detection.mjs";
 import { loadConfig, readConfigDocument } from "../config/config.mjs";
 import { resolveHeavyRunnerPolicy, runCommandInHeavyRunnerLease } from "./heavy-runner-pool.mjs";
-import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
+import {
+  bootstrapWorktreeForPath,
+  deriveManagedTaskToken,
+  fixGitConfigCorruption,
+  pruneStaleWorktrees,
+} from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
 import { buildArchitectEditorFrame, buildRepoTopologyContext, hasRepoMapContext } from "../lib/repo-map.mjs";
@@ -608,37 +613,6 @@ function resolveGitCandidates(env = process.env) {
   }
 
   if (process.platform === "win32") {
-    const recoveryState = {
-      recreated: false,
-      detectedIssues: new Set(),
-      phase: null,
-      worktreePath: null,
-    };
-    const persistRecoveryEvent = async (event) => {
-      const payload = {
-        reason: "poisoned_worktree",
-        branch,
-        taskId,
-        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
-        phase: event?.phase || recoveryState.phase || null,
-        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
-        error: event?.error || null,
-        outcome: event?.outcome || "healthy_noop",
-        timestamp: new Date().toISOString(),
-      };
-      const details = [
-        `outcome=${payload.outcome}`,
-        `branch=${payload.branch}`,
-        payload.taskId ? `taskId=${payload.taskId}` : "",
-        payload.phase ? `phase=${payload.phase}` : "",
-        payload.worktreePath ? `path=${payload.worktreePath}` : "",
-        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
-        payload.error ? `error=${payload.error}` : "",
-      ].filter(Boolean).join(" ");
-      ctx.log(node.id, `[worktree-recovery] ${details}`);
-      await recordWorktreeRecoveryEvent(repoRoot, payload);
-    };
-
     try {
       const whereOutput = execFileSync("where.exe", ["git"], {
         encoding: "utf8",
@@ -849,16 +823,149 @@ function isManagedBosunWorktree(worktreePath, repoRoot) {
   );
 }
 
+function resolveManagedWorktreeGatePolicy(repoRoot) {
+  try {
+    const config = loadConfig(["node", "bosun", "--repo-root", repoRoot]);
+    return config?.gates?.worktrees && typeof config.gates.worktrees === "object"
+      ? config.gates.worktrees
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldBootstrapManagedTaskWorktree(repoRoot, worktreePath) {
+  if (!isManagedBosunWorktree(worktreePath, repoRoot)) return false;
+  const gatePolicy = resolveManagedWorktreeGatePolicy(repoRoot);
+  if (!gatePolicy) return true;
+  return gatePolicy.requireBootstrap !== false || gatePolicy.requireReadiness !== false;
+}
+
+function ensureManagedTaskWorktreeReady(repoRoot, worktreePath) {
+  if (!shouldBootstrapManagedTaskWorktree(repoRoot, worktreePath)) return;
+  bootstrapWorktreeForPath(repoRoot, worktreePath);
+}
+
+function shouldEnforceManagedPushHook(repoRoot, worktreePath) {
+  if (!isManagedBosunWorktree(worktreePath, repoRoot)) return false;
+  const gatePolicy = resolveManagedWorktreeGatePolicy(repoRoot);
+  if (!gatePolicy) return true;
+  return gatePolicy.enforcePushHook !== false;
+}
+
 function deriveManagedWorktreeDirName(taskId, branch) {
-  const taskToken = String(taskId || "task")
-    .replace(/[^a-zA-Z0-9]/g, "")
-    .slice(0, 12)
-    || "task";
+  const taskToken = deriveManagedTaskToken(taskId);
   const branchHash = createHash("sha1")
     .update(String(branch || "branch"))
     .digest("hex")
     .slice(0, 10);
   return `task-${taskToken}-${branchHash}`;
+}
+
+function sanitizeRepairArtifactToken(value, maxLength = 48) {
+  return String(value || "")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, maxLength);
+}
+
+function createManagedWorktreeRepairArtifacts({
+  repoRoot,
+  worktreePath,
+  branch,
+  baseBranch,
+  taskId,
+  detectedIssues = [],
+  refreshError = "",
+}) {
+  if (!repoRoot || !worktreePath || !existsSync(worktreePath)) return null;
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const artifactId = [
+    timestamp,
+    sanitizeRepairArtifactToken(deriveManagedTaskToken(taskId), 18) || "task",
+    createHash("sha1")
+      .update(`${branch || "branch"}:${worktreePath}`)
+      .digest("hex")
+      .slice(0, 8),
+  ].join("-");
+  const artifactRoot = resolve(repoRoot, ".cache", "worktree-repair", artifactId);
+  const summaryPath = resolve(artifactRoot, "summary.json");
+  const patchPath = resolve(artifactRoot, "changes.patch");
+  const commitsPath = resolve(artifactRoot, "commits.patch");
+  const statusPath = resolve(artifactRoot, "status.txt");
+
+  try {
+    mkdirSync(artifactRoot, { recursive: true });
+  } catch {
+    return null;
+  }
+
+  const summary = {
+    taskId: String(taskId || "").trim() || null,
+    branch: String(branch || "").trim() || null,
+    baseBranch: String(baseBranch || "").trim() || null,
+    worktreePath,
+    artifactRoot,
+    createdAt: new Date().toISOString(),
+    detectedIssues: Array.isArray(detectedIssues)
+      ? detectedIssues.map((issue) => String(issue || "").trim()).filter(Boolean)
+      : [],
+    refreshError: String(refreshError || "").trim() || null,
+    head: null,
+    aheadBehind: null,
+    files: {
+      summaryPath,
+      patchPath: null,
+      commitsPath: null,
+      statusPath: null,
+    },
+  };
+
+  const runGit = (args, fallback = "") => {
+    try {
+      return execGitArgsSync(args, {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 15000,
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trimEnd();
+    } catch {
+      return fallback;
+    }
+  };
+
+  const statusText = runGit(["status", "--short", "--branch"]);
+  if (statusText) {
+    writeFileSync(statusPath, `${statusText}\n`);
+    summary.files.statusPath = statusPath;
+  }
+
+  const head = runGit(["rev-parse", "HEAD"]);
+  if (head) summary.head = head;
+
+  const aheadBehind = baseBranch
+    ? runGit(["rev-list", "--left-right", "--count", `HEAD...${baseBranch}`])
+    : "";
+  if (aheadBehind) summary.aheadBehind = aheadBehind;
+
+  if (baseBranch) {
+    const diffPatch = runGit(["diff", "--binary", `${baseBranch}...HEAD`]);
+    if (diffPatch) {
+      writeFileSync(patchPath, `${diffPatch}\n`);
+      summary.files.patchPath = patchPath;
+    }
+
+    const commitsPatch = runGit(["format-patch", "--stdout", `${baseBranch}..HEAD`]);
+    if (commitsPatch) {
+      writeFileSync(commitsPath, commitsPatch);
+      summary.files.commitsPath = commitsPath;
+    }
+  }
+
+  writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
+  return summary;
 }
 
 const WORKFLOW_TELEGRAM_ICON_MAP = Object.freeze({
@@ -11560,8 +11667,15 @@ function refreshManagedWorktreeReuse(
   baseBranch,
   baseBranchShort,
   fetchTimeout,
+  options = {},
 ) {
-  if (!existsSync(worktreePath) || shouldSkipGitRefreshForTests()) return existsSync(worktreePath);
+  if (!existsSync(worktreePath) || shouldSkipGitRefreshForTests()) {
+    return {
+      healthy: existsSync(worktreePath),
+      repairArtifacts: null,
+      detectedIssues: [],
+    };
+  }
   let refreshError = "";
   try {
     execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
@@ -11573,28 +11687,71 @@ function refreshManagedWorktreeReuse(
   } catch (error) {
     refreshError = formatExecSyncError(error);
   }
-  if (!existsSync(worktreePath)) return false;
+  if (!existsSync(worktreePath)) {
+    return {
+      healthy: false,
+      repairArtifacts: null,
+      detectedIssues: refreshError ? ["refresh_failed"] : [],
+    };
+  }
   if (hasUnresolvedGitOperation(worktreePath)) {
     const detail = refreshError ? ` (${refreshError})` : "";
     ctx.log(
       nodeId,
       `Managed worktree refresh left unresolved git state, recreating: ${worktreePath}${detail}`,
     );
+    const detectedIssues = ["unresolved_git_operation", ...(refreshError ? ["refresh_failed"] : [])];
+    const repairArtifacts = createManagedWorktreeRepairArtifacts({
+      repoRoot,
+      worktreePath,
+      branch: options.branch,
+      baseBranch,
+      taskId: options.taskId,
+      detectedIssues,
+      refreshError,
+    });
     cleanupBrokenManagedWorktree(repoRoot, worktreePath);
-    return false;
+    return {
+      healthy: false,
+      repairArtifacts,
+      detectedIssues,
+    };
   }
   const reasons = [];
+  const detectedIssues = [];
   if (hasTrackedGitChanges(worktreePath)) reasons.push("tracked changes after refresh");
+  if (hasTrackedGitChanges(worktreePath)) detectedIssues.push("tracked_changes_after_refresh");
   const behindCount = countCommitsBehindBase(worktreePath, baseBranch);
   if (behindCount > 0) reasons.push(`${behindCount} commit(s) behind ${baseBranch}`);
-  if (reasons.length === 0) return true;
+  if (behindCount > 0) detectedIssues.push("behind_base_after_refresh");
+  if (reasons.length === 0) {
+    return {
+      healthy: true,
+      repairArtifacts: null,
+      detectedIssues: [],
+    };
+  }
+  if (refreshError) detectedIssues.unshift("refresh_failed");
   if (refreshError) reasons.unshift(`refresh failed: ${refreshError}`);
   ctx.log(
     nodeId,
     `Managed worktree refresh did not yield a clean up-to-date branch, recreating: ${worktreePath} (${reasons.join("; ")})`,
   );
+  const repairArtifacts = createManagedWorktreeRepairArtifacts({
+    repoRoot,
+    worktreePath,
+    branch: options.branch,
+    baseBranch,
+    taskId: options.taskId,
+    detectedIssues,
+    refreshError,
+  });
   cleanupBrokenManagedWorktree(repoRoot, worktreePath);
-  return false;
+  return {
+    healthy: false,
+    repairArtifacts,
+    detectedIssues,
+  };
 }
 
 function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
@@ -12686,6 +12843,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       detectedIssues: new Set(),
       phase: null,
       worktreePath: null,
+      repairArtifacts: null,
     };
     const persistRecoveryEvent = async (event) => {
       const payload = {
@@ -12722,6 +12880,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
 
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
+    ctx.data.repoRoot = repoRoot;
     ctx.data.baseBranch = baseBranch;
 
     // Non-git directory — agent spawns directly
@@ -12792,7 +12951,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       }
 
       if (existsSync(worktreePath)) {
-        refreshManagedWorktreeReuse(
+        const refreshResult = refreshManagedWorktreeReuse(
           node.id,
           ctx,
           repoRoot,
@@ -12800,11 +12959,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
           baseBranch,
           baseBranchShort,
           fetchTimeout,
+          { taskId, branch },
         );
+        if (refreshResult?.repairArtifacts) {
+          recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+        }
         if (existsSync(worktreePath)) {
           ctx.data.worktreePath = worktreePath;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          ensureManagedTaskWorktreeReady(repoRoot, worktreePath);
           await persistRecoveryEvent({
             outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
             worktreePath,
@@ -12858,7 +13022,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
           isValidGitWorktreePath(existingBranchWorktree) &&
           !hasUnresolvedGitOperation(existingBranchWorktree)
         ) {
-          refreshManagedWorktreeReuse(
+          const refreshResult = refreshManagedWorktreeReuse(
             node.id,
             ctx,
             repoRoot,
@@ -12866,7 +13030,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
             baseBranch,
             baseBranchShort,
             fetchTimeout,
+            { taskId, branch },
           );
+          if (refreshResult?.repairArtifacts) {
+            recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+          }
         }
         if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
           isValidGitWorktreePath(existingBranchWorktree) &&
@@ -12875,6 +13043,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
           ctx.data.worktreePath = existingBranchWorktree;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          ensureManagedTaskWorktreeReady(repoRoot, existingBranchWorktree);
           await persistRecoveryEvent({
             outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
             worktreePath: existingBranchWorktree,
@@ -12944,7 +13113,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             isValidGitWorktreePath(existingBranchWorktree) &&
             !hasUnresolvedGitOperation(existingBranchWorktree)
           ) {
-            refreshManagedWorktreeReuse(
+            const refreshResult = refreshManagedWorktreeReuse(
               node.id,
               ctx,
               repoRoot,
@@ -12952,7 +13121,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
               baseBranch,
               baseBranchShort,
               fetchTimeout,
+              { taskId, branch },
             );
+            if (refreshResult?.repairArtifacts) {
+              recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+            }
           }
           if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
             isValidGitWorktreePath(existingBranchWorktree) &&
@@ -12961,6 +13134,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
+            ensureManagedTaskWorktreeReady(repoRoot, existingBranchWorktree);
             await persistRecoveryEvent({
               outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
               worktreePath: existingBranchWorktree,
@@ -12986,7 +13160,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
         }
       }
       if (attachedExistingBranch) {
-        refreshManagedWorktreeReuse(
+        const refreshResult = refreshManagedWorktreeReuse(
           node.id,
           ctx,
           repoRoot,
@@ -12994,7 +13168,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
           baseBranch,
           baseBranchShort,
           fetchTimeout,
+          { taskId, branch },
         );
+        if (refreshResult?.repairArtifacts) {
+          recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+        }
         if (!existsSync(worktreePath)) {
           notePoisonedWorktree("post-pull", worktreePath, ["refresh_conflict"]);
           throw new Error(
@@ -13009,6 +13187,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.data.worktreePath = worktreePath;
       ctx.data._worktreeCreated = true;
       ctx.data._worktreeManaged = true;
+      ensureManagedTaskWorktreeReady(repoRoot, worktreePath);
       await persistRecoveryEvent({
         outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
         worktreePath,
@@ -13053,6 +13232,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
         autoRecoverDelayMs,
         retryAt,
         blockedReason,
+        repairArtifacts: retryable ? null : recoveryState.repairArtifacts,
         recoveryNote: retryable || !retryAt ? "" : ` — blocked until ${retryAt}`,
       };
     }
@@ -13320,6 +13500,27 @@ registerBuiltinNodeType("action.recover_worktree", {
       },
     };
     const result = await getNodeType("action.release_worktree")?.execute?.(releaseNode, ctx);
+    const sweepResult = await getNodeType("action.sweep_task_worktrees")?.execute?.(
+      {
+        id: `${node.id}:sweep`,
+        type: "action.sweep_task_worktrees",
+        config: {
+          repoRoot,
+          taskId,
+          timeout: removeTimeout,
+        },
+      },
+      ctx,
+      engine,
+    );
+    let pruneResult = null;
+    if (shouldPrune) {
+      try {
+        pruneResult = await pruneStaleWorktrees(repoRoot);
+      } catch (err) {
+        ctx.log(node.id, `Worktree prune warning: ${err?.message || err}`);
+      }
+    }
     ctx.data.worktreePath = "";
     return {
       success: result?.success !== false,
@@ -13327,6 +13528,8 @@ registerBuiltinNodeType("action.recover_worktree", {
       worktreePath,
       released: result?.released === true,
       skipped: result?.skipped === true,
+      removedWorktrees: Array.isArray(sweepResult?.removed) ? sweepResult.removed : [],
+      prunedOrphans: Number(pruneResult?.pruned || 0),
       warning: result?.warning,
     };
   },
@@ -13334,19 +13537,66 @@ registerBuiltinNodeType("action.recover_worktree", {
 
 registerBuiltinNodeType("action.sweep_task_worktrees", {
   describe: () =>
-    "Sweep stale managed task worktrees for a task by pruning git worktree metadata.",
+    "Sweep managed task worktrees for a task by removing matching .bosun/worktrees entries and pruning git metadata.",
   schema: {
     type: "object",
     properties: {
       repoRoot: { type: "string", description: "Repository root" },
       taskId: { type: "string", description: "Task ID (owner)" },
+      maxAgeMs: { type: "number", default: 43200000, description: "Fallback max age in ms when taskId is omitted" },
       timeout: { type: "number", default: 15000, description: "Timeout for git worktree prune (ms)" },
     },
   },
   async execute(node, ctx, engine) {
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
     const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const maxAgeMs = Number(node.config?.maxAgeMs ?? 43200000);
     const timeout = Number(node.config?.timeout ?? 15000);
+    const managedRoot = resolve(repoRoot, ".bosun", "worktrees");
+    const removed = [];
+    const errors = [];
+    let scanned = 0;
+
+    try {
+      if (existsSync(managedRoot)) {
+        const entries = readdirSync(managedRoot);
+        const taskToken = taskId ? deriveManagedTaskToken(taskId) : "";
+        const now = Date.now();
+        for (const entry of entries) {
+          const entryPath = resolve(managedRoot, entry);
+          if (!existsSync(entryPath)) continue;
+          try {
+            const stats = statSync(entryPath);
+            if (!stats.isDirectory()) continue;
+            scanned += 1;
+            const matchesTask = taskToken && entry.includes(taskToken);
+            const isStale = !taskToken && Number.isFinite(stats.mtimeMs)
+              ? now - stats.mtimeMs > maxAgeMs
+              : false;
+            if (!matchesTask && !isStale) continue;
+            try {
+              execGitArgsSync(["worktree", "remove", String(entryPath), "--force"], {
+                cwd: repoRoot,
+                encoding: "utf8",
+                timeout,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+            } catch {
+              // Orphaned directories may no longer be registered; fall back to rmSync below.
+            }
+            if (existsSync(entryPath)) {
+              rmSync(entryPath, { recursive: true, force: true });
+            }
+            removed.push(entry);
+          } catch (err) {
+            errors.push({ entry, error: String(err?.message || err) });
+          }
+        }
+      }
+    } catch (err) {
+      errors.push({ entry: managedRoot, error: String(err?.message || err) });
+    }
+
     try {
       execGitArgsSync(["worktree", "prune"], {
         cwd: repoRoot,
@@ -13355,11 +13605,14 @@ registerBuiltinNodeType("action.sweep_task_worktrees", {
         stdio: ["ignore", "pipe", "pipe"],
       });
       fixGitConfigCorruption(repoRoot);
-      ctx.log(node.id, `Swept task worktrees for ${taskId || "(unknown task)"}`);
-      return { success: true, taskId, swept: true };
+      ctx.log(
+        node.id,
+        `Swept task worktrees for ${taskId || "(unknown task)"}: removed=${removed.length}, scanned=${scanned}`,
+      );
+      return { success: true, taskId, swept: true, removed, scanned, errors };
     } catch (err) {
       ctx.log(node.id, `Task worktree sweep warning: ${err.message}`);
-      return { success: true, taskId, swept: false, warning: err.message };
+      return { success: true, taskId, swept: false, removed, scanned, errors, warning: err.message };
     }
   },
 });
@@ -14633,9 +14886,12 @@ registerBuiltinNodeType("action.push_branch", {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
     const branch = cfgOrCtx(node, ctx, "branch", "");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || ctx.data.repoRoot || process.cwd();
     const remote = node.config?.remote || "origin";
     const forceWithLease = node.config?.forceWithLease !== false;
-    const skipHooks = node.config?.skipHooks !== false;
+    const skipHooks = typeof node.config?.skipHooks === "boolean"
+      ? node.config.skipHooks
+      : !shouldEnforceManagedPushHook(repoRoot, worktreePath);
     const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
     const emptyDiffGuard = node.config?.emptyDiffGuard !== false;
     const syncMain = node.config?.syncMainForModuleBranch === true;

@@ -305,6 +305,22 @@ function getTaskRuntimeSnapshot(task) {
   return task?.runtimeSnapshot || task?.meta?.runtimeSnapshot || null;
 }
 
+function getTaskSharedReviewIncident(task) {
+  if (String(task?.status || "").trim().toLowerCase() !== "inreview") return null;
+  const reviewHealth = task?.meta?.reviewHealth;
+  if (!reviewHealth || typeof reviewHealth !== "object") return null;
+  if (String(reviewHealth.failureScope || "").trim().toLowerCase() !== "shared") return null;
+  const failingJobs = Array.isArray(reviewHealth.failingJobs)
+    ? reviewHealth.failingJobs.map((job) => String(job || "").trim()).filter(Boolean)
+    : [];
+  return {
+    label: "SHARED CI",
+    detail: failingJobs.length > 0
+      ? `Shared CI incident on base branch: ${truncate(failingJobs.join(", "), 72)}`
+      : "Shared CI incident on base branch.",
+  };
+}
+
 function getTaskBlockedPreview(task) {
   const direct = String(
     task?.blockedReason ||
@@ -677,6 +693,7 @@ function KanbanCard({ task, onOpen }) {
   const dueDate = getTaskDueDate(task);
   const blockedPreview = getTaskBlockedPreview(task);
   const prLinkage = getPrimaryTaskPrLinkage(task);
+  const sharedReviewIncident = getTaskSharedReviewIncident(task);
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
   const hasAgent = Boolean(
@@ -731,10 +748,18 @@ function KanbanCard({ task, onOpen }) {
           ${runtime?.state === "queued" && html`
             <${Chip} label="QUEUED" size="small" color="warning" sx=${{ height: 18, fontSize: '0.65rem' }} />
           `}
+          ${sharedReviewIncident && html`
+            <${Chip} label=${sharedReviewIncident.label} size="small" color="warning" variant="outlined" sx=${{ height: 18, fontSize: '0.65rem', fontWeight: 700 }} />
+          `}
         </${Stack}>
         <${Typography} variant="body2" fontWeight=${500}>${truncate(task.title || "(untitled)", 80)}</${Typography}>
         ${task.description && html`
           <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>${truncate(task.description, 72)}</${Typography}>
+        `}
+        ${sharedReviewIncident && html`
+          <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-warning, #f59e0b)', fontWeight: 600 }}>
+            ${sharedReviewIncident.detail}
+          </${Typography}>
         `}
         ${String(task?.status || "").toLowerCase() === "blocked" && html`
           <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-error, #ef4444)', fontWeight: 600 }}>

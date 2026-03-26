@@ -683,6 +683,9 @@ function resolveWorktreeBootstrapConfig(configData = {}) {
       1000,
       60 * 60 * 1000,
     ),
+    setupScript: String(
+      process.env.WORKTREE_BOOTSTRAP_SETUP_SCRIPT ?? raw.setupScript ?? "",
+    ).trim(),
     commandsByStack: Object.freeze(commandsByStack),
     sharedPathsByStack: freezeNestedStringListMap(raw.sharedPathsByStack),
   });
@@ -2111,10 +2114,21 @@ export function loadConfig(argv = process.argv, options = {}) {
     gatesData.execution && typeof gatesData.execution === "object"
       ? gatesData.execution
       : {};
+  const gatesWorktreesData =
+    gatesData.worktrees && typeof gatesData.worktrees === "object"
+      ? gatesData.worktrees
+      : {};
   const gatesRuntimeData =
     gatesData.runtime && typeof gatesData.runtime === "object"
       ? gatesData.runtime
       : {};
+  const hasExplicitWorktreeBootstrapEnabled =
+    configData.worktreeBootstrap &&
+    typeof configData.worktreeBootstrap === "object" &&
+    Object.prototype.hasOwnProperty.call(configData.worktreeBootstrap, "enabled");
+  const managedWorktreeDefault = hasExplicitWorktreeBootstrapEnabled
+    ? worktreeBootstrap.enabled
+    : true;
   const repoVisibilityRaw = String(
     process.env.BOSUN_GATES_REPO_VISIBILITY ||
       gatesPrsData.repoVisibility ||
@@ -2211,6 +2225,23 @@ export function loadConfig(argv = process.argv, options = {}) {
       )
         .trim()
         .toLowerCase(),
+    }),
+    worktrees: Object.freeze({
+      requireBootstrap: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_REQUIRE_BOOTSTRAP ??
+          gatesWorktreesData.requireBootstrap,
+        managedWorktreeDefault,
+      ),
+      requireReadiness: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_REQUIRE_READINESS ??
+          gatesWorktreesData.requireReadiness,
+        managedWorktreeDefault,
+      ),
+      enforcePushHook: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_ENFORCE_PUSH_HOOK ??
+          gatesWorktreesData.enforcePushHook,
+        true,
+      ),
     }),
     runtime: Object.freeze({
       enforceBacklog: isEnvEnabled(

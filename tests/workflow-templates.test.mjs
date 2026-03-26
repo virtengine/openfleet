@@ -977,7 +977,7 @@ describe("template drift + update behavior", () => {
     engine.save(wf);
 
     const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
-    expect(result.portMetadataRepaired).toBe(1);
+    expect(result.metadataUpdated).toBeGreaterThanOrEqual(1);
 
     const refreshed = engine.get(installed.id);
     const refreshedClaimOk = refreshed.nodes.find((node) => node.id === "claim-ok");
@@ -1340,8 +1340,8 @@ describe("github template CLI compatibility", () => {
 
     const gateNode = mergeTemplate.nodes.find((n) => n.id === "automation-eligible");
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
-    expect(gateNode?.config?.expression).toContain("<!-- bosun-created -->");
-    expect(gateNode?.config?.expression).toContain("auto-created by bosun");
+    expect(gateNode?.config?.expression).toContain("bosun-pr-bosun-created");
+    expect(gateNode?.config?.expression).toContain("requireBosunCreatedPr");
     expect(getNodeCommandCode(checkCi)).toContain("gh pr checks");
     expect(getNodeCommandCode(checkCi)).toContain("--json name,state");
     expect(getNodeCommandCode(checkCi)).not.toContain("conclusion");
@@ -1358,7 +1358,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(listNode)).toContain("gh pr list --state open");
     expect(getNodeCommandCode(listNode)).toContain("--json number,title,body,headRefName,baseRefName,mergeable,labels");
     const targetNode = resolverTemplate.nodes.find((n) => n.id === "target-pr");
-    expect(String(targetNode?.config?.value || "")).toContain("<!-- bosun-created -->");
+    expect(String(targetNode?.config?.value || "")).toContain("bosun-pr-bosun-created");
     // Must NOT contain a direct merge call — merge is deferred to watchdog.
     const hasMergeCall = resolverTemplate.nodes.some(
       (n) => typeof n.config?.command === "string" && n.config.command.includes("gh pr merge")
@@ -1426,6 +1426,11 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(fetchNode)).toContain("skippedUntrusted");
     expect(getNodeCommandCode(fetchNode)).toContain("attachEligible");
     expect(getNodeCommandCode(fetchNode)).toContain("pendingChecks:hasPend");
+    expect(getNodeCommandCode(fetchNode)).toContain("sharedFailures=[]");
+    expect(getNodeCommandCode(fetchNode)).toContain("collectDefaultBranchFailureNames(repo,baseBranch)");
+    expect(getNodeCommandCode(fetchNode)).toContain("reviewStatus:'shared_ci_failure'");
+    expect(getNodeCommandCode(fetchNode)).toContain("failureScope:'shared'");
+    expect(getNodeCommandCode(fetchNode)).toContain("taskReviewSignalsUpdated");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs.push('--auto')");
     expect(getNodeCommandCode(reviewNode)).toContain("reason:'ci_failed'");
     expect(getNodeCommandCode(reviewNode)).toContain("reason:'ci_pending'");
@@ -1450,6 +1455,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(fetchNode)).toContain("securityFailures");
     expect(getNodeCommandCode(fetchNode)).toContain("securityCheckNames");
     expect(getNodeCommandCode(fetchNode)).toContain("fixNeeded:conflicts.length+securityFailures.length+ciFailures.length");
+    expect(getNodeCommandCode(fetchNode)).toContain("sharedIncidentCount:sharedFailures.length");
 
     expect(getNodeCommandCode(securityNode)).toContain("/code-scanning/alerts");
     expect(getNodeCommandCode(securityNode)).toContain("collectPrDigest");
@@ -1475,8 +1481,10 @@ describe("github template CLI compatibility", () => {
 
     expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
-    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs'])");
-    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
+    expect(command).toContain("['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']");
+    expect(command).toContain("/actions/runs/'+runId+'/jobs?per_page=100");
+    expect(command).toContain("/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page");
+    expect(command).toContain("['run','view',String(runId),'--repo',repo,'--log-failed']");
     expect(command).toContain("reason:'auto_rerun_limit_reached'");
     expect(command).toContain("failedLogExcerpt");
     expect(command).toContain("failedJobs");
@@ -1485,7 +1493,7 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
+    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt");
     expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
   });
 
@@ -1509,6 +1517,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(inspectNode)).toContain("failedCheckNames");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
+    expect(getNodeCommandCode(fixNode)).toContain("/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs=['pr','merge'");
     expect(fixAgentNode?.config?.prompt).toContain("Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks");

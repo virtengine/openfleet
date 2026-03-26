@@ -43,6 +43,9 @@ const ENV_KEYS = [
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "GEMINI_SDK_DISABLED",
+  "BOSUN_GATES_WORKTREE_REQUIRE_BOOTSTRAP",
+  "BOSUN_GATES_WORKTREE_REQUIRE_READINESS",
+  "BOSUN_GATES_WORKTREE_ENFORCE_PUSH_HOOK",
   "WORKFLOW_RECOVERY_MAX_ATTEMPTS",
   "WORKFLOW_RECOVERY_ESCALATION_THRESHOLD",
   "WORKFLOW_RECOVERY_BACKOFF_BASE_MS",
@@ -142,6 +145,147 @@ describe("loadConfig validation and edge cases", () => {
       baseBackoffMs: 1500,
       maxBackoffMs: 45_000,
       jitterRatio: 0.35,
+    });
+  });
+
+  it("derives managed worktree gate defaults from worktree bootstrap", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify(
+        {
+          worktreeBootstrap: {
+            enabled: true,
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.gates.worktrees).toEqual({
+      requireBootstrap: true,
+      requireReadiness: true,
+      enforcePushHook: true,
+    });
+  });
+
+  it("uses explicit bootstrap disablement for managed worktree gate defaults", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify(
+        {
+          worktreeBootstrap: {
+            enabled: false,
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.gates.worktrees).toEqual({
+      requireBootstrap: false,
+      requireReadiness: false,
+      enforcePushHook: true,
+    });
+  });
+
+  it("allows managed worktree gate overrides independent of bootstrap defaults", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify(
+        {
+          worktreeBootstrap: {
+            enabled: true,
+          },
+          gates: {
+            worktrees: {
+              requireBootstrap: false,
+              requireReadiness: true,
+              enforcePushHook: true,
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.gates.worktrees).toEqual({
+      requireBootstrap: false,
+      requireReadiness: true,
+      enforcePushHook: true,
+    });
+  });
+
+  it("applies env overrides to managed worktree gate policy", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify(
+        {
+          worktreeBootstrap: {
+            enabled: false,
+          },
+          gates: {
+            worktrees: {
+              requireBootstrap: false,
+              requireReadiness: false,
+              enforcePushHook: false,
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    process.env.BOSUN_GATES_WORKTREE_REQUIRE_BOOTSTRAP = "true";
+    process.env.BOSUN_GATES_WORKTREE_REQUIRE_READINESS = "1";
+    process.env.BOSUN_GATES_WORKTREE_ENFORCE_PUSH_HOOK = "yes";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.gates.worktrees).toEqual({
+      requireBootstrap: true,
+      requireReadiness: true,
+      enforcePushHook: true,
     });
   });
 
@@ -314,6 +458,11 @@ describe("loadConfig validation and edge cases", () => {
     expect(typeof config.workflowRecovery).toBe("object");
     expect(typeof config.workflowRecovery.maxAttempts).toBe("number");
     expect(typeof config.workflowRecovery.escalationWarnAfterAttempts).toBe("number");
+    expect(typeof config.gates).toBe("object");
+    expect(typeof config.gates.worktrees).toBe("object");
+    expect(typeof config.gates.worktrees.requireBootstrap).toBe("boolean");
+    expect(typeof config.gates.worktrees.requireReadiness).toBe("boolean");
+    expect(typeof config.gates.worktrees.enforcePushHook).toBe("boolean");
     expect(Array.isArray(config.triggerSystem.templates)).toBe(true);
     expect(typeof config.workflowDefaults).toBe("object");
     expect(Array.isArray(config.workflows)).toBe(true);
