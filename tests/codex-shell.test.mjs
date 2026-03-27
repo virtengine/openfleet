@@ -222,6 +222,10 @@ describe("codex-shell stream safeguards", () => {
     await execCodexPrompt("test custom provider", { timeoutMs: 1000 });
 
     const ctorOptions = mockCodexCtor.mock.calls.at(-1)?.[0] || {};
+    expect(ctorOptions).toBeDefined();
+    expect(ctorOptions.provider).toBeDefined();
+    expect(ctorOptions.provider).not.toBe("openai");
+    expect(ctorOptions.provider).not.toBe("azure");
   });
   it("caps retained items and truncates oversized item payloads", async () => {
     process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN = "1";

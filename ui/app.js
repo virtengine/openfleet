@@ -1929,15 +1929,13 @@ function App() {
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
   const initialPanelLayout = getStoredPanelLayout();
-  const [sidebarWidth, setSidebarWidth] = useState(initialPanelLayout.sidebarWidth);
+  const [sidebarWidth] = useState(initialPanelLayout.sidebarWidth);
   const [railWidth, setRailWidth] = useState(initialPanelLayout.railWidth);
   const [inspectorWidth, setInspectorWidth] = useState(initialPanelLayout.inspectorWidth);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialPanelLayout.sidebarCollapsed);
   const [railCollapsed, setRailCollapsed] = useState(initialPanelLayout.railCollapsed);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(initialPanelLayout.inspectorCollapsed);
   const railWidthBeforeCollapseRef = useRef(initialPanelLayout.railWidth || DEFAULT_RAIL_WIDTH);
-  const sidebarWidthBeforeCollapseRef = useRef(initialPanelLayout.sidebarWidth || DEFAULT_SIDEBAR_WIDTH);
-  const inspectorWidthBeforeCollapseRef = useRef(initialPanelLayout.inspectorWidth || DEFAULT_INSPECTOR_WIDTH);
 
   const clamp = useCallback((value, min, max) => {
     if (!Number.isFinite(value)) return min;
