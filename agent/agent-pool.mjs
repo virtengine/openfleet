@@ -267,6 +267,14 @@ async function maybeCompressResultItems(
 }
 
 function resolveCodexStreamSafety(totalTimeoutMs) {
+  const minSilentStreamFraction =
+    typeof MIN_SILENT_STREAM_FRACTION === "number" && Number.isFinite(MIN_SILENT_STREAM_FRACTION)
+      ? MIN_SILENT_STREAM_FRACTION
+      : 0.25;
+  const maxSilentStreamGraceMs =
+    typeof MAX_SILENT_STREAM_GRACE_MS === "number" && Number.isFinite(MAX_SILENT_STREAM_GRACE_MS)
+      ? MAX_SILENT_STREAM_GRACE_MS
+      : 30_000;
   const streamCfg = getInternalExecutorStreamConfig();
   const firstEventRaw =
     process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
@@ -297,8 +305,8 @@ function resolveCodexStreamSafety(totalTimeoutMs) {
       Math.max(
         configuredFirstEventMs,
         Math.min(
-          Math.trunc(budgetMs * MIN_SILENT_STREAM_FRACTION),
-          MAX_SILENT_STREAM_GRACE_MS,
+          Math.trunc(budgetMs * minSilentStreamFraction),
+          maxSilentStreamGraceMs,
         ),
       ),
     );

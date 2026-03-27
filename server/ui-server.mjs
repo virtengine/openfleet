@@ -5302,6 +5302,10 @@ function resolveUiConfigDir() {
     try { mkdirSync(fromConfigPath, { recursive: true }); } catch { /* ok */ }
     return fromConfigPath;
   }
+  if (sandbox && process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG !== "1") {
+    try { mkdirSync(sandbox.configDir, { recursive: true }); } catch { /* ok */ }
+    return sandbox.configDir;
+  }
   if (String(process.env.REPO_ROOT || "").trim()) {
     const repoLocalConfigDirCandidates = [
       resolve(repoRoot, ".bosun"),
@@ -23671,5 +23675,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
 

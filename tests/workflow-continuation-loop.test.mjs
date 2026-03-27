@@ -158,6 +158,47 @@ describe("continuation-loop template integration", () => {
     expect(ctx.getNodeStatus("end-escalated")).toBe("completed");
     expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(3);
   }, 15000);
+
+  it("treats bare continued responses as an immediate stuck signal when no progress changes", async () => {
+    const kanban = {
+      getTask: vi.fn(async (taskId) => ({
+        id: taskId,
+        title: `Task ${taskId}`,
+        externalStatus: "inprogress",
+      })),
+    };
+    const launchEphemeralThread = vi.fn(async () => ({
+      success: true,
+      output: "continued",
+      threadId: "session-continued-loop",
+    }));
+    makeTmpEngine({
+      kanban,
+      agentPool: { launchEphemeralThread },
+    });
+
+    const installed = installTemplate("template-continuation-loop", engine, {
+      taskId: "TASK-202",
+      worktreePath: tmpDir,
+      pollIntervalMs: 0,
+      maxTurns: 3,
+      terminalStates: ["done", "cancelled"],
+      stuckThresholdMs: 3600000,
+      onStuck: "pause",
+    });
+
+    const ctx = await engine.execute(installed.id, {
+      taskId: "TASK-202",
+      sessionId: "session-continued-loop",
+      worktreePath: tmpDir,
+    }, { force: true });
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("emit-stuck")?.payload?.placeholderResponse).toBe(true);
+    expect(ctx.getNodeStatus("end-paused")).toBe("completed");
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+  }, 15000);
+
   it("injects issue-advisor guidance into planner feedback for downstream continuation prompts", async () => {
     makeTmpEngine();
     const ctxLike = {

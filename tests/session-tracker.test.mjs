@@ -53,6 +53,27 @@ describe("session-tracker", () => {
       expect(session.endedAt).toBeGreaterThan(0);
     });
 
+    it("resets turnCount on new session start while preserving final turn count on completion", () => {
+      tracker.startSession("task-1", "First Run");
+      tracker.recordEvent("task-1", {
+        role: "assistant",
+        content: "First response",
+        timestamp: "2026-03-27T10:00:00.000Z",
+      });
+      tracker.endSession("task-1", "completed");
+
+      const completed = tracker.getSession("task-1");
+      expect(completed?.turnCount).toBe(1);
+      expect(completed?.status).toBe("completed");
+
+      tracker.startSession("task-1", "Second Run");
+
+      const restarted = tracker.getSession("task-1");
+      expect(restarted?.turnCount).toBe(0);
+      expect(restarted?.status).toBe("active");
+      expect(restarted?.messages).toEqual([]);
+    });
+
     it("replaces existing session", () => {
       tracker.startSession("task-1", "First");
       tracker.recordEvent("task-1", {
@@ -517,6 +538,48 @@ describe("session-tracker", () => {
       expect(session.turnCount).toBe(2);
       expect(session.messages.filter((msg) => msg.role === "user").map((msg) => msg.turnIndex)).toEqual([0, 1]);
       expect(session.messages.filter((msg) => msg.role === "assistant").map((msg) => msg.turnIndex)).toEqual([0, 1]);
+      expect(Array.isArray(session.turns)).toBe(true);
+      expect(session.turns).toHaveLength(2);
+      expect(session.turns[0]).toEqual(expect.objectContaining({
+        turnIndex: 0,
+        status: "completed",
+      }));
+      expect(session.turns[1]).toEqual(expect.objectContaining({
+        turnIndex: 1,
+        status: "completed",
+      }));
+      expect(session.turns[0].durationMs).toBeGreaterThanOrEqual(0);
+      expect(session.turns[1].durationMs).toBeGreaterThanOrEqual(3000);
+    });
+
+    it("captures token usage on turn timeline entries", () => {
+      tracker.startSession("task-usage", "Usage timeline");
+      tracker.recordEvent("task-usage", {
+        role: "user",
+        content: "Summarize the diff",
+        timestamp: "2026-03-27T11:00:00.000Z",
+      });
+      tracker.recordEvent("task-usage", {
+        role: "assistant",
+        content: "Summary ready",
+        timestamp: "2026-03-27T11:00:04.000Z",
+        meta: {
+          usage: {
+            inputTokens: 120,
+            outputTokens: 45,
+            totalTokens: 165,
+          },
+        },
+      });
+
+      const session = tracker.getSession("task-usage");
+      expect(session.turnCount).toBe(1);
+      expect(session.turns?.[0]).toEqual(expect.objectContaining({
+        turnIndex: 0,
+        status: "completed",
+        durationMs: 4000,
+      }));
+      expect(tracker.listAllSessions().find((entry) => entry.id === "task-usage")?.turns?.[0]?.durationMs).toBe(4000);
     });
 
     it("tracks stats", () => {
@@ -684,6 +747,36 @@ describe("session-tracker", () => {
           "Patched the session sidebar and validated the state flow.",
           "npm test -- tests/session-tracker.test.mjs",
         ]);
+        reloadedTracker.destroy();
+      } finally {
+        rmSync(persistDir, { recursive: true, force: true });
+      }
+    });
+
+    it("preserves and lists disk-backed sessions beyond the in-memory cap", () => {
+      const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
+      try {
+        const writer = createSessionTracker({ maxMessages: 5, persistDir });
+        for (let index = 0; index < 105; index += 1) {
+          const id = `hist-${String(index).padStart(3, "0")}`;
+          writer.createSession({ id, type: "primary", metadata: { workspaceId: "ws-main" } });
+          writer.recordEvent(id, {
+            role: "assistant",
+            content: `Historic session ${index}`,
+            timestamp: new Date(Date.now() + index * 1000).toISOString(),
+          });
+          writer.updateSessionStatus(id, "completed");
+        }
+        writer.flush();
+        writer.destroy();
+
+        expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(105);
+
+        const reloadedTracker = createSessionTracker({ maxMessages: 5, persistDir });
+        expect(reloadedTracker.listAllSessions()).toHaveLength(105);
+        expect(reloadedTracker.getSessionMessages("hist-000")?.id).toBe("hist-000");
+        expect(reloadedTracker.getSessionMessages("hist-104")?.id).toBe("hist-104");
+        expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(105);
         reloadedTracker.destroy();
       } finally {
         rmSync(persistDir, { recursive: true, force: true });

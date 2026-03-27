@@ -195,6 +195,8 @@ describe("ui-server TUI websocket bridge", () => {
     expect(validateSessions(startedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
     expect(validateSessionEvent(sessionEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
     expect(validateSessions(sessionsUpdate.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
+    expect(sessionEvent.payload?.session?.turnCount).toBe(1);
+    expect(sessionsUpdate.payload.find((session) => session.taskId === "task-1")?.turnCount).toBe(1);
     expect(validateSessionEvent(endedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
     expect(validateSessions(endedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
 

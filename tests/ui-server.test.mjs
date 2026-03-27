@@ -81,13 +81,18 @@ describe("ui-server mini app", () => {
     "OPENAI_API_KEY",
     "STATUS_FILE",
     "BOSUN_ENV_NO_OVERRIDE",
+    "BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG",
   ];
   let envSnapshot = {};
+  let testSandboxRoot = null;
 
   beforeEach(async () => {
     envSnapshot = Object.fromEntries(
       ENV_KEYS.map((key) => [key, process.env[key]]),
     );
+    testSandboxRoot = mkdtempSync(join(tmpdir(), "bosun-ui-server-test-"));
+    const { ensureTestRuntimeSandbox } = await import("../infra/test-runtime.mjs");
+    const sandbox = ensureTestRuntimeSandbox({ rootDir: testSandboxRoot, force: true });
     // Prevent loadConfig() → loadDotEnv() from overriding test-controlled env
     // vars with values from the user's on-disk .env file.
     process.env.BOSUN_ENV_NO_OVERRIDE = "1";
@@ -100,6 +105,14 @@ describe("ui-server mini app", () => {
     process.env.GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE = "true";
     process.env.GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD = "2";
     process.env.KANBAN_BACKEND = "internal";
+    process.env.BOSUN_CONFIG_PATH = join(sandbox.configDir, "bosun.config.json");
+    process.env.BOSUN_HOME = sandbox.configDir;
+    process.env.BOSUN_DIR = sandbox.configDir;
+    process.env.CODEX_MONITOR_HOME = sandbox.configDir;
+    process.env.CODEX_MONITOR_DIR = sandbox.configDir;
+    delete process.env.REPO_ROOT;
+    delete process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG;
+    vi.resetModules();
 
     const { setKanbanBackend } = await import("../kanban/kanban-adapter.mjs");
     setKanbanBackend("internal");
@@ -108,9 +121,14 @@ describe("ui-server mini app", () => {
   afterEach(async () => {
     const mod = await import("../server/ui-server.mjs");
     mod.stopTelegramUiServer();
+    vi.resetModules();
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
       else process.env[key] = envSnapshot[key];
+    }
+    if (testSandboxRoot) {
+      rmSync(testSandboxRoot, { recursive: true, force: true });
+      testSandboxRoot = null;
     }
   });
 
@@ -1568,6 +1586,7 @@ describe("ui-server mini app", () => {
     const previousRepoRoot = process.env.REPO_ROOT;
     const previousBosunHome = process.env.BOSUN_HOME;
     const previousBosunDir = process.env.BOSUN_DIR;
+    const previousTestRepoLocalOverride = process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG;
     const repoRootDir = mkdtempSync(join(tmpdir(), "bosun-repo-local-config-"));
     const globalHomeDir = mkdtempSync(join(tmpdir(), "bosun-global-home-"));
     const repoConfigDir = join(repoRootDir, ".bosun");
@@ -1624,6 +1643,7 @@ describe("ui-server mini app", () => {
     process.env.REPO_ROOT = repoRootDir;
     process.env.BOSUN_HOME = globalHomeDir;
     process.env.BOSUN_DIR = globalHomeDir;
+    process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG = "1";
     delete process.env.BOSUN_CONFIG_PATH;
     vi.resetModules();
 
@@ -1663,6 +1683,8 @@ describe("ui-server mini app", () => {
       else process.env.BOSUN_HOME = previousBosunHome;
       if (previousBosunDir === undefined) delete process.env.BOSUN_DIR;
       else process.env.BOSUN_DIR = previousBosunDir;
+      if (previousTestRepoLocalOverride === undefined) delete process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG;
+      else process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG = previousTestRepoLocalOverride;
       rmSync(repoRootDir, { recursive: true, force: true });
       rmSync(globalHomeDir, { recursive: true, force: true });
     }
@@ -3633,6 +3655,10 @@ describe("ui-server mini app", () => {
       "utf8",
     );
     process.env.BOSUN_CONFIG_PATH = configPath;
+    process.env.BOSUN_HOME = tmpDir;
+    process.env.BOSUN_DIR = tmpDir;
+    process.env.CODEX_MONITOR_HOME = tmpDir;
+    process.env.CODEX_MONITOR_DIR = tmpDir;
 
     const taskStore = await import("../task/task-store.mjs");
     const originalStorePath = taskStore.getStorePath();
@@ -3652,6 +3678,8 @@ describe("ui-server mini app", () => {
         skipAutoOpen: true,
       });
       const port = server.address().port;
+      taskStore.configureTaskStore({ storePath });
+      taskStore.loadStore();
 
       const response = await fetch(`http://127.0.0.1:${port}/api/tasks`);
       const json = await response.json();
@@ -4886,8 +4914,4 @@ describe("ui-server mini app", () => {
   });
 
 });
-
-
-
-
 

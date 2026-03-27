@@ -1605,8 +1605,20 @@ describe("github template CLI compatibility", () => {
     expect(lifecycleTemplate.edges.find((e) => e.source === "handoff-pr-progressor" && e.target === "log-success")).toBeDefined();
     expect(lifecycleTemplate.edges.find((e) => e.source === "set-inreview-stolen" && e.target === "handoff-pr-progressor-stolen")).toBeDefined();
     expect(finalizationTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
-    expect(repairTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(repairTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "clear-repair-blocked-success")).toBeDefined();
+    expect(repairTemplate.edges.find((e) => e.source === "clear-repair-blocked-success" && e.target === "handoff-pr-progressor")).toBeDefined();
     expect(batchPrTemplate.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+  });
+
+  it("task lifecycle dispatches repair workflow for blocked non-retryable worktree failures", () => {
+    const lifecycleTemplate = getTemplate("template-task-lifecycle");
+    const repairDispatch = lifecycleTemplate.nodes.find((n) => n.id === "dispatch-wt-repair");
+
+    expect(repairDispatch?.type).toBe("action.execute_workflow");
+    expect(repairDispatch?.config?.workflowId).toBe("template-task-repair-worktree");
+    expect(repairDispatch?.config?.mode).toBe("dispatch");
+    expect(lifecycleTemplate.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "dispatch-wt-repair")).toBeDefined();
+    expect(lifecycleTemplate.edges.find((e) => e.source === "dispatch-wt-repair" && e.target === "release-slot-wt-failed")).toBeDefined();
   });
 
   it("PR watchdog and GitHub sync pass node outputs via template interpolation env vars", () => {
