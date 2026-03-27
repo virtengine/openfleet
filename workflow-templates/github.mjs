@@ -417,7 +417,8 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
         "  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);" +
         "  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';" +
         "  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];" +
-        "  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);" +
+        "  const readBody = (pr) => String(pr?.body || '');" +
+        "  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || readBody(pr).includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(readBody(pr));" +
         "  /* Skip PRs already owned by the watchdog fix agent */" +
         "  const pr = prs.find((p) =>" +
         "    isBosunCreated(p) &&" +
