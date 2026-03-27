@@ -1578,8 +1578,9 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(inspectNode)).toContain("prDigest");
     expect(getNodeCommandCode(inspectNode)).toContain("digestSummary");
     expect(getNodeCommandCode(inspectNode)).toContain("failedCheckNames");
-    expect(getNodeCommandCode(inspectNode)).toContain("const behindMergeables=new Set(['BEHIND']);");
-    expect(getNodeCommandCode(inspectNode)).toContain("classification='behind';reason='behind_base';");
+    expect(getNodeCommandCode(inspectNode)).toContain("mergeable=String(pr?.mergeable||'').toUpperCase()");
+    expect(getNodeCommandCode(inspectNode)).toContain("classification='behind'");
+    expect(getNodeCommandCode(inspectNode)).toContain("reason='behind_base'");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
