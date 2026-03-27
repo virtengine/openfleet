@@ -9,6 +9,19 @@ function clean(value) {
   return String(value ?? "").trim();
 }
 
+export function resolveCodexHomeDir(envInput = process.env) {
+  const home =
+    clean(envInput?.HOME) ||
+    clean(envInput?.USERPROFILE) ||
+    (
+      clean(envInput?.HOMEDRIVE) && clean(envInput?.HOMEPATH)
+        ? `${clean(envInput.HOMEDRIVE)}${clean(envInput.HOMEPATH)}`
+        : ""
+    ) ||
+    clean(homedir());
+  return home;
+}
+
 function isAzureOpenAIBaseUrl(value) {
   try {
     const parsed = value instanceof URL ? value : new URL(String(value || ""));
@@ -130,9 +143,9 @@ function profileRecord(env, profileName, globalProvider) {
   };
 }
 
-export function readCodexConfigRuntimeDefaults() {
+export function readCodexConfigRuntimeDefaults(envInput = process.env) {
   try {
-    const configPath = resolve(homedir(), ".codex", "config.toml");
+    const configPath = resolve(resolveCodexHomeDir(envInput), ".codex", "config.toml");
     if (!existsSync(configPath)) {
       return { model: "", modelProvider: "", providers: {} };
     }
@@ -164,8 +177,8 @@ export function readCodexConfigRuntimeDefaults() {
   }
 }
 
-function readCodexConfigTopLevelModel() {
-  return readCodexConfigRuntimeDefaults().model;
+function readCodexConfigTopLevelModel(envInput = process.env) {
+  return readCodexConfigRuntimeDefaults(envInput).model;
 }
 
 function selectConfigProviderForRuntime(configDefaults, env, preferredProvider = "") {
@@ -248,7 +261,7 @@ function inferGlobalProvider(env, configDefaults = null) {
  */
 export function resolveCodexProfileRuntime(envInput = process.env) {
   const sourceEnv = { ...envInput };
-  const configDefaults = readCodexConfigRuntimeDefaults();
+  const configDefaults = readCodexConfigRuntimeDefaults(sourceEnv);
   const activeProfile = normalizeProfileName(
     sourceEnv.CODEX_MODEL_PROFILE,
     DEFAULT_ACTIVE_PROFILE,
@@ -264,7 +277,7 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
 
   const env = { ...sourceEnv };
 
-  const configModel = readCodexConfigTopLevelModel();
+  const configModel = readCodexConfigTopLevelModel(sourceEnv);
 
   if (active.model) {
     env.CODEX_MODEL = active.model;
@@ -368,5 +381,4 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
       : null,
   };
 }
-
 

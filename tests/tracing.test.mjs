@@ -90,7 +90,7 @@ describe("infra/tracing", () => {
       });
     });
     const tracingState = getTracingState();
-    expect(tracingState.testSpans.map((span) => span.name)).toEqual(expect.arrayContaining(["bosun.task.execution", "bosun.agent.session", "bosun.tool.call", "bosun.llm.call"]));
+    expect(tracingState.testSpans.map((span) => span.name)).toEqual(expect.arrayContaining(["bosun.task.execute", "bosun.agent.session", "bosun.tool.call", "bosun.llm.call"]));
     expect(tracingState.metrics.taskTokensTotal).toBe(125);
     expect(tracingState.metrics.taskCostUsd).toBeCloseTo(0.12, 5);
     expect(tracingState.metrics.activeSessions).toBe(0);
@@ -111,9 +111,8 @@ describe("infra/tracing", () => {
     await traceTaskExecution({ taskId: "task-events" }, async () => {
       recordAgentEvent({ type: "agent:task-started", taskId: "task-events", payload: { title: "Tracing" }, ts: Date.now() });
     });
-    const taskSpan = getTracingState().testSpans.find((entry) => entry.name === "bosun.task.execution");
+    const taskSpan = getTracingState().testSpans.find((entry) => entry.name === "bosun.task.execute");
     expect(taskSpan.events).toEqual(expect.arrayContaining([expect.objectContaining({ name: "agent:task-started" })]));
   });
 });
-
 

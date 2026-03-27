@@ -1414,6 +1414,38 @@ describe("launchOrResumeThread", () => {
     expect(result.error).toContain("no events received within 1000ms");
   });
 
+  it("does not throw when using default codex stream safety constants", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    delete process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS;
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementationOnce(() => ({
+      id: "default-stream-safety-thread",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "stream ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await launchOrResumeThread("default stream safety test", process.cwd(), 5000, {
+      taskKey: "stream-default-safety",
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("stream ok");
+  });
+
   it("caps and truncates stored codex stream items", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";

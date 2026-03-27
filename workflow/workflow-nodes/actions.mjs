@@ -320,7 +320,11 @@ registerNodeType("action.run_agent", {
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const configuredCwd = ctx.resolve(node.config?.cwd || "");
+    const runtimeWorktreePath = String(ctx.data?.worktreePath || "").trim();
+    const cwd = isUnresolvedTemplateToken(configuredCwd)
+      ? runtimeWorktreePath || process.cwd()
+      : configuredCwd || runtimeWorktreePath || process.cwd();
     const trackedTaskId = String(
       ctx.data?.taskId ||
         ctx.data?.task?.id ||

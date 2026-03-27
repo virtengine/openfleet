@@ -163,6 +163,9 @@ function createLocalSpan(name, attributes = {}, parent = null) {
     name,
     traceId,
     spanId,
+    traceFlags: Number.isFinite(Number(activeParent?.traceFlags))
+      ? Number(activeParent.traceFlags)
+      : 1,
     parentSpanId: activeParent?.spanId || null,
     startTime: nowHrTime(),
     endTime: null,
@@ -187,8 +190,9 @@ function attachOtelAttributes(otelSpan, attributes = {}) {
 function syncSpanContext(span) {
   const spanContext = span?.otelSpan?.spanContext?.();
   if (!spanContext) return;
-  span.traceId = spanContext.traceId || span.traceId;
-  span.spanId = spanContext.spanId || span.spanId;
+  if (Number.isFinite(Number(spanContext.traceFlags))) {
+    span.traceFlags = Number(spanContext.traceFlags);
+  }
 }
 
 function finalizeLocalSpan(span) {
@@ -587,6 +591,7 @@ export function getCurrentTraceContext() {
     name: current.name,
     traceId: current.traceId,
     spanId: current.spanId,
+    traceFlags: current.traceFlags,
     parentSpanId: current.parentSpanId,
     attributes: { ...current.attributes },
   };
@@ -744,7 +749,7 @@ export async function traceWorkflowNode(node = {}, fn) {
 export async function traceTaskExecution(task = {}, fn) {
   const remoteParent = buildRemoteParentContext(task?.carrier || task?.headers || null);
   return withSpan(
-    "bosun.task.execution",
+    "bosun.task.execute",
     {
       ...resolveSpanAttributes(task),
       "bosun.task.title": task.title,

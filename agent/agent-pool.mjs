@@ -131,6 +131,8 @@ async function importCodexSdkModule() {
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
 let timeoutClampWarningKey = "";
+const MIN_SILENT_STREAM_FRACTION = 0.25;
+const MAX_SILENT_STREAM_GRACE_MS = 30_000;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_ITEMS_PER_TURN = 600;
 const DEFAULT_MAX_ITEM_CHARS = 12_000;
