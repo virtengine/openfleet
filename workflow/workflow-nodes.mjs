@@ -3020,11 +3020,12 @@ registerBuiltinNodeType("action.run_agent", {
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
-    const configuredCwd = ctx.resolve(node.config?.cwd || "");
+    const rawConfiguredCwd = node.config?.cwd;
     const runtimeWorktreePath = String(ctx.data?.worktreePath || "").trim();
-    const cwd = isUnresolvedTemplateToken(configuredCwd)
-      ? runtimeWorktreePath || process.cwd()
-      : configuredCwd || runtimeWorktreePath || process.cwd();
+    const resolvedCwd = ctx.resolve(rawConfiguredCwd || runtimeWorktreePath || process.cwd());
+    const cwdHasUnresolvedTemplate = /\{\{[^}]+\}\}/.test(String(resolvedCwd || ""));
+    const cwdFallback = ctx.resolve(runtimeWorktreePath || ctx.data?.repoRoot || process.cwd());
+    const cwd = cwdHasUnresolvedTemplate ? cwdFallback : resolvedCwd;
     const trackedTaskId = String(
       ctx.data?.taskId ||
         ctx.data?.task?.id ||
@@ -15819,3 +15820,4 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
