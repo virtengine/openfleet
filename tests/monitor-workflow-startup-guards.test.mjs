@@ -59,15 +59,14 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("engine.load();");
   });
 
-  it("resumes interrupted workflow runs after monitor services are wired", () => {
-    expect(monitorSource).toContain('if (typeof engine.resumeInterruptedRuns === "function") {');
-    expect(monitorSource).toContain('engine.resumeInterruptedRuns().catch((err) => {');
-    expect(monitorSource).toContain('[workflows] Failed to resume interrupted runs:');
-    expect(
-      monitorSource.indexOf("bindWorkflowEngineToAnomalyDetector(engine);"),
-    ).toBeLessThan(
-      monitorSource.indexOf('engine.resumeInterruptedRuns().catch((err) => {'),
-    );
+  it("stages interrupted-run recovery behind startup throttling", () => {
+    expect(monitorSource).toContain("const workflowStartupRecoveryGraceMs = Math.max(");
+    expect(monitorSource).toContain("const workflowStartupRecoveryStepDelayMs = Math.max(");
+    expect(monitorSource).toContain("function scheduleStartupWorkflowRecovery(name, handler, step = 0)");
+    expect(monitorSource).toContain('"startup-workflow-history-unstick"');
+    expect(monitorSource).toContain("workflowRecovery?.startupGraceMs");
+    expect(monitorSource).toContain("workflowRecovery?.startupStepDelayMs");
+    expect(monitorSource).not.toContain('engine.resumeInterruptedRuns().catch((err) => {');
   });
 
   it("stores workflow definitions and runs under the selected repoRoot", () => {
@@ -118,7 +117,7 @@ describe("monitor workflow startup guards", () => {
     expect(
       monitorSource.indexOf('await ensureWorkflowAutomationEngine().catch(() => {});'),
     ).toBeLessThan(
-      monitorSource.indexOf('"stale-dispatch-unstick"'),
+      monitorSource.indexOf('"startup-stale-dispatch-unstick"'),
     );
   });
 

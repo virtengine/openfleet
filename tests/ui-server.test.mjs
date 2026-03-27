@@ -333,31 +333,39 @@ describe("ui-server mini app", () => {
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    const port = server.address().port;
-    const token = mod.getSessionToken();
-    expect(token).toBeTruthy();
+    try {
+      const port = server.address().port;
+      const token = mod.getSessionToken();
+      expect(token).toBeTruthy();
 
-    const response = await fetch(
-      `http://127.0.0.1:${port}/chat?launch=meeting&call=video&token=${encodeURIComponent(token)}`,
-      { redirect: "manual" },
-    );
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
-    expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
+      const response = await fetch(
+        `http://127.0.0.1:${port}/chat?launch=meeting&call=video&token=${encodeURIComponent(token)}`,
+        { redirect: "manual" },
+      );
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
+      expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose));
+    }
   });
   it("regenerates zero-entropy session tokens before issuing browser auth", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_TOKEN = "a".repeat(64);
     vi.resetModules();
     const mod = await import("../server/ui-server.mjs");
-    await mod.startTelegramUiServer({
+    const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    const token = mod.getSessionToken();
-    expect(token).toMatch(/^[a-f0-9]{64}$/i);
+    try {
+      const token = mod.getSessionToken();
+      expect(token).toMatch(/^[a-f0-9]{64}$/i);
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose));
+    }
     expect(token).not.toBe("a".repeat(64));
     delete process.env.BOSUN_UI_TOKEN;
   });

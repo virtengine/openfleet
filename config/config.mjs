@@ -1734,6 +1734,65 @@ export function loadConfig(argv = process.argv, options = {}) {
       0.2,
       { min: 0, max: 0.9 },
     ),
+    startupGraceMs: parseBoundedInteger(
+      process.env.WORKFLOW_RECOVERY_STARTUP_GRACE_MS ??
+        workflowRecoveryConfig.startupGraceMs,
+      30_000,
+      { min: 0, max: 10 * 60 * 1000 },
+    ),
+    startupStepDelayMs: parseBoundedInteger(
+      process.env.WORKFLOW_RECOVERY_STARTUP_STEP_DELAY_MS ??
+        workflowRecoveryConfig.startupStepDelayMs,
+      15_000,
+      { min: 0, max: 5 * 60 * 1000 },
+    ),
+  });
+  const rawMcpServersConfig =
+    configData.mcpServers && typeof configData.mcpServers === "object"
+      ? configData.mcpServers
+      : {};
+  const mcpServers = Object.freeze({
+    enabled: rawMcpServersConfig.enabled !== false,
+    defaultServers: Object.freeze(
+      Array.isArray(rawMcpServersConfig.defaultServers)
+        ? rawMcpServersConfig.defaultServers
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+        : [],
+    ),
+    catalogOverrides:
+      rawMcpServersConfig.catalogOverrides &&
+      typeof rawMcpServersConfig.catalogOverrides === "object"
+        ? Object.freeze({ ...rawMcpServersConfig.catalogOverrides })
+        : Object.freeze({}),
+    useDiscoveryProxy: rawMcpServersConfig.useDiscoveryProxy !== false,
+    includeCustomToolsInDiscoveryProxy:
+      rawMcpServersConfig.includeCustomToolsInDiscoveryProxy !== false,
+    discoveryProxyCacheTtlMs: parseBoundedInteger(
+      rawMcpServersConfig.discoveryProxyCacheTtlMs,
+      60_000,
+      { min: 1000, max: 60 * 60 * 1000 },
+    ),
+    discoveryProxyExecuteTimeoutMs: parseBoundedInteger(
+      rawMcpServersConfig.discoveryProxyExecuteTimeoutMs,
+      10_000,
+      { min: 1000, max: 10 * 60 * 1000 },
+    ),
+    autoInstallDefaults: rawMcpServersConfig.autoInstallDefaults === true,
+    allowExternalSources: isEnvEnabled(
+      process.env.BOSUN_MCP_ALLOW_EXTERNAL_SOURCES ??
+        rawMcpServersConfig.allowExternalSources,
+      false,
+    ),
+    allowDefaultServers: isEnvEnabled(
+      process.env.BOSUN_MCP_ALLOW_DEFAULT_SERVERS ??
+        rawMcpServersConfig.allowDefaultServers,
+      false,
+    ),
+    requireAuth: isEnvEnabled(
+      process.env.BOSUN_MCP_REQUIRE_AUTH ?? rawMcpServersConfig.requireAuth,
+      true,
+    ),
   });
   const internalExecutor = {
     mode: ["internal", "hybrid"].includes(executorMode)
@@ -2335,6 +2394,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Internal Executor
     internalExecutor,
     workflowRecovery,
+    mcpServers,
     executorMode: internalExecutor.mode,
     kanban,
     kanbanSource,

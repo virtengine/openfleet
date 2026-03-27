@@ -16,8 +16,15 @@ import {
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
 
 describe("codex-config defaults", () => {
-  it("includes expanded MCP server defaults", () => {
+  it("omits default MCP server blocks unless explicitly enabled", () => {
     const block = buildCommonMcpBlocks();
+    expect(block).toBe("");
+  });
+
+  it("includes expanded MCP server defaults when explicitly enabled", () => {
+    const block = buildCommonMcpBlocks({
+      BOSUN_MCP_ALLOW_DEFAULT_SERVERS: "1",
+    });
     expect(block).toContain("[mcp_servers.context7]");
     expect(block).toContain("[mcp_servers.sequential-thinking]");
     expect(block).toContain("[mcp_servers.playwright]");
@@ -203,6 +210,28 @@ describe("codex-config defaults", () => {
     });
 
     expect(toml).toContain('sandbox_mode = "danger-full-access"');
+  });
+
+  it("does not seed default MCP servers into repo Codex config unless enabled", () => {
+    const toml = buildRepoCodexConfig({
+      repoRoot: "/tmp/virtengine",
+      env: {},
+    });
+
+    expect(toml).not.toContain("[mcp_servers.context7]");
+    expect(toml).not.toContain("[mcp_servers.microsoft-docs]");
+  });
+
+  it("can opt back into default MCP servers when building repo Codex config", () => {
+    const toml = buildRepoCodexConfig({
+      repoRoot: "/tmp/virtengine",
+      env: {
+        BOSUN_MCP_ALLOW_DEFAULT_SERVERS: "1",
+      },
+    });
+
+    expect(toml).toContain("[mcp_servers.context7]");
+    expect(toml).toContain("[mcp_servers.microsoft-docs]");
   });
 
   it("supports legacy sandbox_permissions helper names", () => {

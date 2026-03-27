@@ -13,7 +13,10 @@ import {
   parseCanonicalToolId,
   searchCatalogEntries,
 } from "../workflow/mcp-discovery-proxy.mjs";
-import { wrapServersWithDiscoveryProxy } from "../workflow/mcp-registry.mjs";
+import {
+  resolveMcpServersForAgent,
+  wrapServersWithDiscoveryProxy,
+} from "../workflow/mcp-registry.mjs";
 
 const tempRoots = [];
 
@@ -211,5 +214,34 @@ describe("mcp discovery proxy helpers", () => {
     const payload = JSON.parse(await readFile(configPath, "utf8"));
     expect(payload.cacheTtlMs).toBe(12345);
     expect(payload.executeTimeoutMs).toBe(6789);
+  });
+
+  it("skips curated MCP servers with missing required auth by default", async () => {
+    const root = await makeRoot();
+    const resolved = await resolveMcpServersForAgent(root, ["linear"]);
+    expect(resolved).toEqual([]);
+  });
+
+  it("accepts curated MCP servers when required auth is present in the environment", async () => {
+    const root = await makeRoot();
+    const previous = process.env.LINEAR_API_KEY;
+    process.env.LINEAR_API_KEY = "test-linear-key";
+    try {
+      const resolved = await resolveMcpServersForAgent(root, ["linear"]);
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]).toMatchObject({
+        id: "linear",
+        command: "npx",
+        env: {
+          LINEAR_API_KEY: "test-linear-key",
+        },
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.LINEAR_API_KEY;
+      } else {
+        process.env.LINEAR_API_KEY = previous;
+      }
+    }
   });
 });

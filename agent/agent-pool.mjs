@@ -2559,14 +2559,20 @@ export async function launchEphemeralThread(
       const mcpCfg = cfg.mcpServers || {};
       if (mcpCfg.enabled !== false) {
         const requestedIds = launchExtra.mcpServers || [];
-        const defaultIds = mcpCfg.defaultServers || [];
+        const defaultIds = mcpCfg.allowDefaultServers === true
+          ? mcpCfg.defaultServers || []
+          : [];
         const registry = await getMcpRegistry();
         let resolved = [];
         if (requestedIds.length || defaultIds.length) {
           resolved = await registry.resolveMcpServersForAgent(
             cwd,
             requestedIds,
-            { defaultServers: defaultIds, catalogOverrides: mcpCfg.catalogOverrides || {} },
+            {
+              defaultServers: defaultIds,
+              catalogOverrides: mcpCfg.catalogOverrides || {},
+              requireAuth: mcpCfg.requireAuth !== false,
+            },
           );
         }
         if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
@@ -2584,7 +2590,8 @@ export async function launchEphemeralThread(
       launchExtra._mcpResolved = true;
     }
   } catch (mcpErr) {
-    console.warn(`${TAG} MCP server resolution failed (non-fatal): ${mcpErr.message}`);
+    launchExtra._resolvedMcpServers = [];
+    console.warn(`${TAG} MCP server resolution failed (servers skipped): ${mcpErr.message}`);
   }
 
   // Determine the primary SDK to try

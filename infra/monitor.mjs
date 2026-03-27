@@ -1042,12 +1042,6 @@ async function ensureWorkflowAutomationEngine() {
         }
       }
 
-      // Resume runs paused by a previous monitor shutdown after services are wired.
-      if (typeof engine.resumeInterruptedRuns === "function") {
-        engine.resumeInterruptedRuns().catch((err) => {
-          console.warn(`[workflows] Failed to resume interrupted runs: ${err?.message || err}`);
-        });
-      }
       workflowAutomationInitDone = true;
       return engine;
     } catch (err) {
@@ -3249,9 +3243,13 @@ function getTelegramBotStartOptions() {
   const restartReason = isSelfRestart
     ? "self-restart"
     : monitorRestartReason;
+  const allowDaemonPortalAutoOpen = isTruthyFlag(
+    process.env.BOSUN_UI_AUTO_OPEN_ON_DAEMON,
+  );
   return {
     restartReason,
-    suppressPortalAutoOpen: restartReason.length > 0,
+    suppressPortalAutoOpen:
+      restartReason.length > 0 || !allowDaemonPortalAutoOpen,
   };
 }
 
@@ -13684,6 +13682,14 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // This keeps scheduled and task-poll lifecycle templates executing without hardcoded
 // per-workflow timers.  Workspace-aware: skips workflows for paused/disabled workspaces.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
+const workflowStartupRecoveryGraceMs = Math.max(
+  0,
+  Number(workflowRecovery?.startupGraceMs || 0),
+);
+const workflowStartupRecoveryStepDelayMs = Math.max(
+  0,
+  Number(workflowRecovery?.startupStepDelayMs || 0),
+);
 pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
   triggerSource = "schedule-poll",
   opts = {},
@@ -13760,6 +13766,13 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
 safeSetInterval("workflow-schedule-check", async () => {
   await pollWorkflowSchedulesOnce();
 }, scheduleCheckIntervalMs);
+
+function scheduleStartupWorkflowRecovery(name, handler, step = 0) {
+  const delayMs =
+    workflowStartupRecoveryGraceMs +
+    Math.max(0, step) * workflowStartupRecoveryStepDelayMs;
+  safeSetTimeout(name, handler, delayMs);
+}
 
 safeSetInterval("workflow-review-merge-reconcile", async () => {
   const result = await checkMergedPRsAndUpdateTasks();
@@ -14119,33 +14132,43 @@ let agentSupervisor = null;
 if (!isMonitorTestRuntime) {
   if (workflowAutomationEnabled) {
     await ensureWorkflowAutomationEngine().catch(() => {});
-    runWorkflowRecoveryWithPolicy(
-      "stale-dispatch-unstick",
+    scheduleStartupWorkflowRecovery(
+      "startup-stale-dispatch-unstick",
       () =>
-        pollWorkflowSchedulesOnce("startup", {
-          includeTaskPoll: false,
-          requireEngine: true,
-          throwOnError: true,
-        }),
-      {
-        trigger: "startup",
-        operationType: "stale-dispatch-unstick",
-        includeTaskPoll: false,
-      },
+        void runWorkflowRecoveryWithPolicy(
+          "stale-dispatch-unstick",
+          () =>
+            pollWorkflowSchedulesOnce("startup", {
+              includeTaskPoll: false,
+              requireEngine: true,
+              throwOnError: true,
+            }),
+          {
+            trigger: "startup",
+            operationType: "stale-dispatch-unstick",
+            includeTaskPoll: false,
+          },
+        ),
+      0,
     );
-    runWorkflowRecoveryWithPolicy(
-      "workflow-history-unstick",
-      async () => {
-        const engine = await ensureWorkflowAutomationEngine();
-        if (!engine?.resumeInterruptedRuns) {
-          throw new Error("workflow engine resumeInterruptedRuns unavailable");
-        }
-        await engine.resumeInterruptedRuns();
-      },
-      {
-        trigger: "startup",
-        operationType: "workflow-history-unstick",
-      },
+    scheduleStartupWorkflowRecovery(
+      "startup-workflow-history-unstick",
+      () =>
+        void runWorkflowRecoveryWithPolicy(
+          "workflow-history-unstick",
+          async () => {
+            const engine = await ensureWorkflowAutomationEngine();
+            if (!engine?.resumeInterruptedRuns) {
+              throw new Error("workflow engine resumeInterruptedRuns unavailable");
+            }
+            await engine.resumeInterruptedRuns();
+          },
+          {
+            trigger: "startup",
+            operationType: "workflow-history-unstick",
+          },
+        ),
+      1,
     );
   } else {
     console.log(
@@ -14402,19 +14425,24 @@ if (isExecutorDisabled()) {
     internalTaskExecutor = getTaskExecutor(execOpts);
     internalTaskExecutor.start();
     if (workflowOwnsTaskExecutorLifecycle) {
-      runWorkflowRecoveryWithPolicy(
-        "stale-dispatch-task-poll-unstick",
+      scheduleStartupWorkflowRecovery(
+        "startup-stale-dispatch-task-poll-unstick",
         () =>
-          pollWorkflowSchedulesOnce("startup", {
-            includeScheduled: false,
-            requireEngine: true,
-            throwOnError: true,
-          }),
-        {
-          trigger: "startup",
-          operationType: "stale-dispatch-task-poll-unstick",
-          includeTaskPoll: true,
-        },
+          void runWorkflowRecoveryWithPolicy(
+            "stale-dispatch-task-poll-unstick",
+            () =>
+              pollWorkflowSchedulesOnce("startup", {
+                includeScheduled: false,
+                requireEngine: true,
+                throwOnError: true,
+              }),
+            {
+              trigger: "startup",
+              operationType: "stale-dispatch-task-poll-unstick",
+              includeTaskPoll: true,
+            },
+          ),
+        2,
       );
     }
 

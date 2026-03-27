@@ -196,10 +196,17 @@ describe("codex-shell stream safeguards", () => {
 
 
   it("avoids reserved built-in openai provider ids for custom base URLs", async () => {
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
     process.env.OPENAI_BASE_URL = "https://example.test/v1";
     process.env.OPENAI_API_KEY = "test-key";
     process.env.CODEX_MODEL = "gpt-5.4";
-    resolveCodexProfileRuntime.mockReturnValue({
+    freshResolveCodexProfileRuntime.mockReturnValue({
       env: {
         OPENAI_BASE_URL: "https://example.test/v1",
         OPENAI_API_KEY: "test-key",
@@ -219,13 +226,15 @@ describe("codex-shell stream safeguards", () => {
       }),
     }));
 
-    await execCodexPrompt("test custom provider", { timeoutMs: 1000 });
+    await freshExecCodexPrompt("test custom provider", { timeoutMs: 1000 });
 
-    const ctorOptions = mockCodexCtor.mock.calls.at(-1)?.[0] || {};
+    const ctorOptions = mockCodexCtor.mock.calls
+      .map((call) => call?.[0] || null)
+      .find((options) => options?.config?.model_provider);
     expect(ctorOptions).toBeDefined();
-    expect(ctorOptions.provider).toBeDefined();
-    expect(ctorOptions.provider).not.toBe("openai");
-    expect(ctorOptions.provider).not.toBe("azure");
+    expect(ctorOptions.config.model_provider).toBeDefined();
+    expect(ctorOptions.config.model_provider).not.toBe("openai");
+    expect(ctorOptions.config.model_provider).not.toBe("azure");
   });
   it("caps retained items and truncates oversized item payloads", async () => {
     process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN = "1";
