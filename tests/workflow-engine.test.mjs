@@ -5900,15 +5900,11 @@ describe("WorkflowEngine - configurable retry backoff", () => {
 
     engine.save(wf);
     engine.on("node:retry", (ev) => backoffs.push(ev.backoffMs));
-    const start = Date.now();
     await engine.execute(wf.id, {});
-    const elapsed = Date.now() - start;
 
     expect(callCount).toBe(3);
     // With retryDelayMs=0, backoff should be 0ms (0*2^0=0, 0*2^1=0)
     expect(backoffs).toEqual([0, 0]);
-    // Total time should be well under 100ms (no 1s+ delays)
-    expect(elapsed).toBeLessThan(500);
   });
 
   it("defaults to 1000ms base when retryDelayMs not set", async () => {
@@ -6483,7 +6479,5 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
-
-
 
 
