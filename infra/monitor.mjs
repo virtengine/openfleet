@@ -13684,11 +13684,11 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
 const workflowStartupRecoveryGraceMs = Math.max(
   0,
-  Number(workflowRecovery?.startupGraceMs || 0),
+  Number(configWorkflowRecovery?.startupGraceMs || 0),
 );
 const workflowStartupRecoveryStepDelayMs = Math.max(
   0,
-  Number(workflowRecovery?.startupStepDelayMs || 0),
+  Number(configWorkflowRecovery?.startupStepDelayMs || 0),
 );
 pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
   triggerSource = "schedule-poll",

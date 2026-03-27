@@ -1,8 +1,85 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+const tempDirs = new Set();
+
+function makeTempDir(prefix) {
+  const dir = mkdtempSync(resolve(tmpdir(), prefix));
+  tempDirs.add(dir);
+  return dir;
+}
+
+function sleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+async function reserveFreePort() {
+  return await new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Failed to determine a free port.")));
+        return;
+      }
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolvePort(address.port);
+      });
+    });
+  });
+}
+
+async function waitForStartupSignal(child, signalPath, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(signalPath)) {
+      return { started: true, exited: false };
+    }
+    if (child.exitCode !== null) {
+      return { started: false, exited: true };
+    }
+    await sleep(100);
+  }
+  return {
+    started: existsSync(signalPath),
+    exited: child.exitCode !== null,
+  };
+}
+
+async function stopChildProcess(child, timeoutMs = 5000) {
+  if (child?.exitCode !== null) return;
+
+  child.kill("SIGTERM");
+  const deadline = Date.now() + timeoutMs;
+  while (child.exitCode === null && Date.now() < deadline) {
+    await sleep(100);
+  }
+
+  if (child.exitCode === null) {
+    child.kill("SIGKILL");
+    const killDeadline = Date.now() + 2000;
+    while (child.exitCode === null && Date.now() < killDeadline) {
+      await sleep(50);
+    }
+  }
+}
+
+afterEach(() => {
+  for (const dir of tempDirs) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  tempDirs.clear();
+});
 
 describe("cli workspace config-dir resolution", () => {
   const cliSource = readFileSync(resolve(process.cwd(), "cli.mjs"), "utf8");
@@ -21,7 +98,7 @@ describe("cli workspace config-dir resolution", () => {
   });
 
   it("prefers repo-local .bosun for --where when repo root is provided", () => {
-    const repoRoot = mkdtempSync(resolve(tmpdir(), "bosun-cli-config-dir-"));
+    const repoRoot = makeTempDir("bosun-cli-config-dir-");
     const repoConfigDir = resolve(repoRoot, ".bosun");
     mkdirSync(repoConfigDir, { recursive: true });
     writeFileSync(resolve(repoConfigDir, "bosun.config.json"), "{}", "utf8");
@@ -35,16 +112,91 @@ describe("cli workspace config-dir resolution", () => {
     env.HOME = env.APPDATA;
     env.XDG_CONFIG_HOME = env.APPDATA;
 
-    try {
-      const output = execFileSync(process.execPath, ["cli.mjs", "--where", "--repo-root", repoRoot], {
-        cwd: resolve(process.cwd()),
-        env,
-        encoding: "utf8",
-      });
+    const output = execFileSync(process.execPath, ["cli.mjs", "--where", "--repo-root", repoRoot], {
+      cwd: resolve(process.cwd()),
+      env,
+      encoding: "utf8",
+    });
 
-      expect(output).toContain(repoConfigDir);
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
+    expect(output).toContain(repoConfigDir);
   });
+
+  it("boots the monitor without crashing during CLI startup", async () => {
+    const runtimeRoot = makeTempDir("bosun-cli-runtime-");
+    const configDir = makeTempDir("bosun-cli-home-");
+    const homeDir = resolve(configDir, "home");
+    mkdirSync(homeDir, { recursive: true });
+
+    writeFileSync(
+      resolve(configDir, "bosun.config.json"),
+      JSON.stringify({
+        projectName: "startup-smoke",
+        executors: [],
+        interactiveShellEnabled: false,
+      }, null, 2),
+      "utf8",
+    );
+
+    const uiPort = await reserveFreePort();
+    const agentEndpointPort = await reserveFreePort();
+    const env = {
+      ...process.env,
+      BOSUN_DIR: configDir,
+      REPO_ROOT: runtimeRoot,
+      HOME: homeDir,
+      USERPROFILE: homeDir,
+      APPDATA: resolve(homeDir, "AppData", "Roaming"),
+      LOCALAPPDATA: resolve(homeDir, "AppData", "Local"),
+      XDG_CONFIG_HOME: resolve(homeDir, ".config"),
+      TELEGRAM_UI_PORT: String(uiPort),
+      BOSUN_AGENT_ENDPOINT_PORT: String(agentEndpointPort),
+      TELEGRAM_UI_TUNNEL: "disabled",
+      BOSUN_UI_AUTO_OPEN_ON_DAEMON: "false",
+      BOSUN_MCP_DISABLE_DAEMON_DISCOVERY: "1",
+    };
+    delete env.NODE_ENV;
+    delete env.VITEST;
+    delete env.VITEST_POOL_ID;
+    delete env.VITEST_WORKER_ID;
+    delete env.JEST_WORKER_ID;
+    delete env.BOSUN_TEST_SANDBOX;
+    delete env.BOSUN_TEST_SANDBOX_ROOT;
+
+    const cliPath = resolve(process.cwd(), "cli.mjs");
+    const child = spawn(
+      process.execPath,
+      [cliPath, "--no-telegram-bot", "--no-update-check", "--no-auto-update"],
+      {
+        cwd: runtimeRoot,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+    });
+
+    try {
+      const pidFile = resolve(runtimeRoot, ".cache", "bosun.pid");
+      const startup = await waitForStartupSignal(child, pidFile, 20000);
+
+      expect(startup.started, `Bosun never reached monitor bootstrap. Output:\n${output}`).toBe(true);
+      expect(startup.exited, `Bosun exited before monitor bootstrap completed. Output:\n${output}`).toBe(false);
+
+      await sleep(1500);
+
+      expect(
+        child.exitCode,
+        `Bosun crashed shortly after monitor bootstrap. Output:\n${output}`,
+      ).toBeNull();
+      expect(output).not.toMatch(/Monitor failed to start|bosun failed:/i);
+    } finally {
+      await stopChildProcess(child);
+    }
+  }, 30000);
 });

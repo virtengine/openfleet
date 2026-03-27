@@ -360,14 +360,15 @@ describe("ui-server mini app", () => {
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
+    let token;
     try {
-      const token = mod.getSessionToken();
+      token = mod.getSessionToken();
       expect(token).toMatch(/^[a-f0-9]{64}$/i);
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose));
+      delete process.env.BOSUN_UI_TOKEN;
     }
     expect(token).not.toBe("a".repeat(64));
-    delete process.env.BOSUN_UI_TOKEN;
   });
 
 

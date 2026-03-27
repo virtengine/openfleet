@@ -16,6 +16,108 @@
         "uriFormat": "%s",
         "action": "openExternally"
       }
+    },
+    {
+      "name": "Debug Bosun CLI",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/cli.mjs",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--config-dir",
+        "${workspaceFolder}/.bosun",
+        "--repo-root",
+        "${workspaceFolder}",
+        "--no-update-check",
+        "--no-auto-update"
+      ],
+      "env": {
+        "BOSUN_DIR": "${workspaceFolder}/.bosun",
+        "REPO_ROOT": "${workspaceFolder}",
+        "BOSUN_SKIP_UPDATE_CHECK": "1",
+        "BOSUN_SKIP_AUTO_UPDATE": "1"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "smartStep": true,
+      "autoAttachChildProcesses": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Debug Bosun Monitor Direct",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/infra/monitor.mjs",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BOSUN_DIR": "${workspaceFolder}/.bosun",
+        "REPO_ROOT": "${workspaceFolder}",
+        "BOSUN_SKIP_UPDATE_CHECK": "1",
+        "BOSUN_SKIP_AUTO_UPDATE": "1"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "smartStep": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Debug Bosun Daemon Child (foreground)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/cli.mjs",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--daemon-child",
+        "--config-dir",
+        "${workspaceFolder}/.bosun",
+        "--repo-root",
+        "${workspaceFolder}",
+        "--no-update-check",
+        "--no-auto-update"
+      ],
+      "env": {
+        "BOSUN_DAEMON": "1",
+        "BOSUN_DIR": "${workspaceFolder}/.bosun",
+        "REPO_ROOT": "${workspaceFolder}",
+        "BOSUN_SKIP_UPDATE_CHECK": "1",
+        "BOSUN_SKIP_AUTO_UPDATE": "1",
+        "BOSUN_UI_AUTO_OPEN_ON_DAEMON": "false"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "smartStep": true,
+      "autoAttachChildProcesses": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Attach to Bosun CLI Startup (9229)",
+      "type": "node",
+      "request": "attach",
+      "address": "127.0.0.1",
+      "port": 9229,
+      "restart": true,
+      "preLaunchTask": "Bosun: Start CLI with Inspector (9229)",
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Attach to Bosun Monitor Startup (9230)",
+      "type": "node",
+      "request": "attach",
+      "address": "127.0.0.1",
+      "port": 9230,
+      "restart": true,
+      "preLaunchTask": "Bosun: Start Monitor with Inspector (9230)",
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
     }
   ]
 }
