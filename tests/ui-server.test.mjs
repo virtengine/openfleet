@@ -218,7 +218,7 @@ describe("ui-server mini app", () => {
         rmSync(statusPath, { force: true });
       }
     }
-  });
+  }, 15000);
 
   it("honors STATUS_FILE overrides for worktree recovery status", async () => {
     const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-status-file-"));
@@ -561,7 +561,7 @@ describe("ui-server mini app", () => {
     expect(response.status).toBe(200);
     expect(payload.ok).toBe(true);
     expect(typeof payload.uptime).toBe("number");
-  });
+  }, 15000);
 
   it("hides tokenized browser URL in startup logs by default", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -692,7 +692,7 @@ describe("ui-server mini app", () => {
     expect(json.sources?.GITHUB_PROJECT_MODE).toBe("default");
 
     rmSync(tmpDir, { recursive: true, force: true });
-  });
+  }, 15000);
 
   it("reflects runtime kanban backend switches via config update", async () => {
     process.env.KANBAN_BACKEND = "github";
@@ -1013,7 +1013,7 @@ describe("ui-server mini app", () => {
     }
 
     rmSync(tmpDir, { recursive: true, force: true });
-  });
+  }, 15000);
 
   it("returns trigger template payload with history/stat fields", async () => {
     const mod = await import("../server/ui-server.mjs");

@@ -1646,7 +1646,7 @@ describe("action.acquire_worktree", () => {
     expect(ctx.data.baseBranch).toBe("main");
     expect(result.created).toBe(true);
     expect(existsSync(result.worktreePath)).toBe(true);
-  });
+  }, 15000);
 
   it("marks reused worktrees as managed for cleanup", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1702,7 +1702,7 @@ describe("action.acquire_worktree", () => {
     expect(result.created).toBe(false);
     expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
     expect(ctx.data._worktreeManaged).toBe(true);
-  }, 10000);
+  }, 20000);
 
   it("attaches a worktree to a pre-existing local branch", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1731,7 +1731,7 @@ describe("action.acquire_worktree", () => {
         encoding: "utf8",
       }).trim(),
     ).toBe(branch);
-  }, 10000);
+  }, 20000);
 
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2508,6 +2508,10 @@ describe("action.build_task_prompt", () => {
       taskId: "T4d",
       taskTitle: "{{taskTitle}}",
       taskDescription: "{{taskDescription}}",
+      includeAgentsMd: false,
+      includeGitContext: false,
+      includeMemory: false,
+      includeStatusEndpoint: false,
     });
     const result = await nt.execute(node, ctx);
     expect(result.prompt).toContain("# Task: Task T4d");

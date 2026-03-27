@@ -1761,7 +1761,20 @@ registerNodeType("action.create_pr", {
     required: ["title"],
   },
   async execute(node, ctx) {
-    const title = ctx.resolve(node.config?.title || "");
+    const PR_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const PR_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
+    const normalizePrText = (value) => {
+      if (value == null) return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      if (PR_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      return text
+        .replace(PR_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim();
+    };
+
+    const title = normalizePrText(ctx.resolve(node.config?.title || ""));
     const body = ctx.resolve(node.config?.body || "");
     const resolvedBody = appendBosunCreatedPrFooter(body);
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
@@ -1788,6 +1801,11 @@ registerNodeType("action.create_pr", {
       BOSUN_CREATED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+    if (!title) {
+      const error = "PR title is required";
+      ctx.log(node.id, error);
+      return { success: false, error, title, base, branch: branch || null, repoSlug: repoSlug || null };
+    }
     const execOptions = {
       cwd,
       encoding: "utf8",

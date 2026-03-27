@@ -175,7 +175,6 @@ describe("cli workspace config-dir resolution", () => {
       APPDATA: appDataDir,
       LOCALAPPDATA: localAppDataDir,
       XDG_CONFIG_HOME: xdgConfigDir,
-      BOSUN_CACHE_DIR: resolve(runtimeRoot, ".cache"),
       TELEGRAM_UI_PORT: String(uiPort),
       BOSUN_AGENT_ENDPOINT_PORT: String(agentEndpointPort),
       TELEGRAM_UI_TUNNEL: "disabled",
@@ -214,7 +213,7 @@ describe("cli workspace config-dir resolution", () => {
     });
 
     try {
-      const pidFile = resolve(runtimeRoot, ".cache", "bosun.pid");
+      const pidFile = resolve(configDir, ".cache", "bosun.pid");
       const startup = await waitForStartupSignal(child, pidFile, 20000);
       const duplicateGuardTriggered = /bosun is already running \(PID \d+\); exiting duplicate start\./i.test(output);
 

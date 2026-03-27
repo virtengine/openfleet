@@ -2740,6 +2740,7 @@ function runMonitor({ restartReason = "" } = {}) {
 }
 
 // Let forked monitor handle signal cleanup — prevent parent from dying first
+let monitorChild = null;
 let gracefulShutdown = false;
 process.on("SIGINT", () => {
   gracefulShutdown = true;

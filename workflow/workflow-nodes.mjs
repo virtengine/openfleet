@@ -5453,7 +5453,20 @@ registerBuiltinNodeType("action.create_pr", {
       }
     };
 
-    const title = String(resolveNodeValue(node.config?.title, "")).trim();
+    const PR_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const PR_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
+    const normalizePrText = (value) => {
+      if (value == null) return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      if (PR_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      return text
+        .replace(PR_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim();
+    };
+
+    const title = normalizePrText(resolveNodeValue(node.config?.title, ""));
     const body = appendBosunCreatedPrFooter(String(resolveNodeValue(node.config?.body, "")));
     const baseInput = resolveNodeValue(node.config?.base ?? node.config?.baseBranch, "main");
     let base = String(baseInput || "main").trim() || "main";
