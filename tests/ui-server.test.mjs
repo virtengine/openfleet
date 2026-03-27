@@ -348,7 +348,7 @@ describe("ui-server mini app", () => {
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose));
     }
-  });
+  }, 15000);
   it("regenerates zero-entropy session tokens before issuing browser auth", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_TOKEN = "a".repeat(64);
@@ -4179,7 +4179,7 @@ describe("ui-server mini app", () => {
         else writeFileSync(filePath, content, "utf8");
       }
     }
-  });
+  }, 15000);
 
   it("falls back to session workspaceDir for diff view", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

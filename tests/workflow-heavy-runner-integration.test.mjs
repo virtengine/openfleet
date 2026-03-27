@@ -4,10 +4,22 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { WorkflowContext } from "../workflow/workflow-engine.mjs";
-import { getNodeType } from "../workflow/workflow-nodes.mjs";
+const originalCommandDiagnosticsStateFile = process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE;
+
+async function loadWorkflowHarness() {
+  vi.resetModules();
+  const [{ WorkflowContext }, { getNodeType }] = await Promise.all([
+    import("../workflow/workflow-engine.mjs"),
+    import("../workflow/workflow-nodes.mjs"),
+  ]);
+  return { WorkflowContext, getNodeType };
+}
 
 function makeCtx(data = {}) {
+  throw new Error("makeCtx requires WorkflowContext and should not be called directly");
+}
+
+function buildCtx(WorkflowContext, data = {}) {
   const ctx = new WorkflowContext(data);
   ctx.log = vi.fn();
   return ctx;
@@ -25,10 +37,18 @@ describe("workflow heavy runner integration", () => {
       rmSync(tempDir, { recursive: true, force: true });
       tempDir = "";
     }
+    if (originalCommandDiagnosticsStateFile === undefined) {
+      delete process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE;
+    } else {
+      process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE = originalCommandDiagnosticsStateFile;
+    }
+    vi.resetModules();
   });
 
   it("offloads validation.tests runs and preserves compact retrieval fields", async () => {
     tempDir = mkdtempSync(join(tmpdir(), "bosun-validation-runner-"));
+    process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE = join(tempDir, "command-diagnostics-state.json");
+    const { WorkflowContext, getNodeType } = await loadWorkflowHarness();
     const nodeType = getNodeType("validation.tests");
     const node = makeNode("validation.tests", {
       command:
@@ -40,7 +60,7 @@ describe("workflow heavy runner integration", () => {
       },
     });
 
-    const result = await nodeType.execute(node, makeCtx({ worktreePath: tempDir }));
+    const result = await nodeType.execute(node, buildCtx(WorkflowContext, { worktreePath: tempDir }));
 
     expect(result.passed).toBe(false);
     expect(result.executionLane).toBe("runner-pool");
@@ -54,6 +74,8 @@ describe("workflow heavy runner integration", () => {
 
   it("surfaces blocked evidence when runner lease acquisition exhausts retries", async () => {
     tempDir = mkdtempSync(join(tmpdir(), "bosun-validation-runner-blocked-"));
+    process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE = join(tempDir, "command-diagnostics-state.json");
+    const { WorkflowContext, getNodeType } = await loadWorkflowHarness();
     const nodeType = getNodeType("validation.build");
     const node = makeNode("validation.build", {
       command: 'node -e "console.log(\'build\')"',
@@ -65,7 +87,7 @@ describe("workflow heavy runner integration", () => {
       },
     });
 
-    const result = await nodeType.execute(node, makeCtx({ worktreePath: tempDir }));
+    const result = await nodeType.execute(node, buildCtx(WorkflowContext, { worktreePath: tempDir }));
 
     expect(result.passed).toBe(false);
     expect(result.blocked).toBe(true);
