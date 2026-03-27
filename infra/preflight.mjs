@@ -11,6 +11,7 @@ import {
 const isWindows = process.platform === "win32";
 const MIN_FREE_GB = Number(process.env.BOSUN_MIN_FREE_GB || "10");
 const MIN_FREE_BYTES = MIN_FREE_GB * 1024 * 1024 * 1024;
+const GIT_EDITOR_FIX_COMMAND = "node git-editor-fix.mjs";
 
 function runCommand(command, args, options = {}) {
   try {
@@ -357,7 +358,7 @@ export function runPreflightChecks(options = {}) {
       title: "Interactive git editor detected",
       message:
         `${interactiveEditor.source} is set to "${interactiveEditor.editor}" which blocks automated commits. ` +
-        `Fix: node git-editor-fix.mjs`,
+        `Run ${GIT_EDITOR_FIX_COMMAND} to switch this repo to a non-interactive editor.`,
     });
   }
 
@@ -494,7 +495,12 @@ export function formatPreflightReport(result, options = {}) {
   if (result.warnings.length) {
     lines.push("Warnings:");
     for (const warn of result.warnings) {
-      lines.push(`  - ${warn.title}`);
+      const isPriorityWarning = /interactive git editor/i.test(
+        `${warn.title}\n${warn.message || ""}`,
+      );
+      lines.push(
+        `  - ${isPriorityWarning ? "[action recommended] " : ""}${warn.title}`,
+      );
       if (warn.message) {
         const messageLines = String(warn.message).split(/\r?\n/);
         for (const msgLine of messageLines) {
@@ -504,9 +510,17 @@ export function formatPreflightReport(result, options = {}) {
     }
   }
 
+  const interactiveEditorWarning = result.warnings.find((warn) =>
+    /interactive git editor/i.test(`${warn.title}\n${warn.message || ""}`),
+  );
+  if (interactiveEditorWarning) {
+    lines.push(`Suggested fix: ${GIT_EDITOR_FIX_COMMAND}`);
+  }
+
   if (!result.ok && options.retryMs) {
     lines.push(`Next check in ${formatDuration(options.retryMs)}.`);
   }
 
   return lines.join(os.EOL);
 }
+
