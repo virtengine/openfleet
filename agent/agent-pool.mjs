@@ -45,6 +45,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
+import { resolveAgentSdkModuleEntry, resolveCodexSdkInstall } from "./agent-sdk.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime, readCodexConfigRuntimeDefaults } from "../shell/codex-model-profiles.mjs";
 import { buildTaskWritableRoots } from "../shell/codex-config.mjs";
@@ -99,6 +100,7 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 /** Tag for console logging */
 const TAG = "[agent-pool]";
 const require = createRequire(import.meta.url);
+const CODEX_SDK_SPECIFIER = "@openai/codex-sdk";
 const MODULE_PRESENCE_CACHE = new Map();
 
 function hasOptionalModule(specifier) {
@@ -106,26 +108,30 @@ function hasOptionalModule(specifier) {
     return MODULE_PRESENCE_CACHE.get(specifier);
   }
   let ok = false;
-  try {
-    require.resolve(specifier);
-    ok = true;
-  } catch {
-    // ESM-only packages have no CJS "require" export so require.resolve
-    // throws even when the package is installed.  Fall back to checking
-    // whether the package directory exists on disk.
+  if (specifier === CODEX_SDK_SPECIFIER) {
+    ok = Boolean(resolveCodexSdkInstall({ extraRoots: [getAgentRepoRoot(), process.cwd()] }));
+  } else {
     try {
-      const pkgDir = resolve(__dirname, "..", "node_modules", ...specifier.split("/"));
-      ok = existsSync(resolve(pkgDir, "package.json"));
+      require.resolve(specifier);
+      ok = true;
     } catch {
-      ok = false;
+      ok = Boolean(
+        resolveAgentSdkModuleEntry(specifier, { extraRoots: [getAgentRepoRoot(), process.cwd()] }),
+      );
     }
   }
   MODULE_PRESENCE_CACHE.set(specifier, ok);
   return ok;
 }
+
+async function importCodexSdkModule() {
+  return import(CODEX_SDK_SPECIFIER);
+}
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
 let timeoutClampWarningKey = "";
+const MIN_SILENT_STREAM_FRACTION = 0.25;
+const MAX_SILENT_STREAM_GRACE_MS = 30_000;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_ITEMS_PER_TURN = 600;
 const DEFAULT_MAX_ITEM_CHARS = 12_000;
@@ -261,6 +267,14 @@ async function maybeCompressResultItems(
 }
 
 function resolveCodexStreamSafety(totalTimeoutMs) {
+  const minSilentStreamFraction =
+    typeof MIN_SILENT_STREAM_FRACTION === "number" && Number.isFinite(MIN_SILENT_STREAM_FRACTION)
+      ? MIN_SILENT_STREAM_FRACTION
+      : 0.25;
+  const maxSilentStreamGraceMs =
+    typeof MAX_SILENT_STREAM_GRACE_MS === "number" && Number.isFinite(MAX_SILENT_STREAM_GRACE_MS)
+      ? MAX_SILENT_STREAM_GRACE_MS
+      : 30_000;
   const streamCfg = getInternalExecutorStreamConfig();
   const firstEventRaw =
     process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
@@ -286,10 +300,17 @@ function resolveCodexStreamSafety(totalTimeoutMs) {
   let firstEventTimeoutMs = null;
   if (Number.isFinite(budgetMs) && budgetMs > 2_000) {
     const maxAllowed = Math.max(1_000, budgetMs - 1_000);
-    firstEventTimeoutMs = clampTimerDelayMs(
-      Math.min(configuredFirstEventMs, maxAllowed),
-      "first-event-timeout",
+    const silentBudgetFloor = Math.min(
+      maxAllowed,
+      Math.max(
+        configuredFirstEventMs,
+        Math.min(
+          Math.trunc(budgetMs * minSilentStreamFraction),
+          maxSilentStreamGraceMs,
+        ),
+      ),
     );
+    firstEventTimeoutMs = clampTimerDelayMs(silentBudgetFloor, "first-event-timeout");
   }
 
   return {
@@ -799,6 +820,22 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
       return false;
     }
   };
+  const getAzureProviderEndpointEnvKeys = (sectionName) => {
+    const normalizedName = String(sectionName || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+    const keys = ["AZURE_OPENAI_ENDPOINT"];
+    if (normalizedName) {
+      keys.push(`${normalizedName}_ENDPOINT`);
+      keys.push(`${normalizedName}_BASE_URL`);
+      if (normalizedName.startsWith("AZURE_")) {
+        const suffix = normalizedName.slice("AZURE_".length);
+        if (suffix) {
+          keys.push(`AZURE_${suffix}_ENDPOINT`);
+          keys.push(`AZURE_${suffix}_BASE_URL`);
+        }
+      }
+    }
+    return [...new Set(keys)];
+  };
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
   const unsetEnvKeys = [];
@@ -842,6 +879,11 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
         if (!otherEnvKey || otherEnvKey === providerEnvKey) continue;
         delete env[otherEnvKey];
         if (!unsetEnvKeys.includes(otherEnvKey)) unsetEnvKeys.push(otherEnvKey);
+        for (const endpointKey of getAzureProviderEndpointEnvKeys(sectionName)) {
+          if (endpointKey === "AZURE_OPENAI_ENDPOINT") continue;
+          delete env[endpointKey];
+          if (!unsetEnvKeys.includes(endpointKey)) unsetEnvKeys.push(endpointKey);
+        }
       }
     } catch {
       // best effort — if config reading fails, don't block execution
@@ -975,6 +1017,21 @@ function shouldApplySdkCooldown(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (message.includes("failed to list models: 400")) return false;
+  if (
+    message.includes("failed to list models")
+    && (
+      message.includes("bad request")
+      || message.includes("invalid url")
+      || message.includes("deployment")
+      || message.includes("api version")
+      || message.includes("/models")
+      || message.includes("list models")
+      || message.includes("400")
+    )
+  ) {
+    return false;
+  }
   if (message.includes("failed to list models")) return true;
   if (message.includes("protocol version mismatch")) return true;
   if (message.includes("sdk expects version") && message.includes("server reports version")) {
@@ -1260,7 +1317,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
   let CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await importCodexSdkModule();
     CodexClass = mod.Codex;
     if (!CodexClass) throw new Error("Codex export not found in SDK module");
   } catch (err) {
@@ -1371,9 +1428,17 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       ? `${String(systemPrompt).trim()}\n\n---\n\n${prompt}`
       : prompt;
     const safePrompt = sanitizeAndBoundPrompt(`${anchoredPrompt}${TOOL_OUTPUT_GUARDRAIL}`);
-    const turn = await thread.runStreamed(safePrompt, {
-      signal: controller.signal,
-    });
+    const turn = await Promise.race([
+      thread.runStreamed(safePrompt, {
+        signal: controller.signal,
+      }),
+      new Promise((_, reject) => {
+        hardTimer = setTimeout(
+          () => reject(new Error("hard_timeout")),
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
+        );
+      }),
+    ]);
 
     let finalResponse = "";
     const allItems = [];
@@ -1382,6 +1447,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     // The soft timeout fires controller.abort() which the SDK should honor.
     // The hard timeout is a safety net in case the SDK iterator ignores the abort.
     const hardTimeoutPromise = new Promise((_, reject) => {
+      if (hardTimer) return;
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
         clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
@@ -2493,14 +2559,20 @@ export async function launchEphemeralThread(
       const mcpCfg = cfg.mcpServers || {};
       if (mcpCfg.enabled !== false) {
         const requestedIds = launchExtra.mcpServers || [];
-        const defaultIds = mcpCfg.defaultServers || [];
+        const defaultIds = mcpCfg.allowDefaultServers === true
+          ? mcpCfg.defaultServers || []
+          : [];
         const registry = await getMcpRegistry();
         let resolved = [];
         if (requestedIds.length || defaultIds.length) {
           resolved = await registry.resolveMcpServersForAgent(
             cwd,
             requestedIds,
-            { defaultServers: defaultIds, catalogOverrides: mcpCfg.catalogOverrides || {} },
+            {
+              defaultServers: defaultIds,
+              catalogOverrides: mcpCfg.catalogOverrides || {},
+              requireAuth: mcpCfg.requireAuth !== false,
+            },
           );
         }
         if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
@@ -2518,7 +2590,8 @@ export async function launchEphemeralThread(
       launchExtra._mcpResolved = true;
     }
   } catch (mcpErr) {
-    console.warn(`${TAG} MCP server resolution failed (non-fatal): ${mcpErr.message}`);
+    launchExtra._resolvedMcpServers = [];
+    console.warn(`${TAG} MCP server resolution failed (servers skipped): ${mcpErr.message}`);
   }
 
   // Determine the primary SDK to try
@@ -3214,7 +3287,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
 
   let CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await importCodexSdkModule();
     CodexClass = mod.Codex;
     if (!CodexClass) throw new Error("Codex export not found");
   } catch (err) {
@@ -3301,14 +3374,23 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
 
   try {
     const safePrompt = sanitizeAndBoundPrompt(prompt);
-    const turn = await thread.runStreamed(safePrompt, {
-      signal: controller.signal,
-    });
+    const turn = await Promise.race([
+      thread.runStreamed(safePrompt, {
+        signal: controller.signal,
+      }),
+      new Promise((_, reject) => {
+        hardTimer = setTimeout(
+          () => reject(new Error("hard_timeout")),
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
+        );
+      }),
+    ]);
     let finalResponse = "";
     const allItems = [];
 
     // Hard timeout safety net (same as launchCodexThread)
     const hardTimeoutPromise = new Promise((_, reject) => {
+      if (hardTimer) return;
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
         clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
@@ -4101,4 +4183,5 @@ export function getActiveThreads() {
   }
   return result;
 }
+
 

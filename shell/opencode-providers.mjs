@@ -12,10 +12,34 @@
  */
 
 import { execFile, exec } from "node:child_process";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
-const execAsync = promisify(exec);
+function execFileAsync(...args) {
+  return new Promise((resolve, reject) => {
+    execFile(...args, (error, stdout = "", stderr = "") => {
+      if (error) {
+        if (stdout !== undefined) error.stdout = stdout;
+        if (stderr !== undefined) error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+function execAsync(...args) {
+  return new Promise((resolve, reject) => {
+    exec(...args, (error, stdout = "", stderr = "") => {
+      if (error) {
+        if (stdout !== undefined) error.stdout = stdout;
+        if (stderr !== undefined) error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
 
 // ── Module-scope cache (lives at module scope per AGENTS.md) ──────────────────
 
@@ -81,13 +105,14 @@ function shouldRetryProviderQueryWithoutDirectory(err) {
   if (status === 400) return true;
 
   const message = String(err?.message || "").toLowerCase();
+  const stderrText = String(err?.stderr || "").toLowerCase();
   const responseText = String(
     err?.response?.data?.error?.message
     || err?.response?.data?.message
     || err?.cause?.message
     || "",
   ).toLowerCase();
-  const haystack = `${message} ${responseText}`;
+  const haystack = `${message} ${stderrText} ${responseText}`;
   return (
     haystack.includes(" 400") ||
     haystack.includes("failed to list models: 400") ||
@@ -109,13 +134,14 @@ function isIgnorableModelDiscoveryError(err) {
   if (status === 400) return true;
 
   const message = String(err?.message || "").toLowerCase();
+  const stderrText = String(err?.stderr || "").toLowerCase();
   const responseText = String(
     err?.response?.data?.error?.message
     || err?.response?.data?.message
     || err?.cause?.message
     || "",
   ).toLowerCase();
-  const haystack = `${message} ${responseText}`;
+  const haystack = `${message} ${stderrText} ${responseText}`;
   return (
     haystack.includes("failed to list models: 400") ||
     haystack.includes("bad request") ||
@@ -344,23 +370,42 @@ async function execOpencode(args, execOpts = {}) {
     ...execOpts,
   };
   const escaped = args.map((a) => `"${a}"`).join(" ");
+  const commandText = `"${bin}" ${escaped}`;
   if (isWindows) {
     // Use exec() on Windows to properly handle .cmd wrappers
-    const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
-    return typeof result === "string"
+    const result = await execAsync(commandText, baseOpts);
+    const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
+    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+      const err = new Error(normalized.stderr.trim());
+      err.stderr = normalized.stderr;
+      throw err;
+    }
+    return normalized;
   }
   try {
     const result = await execFileAsync(bin, args, baseOpts);
-    return typeof result === "string"
+    const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
+    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+      const err = new Error(normalized.stderr.trim());
+      err.stderr = normalized.stderr;
+      throw err;
+    }
+    return normalized;
   } catch {
-    const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
-    return typeof result === "string"
+    const result = await execAsync(commandText, baseOpts);
+    const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
+    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+      const err = new Error(normalized.stderr.trim());
+      err.stderr = normalized.stderr;
+      throw err;
+    }
+    return normalized;
   }
 }
 
@@ -537,7 +582,7 @@ async function discoverViaCLI() {
 
     if (isIgnorableModelDiscoveryError(err)) {
       console.warn(
-        `[opencode-providers] skipping CLI model discovery after provider returned HTTP 400: ${err.message}` ,
+        `[opencode-providers] CLI model discovery hit ignorable provider error with no basic fallback data: ${err.message}` ,
       );
       return buildEmptySnapshot();
     }
@@ -593,7 +638,7 @@ async function discoverAllViaCLI() {
 
     if (isIgnorableModelDiscoveryError(err)) {
       console.warn(
-        `[opencode-providers] skipping catalog discovery after provider returned HTTP 400: ${err.message}`,
+        `[opencode-providers] catalog discovery hit ignorable provider error with no basic fallback data: ${err.message}`,
       );
       return buildEmptySnapshot();
     }
@@ -765,6 +810,8 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
+
 
 
 

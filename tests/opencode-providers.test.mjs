@@ -10,6 +10,7 @@ vi.mock("node:child_process", async (importOriginal) => {
     execFile: execFileMock,
     exec: execMock,
   };
+
 });
 
 describe("opencode provider discovery", () => {
@@ -48,4 +49,62 @@ describe("opencode provider discovery", () => {
     expect(totalCalls).toBeGreaterThanOrEqual(2);
     expect(totalCalls).toBeLessThanOrEqual(3);
   });
+  it("falls back when verbose CLI writes 400 only to stderr", async () => {
+    execFileMock
+      .mockImplementationOnce((command, args, options, callback) => {
+        callback(null, "", "Failed to list models: 400");
+      })
+      .mockImplementationOnce((command, args, options, callback) => {
+        callback(null, "openai/gpt-4.1\n", "");
+      });
+
+    execMock
+      .mockImplementationOnce((command, options, callback) => {
+        callback(null, "", "Failed to list models: 400");
+      })
+      .mockImplementationOnce((command, options, callback) => {
+        callback(null, "openai/gpt-4.1\n", "");
+      });
+
+    const mod = await import("../shell/opencode-providers.mjs");
+    const snapshot = await mod.discoverProviders({ force: true });
+
+    expect(snapshot.connectedIds).toEqual(["openai"]);
+    expect(snapshot.allModels.map((model) => model.fullId)).toEqual([
+      "openai/gpt-4.1",
+    ]);
+  });
+
+  it("treats stderr-only 400 text on thrown fallback errors as ignorable", async () => {
+    execFileMock
+      .mockImplementationOnce((command, args, options, callback) => {
+        callback(new Error("verbose failed"));
+      })
+      .mockImplementationOnce((command, args, options, callback) => {
+        const err = new Error("");
+        err.stderr = "Failed to list models: 400";
+        callback(err);
+      });
+
+    execMock
+      .mockImplementationOnce((command, options, callback) => {
+        callback(new Error("verbose failed"));
+      })
+      .mockImplementationOnce((command, options, callback) => {
+        const err = new Error("");
+        err.stderr = "Failed to list models: 400";
+        callback(err);
+      });
+
+    const mod = await import("../shell/opencode-providers.mjs");
+    const snapshot = await mod.discoverProviders({ force: true });
+
+    expect(snapshot.connectedIds).toEqual([]);
+    expect(snapshot.allModels).toEqual([]);
+  });
 });
+
+
+
+
+

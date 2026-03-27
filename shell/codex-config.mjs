@@ -1102,6 +1102,13 @@ const COMMON_MCP_SERVER_DEFS = [
   },
 ];
 
+function shouldIncludeDefaultMcpServers(env = process.env) {
+  const raw = String(env.BOSUN_MCP_ALLOW_DEFAULT_SERVERS || "")
+    .trim()
+    .toLowerCase();
+  return ["1", "true", "yes", "on", "y"].includes(raw);
+}
+
 function buildCommonMcpBlock(definition) {
   return [
     "",
@@ -1111,7 +1118,10 @@ function buildCommonMcpBlock(definition) {
   ].join("\n");
 }
 
-export function buildCommonMcpBlocks() {
+export function buildCommonMcpBlocks(env = process.env) {
+  if (!shouldIncludeDefaultMcpServers(env)) {
+    return "";
+  }
   return COMMON_MCP_SERVER_DEFS.map(buildCommonMcpBlock).join("");
 }
 
@@ -1502,7 +1512,10 @@ function applyAgentSdkDefaults(toml, env, primarySdk, result) {
   return nextToml;
 }
 
-function ensureCommonMcpDefaults(toml, result) {
+function ensureCommonMcpDefaults(toml, result, env = process.env) {
+  if (!shouldIncludeDefaultMcpServers(env)) {
+    return toml;
+  }
   let nextToml = toml;
   for (const definition of COMMON_MCP_SERVER_DEFS) {
     if (!definition.isPresent(nextToml)) {
@@ -1604,7 +1617,7 @@ function applyEnsureCodexConfigDefaults(toml, env, primarySdk, result) {
   result.featuresAdded = featureResult.added;
   nextToml = featureResult.toml;
 
-  nextToml = ensureCommonMcpDefaults(nextToml, result);
+  nextToml = ensureCommonMcpDefaults(nextToml, result, env);
   nextToml = applyModelProviderDefaults(nextToml, env, result);
 
   return { sandboxState, toml: nextToml };

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
@@ -51,6 +51,27 @@ describe("session-tracker", () => {
       const session = tracker.getSession("task-1");
       expect(session.status).toBe("completed");
       expect(session.endedAt).toBeGreaterThan(0);
+    });
+
+    it("resets turnCount on new session start while preserving final turn count on completion", () => {
+      tracker.startSession("task-1", "First Run");
+      tracker.recordEvent("task-1", {
+        role: "assistant",
+        content: "First response",
+        timestamp: "2026-03-27T10:00:00.000Z",
+      });
+      tracker.endSession("task-1", "completed");
+
+      const completed = tracker.getSession("task-1");
+      expect(completed?.turnCount).toBe(1);
+      expect(completed?.status).toBe("completed");
+
+      tracker.startSession("task-1", "Second Run");
+
+      const restarted = tracker.getSession("task-1");
+      expect(restarted?.turnCount).toBe(0);
+      expect(restarted?.status).toBe("active");
+      expect(restarted?.messages).toEqual([]);
     });
 
     it("replaces existing session", () => {
@@ -483,6 +504,153 @@ describe("session-tracker", () => {
       expect(tracker.getSession("task-1")).toBeNull();
     });
 
+
+    it("increments turnCount only for completed assistant replies", () => {
+      tracker.startSession("task-turns", "Turn counting");
+      tracker.recordEvent("task-turns", {
+        role: "user",
+        content: "First prompt",
+        timestamp: "2026-03-27T10:00:00.000Z",
+      });
+      tracker.recordEvent("task-turns", {
+        type: "tool_call",
+        content: "read_file(src/app.js)",
+        meta: { toolName: "read_file" },
+        timestamp: "2026-03-27T10:00:01.000Z",
+      });
+      tracker.recordEvent("task-turns", {
+        role: "assistant",
+        content: "First reply",
+        timestamp: "2026-03-27T10:00:02.000Z",
+      });
+      tracker.recordEvent("task-turns", {
+        role: "user",
+        content: "Second prompt",
+        timestamp: "2026-03-27T10:01:00.000Z",
+      });
+      tracker.recordEvent("task-turns", {
+        role: "assistant",
+        content: "Second reply",
+        timestamp: "2026-03-27T10:01:03.000Z",
+      });
+
+      const session = tracker.getSession("task-turns");
+      expect(session.turnCount).toBe(2);
+      expect(session.messages.filter((msg) => msg.role === "user").map((msg) => msg.turnIndex)).toEqual([0, 1]);
+      expect(session.messages.filter((msg) => msg.role === "assistant").map((msg) => msg.turnIndex)).toEqual([0, 1]);
+      expect(Array.isArray(session.turns)).toBe(true);
+      expect(session.turns).toHaveLength(2);
+      expect(session.turns[0]).toEqual(expect.objectContaining({
+        turnIndex: 0,
+        status: "completed",
+      }));
+      expect(session.turns[1]).toEqual(expect.objectContaining({
+        turnIndex: 1,
+        status: "completed",
+      }));
+      expect(session.turns[0].durationMs).toBeGreaterThanOrEqual(0);
+      expect(session.turns[1].durationMs).toBeGreaterThanOrEqual(3000);
+    });
+
+    it("captures token usage on turn timeline entries", () => {
+      tracker.startSession("task-usage", "Usage timeline");
+      tracker.recordEvent("task-usage", {
+        role: "user",
+        content: "Summarize the diff",
+        timestamp: "2026-03-27T11:00:00.000Z",
+      });
+      tracker.recordEvent("task-usage", {
+        role: "assistant",
+        content: "Summary ready",
+        timestamp: "2026-03-27T11:00:04.000Z",
+        meta: {
+          usage: {
+            inputTokens: 120,
+            outputTokens: 45,
+            totalTokens: 165,
+          },
+        },
+      });
+
+      const session = tracker.getSession("task-usage");
+      expect(session.turnCount).toBe(1);
+      expect(session.turns?.[0]).toEqual(expect.objectContaining({
+        turnIndex: 0,
+        status: "completed",
+        durationMs: 4000,
+      }));
+      expect(tracker.listAllSessions().find((entry) => entry.id === "task-usage")?.turns?.[0]?.durationMs).toBe(4000);
+    });
+
+    it("preserves turn timeline history after session completion", () => {
+      tracker.startSession("task-history", "Historic turns");
+      tracker.recordEvent("task-history", {
+        role: "user",
+        content: "First prompt",
+        timestamp: "2026-03-27T12:00:00.000Z",
+      });
+      tracker.recordEvent("task-history", {
+        role: "assistant",
+        content: "First reply",
+        timestamp: "2026-03-27T12:00:02.000Z",
+        meta: { usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 } },
+      });
+      tracker.recordEvent("task-history", {
+        role: "user",
+        content: "Second prompt",
+        timestamp: "2026-03-27T12:01:00.000Z",
+      });
+      tracker.recordEvent("task-history", {
+        role: "assistant",
+        content: "Second reply",
+        timestamp: "2026-03-27T12:01:05.000Z",
+        meta: { usage: { inputTokens: 30, outputTokens: 15, totalTokens: 45 } },
+      });
+      tracker.endSession("task-history", "completed");
+
+      const session = tracker.getSession("task-history");
+      expect(session?.status).toBe("completed");
+      expect(session?.turnCount).toBe(2);
+      expect(session?.turns).toEqual([
+        expect.objectContaining({ turnIndex: 0, durationMs: 2000, totalTokens: 30, status: "completed" }),
+        expect.objectContaining({ turnIndex: 1, durationMs: 5000, totalTokens: 45, status: "completed" }),
+      ]);
+      expect(tracker.listAllSessions().find((entry) => entry.id === "task-history")?.turns).toEqual([
+        expect.objectContaining({ turnIndex: 0, totalTokens: 30 }),
+        expect.objectContaining({ turnIndex: 1, totalTokens: 45 }),
+      ]);
+
+      const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-turns-"));
+      try {
+        const persisted = createSessionTracker({ maxMessages: 20, persistDir, flushIntervalMs: 5 });
+        persisted.startSession("task-history", "Historic turns");
+        persisted.recordEvent("task-history", {
+          role: "user",
+          content: "First prompt",
+          timestamp: "2026-03-27T12:00:00.000Z",
+        });
+        persisted.recordEvent("task-history", {
+          role: "assistant",
+          content: "First reply",
+          timestamp: "2026-03-27T12:00:02.000Z",
+          meta: { usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 } },
+        });
+        persisted.endSession("task-history", "completed");
+        persisted.flushNow();
+        persisted.destroy();
+
+        const reloaded = createSessionTracker({ maxMessages: 20, persistDir });
+        const restored = reloaded.getSession("task-history");
+        expect(restored?.turnCount).toBe(1);
+        expect(restored?.turns).toEqual([
+          expect.objectContaining({ turnIndex: 0, durationMs: 2000, totalTokens: 30, status: "completed" }),
+        ]);
+        reloaded.destroy();
+      } finally {
+        rmSync(persistDir, { recursive: true, force: true });
+      }
+    });
+
     it("tracks stats", () => {
       tracker.startSession("task-1", "Test 1");
       tracker.startSession("task-2", "Test 2");
@@ -654,6 +822,47 @@ describe("session-tracker", () => {
       }
     });
 
+    it("preserves and lists disk-backed sessions beyond the in-memory cap", () => {
+      const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
+      try {
+        for (let index = 0; index < 101; index += 1) {
+          const id = `hist-${String(index).padStart(3, "0")}`;
+          const timestamp = new Date(Date.now() + index * 1000).toISOString();
+          writeFileSync(join(persistDir, `${id}.json`), JSON.stringify({
+            id,
+            taskId: id,
+            taskTitle: `Historic ${index}`,
+            type: "primary",
+            status: "completed",
+            createdAt: timestamp,
+            lastActiveAt: timestamp,
+            startedAt: Date.parse(timestamp),
+            endedAt: Date.parse(timestamp),
+            messages: [
+              {
+                id: `${id}-msg-1`,
+                role: "assistant",
+                content: `Historic session ${index}`,
+                timestamp,
+              },
+            ],
+            metadata: { workspaceId: "ws-main" },
+          }, null, 2));
+        }
+
+        expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(101);
+
+        const reloadedTracker = createSessionTracker({ maxMessages: 5, persistDir });
+        expect(reloadedTracker.listAllSessions()).toHaveLength(101);
+        expect(reloadedTracker.getSessionMessages("hist-000")?.id).toBe("hist-000");
+        expect(reloadedTracker.getSessionMessages("hist-100")?.id).toBe("hist-100");
+        expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(101);
+        reloadedTracker.destroy();
+      } finally {
+        rmSync(persistDir, { recursive: true, force: true });
+      }
+    }, 15000);
+
     it("marks failed or long runs as resumable and trims short summaries", () => {
       tracker = createSessionTracker({ maxMessages: 50, persistDir: null });
       tracker.createSession({ id: "chat-resume", type: "primary" });
@@ -702,3 +911,4 @@ describe("session-tracker", () => {
     });
   });
 });
+

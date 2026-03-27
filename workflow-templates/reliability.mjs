@@ -626,6 +626,8 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
   variables: {
     repairTimeoutMs: 5400000,
     verificationTimeoutMs: 3600000,
+    repoRoot: "",
+    defaultTargetBranch: "main",
     baseBranch: "main",
     verificationCommand:
       "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
@@ -641,32 +643,55 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       eventType: "task.finalization_failed",
     }, { x: 550, y: 50 }),
 
-    node("has-worktree", "condition.expression", "Worktree Context Available?", {
+    node("has-branch-context", "condition.expression", "Branch Context Available?", {
+      expression: "Boolean($data?.repoRoot) && Boolean($data?.branch) && Boolean($data?.taskId)",
+    }, { x: 400, y: 180, outputs: ["yes", "no"] }),
+
+    node("recover-repair-worktree", "action.recover_worktree", "Reset Broken Worktree", {
+      worktreePath: "{{worktreePath}}",
+      branch: "{{branch}}",
+      repoRoot: "{{repoRoot}}",
+      taskId: "{{taskId}}",
+    }, { x: 220, y: 320 }),
+
+    node("acquire-repair-worktree", "action.acquire_worktree", "Acquire Clean Worktree", {
+      repoRoot: "{{repoRoot}}",
+      branch: "{{branch}}",
+      taskId: "{{taskId}}",
+      baseBranch: "{{baseBranch}}",
+      defaultTargetBranch: "{{defaultTargetBranch}}",
+    }, { x: 220, y: 460 }),
+
+    node("acquired-repair-worktree", "condition.expression", "Clean Worktree Ready?", {
+      expression: "$ctx.getNodeOutput('acquire-repair-worktree')?.success === true",
+    }, { x: 220, y: 600, outputs: ["yes", "no"] }),
+
+    node("has-worktree", "condition.expression", "Fallback Worktree Context Available?", {
       expression: "Boolean($data?.worktreePath)",
-    }, { x: 400, y: 180 }),
+    }, { x: 560, y: 320, outputs: ["yes", "no"] }),
 
     node("refresh-worktree", "action.refresh_worktree", "Refresh Worktree", {
       operation: "fetch",
-      cwd: "{{worktreePath}}",
+      cwd: "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
       continueOnError: true,
-    }, { x: 400, y: 320 }),
+    }, { x: 400, y: 740 }),
 
     node("repair-agent", "action.run_agent", "Repair Task", {
       prompt: "{{repairPrompt}}",
-      cwd: "{{worktreePath}}",
+      cwd: "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
       timeoutMs: "{{repairTimeoutMs}}",
-    }, { x: 400, y: 460 }),
+    }, { x: 400, y: 880 }),
 
     node("verify", "action.run_command", "Re-run Quality Gates", {
       command: "{{verificationCommand}}",
-      cwd: "{{worktreePath}}",
+      cwd: "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
       timeoutMs: "{{verificationTimeoutMs}}",
       continueOnError: true,
-    }, { x: 400, y: 600 }),
+    }, { x: 400, y: 1020 }),
 
     node("verify-passed", "condition.expression", "Repair Passed?", {
       expression: "$ctx.getNodeOutput('verify')?.success === true",
-    }, { x: 400, y: 740 }),
+    }, { x: 400, y: 1160 }),
 
     node("create-pr", "action.create_pr", "Handoff/Refresh Lifecycle", {
       title: "{{taskTitle}}",
@@ -677,11 +702,11 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       maxRetries: 3,
       retryDelayMs: 15000,
       continueOnError: true,
-    }, { x: 250, y: 880 }),
+    }, { x: 250, y: 1300 }),
 
     node("create-pr-success", "condition.expression", "Lifecycle Handoff Ready?", {
       expression: "$ctx.getNodeOutput('create-pr')?.success === true",
-    }, { x: 250, y: 950, outputs: ["yes", "no"] }),
+    }, { x: 250, y: 1370, outputs: ["yes", "no"] }),
 
     node("mark-inreview", "action.update_task_status", "Set In Review", {
       taskId: "{{taskId}}",
@@ -694,7 +719,19 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
         branch: "{{branch}}",
         worktreePath: "{{worktreePath}}",
       },
-    }, { x: 250, y: 1020 }),
+    }, { x: 250, y: 1440 }),
+
+    node("clear-repair-blocked-success", "action.bosun_function", "Clear Repair Blocked State", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{taskId}}",
+        fields: {
+          cooldownUntil: null,
+          blockedReason: null,
+          meta: "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}",
+        },
+      },
+    }, { x: 250, y: 1510 }),
 
     node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
       workflowId: "template-bosun-pr-progressor",
@@ -708,7 +745,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
         prUrl: "{{$data?.prUrl || $ctx.getNodeOutput('create-pr')?.prUrl || ''}}",
         repo: "{{$data?.repo || $data?.repoSlug || $data?.repository || $ctx.getNodeOutput('create-pr')?.repoSlug || ''}}",
       },
-    }, { x: 250, y: 1160 }),
+    }, { x: 250, y: 1650 }),
 
     node("mark-todo", "action.update_task_status", "Mark Todo (Repair Failed)", {
       taskId: "{{taskId}}",
@@ -722,27 +759,45 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
         worktreePath: "{{worktreePath}}",
         baseBranch: "{{baseBranch}}",
       },
-    }, { x: 560, y: 880 }),
+    }, { x: 560, y: 1300 }),
+
+    node("clear-repair-blocked-failure", "action.bosun_function", "Clear Failed Repair Blocked State", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{taskId}}",
+        fields: {
+          cooldownUntil: null,
+          blockedReason: null,
+          meta: "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}",
+        },
+      },
+    }, { x: 560, y: 1440 }),
 
     node("notify-success", "notify.telegram", "Notify Repair Success", {
       message: ":check: Repair workflow recovered **{{taskTitle}}** ({{taskId}}) and moved it to inreview.",
       silent: true,
-    }, { x: 250, y: 1300 }),
+    }, { x: 250, y: 1790 }),
 
     node("notify-escalate", "notify.telegram", "Escalate Repair Failure", {
       message: ":alert: Repair workflow could not recover **{{taskTitle}}** ({{taskId}}). Manual intervention required.",
-    }, { x: 560, y: 1020 }),
+    }, { x: 560, y: 1580 }),
 
     node("no-worktree", "notify.log", "Missing Worktree Context", {
       message: "Task repair skipped for {{taskId}} — missing worktreePath in event payload",
       level: "warn",
-    }, { x: 700, y: 320 }),
+    }, { x: 720, y: 460 }),
   ],
   edges: [
-    edge("trigger-failed", "has-worktree"),
-    edge("trigger-finalization", "has-worktree"),
-    edge("has-worktree", "refresh-worktree", { condition: "$output?.result === true" }),
-    edge("has-worktree", "no-worktree", { condition: "$output?.result !== true" }),
+    edge("trigger-failed", "has-branch-context"),
+    edge("trigger-finalization", "has-branch-context"),
+    edge("has-branch-context", "recover-repair-worktree", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-branch-context", "has-worktree", { condition: "$output?.result !== true", port: "no" }),
+    edge("recover-repair-worktree", "acquire-repair-worktree"),
+    edge("acquire-repair-worktree", "acquired-repair-worktree"),
+    edge("acquired-repair-worktree", "refresh-worktree", { condition: "$output?.result === true", port: "yes" }),
+    edge("acquired-repair-worktree", "no-worktree", { condition: "$output?.result !== true", port: "no" }),
+    edge("has-worktree", "refresh-worktree", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-worktree", "no-worktree", { condition: "$output?.result !== true", port: "no" }),
     edge("refresh-worktree", "repair-agent"),
     edge("repair-agent", "verify"),
     edge("verify", "verify-passed"),
@@ -751,9 +806,11 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     edge("create-pr", "create-pr-success"),
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo", { condition: "$output?.result !== true", port: "no" }),
-    edge("mark-inreview", "handoff-pr-progressor"),
+    edge("mark-inreview", "clear-repair-blocked-success"),
+    edge("clear-repair-blocked-success", "handoff-pr-progressor"),
     edge("handoff-pr-progressor", "notify-success"),
-    edge("mark-todo", "notify-escalate"),
+    edge("mark-todo", "clear-repair-blocked-failure"),
+    edge("clear-repair-blocked-failure", "notify-escalate"),
     edge("no-worktree", "notify-escalate"),
   ],
   metadata: {

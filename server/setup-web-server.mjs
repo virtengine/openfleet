@@ -88,7 +88,11 @@ function buildModelsProbeRequest({ apiKey = "", baseUrl = "" } = {}) {
       return { endpoint: parsed.toString(), headers };
     }
 
-    if (isAzure || lowerPath === "/openai" || lowerPath.startsWith("/openai/")) {
+    if (
+      (isAzure && !(lowerPath === "/openai/v1" || lowerPath.startsWith("/openai/v1/")))
+      || lowerPath === "/openai"
+      || lowerPath.startsWith("/openai/")
+    ) {
       parsed.pathname = "/openai/models";
       parsed.search = "";
       parsed.searchParams.set("api-version", "2024-10-21");
@@ -3355,3 +3359,4 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup_web
     process.exit(1);
   });
 }
+

@@ -67,6 +67,10 @@ import {
 
 const REPO_ROOT = "/fake/repo";
 
+function normalizePathForAssert(value) {
+  return String(value).replace(/\\/g, "/").replace(/^[A-Za-z]:/, "");
+}
+
 /** Build a porcelain `git worktree list` stdout string. */
 function porcelainOutput(entries) {
   return (
@@ -444,7 +448,7 @@ describe("worktree-manager", () => {
     it("bootstraps arbitrary managed worktree paths with shared node_modules", () => {
       const worktreePath = `${REPO_ROOT}/.bosun/worktrees/task-abc123`;
       existsSync.mockImplementation((path) => {
-        const normalized = String(path).replace(/\\/g, "/");
+        const normalized = normalizePathForAssert(path);
         return normalized.endsWith("/.bosun/worktrees/task-abc123")
           || normalized.endsWith("/package.json")
           || normalized.endsWith(`${REPO_ROOT}/node_modules`)
@@ -454,12 +458,14 @@ describe("worktree-manager", () => {
 
       bootstrapWorktreeForPath(REPO_ROOT, worktreePath);
 
-      expect(ensureWorktreeRuntimeSetupMock).toHaveBeenCalledWith(REPO_ROOT, worktreePath);
-      expect(inspectWorktreeRuntimeSetupMock).toHaveBeenCalledWith(REPO_ROOT, worktreePath);
+      expect(normalizePathForAssert(ensureWorktreeRuntimeSetupMock.mock.calls[0][0])).toBe(REPO_ROOT);
+      expect(normalizePathForAssert(ensureWorktreeRuntimeSetupMock.mock.calls[0][1])).toBe(worktreePath);
+      expect(normalizePathForAssert(inspectWorktreeRuntimeSetupMock.mock.calls[0][0])).toBe(REPO_ROOT);
+      expect(normalizePathForAssert(inspectWorktreeRuntimeSetupMock.mock.calls[0][1])).toBe(worktreePath);
       expect(symlinkSync).toHaveBeenCalledTimes(1);
       const [targetPath, linkPath] = symlinkSync.mock.calls[0];
-      expect(String(targetPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/node_modules$/);
-      expect(String(linkPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123\/node_modules$/);
+      expect(normalizePathForAssert(targetPath)).toMatch(/\/fake\/repo\/node_modules$/);
+      expect(normalizePathForAssert(linkPath)).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123\/node_modules$/);
     });
 
     it("fails closed when runtime setup inspection reports missing hook state", () => {
@@ -1187,17 +1193,17 @@ describe("worktree-manager", () => {
         stderr: "",
       });
       existsSync.mockImplementation((p) => {
-        const normalized = String(p).replace(/\\/g, "/");
-        return normalized === `/fake/repo/${DEFAULT_MANAGED_TASK_BASE_DIR}`;
+        const normalized = normalizePathForAssert(p);
+        return normalized.endsWith(`/${DEFAULT_MANAGED_TASK_BASE_DIR}`);
       });
       readdirSync.mockImplementation((dirPath) => {
-        if (String(dirPath).replace(/\\/g, "/") === `/fake/repo/${DEFAULT_MANAGED_TASK_BASE_DIR}`) {
+        if (normalizePathForAssert(dirPath).endsWith(`/${DEFAULT_MANAGED_TASK_BASE_DIR}`)) {
           return [{ name: "task-abc123-deadbeef", isDirectory: () => true }];
         }
         return [];
       });
       statSync.mockImplementation((targetPath) => ({
-        mtimeMs: String(targetPath).replace(/\\/g, "/") === orphanPath
+        mtimeMs: normalizePathForAssert(targetPath) === orphanPath
           ? Date.now() - MAX_WORKTREE_AGE_MS - 10_000
           : Date.now(),
         isDirectory: () => true,

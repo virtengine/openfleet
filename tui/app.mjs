@@ -1,6 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import * as ReactModule from "react";
 import htm from "htm";
-import { Box, Text, useApp, useInput } from "ink";
+import * as ink from "ink";
+
+const React = ReactModule.default ?? ReactModule;
+const useCallback = ReactModule.useCallback ?? React.useCallback;
+const useEffect = ReactModule.useEffect ?? React.useEffect;
+const useMemo = ReactModule.useMemo ?? React.useMemo;
+const useState = ReactModule.useState ?? React.useState;
+const Box = ink.Box ?? ink.default?.Box;
+const Text = ink.Text ?? ink.default?.Text;
+const useApp = ink.useApp ?? ink.default?.useApp;
+const useInput = ink.useInput ?? ink.default?.useInput;
 
 import wsBridgeFactory from "./lib/ws-bridge.mjs";
 import { getNextScreenForInput } from "./lib/navigation.mjs";

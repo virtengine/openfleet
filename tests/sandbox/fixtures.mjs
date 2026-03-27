@@ -279,6 +279,8 @@ export const TEMPLATE_FIXTURES = {
   "template-bosun-pr-watchdog":            { scenario: scenarios.greenPR(60),      inputVars: { prNumber: 60 } },
   "template-github-kanban-sync":           { scenario: scenarios.kanbanState(),     inputVars: {} },
   "template-sdk-conflict-resolver":        { scenario: scenarios.conflictPR(70),   inputVars: { prNumber: 70, branch: "fix/sdk-conflict" } },
+  "template-pr-review-quality-striker":    { scenario: scenarios.greenPR(71),      inputVars: { repo: "virtengine/bosun", branch: "feat/review-quality", prNumber: 71 } },
+  "template-sonarqube-pr-striker":         { scenario: scenarios.greenPR(72),      inputVars: { repo: "virtengine/bosun", branch: "feat/sonar-quality", prNumber: 72 } },
   "template-review-agent":                 { scenario: scenarios.greenPR(80),      inputVars: { prNumber: 80, branch: "feat/review" } },
   "template-frontend-agent":               { scenario: scenarios.greenPR(81),      inputVars: { prNumber: 81, taskId: "TASK-1", branch: "feat/frontend" } },
   "template-custom-agent":                 { scenario: scenarios.greenPR(82),      inputVars: { prNumber: 82, taskId: "TASK-2", branch: "feat/custom" } },
@@ -335,4 +337,3 @@ export const TEMPLATE_FIXTURES = {
   "template-task-cicd":                  { scenario: scenarios.cicdDeploy(),      inputVars: { taskId: "TASK-CI-1", worktreePath: "/tmp/wt/cicd", branch: "feat/cicd", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
   "template-task-design":                { scenario: scenarios.greenPR(214),      inputVars: { taskId: "TASK-DS-1", worktreePath: "/tmp/wt/design", branch: "feat/design", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
 };
-

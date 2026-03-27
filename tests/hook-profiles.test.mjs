@@ -28,6 +28,12 @@ describe("hook-profiles", () => {
     expect(config.hooks.PrePush?.length).toBeGreaterThan(0);
     expect(config.hooks.PreCommit?.length).toBeGreaterThan(0);
     expect(config.hooks.TaskComplete?.length).toBeGreaterThan(0);
+    expect(config.hooks.PrePush?.map((item) => item.command)).toContain(
+      "git diff --check",
+    );
+    expect(config.hooks.PreCommit?.map((item) => item.command)).toContain(
+      "git diff --cached --check",
+    );
   });
 
   it("builds lightweight profile without validation hooks", () => {
@@ -44,6 +50,36 @@ describe("hook-profiles", () => {
       commands: { PrePush: [] },
     });
     expect(config.hooks.PrePush).toBeUndefined();
+  });
+
+  it("adds detected repository commands to validation hooks", async () => {
+    await writeFile(
+      resolve(rootDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "hook-fixture",
+          scripts: {
+            lint: "eslint .",
+            "prepush:check": "npm run lint && npm test",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = buildCanonicalHookConfig({
+      profile: "strict",
+      repoRoot: rootDir,
+    });
+
+    expect(config.hooks.PrePush?.map((item) => item.command)).toContain(
+      "npm run prepush:check",
+    );
+    expect(config.hooks.PreCommit?.map((item) => item.command)).toContain(
+      "npm run lint",
+    );
   });
 
   it("normalizes hook targets", () => {
@@ -64,6 +100,22 @@ describe("hook-profiles", () => {
   });
 
   it("scaffolds codex/claude/copilot hook files", async () => {
+    await writeFile(
+      resolve(rootDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "hook-scaffold-fixture",
+          scripts: {
+            lint: "eslint .",
+            "prepush:check": "npm run lint && npm test",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
     const result = scaffoldAgentHookFiles(rootDir, {
       profile: "strict",
       targets: ["codex", "claude", "copilot"],
@@ -81,6 +133,12 @@ describe("hook-profiles", () => {
       await readFile(resolve(rootDir, ".codex", "hooks.json"), "utf8"),
     );
     expect(codexHooks.hooks.PrePush?.length).toBeGreaterThan(0);
+    expect(codexHooks.hooks.PrePush?.map((item) => item.command)).toContain(
+      "npm run prepush:check",
+    );
+    expect(codexHooks.hooks.PreCommit?.map((item) => item.command)).toContain(
+      "npm run lint",
+    );
 
     const claudeSettings = JSON.parse(
       await readFile(
