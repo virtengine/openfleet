@@ -25,6 +25,7 @@ jobs:
             const pullRequests = Array.isArray(run.pull_requests) ? run.pull_requests : [];
             const prNumber = Number(pullRequests[0]?.number || 0);
             const failureMarker = "<!-- bosun-ci-failure -->";
+            const bosunCreatedMarker = "<!-- bosun-created -->";
             const sharedFailureMarker = "<!-- bosun-ci-shared-failure -->";
             const attachedLabel = "bosun-attached";
             const bosunCreatedLabel = "bosun-pr-bosun-created";

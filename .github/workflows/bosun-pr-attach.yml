@@ -76,6 +76,7 @@ jobs:
             const pr = context.payload.pull_request || {};
             const issue_number = context.payload.pull_request.number;
             const attachedLabel = "bosun-attached";
+            const bosunCreatedMarker = "<!-- bosun-created -->";
             const marker = "<!-- bosun-pr-classification -->";
             const legacyMarker = "<!-- bosun-attached -->";
             const classLabels = {
