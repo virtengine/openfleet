@@ -97,6 +97,12 @@ describe("cli workspace config-dir resolution", () => {
     expect(workspaceSection).not.toContain('resolve(os.homedir(), "bosun")');
   });
 
+  it("checks existing monitor locks using configured runtime cache dirs", () => {
+    expect(cliSource).toContain("const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();");
+    expect(cliSource).toContain("detectExistingMonitorLockOwner(null, configuredCacheDirs)");
+    expect(cliSource).toContain("function detectExistingMonitorLockOwner(excludePid = null, extraCacheDirs = [])");
+  });
+
   it("prefers repo-local .bosun for --where when repo root is provided", () => {
     const repoRoot = makeTempDir("bosun-cli-config-dir-");
     const repoConfigDir = resolve(repoRoot, ".bosun");
@@ -153,6 +159,9 @@ describe("cli workspace config-dir resolution", () => {
       TELEGRAM_UI_TUNNEL: "disabled",
       BOSUN_UI_AUTO_OPEN_ON_DAEMON: "false",
       BOSUN_MCP_DISABLE_DAEMON_DISCOVERY: "1",
+      BOSUN_SENTINEL_AUTO_START: "0",
+      BOSUN_SENTINEL_STRICT: "0",
+      BOSUN_DAEMON: "0",
     };
     delete env.NODE_ENV;
     delete env.VITEST;
@@ -184,17 +193,23 @@ describe("cli workspace config-dir resolution", () => {
     try {
       const pidFile = resolve(runtimeRoot, ".cache", "bosun.pid");
       const startup = await waitForStartupSignal(child, pidFile, 20000);
+      const duplicateGuardTriggered = /bosun is already running \(PID \d+\); exiting duplicate start\./i.test(output);
 
-      expect(startup.started, `Bosun never reached monitor bootstrap. Output:\n${output}`).toBe(true);
-      expect(startup.exited, `Bosun exited before monitor bootstrap completed. Output:\n${output}`).toBe(false);
+      if (duplicateGuardTriggered) {
+        expect(startup.started, `Duplicate guard should prevent monitor bootstrap. Output:\n${output}`).toBe(false);
+        expect(child.exitCode, `Duplicate guard should exit cleanly. Output:\n${output}`).toBe(0);
+      } else {
+        expect(startup.started, `Bosun never reached monitor bootstrap. Output:\n${output}`).toBe(true);
+        expect(startup.exited, `Bosun exited before monitor bootstrap completed. Output:\n${output}`).toBe(false);
 
-      await sleep(1500);
+        await sleep(1500);
 
-      expect(
-        child.exitCode,
-        `Bosun crashed shortly after monitor bootstrap. Output:\n${output}`,
-      ).toBeNull();
-      expect(output).not.toMatch(/Monitor failed to start|bosun failed:/i);
+        expect(
+          child.exitCode,
+          `Bosun crashed shortly after monitor bootstrap. Output:\n${output}`,
+        ).toBeNull();
+        expect(output).not.toMatch(/Monitor failed to start|bosun failed:/i);
+      }
     } finally {
       await stopChildProcess(child);
     }

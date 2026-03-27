@@ -242,8 +242,7 @@ let TELEGRAM_CURL_POLL_TIMEOUT_SEC = Math.max(
 );
 let TELEGRAM_CURL_FALLBACK = !["0", "false", "no"].includes(
   String(
-    process.env.TELEGRAM_CURL_FALLBACK ||
-      (process.platform === "win32" ? "false" : "true"),
+    process.env.TELEGRAM_CURL_FALLBACK || "true",
   ).toLowerCase(),
 );
 let telegramAllowedChatIds = new Set();
@@ -363,8 +362,7 @@ function refreshTelegramConfigFromEnv() {
   );
   TELEGRAM_CURL_FALLBACK = !["0", "false", "no"].includes(
     String(
-      process.env.TELEGRAM_CURL_FALLBACK ||
-        (process.platform === "win32" ? "false" : "true"),
+      process.env.TELEGRAM_CURL_FALLBACK || "true",
     ).toLowerCase(),
   );
   const allowedIds = new Set([

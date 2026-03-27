@@ -2321,10 +2321,14 @@ export function loadConfig(argv = process.argv, options = {}) {
   });
 
   // ── Status file ──────────────────────────────────────────
-  const cacheDir = resolve(
-    repoRoot,
-    configData.cacheDir || selectedRepository?.cacheDir || ".cache",
-  );
+  const configuredCacheDir =
+    String(configData.cacheDir || selectedRepository?.cacheDir || ".cache").trim() ||
+    ".cache";
+  const cacheDirBase =
+    hasExplicitConfigDir && !selectedRepository?.cacheDir && !configData.cacheDir
+      ? configDir
+      : repoRoot;
+  const cacheDir = resolve(cacheDirBase, configuredCacheDir);
   const statusPath =
     process.env.STATUS_FILE ||
     configData.statusPath ||

@@ -64,9 +64,14 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("const workflowStartupRecoveryStepDelayMs = Math.max(");
     expect(monitorSource).toContain("function scheduleStartupWorkflowRecovery(name, handler, step = 0)");
     expect(monitorSource).toContain('"startup-workflow-history-unstick"');
-    expect(monitorSource).toContain("workflowRecovery?.startupGraceMs");
-    expect(monitorSource).toContain("workflowRecovery?.startupStepDelayMs");
+    expect(monitorSource).toContain("configWorkflowRecovery?.startupGraceMs");
+    expect(monitorSource).toContain("configWorkflowRecovery?.startupStepDelayMs");
     expect(monitorSource).not.toContain('engine.resumeInterruptedRuns().catch((err) => {');
+    expect(
+      monitorSource.indexOf("function scheduleStartupWorkflowRecovery(name, handler, step = 0)"),
+    ).toBeLessThan(
+      monitorSource.indexOf("if (!isMonitorTestRuntime) {\n  if (workflowAutomationEnabled) {")
+    );
   });
 
   it("stores workflow definitions and runs under the selected repoRoot", () => {

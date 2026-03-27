@@ -427,8 +427,11 @@ async function getConfiguredRuntimeCacheDirs() {
   try {
     const { loadConfig } = await import("./config/config.mjs");
     const config = loadConfig();
-    return getRuntimeCacheDirCandidates([
-      String(config?.cacheDir || "").trim() || null,
+    const configuredCacheDir = String(config?.cacheDir || "").trim() || null;
+    return uniqueResolvedPaths([
+      runtimeCacheDir,
+      configuredCacheDir,
+      ...getRuntimeCacheDirCandidates(),
     ]);
   } catch {
     return getRuntimeCacheDirCandidates();
@@ -926,7 +929,7 @@ function stopDaemon() {
   }
 }
 
-function daemonStatus() {
+async function daemonStatus() {
   const pid = getDaemonPid();
   if (pid) {
     console.log(`  bosun daemon is running (PID ${pid})`);
@@ -942,7 +945,8 @@ function daemonStatus() {
       }
       console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
-      const existingMonitorOwner = detectExistingMonitorLockOwner();
+      const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+      const existingMonitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
       if (existingMonitorOwner) {
         console.log(
           `  bosun daemon is not running in daemon mode, but bosun monitor is active (PID ${existingMonitorOwner.pid}).`,
@@ -1678,7 +1682,7 @@ async function main() {
     return;
   }
   if (args.includes("--daemon-status")) {
-    daemonStatus();
+    await daemonStatus();
     return;
   }
 
@@ -2314,7 +2318,8 @@ async function main() {
     process.exit(0);
   }
 
-  const existingOwner = detectExistingMonitorLockOwner();
+  const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+  const existingOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
   if (existingOwner) {
     console.log(
       `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,
@@ -2409,14 +2414,8 @@ async function sendCrashNotification(exitCode, signal, options = {}) {
 }
 
 // ── Self-restart exit code (must match monitor.mjs SELF_RESTART_EXIT_CODE) ───
-const SELF_RESTART_EXIT_CODE = 75;
-let monitorChild = null;
-
 function getMonitorPidFileCandidates(extraCacheDirs = []) {
-  return uniqueResolvedPaths([
-    ...getPidFileCandidates("bosun.pid", extraCacheDirs),
-    resolve(__dirname, "..", ".cache", "bosun.pid"),
-  ]);
+  return getPidFileCandidates("bosun.pid", extraCacheDirs);
 }
 
 function tailLinesFromFile(filePath, maxLines = 200) {
@@ -2490,9 +2489,9 @@ function shouldPauseDaemonRestartStorm(options) {
   return { pause: true, reasons: signals.reasons };
 }
 
-function detectExistingMonitorLockOwner(excludePid = null) {
+function detectExistingMonitorLockOwner(excludePid = null, extraCacheDirs = []) {
   try {
-    for (const pidFile of getMonitorPidFileCandidates()) {
+    for (const pidFile of getMonitorPidFileCandidates(extraCacheDirs)) {
       let ownerPid = null;
       try {
         ownerPid = readAlivePid(pidFile);
@@ -2621,7 +2620,7 @@ function runMonitor({ restartReason = "" } = {}) {
             const exitCode = code ?? (signal ? 1 : 0);
             const existingOwner =
               !gracefulShutdown && exitCode === 1
-                ? detectExistingMonitorLockOwner(childPid)
+                ? detectExistingMonitorLockOwner(childPid, [runtimeCacheDir])
                 : null;
             if (existingOwner) {
               console.log(

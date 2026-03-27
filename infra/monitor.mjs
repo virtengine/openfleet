@@ -13533,6 +13533,22 @@ process.on("exit", (code) => {
   appendMonitorCrashBreadcrumb(line);
 });
 
+const workflowStartupRecoveryGraceMs = Math.max(
+  0,
+  Number(configWorkflowRecovery?.startupGraceMs || 0),
+);
+const workflowStartupRecoveryStepDelayMs = Math.max(
+  0,
+  Number(configWorkflowRecovery?.startupStepDelayMs || 0),
+);
+
+function scheduleStartupWorkflowRecovery(name, handler, step = 0) {
+  const delayMs =
+    workflowStartupRecoveryGraceMs +
+    Math.max(0, step) * workflowStartupRecoveryStepDelayMs;
+  safeSetTimeout(name, handler, delayMs);
+}
+
 if (!isMonitorTestRuntime) {
   const DUPLICATE_START_EXIT_STATE_FILE =
     "monitor-duplicate-start-exit-state.json";
@@ -13682,14 +13698,6 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // This keeps scheduled and task-poll lifecycle templates executing without hardcoded
 // per-workflow timers.  Workspace-aware: skips workflows for paused/disabled workspaces.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
-const workflowStartupRecoveryGraceMs = Math.max(
-  0,
-  Number(configWorkflowRecovery?.startupGraceMs || 0),
-);
-const workflowStartupRecoveryStepDelayMs = Math.max(
-  0,
-  Number(configWorkflowRecovery?.startupStepDelayMs || 0),
-);
 pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
   triggerSource = "schedule-poll",
   opts = {},
@@ -13766,13 +13774,6 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
 safeSetInterval("workflow-schedule-check", async () => {
   await pollWorkflowSchedulesOnce();
 }, scheduleCheckIntervalMs);
-
-function scheduleStartupWorkflowRecovery(name, handler, step = 0) {
-  const delayMs =
-    workflowStartupRecoveryGraceMs +
-    Math.max(0, step) * workflowStartupRecoveryStepDelayMs;
-  safeSetTimeout(name, handler, delayMs);
-}
 
 safeSetInterval("workflow-review-merge-reconcile", async () => {
   const result = await checkMergedPRsAndUpdateTasks();
