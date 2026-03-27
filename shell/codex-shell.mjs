@@ -127,6 +127,7 @@ function buildInjectedSandboxConfig(envInput, workingDirectory) {
 function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, workingDirectory = DEFAULT_WORKING_DIRECTORY) {
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
+  const runtimeDefaults = readCodexConfigRuntimeDefaults(envInput) || {};
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const hasCustomBaseUrl = Boolean(String(baseUrl || "").trim());
@@ -194,6 +195,20 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
       : {};
 
   Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
+
+  if (runtimeDefaults.modelProvider && !config.model_provider) {
+    config.model_provider = runtimeDefaults.modelProvider;
+  }
+  if (runtimeDefaults.model && !config.model) {
+    config.model = runtimeDefaults.model;
+  }
+  if (
+    runtimeDefaults.providers
+    && typeof runtimeDefaults.providers === "object"
+    && !config.model_providers
+  ) {
+    config.model_providers = runtimeDefaults.providers;
+  }
 
   if (isAzure && env.CODEX_MODEL) {
     config.model_provider = providerSectionName;
@@ -601,6 +616,9 @@ async function getThread() {
     codexInstance = new Cls({
       config: {
         ...runtime.config,
+        model_provider: runtime.config?.model_provider,
+        model_providers: runtime.config?.model_providers,
+        model: runtime.config?.model,
         features: {
           ...(runtime.config?.features || {}),
           child_agents_md: true,
