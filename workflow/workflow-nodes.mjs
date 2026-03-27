@@ -11548,6 +11548,21 @@ function findExistingWorktreePathForBranch(repoRoot, branch) {
   return "";
 }
 
+function localBranchExists(repoRoot, branch) {
+  const normalizedBranch = String(branch || "").trim().replace(/^refs\/heads\//, "");
+  if (!normalizedBranch) return false;
+  try {
+    execGitArgsSync(["show-ref", "--verify", "--quiet", `refs/heads/${normalizedBranch}`], {
+      cwd: repoRoot,
+      timeout: 5000,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isValidGitWorktreePath(worktreePath) {
   if (!worktreePath || !existsSync(worktreePath)) return false;
   try {
@@ -12810,6 +12825,46 @@ registerBuiltinNodeType("action.resolve_executor", {
 
 // ── action.acquire_worktree ─────────────────────────────────────────────────
 
+export function classifyAcquireWorktreeFailure(errorInput) {
+  const errorMessage = String(errorInput?.message || errorInput || "worktree_acquisition_failed");
+  const normalized = errorMessage.trim();
+
+  if (/managed worktree was removed after stale refresh state/i.test(normalized)) {
+    return {
+      errorMessage: normalized,
+      retryable: false,
+      failureKind: "branch_refresh_conflict",
+      blockedReason: "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.",
+      detectedIssues: ["refresh_conflict"],
+      phase: "post-pull",
+    };
+  }
+
+  if (
+    /worktree runtime setup incomplete/i.test(normalized) ||
+    /missing worktree setup files/i.test(normalized) ||
+    /git core\.hooksPath/i.test(normalized)
+  ) {
+    return {
+      errorMessage: normalized,
+      retryable: false,
+      failureKind: "worktree_runtime_setup_incomplete",
+      blockedReason: normalized,
+      detectedIssues: ["runtime_setup_incomplete"],
+      phase: "runtime-setup",
+    };
+  }
+
+  return {
+    errorMessage: normalized,
+    retryable: true,
+    failureKind: "worktree_acquisition_failed",
+    blockedReason: normalized,
+    detectedIssues: [],
+    phase: null,
+  };
+}
+
 registerBuiltinNodeType("action.acquire_worktree", {
   describe: () =>
     "Create or checkout a git worktree for isolated task execution. " +
@@ -12984,16 +13039,93 @@ registerBuiltinNodeType("action.acquire_worktree", {
 
       // Create fresh worktree
       let attachedExistingBranch = false;
+      const branchExistsLocally = localBranchExists(repoRoot, branch);
+      let existingBranchWorktree = branchExistsLocally
+        ? findExistingWorktreePathForBranch(repoRoot, branch)
+        : "";
+      if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
+        ctx.log(
+          node.id,
+          `Pruning stale registered worktree for branch ${branch}: ${existingBranchWorktree}`,
+        );
+        notePoisonedWorktree("attached-branch", existingBranchWorktree, ["missing_git_metadata"]);
+        cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+        existingBranchWorktree = "";
+      }
+      if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+        const existingWorktreeIsBroken = (
+          !isValidGitWorktreePath(existingBranchWorktree) ||
+          hasUnresolvedGitOperation(existingBranchWorktree)
+        ) && isManagedBosunWorktree(existingBranchWorktree, repoRoot);
+        if (existingWorktreeIsBroken) {
+          ctx.log(
+            node.id,
+            `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
+          );
+          notePoisonedWorktree("attached-branch", existingBranchWorktree, [
+            !isValidGitWorktreePath(existingBranchWorktree)
+              ? "missing_git_metadata"
+              : "unresolved_git_operation",
+          ]);
+          cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+          existingBranchWorktree = "";
+        }
+      }
+      if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+        isValidGitWorktreePath(existingBranchWorktree) &&
+        !hasUnresolvedGitOperation(existingBranchWorktree)
+      ) {
+        const refreshResult = refreshManagedWorktreeReuse(
+          node.id,
+          ctx,
+          repoRoot,
+          existingBranchWorktree,
+          baseBranch,
+          baseBranchShort,
+          fetchTimeout,
+          { taskId, branch },
+        );
+        if (refreshResult?.repairArtifacts) {
+          recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+        }
+        if (existsSync(existingBranchWorktree) &&
+          isValidGitWorktreePath(existingBranchWorktree) &&
+          !hasUnresolvedGitOperation(existingBranchWorktree)
+        ) {
+          ctx.data.worktreePath = existingBranchWorktree;
+          ctx.data._worktreeCreated = false;
+          ctx.data._worktreeManaged = true;
+          ensureManagedTaskWorktreeReady(repoRoot, existingBranchWorktree);
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath: existingBranchWorktree,
+          });
+          ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+          const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
+          if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
+          return {
+            success: true,
+            worktreePath: existingBranchWorktree,
+            created: false,
+            reused: true,
+            reusedExistingBranch: true,
+            branch,
+            baseBranch,
+          };
+        }
+      }
       try {
         execGitArgsSync(
-          ["worktree", "add", worktreePath, "-b", branch, baseBranch],
+          branchExistsLocally
+            ? ["worktree", "add", worktreePath, branch]
+            : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
       } catch (createErr) {
-        if (!isExistingBranchWorktreeError(createErr)) {
+        if (!isExistingBranchWorktreeError(createErr) && !isMissingRegisteredWorktreeError(createErr)) {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
-        const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+        existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
         if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
           ctx.log(
             node.id,
@@ -13197,19 +13329,23 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
-      const errorMessage = String(err?.message || err || "worktree_acquisition_failed");
-      const retryable = !/managed worktree was removed after stale refresh state/i.test(errorMessage);
+      const classified = classifyAcquireWorktreeFailure(err);
+      const {
+        errorMessage,
+        retryable,
+        failureKind,
+        blockedReason,
+        detectedIssues,
+        phase,
+      } = classified;
       const recordedAt = new Date().toISOString();
       const autoRecoverDelayMs = retryable ? 0 : getNonRetryableWorktreeRecoveryMs();
       const retryAt = retryable ? null : new Date(Date.now() + autoRecoverDelayMs).toISOString();
-      const blockedReason = retryable
-        ? errorMessage
-        : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
       if (!retryable) {
         await recordWorktreeRecoveryEvent(repoRoot, {
           outcome: "recreation_failed",
           reason: "poisoned_worktree",
-          phase: "post-pull",
+          phase,
           branch,
           taskId,
           worktreePath: resolve(
@@ -13218,7 +13354,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             "worktrees",
             deriveManagedWorktreeDirName(taskId, branch)
           ),
-          detectedIssues: ["refresh_conflict"],
+          detectedIssues,
           error: errorMessage,
         });
       }
@@ -13229,7 +13365,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
         branch,
         baseBranch,
         retryable,
-        failureKind: retryable ? "worktree_acquisition_failed" : "branch_refresh_conflict",
+        failureKind,
         recordedAt,
         autoRecoverDelayMs,
         retryAt,
@@ -15567,7 +15703,6 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
-
 
 
 

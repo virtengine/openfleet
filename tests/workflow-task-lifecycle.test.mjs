@@ -16,7 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
-import { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { classifyAcquireWorktreeFailure, getNodeType } from "../workflow/workflow-nodes.mjs";
 import { clearContractCache } from "../workflow/workflow-contract.mjs";
 import {
   WorkflowEngine,
@@ -1594,6 +1594,39 @@ describe("action.acquire_worktree", () => {
     try { rmSync(repoDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
 
+  it("rebuilds missing repo git hooks in reused managed worktrees", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recover-missing-hooks";
+    mkdirSync(join(repoDir, ".githooks"), { recursive: true });
+    writeFileSync(join(repoDir, ".githooks", "pre-commit"), "#!/usr/bin/env bash\necho pre-commit\n");
+    writeFileSync(join(repoDir, ".githooks", "pre-push"), "#!/usr/bin/env bash\necho pre-push\n");
+
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recover-hooks-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const first = await nt.execute(node, makeCtx({}));
+    expect(first.success).toBe(true);
+    expect(existsSync(join(first.worktreePath, ".githooks", "pre-commit"))).toBe(true);
+    expect(existsSync(join(first.worktreePath, ".githooks", "pre-push"))).toBe(true);
+
+    rmSync(join(first.worktreePath, ".githooks"), { recursive: true, force: true });
+    expect(existsSync(join(first.worktreePath, ".githooks", "pre-commit"))).toBe(false);
+
+    const second = await nt.execute(node, makeCtx({}));
+    expect(second.success).toBe(true);
+    expect(second.reused).toBe(true);
+    expect(readFileSync(join(second.worktreePath, ".githooks", "pre-commit"), "utf8"))
+      .toContain("pre-commit");
+    expect(readFileSync(join(second.worktreePath, ".githooks", "pre-push"), "utf8"))
+      .toContain("pre-push");
+  }, 15000);
+
   it("falls back to defaultTargetBranch when baseBranch template is unresolved", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -1670,6 +1703,36 @@ describe("action.acquire_worktree", () => {
     expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
     expect(ctx.data._worktreeManaged).toBe(true);
   }, 10000);
+
+  it("attaches a worktree to a pre-existing local branch", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/local-branch-already-exists";
+    gitExec(`git checkout -b ${branch} main`, { cwd: repoDir, stdio: "ignore" });
+    gitExec("git checkout main", { cwd: repoDir, stdio: "ignore" });
+
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "local-branch-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.created).toBe(true);
+    expect(result.branch).toBe(branch);
+    expect(existsSync(result.worktreePath)).toBe(true);
+    expect(
+      gitExec("git branch --show-current", {
+        cwd: result.worktreePath,
+        encoding: "utf8",
+      }).trim(),
+    ).toBe(branch);
+  }, 10000);
+
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -2134,6 +2197,20 @@ describe("action.acquire_worktree", () => {
       stdio: "pipe",
     })).toThrow();
   }, 15000);
+});
+
+describe("classifyAcquireWorktreeFailure", () => {
+  it("treats runtime setup failures as non-retryable blocking errors", () => {
+    const result = classifyAcquireWorktreeFailure(
+      "Worktree runtime setup incomplete for C:\\repo\\.bosun\\worktrees\\task-1: missing worktree setup files: .githooks/pre-commit, .githooks/pre-push",
+    );
+
+    expect(result.retryable).toBe(false);
+    expect(result.failureKind).toBe("worktree_runtime_setup_incomplete");
+    expect(result.phase).toBe("runtime-setup");
+    expect(result.detectedIssues).toContain("runtime_setup_incomplete");
+    expect(result.blockedReason).toMatch(/missing worktree setup files/i);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

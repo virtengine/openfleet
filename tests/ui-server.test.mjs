@@ -515,6 +515,27 @@ describe("ui-server mini app", () => {
     expect(url).toBe(`http://127.0.0.1:${port}`);
   });
 
+  it("keeps /api/health public when auth is enabled", async () => {
+    process.env.TELEGRAM_UI_TLS_DISABLE = "true";
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.ok).toBe(true);
+    expect(typeof payload.uptime).toBe("number");
+  });
+
   it("hides tokenized browser URL in startup logs by default", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_BROWSER_OPEN_MODE = "manual";

@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
-import { defineConfig } from "vitest/config";
+import * as vitestConfig from "vitest/config";
+
+const defineConfig =
+  vitestConfig.defineConfig ??
+  vitestConfig.default?.defineConfig ??
+  ((config) => config);
 
 export default defineConfig({
   resolve: {

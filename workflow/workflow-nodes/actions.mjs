@@ -4791,6 +4791,19 @@ registerNodeType("action.acquire_worktree", {
         return "";
       };
 
+      const localBranchExists = () => {
+        try {
+          execGitArgsSync(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+            cwd: repoRoot,
+            timeout: 5000,
+            stdio: ["ignore", "ignore", "ignore"],
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
       const invalidateBrokenReusableWorktree = (candidatePath, phaseLabel) => {
         const state = inspectManagedWorktreeState(candidatePath);
         if (!state.invalid) return false;
@@ -4874,9 +4887,12 @@ registerNodeType("action.acquire_worktree", {
       }
 
       // Create fresh worktree
+      const branchExistsLocally = localBranchExists();
       try {
         execGitArgsSync(
-          ["worktree", "add", worktreePath, "-b", branch, baseBranch],
+          branchExistsLocally
+            ? ["worktree", "add", worktreePath, branch]
+            : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
       } catch (createErr) {
@@ -4889,7 +4905,9 @@ registerNodeType("action.acquire_worktree", {
           if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
             fixGitConfigCorruption(repoRoot);
             execGitArgsSync(
-              ["worktree", "add", worktreePath, "-b", branch, baseBranch],
+              branchExistsLocally
+                ? ["worktree", "add", worktreePath, branch]
+                : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
               { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
             );
             recreatedAttachedWorktree = true;

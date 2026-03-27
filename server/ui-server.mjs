@@ -13,6 +13,7 @@ import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
 import { gzip as zlibGzip } from "node:zlib";
 import { promisify } from "node:util";
+import * as wsModule from "ws";
 import Ajv2020 from "ajv/dist/2020.js";
 
 const gzipAsync = promisify(zlibGzip);
@@ -94,7 +95,10 @@ function getLocalLanIp() {
   }
   return "localhost";
 }
-import { WebSocketServer } from "ws";
+const WebSocketServer =
+  wsModule.WebSocketServer ??
+  wsModule.default?.WebSocketServer ??
+  wsModule.default?.Server;
 import {
   getKanbanAdapter,
   getKanbanBackendName,
@@ -12979,6 +12983,39 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/health") {
+    jsonResponse(res, 200, {
+      ok: true,
+      uptime: process.uptime(),
+      wsClients: wsClients.size,
+      lanIp: getLocalLanIp(),
+      url: getTelegramUiUrl(),
+    });
+    return;
+  }
+
+  if (path === "/api/health-stats") {
+    const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+    const cutoff = new Date(Date.now() - SIX_HOURS_MS).toISOString();
+    let successRuns = 0;
+    let failedRuns = 0;
+    try {
+      const tasks = getAllInternalTasks();
+      for (const task of tasks) {
+        for (const entry of (task.statusHistory || [])) {
+          if (entry.timestamp < cutoff) continue;
+          const normalizedStatus = String(entry.status || "").toLowerCase();
+          if (normalizedStatus === "done") successRuns++;
+          else if (normalizedStatus === "error" || normalizedStatus === "failed" || normalizedStatus === "blocked") failedRuns++;
+        }
+      }
+    } catch { /* task store not loaded or unavailable */ }
+    const total = successRuns + failedRuns;
+    const failRate = total > 0 ? failedRuns / total : 0;
+    jsonResponse(res, 200, { ok: true, successRuns, failedRuns, total, failRate, windowHours: 6 });
+    return;
+  }
+
   const authResult = await requireAuth(req);
   if (!authResult?.ok) {
     jsonResponse(res, 401, {
@@ -19655,39 +19692,6 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
-  if (path === "/api/health") {
-    jsonResponse(res, 200, {
-      ok: true,
-      uptime: process.uptime(),
-      wsClients: wsClients.size,
-      lanIp: getLocalLanIp(),
-      url: getTelegramUiUrl(),
-    });
-    return;
-  }
-
-  if (path === "/api/health-stats") {
-    const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-    const cutoff = new Date(Date.now() - SIX_HOURS_MS).toISOString();
-    let successRuns = 0;
-    let failedRuns = 0;
-    try {
-      const tasks = getAllInternalTasks();
-      for (const task of tasks) {
-        for (const entry of (task.statusHistory || [])) {
-          if (entry.timestamp < cutoff) continue;
-          const normalizedStatus = String(entry.status || "").toLowerCase();
-          if (normalizedStatus === "done") successRuns++;
-          else if (normalizedStatus === "error" || normalizedStatus === "failed" || normalizedStatus === "blocked") failedRuns++;
-        }
-      }
-    } catch { /* task store not loaded or unavailable */ }
-    const total = successRuns + failedRuns;
-    const failRate = total > 0 ? failedRuns / total : 0;
-    jsonResponse(res, 200, { ok: true, successRuns, failedRuns, total, failRate, windowHours: 6 });
-    return;
-  }
-
   if (path === "/api/config") {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
@@ -23667,6 +23671,5 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
 
 
