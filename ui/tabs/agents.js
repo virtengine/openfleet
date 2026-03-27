@@ -86,6 +86,57 @@ function formatDuration(startedAt) {
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
 }
 
+function formatMsDuration(ms) {
+  const safeMs = Math.max(0, Number(ms || 0));
+  if (safeMs < 1000) return String(safeMs) + "ms";
+  const sec = Math.round(safeMs / 1000);
+  if (sec < 60) return String(sec) + "s";
+  if (sec < 3600) return String(Math.floor(sec / 60)) + "m " + String(sec % 60) + "s";
+  return String(Math.floor(sec / 3600)) + "h " + String(Math.floor((sec % 3600) / 60)) + "m";
+}
+
+function formatTurnTokens(turn) {
+  const total = Number(turn?.totalTokens || 0);
+  const input = Number(turn?.inputTokens || 0);
+  const output = Number(turn?.outputTokens || 0);
+  if (total > 0 || input > 0 || output > 0) {
+    return String(total || input + output) + " tok" + ((input || output) ? (" · in " + input + " / out " + output) : "");
+  }
+  return "—";
+}
+
+function buildTurnTimeline(messages, turns) {
+  const turnEntries = Array.isArray(turns) ? turns : [];
+  const byIndex = new Map(turnEntries.map((turn) => [Number(turn?.turnIndex || 0), turn]));
+  const grouped = new Map();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const turnIndex = Number.isFinite(Number(message?.turnIndex)) ? Number(message.turnIndex) : null;
+    if (turnIndex == null) continue;
+    const bucket = grouped.get(turnIndex) || { user: null, assistant: null };
+    const role = String(message?.role || "").toLowerCase();
+    if (role === "user" && !bucket.user) bucket.user = message;
+    if (role === "assistant") bucket.assistant = message;
+    grouped.set(turnIndex, bucket);
+  }
+  const allIndexes = Array.from(new Set([...byIndex.keys(), ...grouped.keys()])).sort((a, b) => a - b);
+  return allIndexes.map((turnIndex) => {
+    const turn = byIndex.get(turnIndex) || {};
+    const pair = grouped.get(turnIndex) || { user: null, assistant: null };
+    return {
+      turnIndex,
+      user: pair.user,
+      assistant: pair.assistant,
+      startedAt: turn.startedAt || pair.user?.timestamp || pair.assistant?.timestamp || null,
+      endedAt: turn.endedAt || pair.assistant?.timestamp || pair.user?.timestamp || null,
+      durationMs: Number(turn.durationMs || 0),
+      inputTokens: Number(turn.inputTokens || 0),
+      outputTokens: Number(turn.outputTokens || 0),
+      totalTokens: Number(turn.totalTokens || 0),
+      status: turn.status || (pair.assistant ? "completed" : pair.user ? "in_progress" : "pending"),
+    };
+  });
+}
+
 function taskSortScore(task) {
   const rawId = String(task?.id || "");
   const digits = rawId.match(/\d+/g);
@@ -2382,6 +2433,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                             : `Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}`}
                       </div>
                       <div class="fleet-slot-item-meta fleet-slot-item-meta-secondary">
+                        <span class="fleet-slot-meta-turns">Turns ${Number(entry.session?.turnCount || 0)}</span>
                         <span class=${`fleet-slot-state-badge ${isFleetEntryActive(entry) ? "active" : "historic"}`}>
                           ${entryStatus || "unknown"}
                         </span>
@@ -2451,6 +2503,10 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                     className=${`session-detail-tab ${detailTab === "logs" ? "active" : ""}`}
                     onClick=${() => setDetailTab("logs")}
                   >${iconText(":file: Logs")}<//>
+                  <${Button} variant="text" size="small"
+                    className=${`session-detail-tab ${detailTab === "turns" ? "active" : ""}`}
+                    onClick=${() => setDetailTab("turns")}
+                  >${iconText(":repeat: Turns")}<//>
                 </div>
                 <div class="fleet-session-body">
                   ${detailTab === "stream"
@@ -2491,7 +2547,33 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                             `
                         : detailTab === "logs"
                           ? html`<div class="workspace-log fleet-session-log" ref=${logRef}>${focusedLogText}</div>`
-                          : null}
+                          : detailTab === "turns"
+                            ? (() => {
+                                const timeline = buildTurnTimeline(streamSessionId
+                                  && String(sessionMessagesSessionId.value || "") === String(streamSessionId)
+                                  ? (sessionMessages.value || [])
+                                  : [], selectedEntry?.session?.turns || []);
+                                return timeline.length
+                                  ? html`<div class="fleet-turn-timeline">
+                                      ${timeline.map((turn) => html`
+                                        <div class="task-card fleet-turn-card" key=${"turn-" + turn.turnIndex}>
+                                          <div class="task-card-header">
+                                            <div>
+                                              <div class="task-card-title">Turn ${Number(turn.turnIndex || 0) + 1}</div>
+                                              <div class="task-card-meta">${formatTurnTokens(turn)} · ${formatMsDuration(turn.durationMs || 0)} · ${turn.status || "unknown"}</div>
+                                            </div>
+                                          </div>
+                                          <div class="meta-text">${turn.user?.content ? "User: " + truncate(String(turn.user.content), 180) : "User: —"}</div>
+                                          <div class="meta-text">${turn.assistant?.content ? "Assistant: " + truncate(String(turn.assistant.content), 220) : "Assistant: pending"}</div>
+                                        </div>
+                                      `)}
+                                    </div>`
+                                  : html`<div class="chat-view chat-empty-state">
+                                      <div class="session-empty-icon">${resolveIcon(":repeat:")}</div>
+                                      <div class="session-empty-text">No turn timeline available yet</div>
+                                    </div>`;
+                              })()
+                            : null}
                 </div>
               `
             : html`
@@ -2598,3 +2680,5 @@ export function FleetSessionsTab() {
     `}
   `;
 }
+
+
