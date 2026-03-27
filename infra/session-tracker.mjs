@@ -331,6 +331,8 @@ export class SessionTracker {
     // Direct message format (role/content)
     if (event && event.role && event.content !== undefined) {
       markActivity();
+      const role = String(event.role || "").toLowerCase();
+      const isAssistantTurn = role === "assistant";
       const msg = {
         id: event.id || `msg-${Date.now()}-${randomToken(6)}`,
         type: event.type || undefined,
@@ -350,7 +352,9 @@ export class SessionTracker {
             : undefined,
         _cachedLogId: event._cachedLogId || undefined,
       };
-      session.turnCount++;
+      if (isAssistantTurn) {
+        session.turnCount += 1;
+      }
       session.messages.push(msg);
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
@@ -1820,3 +1824,4 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
+

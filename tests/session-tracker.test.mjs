@@ -483,6 +483,42 @@ describe("session-tracker", () => {
       expect(tracker.getSession("task-1")).toBeNull();
     });
 
+
+    it("increments turnCount only for completed assistant replies", () => {
+      tracker.startSession("task-turns", "Turn counting");
+      tracker.recordEvent("task-turns", {
+        role: "user",
+        content: "First prompt",
+        timestamp: "2026-03-27T10:00:00.000Z",
+      });
+      tracker.recordEvent("task-turns", {
+        type: "tool_call",
+        content: "read_file(src/app.js)",
+        meta: { toolName: "read_file" },
+        timestamp: "2026-03-27T10:00:01.000Z",
+      });
+      tracker.recordEvent("task-turns", {
+        role: "assistant",
+        content: "First reply",
+        timestamp: "2026-03-27T10:00:02.000Z",
+      });
+      tracker.recordEvent("task-turns", {
+        role: "user",
+        content: "Second prompt",
+        timestamp: "2026-03-27T10:01:00.000Z",
+      });
+      tracker.recordEvent("task-turns", {
+        role: "assistant",
+        content: "Second reply",
+        timestamp: "2026-03-27T10:01:03.000Z",
+      });
+
+      const session = tracker.getSession("task-turns");
+      expect(session.turnCount).toBe(2);
+      expect(session.messages.filter((msg) => msg.role === "user").map((msg) => msg.turnIndex)).toEqual([0, 1]);
+      expect(session.messages.filter((msg) => msg.role === "assistant").map((msg) => msg.turnIndex)).toEqual([0, 1]);
+    });
+
     it("tracks stats", () => {
       tracker.startSession("task-1", "Test 1");
       tracker.startSession("task-2", "Test 2");

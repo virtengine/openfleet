@@ -2382,6 +2382,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                             : `Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}`}
                       </div>
                       <div class="fleet-slot-item-meta fleet-slot-item-meta-secondary">
+                        <span class="fleet-slot-meta-turns">Turns ${Number(entry.session?.turnCount || 0)}</span>
                         <span class=${`fleet-slot-state-badge ${isFleetEntryActive(entry) ? "active" : "historic"}`}>
                           ${entryStatus || "unknown"}
                         </span>
@@ -2598,3 +2599,5 @@ export function FleetSessionsTab() {
     `}
   `;
 }
+
+
