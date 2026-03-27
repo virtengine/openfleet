@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
@@ -582,6 +582,45 @@ describe("session-tracker", () => {
       expect(tracker.listAllSessions().find((entry) => entry.id === "task-usage")?.turns?.[0]?.durationMs).toBe(4000);
     });
 
+    it("preserves turn timeline history after session completion", () => {
+      tracker.startSession("task-history", "Historic turns");
+      tracker.recordEvent("task-history", {
+        role: "user",
+        content: "First prompt",
+        timestamp: "2026-03-27T12:00:00.000Z",
+      });
+      tracker.recordEvent("task-history", {
+        role: "assistant",
+        content: "First reply",
+        timestamp: "2026-03-27T12:00:02.000Z",
+        meta: { usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 } },
+      });
+      tracker.recordEvent("task-history", {
+        role: "user",
+        content: "Second prompt",
+        timestamp: "2026-03-27T12:01:00.000Z",
+      });
+      tracker.recordEvent("task-history", {
+        role: "assistant",
+        content: "Second reply",
+        timestamp: "2026-03-27T12:01:05.000Z",
+        meta: { usage: { inputTokens: 30, outputTokens: 15, totalTokens: 45 } },
+      });
+      tracker.endSession("task-history", "completed");
+
+      const session = tracker.getSession("task-history");
+      expect(session?.status).toBe("completed");
+      expect(session?.turnCount).toBe(2);
+      expect(session?.turns).toEqual([
+        expect.objectContaining({ turnIndex: 0, durationMs: 2000, totalTokens: 30, status: "completed" }),
+        expect.objectContaining({ turnIndex: 1, durationMs: 5000, totalTokens: 45, status: "completed" }),
+      ]);
+      expect(tracker.listAllSessions().find((entry) => entry.id === "task-history")?.turns).toEqual([
+        expect.objectContaining({ turnIndex: 0, totalTokens: 30 }),
+        expect.objectContaining({ turnIndex: 1, totalTokens: 45 }),
+      ]);
+    });
+
     it("tracks stats", () => {
       tracker.startSession("task-1", "Test 1");
       tracker.startSession("task-2", "Test 2");
@@ -756,19 +795,30 @@ describe("session-tracker", () => {
     it("preserves and lists disk-backed sessions beyond the in-memory cap", () => {
       const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
       try {
-        const writer = createSessionTracker({ maxMessages: 5, persistDir });
         for (let index = 0; index < 101; index += 1) {
           const id = `hist-${String(index).padStart(3, "0")}`;
-          writer.createSession({ id, type: "primary", metadata: { workspaceId: "ws-main" } });
-          writer.recordEvent(id, {
-            role: "assistant",
-            content: `Historic session ${index}`,
-            timestamp: new Date(Date.now() + index * 1000).toISOString(),
-          });
-          writer.updateSessionStatus(id, "completed");
+          const timestamp = new Date(Date.now() + index * 1000).toISOString();
+          writeFileSync(join(persistDir, `${id}.json`), JSON.stringify({
+            id,
+            taskId: id,
+            taskTitle: `Historic ${index}`,
+            type: "primary",
+            status: "completed",
+            createdAt: timestamp,
+            lastActiveAt: timestamp,
+            startedAt: Date.parse(timestamp),
+            endedAt: Date.parse(timestamp),
+            messages: [
+              {
+                id: `${id}-msg-1`,
+                role: "assistant",
+                content: `Historic session ${index}`,
+                timestamp,
+              },
+            ],
+            metadata: { workspaceId: "ws-main" },
+          }, null, 2));
         }
-        writer.flush();
-        writer.destroy();
 
         expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(101);
 

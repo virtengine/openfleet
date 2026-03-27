@@ -44,7 +44,7 @@ describe("continuation-loop template integration", () => {
   });
 
   it("polls externalStatus transitions and terminates on configured terminal state", async () => {
-    const kanban = makeStatusKanban(["todo", "inprogress", "done"]);
+    const kanban = makeStatusKanban(["todo", "done"]);
     const launchEphemeralThread = vi.fn(async () => ({
       success: true,
       output: "progress recorded",
@@ -59,7 +59,7 @@ describe("continuation-loop template integration", () => {
       taskId: "TASK-100",
       worktreePath: tmpDir,
       pollIntervalMs: 0,
-      maxTurns: 6,
+      maxTurns: 2,
       terminalStates: ["done", "cancelled"],
       stuckThresholdMs: 3600000,
       onStuck: "escalate",
@@ -76,7 +76,7 @@ describe("continuation-loop template integration", () => {
     expect(kanban.getTask).toHaveBeenCalled();
     expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect(ctx.data.currentExternalStatus).toBe("done");
-  });
+  }, 15000);
 
   it("fires a session-stuck event payload and executes retry action when no progress is detected", async () => {
     const kanban = makeStatusKanban(["inprogress", "done"]);

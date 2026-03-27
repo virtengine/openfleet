@@ -8716,7 +8716,7 @@
           "type": "condition.expression",
           "label": "Session Stuck?",
           "config": {
-            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+            "expression": "(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return true; if (lastProgressAt <= 0) return false; return (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
           },
           "position": {
             "x": 980,
@@ -8745,6 +8745,7 @@
               "lastProgressAt": "{{lastProgressAt}}",
               "lastProgressSignature": "{{lastProgressSignature}}",
               "currentProgressSignature": "{{currentProgressSignature}}",
+              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
               "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
               "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
               "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
@@ -9597,7 +9598,7 @@
           "type": "condition.expression",
           "label": "Session Stuck?",
           "config": {
-            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+            "expression": "(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return true; if (lastProgressAt <= 0) return false; return (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
           },
           "position": {
             "x": 980,
@@ -9626,6 +9627,7 @@
               "lastProgressAt": "{{lastProgressAt}}",
               "lastProgressSignature": "{{lastProgressSignature}}",
               "currentProgressSignature": "{{currentProgressSignature}}",
+              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
               "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
               "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
               "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
@@ -12303,14 +12305,16 @@
         "resilience",
         "automation"
       ],
-      "nodeCount": 15,
-      "edgeCount": 16,
+      "nodeCount": 21,
+      "edgeCount": 24,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
       "variables": {
         "repairTimeoutMs": 5400000,
         "verificationTimeoutMs": 3600000,
+        "repoRoot": "",
+        "defaultTargetBranch": "main",
         "baseBranch": "main",
         "verificationCommand": "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
         "repairPrompt": "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for Bosun PR lifecycle handoff."
@@ -12373,18 +12377,88 @@
           ]
         },
         {
-          "id": "has-worktree",
+          "id": "has-branch-context",
           "type": "condition.expression",
-          "label": "Worktree Context Available?",
+          "label": "Branch Context Available?",
           "config": {
-            "expression": "Boolean($data?.worktreePath)"
+            "expression": "Boolean($data?.repoRoot) && Boolean($data?.branch) && Boolean($data?.taskId)"
           },
           "position": {
             "x": 400,
             "y": 180
           },
           "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-repair-worktree",
+          "type": "action.recover_worktree",
+          "label": "Reset Broken Worktree",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 220,
+            "y": 320
+          },
+          "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "acquire-repair-worktree",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Clean Worktree",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 220,
+            "y": 460
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquired-repair-worktree",
+          "type": "condition.expression",
+          "label": "Clean Worktree Ready?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-repair-worktree')?.success === true"
+          },
+          "position": {
+            "x": 220,
+            "y": 600
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "has-worktree",
+          "type": "condition.expression",
+          "label": "Fallback Worktree Context Available?",
+          "config": {
+            "expression": "Boolean($data?.worktreePath)"
+          },
+          "position": {
+            "x": 560,
+            "y": 320
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -12393,12 +12467,12 @@
           "label": "Refresh Worktree",
           "config": {
             "operation": "fetch",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 320
+            "y": 740
           },
           "outputs": [
             "default"
@@ -12410,12 +12484,12 @@
           "label": "Repair Task",
           "config": {
             "prompt": "{{repairPrompt}}",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "timeoutMs": "{{repairTimeoutMs}}"
           },
           "position": {
             "x": 400,
-            "y": 460
+            "y": 880
           },
           "outputs": [
             "default"
@@ -12427,13 +12501,13 @@
           "label": "Re-run Quality Gates",
           "config": {
             "command": "{{verificationCommand}}",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "timeoutMs": "{{verificationTimeoutMs}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 600
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -12448,7 +12522,7 @@
           },
           "position": {
             "x": 400,
-            "y": 740
+            "y": 1160
           },
           "outputs": [
             "default"
@@ -12470,7 +12544,7 @@
           },
           "position": {
             "x": 250,
-            "y": 880
+            "y": 1300
           },
           "outputs": [
             "default"
@@ -12485,7 +12559,7 @@
           },
           "position": {
             "x": 250,
-            "y": 950
+            "y": 1370
           },
           "outputs": [
             "yes",
@@ -12510,7 +12584,30 @@
           },
           "position": {
             "x": 250,
-            "y": 1020
+            "y": 1440
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-repair-blocked-success",
+          "type": "action.bosun_function",
+          "label": "Clear Repair Blocked State",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": null,
+                "blockedReason": null,
+                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 1510
           },
           "outputs": [
             "default"
@@ -12535,7 +12632,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1160
+            "y": 1650
           },
           "outputs": [
             "default"
@@ -12560,7 +12657,30 @@
           },
           "position": {
             "x": 560,
-            "y": 880
+            "y": 1300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-repair-blocked-failure",
+          "type": "action.bosun_function",
+          "label": "Clear Failed Repair Blocked State",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": null,
+                "blockedReason": null,
+                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 560,
+            "y": 1440
           },
           "outputs": [
             "default"
@@ -12576,7 +12696,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1300
+            "y": 1790
           },
           "outputs": [
             "default"
@@ -12591,7 +12711,7 @@
           },
           "position": {
             "x": 560,
-            "y": 1020
+            "y": 1580
           },
           "outputs": [
             "default"
@@ -12606,8 +12726,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 700,
-            "y": 320
+            "x": 720,
+            "y": 460
           },
           "outputs": [
             "default"
@@ -12616,29 +12736,69 @@
       ],
       "edges": [
         {
-          "id": "trigger-failed->has-worktree",
+          "id": "trigger-failed->has-branch-context",
           "source": "trigger-failed",
-          "target": "has-worktree",
+          "target": "has-branch-context",
           "sourcePort": "default"
         },
         {
-          "id": "trigger-finalization->has-worktree",
+          "id": "trigger-finalization->has-branch-context",
           "source": "trigger-finalization",
-          "target": "has-worktree",
+          "target": "has-branch-context",
           "sourcePort": "default"
+        },
+        {
+          "id": "has-branch-context->recover-repair-worktree",
+          "source": "has-branch-context",
+          "target": "recover-repair-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-branch-context->has-worktree",
+          "source": "has-branch-context",
+          "target": "has-worktree",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-repair-worktree->acquire-repair-worktree",
+          "source": "recover-repair-worktree",
+          "target": "acquire-repair-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-repair-worktree->acquired-repair-worktree",
+          "source": "acquire-repair-worktree",
+          "target": "acquired-repair-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquired-repair-worktree->refresh-worktree",
+          "source": "acquired-repair-worktree",
+          "target": "refresh-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "acquired-repair-worktree->no-worktree",
+          "source": "acquired-repair-worktree",
+          "target": "no-worktree",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "has-worktree->refresh-worktree",
           "source": "has-worktree",
           "target": "refresh-worktree",
-          "sourcePort": "default",
+          "sourcePort": "yes",
           "condition": "$output?.result === true"
         },
         {
           "id": "has-worktree->no-worktree",
           "source": "has-worktree",
           "target": "no-worktree",
-          "sourcePort": "default",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -12694,8 +12854,14 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "mark-inreview->handoff-pr-progressor",
+          "id": "mark-inreview->clear-repair-blocked-success",
           "source": "mark-inreview",
+          "target": "clear-repair-blocked-success",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-repair-blocked-success->handoff-pr-progressor",
+          "source": "clear-repair-blocked-success",
           "target": "handoff-pr-progressor",
           "sourcePort": "default"
         },
@@ -12706,8 +12872,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-todo->notify-escalate",
+          "id": "mark-todo->clear-repair-blocked-failure",
           "source": "mark-todo",
+          "target": "clear-repair-blocked-failure",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-repair-blocked-failure->notify-escalate",
+          "source": "clear-repair-blocked-failure",
           "target": "notify-escalate",
           "sourcePort": "default"
         },
@@ -19080,8 +19252,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 59,
-      "edgeCount": 67,
+      "nodeCount": 60,
+      "edgeCount": 68,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -19120,7 +19292,8 @@
           "core"
         ],
         "requiredTemplates": [
-          "template-bosun-pr-progressor"
+          "template-bosun-pr-progressor",
+          "template-task-repair-worktree"
         ],
         "replaces": {
           "module": "task-executor.mjs",
@@ -20066,6 +20239,34 @@
           ]
         },
         {
+          "id": "dispatch-wt-repair",
+          "type": "action.execute_workflow",
+          "label": "Dispatch WT Repair",
+          "config": {
+            "workflowId": "template-task-repair-worktree",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "repoRoot": "{{repoRoot}}",
+              "worktreePath": "{{$ctx.getNodeOutput('acquire-worktree')?.worktreePath || ''}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}",
+              "defaultTargetBranch": "{{defaultTargetBranch}}",
+              "error": "{{$ctx.getNodeOutput('acquire-worktree')?.error || $ctx.getNodeOutput('acquire-worktree')?.blockedReason || 'worktree acquisition failed'}}",
+              "failureKind": "{{$ctx.getNodeOutput('acquire-worktree')?.failureKind || 'branch_refresh_conflict'}}",
+              "repairArtifacts": "{{$ctx.getNodeOutput('acquire-worktree')?.repairArtifacts || null}}"
+            }
+          },
+          "position": {
+            "x": 470,
+            "y": 1610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-todo-wt-failed",
           "type": "action.update_task_status",
           "label": "Set Todo (WT Fail)",
@@ -20606,8 +20807,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "annotate-blocked-wt-failed->release-slot-wt-failed",
+          "id": "annotate-blocked-wt-failed->dispatch-wt-repair",
           "source": "annotate-blocked-wt-failed",
+          "target": "dispatch-wt-repair",
+          "sourcePort": "default"
+        },
+        {
+          "id": "dispatch-wt-repair->release-slot-wt-failed",
+          "source": "dispatch-wt-repair",
           "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },
@@ -29175,7 +29382,7 @@
           "type": "condition.expression",
           "label": "Session Stuck?",
           "config": {
-            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+            "expression": "(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return true; if (lastProgressAt <= 0) return false; return (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
           },
           "position": {
             "x": 980,
@@ -29204,6 +29411,7 @@
               "lastProgressAt": "{{lastProgressAt}}",
               "lastProgressSignature": "{{lastProgressSignature}}",
               "currentProgressSignature": "{{currentProgressSignature}}",
+              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
               "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
               "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
               "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
@@ -30043,7 +30251,7 @@
           "type": "condition.expression",
           "label": "Session Stuck?",
           "config": {
-            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+            "expression": "(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return true; if (lastProgressAt <= 0) return false; return (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
           },
           "position": {
             "x": 980,
@@ -30072,6 +30280,7 @@
               "lastProgressAt": "{{lastProgressAt}}",
               "lastProgressSignature": "{{lastProgressSignature}}",
               "currentProgressSignature": "{{currentProgressSignature}}",
+              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
               "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
               "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
               "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
@@ -32589,11 +32798,13 @@
       "description": "Recovery workflow for tasks that fail execution or finalization. Refreshes worktree state, runs a repair agent, re-validates quality gates, and escalates only after automated repair fails.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 15,
+      "nodeCount": 21,
       "trigger": "trigger.event",
       "variables": {
         "repairTimeoutMs": 5400000,
         "verificationTimeoutMs": 3600000,
+        "repoRoot": "",
+        "defaultTargetBranch": "main",
         "baseBranch": "main",
         "verificationCommand": "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
         "repairPrompt": "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for Bosun PR lifecycle handoff."
@@ -32630,18 +32841,88 @@
           ]
         },
         {
-          "id": "has-worktree",
+          "id": "has-branch-context",
           "type": "condition.expression",
-          "label": "Worktree Context Available?",
+          "label": "Branch Context Available?",
           "config": {
-            "expression": "Boolean($data?.worktreePath)"
+            "expression": "Boolean($data?.repoRoot) && Boolean($data?.branch) && Boolean($data?.taskId)"
           },
           "position": {
             "x": 400,
             "y": 180
           },
           "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-repair-worktree",
+          "type": "action.recover_worktree",
+          "label": "Reset Broken Worktree",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 220,
+            "y": 320
+          },
+          "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "acquire-repair-worktree",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Clean Worktree",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 220,
+            "y": 460
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquired-repair-worktree",
+          "type": "condition.expression",
+          "label": "Clean Worktree Ready?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-repair-worktree')?.success === true"
+          },
+          "position": {
+            "x": 220,
+            "y": 600
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "has-worktree",
+          "type": "condition.expression",
+          "label": "Fallback Worktree Context Available?",
+          "config": {
+            "expression": "Boolean($data?.worktreePath)"
+          },
+          "position": {
+            "x": 560,
+            "y": 320
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -32650,12 +32931,12 @@
           "label": "Refresh Worktree",
           "config": {
             "operation": "fetch",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 320
+            "y": 740
           },
           "outputs": [
             "default"
@@ -32667,12 +32948,12 @@
           "label": "Repair Task",
           "config": {
             "prompt": "{{repairPrompt}}",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "timeoutMs": "{{repairTimeoutMs}}"
           },
           "position": {
             "x": 400,
-            "y": 460
+            "y": 880
           },
           "outputs": [
             "default"
@@ -32684,13 +32965,13 @@
           "label": "Re-run Quality Gates",
           "config": {
             "command": "{{verificationCommand}}",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "timeoutMs": "{{verificationTimeoutMs}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 600
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -32705,7 +32986,7 @@
           },
           "position": {
             "x": 400,
-            "y": 740
+            "y": 1160
           },
           "outputs": [
             "default"
@@ -32727,7 +33008,7 @@
           },
           "position": {
             "x": 250,
-            "y": 880
+            "y": 1300
           },
           "outputs": [
             "default"
@@ -32742,7 +33023,7 @@
           },
           "position": {
             "x": 250,
-            "y": 950
+            "y": 1370
           },
           "outputs": [
             "yes",
@@ -32767,7 +33048,30 @@
           },
           "position": {
             "x": 250,
-            "y": 1020
+            "y": 1440
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-repair-blocked-success",
+          "type": "action.bosun_function",
+          "label": "Clear Repair Blocked State",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": null,
+                "blockedReason": null,
+                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 1510
           },
           "outputs": [
             "default"
@@ -32792,7 +33096,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1160
+            "y": 1650
           },
           "outputs": [
             "default"
@@ -32817,7 +33121,30 @@
           },
           "position": {
             "x": 560,
-            "y": 880
+            "y": 1300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-repair-blocked-failure",
+          "type": "action.bosun_function",
+          "label": "Clear Failed Repair Blocked State",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": null,
+                "blockedReason": null,
+                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 560,
+            "y": 1440
           },
           "outputs": [
             "default"
@@ -32833,7 +33160,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1300
+            "y": 1790
           },
           "outputs": [
             "default"
@@ -32848,7 +33175,7 @@
           },
           "position": {
             "x": 560,
-            "y": 1020
+            "y": 1580
           },
           "outputs": [
             "default"
@@ -32863,8 +33190,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 700,
-            "y": 320
+            "x": 720,
+            "y": 460
           },
           "outputs": [
             "default"
@@ -32873,29 +33200,69 @@
       ],
       "edges": [
         {
-          "id": "trigger-failed->has-worktree",
+          "id": "trigger-failed->has-branch-context",
           "source": "trigger-failed",
-          "target": "has-worktree",
+          "target": "has-branch-context",
           "sourcePort": "default"
         },
         {
-          "id": "trigger-finalization->has-worktree",
+          "id": "trigger-finalization->has-branch-context",
           "source": "trigger-finalization",
-          "target": "has-worktree",
+          "target": "has-branch-context",
           "sourcePort": "default"
+        },
+        {
+          "id": "has-branch-context->recover-repair-worktree",
+          "source": "has-branch-context",
+          "target": "recover-repair-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-branch-context->has-worktree",
+          "source": "has-branch-context",
+          "target": "has-worktree",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-repair-worktree->acquire-repair-worktree",
+          "source": "recover-repair-worktree",
+          "target": "acquire-repair-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-repair-worktree->acquired-repair-worktree",
+          "source": "acquire-repair-worktree",
+          "target": "acquired-repair-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquired-repair-worktree->refresh-worktree",
+          "source": "acquired-repair-worktree",
+          "target": "refresh-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "acquired-repair-worktree->no-worktree",
+          "source": "acquired-repair-worktree",
+          "target": "no-worktree",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "has-worktree->refresh-worktree",
           "source": "has-worktree",
           "target": "refresh-worktree",
-          "sourcePort": "default",
+          "sourcePort": "yes",
           "condition": "$output?.result === true"
         },
         {
           "id": "has-worktree->no-worktree",
           "source": "has-worktree",
           "target": "no-worktree",
-          "sourcePort": "default",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -32951,8 +33318,14 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "mark-inreview->handoff-pr-progressor",
+          "id": "mark-inreview->clear-repair-blocked-success",
           "source": "mark-inreview",
+          "target": "clear-repair-blocked-success",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-repair-blocked-success->handoff-pr-progressor",
+          "source": "clear-repair-blocked-success",
           "target": "handoff-pr-progressor",
           "sourcePort": "default"
         },
@@ -32963,8 +33336,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-todo->notify-escalate",
+          "id": "mark-todo->clear-repair-blocked-failure",
           "source": "mark-todo",
+          "target": "clear-repair-blocked-failure",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-repair-blocked-failure->notify-escalate",
+          "source": "clear-repair-blocked-failure",
           "target": "notify-escalate",
           "sourcePort": "default"
         },
@@ -39006,7 +39385,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 59,
+      "nodeCount": 60,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -39958,6 +40337,34 @@
           ]
         },
         {
+          "id": "dispatch-wt-repair",
+          "type": "action.execute_workflow",
+          "label": "Dispatch WT Repair",
+          "config": {
+            "workflowId": "template-task-repair-worktree",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "repoRoot": "{{repoRoot}}",
+              "worktreePath": "{{$ctx.getNodeOutput('acquire-worktree')?.worktreePath || ''}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}",
+              "defaultTargetBranch": "{{defaultTargetBranch}}",
+              "error": "{{$ctx.getNodeOutput('acquire-worktree')?.error || $ctx.getNodeOutput('acquire-worktree')?.blockedReason || 'worktree acquisition failed'}}",
+              "failureKind": "{{$ctx.getNodeOutput('acquire-worktree')?.failureKind || 'branch_refresh_conflict'}}",
+              "repairArtifacts": "{{$ctx.getNodeOutput('acquire-worktree')?.repairArtifacts || null}}"
+            }
+          },
+          "position": {
+            "x": 470,
+            "y": 1610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-todo-wt-failed",
           "type": "action.update_task_status",
           "label": "Set Todo (WT Fail)",
@@ -40498,8 +40905,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "annotate-blocked-wt-failed->release-slot-wt-failed",
+          "id": "annotate-blocked-wt-failed->dispatch-wt-repair",
           "source": "annotate-blocked-wt-failed",
+          "target": "dispatch-wt-repair",
+          "sourcePort": "default"
+        },
+        {
+          "id": "dispatch-wt-repair->release-slot-wt-failed",
+          "source": "dispatch-wt-repair",
           "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },

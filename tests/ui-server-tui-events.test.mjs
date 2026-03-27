@@ -176,9 +176,19 @@ describe("ui-server TUI websocket bridge", () => {
     }));
     const startedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "active")));
 
-    tracker.recordEvent("task-1", { role: "assistant", content: "hello from tui bridge" });
+    tracker.recordEvent("task-1", {
+      role: "user",
+      content: "please help",
+      timestamp: "2026-03-27T10:00:00.000Z",
+    });
+    tracker.recordEvent("task-1", {
+      role: "assistant",
+      content: "hello from tui bridge",
+      timestamp: "2026-03-27T10:00:04.000Z",
+      usage: { inputTokens: 12, outputTokens: 20, totalTokens: 32 },
+    });
 
-    const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message"));
+    const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message" && message.payload?.session?.turnCount === 1));
     const sessionsUpdate = await waitFor(() => findLatestMessage(
       messages,
       (message) => message.type === "sessions:update"

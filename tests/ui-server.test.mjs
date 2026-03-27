@@ -4615,6 +4615,61 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("returns session turn timeline details including final turn counts", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const tracker = mod.getSessionTracker();
+    tracker.startSession("task-turn-api", "Turn API task", { type: "task" });
+    tracker.recordEvent("task-turn-api", {
+      role: "user",
+      content: "Inspect files",
+      timestamp: "2026-03-27T13:00:00.000Z",
+    });
+    tracker.recordEvent("task-turn-api", {
+      role: "assistant",
+      content: "Inspected files",
+      timestamp: "2026-03-27T13:00:03.000Z",
+      meta: { usage: { inputTokens: 50, outputTokens: 25, totalTokens: 75 } },
+    });
+    tracker.endSession("task-turn-api", "completed");
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      const listed = listJson.sessions.find((session) => session.id === "task-turn-api");
+      expect(listed).toEqual(expect.objectContaining({
+        id: "task-turn-api",
+        turnCount: 1,
+        status: "completed",
+      }));
+      expect(listed.turns).toEqual([
+        expect.objectContaining({ turnIndex: 0, durationMs: 3000, totalTokens: 75, status: "completed" }),
+      ]);
+
+      const detailRes = await fetch(`http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("task-turn-api")}?workspace=all&full=1`);
+      const detailJson = await detailRes.json();
+      expect(detailRes.status).toBe(200);
+      expect(detailJson.session).toEqual(expect.objectContaining({
+        id: "task-turn-api",
+        turnCount: 1,
+        status: "completed",
+      }));
+      expect(detailJson.session.turns).toEqual([
+        expect.objectContaining({ turnIndex: 0, durationMs: 3000, totalTokens: 75, status: "completed" }),
+      ]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("returns replayable trajectory details for a single agent run", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-run-detail-"));
     const previousRepoRoot = process.env.REPO_ROOT;

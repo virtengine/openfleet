@@ -161,7 +161,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
 
     node("stuck-check", "condition.expression", "Session Stuck?", {
       expression:
-        String.raw`(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; return (Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0); })()`,
+        String.raw`(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return true; if (lastProgressAt <= 0) return false; return (Date.now() - lastProgressAt) >= stuckThresholdMs; })()`,
     }, { x: 980, y: 1820, outputs: ["yes", "no"] }),
 
     node("emit-stuck", "action.emit_event", "Emit session-stuck", {

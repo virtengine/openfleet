@@ -3556,7 +3556,8 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-blocked-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "annotate-blocked-wt-failed")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "dispatch-wt-repair")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "dispatch-wt-repair" && e.target === "release-slot-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
     const annotate = t.nodes.find((n) => n.id === "annotate-blocked-wt-failed");
     expect(annotate?.type).toBe("action.bosun_function");

@@ -273,6 +273,9 @@ function emitSessionEvent(session, message) {
       status: session.status || "active",
       lastActiveAt: session.lastActiveAt || new Date().toISOString(),
       turnCount: session.turnCount || 0,
+      turns: Array.isArray(session.turns)
+        ? session.turns.map((turn) => ({ ...turn }))
+        : [],
     },
   };
   for (const listener of SESSION_EVENT_LISTENERS) {
@@ -298,6 +301,9 @@ function emitSessionStateEvent(session, reason, extra = {}) {
       status: session.status || "active",
       lastActiveAt: session.lastActiveAt || new Date().toISOString(),
       turnCount: session.turnCount || 0,
+      turns: Array.isArray(session.turns)
+        ? session.turns.map((turn) => ({ ...turn }))
+        : [],
       title: session.taskTitle || session.title || null,
     },
     event: {
@@ -489,6 +495,7 @@ export class SessionTracker {
         session.turnCount += 1;
       }
       session.messages.push(msg);
+      updateTurnTimeline(session, msg);
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
@@ -1944,4 +1951,3 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
-
