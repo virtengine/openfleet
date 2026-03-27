@@ -831,6 +831,119 @@
   }
 }
 
+:root[data-desktop="true"] {
+  --sidebar-width: 220px;
+}
+
+:root[data-desktop="true"] body {
+  overflow: hidden;
+}
+
+:root[data-desktop="true"] .app-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) var(--rail-width) minmax(0, 1fr);
+  grid-template-rows: 1fr;
+  grid-template-areas: "sidebar rail main";
+  gap: var(--shell-gap);
+  padding: var(--shell-gap);
+  height: var(--viewport-stable-height);
+  overflow: hidden;
+}
+
+:root[data-desktop="true"] .app-shell[data-has-rail="false"] {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-areas: "sidebar main";
+}
+
+:root[data-desktop="true"] .app-shell[data-has-inspector="true"] {
+  grid-template-columns: var(--sidebar-width) var(--rail-width) minmax(0, 1fr) max(200px, var(--inspector-width));
+  grid-template-areas: "sidebar rail main inspector";
+}
+
+:root[data-desktop="true"] .app-shell[data-has-rail="false"][data-has-inspector="true"] {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) max(200px, var(--inspector-width));
+  grid-template-areas: "sidebar main inspector";
+}
+
+:root[data-desktop="true"] .sidebar {
+  display: flex;
+  flex-direction: column;
+  grid-area: sidebar;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 16px;
+  gap: 14px;
+  box-shadow: var(--shadow-sm);
+  min-width: 0;
+  position: relative;
+  z-index: 20;
+}
+
+:root[data-desktop="true"] .session-rail {
+  display: flex;
+  flex-direction: column;
+  grid-area: rail;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  min-height: 0;
+  box-shadow: var(--shadow-sm);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+:root[data-desktop="true"] .app-main {
+  grid-area: main;
+  min-height: 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+:root[data-desktop="true"] .inspector {
+  display: flex;
+  flex-direction: column;
+  grid-area: inspector;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  gap: 12px;
+  min-height: 0;
+  min-width: 200px;
+  box-shadow: var(--shadow-sm);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+:root[data-desktop="true"] .app-header {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  margin-bottom: var(--space-md);
+  position: sticky;
+  top: 0;
+  background: var(--bg-primary);
+  z-index: 5;
+}
+
+:root[data-desktop="true"] .main-content {
+  padding: 20px 24px 32px;
+  padding-bottom: 32px;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+
+:root[data-desktop="true"] .bottom-nav,
+:root[data-desktop="true"] .more-sheet,
+:root[data-desktop="true"] .tablet-action-bar {
+  display: none;
+}
+
 /* ═══════════════════════════════════════════════
  *  Tablet Breakpoint (768px – 1399px)
  *  Sidebar & Inspector as slide-over drawers
