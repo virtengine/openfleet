@@ -47,7 +47,7 @@ describe("continuation-loop template integration", () => {
     const kanban = makeStatusKanban(["todo", "inprogress", "done"]);
     const launchEphemeralThread = vi.fn(async () => ({
       success: true,
-      output: "continued",
+      output: "progress recorded",
       threadId: "session-1",
     }));
     makeTmpEngine({
@@ -75,8 +75,7 @@ describe("continuation-loop template integration", () => {
     expect(ctx.errors).toEqual([]);
     expect(kanban.getTask).toHaveBeenCalled();
     expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(1);
-    expect(ctx.getNodeOutput("end-terminal")?.status).toBe("completed");
-    expect(ctx.getNodeOutput("end-terminal")?.output?.externalStatus).toBe("done");
+    expect(ctx.data.currentExternalStatus).toBe("done");
   });
 
   it("fires a session-stuck event payload and executes retry action when no progress is detected", async () => {

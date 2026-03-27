@@ -161,7 +161,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
 
     node("stuck-check", "condition.expression", "Session Stuck?", {
       expression:
-        "(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; return (Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0); })()",
+        String.raw`(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; return (Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0); })()`,
     }, { x: 980, y: 1820, outputs: ["yes", "no"] }),
 
     node("emit-stuck", "action.emit_event", "Emit session-stuck", {
@@ -178,7 +178,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
         lastProgressAt: "{{lastProgressAt}}",
         lastProgressSignature: "{{lastProgressSignature}}",
         currentProgressSignature: "{{currentProgressSignature}}",
-        placeholderResponse: "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
+        placeholderResponse: "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
         progressSnapshot: "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
         lastAgentSuccess: "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
         lastAgentOutput: "{{$ctx.getNodeOutput('run-agent')?.output || ''}}",

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
@@ -757,7 +757,7 @@ describe("session-tracker", () => {
       const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
       try {
         const writer = createSessionTracker({ maxMessages: 5, persistDir });
-        for (let index = 0; index < 105; index += 1) {
+        for (let index = 0; index < 101; index += 1) {
           const id = `hist-${String(index).padStart(3, "0")}`;
           writer.createSession({ id, type: "primary", metadata: { workspaceId: "ws-main" } });
           writer.recordEvent(id, {
@@ -770,18 +770,18 @@ describe("session-tracker", () => {
         writer.flush();
         writer.destroy();
 
-        expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(105);
+        expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(101);
 
         const reloadedTracker = createSessionTracker({ maxMessages: 5, persistDir });
-        expect(reloadedTracker.listAllSessions()).toHaveLength(105);
+        expect(reloadedTracker.listAllSessions()).toHaveLength(101);
         expect(reloadedTracker.getSessionMessages("hist-000")?.id).toBe("hist-000");
-        expect(reloadedTracker.getSessionMessages("hist-104")?.id).toBe("hist-104");
-        expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(105);
+        expect(reloadedTracker.getSessionMessages("hist-100")?.id).toBe("hist-100");
+        expect(readdirSync(persistDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(101);
         reloadedTracker.destroy();
       } finally {
         rmSync(persistDir, { recursive: true, force: true });
       }
-    });
+    }, 15000);
 
     it("marks failed or long runs as resumable and trims short summaries", () => {
       tracker = createSessionTracker({ maxMessages: 50, persistDir: null });

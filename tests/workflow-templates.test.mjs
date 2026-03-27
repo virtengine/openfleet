@@ -1744,7 +1744,7 @@ describe("template category coverage", () => {
   });
 
   it("categories have valid structure", () => {
-    for (const [key, val] of Object.entries(TEMPLATE_CATEGORIES)) {
+    for (const [, val] of Object.entries(TEMPLATE_CATEGORIES)) {
       expect(typeof val.label).toBe("string");
       expect(typeof val.icon).toBe("string");
       expect(typeof val.order).toBe("number");
