@@ -1,9 +1,8 @@
-﻿/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- *  VirtEngine Control Center â€“ Preact + HTM Entry Point
+﻿/* VirtEngine Control Center “ Preact + HTM Entry Point
  *  Modular SPA for Telegram Mini App (no build step)
- * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+ */
 
-// â”€â”€ Error telemetry ring buffer (max 50 entries, persisted to sessionStorage) â”€â”€
+// Error telemetry ring buffer (max 50 entries, persisted to sessionStorage) â”€â”€
 const MAX_ERROR_LOG = 50;
 function getErrorLog() {
   try { return JSON.parse(sessionStorage.getItem("ve_error_log") || "[]"); } catch { return []; }
