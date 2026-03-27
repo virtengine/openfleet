@@ -1620,6 +1620,35 @@ async function compactWorkflowCommandResult({
     },
   );
 
+  const envelopeMeta = compacted.contextEnvelope?.meta && typeof compacted.contextEnvelope.meta === "object"
+    ? compacted.contextEnvelope.meta
+    : null;
+  const synthesizedDiagnostics = compacted.commandDiagnostics || (
+    envelopeMeta && (
+      envelopeMeta.summary ||
+      envelopeMeta.deltaSummary ||
+      envelopeMeta.suggestedRerun ||
+      envelopeMeta.hint ||
+      envelopeMeta.lowSignal === true
+    )
+      ? {
+          family: envelopeMeta.family || compacted.compactionFamily || null,
+          runner: null,
+          commandKey: null,
+          summary: String(envelopeMeta.summary || ""),
+          failedTargets: [],
+          fileAnchors: [],
+          insufficientSignal: envelopeMeta.lowSignal === true,
+          deltaSummary: String(envelopeMeta.deltaSummary || ""),
+          resolvedTargets: [],
+          remainingTargets: [],
+          newTargets: [],
+          suggestedRerun: String(envelopeMeta.suggestedRerun || "") || null,
+          hint: String(envelopeMeta.hint || ""),
+        }
+      : null
+  );
+
   return {
     output: compacted.text || rawOutput || rawStderr,
     outputCompacted: compacted.compacted,
@@ -1632,11 +1661,11 @@ async function compactWorkflowCommandResult({
     outputBudgetPolicy: compacted.budgetPolicy || null,
     outputBudgetReason: compacted.budgetReason || "",
     outputContextEnvelope: compacted.contextEnvelope || null,
-    outputDiagnostics: compacted.commandDiagnostics || null,
-    outputSuggestedRerun: compacted.commandDiagnostics?.suggestedRerun || null,
-    outputDeltaSummary: compacted.commandDiagnostics?.deltaSummary || "",
-    outputHint: compacted.commandDiagnostics?.hint || "",
-    outputInsufficientSignal: compacted.commandDiagnostics?.insufficientSignal === true,
+    outputDiagnostics: synthesizedDiagnostics,
+    outputSuggestedRerun: synthesizedDiagnostics?.suggestedRerun || null,
+    outputDeltaSummary: synthesizedDiagnostics?.deltaSummary || "",
+    outputHint: synthesizedDiagnostics?.hint || "",
+    outputInsufficientSignal: synthesizedDiagnostics?.insufficientSignal === true,
     items: compacted.item ? [compacted.item] : [],
   };
 }
