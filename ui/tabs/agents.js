@@ -1847,6 +1847,10 @@ export function AgentsTab() {
                         ${s.taskId ? ` · ${s.taskId}` : ""}
                         ${s.branch ? ` · ${s.branch}` : ""}
                       </div>
+                      <div class="task-card-meta">
+                        ${`Turns ${Number(s.turnCount || 0)}`}
+                        ${Number(s.elapsedMs || 0) > 0 ? ` · ${formatMsDuration(s.elapsedMs || 0)}` : ""}
+                      </div>
                     </div>
                     <${Badge} status=${s.status || "idle"} text=${s.status || "idle"} />
                   </div>
@@ -2680,5 +2684,6 @@ export function FleetSessionsTab() {
     `}
   `;
 }
+
 
 

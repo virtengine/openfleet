@@ -8,10 +8,12 @@ describe("desktop layout implementation", () => {
 
   it("uses the 1200px desktop breakpoint and tablet-aware bottom nav gating", () => {
     expect(source).toContain("const DESKTOP_MIN_WIDTH = 1200;");
+    expect(source).toContain("const WIDE_DESKTOP_MIN_WIDTH = 1400;");
     expect(source).toContain("app-desktop-grid");
     expect(layoutCss).toContain(".app-desktop-grid");
     expect(source).toContain("const showBottomNav = !(isDesktop || isTablet);");
-    expect(source).toContain("const showSessionRail = (isDesktop || isTablet) && isChat;");
+    expect(source).toContain("const showSessionRail = isWideDesktop && isChat;");
+    expect(layoutCss).toContain("@media (min-width: 1400px)");
   });
 
   it("persists sidebar and inspector layout state", () => {

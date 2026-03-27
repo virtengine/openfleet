@@ -124,6 +124,7 @@ function buildSessionRecordFromPersistedData(data, idleThresholdMs) {
     messages,
     totalEvents: messages.length,
     turnCount: data.turnCount || 0,
+    turns: Array.isArray(data.turns) ? data.turns : [],
     accumulatedAt: data.accumulatedAt || null,
     lastActivityAt: lastActiveMs,
     metadata: data.metadata || {},
@@ -1275,20 +1276,37 @@ export class SessionTracker {
         ...session,
         insights: null,
       });
+      const priorTurns = Array.isArray(session.turns) ? session.turns : [];
+      const priorTurnsByIndex = new Map(
+        priorTurns.map((turn) => [Number(turn?.turnIndex || 0), turn]),
+      );
       session.turns = Array.isArray(session.insights?.turnTimeline)
-        ? session.insights.turnTimeline.map((turn) => ({
-            turnIndex: Number(turn?.turnIndex || 0),
-            startedAt: turn?.startedAt ? parseTimestampMs(turn.startedAt) : null,
-            endedAt: turn?.endedAt ? parseTimestampMs(turn.endedAt) : null,
-            durationMs: Math.max(0, Number(turn?.durationMs || 0)),
-            inputTokens: normalizeTokenNumber(turn?.inputTokens),
-            outputTokens: normalizeTokenNumber(turn?.outputTokens),
-            totalTokens: normalizeTokenNumber(turn?.totalTokens),
-            userMessageId: null,
-            assistantMessageId: null,
-            status: turn?.endedAt ? "completed" : "in_progress",
-          }))
-        : (Array.isArray(session.turns) ? session.turns : []);
+        ? session.insights.turnTimeline.map((turn) => {
+            const turnIndex = Number(turn?.turnIndex || 0);
+            const priorTurn = priorTurnsByIndex.get(turnIndex) || {};
+            return {
+              turnIndex,
+              startedAt: turn?.startedAt ? parseTimestampMs(turn.startedAt) : (priorTurn.startedAt ?? null),
+              endedAt: turn?.endedAt ? parseTimestampMs(turn.endedAt) : (priorTurn.endedAt ?? null),
+              durationMs: Math.max(0, Number(turn?.durationMs || priorTurn.durationMs || 0)),
+              inputTokens: Math.max(
+                normalizeTokenNumber(turn?.inputTokens),
+                normalizeTokenNumber(priorTurn.inputTokens),
+              ),
+              outputTokens: Math.max(
+                normalizeTokenNumber(turn?.outputTokens),
+                normalizeTokenNumber(priorTurn.outputTokens),
+              ),
+              totalTokens: Math.max(
+                normalizeTokenNumber(turn?.totalTokens),
+                normalizeTokenNumber(priorTurn.totalTokens),
+              ),
+              userMessageId: priorTurn.userMessageId || null,
+              assistantMessageId: priorTurn.assistantMessageId || null,
+              status: priorTurn.status || (turn?.endedAt ? "completed" : "in_progress"),
+            };
+          })
+        : priorTurns;
     } catch {
       // Inspector insights are best-effort only.
     }
@@ -1344,6 +1362,7 @@ export class SessionTracker {
           endedAt: session.endedAt || null,
           accumulatedAt: session.accumulatedAt || null,
           turnCount: session.turnCount || 0,
+          turns: Array.isArray(session.turns) ? session.turns : [],
           messages: session.messages || [],
           metadata: session.metadata || {},
           insights: session.insights || null,
@@ -1951,3 +1970,5 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
+
+

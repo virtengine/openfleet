@@ -137,6 +137,7 @@ const backendError = signal("");
 const backendLastSeen = signal(null);
 const backendRetryCount = signal(0);
 const DESKTOP_MIN_WIDTH = 1200;
+const WIDE_DESKTOP_MIN_WIDTH = 1400;
 const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
 const RAIL_ICON_WIDTH = 54;
@@ -238,23 +239,25 @@ function readForcedLayoutMode() {
 }
 
 function resolveLayoutFlags(win, forcedMode = "auto") {
+  const width = Number(win?.innerWidth || 0);
+  const isWideDesktop = width >= WIDE_DESKTOP_MIN_WIDTH;
   if (!win?.matchMedia) {
-    return { isCompactNav: false, isDesktop: false, isTablet: false };
+    return { isCompactNav: false, isDesktop: false, isTablet: false, isWideDesktop: false };
   }
   if (forcedMode === "desktop") {
-    return { isCompactNav: false, isDesktop: true, isTablet: false };
+    return { isCompactNav: false, isDesktop: true, isTablet: false, isWideDesktop };
   }
   if (forcedMode === "mobile") {
-    return { isCompactNav: true, isDesktop: false, isTablet: false };
+    return { isCompactNav: true, isDesktop: false, isTablet: false, isWideDesktop: false };
   }
   if (forcedMode === "tablet") {
-    return { isCompactNav: false, isDesktop: false, isTablet: true };
+    return { isCompactNav: false, isDesktop: false, isTablet: true, isWideDesktop: false };
   }
-  const width = Number(win.innerWidth || 0);
   return {
     isCompactNav: win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`).matches,
     isDesktop: win.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`).matches,
     isTablet: width >= TABLET_MIN_WIDTH && width < DESKTOP_MIN_WIDTH,
+    isWideDesktop,
   };
 }
 
@@ -1923,6 +1926,7 @@ function App() {
   const [isCompactNav, setIsCompactNav] = useState(initialLayout.isCompactNav);
   const [isDesktop, setIsDesktop] = useState(initialLayout.isDesktop);
   const [isTablet, setIsTablet] = useState(initialLayout.isTablet);
+  const [isWideDesktop, setIsWideDesktop] = useState(initialLayout.isWideDesktop);
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
   const initialPanelLayout = getStoredPanelLayout();
@@ -2022,6 +2026,23 @@ function App() {
     }
     const query = win.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`);
     const update = () => setIsDesktop(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => {
+      query.removeEventListener?.("change", update);
+    };
+  }, [forcedLayoutMode]);
+
+  useEffect(() => {
+    const win = globalThis.window;
+    if (!win?.matchMedia) return;
+    if (forcedLayoutMode !== "auto") {
+      const next = resolveLayoutFlags(win, forcedLayoutMode);
+      setIsWideDesktop(next.isWideDesktop);
+      return;
+    }
+    const query = win.matchMedia(`(min-width: ${WIDE_DESKTOP_MIN_WIDTH}px)`);
+    const update = () => setIsWideDesktop(query.matches);
     update();
     query.addEventListener?.("change", update);
     return () => {
@@ -2590,7 +2611,9 @@ function App() {
   const CurrentTab = TAB_COMPONENTS[activeTab.value] || DashboardTab;
   const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents" || activeTab.value === "fleet-sessions";
   const isChat = activeTab.value === "chat";
-  const showSessionRail = (isDesktop || isTablet) && isChat;
+  // The detached session rail only has wide-desktop CSS. Keep 1200-1399 in the
+  // compact desktop layout so chat keeps its inline session pane.
+  const showSessionRail = isWideDesktop && isChat;
   const showInspector = isDesktop && isChatOrAgents;
   const showBottomNav = !(isDesktop || isTablet);
   const railSessionType = "primary";
@@ -2961,5 +2984,4 @@ const remountApp = () => {
 };
 globalThis.__veRemountApp = remountApp;
 mountApp();
-
 

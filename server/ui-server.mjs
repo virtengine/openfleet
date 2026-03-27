@@ -53,6 +53,7 @@ async function compressAndSend(req, res, statusCode, headers, body) {
 
 // Lightweight TTL cache for expensive API responses
 const _apiCache = new Map();
+const _apiInflight = new Map();
 function getCachedApiResponse(key, ttlMs) {
   const entry = _apiCache.get(key);
   if (!entry) return undefined;
@@ -70,6 +71,29 @@ function invalidateApiCache(prefix) {
   for (const key of _apiCache.keys()) {
     if (key.startsWith(prefix)) _apiCache.delete(key);
   }
+  for (const key of _apiInflight.keys()) {
+    if (key.startsWith(prefix)) _apiInflight.delete(key);
+  }
+}
+async function getOrComputeCachedApiResponse(key, ttlMs, producer) {
+  const cached = getCachedApiResponse(key, ttlMs);
+  if (cached !== undefined) return cached;
+
+  const inflight = _apiInflight.get(key);
+  if (inflight) return inflight;
+
+  const pending = Promise.resolve()
+    .then(producer)
+    .then((value) => {
+      setCachedApiResponse(key, value);
+      return value;
+    })
+    .finally(() => {
+      _apiInflight.delete(key);
+    });
+
+  _apiInflight.set(key, pending);
+  return pending;
 }
 
 // Static file ETag + cache header helper
@@ -12988,13 +13012,14 @@ async function handleApi(req, res, url) {
   }
 
   if (path === "/api/health") {
-    jsonResponse(res, 200, {
+    const payload = await getOrComputeCachedApiResponse("health", 2000, async () => ({
       ok: true,
       uptime: process.uptime(),
       wsClients: wsClients.size,
       lanIp: getLocalLanIp(),
       url: getTelegramUiUrl(),
-    });
+    }));
+    jsonResponse(res, 200, payload);
     return;
   }
 
@@ -16526,12 +16551,16 @@ async function handleApi(req, res, url) {
   // ── Workspace Management API ──────────────────────────────────────────────
   if (path === "/api/workspaces") {
     try {
-      const configDir = resolveUiConfigDir();
-      // Auto-initialize workspaces from disk if config has none yet
-      const { workspaces: initialized } = initializeWorkspaces(configDir, { repoRoot });
-      const workspaces = initialized.length > 0 ? initialized : listManagedWorkspaces(configDir, { repoRoot });
-      const active = getActiveManagedWorkspace(configDir);
-      jsonResponse(res, 200, { ok: true, data: workspaces, activeId: active?.id || null });
+      const payload = await getOrComputeCachedApiResponse(`workspaces:${repoRoot}`, 3000, async () => {
+        const configDir = resolveUiConfigDir();
+        // Auto-initialize workspaces from disk if config has none yet.
+        // This path can touch the filesystem repeatedly under UI polling.
+        const { workspaces: initialized } = initializeWorkspaces(configDir, { repoRoot });
+        const workspaces = initialized.length > 0 ? initialized : listManagedWorkspaces(configDir, { repoRoot });
+        const active = getActiveManagedWorkspace(configDir);
+        return { ok: true, data: workspaces, activeId: active?.id || null };
+      });
+      jsonResponse(res, 200, payload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -16570,6 +16599,8 @@ async function handleApi(req, res, url) {
           return;
         }
         setActiveManagedWorkspace(configDir, wsId);
+        invalidateApiCache("workspaces:");
+        invalidateApiCache("workflows:");
         const active = getActiveManagedWorkspace(configDir);
         jsonResponse(res, 200, {
           ok: true,
@@ -16591,20 +16622,22 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workspaces/active/repos") {
     try {
-      const configDir = resolveUiConfigDir();
-      const active = getActiveManagedWorkspace(configDir);
-      if (!active) {
-        jsonResponse(res, 200, { ok: true, repos: [] });
-        return;
-      }
-      const repos = Array.isArray(active.repos)
-        ? active.repos.map((r) => ({
-            name: r.name || r.path || "",
-            path: r.path || "",
-            primary: Boolean(r.primary),
-          }))
-        : [];
-      jsonResponse(res, 200, { ok: true, repos });
+      const payload = await getOrComputeCachedApiResponse(`workspaces:active-repos:${repoRoot}`, 3000, async () => {
+        const configDir = resolveUiConfigDir();
+        const active = getActiveManagedWorkspace(configDir);
+        if (!active) {
+          return { ok: true, repos: [] };
+        }
+        const repos = Array.isArray(active.repos)
+          ? active.repos.map((r) => ({
+              name: r.name || r.path || "",
+              path: r.path || "",
+              primary: Boolean(r.primary),
+            }))
+          : [];
+        return { ok: true, repos };
+      });
+      jsonResponse(res, 200, payload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -18183,19 +18216,28 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
-      if (!wfCtx.ok) {
-        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+      const payload = await getOrComputeCachedApiResponse(`workflows:list:${url.search}`, 3000, async () => {
+        const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
+        if (!wfCtx.ok) {
+          return { __error: true, status: wfCtx.status, body: { ok: false, error: wfCtx.error } };
+        }
+        const engine = wfCtx.engine;
+        const all = engine.list().filter((workflow) => !shouldHideGeneratedWorkflowFromList(workflow));
+        return {
+          ok: true,
+          workflows: all.map((w) => ({
+            id: w.id, name: w.name, description: w.description, category: w.category,
+            enabled: w.enabled !== false,
+            nodeCount: Number.isFinite(w.nodeCount) ? w.nodeCount : (w.nodes || []).length,
+            trigger: w.trigger || (w.nodes || [])[0]?.type || "manual",
+          })),
+        };
+      });
+      if (payload?.__error) {
+        jsonResponse(res, payload.status, payload.body);
         return;
       }
-      const engine = wfCtx.engine;
-      const all = engine.list().filter((workflow) => !shouldHideGeneratedWorkflowFromList(workflow));
-      jsonResponse(res, 200, { ok: true, workflows: all.map(w => ({
-        id: w.id, name: w.name, description: w.description, category: w.category,
-        enabled: w.enabled !== false,
-        nodeCount: Number.isFinite(w.nodeCount) ? w.nodeCount : (w.nodes || []).length,
-        trigger: w.trigger || (w.nodes || [])[0]?.type || "manual",
-      })) });
+      jsonResponse(res, 200, payload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -18215,6 +18257,7 @@ if (path === "/api/agent-logs/context") {
         _wfTemplates.applyWorkflowTemplateState(body);
       }
       const saved = await engine.save(body);
+      invalidateApiCache("workflows:");
       jsonResponse(res, 200, { ok: true, workflow: saved });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -18233,6 +18276,7 @@ if (path === "/api/agent-logs/context") {
       const engine = wfCtx.engine;
       const workflowPayload = body?.workflow ?? body;
       const imported = await engine.import(workflowPayload);
+      invalidateApiCache("workflows:");
       jsonResponse(res, 200, { ok: true, workflow: imported });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -18948,39 +18992,42 @@ if (path === "/api/agent-logs/context") {
       }
 
       if (action === "runs") {
-        const rawOffset = Number(url.searchParams.get("offset"));
-        const rawLimit = Number(url.searchParams.get("limit"));
-        const offset = Number.isFinite(rawOffset) && rawOffset > 0
-          ? Math.max(0, Math.floor(rawOffset))
-          : 0;
-        const limit = Number.isFinite(rawLimit) && rawLimit > 0
-          ? Math.min(rawLimit, 5000)
-          : 20;
-        const page = typeof engine.getRunHistoryPage === "function"
-          ? engine.getRunHistoryPage(workflowId, { offset, limit })
-          : {
-              runs: engine.getRunHistory ? engine.getRunHistory(workflowId, limit) : [],
-              total: engine.getRunHistory ? engine.getRunHistory(workflowId).length : 0,
+        const payload = await getOrComputeCachedApiResponse(`workflows:runs:${workflowId}:${url.search}`, 2000, async () => {
+          const rawOffset = Number(url.searchParams.get("offset"));
+          const rawLimit = Number(url.searchParams.get("limit"));
+          const offset = Number.isFinite(rawOffset) && rawOffset > 0
+            ? Math.max(0, Math.floor(rawOffset))
+            : 0;
+          const limit = Number.isFinite(rawLimit) && rawLimit > 0
+            ? Math.min(rawLimit, 5000)
+            : 20;
+          const page = typeof engine.getRunHistoryPage === "function"
+            ? engine.getRunHistoryPage(workflowId, { offset, limit })
+            : {
+                runs: engine.getRunHistory ? engine.getRunHistory(workflowId, limit) : [],
+                total: engine.getRunHistory ? engine.getRunHistory(workflowId).length : 0,
+                offset,
+                limit,
+              };
+          const runs = Array.isArray(page?.runs) ? page.runs : [];
+          const total = Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length;
+          const nextOffset = Number.isFinite(Number(page?.nextOffset))
+            ? Number(page.nextOffset)
+            : (offset + runs.length < total ? offset + runs.length : null);
+          return {
+            ok: true,
+            runs,
+            pagination: {
+              total,
               offset,
               limit,
-            };
-        const runs = Array.isArray(page?.runs) ? page.runs : [];
-        const total = Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length;
-        const nextOffset = Number.isFinite(Number(page?.nextOffset))
-          ? Number(page.nextOffset)
-          : (offset + runs.length < total ? offset + runs.length : null);
-        jsonResponse(res, 200, {
-          ok: true,
-          runs,
-          pagination: {
-            total,
-            offset,
-            limit,
-            count: runs.length,
-            hasMore: page?.hasMore === true || (nextOffset != null && nextOffset < total),
-            nextOffset,
-          },
+              count: runs.length,
+              hasMore: page?.hasMore === true || (nextOffset != null && nextOffset < total),
+              nextOffset,
+            },
+          };
         });
+        jsonResponse(res, 200, payload);
         return;
       }
 
@@ -19208,9 +19255,18 @@ if (path === "/api/agent-logs/context") {
       }
 
       // GET — return full workflow definition
-      const wf = engine.get(workflowId);
-      if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
-      jsonResponse(res, 200, { ok: true, workflow: wf });
+      const payload = await getOrComputeCachedApiResponse(`workflows:detail:${workflowId}:${url.search}`, 3000, async () => {
+        const wf = engine.get(workflowId);
+        if (!wf) {
+          return { __error: true, status: 404, body: { ok: false, error: "Workflow not found" } };
+        }
+        return { ok: true, workflow: wf };
+      });
+      if (payload?.__error) {
+        jsonResponse(res, payload.status, payload.body);
+        return;
+      }
+      jsonResponse(res, 200, payload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

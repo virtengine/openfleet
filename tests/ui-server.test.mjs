@@ -4616,8 +4616,9 @@ describe("ui-server mini app", () => {
   });
 
   it("returns session turn timeline details including final turn counts", async () => {
+    const trackerMod = await import("../infra/session-tracker.mjs");
+    const tracker = trackerMod.getSessionTracker();
     const mod = await import("../server/ui-server.mjs");
-    const tracker = mod.getSessionTracker();
     tracker.startSession("task-turn-api", "Turn API task", { type: "task" });
     tracker.recordEvent("task-turn-api", {
       role: "user",

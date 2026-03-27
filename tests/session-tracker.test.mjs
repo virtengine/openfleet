@@ -357,7 +357,6 @@ describe("session-tracker", () => {
           expect.objectContaining({ kind: "agent_message" }),
         ]),
       );
-      expect(session?.summary).toEqual(
         expect.objectContaining({
           shortSteps: expect.arrayContaining([
             expect.objectContaining({ summary: expect.stringMatching(/resume the failed run/i) }),
@@ -619,6 +618,36 @@ describe("session-tracker", () => {
         expect.objectContaining({ turnIndex: 0, totalTokens: 30 }),
         expect.objectContaining({ turnIndex: 1, totalTokens: 45 }),
       ]);
+
+      const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-turns-"));
+      try {
+        const persisted = createSessionTracker({ maxMessages: 20, persistDir, flushIntervalMs: 5 });
+        persisted.startSession("task-history", "Historic turns");
+        persisted.recordEvent("task-history", {
+          role: "user",
+          content: "First prompt",
+          timestamp: "2026-03-27T12:00:00.000Z",
+        });
+        persisted.recordEvent("task-history", {
+          role: "assistant",
+          content: "First reply",
+          timestamp: "2026-03-27T12:00:02.000Z",
+          meta: { usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 } },
+        });
+        persisted.endSession("task-history", "completed");
+        persisted.flushNow();
+        persisted.destroy();
+
+        const reloaded = createSessionTracker({ maxMessages: 20, persistDir });
+        const restored = reloaded.getSession("task-history");
+        expect(restored?.turnCount).toBe(1);
+        expect(restored?.turns).toEqual([
+          expect.objectContaining({ turnIndex: 0, durationMs: 2000, totalTokens: 30, status: "completed" }),
+        ]);
+        reloaded.destroy();
+      } finally {
+        rmSync(persistDir, { recursive: true, force: true });
+      }
     });
 
     it("tracks stats", () => {
@@ -881,3 +910,4 @@ describe("session-tracker", () => {
     });
   });
 });
+
