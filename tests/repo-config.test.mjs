@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -35,6 +35,7 @@ describe("repo-config Claude settings", () => {
 
   it("repairs legacy invalid permissions and stale bridge paths when merging", async () => {
     const settingsPath = resolve(rootDir, ".claude", "settings.local.json");
+    await mkdir(resolve(rootDir, ".claude"), { recursive: true });
     await writeFile(resolve(rootDir, ".claude", ".gitkeep"), "", "utf8");
     await writeFile(
       settingsPath,
