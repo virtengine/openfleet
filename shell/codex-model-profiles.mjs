@@ -11,10 +11,11 @@ function clean(value) {
 
 function trimTrailingSlashes(value) {
   let normalized = String(value ?? "");
-  while (normalized.endsWith("/")) {
-    normalized = normalized.slice(0, -1);
+  let end = normalized.length;
+  while (end > 0 && normalized[end - 1] === "/") {
+    end -= 1;
   }
-  return normalized;
+  return end === normalized.length ? normalized : normalized.slice(0, end);
 }
 
 export function resolveCodexHomeDir(envInput = process.env) {
@@ -406,6 +407,5 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
       : null,
   };
 }
-
 
 
