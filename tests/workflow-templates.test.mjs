@@ -1399,6 +1399,7 @@ describe("github template CLI compatibility", () => {
 
     const gateNode = mergeTemplate.nodes.find((n) => n.id === "automation-eligible");
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
+    expect(gateNode?.config?.expression).toContain("bosun-pr-bosun-created");
     expect(gateNode?.config?.expression).toContain("labels.includes('bosun-pr-bosun-created')");
     expect(getNodeCommandCode(checkCi)).toContain("gh pr checks");
     expect(getNodeCommandCode(checkCi)).toContain("--json name,state");
@@ -1574,7 +1575,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(inspectNode)).toContain("const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']);");
     expect(getNodeCommandCode(inspectNode)).toContain("classification='conflict';reason='merge_conflict';");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
-    expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
+    expect(getNodeCommandCode(fixNode)).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
     expect(getNodeCommandCode(fixNode)).toContain("classification==='conflict'");
     expect(getNodeCommandCode(fixNode)).toContain("mergeable==='BEHIND'");
