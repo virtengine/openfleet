@@ -162,6 +162,20 @@ Key places to start:
 - `docs/agent-logging-quickstart.md` - agent work logging quickstart
 - `docs/agent-work-logging-design.md` - logging design and event model
 
+## Troubleshooting
+
+### Preflight warns about an interactive git editor
+
+If preflight reports an interactive git editor such as `code --wait`, `vim`, or `nano`, Bosun can deadlock while Git waits for an editor session to close.
+
+Run this from the repo root to switch the local repo config to a non-interactive editor:
+
+```bash
+node git-editor-fix.mjs
+```
+
+Preflight checks both `GIT_EDITOR` and `git config --get core.editor`. No warning is shown when `core.editor` is already non-interactive, for example `:`.
+
 ---
 
 ## CI/CD and quality gates
@@ -251,3 +265,5 @@ If you find this project useful or would like to stay up to date with new releas
 ## License
 
 Apache-2.0
+
+

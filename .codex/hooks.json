@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Agent lifecycle hooks for bosun. Compatible with Codex, Claude Code, and Copilot CLI.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "id": "session-start-log",
+        "command": "echo \"[hook] Agent session started: task=${VE_TASK_ID} sdk=${VE_SDK} branch=${VE_BRANCH_NAME}\"",
+        "description": "Log agent session start for audit trail",
+        "blocking": false,
+        "timeout": 10000,
+        "sdks": [
+          "*"
+        ]
+      }
+    ],
+    "SessionStop": [
+      {
+        "id": "session-stop-log",
+        "command": "echo \"[hook] Agent session ended: task=${VE_TASK_ID} sdk=${VE_SDK}\"",
+        "description": "Log agent session end for audit trail",
+        "blocking": false,
+        "timeout": 10000,
+        "sdks": [
+          "*"
+        ]
+      }
+    ],
+    "PrePush": [
+      {
+        "id": "prepush-go-vet",
+        "command": "go vet ./...",
+        "description": "Run go vet before push",
+        "blocking": true,
+        "timeout": 120000,
+        "sdks": [
+          "*"
+        ]
+      },
+      {
+        "id": "prepush-go-build",
+        "command": "go build ./...",
+        "description": "Verify Go build succeeds before push",
+        "blocking": true,
+        "timeout": 300000,
+        "sdks": [
+          "*"
+        ]
+      }
+    ],
+    "TaskComplete": [
+      {
+        "id": "task-complete-audit",
+        "command": "echo \"[hook] Task completed: ${VE_TASK_ID} — ${VE_TASK_TITLE}\"",
+        "description": "Audit log for task completion",
+        "blocking": false,
+        "timeout": 10000,
+        "sdks": [
+          "*"
+        ]
+      }
+    ]
+  },
+  "meta": {
+    "profile": "balanced",
+    "generatedBy": "bosun setup",
+    "generatedAt": "2026-03-27T06:21:21.749Z"
+  }
+}
