@@ -344,23 +344,42 @@ async function execOpencode(args, execOpts = {}) {
     ...execOpts,
   };
   const escaped = args.map((a) => `"${a}"`).join(" ");
+  const commandText = `"${bin}" ${escaped}`;
   if (isWindows) {
     // Use exec() on Windows to properly handle .cmd wrappers
-    const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
-    return typeof result === "string"
+    const result = await execAsync(commandText, baseOpts);
+    const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
+    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+      const err = new Error(normalized.stderr.trim());
+      err.stderr = normalized.stderr;
+      throw err;
+    }
+    return normalized;
   }
   try {
     const result = await execFileAsync(bin, args, baseOpts);
-    return typeof result === "string"
+    const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
+    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+      const err = new Error(normalized.stderr.trim());
+      err.stderr = normalized.stderr;
+      throw err;
+    }
+    return normalized;
   } catch {
-    const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
-    return typeof result === "string"
+    const result = await execAsync(commandText, baseOpts);
+    const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
+    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+      const err = new Error(normalized.stderr.trim());
+      err.stderr = normalized.stderr;
+      throw err;
+    }
+    return normalized;
   }
 }
 
@@ -765,6 +784,7 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
 
 
 

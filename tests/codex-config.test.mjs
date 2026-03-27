@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -254,7 +254,48 @@ describe("codex-config defaults", () => {
     expect(result.toml).toContain('base_url = "https://example-resource.openai.azure.com/openai/v1"');
     expect(result.toml).not.toContain('/openai/deployments/gpt-5/chat/completions');
   });
+  it("selects the Azure provider whose endpoint matches OPENAI_BASE_URL", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-home-"));
+    const codexDir = join(home, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      join(codexDir, "config.toml"),
+      [
+        'model = "gpt-5-deployment"',
+        'model_provider = "azure-sweden"',
+        "",
+        "[model_providers.azure-us]",
+        'name = "Azure OpenAI US"',
+        'base_url = "https://us-resource.openai.azure.com/openai/v1"',
+        'env_key = "AZURE_OPENAI_API_KEY"',
+        'wire_api = "responses"',
+        "",
+        "[model_providers.azure-sweden]",
+        'name = "Azure OpenAI Sweden"',
+        'base_url = "https://sweden-resource.openai.azure.com/openai/v1"',
+        'env_key = "AZURE_SWEDEN_OPENAI_API_KEY"',
+        'wire_api = "responses"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = resolveCodexProfileRuntime({
+      HOME: home,
+      OPENAI_BASE_URL: "https://us-resource.openai.azure.com/openai/v1",
+      OPENAI_API_KEY: "shared-openai-key",
+      AZURE_OPENAI_API_KEY: "us-key",
+      AZURE_SWEDEN_OPENAI_API_KEY: "sweden-key",
+    });
+
+    expect(result.provider).toBe("azure");
+    expect(result.configProvider).toEqual({
+      name: "azure-us",
+      envKey: "AZURE_OPENAI_API_KEY",
+      baseUrl: "https://us-resource.openai.azure.com/openai/v1",
+    });
+    expect(result.env.OPENAI_BASE_URL).toBe("https://us-resource.openai.azure.com/openai/v1");
+    expect(result.env.AZURE_OPENAI_API_KEY).toBe("us-key");
+  });
 });
-
-
 

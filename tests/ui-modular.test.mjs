@@ -41,11 +41,10 @@ import {
 } from "../ui/tabs/tasks.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-
 const uiDir = resolve(process.cwd(), "ui");
 const uiComponentsCss = readFileSync(resolve(process.cwd(), "ui/styles/components.css"), "utf8");
 const siteComponentsCss = readFileSync(resolve(process.cwd(), "site/ui/styles/components.css"), "utf8");
-
+const dashboardSource = readFileSync(resolve(process.cwd(), "ui/tabs/dashboard.js"), "utf8");
 describe("modular mini app structure", () => {
   const requiredModules = [
     "app.js",
@@ -82,6 +81,27 @@ describe("modular mini app structure", () => {
   }
 });
 
+
+describe("dashboard accessibility regressions", () => {
+  it("adds semantic labels for overview and quick actions", () => {
+    expect(dashboardSource).toContain('role="region" aria-label="Dashboard overview"');
+    expect(dashboardSource).toContain('role="banner" aria-label="Dashboard status header"');
+    expect(dashboardSource).toContain('aria-label="Overview metrics"');
+    expect(dashboardSource).toContain('aria-label="Quick actions"');
+  });
+
+  it("renders the dashboard title as a heading and supports space-key activation", () => {
+    expect(dashboardSource).toContain('<h1 class="dashboard-title ${headlineClass}">${headline}</h1>');
+    expect(dashboardSource).toContain('e.key === "Enter" || e.key === " "');
+  });
+
+  it("adds mobile dashboard layout rules and focus-visible states", () => {
+    expect(uiComponentsCss).toContain('@media (max-width: 599px)');
+    expect(uiComponentsCss).toContain('.dashboard-health-grid,');
+    expect(uiComponentsCss).toContain('.dashboard-metric:focus-visible,');
+    expect(uiComponentsCss).toContain('.dashboard-action-btn:focus-visible');
+  });
+});
 describe("workflow canvas helpers", () => {
   it("keeps workflow node header constants defined at module scope for render-time aliases", () => {
     const workflowsSource = readFileSync(resolve(process.cwd(), "ui/tabs/workflows.js"), "utf8");
@@ -595,3 +615,5 @@ describe("shared icon sizing rules", () => {
     }
   });
 });
+
+

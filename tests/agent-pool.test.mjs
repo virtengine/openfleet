@@ -185,6 +185,14 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
 // Mock agent-sdk.mjs so the config.toml resolution doesn't interfere
 vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: () => ({ primary: "", source: "test" }),
+  resolveCodexSdkInstall: () => ({
+    entryPath: join(process.cwd(), "node_modules", "@openai", "codex-sdk", "dist", "index.js"),
+    rootDir: process.cwd(),
+  }),
+  resolveAgentSdkModuleEntry: (specifier) => ({
+    entryPath: join(process.cwd(), "node_modules", ...String(specifier || "").split("/"), "index.js"),
+    rootDir: process.cwd(),
+  }),
 }));
 
 // Mock config.mjs so tests don't read the real bosun.config.json
@@ -214,6 +222,8 @@ const ENV_KEYS = [
   "CODEX_MODEL",
   "AZURE_OPENAI_API_KEY",
   "AZURE_OPENAI_API_KEY_SWEDEN",
+  "AZURE_SWEDEN_ENDPOINT",
+  "AZURE_SWEDEN_BASE_URL",
   "__MOCK_CODEX_AVAILABLE",
   "__MOCK_COPILOT_AVAILABLE",
   "__MOCK_CLAUDE_AVAILABLE",
@@ -265,6 +275,8 @@ function clearSdkEnv() {
   delete process.env.CODEX_MODEL;
   delete process.env.AZURE_OPENAI_API_KEY;
   delete process.env.AZURE_OPENAI_API_KEY_SWEDEN;
+  delete process.env.AZURE_SWEDEN_ENDPOINT;
+  delete process.env.AZURE_SWEDEN_BASE_URL;
   delete process.env.__MOCK_CODEX_AVAILABLE;
   delete process.env.__MOCK_COPILOT_AVAILABLE;
   delete process.env.__MOCK_CLAUDE_AVAILABLE;
@@ -561,6 +573,7 @@ describe("launchEphemeralThread", () => {
       expect(String(result.error || "")).toContain("400");
     }
   });
+
   it("tries fallback when primary SDK not available", async () => {
     // Set codex as primary, disable it, have copilot available in fallback
     // Since both will fail (SDKs not installed), verify it tries multiple
@@ -759,6 +772,46 @@ describe("launchEphemeralThread", () => {
     expect(result.sdk).toBe("codex");
     expect(result.error).toMatch(/codex/i);
     expect(result.error).not.toMatch(/no sdk available/i);
+  });
+
+  it("does not cool down SDKs for ignorable model listing 400 errors", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "600000";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementationOnce(() => ({
+      id: "model-list-400-thread",
+      runStreamed: async () => {
+        throw new Error("Failed to list models: 400 Bad Request");
+      },
+    }));
+
+    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(first.success).toBe(false);
+    expect(first.sdk).toBe("codex");
+    expect(first.error).toMatch(/failed to list models/i);
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("model-list-400-retry", "codex-after-ignorable-400"),
+    );
+
+    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(second.success).toBe(true);
+    expect(second.sdk).toBe("codex");
+    expect(second.output).toContain("codex-after-ignorable-400");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
   });
 
   it("retries primary SDK during cooldown when fallback SDKs are missing credentials", async () => {
@@ -1055,7 +1108,10 @@ describe("launchEphemeralThread", () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_BASE_URL = "https://example-resource.openai.azure.com/openai/v1";
     process.env.OPENAI_API_KEY = "azure-key";
+    process.env.AZURE_OPENAI_API_KEY = "azure-key";
     process.env.AZURE_OPENAI_API_KEY_SWEDEN = "sweden-key";
+    process.env.AZURE_SWEDEN_ENDPOINT = "https://example-sweden.openai.azure.com";
+    process.env.AZURE_SWEDEN_BASE_URL = "https://example-sweden.openai.azure.com/openai/v1";
     process.env.CODEX_MODEL = "gpt-5.4";
     setPoolSdk("codex");
 
@@ -1105,6 +1161,11 @@ describe("launchEphemeralThread", () => {
       env_key: "AZURE_OPENAI_API_KEY",
       base_url: "https://example-resource.openai.azure.com/openai/v1",
     }));
+    expect(codexCtorOpts?.unsetEnvKeys || []).toEqual(expect.arrayContaining([
+      "AZURE_OPENAI_API_KEY_SWEDEN",
+      "AZURE_SWEDEN_ENDPOINT",
+      "AZURE_SWEDEN_BASE_URL",
+    ]));
   });
 
   it("accepts copilot output when sendAndWait times out waiting for session.idle", async () => {
@@ -1925,5 +1986,7 @@ describe("resolution and launch integration", () => {
   });
 });
 }
+
+
 
 

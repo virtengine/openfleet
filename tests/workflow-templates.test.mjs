@@ -1399,8 +1399,7 @@ describe("github template CLI compatibility", () => {
 
     const gateNode = mergeTemplate.nodes.find((n) => n.id === "automation-eligible");
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
-    expect(gateNode?.config?.expression).toContain("<!-- bosun-created -->");
-    expect(gateNode?.config?.expression).toContain("auto-created by bosun");
+    expect(gateNode?.config?.expression).toContain("labels.includes('bosun-pr-bosun-created')");
     expect(getNodeCommandCode(checkCi)).toContain("gh pr checks");
     expect(getNodeCommandCode(checkCi)).toContain("--json name,state");
     expect(getNodeCommandCode(checkCi)).not.toContain("conclusion");
@@ -1417,7 +1416,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(listNode)).toContain("gh pr list --state open");
     expect(getNodeCommandCode(listNode)).toContain("--json number,title,body,headRefName,baseRefName,mergeable,labels");
     const targetNode = resolverTemplate.nodes.find((n) => n.id === "target-pr");
-    expect(String(targetNode?.config?.value || "")).toContain("<!-- bosun-created -->");
+    expect(String(targetNode?.config?.value || "")).toContain("bosun-pr-bosun-created");
     // Must NOT contain a direct merge call — merge is deferred to watchdog.
     const hasMergeCall = resolverTemplate.nodes.some(
       (n) => typeof n.config?.command === "string" && n.config.command.includes("gh pr merge")
@@ -1472,13 +1471,7 @@ describe("github template CLI compatibility", () => {
 
     expect(getNodeCommandCode(fetchNode)).toContain("const BOSUN_CREATED_LABEL='bosun-pr-bosun-created';");
     expect(getNodeCommandCode(fetchNode)).toContain("function readLabelNames(pr){");
-  expect(getNodeCommandCode(fetchNode)).toContain("function readBosunProvenanceText(pr){return String(pr?.body||'')+");
-  expect(getNodeCommandCode(fetchNode)).toContain("String(pr?.title||'');}");
-  expect(getNodeCommandCode(fetchNode)).toContain("const taskIdMatch=text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i);");
-  expect(getNodeCommandCode(fetchNode)).toContain("const hasLegacyTaskSignature=Boolean(");
-  expect(getNodeCommandCode(fetchNode)).toContain("automated pr for task ${String(taskIdMatch[1]||'').trim().toLowerCase()}");
-  expect(getNodeCommandCode(fetchNode)).toContain("return text.includes('<!-- bosun-created -->')||/Bosun-Origin:\\s*created/i.test(text)||/auto-created by bosun/i.test(text)||hasLegacyTaskSignature;");
-    expect(getNodeCommandCode(fetchNode)).toContain("function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL)||hasBosunCreatedText(readBosunProvenanceText(pr));}");
+    expect(getNodeCommandCode(fetchNode)).toContain("function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);}");
     expect(getNodeCommandCode(fetchNode)).toContain("const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all');");
     expect(getNodeCommandCode(fetchNode)).toContain("const TRUSTED_AUTHORS=new Set");
     expect(getNodeCommandCode(fetchNode)).toContain("allowTrustedFixes");
@@ -1546,8 +1539,8 @@ describe("github template CLI compatibility", () => {
 
     expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
-    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs'])");
-    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
+    expect(command).toContain("collectCiDiagnostics(repo,failedRun,runGh)");
+    expect(command).toContain("runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8'])");
     expect(command).toContain("reason:'auto_rerun_limit_reached'");
     expect(command).toContain("failedLogExcerpt");
     expect(command).toContain("failedJobs");
@@ -1556,7 +1549,7 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
+    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt");
     expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
   });
 
@@ -1578,12 +1571,13 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(inspectNode)).toContain("prDigest");
     expect(getNodeCommandCode(inspectNode)).toContain("digestSummary");
     expect(getNodeCommandCode(inspectNode)).toContain("failedCheckNames");
-    expect(getNodeCommandCode(inspectNode)).toContain("const behindMergeables=new Set(['BEHIND']);");
-    expect(getNodeCommandCode(inspectNode)).toContain("classification='behind';reason='behind_base';");
+    expect(getNodeCommandCode(inspectNode)).toContain("const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']);");
+    expect(getNodeCommandCode(inspectNode)).toContain("classification='conflict';reason='merge_conflict';");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
-    expect(getNodeCommandCode(fixNode)).toContain("classification==='behind'");
+    expect(getNodeCommandCode(fixNode)).toContain("classification==='conflict'");
+    expect(getNodeCommandCode(fixNode)).toContain("mergeable==='BEHIND'");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'branch_updated_from_base'");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs=['pr','merge'");
     expect(fixAgentNode?.config?.prompt).toContain("Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks");

@@ -45,6 +45,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
+import { resolveAgentSdkModuleEntry, resolveCodexSdkInstall } from "./agent-sdk.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime, readCodexConfigRuntimeDefaults } from "../shell/codex-model-profiles.mjs";
 import { buildTaskWritableRoots } from "../shell/codex-config.mjs";
@@ -107,18 +108,16 @@ function hasOptionalModule(specifier) {
     return MODULE_PRESENCE_CACHE.get(specifier);
   }
   let ok = false;
-  try {
-    require.resolve(specifier);
-    ok = true;
-  } catch {
-    // ESM-only packages have no CJS "require" export so require.resolve
-    // throws even when the package is installed.  Fall back to checking
-    // whether the package directory exists on disk.
+  if (specifier === CODEX_SDK_SPECIFIER) {
+    ok = Boolean(resolveCodexSdkInstall({ extraRoots: [getAgentRepoRoot(), process.cwd()] }));
+  } else {
     try {
-      const pkgDir = resolve(__dirname, "..", "node_modules", ...specifier.split("/"));
-      ok = existsSync(resolve(pkgDir, "package.json"));
+      require.resolve(specifier);
+      ok = true;
     } catch {
-      ok = false;
+      ok = Boolean(
+        resolveAgentSdkModuleEntry(specifier, { extraRoots: [getAgentRepoRoot(), process.cwd()] }),
+      );
     }
   }
   MODULE_PRESENCE_CACHE.set(specifier, ok);
@@ -813,6 +812,22 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
       return false;
     }
   };
+  const getAzureProviderEndpointEnvKeys = (sectionName) => {
+    const normalizedName = String(sectionName || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+    const keys = ["AZURE_OPENAI_ENDPOINT"];
+    if (normalizedName) {
+      keys.push(`${normalizedName}_ENDPOINT`);
+      keys.push(`${normalizedName}_BASE_URL`);
+      if (normalizedName.startsWith("AZURE_")) {
+        const suffix = normalizedName.slice("AZURE_".length);
+        if (suffix) {
+          keys.push(`AZURE_${suffix}_ENDPOINT`);
+          keys.push(`AZURE_${suffix}_BASE_URL`);
+        }
+      }
+    }
+    return [...new Set(keys)];
+  };
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
   const unsetEnvKeys = [];
@@ -856,6 +871,11 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
         if (!otherEnvKey || otherEnvKey === providerEnvKey) continue;
         delete env[otherEnvKey];
         if (!unsetEnvKeys.includes(otherEnvKey)) unsetEnvKeys.push(otherEnvKey);
+        for (const endpointKey of getAzureProviderEndpointEnvKeys(sectionName)) {
+          if (endpointKey === "AZURE_OPENAI_ENDPOINT") continue;
+          delete env[endpointKey];
+          if (!unsetEnvKeys.includes(endpointKey)) unsetEnvKeys.push(endpointKey);
+        }
       }
     } catch {
       // best effort — if config reading fails, don't block execution
@@ -989,6 +1009,21 @@ function shouldApplySdkCooldown(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (message.includes("failed to list models: 400")) return false;
+  if (
+    message.includes("failed to list models")
+    && (
+      message.includes("bad request")
+      || message.includes("invalid url")
+      || message.includes("deployment")
+      || message.includes("api version")
+      || message.includes("/models")
+      || message.includes("list models")
+      || message.includes("400")
+    )
+  ) {
+    return false;
+  }
   if (message.includes("failed to list models")) return true;
   if (message.includes("protocol version mismatch")) return true;
   if (message.includes("sdk expects version") && message.includes("server reports version")) {
@@ -4133,4 +4168,5 @@ export function getActiveThreads() {
   }
   return result;
 }
+
 

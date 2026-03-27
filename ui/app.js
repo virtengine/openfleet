@@ -1,12 +1,31 @@
-/* ─────────────────────────────────────────────────────────────
- *  VirtEngine Control Center – Preact + HTM Entry Point
+﻿/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ *  VirtEngine Control Center â€“ Preact + HTM Entry Point
  *  Modular SPA for Telegram Mini App (no build step)
- * ────────────────────────────────────────────────────────────── */
+ * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
-// ── Error telemetry ring buffer (max 50 entries, persisted to sessionStorage) ──
+// â”€â”€ Error telemetry ring buffer (max 50 entries, persisted to sessionStorage) â”€â”€
 const MAX_ERROR_LOG = 50;
 function getErrorLog() {
   try { return JSON.parse(sessionStorage.getItem("ve_error_log") || "[]"); } catch { return []; }
+}
+
+
+function clampPanelLayoutValue(value, min, max, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+export function getStoredPanelLayout(storage = globalThis?.localStorage) {
+  const readNumber = (key) => Number(storage?.getItem?.(key));
+  const readBool = (key) => storage?.getItem?.(key) === "true";
+  return {
+    sidebarWidth: clampPanelLayoutValue(readNumber("ve-sidebar-width"), DESKTOP_MIN_SIDEBAR_WIDTH, DESKTOP_MAX_SIDEBAR_WIDTH, DEFAULT_SIDEBAR_WIDTH),
+    railWidth: clampPanelLayoutValue(readNumber("ve-rail-width"), RAIL_ICON_WIDTH, 440, DEFAULT_RAIL_WIDTH),
+    inspectorWidth: clampPanelLayoutValue(readNumber("ve-inspector-width"), 260, 440, DEFAULT_INSPECTOR_WIDTH),
+    sidebarCollapsed: readBool("ve-sidebar-collapsed"),
+    railCollapsed: readBool("ve-rail-collapsed"),
+    inspectorCollapsed: readBool("ve-inspector-collapsed"),
+  };
 }
 function appendErrorLog(entry) {
   try {
@@ -26,7 +45,7 @@ function maybeRemountUi(message) {
   }
 }
 
-/* ── Global error handlers — catch unhandled errors before they freeze the UI ── */
+/* â”€â”€ Global error handlers â€” catch unhandled errors before they freeze the UI â”€â”€ */
 globalThis.addEventListener?.("error", (e) => {
   console.error("[ve:global-error]", e.error || e.message);
   appendErrorLog({ type: "global", message: e.message, stack: e.error?.stack });
@@ -61,12 +80,12 @@ function normalizeRenderableType(type) {
 
 function h(type, props, ...rest) {
   if (Array.isArray(type)) {
-    console.warn("[h-guard] Array passed as element type — rendering as Fragment", type.length, "items");
+    console.warn("[h-guard] Array passed as element type â€” rendering as Fragment", type.length, "items");
     return _h(_PreactFragment, null, ...type);
   }
   const normalizedType = normalizeRenderableType(type);
   if (normalizedType == null) {
-    console.warn("[h-guard] Invalid object passed as element type — rendering empty Fragment", type);
+    console.warn("[h-guard] Invalid object passed as element type â€” rendering empty Fragment", type);
     return _h(_PreactFragment, props, ...rest);
   }
   return _h(normalizedType, props, ...rest);
@@ -85,7 +104,7 @@ const html = htm.bind(h);
     } else if (vnode.type != null && typeof vnode.type === "object" && typeof vnode.type !== "function") {
       const normalizedType = normalizeRenderableType(vnode.type);
       if (normalizedType == null) {
-        console.warn("[vnode-guard] Invalid object used as element type — converting to Fragment", vnode.type);
+        console.warn("[vnode-guard] Invalid object used as element type â€” converting to Fragment", vnode.type);
         vnode.type = _PreactFragment;
       } else {
         vnode.type = normalizedType;
@@ -95,8 +114,8 @@ const html = htm.bind(h);
   };
 })();
 
-// ── Visibility-aware polling ──
-// Pauses or slows intervals 10× when tab is hidden; resumes immediately on focus.
+// â”€â”€ Visibility-aware polling â”€â”€
+// Pauses or slows intervals 10Ã— when tab is hidden; resumes immediately on focus.
 const _pageVisible = signal(!document.hidden);
 document.addEventListener("visibilitychange", () => { _pageVisible.value = !document.hidden; });
 function visibilityInterval(fn, activeMs, opts = {}) {
@@ -117,11 +136,17 @@ const backendDown = signal(false);
 const backendError = signal("");
 const backendLastSeen = signal(null);
 const backendRetryCount = signal(0);
-const DESKTOP_MIN_WIDTH = 1400;
+const DESKTOP_MIN_WIDTH = 1200;
 const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
 const RAIL_ICON_WIDTH = 54;
 const SIDEBAR_ICON_WIDTH = 54;
+const DEFAULT_SIDEBAR_WIDTH = 240;
+const DEFAULT_RAIL_WIDTH = 300;
+const DEFAULT_INSPECTOR_WIDTH = 320;
+const TABLET_MIN_SIDEBAR_WIDTH = 72;
+const DESKTOP_MIN_SIDEBAR_WIDTH = 200;
+const DESKTOP_MAX_SIDEBAR_WIDTH = 360;
 const APP_LOGO_SOURCES = ["/logo.png", "/logo.svg", "/favicon.png"];
 const VOICE_LAUNCH_QUERY_KEYS = [
   "launch",
@@ -334,7 +359,7 @@ function writeFloatingCallState(nextState) {
   }
 }
 
-/* ── Module imports ── */
+/* â”€â”€ Module imports â”€â”€ */
 import { ICONS } from "./modules/icons.js";
 import { iconText, resolveIcon } from "./modules/icon-utils.js";
 import {
@@ -385,7 +410,7 @@ import {
 import { buildSessionInsights, formatCompactCount } from "./modules/session-insights.js";
 import { VeTheme, CssBaseline, AppBar, Toolbar, Tabs, Tab, Drawer, Box, IconButton, Typography, Chip, Badge, BottomNavigation, BottomNavigationAction, Tooltip, Avatar, Stack, Paper, CircularProgress, Button, Divider, Menu, MenuItem, Fab, Snackbar, Alert } from "./modules/mui.js";
 
-/* ── Component imports ── */
+/* â”€â”€ Component imports â”€â”€ */
 import { ToastContainer, Modal } from "./components/shared.js";
 import { PullToRefresh } from "./components/forms.js";
 import {
@@ -409,11 +434,11 @@ import {
 } from "./components/command-palette.js";
 import { VoiceOverlay } from "./modules/voice-overlay.js";
 
-/* ── Tab imports (eager — loaded with app.js) ── */
+/* â”€â”€ Tab imports (eager â€” loaded with app.js) â”€â”€ */
 import { DashboardTab } from "./tabs/dashboard.js";
 import { ChatTab } from "./tabs/chat.js";
 
-/* ── Lazy tab loading ── */
+/* â”€â”€ Lazy tab loading â”€â”€ */
 const _lazyTabCache = {};
 
 function resolveLazyTabComponent(mod, exportName) {
@@ -457,7 +482,7 @@ function lazyTab(tabPath, exportName, nativeLoader) {
   return (props) => html`<${LazyTab} loader=${loader} ...${props} />`;
 }
 
-/* ── Lazy tab definitions ── */
+/* â”€â”€ Lazy tab definitions â”€â”€ */
 const TasksTab = lazyTab("./tabs/tasks.js", "TasksTab", () => import("./tabs/tasks.js"));
 const BenchmarksTab = lazyTab("./tabs/benchmarks.js", "BenchmarksTab", () => import("./tabs/benchmarks.js"));
 const AgentsTab = lazyTab("./tabs/agents.js", "AgentsTab", () => import("./tabs/agents.js"));
@@ -472,10 +497,10 @@ const LibraryTab = lazyTab("./tabs/library.js", "LibraryTab", () => import("./ta
 const LibraryMarketplaceTab = lazyTab("./tabs/library.js", "LibraryMarketplaceTab", () => import("./tabs/library.js"));
 const ManualFlowsTab = lazyTab("./tabs/manual-flows.js", "ManualFlowsTab", () => import("./tabs/manual-flows.js"));
 
-/* ── Shared components ── */
+/* â”€â”€ Shared components â”€â”€ */
 
 /**
- * AnimatedNumber — smoothly counts from previous to new value using rAF.
+ * AnimatedNumber â€” smoothly counts from previous to new value using rAF.
  */
 function AnimatedNumber({ value, duration = 600, className = "" }) {
   const displayRef = useRef(value);
@@ -503,11 +528,11 @@ function AnimatedNumber({ value, duration = 600, className = "" }) {
 }
 
 /**
- * KeyboardShortcutsModal — shows available keyboard shortcuts.
+ * KeyboardShortcutsModal â€” shows available keyboard shortcuts.
  */
 function KeyboardShortcutsModal({ onClose }) {
   const shortcuts = [
-    { key: "1–8", desc: "Switch tabs" },
+    { key: "1â€“8", desc: "Switch tabs" },
     { key: "c",   desc: "Create task (on Dashboard)" },
     { key: "?",   desc: "Show keyboard shortcuts" },
     { key: "Esc", desc: "Close modal / palette" },
@@ -526,7 +551,7 @@ function KeyboardShortcutsModal({ onClose }) {
   `;
 }
 
-/* ── Backend health helpers ── */
+/* â”€â”€ Backend health helpers â”€â”€ */
 
 function formatTimeAgo(ts) {
   return formatRelative(ts);
@@ -602,7 +627,7 @@ function useBackendHealth() {
       backendLastSeen.value = Date.now();
       backendRetryCount.value = 0;
     } catch (err) {
-      // Only mark as down if WS is also disconnected — WS is the primary
+      // Only mark as down if WS is also disconnected â€” WS is the primary
       // connectivity signal; the health check is a fallback.
       if (!wsConnected.value) {
         backendDown.value = true;
@@ -638,10 +663,10 @@ function useBackendHealth() {
 }
 
 function OfflineBanner() {
-  // Don't call useBackendHealth() here — the App component already runs it.
+  // Don't call useBackendHealth() here â€” the App component already runs it.
   // Calling it here caused a mount/unmount oscillation: App health check fails
-  // (no auth) → backendDown=true → OfflineBanner mounts → effect corrects it
-  // → backendDown=false → unmount → repeat every 10s.
+  // (no auth) â†’ backendDown=true â†’ OfflineBanner mounts â†’ effect corrects it
+  // â†’ backendDown=false â†’ unmount â†’ repeat every 10s.
   const manualRetry = useCallback(async () => {
     try {
       const res = await apiFetch("/api/health", { _silent: true });
@@ -669,20 +694,20 @@ function OfflineBanner() {
       sx=${{m: 1, mx: 2, animation: "slideDown 0.3s ease-out"}}
       action=${html`<${Button} color="inherit" size="small" onClick=${manualRetry}>Retry</${Button}>`}
     >
-      <strong>${title}</strong> — ${backendError.value || "Connection lost"}
+      <strong>${title}</strong> â€” ${backendError.value || "Connection lost"}
       ${backendLastSeen.value
         ? html`<${Typography} variant="caption" display="block">Last connected: ${formatTimeAgo(backendLastSeen.value)}</${Typography}>`
         : null}
       <${Typography} variant="caption" display="block">
         ${countdown != null && countdown > 0
-          ? `Reconnecting in ${countdown}s…`
+          ? `Reconnecting in ${countdown}sâ€¦`
           : `Retry attempt #${retryCount}`}
       </${Typography}>
     </${Alert}>
   `;
 }
 
-/* ── Error Boundary — catches render errors in child components ── */
+/* â”€â”€ Error Boundary â€” catches render errors in child components â”€â”€ */
 class TabErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -743,7 +768,7 @@ class TabErrorBoundary extends Component {
   }
 }
 
-/* ── Tab component map ── */
+/* â”€â”€ Tab component map â”€â”€ */
 const TAB_COMPONENTS = {
   dashboard: DashboardTab,
   tasks: TasksTab,
@@ -786,15 +811,25 @@ function inferUiConnected() {
   );
 }
 
-/* ═══════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
  *  Header
- * ═══════════════════════════════════════════════ */
+ * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function Header() {
   const isConn = inferUiConnected();
   const user = getTelegramUser();
   const latency = wsLatency.value;
   const reconnect = wsReconnectIn.value;
   const freshness = getMaxFreshnessMs(dataFreshness.value);
+  const activeConfig = TAB_CONFIG.find((tab) => tab.id === activeTab.value) || TAB_CONFIG[0] || { id: "dashboard", label: "Dashboard" };
+  const sessionId = selectedSessionId.value;
+  const activeSession = (sessionsData.value || []).find((session) => session?.id === sessionId);
+  const breadcrumbParts = [activeConfig.label];
+  if (activeSession?.title || activeSession?.taskId || activeSession?.id) {
+    breadcrumbParts.push(activeSession.title || activeSession.taskId || activeSession.id);
+  }
+  if (activeSession?.taskId && breadcrumbParts[breadcrumbParts.length - 1] !== activeSession.taskId) {
+    breadcrumbParts.push(activeSession.taskId);
+  }
 
   // Connection quality label
   let connLabel = "Offline";
@@ -806,7 +841,7 @@ function Header() {
     connLabel = "Live";
     connClass = "connected";
   } else if (reconnect != null && reconnect > 0) {
-    connLabel = `Reconnecting in ${reconnect}s…`;
+    connLabel = `Reconnecting in ${reconnect}sâ€¦`;
     connClass = "reconnecting";
   }
 
@@ -814,7 +849,7 @@ function Header() {
   let freshnessLabel = "";
   if (freshness != null && Number.isFinite(freshness)) {
     const rel = formatRelative(freshness);
-    if (rel && rel !== "—" && !rel.includes("NaN")) {
+    if (rel && rel !== "â€”" && !rel.includes("NaN")) {
       freshnessLabel = rel === "just now" ? "Updated just now" : `Updated ${rel}`;
     }
   }
@@ -828,6 +863,14 @@ function Header() {
       <${Toolbar} variant="dense">
         <img src=${logoSrc} alt="Bosun" style=${{height: 24, width: 24, marginRight: 4}} data-logo-fallback-index="0" onError=${handleAppLogoLoadError} />
         <${Typography} variant="h6" sx=${{ml: 1, flexGrow: 0}}>Bosun</${Typography}>
+        <div class="app-breadcrumbs" aria-label="Breadcrumb">
+          ${breadcrumbParts.map((part, index) => html`
+            <span class="app-breadcrumb-part" key=${`${part}-${index}`}>
+              ${index > 0 ? html`<span class="app-breadcrumb-separator" aria-hidden="true">â€º</span>` : null}
+              <span>${part}</span>
+            </span>
+          `)}
+        </div>
         <${Box} sx=${{ml: 2}}>
           <${WorkspaceSwitcher} />
         </${Box}>
@@ -852,16 +895,59 @@ function Header() {
   `;
 }
 
-/* ═══════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
  *  Desktop Sidebar + Session Rail
- * ═══════════════════════════════════════════════ */
+ * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function SidebarNav({ collapsed = false, onToggle }) {
   const user = getTelegramUser();
   const isConn = inferUiConnected();
+  const navRef = useRef(null);
 
   const collapseIcon = collapsed
     ? html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l5 5-5 5"/></svg>`
     : html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 3l-5 5 5 5"/></svg>`;
+
+  const focusSidebarTab = (targetIndex) => {
+    const navEl = navRef.current;
+    if (!navEl) return;
+    const tabEls = Array.from(navEl.querySelectorAll('[role="tab"]'));
+    if (tabEls.length === 0) return;
+    const nextIndex = Math.max(0, Math.min(tabEls.length - 1, targetIndex));
+    tabEls[nextIndex]?.focus();
+  };
+
+  const handleSidebarKeyDown = (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const navEl = navRef.current;
+    if (!navEl) return;
+    const tabEls = Array.from(navEl.querySelectorAll('[role="tab"]'));
+    if (tabEls.length === 0) return;
+    const activeIndex = tabEls.findIndex((tabEl) => tabEl === document.activeElement);
+    if (activeIndex < 0) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusSidebarTab((activeIndex + 1) % tabEls.length);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusSidebarTab((activeIndex - 1 + tabEls.length) % tabEls.length);
+      return;
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusSidebarTab(0);
+      return;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      focusSidebarTab(tabEls.length - 1);
+    }
+  };
 
   return html`
     <aside class="sidebar ${collapsed ? 'sidebar-icon-only' : ''}">
@@ -910,13 +996,16 @@ function SidebarNav({ collapsed = false, onToggle }) {
         </div>
       `}
       <${Tabs}
+        ref=${navRef}
         orientation="vertical"
         value=${Math.max(0, TAB_CONFIG.findIndex((t) => t.id === activeTab.value))}
         onChange=${(_, idx) => {
           const tab = TAB_CONFIG[idx];
           if (tab) navigateTo(tab.id, { resetHistory: tab.id === "dashboard", forceRefresh: tab.id === "dashboard" && activeTab.value === "dashboard" });
         }}
+        onKeyDown=${handleSidebarKeyDown}
         aria-label="Main navigation"
+        aria-orientation="vertical"
         sx=${{
           flexGrow: 1,
           "& .MuiTab-root": { minHeight: 40, justifyContent: collapsed ? "center" : "flex-start", px: collapsed ? 1 : 2 },
@@ -1035,7 +1124,7 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
         <div class="rail-header-inner">
           <div class="rail-title">Sessions</div>
           <div class="rail-meta">
-            ${liveRuntimeCount} live runtime · ${sessions.length} total
+            ${liveRuntimeCount} live runtime Â· ${sessions.length} total
           </div>
         </div>
         <${IconButton}
@@ -1086,7 +1175,7 @@ function filterSessionsByType(allSessions, sessionType = "primary") {
   });
 }
 
-function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
+function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed = false, onToggleCollapse }) {
   const sessionId = selectedSessionId.value;
   const session = (sessionsData.value || []).find((s) => s.id === sessionId);
   const isSessionTab = activeTab.value === "chat" || activeTab.value === "agents";
@@ -1102,12 +1191,12 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   const [insights, setInsights] = useState(null);
   const [insightState, setInsightState] = useState("idle");
   const workspaceHint = resolveSessionWorkspaceHint(session, "active");
-  const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
+  const lastActiveLabel = lastActive ? formatRelative(lastActive) : "â€”";
   const apiStatusLabel = inferUiConnected() ? "Connected" : "Offline";
   const wsStatusLabel = wsConnected.value ? "Live" : "Closed";
   const backendLastSeenLabel = backendLastSeen.value
     ? formatRelative(backendLastSeen.value)
-    : "—";
+    : "â€”";
 
   useEffect(() => {
     if (!isSessionTab) return;
@@ -1281,7 +1370,15 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   }
 
   return html`
-    <aside class="inspector">
+    <aside class="inspector" aria-label="Inspector panel">
+      <button
+        type="button"
+        class="inspector-collapse-btn"
+        onClick=${onToggleCollapse}
+        aria-label=${collapsed ? "Expand inspector" : "Collapse inspector"}
+        aria-pressed=${collapsed ? "true" : "false"}
+        title=${collapsed ? "Expand inspector" : "Collapse inspector"}
+      >${collapsed ? "âŸ¨" : "âŸ©"}</button>
       <div class="inspector-section">
         <div class="inspector-title">Focus</div>
         ${session
@@ -1334,7 +1431,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
                                 ${(contextWindow.usedTokens || contextWindow.totalTokens) &&
                                   html`
                                     <div class="inspector-kv"><span>Token Fill</span><strong>
-                                      ${contextWindow.usedTokens != null ? formatCompactCount(contextWindow.usedTokens) : "—"}
+                                      ${contextWindow.usedTokens != null ? formatCompactCount(contextWindow.usedTokens) : "â€”"}
                                       ${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)}` : ""}
                                     </strong></div>
                                   `}
@@ -1372,7 +1469,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
                           </div>
                         `}
                     `
-                  : html`<div class="inspector-empty">Tracking session metrics…</div>`}
+                  : html`<div class="inspector-empty">Tracking session metricsâ€¦</div>`}
               <div class="inspector-subtitle">Recent Warning/Error Logs</div>
               ${smartLogsContent}
               <${Button} variant="text" size="small" onClick=${() => navigateTo("logs")}>
@@ -1403,9 +1500,9 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   `;
 }
 
-/* ═══════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
  *  Bottom Navigation
- * ═══════════════════════════════════════════════ */
+ * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
 const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "marketplace", "workflows", "manual-flows", "settings"];
 
@@ -1550,7 +1647,7 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
               <span class="more-menu-bot-label">Bot Controls</span>
               <span class="more-menu-bot-sub">Commands, executor, routing</span>
             </div>
-            <span class="more-menu-bot-chevron">›</span>
+            <span class="more-menu-bot-chevron">â€º</span>
           <//>
         </div>
       </div>
@@ -1558,11 +1655,11 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
   `;
 }
 
-/* ═══════════════════════════════════════════════
- *  Bot Controls — multi-level command panel
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+ *  Bot Controls â€” multi-level command panel
  *  Triggered from the "More" sheet (not a floating FAB so it
  *  doesn't obscure content on small screens / mobile).
- * ═══════════════════════════════════════════════ */
+ * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 const BOT_SCREENS = {
   home: {
     title: ":sliders: Bosun Control Center",
@@ -1689,7 +1786,7 @@ function BotControlsSheet({ open, onClose }) {
         setCmdError(result?.error || "Command failed");
       }
     } catch (err) {
-      setCmdError(err.message || "Connection error — is bosun running?");
+      setCmdError(err.message || "Connection error â€” is bosun running?");
     } finally {
       setCmdLoading(false);
     }
@@ -1706,7 +1803,7 @@ function BotControlsSheet({ open, onClose }) {
         ${navStack.length > 0 ? html`
           <div class="bot-controls-breadcrumb">
             <${Button} variant="text" size="small" type="button" onClick=${botGoBack} aria-label="Go back">
-              ← Back
+              â† Back
             <//>
             ${navStack.length > 1 ? html`
               <${Button} variant="text" size="small" type="button" onClick=${botGoHome} aria-label="Go to home">
@@ -1721,7 +1818,7 @@ function BotControlsSheet({ open, onClose }) {
         ${cmdLoading ? html`
           <div class="bot-controls-spinner">
             <div class="ptr-spinner-icon"></div>
-            <span>Running…</span>
+            <span>Runningâ€¦</span>
           </div>
         ` : null}
 
@@ -1756,9 +1853,9 @@ function BotControlsSheet({ open, onClose }) {
   `;
 }
 
-/* ═══════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
  *  App Root
- * ═══════════════════════════════════════════════ */
+ * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function App() {
   const forcedLayoutMode = readForcedLayoutMode();
   const initialLayout = resolveLayoutFlags(globalThis.window, forcedLayoutMode);
@@ -1769,7 +1866,7 @@ function App() {
   const [showScrollTop, setShowScrollTop] = useState(false);
   const scrollVisibilityRef = useRef(false);
 
-  // ── Top loading bar state ──
+  // â”€â”€ Top loading bar state â”€â”€
   const [loadingPct, setLoadingPct] = useState(0);
   const [loadingVisible, setLoadingVisible] = useState(false);
   const loadingTimerRef = useRef(null);
@@ -1828,26 +1925,16 @@ function App() {
   const [isTablet, setIsTablet] = useState(initialLayout.isTablet);
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
-  const [railWidth, setRailWidth] = useState(() => {
-    if (!globalThis.window) return 280;
-    const stored = Number(localStorage.getItem("ve-rail-width"));
-    // Ensure a sensible default — never start at 0 or very small
-    return Number.isFinite(stored) && stored >= RAIL_ICON_WIDTH ? stored : 280;
-  });
-  const [inspectorWidth, setInspectorWidth] = useState(() => {
-    if (!globalThis.window) return 320;
-    const stored = Number(localStorage.getItem("ve-inspector-width"));
-    return Number.isFinite(stored) && stored >= 200 ? stored : 320;
-  });
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    if (!globalThis.window) return false;
-    return localStorage.getItem("ve-sidebar-collapsed") === "true";
-  });
-  const [railCollapsed, setRailCollapsed] = useState(() => {
-    if (!globalThis.window) return false;
-    return localStorage.getItem("ve-rail-collapsed") === "true";
-  });
-  const railWidthBeforeCollapseRef = useRef(280);
+  const initialPanelLayout = getStoredPanelLayout();
+  const [sidebarWidth, setSidebarWidth] = useState(initialPanelLayout.sidebarWidth);
+  const [railWidth, setRailWidth] = useState(initialPanelLayout.railWidth);
+  const [inspectorWidth, setInspectorWidth] = useState(initialPanelLayout.inspectorWidth);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(initialPanelLayout.sidebarCollapsed);
+  const [railCollapsed, setRailCollapsed] = useState(initialPanelLayout.railCollapsed);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(initialPanelLayout.inspectorCollapsed);
+  const railWidthBeforeCollapseRef = useRef(initialPanelLayout.railWidth || DEFAULT_RAIL_WIDTH);
+  const sidebarWidthBeforeCollapseRef = useRef(initialPanelLayout.sidebarWidth || DEFAULT_SIDEBAR_WIDTH);
+  const inspectorWidthBeforeCollapseRef = useRef(initialPanelLayout.inspectorWidth || DEFAULT_INSPECTOR_WIDTH);
 
   const clamp = useCallback((value, min, max) => {
     if (!Number.isFinite(value)) return min;
@@ -1909,6 +1996,23 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const onKeyDown = (event) => {
+      const key = String(event.key || "").toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "b") {
+        event.preventDefault();
+        setSidebarCollapsed((value) => !value);
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === "i") {
+        event.preventDefault();
+        setInspectorCollapsed((value) => !value);
+      }
+    };
+    globalThis.addEventListener?.("keydown", onKeyDown);
+    return () => globalThis.removeEventListener?.("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
     const win = globalThis.window;
     if (!win?.matchMedia) return;
     if (forcedLayoutMode !== "auto") {
@@ -1963,14 +2067,24 @@ function App() {
 
 
   useEffect(() => {
-    if (!isDesktop || !globalThis.window) return;
-    if (!railCollapsed) localStorage.setItem("ve-rail-width", String(railWidth));
-  }, [railWidth, isDesktop, railCollapsed]);
+    if (!globalThis.window) return;
+    localStorage.setItem("ve-sidebar-width", String(sidebarWidth));
+  }, [sidebarWidth]);
 
   useEffect(() => {
-    if (!isDesktop || !globalThis.window) return;
-    localStorage.setItem("ve-inspector-width", String(inspectorWidth));
-  }, [inspectorWidth, isDesktop]);
+    if (!globalThis.window) return;
+    if (!railCollapsed) localStorage.setItem("ve-rail-width", String(railWidth));
+  }, [railWidth, railCollapsed]);
+
+  useEffect(() => {
+    if (!globalThis.window) return;
+    if (!inspectorCollapsed) localStorage.setItem("ve-inspector-width", String(inspectorWidth));
+  }, [inspectorWidth, inspectorCollapsed]);
+
+  useEffect(() => {
+    if (!globalThis.window) return;
+    localStorage.setItem("ve-inspector-collapsed", String(inspectorCollapsed));
+  }, [inspectorCollapsed]);
 
   useEffect(() => {
     if (!globalThis.window) return;
@@ -1999,7 +2113,7 @@ function App() {
     if (isDesktop) {
       document.documentElement.dataset.desktop = "true";
       delete document.documentElement.dataset.tablet;
-      // Close drawers when switching to desktop — panels are always visible
+      // Close drawers when switching to desktop â€” panels are always visible
       setSidebarDrawerOpen(false);
       setInspectorDrawerOpen(false);
     } else if (isTablet) {
@@ -2015,7 +2129,7 @@ function App() {
 
   const closeMore = useCallback(() => setIsMoreOpen(false), []);
 
-  // ── Bot Controls sheet state ──
+  // â”€â”€ Bot Controls sheet state â”€â”€
   const [isBotOpen, setIsBotOpen] = useState(false);
   const openBot  = useCallback(() => setIsBotOpen(true), []);
   const closeBot = useCallback(() => setIsBotOpen(false), []);
@@ -2207,7 +2321,7 @@ function App() {
         }
         const nextTier = Number(cfg?.tier) === 1 ? 1 : 2;
 
-        // Always open the voice overlay inline — even in Electron.
+        // Always open the voice overlay inline â€” even in Electron.
         // The desktop follow window (always-on-top pop-out) is available
         // via the tray menu or the "externalize" button inside the overlay.
         // Auto-delegating to the follow window on mic-button click was
@@ -2343,7 +2457,7 @@ function App() {
         }
       }
       // Wait for UI components and the voice-mode event listener to mount.
-      // Cold-start Electron windows need more time — JS bundles are still
+      // Cold-start Electron windows need more time â€” JS bundles are still
       // being parsed.  We retry the dispatch up to 5 times with increasing
       // delays to ensure the listener is registered before we give up.
       const delays = [400, 600, 1000, 1500, 2000];
@@ -2352,7 +2466,7 @@ function App() {
         await new Promise((resolve) => setTimeout(resolve, delay));
         if (cancelled) return;
         // Check if voice overlay is already open (a previous dispatch succeeded).
-        // Use the ref to read current state — the closure-captured useState
+        // Use the ref to read current state â€” the closure-captured useState
         // value is stale inside this async loop.
         if (voiceOverlayOpenRef.current) return;
         globalThis.dispatchEvent?.(
@@ -2476,9 +2590,9 @@ function App() {
   const CurrentTab = TAB_COMPONENTS[activeTab.value] || DashboardTab;
   const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents" || activeTab.value === "fleet-sessions";
   const isChat = activeTab.value === "chat";
-  const showSessionRail = isDesktop && isChat;
+  const showSessionRail = (isDesktop || isTablet) && isChat;
   const showInspector = isDesktop && isChatOrAgents;
-  const showBottomNav = !isDesktop;
+  const showBottomNav = !(isDesktop || isTablet);
   const railSessionType = "primary";
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
@@ -2555,7 +2669,7 @@ function App() {
           onClick=${toggleMore}
           aria-label=${isMoreOpen ? "Close navigation menu" : "Open navigation menu"}
         >
-          ⋯ Navigation
+          â‹¯ Navigation
         <//>
       `
     : null;
@@ -2563,7 +2677,7 @@ function App() {
   return html`<${VeTheme}><${CssBaseline} />
     <div class="top-loading-bar" style="width: ${loadingPct}%; opacity: ${loadingVisible ? 1 : 0}"></div>
     <div
-      class="app-shell"
+      class=${`app-shell${isDesktop ? " app-desktop-grid" : isTablet ? " app-tablet-grid" : ""}`}
       style=${shellStyle}
       data-tab=${activeTab.value}
       data-has-rail=${showSessionRail ? "true" : "false"}
@@ -2647,7 +2761,7 @@ function App() {
                   mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
                 }}
               >
-                ↑
+                â†‘
               </${Fab}>
             </${Tooltip}>
           `}
@@ -2658,6 +2772,8 @@ function App() {
             onResizeStart=${handleResizeStart}
             onResizeReset=${handleResizeReset}
             showResizer=${isDesktop}
+            collapsed=${inspectorCollapsed}
+            onToggleCollapse=${() => setInspectorCollapsed((value) => !value)}
           />`
         : null}
     </div>
@@ -2822,7 +2938,7 @@ function App() {
   </${VeTheme}>`;
 }
 
-/* ─── Mount ─── */
+/* â”€â”€â”€ Mount â”€â”€â”€ */
 const mountRoot = () => document.getElementById("app");
 const signalAppMounted = () => {
   globalThis.dispatchEvent?.(new Event("bosun:app-mounted"));
@@ -2845,3 +2961,5 @@ const remountApp = () => {
 };
 globalThis.__veRemountApp = remountApp;
 mountApp();
+
+

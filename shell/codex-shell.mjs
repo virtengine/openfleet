@@ -14,8 +14,8 @@
 
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { resolveAgentSdkConfig } from "../agent/agent-sdk.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveAgentSdkConfig, resolveCodexSdkInstall } from "../agent/agent-sdk.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
@@ -168,6 +168,11 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
   }
 
   const providerName = isAzure ? "azure" : "openai";
+  const providerSectionNameResolved = isAzure
+    ? providerSectionName
+    : hasCustomBaseUrl
+      ? (configProvider?.name || "openai-direct")
+      : null;
   const config = isAzure
     ? {
         model_providers: {
@@ -185,18 +190,20 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
       }
     : hasCustomBaseUrl
       ? {
-          model_providers: {
-            [providerSectionName]: {
-              ...streamProviderOverrides,
-            },
-          },
+          model_providers: providerSectionNameResolved
+            ? {
+                [providerSectionNameResolved]: {
+                  ...streamProviderOverrides,
+                },
+              }
+            : undefined,
         }
       : {};
 
   Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
 
-  if (isAzure && env.CODEX_MODEL) {
-    config.model_provider = providerSectionName;
+  if (providerSectionNameResolved && env.CODEX_MODEL) {
+    config.model_provider = providerSectionNameResolved;
     config.model = env.CODEX_MODEL;
   }
 
@@ -386,6 +393,17 @@ function resolveCodexTransport() {
   return "auto";
 }
 
+function shouldUseBareCodexSdkImport() {
+  return Boolean(import.meta.vitest || process.env.VITEST);
+}
+
+async function importCodexSdkModule(resolvedSdk) {
+  if (shouldUseBareCodexSdkImport()) {
+    return import(CODEX_SDK_SPECIFIER);
+  }
+  return import(pathToFileURL(resolvedSdk.entryPath).href);
+}
+
 // ── SDK Loading ──────────────────────────────────────────────────────────────
 
 async function loadCodexSdk() {
@@ -404,9 +422,14 @@ async function loadCodexSdk() {
   }
   if (CodexClass) return CodexClass;
   try {
-    const mod = await import(CODEX_SDK_SPECIFIER); // Use the defined specifier
+    const resolvedSdk = resolveCodexSdkInstall({ extraRoots: [getWorkingDirectory()] });
+    if (!resolvedSdk?.entryPath) {
+      console.error("[codex-shell] failed to load SDK: no complete @openai/codex-sdk install found");
+      return null;
+    }
+    const mod = await importCodexSdkModule(resolvedSdk);
     CodexClass = mod.Codex;
-    console.log("[codex-shell] SDK loaded successfully");
+    console.log(`[codex-shell] SDK loaded successfully from ${resolvedSdk.rootDir}`);
     return CodexClass;
   } catch (err) {
     console.error(`[codex-shell] failed to load SDK: ${err.message}`);
@@ -1309,3 +1332,4 @@ export async function initCodexShell() {
     );
   }
 }
+

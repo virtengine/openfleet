@@ -145,6 +145,14 @@ function AnimatedNumber({ value, duration = 600, className = "" }) {
   return html`<span class="${className}">${display}</span>`;
 }
 
+function buildQuickActionLabel(action) {
+  if (!action) return "Run quick action";
+  if (action.action === "create") return "Create a new task";
+  if (action.action === "start") return "Start a task";
+  if (action.cmd) return `Run ${action.label} command`;
+  return action.label || "Run quick action";
+}
+
 function normalizeCommitMessage(message) {
   const text = String(message || "").trim();
   if (!text) return "";
@@ -740,8 +748,8 @@ export function DashboardTab() {
 
   if (!status && !executor)
     return html`
-      <div class="dashboard-shell">
-        <div class="dashboard-grid">
+      <div class="dashboard-shell" role="region" aria-label="Dashboard overview">
+        <div class="dashboard-grid" aria-label="Dashboard cards">
           ${Array.from({ length: 6 }, (_, i) => html`<${SkeletonCard} key=${i} />`)}
         </div>
       </div>
@@ -771,13 +779,13 @@ export function DashboardTab() {
 
   return html`
     <div class="dashboard-shell">
-      <div class="dashboard-header">
+      <div class="dashboard-header" role="banner" aria-label="Dashboard status header">
         <div class="dashboard-header-text">
           <div class="dashboard-eyebrow">Pulse</div>
-          <div class="dashboard-title ${headlineClass}">${headline}</div>
-          <div class="dashboard-subtitle">${headerLine}</div>
+          <h1 class="dashboard-title ${headlineClass}">${headline}</h1>
+          <p class="dashboard-subtitle">${headerLine}</p>
         </div>
-        <div class="dashboard-header-meta">
+        <div class="dashboard-header-meta" aria-label="Runtime status chips">
           <span class="dashboard-chip">Mode ${mode}</span>
           <span class="dashboard-chip">SDK ${defaultSdk}</span>
           ${uptime ? html`<span class="dashboard-chip">${uptime}</span>` : null}
@@ -910,16 +918,17 @@ export function DashboardTab() {
               </div>
             `
             : html`
-              <div class="dashboard-metric-grid stat-flash" key=${flashKey}>
+              <div class="dashboard-metric-grid stat-flash" key=${flashKey} role="list" aria-label="Overview metrics">
                 ${overviewMetrics.map(
                   (metric) => html`
                     <div
                       class="dashboard-metric"
                       style="cursor:pointer;"
                       role="button"
+                      aria-label=${`${metric.label}: ${metric.value}. Open ${metric.tab || "tasks"} tab`}
                       tabindex="0"
                       onClick=${() => navigateTo(metric.tab || "tasks")}
-                      onKeyDown=${(e) => e.key === "Enter" && navigateTo(metric.tab || "tasks")}
+                      onKeyDown=${(e) => (e.key === "Enter" || e.key === " ") && navigateTo(metric.tab || "tasks")}
                     >
                       <div class="dashboard-metric-label">${metric.label}</div>
                       <div
@@ -1009,7 +1018,7 @@ export function DashboardTab() {
           >`}
           className="dashboard-card dashboard-actions"
         >
-          <div class="dashboard-actions-grid">
+          <div class="dashboard-actions-grid" role="list" aria-label="Quick actions">
             ${QUICK_ACTIONS.map(
               (a) => html`
                 <${Button}
@@ -1018,6 +1027,8 @@ export function DashboardTab() {
                   size="small"
                   className="dashboard-action-btn"
                   style=${{ '--qa-color': a.color }}
+                  aria-label=${buildQuickActionLabel(a)}
+                  title=${buildQuickActionLabel(a)}
                   onClick=${(e) => handleQuickAction(a, e)}
                 >
                   <span class="dashboard-action-icon">${resolveIcon(a.icon) || a.icon}</span>

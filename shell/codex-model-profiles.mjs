@@ -49,6 +49,15 @@ function normalizeAzureOpenAIBaseUrl(value) {
   }
 }
 
+function normalizeProviderBaseUrlForComparison(value, providerKind = "openai") {
+  const raw = clean(value);
+  if (!raw) return "";
+  if (providerKind === "azure") {
+    return normalizeAzureOpenAIBaseUrl(raw);
+  }
+  return raw.replace(/\/+$/, "");
+}
+
 function normalizeProfileName(value, fallback = DEFAULT_ACTIVE_PROFILE) {
   const raw = clean(value).toLowerCase();
   if (!raw) return fallback;
@@ -192,12 +201,18 @@ function selectConfigProviderForRuntime(configDefaults, env, preferredProvider =
   const matchingEntries = preferred
     ? entries.filter((section) => section.provider === preferred)
     : entries;
+  const normalizedRuntimeBaseUrl = normalizeProviderBaseUrlForComparison(
+    runtimeBaseUrl,
+    preferred || inferProviderKindFromSection("", { baseUrl: runtimeBaseUrl }, "openai"),
+  );
   const baseUrlMatchedEntries = runtimeBaseUrl
-    ? matchingEntries.filter((section) => clean(section.baseUrl) === runtimeBaseUrl)
+    ? matchingEntries.filter((section) =>
+      normalizeProviderBaseUrlForComparison(section.baseUrl, section.provider) === normalizedRuntimeBaseUrl)
     : [];
   const envBackedEntries = matchingEntries.filter((section) => providerRuntimeConfigured(env, section));
   const baseUrlMatchedEnvBackedEntries = runtimeBaseUrl
-    ? envBackedEntries.filter((section) => clean(section.baseUrl) === runtimeBaseUrl)
+    ? envBackedEntries.filter((section) =>
+      normalizeProviderBaseUrlForComparison(section.baseUrl, section.provider) === normalizedRuntimeBaseUrl)
     : [];
   const preferredNames = preferred === "azure"
     ? ["azure"]
@@ -221,7 +236,9 @@ function selectConfigProviderForRuntime(configDefaults, env, preferredProvider =
         ),
       };
       const preferredMatches = !preferred || configured.provider === preferred;
-      const baseUrlMatches = !runtimeBaseUrl || clean(configured.baseUrl) === runtimeBaseUrl;
+      const baseUrlMatches = !runtimeBaseUrl ||
+        normalizeProviderBaseUrlForComparison(configured.baseUrl, configured.provider)
+          === normalizedRuntimeBaseUrl;
       if (preferredMatches && baseUrlMatches && providerRuntimeConfigured(env, configured)) {
         return configured;
       }
@@ -381,4 +398,7 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
       : null,
   };
 }
+
+
+
 

@@ -42,7 +42,7 @@ import {
   isUnresolvedTemplateToken,
   pickGitRef,
 } from "./transforms.mjs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
@@ -2485,6 +2485,30 @@ async function getCustomToolsMod() {
   return _customToolsMod;
 }
 
+function resolveBosunNativeRootDir(ctx, engine, explicitRoot = "") {
+  const resolvedExplicit = String(explicitRoot || "").trim();
+  if (resolvedExplicit) return resolvedExplicit;
+
+  const ctxRoot = String(ctx?.data?.worktreePath || ctx?.data?.repoRoot || "").trim();
+  if (ctxRoot) return ctxRoot;
+
+  const workflowDir = String(engine?.workflowDir || "").trim();
+  if (workflowDir) {
+    const normalizedWorkflowDir = resolve(workflowDir);
+    const workflowDirName = basename(normalizedWorkflowDir).toLowerCase();
+    if (workflowDirName === "workflows") {
+      const parentDir = dirname(normalizedWorkflowDir);
+      if (basename(parentDir).toLowerCase() === ".bosun") {
+        return dirname(parentDir);
+      }
+      return parentDir;
+    }
+    return dirname(normalizedWorkflowDir);
+  }
+
+  return process.cwd();
+}
+
 let _kanbanMod = null;
 async function getKanbanMod() {
   if (!_kanbanMod) {
@@ -2574,11 +2598,11 @@ registerNodeType("action.bosun_tool", {
     },
     required: ["toolId"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const toolId = ctx.resolve(node.config?.toolId || "");
     if (!toolId) throw new Error("action.bosun_tool: 'toolId' is required");
 
-    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const rootDir = resolveBosunNativeRootDir(ctx, engine);
     const cwd = ctx.resolve(node.config?.cwd || "") || rootDir;
     const timeoutMs = node.config?.timeoutMs || 60000;
 
@@ -2945,18 +2969,18 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
   "tools.list": {
     description: "List all available Bosun tools (built-in + custom + global)",
     params: ["rootDir"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       return mod.listCustomTools(rootDir, { includeBuiltins: true });
     },
   },
   "tools.get": {
     description: "Get details of a specific Bosun tool by ID",
     params: ["rootDir", "toolId"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       const result = mod.getCustomTool(rootDir, args.toolId);
       if (!result) return { found: false, toolId: args.toolId };
       return { found: true, ...result.entry };
@@ -6436,7 +6460,5 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
-
-
 
 

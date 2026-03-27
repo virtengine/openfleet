@@ -19,6 +19,8 @@ export default defineConfig({
     exclude: ["**/node_modules/**", "**/.cache/**", "**/*.node.test.mjs"],
     testTimeout: 5000,
     pool: "threads",
+    minWorkers: process.platform === "win32" ? 1 : undefined,
+    maxWorkers: process.platform === "win32" ? 4 : undefined,
     setupFiles: ["tests/setup.mjs"],
   },
 });

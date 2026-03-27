@@ -96,12 +96,16 @@ describe("monitor workflow startup guards", () => {
     );
     expect(monitorSource).toContain('pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(');
     expect(monitorSource).toContain('const includeTaskPoll = opts?.includeTaskPoll !== false;');
+    expect(monitorSource).toContain('const includeScheduled = opts?.includeScheduled !== false;');
     expect(monitorSource).not.toContain('_lastRunAt: Date.now()');
-    expect(monitorSource).toContain('if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {');
+    expect(monitorSource).toContain('const isTaskPollTrigger =');
+    expect(monitorSource).toContain('if (!includeTaskPoll && isTaskPollTrigger) {');
+    expect(monitorSource).toContain('if (!includeScheduled && !isTaskPollTrigger) {');
     expect(monitorSource).toContain('"stale-dispatch-unstick"');
     expect(monitorSource).toContain('"stale-dispatch-task-poll-unstick"');
     expect(monitorSource).toContain('throwOnError: true');
     expect(monitorSource).toContain('requireEngine: true');
+    expect(monitorSource).toContain('includeScheduled: false,');
     const startupTaskPollHook = monitorSource.indexOf('"stale-dispatch-task-poll-unstick"');
     expect(startupTaskPollHook).toBeGreaterThan(-1);
     expect(
@@ -203,6 +207,9 @@ describe("monitor workflow startup guards", () => {
       "review rehydrate redispatch ${taskId}: missing prUrl/prNumber",
     );
     expect(monitorSource).toContain("redispatchInReviewTask(task, \"review-agent-rehydrate\"");
+    expect(monitorSource).toContain("const reviewRedispatchCooldownByTask = new Map();");
+    expect(monitorSource).toContain("const REVIEW_REDISPATCH_COOLDOWN_MS = 5 * 60 * 1000;");
+    expect(monitorSource).toContain("if (existing && now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS) {");
     expect(monitorSource).toContain("dispatchFixTask: (taskId, issues) => {");
     expect(monitorSource).toContain("supervisor dispatch-fix: no active session");
     expect(monitorSource).toContain("review-fix-redispatch");
@@ -224,6 +231,19 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("[monitor] review reconcile: PR #");
     expect(monitorSource).toContain("safeSetInterval(\"workflow-review-merge-reconcile\"");
     expect(monitorSource).toContain("checkMergedPRsAndUpdateTasks();");
+  });
+
+  it("stages heavy startup epic and dependabot maintenance behind delayed timers", () => {
+    expect(monitorSource).toContain("const STARTUP_EPIC_CHECK_DELAY_MS = parseEnvInteger(");
+    expect(monitorSource).toContain("const STARTUP_DEPENDABOT_CHECK_DELAY_MS = parseEnvInteger(");
+    expect(monitorSource).toContain("safeSetTimeout(\"startup-epic-check\"");
+    expect(monitorSource).toContain("safeSetTimeout(\"startup-dependabot-auto-merge\"");
+    expect(monitorSource).not.toContain("safeSetTimeout(\"startup-health-checks\"");
+  });
+
+  it("avoids repeated review reconcile redispatch logs while cooldown is active", () => {
+    expect(monitorSource).toContain("function isReviewRedispatchCoolingDown(taskId, now = Date.now())");
+    expect(monitorSource).toContain("!isReviewRedispatchCoolingDown(taskId, nowMs)");
   });
 
   it("recovers merged PR tasks that were bounced back to todo/inprogress", () => {

@@ -3901,7 +3901,27 @@ function safeSetInterval(reason, fn, ms) {
       `[monitor] timer delay clamped for interval:${reason} (${normalized}ms -> ${clamped}ms)`,
     );
   }
-  return setInterval(() => runGuarded(`interval:${reason}`, fn), clamped);
+  let inFlight = false;
+  return setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    runGuarded(`interval:${reason}`, () => {
+      let result;
+      try {
+        result = fn();
+      } catch (err) {
+        inFlight = false;
+        throw err;
+      }
+      if (result && typeof result.then === "function") {
+        return Promise.resolve(result).finally(() => {
+          inFlight = false;
+        });
+      }
+      inFlight = false;
+      return result;
+    });
+  }, clamped);
 }
 
 function safeSetTimeout(reason, fn, ms) {
@@ -5934,8 +5954,9 @@ async function checkMergedPRsAndUpdateTasks() {
         // freshly created PR that is not discoverable yet.
         if (allowsInreviewMergeCheck) {
           const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
-          const ageMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Infinity;
-          if (ageMs > 2 * 60 * 1000) {
+          const nowMs = Date.now();
+          const ageMs = Number.isFinite(updatedAt) ? nowMs - updatedAt : Infinity;
+          if (ageMs > 2 * 60 * 1000 && !isReviewRedispatchCoolingDown(taskId, nowMs)) {
             console.warn(
               `[monitor] review reconcile: inreview task ${taskId} has no discoverable PR — re-dispatching inreview repair`,
             );
@@ -6997,6 +7018,16 @@ async function queueFlowReview(taskId, ctx, reason = "") {
 function redispatchInReviewTask(task, reason, extra = {}) {
   const taskId = String(task?.id || "").trim();
   if (!taskId) return false;
+  const normalizedReason = String(reason || "inreview_redispatch").trim() || "inreview_redispatch";
+  const now = Date.now();
+  const existing = reviewRedispatchCooldownByTask.get(taskId);
+  if (existing && now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS) {
+    return false;
+  }
+  reviewRedispatchCooldownByTask.set(taskId, {
+    at: now,
+    reason: normalizedReason,
+  });
   const taskTitle = String(task?.title || taskId).trim() || taskId;
   const branch = String(task?.branchName || task?.branch || extra.branch || "").trim() || null;
   const worktreePath = String(task?.worktreePath || task?.meta?.worktreePath || extra.worktreePath || "").trim() || null;
@@ -7016,12 +7047,23 @@ function redispatchInReviewTask(task, reason, extra = {}) {
       worktreePath,
       prNumber,
       prUrl,
-      reviewRedispatchReason: String(reason || "inreview_redispatch").trim() || "inreview_redispatch",
+      reviewRedispatchReason: normalizedReason,
       ...extra,
     },
-    { dedupKey: `workflow-event:task.assigned:${taskId}:inreview:${String(reason || "inreview_redispatch").trim() || "inreview_redispatch"}` },
+    { dedupKey: `workflow-event:task.assigned:${taskId}:inreview:${normalizedReason}` },
   );
   return true;
+}
+
+function isReviewRedispatchCoolingDown(taskId, now = Date.now()) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return false;
+  const existing = reviewRedispatchCooldownByTask.get(normalizedTaskId);
+  return Boolean(
+    existing &&
+    Number.isFinite(existing.at) &&
+    now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS
+  );
 }
 
 function parsePositivePrNumber(value) {
@@ -13655,6 +13697,7 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
       return;
     }
     const includeTaskPoll = opts?.includeTaskPoll !== false;
+    const includeScheduled = opts?.includeScheduled !== false;
 
     const triggered = engine.evaluateScheduleTriggers({ configDir: repoRoot });
     if (!Array.isArray(triggered) || triggered.length === 0) return;
@@ -13662,14 +13705,18 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
     for (const match of triggered) {
       const workflowId = String(match?.workflowId || "").trim();
       if (!workflowId) continue;
-      if (!includeTaskPoll) {
-        const workflow = typeof engine.get === "function" ? engine.get(workflowId) : null;
-        const triggerNode = Array.isArray(workflow?.nodes)
-          ? workflow.nodes.find((node) => node?.id === match?.triggeredBy)
-          : null;
-        if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {
-          continue;
-        }
+      const workflow = typeof engine.get === "function" ? engine.get(workflowId) : null;
+      const triggerNode = Array.isArray(workflow?.nodes)
+        ? workflow.nodes.find((node) => node?.id === match?.triggeredBy)
+        : null;
+      const isTaskPollTrigger =
+        triggerNode?.type === "trigger.task_available" ||
+        triggerNode?.type === "trigger.task_low";
+      if (!includeTaskPoll && isTaskPollTrigger) {
+        continue;
+      }
+      if (!includeScheduled && !isTaskPollTrigger) {
+        continue;
       }
       void engine
         .execute(workflowId, {
@@ -13849,11 +13896,21 @@ if (logMaxSizeMb > 0) {
   }
 }
 
-// Run once immediately after startup (delayed by 30s to let things settle)
-safeSetTimeout("startup-health-checks", () => {
-  checkEpicBranches("startup");
-  return checkAndMergeDependabotPRs();
-}, 30 * 1000);
+const STARTUP_EPIC_CHECK_DELAY_MS = parseEnvInteger(
+  process.env.BOSUN_STARTUP_EPIC_CHECK_DELAY_MS,
+  2 * 60 * 1000,
+  { min: 30 * 1000, max: 30 * 60 * 1000 },
+);
+const STARTUP_DEPENDABOT_CHECK_DELAY_MS = parseEnvInteger(
+  process.env.BOSUN_STARTUP_DEPENDABOT_CHECK_DELAY_MS,
+  STARTUP_EPIC_CHECK_DELAY_MS + 30 * 1000,
+  { min: STARTUP_EPIC_CHECK_DELAY_MS, max: 30 * 60 * 1000 },
+);
+
+// Stagger the heaviest git/gh maintenance away from initial startup so the UI
+// server can answer readiness probes before long-running repo checks begin.
+safeSetTimeout("startup-epic-check", () => checkEpicBranches("startup"), STARTUP_EPIC_CHECK_DELAY_MS);
+safeSetTimeout("startup-dependabot-auto-merge", () => checkAndMergeDependabotPRs(), STARTUP_DEPENDABOT_CHECK_DELAY_MS);
 
 // ── Fleet Coordination ───────────────────────────────────────────────────────
 if (fleetConfig?.enabled) {
@@ -14050,6 +14107,8 @@ let reviewAgent = null;
 /** @type {Map<string, { approved: boolean, reviewedAt: string }>} */
 const reviewGateResults = new Map();
 const pendingMergeStrategyByTask = new Map();
+const reviewRedispatchCooldownByTask = new Map();
+const REVIEW_REDISPATCH_COOLDOWN_MS = 5 * 60 * 1000;
 /** @type {null} Sync engine lifecycle now managed by workflow template */
 let syncEngine = null;
 /** @type {import("./error-detector.mjs").ErrorDetector|null} */
@@ -14347,6 +14406,7 @@ if (isExecutorDisabled()) {
         "stale-dispatch-task-poll-unstick",
         () =>
           pollWorkflowSchedulesOnce("startup", {
+            includeScheduled: false,
             requireEngine: true,
             throwOnError: true,
           }),

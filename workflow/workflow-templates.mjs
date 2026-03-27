@@ -103,6 +103,8 @@ import {
 // Code Quality (structural refactor, agentic maintenance)
 import {
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
 } from "../workflow-templates/code-quality.mjs";
 
 // Task Execution (task-type-specific workflows)
@@ -203,6 +205,8 @@ export {
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
   FULLSTACK_TASK_TEMPLATE,
   BACKEND_TASK_TEMPLATE,
   FRONTEND_TASK_TEMPLATE,
@@ -297,6 +301,8 @@ const BUILTIN_WORKFLOW_TEMPLATES = [
   SECRET_SCANNER_TEMPLATE,
   // ── Maintenance (structural quality, agentic dev) ──
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
   // ── Task Execution (task-type workflows + core lifecycle) ──
   FULLSTACK_TASK_TEMPLATE,
   BACKEND_TASK_TEMPLATE,
@@ -1529,5 +1535,4 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
 

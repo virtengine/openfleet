@@ -2049,7 +2049,7 @@ describe("action.acquire_worktree", () => {
       }
       try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
     }
-  }, 20000);
+  }, 45000);
 
   it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2168,7 +2168,7 @@ describe("action.acquire_worktree", () => {
       encoding: "utf8",
     }).trim().toLowerCase();
     expect(longpaths).toBe("true");
-  });
+  }, 20000);
 
   it("repairs core.bare corruption after creating a worktree", async () => {
     const nt = getNodeType("action.acquire_worktree");

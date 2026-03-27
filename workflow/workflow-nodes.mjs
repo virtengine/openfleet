@@ -31,7 +31,7 @@ import {
   MAX_NO_COMMIT_ATTEMPTS,
 } from "./workflow-nodes/transforms.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
@@ -576,6 +576,11 @@ function shouldSkipGitRefreshForTests() {
   return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GIT_REFRESH !== "true";
 }
 
+function getNoopGitEditorCommand() {
+  const nodeBinary = JSON.stringify(process.execPath);
+  return `${nodeBinary} -e ""`;
+}
+
 function makeIsolatedGitEnv(extra = {}) {
   const env = { ...process.env, ...extra };
   for (const key of [
@@ -589,6 +594,12 @@ function makeIsolatedGitEnv(extra = {}) {
   ]) {
     delete env[key];
   }
+  // Force git to stay non-interactive inside Bosun-managed automation paths.
+  env.GIT_TERMINAL_PROMPT = env.GIT_TERMINAL_PROMPT || "0";
+  env.GCM_INTERACTIVE = env.GCM_INTERACTIVE || "never";
+  env.GIT_MERGE_AUTOEDIT = env.GIT_MERGE_AUTOEDIT || "no";
+  env.GIT_EDITOR = env.GIT_EDITOR || getNoopGitEditorCommand();
+  env.GIT_SEQUENCE_EDITOR = env.GIT_SEQUENCE_EDITOR || env.GIT_EDITOR;
   return env;
 }
 
@@ -9247,6 +9258,30 @@ async function getCustomToolsMod() {
   return _customToolsMod;
 }
 
+function resolveBosunNativeRootDir(ctx, engine, explicitRoot = "") {
+  const resolvedExplicit = String(explicitRoot || "").trim();
+  if (resolvedExplicit) return resolvedExplicit;
+
+  const ctxRoot = String(ctx?.data?.worktreePath || ctx?.data?.repoRoot || "").trim();
+  if (ctxRoot) return ctxRoot;
+
+  const workflowDir = String(engine?.workflowDir || "").trim();
+  if (workflowDir) {
+    const normalizedWorkflowDir = resolve(workflowDir);
+    const workflowDirName = basename(normalizedWorkflowDir).toLowerCase();
+    if (workflowDirName === "workflows") {
+      const parentDir = dirname(normalizedWorkflowDir);
+      if (basename(parentDir).toLowerCase() === ".bosun") {
+        return dirname(parentDir);
+      }
+      return parentDir;
+    }
+    return dirname(normalizedWorkflowDir);
+  }
+
+  return process.cwd();
+}
+
 let _kanbanMod = null;
 async function getKanbanMod() {
   if (!_kanbanMod) {
@@ -9340,7 +9375,7 @@ registerBuiltinNodeType("action.bosun_tool", {
     const toolId = ctx.resolve(node.config?.toolId || "");
     if (!toolId) throw new Error("action.bosun_tool: 'toolId' is required");
 
-    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const rootDir = resolveBosunNativeRootDir(ctx, engine);
     const cwd = ctx.resolve(node.config?.cwd || "") || rootDir;
     const timeoutMs = node.config?.timeoutMs || 60000;
 
@@ -9760,18 +9795,18 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
   "tools.list": {
     description: "List all available Bosun tools (built-in + custom + global)",
     params: ["rootDir"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       return mod.listCustomTools(rootDir, { includeBuiltins: true });
     },
   },
   "tools.get": {
     description: "Get details of a specific Bosun tool by ID",
     params: ["rootDir", "toolId"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       const result = mod.getCustomTool(rootDir, args.toolId);
       if (!result) return { found: false, toolId: args.toolId };
       return { found: true, ...result.entry };
@@ -11782,7 +11817,8 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
     execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
       cwd: repoRoot,
       encoding: "utf8",
-      timeout: 30000,
+      // Best-effort cleanup should fail fast instead of hanging the workflow.
+      timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
@@ -11804,7 +11840,7 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
     execGitArgsSync(["worktree", "prune"], {
       cwd: repoRoot,
       encoding: "utf8",
-      timeout: 15000,
+      timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
@@ -13125,6 +13161,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
+        attachedExistingBranch = branchExistsLocally;
       } catch (createErr) {
         if (!isExistingBranchWorktreeError(createErr) && !isMissingRegisteredWorktreeError(createErr)) {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
@@ -15707,7 +15744,3 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
-
-
-
-

@@ -6239,11 +6239,15 @@ describe("WorkflowEngine task traceability hooks", () => {
 
 
 describe("WorkflowEngine.getTaskTraceEvents", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     makeTmpEngine();
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.resetTracingForTests();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.resetTracingForTests();
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
 
