@@ -2978,7 +2978,11 @@ registerBuiltinNodeType("action.run_agent", {
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const rawConfiguredCwd = node.config?.cwd;
+    const resolvedCwd = ctx.resolve(rawConfiguredCwd || ctx.data?.worktreePath || process.cwd());
+    const cwdHasUnresolvedTemplate = /\{\{[^}]+\}\}/.test(String(resolvedCwd || ""));
+    const cwdFallback = ctx.resolve(ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd());
+    const cwd = cwdHasUnresolvedTemplate ? cwdFallback : resolvedCwd;
     const trackedTaskId = String(
       ctx.data?.taskId ||
         ctx.data?.task?.id ||
