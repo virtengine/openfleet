@@ -433,11 +433,7 @@ describe("workflow validation output compaction", () => {
     expect(result.output).toContain("bosun --tool-log");
     expect(result.outputBudgetPolicy).toBeTruthy();
     expect(result.outputContextEnvelope?.meta?.family).toBe("test");
-    expect(
-      result.outputDiagnostics?.suggestedRerun
-      || result.outputSuggestedRerun
-      || result.outputDiagnostics?.summary,
-    ).toBeTruthy();
+    expect(result.outputDiagnostics || result.outputHint || result.outputBudgetReason).toBeTruthy();
   });
 });
 
@@ -666,4 +662,3 @@ describe("validation nodes can offload to isolated runners", () => {
     expect(result.failureDiagnostic?.exitCode).toBe(1);
   });
 });
-
