@@ -357,6 +357,7 @@ describe("session-tracker", () => {
           expect.objectContaining({ kind: "agent_message" }),
         ]),
       );
+      expect(session?.summary).toEqual(
         expect.objectContaining({
           shortSteps: expect.arrayContaining([
             expect.objectContaining({ summary: expect.stringMatching(/resume the failed run/i) }),
