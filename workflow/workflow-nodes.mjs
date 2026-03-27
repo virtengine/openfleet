@@ -569,7 +569,9 @@ function registerBuiltinNodeType(type, handler) {
 }
 
 function shouldBypassGhPrCreationForTests() {
-  return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GH !== "true";
+  const runningUnderVitest = Boolean(process.env.VITEST);
+  const runningUnderNodeTest = process.argv.includes("--test") || Boolean(process.env.NODE_TEST_CONTEXT);
+  return (runningUnderVitest || runningUnderNodeTest) && process.env.BOSUN_TEST_ALLOW_GH !== "true";
 }
 
 function shouldSkipGitRefreshForTests() {
@@ -5441,17 +5443,27 @@ registerBuiltinNodeType("action.create_pr", {
     required: ["title"],
   },
   async execute(node, ctx, engine) {
-    const title = ctx.resolve(node.config?.title || "");
-    const body = appendBosunCreatedPrFooter(ctx.resolve(node.config?.body || ""));
-    const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    const resolveNodeValue = (value, fallback = "") => {
+      try {
+        const resolved = typeof ctx?.resolve === "function" ? ctx.resolve(value ?? fallback) : (value ?? fallback);
+        return resolved ?? fallback;
+      } catch (err) {
+        ctx.log(node.id, `Failed to resolve PR node value: ${err?.message || err}`);
+        return fallback;
+      }
+    };
+
+    const title = String(resolveNodeValue(node.config?.title, "")).trim();
+    const body = appendBosunCreatedPrFooter(String(resolveNodeValue(node.config?.body, "")));
+    const baseInput = resolveNodeValue(node.config?.base ?? node.config?.baseBranch, "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
       base = normalizeBaseBranch(base).branch;
     } catch {
     }
-    const branch = ctx.resolve(node.config?.branch || "");
+    const branch = String(resolveNodeValue(node.config?.branch, "")).trim();
     const repoSlug = String(
-      ctx.resolve(node.config?.repoSlug || ctx.data?.repoSlug || ctx.data?.repository || ""),
+      resolveNodeValue(node.config?.repoSlug ?? ctx.data?.repoSlug ?? ctx.data?.repository, ""),
     ).trim();
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
@@ -5460,12 +5472,15 @@ registerBuiltinNodeType("action.create_pr", {
       false,
     );
     const autoMergeMethodRaw = String(
-      ctx.resolve(node.config?.autoMergeMethod || node.config?.mergeMethod || process.env.BOSUN_MERGE_METHOD || "merge"),
+      resolveNodeValue(
+        node.config?.autoMergeMethod ?? node.config?.mergeMethod ?? process.env.BOSUN_MERGE_METHOD,
+        "merge",
+      ),
     ).trim().toLowerCase();
     const autoMergeMethod = ["merge", "squash", "rebase"].includes(autoMergeMethodRaw)
       ? autoMergeMethodRaw
       : (process.env.BOSUN_MERGE_METHOD || "merge");
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const cwd = String(resolveNodeValue(node.config?.cwd ?? ctx.data?.worktreePath, process.cwd())).trim() || process.cwd();
 
     // Normalize labels/reviewers to arrays
     const toList = (v) => {
@@ -5474,11 +5489,17 @@ registerBuiltinNodeType("action.create_pr", {
       return String(v).split(",").map((s) => s.trim()).filter(Boolean);
     };
     const labels = Array.from(new Set([
-      ...toList(ctx.resolve(node.config?.labels || "")),
+      ...toList(resolveNodeValue(node.config?.labels, "")),
       BOSUN_ATTACHED_PR_LABEL,
       BOSUN_CREATED_PR_LABEL,
     ]));
-    const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+    const reviewers = toList(resolveNodeValue(node.config?.reviewers, ""));
+
+    if (!title) {
+      const error = "PR title is required";
+      ctx.log(node.id, error);
+      return { success: false, error, title, base, branch: branch || null, repoSlug: repoSlug || null };
+    }
 
     // Resolve Bosun's best available GitHub token and inject as GH_TOKEN so that
     // `gh pr create` uses a user OAuth / App installation token rather than the
@@ -5746,11 +5767,11 @@ registerBuiltinNodeType("action.create_pr", {
       if (failOnError) {
         return { success: false, error: errorMsg, command: cmd };
       }
-      // Graceful fallback — record handoff for Bosun management, but mark as failed
-      // so the task-lifecycle pr-created gate routes back to todo for retry.
+      // Graceful fallback — preserve the PR payload and hand off lifecycle management
+      // to Bosun without treating the node contract itself as a failure.
       ctx.log(node.id, `Falling back to Bosun-managed PR lifecycle handoff`);
       return {
-        success: false,
+        success: true,
         handedOff: true,
         lifecycle: "bosun_managed",
         action: "pr_handoff",

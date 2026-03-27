@@ -63,3 +63,5 @@ reports/mutation/
 
 .bosun-monitor/backups/*
 tmp/*
+
+node-compile-cache/*

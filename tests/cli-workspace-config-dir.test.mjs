@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const tempDirs = new Set();
+const spawnedChildren = new Set();
 
 function makeTempDir(prefix) {
   const dir = mkdtempSync(resolve(tmpdir(), prefix));
@@ -75,8 +76,22 @@ async function stopChildProcess(child, timeoutMs = 5000) {
 }
 
 afterEach(() => {
+  for (const child of spawnedChildren) {
+    try {
+      if (child?.exitCode === null) {
+        child.kill("SIGKILL");
+      }
+    } catch {
+      /* best effort */
+    }
+  }
+  spawnedChildren.clear();
   for (const dir of tempDirs) {
-    rmSync(dir, { recursive: true, force: true });
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    } catch {
+      /* best effort */
+    }
   }
   tempDirs.clear();
 });
@@ -131,7 +146,13 @@ describe("cli workspace config-dir resolution", () => {
     const runtimeRoot = makeTempDir("bosun-cli-runtime-");
     const configDir = makeTempDir("bosun-cli-home-");
     const homeDir = resolve(configDir, "home");
+    const appDataDir = resolve(homeDir, "AppData", "Roaming");
+    const localAppDataDir = resolve(homeDir, "AppData", "Local");
+    const xdgConfigDir = resolve(homeDir, ".config");
     mkdirSync(homeDir, { recursive: true });
+    mkdirSync(appDataDir, { recursive: true });
+    mkdirSync(localAppDataDir, { recursive: true });
+    mkdirSync(xdgConfigDir, { recursive: true });
 
     writeFileSync(
       resolve(configDir, "bosun.config.json"),
@@ -151,9 +172,10 @@ describe("cli workspace config-dir resolution", () => {
       REPO_ROOT: runtimeRoot,
       HOME: homeDir,
       USERPROFILE: homeDir,
-      APPDATA: resolve(homeDir, "AppData", "Roaming"),
-      LOCALAPPDATA: resolve(homeDir, "AppData", "Local"),
-      XDG_CONFIG_HOME: resolve(homeDir, ".config"),
+      APPDATA: appDataDir,
+      LOCALAPPDATA: localAppDataDir,
+      XDG_CONFIG_HOME: xdgConfigDir,
+      BOSUN_CACHE_DIR: resolve(runtimeRoot, ".cache"),
       TELEGRAM_UI_PORT: String(uiPort),
       BOSUN_AGENT_ENDPOINT_PORT: String(agentEndpointPort),
       TELEGRAM_UI_TUNNEL: "disabled",
@@ -181,6 +203,7 @@ describe("cli workspace config-dir resolution", () => {
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    spawnedChildren.add(child);
 
     let output = "";
     child.stdout.on("data", (chunk) => {
@@ -212,6 +235,8 @@ describe("cli workspace config-dir resolution", () => {
       }
     } finally {
       await stopChildProcess(child);
+      spawnedChildren.delete(child);
     }
   }, 30000);
 });
+

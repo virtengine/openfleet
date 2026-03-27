@@ -74,7 +74,36 @@ describe("opencode provider discovery", () => {
       "openai/gpt-4.1",
     ]);
   });
+
+  it("treats stderr-only 400 text on thrown fallback errors as ignorable", async () => {
+    execFileMock
+      .mockImplementationOnce((command, args, options, callback) => {
+        callback(new Error("verbose failed"));
+      })
+      .mockImplementationOnce((command, args, options, callback) => {
+        const err = new Error("");
+        err.stderr = "Failed to list models: 400";
+        callback(err);
+      });
+
+    execMock
+      .mockImplementationOnce((command, options, callback) => {
+        callback(new Error("verbose failed"));
+      })
+      .mockImplementationOnce((command, options, callback) => {
+        const err = new Error("");
+        err.stderr = "Failed to list models: 400";
+        callback(err);
+      });
+
+    const mod = await import("../shell/opencode-providers.mjs");
+    const snapshot = await mod.discoverProviders({ force: true });
+
+    expect(snapshot.connectedIds).toEqual([]);
+    expect(snapshot.allModels).toEqual([]);
+  });
 });
+
 
 
 
