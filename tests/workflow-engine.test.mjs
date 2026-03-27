@@ -4893,6 +4893,46 @@ it("agent.run_planner appends planner feedback context from workflow data", asyn
   expect(sentPrompt).toContain("Planner feedback context:");
   expect(sentPrompt).toContain("Previous run skipped high-risk tasks in workflow area.");
 });
+
+it("agent.run_planner avoids duplicating planner feedback already present in the prompt context", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const feedback = "Previous run skipped high-risk tasks in workflow area.";
+  const ctx = new WorkflowContext({
+    _plannerFeedback: feedback,
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-feedback-dedupe",
+  });
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: `Planner prompt\n\nPlanner feedback context:\n${feedback}`,
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-feedback-dedupe",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 2,
+    },
+  };
+
+  await handler.execute(node, ctx, mockEngine);
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt.split("Planner feedback context:").length - 1).toBe(1);
+  expect(sentPrompt.split(feedback).length - 1).toBe(1);
+});
 it("agent.run_planner injects compact repo topology when enabled", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
@@ -5339,6 +5379,53 @@ it("action.materialize_planner_tasks applies workspace defaults from workflow co
       repository: "repo-alpha",
     }),
   }));
+});
+
+it("action.materialize_planner_tasks caps requiredCreated to maxTasks before post-parse filtering", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): first", "description": "A", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"] },',
+      '    { "title": "[m] fix(workflow): second", "description": "B", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"] },',
+      '    { "title": "[m] fix(workflow): second", "description": "Duplicate title", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"] }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async ({ title } = {}) => ({ id: `task-${title}` }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-max-tasks-cap",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      maxTasks: 2,
+      minCreated: 3,
+      failOnZero: true,
+      dedup: false,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.parsedCount).toBe(2);
+  expect(result.createdCount).toBe(2);
+  expect(createTask).toHaveBeenCalledTimes(2);
 });
 
 it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {
