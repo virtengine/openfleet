@@ -9,6 +9,15 @@ function clean(value) {
   return String(value ?? "").trim();
 }
 
+function trimTrailingSlashes(value) {
+  let normalized = String(value ?? "");
+  let end = normalized.length;
+  while (end > 0 && normalized[end - 1] === "/") {
+    end -= 1;
+  }
+  return end === normalized.length ? normalized : normalized.slice(0, end);
+}
+
 export function resolveCodexHomeDir(envInput = process.env) {
   const home =
     clean(envInput?.HOME) ||
@@ -43,7 +52,7 @@ function normalizeAzureOpenAIBaseUrl(value) {
     parsed.pathname = "/openai/v1";
     parsed.search = "";
     parsed.hash = "";
-    return parsed.toString().replace(/\/+$/, "");
+    return trimTrailingSlashes(parsed.toString());
   } catch {
     return raw;
   }
@@ -55,7 +64,7 @@ function normalizeProviderBaseUrlForComparison(value, providerKind = "openai") {
   if (providerKind === "azure") {
     return normalizeAzureOpenAIBaseUrl(raw);
   }
-  return raw.replace(/\/+$/, "");
+  return trimTrailingSlashes(raw);
 }
 
 function normalizeProfileName(value, fallback = DEFAULT_ACTIVE_PROFILE) {
@@ -398,7 +407,5 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
       : null,
   };
 }
-
-
 
 
