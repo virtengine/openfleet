@@ -844,27 +844,6 @@ function _buildEnv(ctx) {
   return env;
 }
 
-/**
- * Build child_process shell options for hook execution.
- * On Windows, prefer `cmd.exe` so inherited env vars expand consistently for
- * shell-launched commands, including nested PowerShell invocations.
- *
- * @returns {{ shell: true | string, windowsHide: boolean }}
- */
-function _getShellOptions() {
-  if (IS_WINDOWS) {
-    return {
-      shell: WINDOWS_SHELL,
-      windowsHide: true,
-    };
-  }
-
-  return {
-    shell: true,
-    windowsHide: true,
-  };
-}
-
 function _getSpawnCommand(command) {
   const trimmed = String(command ?? "").trim();
 
