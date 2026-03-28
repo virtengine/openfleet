@@ -51,6 +51,13 @@ jobs:
               return fallback;
             };
 
+            const hasBosunCreatedText = (value) => {
+              const body = String(value || "");
+              const normalized = body.trim().toLowerCase();
+              return body.includes(bosunCreatedMarker)
+                || normalized.includes("automated pr for task");
+            };
+
             const normalizeCheckKey = (value) =>
               String(value || "")
                 .trim()
@@ -161,7 +168,8 @@ jobs:
               core.info(`PR #${prNumber} is not labeled '${attachedLabel}'; skipping.`);
               return;
             }
-            const isBosunCreated = labels.includes(bosunCreatedLabel);
+            const isBosunCreated = labels.includes(bosunCreatedLabel)
+              || hasBosunCreatedText(pr.body);
             const bosunConfig = await loadBosunConfig(pr.head?.sha || run.head_sha || context.sha);
             const prAutomation =
               bosunConfig?.prAutomation && typeof bosunConfig.prAutomation === "object"
@@ -413,3 +421,4 @@ jobs:
             core.info(
               `PR #${prNumber}: CI conclusion '${conclusion || "unknown"}' does not trigger Bosun signal changes.`,
             );
+
