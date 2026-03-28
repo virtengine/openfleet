@@ -1,3 +1,8 @@
+// CLAUDE:SUMMARY — agent-pool
+// Resolves SDK selection and fallback order for ephemeral agent threads,
+// including env/config-driven failover and launch orchestration across Codex,
+// Copilot, Claude, and compatible adapters.
+
 /**
  * agent-pool.mjs — Universal SDK-Aware Ephemeral Agent Pool
  *
@@ -4196,3 +4201,4 @@ export function getActiveThreads() {
   }
   return result;
 }
+
