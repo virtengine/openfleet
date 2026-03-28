@@ -12,6 +12,27 @@ let mockCopilotResumeSession;
 let mockClaudeQuery;
 let isolatedHomeDir;
 let setSdkFailureCooldownForTest;
+function ensureMock(name) {
+  const candidate = globalThis[name];
+  if (typeof candidate === "function") {
+    return candidate;
+  }
+  return (...args) => {
+    const current = globalThis[name];
+    if (typeof current !== "function") {
+      throw new Error(`Missing test mock: ${name}`);
+    }
+    return current(...args);
+  };
+}
+
+const callMockCodexCtor = ensureMock("__agentPoolMockCodexCtor");
+const callMockCodexStartThread = ensureMock("__agentPoolMockCodexStartThread");
+const callMockCodexResumeThread = ensureMock("__agentPoolMockCodexResumeThread");
+const callMockCopilotStart = ensureMock("__agentPoolMockCopilotStart");
+const callMockCopilotCreateSession = ensureMock("__agentPoolMockCopilotCreateSession");
+const callMockCopilotResumeSession = ensureMock("__agentPoolMockCopilotResumeSession");
+const callMockClaudeQuery = ensureMock("__agentPoolMockClaudeQuery");
 
 function makeCodexMockThread(
   threadId = "mock-codex-thread",
@@ -57,12 +78,19 @@ mockCopilotStart = vi.fn();
 mockCopilotCreateSession = vi.fn();
 mockCopilotResumeSession = vi.fn();
 mockClaudeQuery = vi.fn();
+globalThis.__agentPoolMockCodexStartThread = mockCodexStartThread;
+globalThis.__agentPoolMockCodexResumeThread = mockCodexResumeThread;
+globalThis.__agentPoolMockCodexCtor = mockCodexCtor;
+globalThis.__agentPoolMockCopilotStart = mockCopilotStart;
+globalThis.__agentPoolMockCopilotCreateSession = mockCopilotCreateSession;
+globalThis.__agentPoolMockCopilotResumeSession = mockCopilotResumeSession;
+globalThis.__agentPoolMockClaudeQuery = mockClaudeQuery;
 
 vi.mock("@openai/codex-sdk", () => {
   return {
     Codex: class MockCodex {
       constructor(...args) {
-        mockCodexCtor(...args);
+        callMockCodexCtor(...args);
       }
 
       startThread(...args) {
@@ -74,7 +102,7 @@ vi.mock("@openai/codex-sdk", () => {
             },
           };
         }
-        const injected = mockCodexStartThread(...args);
+        const injected = callMockCodexStartThread(...args);
         if (injected !== undefined) return injected;
         return makeCodexMockThread("mock-codex-thread-new", "codex-output");
       }
@@ -83,7 +111,7 @@ vi.mock("@openai/codex-sdk", () => {
         if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
           throw new Error("Codex SDK not available: mocked unavailable");
         }
-        const injected = mockCodexResumeThread(...args);
+        const injected = callMockCodexResumeThread(...args);
         if (injected !== undefined) return injected;
         const [threadId] = args;
         return makeCodexMockThread(
@@ -100,12 +128,12 @@ vi.mock("@github/copilot-sdk", () => {
     return {
       CopilotClient: class MockCopilotClient {
         async start() {
-          const injected = mockCopilotStart();
+          const injected = callMockCopilotStart();
           if (injected !== undefined) return injected;
         }
         async stop() {}
         async resumeSession(...args) {
-          const injected = mockCopilotResumeSession(...args);
+          const injected = callMockCopilotResumeSession(...args);
           if (injected !== undefined) return injected;
           const [sessionId] = args;
           return {
@@ -121,7 +149,7 @@ vi.mock("@github/copilot-sdk", () => {
           };
         }
         async createSession(...args) {
-          const injected = mockCopilotCreateSession(...args);
+          const injected = callMockCopilotCreateSession(...args);
           if (injected !== undefined) return injected;
           return {
             sessionId: "mock-copilot-session-new",
@@ -145,7 +173,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   if (process.env.__MOCK_CLAUDE_AVAILABLE === "1") {
     return {
       query: function mockQuery(payload = {}) {
-        const injected = mockClaudeQuery(payload);
+        const injected = callMockClaudeQuery(payload);
         if (injected !== undefined) return injected;
         return {
           async *[Symbol.asyncIterator]() {
@@ -1986,6 +2014,7 @@ describe("resolution and launch integration", () => {
   });
 });
 }
+
 
 
 

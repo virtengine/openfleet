@@ -24,6 +24,35 @@ const DEFAULT_REVIEW_TIMEOUT_MS = 5 * 60 * 1000;
 /** Default max concurrent reviews. */
 const DEFAULT_MAX_CONCURRENT = 2;
 
+function normalizeReviewDedupFragment(value) {
+  return String(value || "")
+    .trim()
+    .replaceAll(/\s+/g, " ")
+    .slice(0, 240);
+}
+
+function buildReviewNotificationDedupKey(taskId, result) {
+  const issues = Array.isArray(result?.issues) ? result.issues : [];
+  const issueFingerprint = issues
+    .map((issue) =>
+      [
+        normalizeReviewDedupFragment(issue?.severity),
+        normalizeReviewDedupFragment(issue?.category),
+        normalizeReviewDedupFragment(issue?.file),
+        Number.isFinite(Number(issue?.line)) ? Number(issue.line) : "",
+        normalizeReviewDedupFragment(issue?.description),
+      ].join(":"),
+    )
+    .join("|");
+  return [
+    "review",
+    normalizeReviewDedupFragment(taskId),
+    result?.approved ? "approved" : "changes_requested",
+    normalizeReviewDedupFragment(result?.summary),
+    issueFingerprint,
+  ].join("|");
+}
+
 // ---------------------------------------------------------------------------
 // Review Prompt
 // ---------------------------------------------------------------------------
@@ -626,7 +655,10 @@ export class ReviewAgent {
         .join("\n");
 
       try {
-        this.#sendTelegram(message);
+        this.#sendTelegram(message, {
+          dedupKey: buildReviewNotificationDedupKey(taskId, result),
+          exactDedup: true,
+        });
       } catch {
         /* best effort */
       }

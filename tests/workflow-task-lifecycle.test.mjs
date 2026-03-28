@@ -125,7 +125,7 @@ describe("project detection quality gates", () => {
     expect(resolveAutoCommand("auto", "qualityGate", repoRoot)).toBe("bash .githooks/pre-push");
     expect(detected.commands.qualityGate).not.toBe("npm run prepush:check");
   });
-});
+
 
   it("records a single owner-mismatch audit event across duplicate renewal retries", async () => {
     vi.useFakeTimers();
@@ -174,6 +174,8 @@ describe("project detection quality gates", () => {
       vi.useRealTimers();
     }
   });
+});
+
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3978,6 +3980,3 @@ describe("template-task-lifecycle", () => {
     }
   });
 });
-
-
-

@@ -7061,7 +7061,7 @@ registerBuiltinNodeType("agent.select_profile", {
   },
 });
 
-function parsePlannerJsonFromText(value) {
+function parsePlannerJsonFromText(value, { strictFence = false } = {}) {
   const text = normalizeLineEndings(String(value || ""))
     .replace(/\u001b\[[0-9;]*m/g, "")
     // Strip common agent prefixes: "Agent: ", "Assistant: ", etc.
@@ -7069,6 +7069,16 @@ function parsePlannerJsonFromText(value) {
     .trim();
   if (!text) return null;
 
+  if (strictFence) {
+    const strictMatch = text.match(/^```json\s*([\s\S]*?)\s*```$/i);
+    if (!strictMatch) return null;
+    try {
+      const parsed = JSON.parse(String(strictMatch[1] || "").trim());
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
   const candidates = [];
   // Match fenced blocks (```json ... ``` or ``` ... ```)
   const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
@@ -7388,6 +7398,62 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
   return tasks;
 }
 
+function validateStrictPlannerTaskPayload(output, expectedTaskCount = 5, opts = {}) {
+  const requireExactCount = opts?.requireExactCount === true;
+  const text = normalizeLineEndings(String(output || ""))
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .trim();
+  if (!text) {
+    return {
+      ok: false,
+      reason: "invalid_format",
+      message: "Planner output must be raw JSON or a single fenced JSON block with shape { \"tasks\": [...] }.",
+    };
+  }
+
+  const fencedMatch = text.match(/^```json\s*([\s\S]*?)\s*```$/i);
+  const rawJsonText = fencedMatch ? String(fencedMatch[1] || "").trim() : text;
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(rawJsonText);
+  } catch {
+    return {
+      ok: false,
+      reason: "invalid_format",
+      message: "Planner output must be raw JSON or a single fenced JSON block with no surrounding prose.",
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      reason: "invalid_format",
+      message: "Planner output must parse to an object with shape { \"tasks\": [...] }.",
+    };
+  }
+
+  if (!Array.isArray(parsed.tasks)) {
+    return {
+      ok: false,
+      reason: "missing_tasks",
+      message: "Planner output JSON must include a top-level \"tasks\" array.",
+    };
+  }
+
+  const expected = Number.isFinite(Number(expectedTaskCount))
+    ? Math.max(1, Math.min(100, Math.trunc(Number(expectedTaskCount))))
+    : 5;
+  if (requireExactCount && parsed.tasks.length !== expected) {
+    return {
+      ok: false,
+      reason: "wrong_task_count",
+      message: `Planner output must contain exactly ${expected} task(s); received ${parsed.tasks.length}.`,
+    };
+  }
+
+  return { ok: true, parsed };
+}
 function resolvePlannerMaterializationDefaults(ctx) {
   const data =
     ctx?.data && typeof ctx.data === "object" && !Array.isArray(ctx.data)
@@ -8059,9 +8125,30 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
     };
     const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
 
+    const enforceStrictPlannerPayload = node.config?.strictPlannerPayload === true;
+    if (enforceStrictPlannerPayload) {
+      const strictPayload = validateStrictPlannerTaskPayload(outputText, 5, { requireExactCount: false });
+      if (!strictPayload.ok) {
+        const outputPreview = outputText.length > 200
+          ? `${outputText.slice(0, 200)}…`
+          : outputText || "(empty)";
+        const message = `Planner output from "${plannerNodeId}" failed validation: ${strictPayload.message} ` +
+          `Output length: ${outputText.length} chars. Preview: ${outputPreview}`;
+        ctx.log(node.id, message, failOnZero ? "error" : "warn");
+        if (failOnZero) throw new Error(message);
+        return {
+          success: false,
+          parsedCount: 0,
+          createdCount: 0,
+          skippedCount: 0,
+          reason: strictPayload.reason,
+          outputPreview,
+        };
+      }
+    }
+
     const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, Number.MAX_SAFE_INTEGER);
     if (!parsedTasks.length) {
-      // Log diagnostic info to help debug planner output format issues
       const outputPreview = outputText.length > 200
         ? `${outputText.slice(0, 200)}…`
         : outputText || "(empty)";
@@ -16097,15 +16184,16 @@ export {
   CALIBRATED_MAX_RISK_WITHOUT_HUMAN,
   normalizePlannerAreaKey,
 };
+export { unregisterNodeType };
 export {
   CUSTOM_NODE_DIR_NAME,
+  ensureCustomWorkflowNodesLoaded,
   getCustomNodeDir,
   inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
-  unregisterNodeType,
-};
+} from "./workflow-nodes/custom-loader.mjs";
 
 export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   if (!customLoadPromise || options.forceReload) {
@@ -16118,4 +16206,6 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
 

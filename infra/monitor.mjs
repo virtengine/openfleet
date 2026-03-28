@@ -5954,7 +5954,12 @@ async function checkMergedPRsAndUpdateTasks() {
           const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
           const nowMs = Date.now();
           const ageMs = Number.isFinite(updatedAt) ? nowMs - updatedAt : Infinity;
-          if (ageMs > 2 * 60 * 1000 && !isReviewRedispatchCoolingDown(taskId, nowMs)) {
+          const reviewVerdictCurrent = hasCurrentReviewVerdict(task);
+          if (
+            ageMs > 2 * 60 * 1000 &&
+            !reviewVerdictCurrent &&
+            !isReviewRedispatchCoolingDown(taskId, nowMs)
+          ) {
             console.warn(
               `[monitor] review reconcile: inreview task ${taskId} has no discoverable PR — re-dispatching inreview repair`,
             );
@@ -6949,6 +6954,21 @@ function getReviewGateSnapshot(taskId) {
   } catch {
     return null;
   }
+}
+
+function hasCurrentReviewVerdict(task) {
+  const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
+  if (!["approved", "changes_requested"].includes(reviewStatus)) {
+    return false;
+  }
+  const reviewedAtMs = Date.parse(String(task?.reviewedAt || ""));
+  if (!Number.isFinite(reviewedAtMs)) {
+    return false;
+  }
+  const updatedAtMs = Date.parse(
+    String(task?.updatedAt || task?.updated_at || ""),
+  );
+  return !Number.isFinite(updatedAtMs) || updatedAtMs <= reviewedAtMs;
 }
 
 function isTaskReviewApprovedForFlow(taskId) {
@@ -14804,9 +14824,14 @@ if (isExecutorDisabled()) {
           if (Array.isArray(pending) && pending.length > 0) {
             let requeued = 0;
             let redispatchedMissingRefs = 0;
+            let skippedReviewed = 0;
             for (const task of pending) {
               const taskId = String(task?.id || "").trim();
               if (!taskId) continue;
+              if (hasCurrentReviewVerdict(task)) {
+                skippedReviewed += 1;
+                continue;
+              }
               const branchName = String(task?.branchName || "").trim();
               let prUrl = String(task?.prUrl || "").trim();
               let prNumber = String(task?.prNumber || "").trim();
@@ -14877,6 +14902,11 @@ if (isExecutorDisabled()) {
             if (redispatchedMissingRefs > 0) {
               console.warn(
                 `[monitor] review agent redispatched ${redispatchedMissingRefs} inreview task(s) with missing review references`,
+              );
+            }
+            if (skippedReviewed > 0) {
+              console.log(
+                `[monitor] review agent skipped ${skippedReviewed} already-reviewed inreview task(s) during rehydrate`,
               );
             }
           }
@@ -15124,5 +15154,3 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
-

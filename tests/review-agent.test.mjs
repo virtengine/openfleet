@@ -208,6 +208,47 @@ describe("review-agent", () => {
       expect(onReviewComplete).toHaveBeenCalledTimes(2);
       await agent.stop();
     });
+
+    it("sends rejected review Telegram notifications with a stable dedupe key", async () => {
+      const sendTelegram = vi.fn();
+      const { execWithRetry } = await import("../agent/agent-pool.mjs");
+      execWithRetry.mockResolvedValueOnce({
+        output: JSON.stringify({
+          verdict: "changes_requested",
+          issues: [
+            {
+              severity: "major",
+              category: "bug",
+              file: "ui/tabs/agents.js",
+              line: 2102,
+              description: "Clipboard access throws when navigator.clipboard is unavailable.",
+            },
+          ],
+          summary: "Clipboard handling regresses unsupported environments",
+        }),
+        success: true,
+      });
+
+      const agent = createReviewAgent({ sendTelegram });
+      agent.start();
+
+      await agent.queueReview({
+        id: "task-telegram-dedup",
+        title: "Clipboard fix",
+        branchName: "ve/clipboard-fix",
+        prUrl: "https://github.com/owner/repo/pull/123",
+      });
+
+      await waitFor(() => sendTelegram.mock.calls.length > 0);
+      expect(sendTelegram).toHaveBeenCalledWith(
+        expect.stringContaining("Review: changes requested"),
+        expect.objectContaining({
+          exactDedup: true,
+          dedupKey: expect.stringContaining("task-telegram-dedup"),
+        }),
+      );
+      await agent.stop();
+    });
   });
 
 

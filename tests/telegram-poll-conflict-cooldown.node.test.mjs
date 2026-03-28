@@ -208,6 +208,17 @@ describe("pollUpdates — 409 conflict handling", () => {
 // ── startTelegramBot cooldown guard ──────────────────────────────────────
 
 describe("startTelegramBot — 409 cooldown startup guard", () => {
+  it("guards against duplicate in-process start attempts", () => {
+    const startFuncIdx = src.indexOf("export async function startTelegramBot");
+    assert.ok(startFuncIdx !== -1, "startTelegramBot should be defined");
+    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 7000);
+    assert.ok(
+      startupSlice.includes("if (telegramBotStarted)") &&
+      startupSlice.includes("if (telegramBotStartPromise)"),
+      "startup flow should short-circuit when Telegram bot runtime is already starting or started",
+    );
+  });
+
   it("reads conflict state at startup", () => {
     assert.ok(
       src.includes("const conflictState = readTelegramPollConflictState();"),
@@ -218,7 +229,7 @@ describe("startTelegramBot — 409 cooldown startup guard", () => {
   it("returns early when conflict cooldown is still active (untilMs > Date.now())", () => {
     const startFuncIdx = src.indexOf("export async function startTelegramBot");
     assert.ok(startFuncIdx !== -1, "startTelegramBot should be defined");
-    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 5000);
+    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 9000);
     assert.ok(
       startupSlice.includes("untilMs") || startupSlice.includes("Date.now"),
       "should compare untilMs with Date.now() to decide early return",
@@ -227,7 +238,7 @@ describe("startTelegramBot — 409 cooldown startup guard", () => {
 
   it("logs a warning and returns when conflict cooldown is active", () => {
     const startFuncIdx = src.indexOf("export async function startTelegramBot");
-    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 5000);
+    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 9000);
     const hasWarning =
       startupSlice.includes("console.warn") &&
       (startupSlice.includes("conflict") ||

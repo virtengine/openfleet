@@ -22835,6 +22835,7 @@ export async function startTelegramUiServer(options = {}) {
   if (!isTlsDisabled()) {
     tlsOpts = ensureSelfSignedCert();
   }
+  let usedFallbackPort = false;
 
   const requestHandler = async (req, res) => {
     const url = new URL(
@@ -23485,6 +23486,7 @@ export async function startTelegramUiServer(options = {}) {
           listenPort > 0;
         if (canRetryPortIncrement) {
           const nextPort = listenPort + 1;
+          usedFallbackPort = true;
           console.warn(
             `[telegram-ui] port ${listenPort} in use; retrying on ${nextPort} (attempt ${attempt + 1}/${maxPortFallbackAttempts})`,
           );
@@ -23496,6 +23498,7 @@ export async function startTelegramUiServer(options = {}) {
         const canRetryWithEphemeral =
           allowEphemeralPort && listenPort > 0 && (code === "EADDRINUSE" || code === "EACCES");
         if (!canRetryWithEphemeral) throw err;
+        usedFallbackPort = true;
         console.warn(
           `[telegram-ui] failed to bind ${host}:${listenPort} (${code || "unknown"}); retrying with ephemeral port`,
         );
@@ -23533,6 +23536,8 @@ export async function startTelegramUiServer(options = {}) {
       || normalized === "localhost"
       || normalized === "::1";
   };
+  const autoOpenSuppressedForFallbackPort =
+    usedFallbackPort || (port > 0 && actualPort !== port);
   const protocol = uiServerTls
     ? "https"
     : publicHost && !isLocalOrPrivateHost(publicHost)
@@ -23610,9 +23615,19 @@ export async function startTelegramUiServer(options = {}) {
   }
   if (
     autoOpenEnabled &&
+    !options.skipAutoOpen &&
+    autoOpenSuppressedForFallbackPort
+  ) {
+    console.log(
+      `[telegram-ui] auto-open suppressed because requested port ${port} was unavailable and UI bound ${actualPort} instead`,
+    );
+  }
+  if (
+    autoOpenEnabled &&
     process.env.BOSUN_DESKTOP !== "1" &&
     !options.skipAutoOpen &&
     !suppressAutoOpenForRestart &&
+    !autoOpenSuppressedForFallbackPort &&
     !_browserOpened &&
     !isTestRunRuntime &&
     shouldAutoOpenBrowserNow()
@@ -23731,4 +23746,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-

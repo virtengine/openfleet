@@ -910,6 +910,8 @@ let lastUpdateId = 0;
 let polling = false;
 let pollAbort = null;
 let presenceReady = false;
+let telegramBotStarted = false;
+let telegramBotStartPromise = null;
 let workspaceRegistryPromise = null;
 let localWorkspaceCache = null;
 let telegramUiUrl = null;
@@ -11664,6 +11666,24 @@ function stopBatchFlushLoop() {
  * Call injectMonitorFunctions() first if you want full integration.
  */
 export async function startTelegramBot(options = {}) {
+  if (telegramBotStarted) {
+    return;
+  }
+  if (telegramBotStartPromise) {
+    return telegramBotStartPromise;
+  }
+  telegramBotStartPromise = startTelegramBotInternal(options)
+    .catch((err) => {
+      telegramBotStarted = false;
+      throw err;
+    })
+    .finally(() => {
+      telegramBotStartPromise = null;
+    });
+  return telegramBotStartPromise;
+}
+
+async function startTelegramBotInternal(options = {}) {
   refreshTelegramConfigFromEnv();
   setComponentStatus("monitor", "running");
 
@@ -11721,6 +11741,7 @@ export async function startTelegramBot(options = {}) {
       "[telegram-bot] Telegram polling disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)" +
       (miniAppEnabled || miniAppPort > 0 ? " — portal UI is still active" : ""),
     );
+    telegramBotStarted = true;
     return;
   }
 
@@ -11960,11 +11981,13 @@ export async function startTelegramBot(options = {}) {
   }
 
   console.log("[telegram-bot] started — listening for messages");
+  telegramBotStarted = true;
 
   // Start the polling loop (non-blocking)
   pollLoop().catch((err) => {
     console.error(`[telegram-bot] fatal poll loop error: ${err.message}`);
     polling = false;
+    telegramBotStarted = false;
   });
 
   // ── Message history auto-cleanup ──
@@ -11998,6 +12021,8 @@ export async function startTelegramBot(options = {}) {
  * Stop the Telegram bot polling.
  */
 export function stopTelegramBot(options = {}) {
+  telegramBotStarted = false;
+  telegramBotStartPromise = null;
   polling = false;
   if (pollAbort) {
     try {

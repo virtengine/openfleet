@@ -203,8 +203,11 @@ describe("monitor workflow startup guards", () => {
   });
 
   it("attempts branch-to-PR recovery before resetting stale inreview tasks during review-agent rehydrate", () => {
+    expect(monitorSource).toContain("function hasCurrentReviewVerdict(task)");
     expect(monitorSource).toContain("let existingPr = await findExistingPrForBranchInRepo(");
     expect(monitorSource).toContain("existingPr = await findExistingPrForBranchApiInRepo(");
+    expect(monitorSource).toContain("if (hasCurrentReviewVerdict(task)) {");
+    expect(monitorSource).toContain("skippedReviewed += 1;");
     expect(monitorSource).toContain("updateInternalTask(taskId, {");
     expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber);");
     expect(monitorSource).toContain(
@@ -247,6 +250,8 @@ describe("monitor workflow startup guards", () => {
 
   it("avoids repeated review reconcile redispatch logs while cooldown is active", () => {
     expect(monitorSource).toContain("function isReviewRedispatchCoolingDown(taskId, now = Date.now())");
+    expect(monitorSource).toContain("const reviewVerdictCurrent = hasCurrentReviewVerdict(task);");
+    expect(monitorSource).toContain("!reviewVerdictCurrent &&");
     expect(monitorSource).toContain("!isReviewRedispatchCoolingDown(taskId, nowMs)");
   });
 

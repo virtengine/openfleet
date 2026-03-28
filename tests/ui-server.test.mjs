@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -636,6 +637,39 @@ describe("ui-server mini app", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("suppresses browser auto-open when the requested port falls back to another port", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "1";
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
+    delete process.env.BOSUN_UI_BROWSER_OPEN_MODE;
+
+    const blocker = createNetServer();
+    await new Promise((resolveReady) => blocker.listen(0, "127.0.0.1", resolveReady));
+    const blockedPort = blocker.address().port;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const markerPath = resolve(process.env.BOSUN_HOME, ".cache", "ui-auto-open.json");
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: blockedPort,
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+      });
+      expect(server).toBeTruthy();
+      expect(server.address().port).not.toBe(blockedPort);
+      expect(existsSync(markerPath)).toBe(false);
+      expect(
+        logSpy.mock.calls.some((args) =>
+          String(args[0] || "").includes("auto-open suppressed because requested port"),
+        ),
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      await new Promise((resolveDone) => blocker.close(resolveDone));
+    }
+  }, 20000);
 
   it("reports running monitor and server components from /healthz during monitor-mode portal startup", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -4979,4 +5013,3 @@ describe("ui-server mini app", () => {
   });
 
 });
-

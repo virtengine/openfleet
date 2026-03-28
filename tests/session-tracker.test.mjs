@@ -1,3 +1,5 @@
+// CLAUDE:SUMMARY — session-tracker tests
+// Covers session lifecycle, timeline, persistence, and summary payload regressions.
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
