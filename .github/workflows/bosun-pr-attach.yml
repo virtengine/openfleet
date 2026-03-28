@@ -92,7 +92,16 @@ jobs:
             const labelNames = (pr.labels || [])
               .map((entry) => (typeof entry === "string" ? entry : entry?.name))
               .filter(Boolean);
-            const isBosunCreated = labelNames.includes(classLabels.bosun);
+
+            const hasBosunCreatedText = (value) => {
+              const body = String(value || "");
+              const normalized = body.trim().toLowerCase();
+              return body.includes(bosunCreatedMarker)
+                || normalized.includes("automated pr for task");
+            };
+
+            const hasBosunCreatedLabel = labelNames.includes(classLabels.bosun);
+            const isBosunCreated = hasBosunCreatedLabel || hasBosunCreatedText(prBody);
 
             const normalizeList = (value) => {
               if (Array.isArray(value)) {
@@ -183,7 +192,8 @@ jobs:
               `- Attach label: ${attachedLabel} (${attachReason})`,
               `- Attach mode policy: ${attachMode}`,
               `- Trusted author: ${isTrustedAuthor ? "yes" : "no"}`,
-              `- Bosun-created label present: ${isBosunCreated ? "yes" : "no"}`,
+              `- Bosun-created label present: ${hasBosunCreatedLabel ? "yes" : "no"}`,
+              `- Bosun-created provenance detected: ${isBosunCreated ? "yes" : "no"}`,
               `- Automation scope: ${automationScope}`,
               "- CI failure signal label: bosun-needs-fix",
               "- CI failure marker: <!-- bosun-ci-failure -->",
