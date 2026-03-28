@@ -10535,7 +10535,7 @@ function installDependencies() {
     return res.status === 0;
   }
 
-  const npm = spawnSync("npm", ["install"], { cwd, stdio: "inherit" });
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";`r`n  const npm = spawnSync(npmCommand, ["install"], { cwd, stdio: "inherit" });
   return npm.status === 0;
 }
 
@@ -15154,3 +15154,4 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
+

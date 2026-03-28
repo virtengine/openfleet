@@ -11478,9 +11478,7 @@ registerBuiltinNodeType("transform.mcp_extract", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Module-scope lazy caches for task lifecycle imports. */
-let _taskClaimsMod = null;
-let _taskClaimsInitPromise = null;
-let _taskClaimsInitRepoRoot = "";
+let _taskClaimsMod = null;`r`nconst _taskClaimsInitPromises = new Map();
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
