@@ -138,7 +138,8 @@ const CHECKPOINT_DEBOUNCE_MS = readBoundedEnvInt(
   500,
   { min: 50, max: 10000 },
 );
-const ACTIVE_RUNS_INDEX = "_active-runs.json";const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
+const ACTIVE_RUNS_INDEX = "_active-runs.json";
+const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
   "WORKFLOW_TASK_TRACE_MAX_EVENTS",
   250,
   { min: 20, max: 5000 },
@@ -4440,7 +4441,7 @@ export class WorkflowEngine extends EventEmitter {
             // booleans so loop-exit expressions never fire.  Cap iterations
             // to a small number (2) to validate the loop structure without
             // executing hundreds of iterations.
-            const DRY_RUN_BACK_EDGE_CAP = 2;
+            const DRY_RUN_BACK_EDGE_CAP = 1;
             const maxIter = opts.dryRun
               ? Math.min(Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS, DRY_RUN_BACK_EDGE_CAP)
               : (Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS);
@@ -5515,5 +5516,9 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+
+
+
 
 

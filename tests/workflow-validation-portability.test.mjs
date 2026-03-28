@@ -12,7 +12,8 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-import { WorkflowContext } from "../workflow/workflow-engine.mjs";`r`nimport { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { WorkflowContext } from "../workflow/workflow-engine.mjs";
+import { getNodeType } from "../workflow/workflow-nodes.mjs";
 
 afterEach(() => {
   execSyncMock.mockReset();
@@ -55,4 +56,3 @@ describe("validation command portability", () => {
     );
   });
 });
-
