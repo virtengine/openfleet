@@ -8475,6 +8475,17 @@ registerBuiltinNodeType("agent.run_planner", {
           agentTimeoutMs,
           launchExtra,
         );
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err || "planner execution failed");
+        ctx.log(node.id, `Planner failed: ${errorMessage}`);
+        return {
+          success: false,
+          error: errorMessage,
+          output: "",
+          taskCount: count,
+          stream: streamLines.slice(),
+          streamEventCount,
+        };
       } finally {
         clearInterval(heartbeat);
       }
@@ -11705,6 +11716,64 @@ function getWorkflowRuntimeState(ctx) {
   return ctx.__workflowRuntimeState;
 }
 
+function getDelegationAuditTrail(ctx) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!Array.isArray(runtimeState.delegationAuditTrail)) {
+    runtimeState.delegationAuditTrail = Array.isArray(ctx?.data?._delegationAuditTrail)
+      ? [...ctx.data._delegationAuditTrail]
+      : [];
+  }
+  if (ctx?.data && !Array.isArray(ctx.data._delegationAuditTrail)) {
+    ctx.data._delegationAuditTrail = runtimeState.delegationAuditTrail;
+  }
+  return runtimeState.delegationAuditTrail;
+}
+
+function appendDelegationAuditEvent(ctx, event) {
+  if (!ctx || !event || typeof event !== "object") return;
+  const trail = getDelegationAuditTrail(ctx);
+  const normalized = {
+    at: new Date().toISOString(),
+    ...event,
+  };
+  const dedupeKey = `${normalized.type || "event"}:${normalized.taskId || ""}:${normalized.claimToken || ""}:${normalized.instanceId || ""}`;
+  if (normalized.type === "owner-mismatch") {
+    const exists = trail.some((entry) => {
+      const entryKey = `${entry?.type || "event"}:${entry?.taskId || ""}:${entry?.claimToken || ""}:${entry?.instanceId || ""}`;
+      return entryKey === dedupeKey;
+    });
+    if (exists) return;
+  }
+  trail.push(normalized);
+  if (ctx?.data) { ctx.data._delegationAuditTrail = trail; ctx.data._workflowDelegationTrail = trail; }
+}
+
+function getClaimTransitionState(ctx, taskId, idempotencyKey) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!runtimeState.claimTransitions || typeof runtimeState.claimTransitions !== "object") {
+    runtimeState.claimTransitions = Object.create(null);
+  }
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedKey = String(idempotencyKey || normalizedTaskId).trim();
+  const bucketKey = `${normalizedTaskId}::${normalizedKey}`;
+  if (!runtimeState.claimTransitions[bucketKey]) {
+    runtimeState.claimTransitions[bucketKey] = { taskId: normalizedTaskId, idempotencyKey: normalizedKey };
+  }
+  return runtimeState.claimTransitions[bucketKey];
+}
+
+function getReleaseTransitionState(ctx, kind, taskId) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!runtimeState.releaseTransitions || typeof runtimeState.releaseTransitions !== "object") {
+    runtimeState.releaseTransitions = Object.create(null);
+  }
+  const key = `${String(kind || "release").trim()}:${String(taskId || "").trim()}`;
+  if (!runtimeState.releaseTransitions[key]) {
+    runtimeState.releaseTransitions[key] = { kind, taskId: String(taskId || "").trim() };
+  }
+  return runtimeState.releaseTransitions[key];
+}
+
 function isUnresolvedTemplateToken(value) {
   return /{{[^{}]+}}/.test(String(value || ""));
 }
@@ -12524,6 +12593,39 @@ registerBuiltinNodeType("condition.slot_available", {
 });
 
 // ── action.allocate_slot ────────────────────────────────────────────────────
+registerBuiltinNodeType("action.release_slot", {
+  describe: () =>
+    "Release a previously allocated execution slot. Restores saved env vars " +
+    "for parallel isolation. Idempotent — safe on double-call.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID whose slot to release" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const slot = ctx.data?._allocatedSlot;
+
+    if (slot && slot.taskId === taskId) {
+      if (slot._envSnapshot && typeof slot._envSnapshot === "object") {
+        for (const [key, val] of Object.entries(slot._envSnapshot)) {
+          if (val === undefined) delete process.env[key];
+          else process.env[key] = val;
+        }
+      }
+      slot.status = "released";
+      slot.releasedAt = Date.now();
+      slot.durationMs = slot.releasedAt - (slot.startedAt || slot.releasedAt);
+      ctx.data._allocatedSlot = null;
+    }
+
+    ctx.log(node.id, `Slot released: ${taskId || "(unknown)"}`);
+    return { success: true, taskId, releasedAt: Date.now() };
+  },
+});
+
+// ── action.claim_task ───────────────────────────────────────────────────────
 
 registerBuiltinNodeType("action.allocate_slot", {
   describe: () =>
@@ -12581,41 +12683,6 @@ registerBuiltinNodeType("action.allocate_slot", {
   },
 });
 
-// ── action.release_slot ─────────────────────────────────────────────────────
-
-registerBuiltinNodeType("action.release_slot", {
-  describe: () =>
-    "Release a previously allocated execution slot. Restores saved env vars " +
-    "for parallel isolation. Idempotent — safe on double-call.",
-  schema: {
-    type: "object",
-    properties: {
-      taskId: { type: "string", description: "Task ID whose slot to release" },
-    },
-  },
-  async execute(node, ctx, engine) {
-    const taskId = cfgOrCtx(node, ctx, "taskId");
-    const slot = ctx.data?._allocatedSlot;
-
-    if (slot && slot.taskId === taskId) {
-      // Restore env vars saved during allocation
-      if (slot._envSnapshot && typeof slot._envSnapshot === "object") {
-        for (const [key, val] of Object.entries(slot._envSnapshot)) {
-          if (val === undefined) delete process.env[key];
-          else process.env[key] = val;
-        }
-      }
-      slot.status = "released";
-      slot.releasedAt = Date.now();
-      slot.durationMs = slot.releasedAt - (slot.startedAt || slot.releasedAt);
-      ctx.data._allocatedSlot = null;
-    }
-
-    ctx.log(node.id, `Slot released: ${taskId || "(unknown)"}`);
-    return { success: true, taskId, releasedAt: Date.now() };
-  },
-});
-
 // ── action.claim_task ───────────────────────────────────────────────────────
 
 registerBuiltinNodeType("action.claim_task", {
@@ -12646,107 +12713,163 @@ registerBuiltinNodeType("action.claim_task", {
     const branch = cfgOrCtx(node, ctx, "branch");
     const sdk = cfgOrCtx(node, ctx, "resolvedSdk", cfgOrCtx(node, ctx, "sdk"));
     const model = cfgOrCtx(node, ctx, "resolvedModel", cfgOrCtx(node, ctx, "model"));
+    const idempotencyKey = String(
+      cfgOrCtx(node, ctx, "idempotencyKey")
+      || ctx.data?._claimIdempotencyKey
+      || node.config?.delegationKey
+      || taskId
+      || "",
+    ).trim();
 
     if (!taskId) throw new Error("action.claim_task: taskId is required");
 
-    const claims = await ensureTaskClaimsMod();
-    try {
-      await ensureTaskClaimsInitialized(ctx, claims);
-    } catch (initErr) {
-      ctx.log(node.id, `Claim init failed: ${initErr.message}`);
-      return { success: false, error: initErr.message, taskId, alreadyClaimed: false };
-    }
-
-    let claimResult;
-    try {
-      claimResult = await claims.claimTask({
+    const transition = getClaimTransitionState(ctx, taskId, idempotencyKey);
+    if (transition.completed && transition.result?.success) {
+      const replayedResult = {
+        ...transition.result,
+        success: true,
         taskId,
-        instanceId,
-        ttlMinutes,
-        metadata: {
-          task_title: taskTitle,
-          branch,
-          owner: "workflow-engine",
-          sdk,
-          model: model || null,
-          pid: process.pid,
-        },
-      });
-    } catch (err) {
-      ctx.log(node.id, `Claim failed: ${err.message}`);
-      return { success: false, error: err.message, taskId, alreadyClaimed: false };
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+      ctx.data._claimToken = replayedResult.claimToken || ctx.data._claimToken || null;
+      ctx.data._claimInstanceId = replayedResult.instanceId || ctx.data._claimInstanceId || instanceId;
+      return replayedResult;
     }
 
-    if (claimResult?.success) {
-      const token = claimResult.token || claimResult.claim?.claim_token || null;
-      ctx.data._claimToken = token;
-      ctx.data._claimInstanceId = instanceId;
+    if (transition.inFlightPromise) {
+      const inFlightResult = await transition.inFlightPromise;
+      return {
+        ...inFlightResult,
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+    }
 
-      const runtimeState = getWorkflowRuntimeState(ctx);
-      // Start renewal timer (stored in non-serializable runtime state for cleanup by release_claim)
-      const renewClaimFn =
-        typeof claims.renewTaskClaim === "function"
-          ? claims.renewTaskClaim.bind(claims)
-          : typeof claims.renewClaim === "function"
-            ? claims.renewClaim.bind(claims)
-            : null;
-      if (renewIntervalMs > 0 && renewClaimFn) {
-        const renewTimer = setInterval(async () => {
-          try {
-            const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
-            if (renewalResult && renewalResult.success === false) {
-              const resultError = String(renewalResult.error || "claim_renew_failed");
-              const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
-                "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => resultError.includes(e));
-              if (fatalResult) {
-                ctx.log(node.id, `Claim renewal fatal: ${resultError} — aborting task`);
-                clearInterval(renewTimer);
-                runtimeState.claimRenewTimer = null;
-                ctx.data._claimRenewTimer = null;
-                ctx.data._claimStolen = true;
-              } else {
-                ctx.log(node.id, `Claim renewal warning: ${resultError}`);
-              }
-            }
-          } catch (renewErr) {
-            const msg = renewErr?.message || String(renewErr);
-            const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
-              "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => msg.includes(e));
-            if (fatal) {
-              ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
-              clearInterval(renewTimer);
-              runtimeState.claimRenewTimer = null;
-              ctx.data._claimRenewTimer = null;
-              // Signal abort to downstream nodes via context
-              ctx.data._claimStolen = true;
-            } else {
-              ctx.log(node.id, `Claim renewal warning: ${msg}`);
-            }
-          }
-        }, renewIntervalMs);
-        // Prevent timer from keeping the process alive
-        if (renewTimer.unref) renewTimer.unref();
-        runtimeState.claimRenewTimer = renewTimer;
-        // Keep serialized context JSON-safe.
-        ctx.data._claimRenewTimer = null;
+    const claims = await ensureTaskClaimsMod();
+    const runtimeState = getWorkflowRuntimeState(ctx);
+    const renewClaimFn =
+      typeof claims.renewTaskClaim === "function"
+        ? claims.renewTaskClaim.bind(claims)
+        : typeof claims.renewClaim === "function"
+          ? claims.renewClaim.bind(claims)
+          : null;
+    const handleFatalRenewal = (message, token) => {
+      ctx.log(node.id, `Claim renewal fatal: ${message} — aborting task`);
+      if (runtimeState.claimRenewTimer) {
+        try { clearInterval(runtimeState.claimRenewTimer); } catch { /* ok */ }
+      }
+      runtimeState.claimRenewTimer = null;
+      ctx.data._claimRenewTimer = null;
+      ctx.data._claimStolen = true;
+      appendDelegationAuditEvent(ctx, {
+        type: "owner-mismatch",
+        taskId,
+        claimToken: token || ctx.data?._claimToken || null,
+        instanceId,
+        reason: message,
+        error: message,
+        nodeId: node.id,
+        transitionKey: `owner-mismatch:${taskId}:${instanceId}`,
+      });
+    };
+
+    transition.inFlightPromise = (async () => {
+      try {
+        await ensureTaskClaimsInitialized(ctx, claims);
+      } catch (initErr) {
+        ctx.log(node.id, `Claim init failed: ${initErr.message}`);
+        return { success: false, error: initErr.message, taskId, alreadyClaimed: false };
       }
 
-      ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
-      return { success: true, taskId, claimToken: token, instanceId };
-    }
+      let claimResult;
+      try {
+        claimResult = await claims.claimTask({
+          taskId,
+          instanceId,
+          ttlMinutes,
+          metadata: {
+            task_title: taskTitle,
+            branch,
+            owner: "workflow-engine",
+            sdk,
+            model: model || null,
+            pid: process.pid,
+            idempotency_key: idempotencyKey || null,
+          },
+        });
+      } catch (err) {
+        ctx.log(node.id, `Claim failed: ${err.message}`);
+        return { success: false, error: err.message, taskId, alreadyClaimed: false };
+      }
 
-    if (claimResult?.error === "task_already_claimed") {
-      const owner = claimResult?.existing_instance || claimResult?.existing_claim?.instance_id || "unknown";
-      ctx.log(node.id, `Task "${taskTitle}" already claimed by ${owner}`);
-      return { success: false, taskId, alreadyClaimed: true, claimedBy: owner, error: "task_already_claimed" };
-    }
+      if (claimResult?.success) {
+        const token = claimResult.token || claimResult.claim?.claim_token || null;
+        ctx.data._claimToken = token;
+        ctx.data._claimInstanceId = instanceId;
+        transition.completed = true;
+        transition.claimToken = token;
+        transition.instanceId = instanceId;
+        transition.result = { success: true, taskId, claimToken: token, instanceId, alreadyClaimed: false };
+        appendDelegationAuditEvent(ctx, {
+          type: "assign",
+          taskId,
+          idempotencyKey,
+          claimToken: token,
+          nodeId: node.id,
+          transitionKey: `assign:${taskId}:${instanceId}`,
+          instanceId,
+        });
 
-    ctx.log(node.id, `Claim error: ${claimResult?.error || "unknown"}`);
-    return { success: false, taskId, error: claimResult?.error || "unknown", alreadyClaimed: false };
+        if (renewIntervalMs > 0 && renewClaimFn && !runtimeState.claimRenewTimer) {
+          const renewTimer = setInterval(async () => {
+            try {
+              const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+              if (renewalResult && renewalResult.success === false) {
+                const resultError = String(renewalResult.error || "claim_renew_failed");
+                const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
+                  "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => resultError.includes(e));
+                if (fatalResult) {
+                  handleFatalRenewal(resultError, token);
+                } else {
+                  ctx.log(node.id, `Claim renewal warning: ${resultError}`);
+                }
+              }
+            } catch (renewErr) {
+              const msg = renewErr?.message || String(renewErr);
+              const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
+                "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => msg.includes(e));
+              if (fatal) {
+                handleFatalRenewal(msg, token);
+              } else {
+                ctx.log(node.id, `Claim renewal warning: ${msg}`);
+              }
+            }
+          }, renewIntervalMs);
+          if (renewTimer.unref) renewTimer.unref();
+          runtimeState.claimRenewTimer = renewTimer;
+          ctx.data._claimRenewTimer = renewTimer;
+        }
+
+        ctx.log(node.id, `Task claimed: ${taskId}`);
+        return transition.result;
+      }
+
+      ctx.log(node.id, `Task already claimed: ${taskId}`);
+      return { success: false, taskId, error: claimResult?.error || "unknown", alreadyClaimed: true };
+    })();
+
+    try {
+      return await transition.inFlightPromise;
+    } finally {
+      transition.inFlightPromise = null;
+    }
   },
 });
 
-// ── action.release_claim ────────────────────────────────────────────────────
+// ── action.release_claim ─────────────────────────────────────────────────────
 
 registerBuiltinNodeType("action.release_claim", {
   describe: () =>
@@ -12764,7 +12887,6 @@ registerBuiltinNodeType("action.release_claim", {
     const claimToken = cfgOrCtx(node, ctx, "claimToken") || ctx.data?._claimToken || "";
     const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._claimInstanceId || "";
 
-    // Always cancel the renewal timer first.
     const runtimeState = getWorkflowRuntimeState(ctx);
     const renewTimer = runtimeState.claimRenewTimer || ctx.data?._claimRenewTimer;
     if (renewTimer) {
@@ -12778,6 +12900,16 @@ registerBuiltinNodeType("action.release_claim", {
       return { success: true, skipped: true, reason: "no_claim" };
     }
 
+    const transition = getReleaseTransitionState(ctx, "claim", taskId);
+    if (transition.completed) {
+      ctx.data._claimToken = null;
+      ctx.data._claimInstanceId = null;
+      return {
+        ...(transition.result || { success: true, taskId, claimToken, instanceId }),
+        replayed: true,
+      };
+    }
+
     const claims = await ensureTaskClaimsMod();
     try {
       await ensureTaskClaimsInitialized(ctx, claims);
@@ -12785,7 +12917,9 @@ registerBuiltinNodeType("action.release_claim", {
       ctx.log(node.id, `Claim release init warning: ${initErr.message}`);
       ctx.data._claimToken = null;
       ctx.data._claimInstanceId = null;
-      return { success: true, taskId, warning: initErr.message };
+      transition.completed = true;
+      transition.result = { success: true, taskId, claimToken, instanceId, warning: initErr.message };
+      return transition.result;
     }
     const releaseClaimFn =
       typeof claims.releaseTaskClaim === "function"
@@ -12796,19 +12930,19 @@ registerBuiltinNodeType("action.release_claim", {
     try {
       if (!releaseClaimFn) throw new Error("no claim release function available");
       await releaseClaimFn({ taskId, claimToken, instanceId });
-      ctx.data._claimToken = null;
-      ctx.data._claimInstanceId = null;
       ctx.log(node.id, `Claim released for ${taskId}`);
-      return { success: true, taskId };
+      transition.result = { success: true, taskId, claimToken, instanceId };
     } catch (err) {
-      // Release is best-effort — log but don't fail
       ctx.log(node.id, `Claim release warning: ${err.message}`);
-      ctx.data._claimToken = null;
-      ctx.data._claimInstanceId = null;
-      return { success: true, taskId, warning: err.message };
+      transition.result = { success: true, taskId, claimToken, instanceId, warning: err.message };
     }
+    transition.completed = true;
+    ctx.data._claimToken = null;
+    ctx.data._claimInstanceId = null;
+    return transition.result;
   },
 });
+
 
 // ── action.resolve_executor ─────────────────────────────────────────────────
 
@@ -13799,23 +13933,31 @@ registerBuiltinNodeType("action.release_worktree", {
       return { success: true, skipped: true, reason: "no_worktree" };
     }
 
+    const transition = getReleaseTransitionState(ctx, "worktree", taskId || worktreePath);
+    if (transition.completed) {
+      return {
+        ...(transition.result || { success: true, worktreePath, taskId, released: true }),
+        replayed: true,
+      };
+    }
+
     try {
-    if (existsSync(worktreePath)) {
-      try {
-        execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
-          cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+      if (existsSync(worktreePath)) {
+        try {
+          execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
+            cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
         } catch {
           /* best-effort — directory might already be gone */
         }
       }
 
-    if (shouldPrune) {
-      try {
-        execGitArgsSync(["worktree", "prune"], {
-          cwd: repoRoot, encoding: "utf8", timeout: 15000,
-        });
+      if (shouldPrune) {
+        try {
+          execGitArgsSync(["worktree", "prune"], {
+            cwd: repoRoot, encoding: "utf8", timeout: 15000,
+          });
         } catch { /* best-effort */ }
       }
 
@@ -13824,10 +13966,28 @@ registerBuiltinNodeType("action.release_worktree", {
       ctx.data._worktreeCreated = false;
       ctx.data._worktreeManaged = false;
       ctx.log(node.id, `Worktree released: ${worktreePath}`);
-      return { success: true, worktreePath, released: true };
+      transition.completed = true;
+      transition.result = {
+        success: true,
+        worktreePath,
+        taskId,
+        claimToken: ctx.data?._claimToken || null,
+        instanceId: ctx.data?._claimInstanceId || null,
+        released: true,
+      };
+      return transition.result;
     } catch (err) {
       ctx.log(node.id, `Worktree release warning: ${err.message}`);
-      return { success: true, worktreePath, warning: err.message };
+      transition.completed = true;
+      transition.result = {
+        success: true,
+        worktreePath,
+        taskId,
+        claimToken: ctx.data?._claimToken || null,
+        instanceId: ctx.data?._claimInstanceId || null,
+        warning: err.message,
+      };
+      return transition.result;
     }
   },
 });
