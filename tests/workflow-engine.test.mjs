@@ -6950,6 +6950,53 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(childSpan.attributes["bosun.workflow.parent_run_id"]).toBe(parentCtx.id);
   });
   it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
+    // TODO: Implement regression test for DAGState replanning from a failed boundary.
+  });
+  it("hydrates delegation audit trail into run detail and history read models", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+      ],
+      [],
+      { id: "wf-delegation-audit", name: "Delegation Audit Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, { taskId: "TASK-DELEGATION-AUDIT" });
+    ctx.__workflowRuntimeState = ctx.__workflowRuntimeState || {};
+    ctx.__workflowRuntimeState.delegationAuditTrail = [
+      {
+        type: "assign",
+        key: "assign:TASK-DELEGATION-AUDIT:agent-1",
+        taskId: "TASK-DELEGATION-AUDIT",
+        agentId: "agent-1",
+        timestamp: 1710000000000,
+      },
+      {
+        type: "handoff-complete",
+        key: "handoff-complete:TASK-DELEGATION-AUDIT:agent-1",
+        taskId: "TASK-DELEGATION-AUDIT",
+        agentId: "agent-1",
+        timestamp: 1710000001000,
+      },
+    ];
+
+    engine._persistRun(ctx.id, wf.id, ctx);
+
+    const detail = engine.getRunDetail(ctx.id);
+    const historyEntry = engine.getRunHistory(wf.id).find((entry) => entry.runId === ctx.id);
+
+    expect(detail?.detail?.delegationAuditTrail).toEqual([
+      expect.objectContaining({ type: "assign", taskId: "TASK-DELEGATION-AUDIT" }),
+      expect.objectContaining({ type: "handoff-complete", taskId: "TASK-DELEGATION-AUDIT" }),
+    ]);
+    expect(historyEntry?.delegationAuditTrail).toEqual([
+      expect.objectContaining({ type: "assign", taskId: "TASK-DELEGATION-AUDIT" }),
+      expect.objectContaining({ type: "handoff-complete", taskId: "TASK-DELEGATION-AUDIT" }),
+    ]);
+  });
+
+
     let attempts = 0;
     registerNodeType("test.replan_once", {
       describe: () => "Fails once so retry planning can revise the active DAG",

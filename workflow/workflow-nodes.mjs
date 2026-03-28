@@ -3709,6 +3709,18 @@ registerBuiltinNodeType("action.run_agent", {
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
     if (agentPool?.launchEphemeralThread) {
+      const delegatedTaskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.task?.id || ctx.data?.taskId || null;
+      const assignTransitionKey = buildDelegationTransitionKey("assign", [delegatedTaskId, node.id, cwd, sdk, model]);
+      recordDelegationAuditEvent(ctx, {
+        type: "assign",
+        taskId: delegatedTaskId,
+        nodeId: node.id,
+        agentProfile: node.config?.agentProfile || null,
+        sdk,
+        model,
+        transitionKey: assignTransitionKey,
+        idempotencyKey: assignTransitionKey,
+      });
       const parseCandidateCount = (value) => {
         const num = Number(value);
         if (!Number.isFinite(num)) return null;
@@ -4068,6 +4080,18 @@ registerBuiltinNodeType("action.run_agent", {
               if (resolvedThreadId) {
                 span.attributes["bosun.session.id"] = resolvedThreadId;
                 if (taskSpan) taskSpan.attributes["bosun.session.id"] = resolvedThreadId;
+                const handoffTransitionKey = buildDelegationTransitionKey("handoff-complete", [delegatedTaskId, node.id, resolvedThreadId]);
+                recordDelegationAuditEvent(ctx, {
+                  type: "handoff-complete",
+                  taskId: delegatedTaskId,
+                  nodeId: node.id,
+                  sessionId: resolvedThreadId,
+                  threadId: resolvedThreadId,
+                  sdk,
+                  model,
+                  transitionKey: handoffTransitionKey,
+                  idempotencyKey: handoffTransitionKey,
+                });
               }
               return tracedResult;
             },
@@ -12448,6 +12472,50 @@ function getReleaseTransitionState(ctx, kind, taskId) {
     runtimeState.releaseTransitions[key] = { kind, taskId: String(taskId || "").trim() };
   }
   return runtimeState.releaseTransitions[key];
+}
+
+function getDelegationGuardStore(ctx) {
+  if (!ctx?.data || typeof ctx.data !== "object") return {};
+  if (!ctx.data._delegationTransitionGuards || typeof ctx.data._delegationTransitionGuards !== "object") {
+    ctx.data._delegationTransitionGuards = {};
+  }
+  return ctx.data._delegationTransitionGuards;
+}
+
+function beginDelegationTransition(ctx, key, meta = {}) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return { shouldRun: true, key: null, entry: null };
+  const guards = getDelegationGuardStore(ctx);
+  const existing = guards[normalizedKey];
+  if (existing?.status === "completed") {
+    return { shouldRun: false, key: normalizedKey, entry: existing, completed: true };
+  }
+  if (existing?.status === "in_progress") {
+    return { shouldRun: false, key: normalizedKey, entry: existing, inProgress: true };
+  }
+  const next = {
+    key: normalizedKey,
+    status: "in_progress",
+    startedAt: new Date().toISOString(),
+    ...meta,
+  };
+  guards[normalizedKey] = next;
+  return { shouldRun: true, key: normalizedKey, entry: next };
+}
+
+function completeDelegationTransition(ctx, key, meta = {}) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return null;
+  const guards = getDelegationGuardStore(ctx);
+  const next = {
+    ...(guards[normalizedKey] || {}),
+    ...meta,
+    key: normalizedKey,
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  };
+  guards[normalizedKey] = next;
+  return next;
 }
 
 function isUnresolvedTemplateToken(value) {
