@@ -1231,18 +1231,34 @@ async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue
     return [];
   })();
   const firstParamName = String(createTaskParamNames[0] || "").toLowerCase();
+  const secondParamName = String(createTaskParamNames[1] || "").toLowerCase();
   const payloadOnlyCreateTask =
     createTaskParamNames.length === 1 &&
     /(task|payload|spec|data)/i.test(firstParamName) &&
     !/project/i.test(firstParamName);
+  const projectOnlyCreateTask =
+    createTaskParamNames.length === 1 &&
+    /project/i.test(firstParamName) &&
+    !/(task|payload|spec|data)/i.test(firstParamName);
+  const projectAwareCreateTask =
+    createTaskParamNames.length >= 2 &&
+    /project/i.test(firstParamName) &&
+    /(task|payload|spec|data)/i.test(secondParamName);
 
   if (payloadOnlyCreateTask) {
     return kanban.createTask(payload);
   }
 
+  if (projectOnlyCreateTask && !resolvedProjectId) {
+    throw new Error("Kanban adapter requires a projectId to create planner tasks");
+  }
+
   const taskPayload = { ...payload };
   delete taskPayload.projectId;
-  return kanban.createTask(resolvedProjectId, taskPayload);
+  if (projectAwareCreateTask || resolvedProjectId) {
+    return kanban.createTask(resolvedProjectId, taskPayload);
+  }
+  return kanban.createTask(taskPayload);
 }
 
 function summarizeAssistantMessageData(data = {}) {
