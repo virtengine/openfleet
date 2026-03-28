@@ -989,7 +989,12 @@ function findAllBosunProcessPids() {
   ];
   const joined = patterns.join("|");
   if (process.platform === "win32") {
+    let cmdPids = [];
     try {
+      // Primary: CommandLine-based scan.
+      // NOTE: Win32_Process.CommandLine can be null/empty under WMI race conditions
+      // for long-running processes. We re-verify null-CommandLine node.exe PIDs by
+      // querying them individually below to work around the WMI race.
       const out = execFileSync(
         "powershell",
         [
@@ -1008,14 +1013,51 @@ function findAllBosunProcessPids() {
         ],
         { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 4000 },
       ).trim();
-      if (!out) return [];
-      return out
-        .split(/\r?\n/)
-        .map((s) => Number.parseInt(String(s).trim(), 10))
-        .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+      if (out) {
+        cmdPids = out
+          .split(/\r?\n/)
+          .map((s) => Number.parseInt(String(s).trim(), 10))
+          .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+      }
     } catch {
-      return [];
+      // fall through to port-based fallback
     }
+
+    // Fallback: find node.exe PIDs listening on known Bosun ports (4400, 3080).
+    // This catches processes whose CommandLine was null in the WMI general scan.
+    let portPids = [];
+    try {
+      const netOut = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `$bosunPorts = @(4400,3080,4401,3081)
+           $listeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+             Where-Object { $bosunPorts -contains $_.LocalPort } |
+             Select-Object -ExpandProperty OwningProcess -Unique
+           $listeners | Where-Object {
+             $pid = [int]$_
+             if ($pid -le 0 -or $pid -eq ${process.pid}) { return $false }
+             $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue
+             $name = [string]$proc.Name
+             $name -match '^(node|electron|bosun)(\\.exe)?$'
+           }`,
+        ],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
+      ).trim();
+      if (netOut) {
+        portPids = netOut
+          .split(/\r?\n/)
+          .map((s) => Number.parseInt(String(s).trim(), 10))
+          .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+      }
+    } catch {
+      // port scan unavailable — cmdPids is still used
+    }
+
+    // Merge both sets, deduplicating
+    return Array.from(new Set([...cmdPids, ...portPids]));
   }
   try {
     const out = execFileSync("pgrep", ["-f", joined], {
@@ -2414,6 +2456,8 @@ async function sendCrashNotification(exitCode, signal, options = {}) {
 }
 
 // ── Self-restart exit code (must match monitor.mjs SELF_RESTART_EXIT_CODE) ───
+const SELF_RESTART_EXIT_CODE = 75;
+
 function getMonitorPidFileCandidates(extraCacheDirs = []) {
   return getPidFileCandidates("bosun.pid", extraCacheDirs);
 }

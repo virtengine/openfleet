@@ -17,6 +17,33 @@ import {
   getInstallationTokenForRepo,
 } from "./github-app-auth.mjs";
 
+// Lazy vault import — avoids circular dependency at startup
+let _vaultModule = null;
+async function tryVaultGitHubToken() {
+  try {
+    if (!_vaultModule) _vaultModule = await import("../lib/vault.mjs");
+    const { VaultStore } = _vaultModule;
+    const { keychainRead } = await import("../lib/vault-keychain.mjs");
+    const v = new VaultStore();
+    if (!v.isInitialized()) return null;
+    const key = keychainRead();
+    if (!key) return null;
+    v.open(key);
+    // Look for a GitHub integration secret
+    const secrets = v.listSecrets().filter((s) => s.integration === "github");
+    for (const s of secrets) {
+      const full = v.getSecret(s.id);
+      const t = full.fields?.token || full.fields?.apiKey || "";
+      if (t) return t;
+    }
+    // Fallback: check vault env for GH_TOKEN
+    const envToken = v.getEnv("GH_TOKEN") || v.getEnv("GITHUB_TOKEN") || "";
+    return envToken || null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const BOSUN_AUTH_STATE_PATH = join(homedir(), ".bosun", "github-auth-state.json");
@@ -180,6 +207,14 @@ export async function getGitHubToken(options = {}) {
       "";
     if (envToken) {
       return { token: envToken, type: "env" };
+    }
+  }
+
+  // ── 5. Bosun vault fallback ───────────────────────────────────────────────
+  if (!isSkipped("vault")) {
+    const vaultToken = await tryVaultGitHubToken();
+    if (vaultToken) {
+      return { token: vaultToken, type: "vault" };
     }
   }
 

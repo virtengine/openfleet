@@ -3293,7 +3293,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
       </div>
 
-      <div style="position: absolute; top: 64px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
+      <div style="position: absolute; top: 108px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
         <div style="pointer-events: auto; background: var(--bg-card, #2b2a27); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; backdrop-filter: blur(8px); box-shadow: var(--shadow-lg, 0 10px 30px rgba(0,0,0,0.28)); overflow: hidden; color: var(--color-text, #e8eaf0);">
           <div style="display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom: 1px solid var(--color-border, #2a3040);">
             <span class="icon-inline">${resolveIcon("chart")}</span>
@@ -4596,7 +4596,7 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
                   fullWidth
                   placeholder=${fieldSchema.default != null ? `Default: ${fieldSchema.default}` : ""}
                 />
-              ` : fieldSchema.enum ? html`
+              ` : Array.isArray(fieldSchema.enum) ? html`
                 <${Select}
                   value=${typeof value === "object" ? "" : value}
                   onChange=${(e) => onFieldChange(key, e.target.value)}
@@ -4604,7 +4604,7 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
                   fullWidth
                 >
                   <${MenuItem} value="">— select —</${MenuItem}>
-                  ${fieldSchema.enum.map(opt => html`<${MenuItem} key=${opt} value=${opt}>${opt}</${MenuItem}>`)}
+                  ${fieldSchema.enum.flatMap(opt => { const o = toMenuOption(opt); return o ? [html`<${MenuItem} key=${String(o.value)} value=${o.value}>${o.label}</${MenuItem}>`] : []; })}
                 </${Select}>
               ` : (typeof value === "string" && value.length > 80) || key === "prompt" || key === "expression" || key === "template" || key === "command" || key === "body" || key === "message" || key === "filter" ? html`
                 <${TextField}
@@ -4893,18 +4893,21 @@ function WorkflowListView() {
                         `}
                       </div>
                     `}
-                    <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                      <span>${wf.nodeCount || 0} nodes</span>
-                      <span>·</span>
-                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5);">
+                    <!-- Footer: info row -->
+                    <div style="display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-bottom: 6px; flex-wrap: nowrap; overflow: hidden;">
+                      <span style="white-space: nowrap; flex-shrink: 0;">${wf.nodeCount || 0} nodes</span>
+                      <span style="flex-shrink: 0;">·</span>
+                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;">
                         ${group.label}
                       </span>
-                      <div style="flex: 1;"></div>
+                    </div>
+                    <!-- Footer: action buttons row -->
+                    <div style="display: flex; gap: 4px; align-items: center; flex-wrap: nowrap;" onClick=${(e) => e.stopPropagation()}>
                       ${hasTemplateUpdate && html`
                         <${Button}
                           variant="text"
                           size="small"
-                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
+                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none', minWidth: 0, padding: '2px 6px' }}
                           onClick=${async (e) => {
                             e.stopPropagation();
                             if (!isCustomizedTemplate) {
@@ -4934,7 +4937,7 @@ function WorkflowListView() {
                       ${!isCore && html`<${Button}
                         variant="text"
                         size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none' }}
+                        sx=${{ fontSize: '11px', textTransform: 'none', minWidth: 0, padding: '2px 6px' }}
                         onClick=${(e) => {
                           e.stopPropagation();
                           setWorkflowEnabled(wf.id, !wf.enabled);
@@ -4943,10 +4946,11 @@ function WorkflowListView() {
                         <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
                         ${wf.enabled ? "Pause" : "Resume"}
                       <//>`}
+                      <div style="flex: 1;"></div>
                       <${Button}
                         variant="text"
                         size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
+                        sx=${{ fontSize: '11px', textTransform: 'none', minWidth: 0, padding: '2px 4px', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
                         onClick=${(e) => {
                           e.stopPropagation();
                           if (!wf.enabled) {
@@ -4961,7 +4965,7 @@ function WorkflowListView() {
                       <${Button}
                         variant="text"
                         size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none' }}
+                        sx=${{ fontSize: '11px', textTransform: 'none', minWidth: 0, padding: '2px 4px' }}
                         onClick=${(e) => {
                           e.stopPropagation();
                           exportWorkflow(wf);
@@ -4969,7 +4973,7 @@ function WorkflowListView() {
                       >
                         <span class="icon-inline">${resolveIcon("save")}</span>
                       <//>
-                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none', minWidth: 0, padding: '2px 4px' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
                         <span class="icon-inline">${resolveIcon("trash")}</span>
                       <//>`}
                     </div>
@@ -6212,18 +6216,19 @@ export function WorkflowsTab() {
     }
 
     if (workflowId) {
+      const wantsCode = Boolean(route.codeView);
       apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`)
         .then((d) => {
           activeWorkflow.value = d?.workflow || activeWorkflow.value;
           if (activeWorkflow.value?.id === workflowId || d?.workflow?.id === workflowId) {
-            viewMode.value = "canvas";
+            viewMode.value = wantsCode ? "code" : "canvas";
           }
         })
         .catch(() => {
           const existing = (workflows.value || []).find((wf) => wf.id === workflowId);
           if (existing) {
             activeWorkflow.value = existing;
-            viewMode.value = "canvas";
+            viewMode.value = wantsCode ? "code" : "canvas";
           }
         });
       return;
@@ -6239,6 +6244,13 @@ export function WorkflowsTab() {
 
   useEffect(() => {
     const mode = viewMode.value;
+    if (mode === "code" && activeWorkflow.value?.id) {
+      setRouteParams(
+        { workflowId: activeWorkflow.value.id, codeView: "1" },
+        { replace: true, skipGuard: true },
+      );
+      return;
+    }
     if (mode === "canvas" && activeWorkflow.value?.id) {
       setRouteParams(
         { workflowId: activeWorkflow.value.id },

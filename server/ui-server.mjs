@@ -1,4 +1,4 @@
-import { execSync, spawn, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync, exec } from "node:child_process";
 import * as nodeCrypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile, readdirSync, statSync } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -318,6 +318,9 @@ import {
   resolveTuiAuthToken,
 } from "../infra/tui-bridge.mjs";
 import { setComponentStatus } from "../infra/health-status.mjs";
+import { VaultStore } from "../lib/vault.mjs";
+import { keychainGetOrCreate } from "../lib/vault-keychain.mjs";
+import { INTEGRATIONS } from "../lib/integrations-registry.mjs";
 
 const TASK_STORE_MODULE_PATH = "../task/task-store.mjs";
 const TASK_STORE_START_GUARD_EXPORTS = [
@@ -11921,6 +11924,25 @@ async function readUiWorktreeRecovery() {
   return readWorktreeRecoveryState(repoRoot);
 }
 
+/**
+ * Non-blocking async shell exec for git/gh calls inside HTTP request handlers.
+ * Prevents execSync/spawnSync from blocking the event loop and starving other requests.
+ */
+function execAsync(cmd, { cwd, timeout = 10_000, encoding = "utf8" } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = exec(cmd, { cwd, timeout, encoding, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+    child.on("close", (code) => {
+      if (code === 0 || code === null) resolve(stdout);
+      else reject(Object.assign(new Error(`exec failed (${code}): ${cmd}`), { stdout, stderr, exitCode: code }));
+    });
+    child.on("error", reject);
+  });
+}
+
 function runGit(args, timeoutMs = 10000) {
   const argList = Array.isArray(args)
     ? args
@@ -12406,7 +12428,13 @@ function withinDays(entry, days) {
 async function readCompletedSessionEntries(maxLines = 100_000) {
   // Check multiple candidate paths — repoRoot may be the monorepo root
   // while data lives under the bosun subdirectory.
+  // When REPO_ROOT is not explicitly set, the module-relative path is added first
+  // so we find the data written by task-executor (__dirname-relative) even when
+  // resolveRepoRoot() returns a workspace clone path instead of the module root.
   const candidates = [
+    ...(!process.env.REPO_ROOT
+      ? [resolve(__dirname, "..", ".cache", "session-accumulator.jsonl")]
+      : []),
     resolve(repoRoot, ".cache", "session-accumulator.jsonl"),
     resolve(repoRoot, "bosun", ".cache", "session-accumulator.jsonl"),
   ];
@@ -12718,7 +12746,13 @@ async function buildUsageAnalytics(days) {
 }
 
 function resolveAgentWorkLogDir() {
+  // When REPO_ROOT is not explicitly set, the module-relative path is added first
+  // so we find the data written by task-executor (__dirname-relative) even when
+  // resolveRepoRoot() returns a workspace clone path instead of the module root.
   const candidates = [
+    ...(!process.env.REPO_ROOT
+      ? [resolve(__dirname, "..", ".cache", "agent-work-logs")]
+      : []),
     resolve(repoRoot, ".cache", "agent-work-logs"),
     // When repoRoot is the monorepo root, data lives under bosun/.cache
     resolve(repoRoot, "bosun", ".cache", "agent-work-logs"),
@@ -13185,11 +13219,15 @@ async function handleApi(req, res, url) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type,X-Telegram-InitData,X-Bosun-Fallback-Auth",
     });
     res.end();
     return;
+  }
+
+  if (path.startsWith("/api/vault")) {
+    if (await handleVaultApi(req, res, path)) return;
   }
 
   if (path === "/api/auth/fallback/status" && req.method === "GET") {
@@ -17749,34 +17787,30 @@ if (path === "/api/agent-logs/context") {
       let gitStatus = "";
       let diffStat = "";
       try {
-        gitLog = execSync("git log --oneline -5 2>&1", {
+        gitLog = (await execAsync("git log --oneline -5", {
           cwd: wtPath,
-          encoding: "utf8",
           timeout: 10000,
-        }).trim();
+        })).trim();
       } catch {
         gitLog = "";
       }
       try {
-        gitStatus = execSync("git status --short 2>&1", {
+        gitStatus = (await execAsync("git status --short", {
           cwd: wtPath,
-          encoding: "utf8",
           timeout: 10000,
-        }).trim();
+        })).trim();
       } catch {
         gitStatus = "";
       }
       try {
-        const branch = execSync("git branch --show-current 2>&1", {
+        const branch = (await execAsync("git branch --show-current", {
           cwd: wtPath,
-          encoding: "utf8",
           timeout: 5000,
-        }).trim();
-        diffStat = execSync(`git diff --stat main...${branch} 2>&1`, {
+        })).trim();
+        diffStat = (await execAsync(`git diff --stat main...${branch}`, {
           cwd: wtPath,
-          encoding: "utf8",
           timeout: 10000,
-        }).trim();
+        })).trim();
       } catch {
         diffStat = "";
       }
@@ -17964,17 +17998,17 @@ if (path === "/api/agent-logs/context") {
         wtPath = resolve(worktreeDir, wtName);
         worktreeMatches.push(...matches);
       }
-      const runWtGit = (args) => {
+      const runWtGit = async (args) => {
         try {
-          return execSync(`git ${args}`, { cwd: wtPath, encoding: "utf8", timeout: 5000 }).trim();
+          return (await execAsync(`git ${args}`, { cwd: wtPath, timeout: 5000 })).trim();
         } catch { return ""; }
       };
-      const gitLog = runWtGit("log --oneline -10");
-      const gitLogDetailed = runWtGit("log --format=%h||%D||%s||%cr -10");
-      const gitStatus = runWtGit("status --porcelain");
-      const gitBranch = runWtGit("rev-parse --abbrev-ref HEAD");
-      const gitDiffStat = runWtGit("diff --stat");
-      const gitAheadBehind = runWtGit("rev-list --left-right --count HEAD...@{upstream} 2>/dev/null");
+      const gitLog = await runWtGit("log --oneline -10");
+      const gitLogDetailed = await runWtGit("log --format=%h||%D||%s||%cr -10");
+      const gitStatus = await runWtGit("status --porcelain");
+      const gitBranch = await runWtGit("rev-parse --abbrev-ref HEAD");
+      const gitDiffStat = await runWtGit("diff --stat");
+      const gitAheadBehind = await runWtGit("rev-list --left-right --count HEAD...@{upstream} 2>/dev/null");
       const changedFiles = gitStatus
         ? gitStatus
             .split("\n")
@@ -18125,12 +18159,11 @@ if (path === "/api/agent-logs/context") {
         jsonResponse(res, 400, { ok: false, error: "branch is required" });
         return;
       }
-      const hasRef = (ref) => {
+      const hasRef = async (ref) => {
         try {
-          execSync(`git show-ref --verify --quiet ${ref}`, {
+          await execAsync(`git show-ref --verify --quiet ${ref}`, {
             cwd: repoRoot,
             timeout: 5000,
-            stdio: "ignore",
           });
           return true;
         } catch {
@@ -18138,10 +18171,10 @@ if (path === "/api/agent-logs/context") {
         }
       };
       const baseRef =
-        (hasRef("refs/heads/main") && "main") ||
-        (hasRef("refs/remotes/origin/main") && "origin/main") ||
-        (hasRef("refs/heads/master") && "master") ||
-        (hasRef("refs/remotes/origin/master") && "origin/master") ||
+        ((await hasRef("refs/heads/main")) && "main") ||
+        ((await hasRef("refs/remotes/origin/main")) && "origin/main") ||
+        ((await hasRef("refs/heads/master")) && "master") ||
+        ((await hasRef("refs/remotes/origin/master")) && "origin/master") ||
         null;
       const diffRange = baseRef ? `${baseRef}...${safe}` : `${safe}~1..${safe}`;
       const commitsRaw = runGit(`log ${safe} --format=%h||%s||%cr -20`, 15000);
@@ -20011,6 +20044,161 @@ if (path === "/api/agent-logs/context") {
       tunnel: getTunnelStatus(),
       fallbackAuth: getFallbackAuthStatus(),
     });
+    return;
+  }
+
+  // ── /api/env/detect — auto-detect project type from a repo path ──────────────
+  if (path === "/api/env/detect" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const targetPath = body?.repoPath ? resolve(body.repoPath) : repoRoot;
+      const [{ detectProjectStack }, { detectEnvironmentTemplate, templateToRepoEnvironment }] = await Promise.all([
+        import("../workflow/project-detection.mjs"),
+        import("../workspace/env-templates.mjs"),
+      ]);
+      const stackResult = detectProjectStack(targetPath);
+      const templateResult = detectEnvironmentTemplate(targetPath);
+      const environment = templateResult.template
+        ? templateToRepoEnvironment(templateResult.template)
+        : null;
+      jsonResponse(res, 200, {
+        ok: true,
+        stack: stackResult.primary ? {
+          id: stackResult.primary.id,
+          label: stackResult.primary.label,
+          packageManager: stackResult.primary.packageManager,
+          frameworks: stackResult.primary.frameworks,
+          commands: stackResult.primary.commands,
+        } : null,
+        allStacks: stackResult.stacks.map((s) => ({ id: s.id, label: s.label, packageManager: s.packageManager })),
+        template: templateResult.template ? {
+          id: templateResult.template.id,
+          label: templateResult.template.label,
+          group: templateResult.template.group,
+          icon: templateResult.template.icon,
+        } : null,
+        confidence: templateResult.confidence,
+        environment,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── /api/repos/environment — read per-repo environment config ─────────────
+  if (path === "/api/repos/environment" && req.method === "GET") {
+    try {
+      const repoName = searchParams.get("name") || searchParams.get("repo");
+      const { configData } = readConfigDocument();
+      const repos = Array.isArray(configData?.repositories)
+        ? configData.repositories
+        : Array.isArray(configData?.repositories?.items)
+          ? configData.repositories.items
+          : [];
+
+      if (!repoName) {
+        // Return environment config for all repos
+        const result = repos.map((r) => ({
+          name: r.name || r.id || r.slug,
+          slug: r.slug,
+          environment: r.environment || null,
+        }));
+        jsonResponse(res, 200, { ok: true, repos: result });
+        return;
+      }
+
+      const repo = repos.find(
+        (r) => r.name === repoName || r.id === repoName || r.slug === repoName || r.slug?.endsWith("/" + repoName),
+      );
+      if (!repo) {
+        jsonResponse(res, 404, { ok: false, error: `Repository '${repoName}' not found in config` });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, name: repo.name, slug: repo.slug, environment: repo.environment || null });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── /api/repos/environment — save per-repo environment config ─────────────
+  if (path === "/api/repos/environment" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { name: repoName, slug: repoSlug, environment } = body || {};
+      const identifier = repoName || repoSlug;
+      if (!identifier) {
+        jsonResponse(res, 400, { ok: false, error: "name or slug is required" });
+        return;
+      }
+      if (!environment || typeof environment !== "object") {
+        jsonResponse(res, 400, { ok: false, error: "environment object is required" });
+        return;
+      }
+      const { configPath, configData } = readConfigDocument();
+      let repos = Array.isArray(configData?.repositories)
+        ? configData.repositories
+        : Array.isArray(configData?.repositories?.items)
+          ? configData.repositories.items
+          : [];
+
+      const idx = repos.findIndex(
+        (r) => r.name === identifier || r.id === identifier || r.slug === identifier || r.slug?.endsWith("/" + identifier),
+      );
+      if (idx < 0) {
+        jsonResponse(res, 404, { ok: false, error: `Repository '${identifier}' not found in config` });
+        return;
+      }
+
+      // Sanitize environment config — only allow known fields
+      const sanitized = {};
+      const allowed = ["template", "installCommands", "startCommand", "buildCommand", "testCommand", "lintCommand", "debugCommand", "worktreeSetupScript", "sharedPaths"];
+      for (const key of allowed) {
+        if (key in environment) sanitized[key] = environment[key];
+      }
+
+      if (Array.isArray(configData.repositories)) {
+        configData.repositories[idx] = { ...configData.repositories[idx], environment: sanitized };
+      } else {
+        configData.repositories.items[idx] = { ...configData.repositories.items[idx], environment: sanitized };
+      }
+
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", { reason: "repo-environment-updated", repo: identifier });
+      jsonResponse(res, 200, { ok: true, name: identifier, environment: sanitized });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── /api/env/templates — list all environment templates ──────────────────
+  if (path === "/api/env/templates" && req.method === "GET") {
+    try {
+      const { ENV_TEMPLATES, getTemplatesByGroup } = await import("../workspace/env-templates.mjs");
+      jsonResponse(res, 200, {
+        ok: true,
+        templates: ENV_TEMPLATES.map((t) => ({
+          id: t.id,
+          label: t.label,
+          description: t.description,
+          icon: t.icon,
+          group: t.group,
+          installCommands: t.installCommands,
+          startCommand: t.startCommand,
+          buildCommand: t.buildCommand,
+          testCommand: t.testCommand,
+          lintCommand: t.lintCommand,
+          debugCommand: t.debugCommand,
+          worktreeSetupCommands: t.worktreeSetupCommands,
+          sharedPaths: t.sharedPaths,
+        })),
+        groups: Object.keys(getTemplatesByGroup()),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
     return;
   }
 
@@ -22864,6 +23052,186 @@ if (path === "/api/agent-logs/context") {
   }
 
   jsonResponse(res, 404, { ok: false, error: "Unknown API endpoint" });
+}
+
+// ─── Vault singleton ────────────────────────────────────────────────────────────
+let _vault = null;
+function getVault() {
+  if (!_vault) _vault = new VaultStore();
+  return _vault;
+}
+
+async function ensureVaultOpen() {
+  const v = getVault();
+  if (v.isUnlocked()) return v;
+  if (!v.isInitialized()) return null;
+  try {
+    const { key } = keychainGetOrCreate();
+    v.open(key);
+    return v;
+  } catch {
+    return null;
+  }
+}
+
+// ─── /api/vault/* routes ────────────────────────────────────────────────────────
+async function handleVaultApi(req, res, path) {
+  // GET /api/vault/status
+  if (path === "/api/vault/status" && req.method === "GET") {
+    const v = getVault();
+    let status = v.status();
+    if (!status.unlocked && v.isInitialized()) {
+      try {
+        const { key } = keychainGetOrCreate();
+        v.open(key);
+        status = v.status();
+      } catch { /* stays locked */ }
+    }
+    jsonResponse(res, 200, { ok: true, data: status });
+    return true;
+  }
+
+  // POST /api/vault/init
+  if (path === "/api/vault/init" && req.method === "POST") {
+    const v = getVault();
+    if (v.isInitialized()) {
+      jsonResponse(res, 409, { ok: false, error: "Vault already initialized." });
+      return true;
+    }
+    try {
+      const { key } = keychainGetOrCreate();
+      v.init(key);
+      jsonResponse(res, 200, { ok: true, data: { initialized: true } });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/vault/integrations
+  if (path === "/api/vault/integrations" && req.method === "GET") {
+    jsonResponse(res, 200, { ok: true, data: INTEGRATIONS });
+    return true;
+  }
+
+  // GET /api/vault/secrets
+  if (path === "/api/vault/secrets" && req.method === "GET") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    jsonResponse(res, 200, { ok: true, data: v.listSecrets() });
+    return true;
+  }
+
+  // POST /api/vault/secrets
+  if (path === "/api/vault/secrets" && req.method === "POST") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    try {
+      const body = await readJsonBody(req);
+      const id = v.createSecret(body);
+      jsonResponse(res, 201, { ok: true, data: { id, ...v.getSecret(id) } });
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/vault/secrets/:id
+  const secretIdMatch = path.match(/^\/api\/vault\/secrets\/([^/]+)$/);
+  if (secretIdMatch && req.method === "GET") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    try {
+      jsonResponse(res, 200, { ok: true, data: v.getSecret(secretIdMatch[1]) });
+    } catch (err) {
+      jsonResponse(res, 404, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // PUT /api/vault/secrets/:id
+  if (secretIdMatch && req.method === "PUT") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    try {
+      const body = await readJsonBody(req);
+      v.updateSecret(secretIdMatch[1], body);
+      jsonResponse(res, 200, { ok: true, data: v.getSecret(secretIdMatch[1]) });
+    } catch (err) {
+      jsonResponse(res, 404, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // DELETE /api/vault/secrets/:id
+  if (secretIdMatch && req.method === "DELETE") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    try {
+      v.deleteSecret(secretIdMatch[1]);
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 404, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // PUT /api/vault/secrets/:id/permissions
+  const permMatch = path.match(/^\/api\/vault\/secrets\/([^/]+)\/permissions$/);
+  if (permMatch && req.method === "PUT") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    try {
+      const body = await readJsonBody(req);
+      v.setPermissions(permMatch[1], body);
+      jsonResponse(res, 200, { ok: true, data: v.getSecret(permMatch[1]).permissions });
+    } catch (err) {
+      jsonResponse(res, 404, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/vault/env
+  if (path === "/api/vault/env" && req.method === "GET") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    const keys = v.listEnvKeys();
+    jsonResponse(res, 200, { ok: true, data: { keys } });
+    return true;
+  }
+
+  // POST /api/vault/env
+  if (path === "/api/vault/env" && req.method === "POST") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    try {
+      const body = await readJsonBody(req);
+      if (!body?.key || typeof body.key !== "string") {
+        jsonResponse(res, 400, { ok: false, error: "key is required" }); return true;
+      }
+      v.setEnv(body.key, String(body.value ?? ""));
+      jsonResponse(res, 200, { ok: true, data: { key: body.key } });
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // DELETE /api/vault/env/:key
+  const envKeyMatch = path.match(/^\/api\/vault\/env\/([^/]+)$/);
+  if (envKeyMatch && req.method === "DELETE") {
+    const v = await ensureVaultOpen();
+    if (!v) { jsonResponse(res, 503, { ok: false, error: "Vault locked or not initialized." }); return true; }
+    try {
+      v.deleteEnv(decodeURIComponent(envKeyMatch[1]));
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  return false; // not handled
 }
 
 async function handleStatic(req, res, url) {

@@ -55,7 +55,7 @@ describe("continuation-loop template integration", () => {
       agentPool: { launchEphemeralThread },
     });
 
-    const installed = installTemplate("template-continuation-loop", engine, {
+    const installed = installTemplate("template-continuation-loop-manual", engine, {
       taskId: "TASK-100",
       worktreePath: tmpDir,
       pollIntervalMs: 0,
@@ -90,7 +90,7 @@ describe("continuation-loop template integration", () => {
       agentPool: { launchEphemeralThread },
     });
 
-    const installed = installTemplate("template-continuation-loop", engine, {
+    const installed = installTemplate("template-continuation-loop-manual", engine, {
       taskId: "TASK-200",
       worktreePath: tmpDir,
       pollIntervalMs: 0,
@@ -132,7 +132,7 @@ describe("continuation-loop template integration", () => {
       agentPool: { launchEphemeralThread },
     });
 
-    const installed = installTemplate("template-continuation-loop", engine, {
+    const installed = installTemplate("template-continuation-loop-manual", engine, {
       taskId: "TASK-201",
       worktreePath: tmpDir,
       pollIntervalMs: 0,
@@ -176,7 +176,7 @@ describe("continuation-loop template integration", () => {
       agentPool: { launchEphemeralThread },
     });
 
-    const installed = installTemplate("template-continuation-loop", engine, {
+    const installed = installTemplate("template-continuation-loop-manual", engine, {
       taskId: "TASK-202",
       worktreePath: tmpDir,
       pollIntervalMs: 0,

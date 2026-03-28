@@ -224,6 +224,31 @@ function readWorktreeBootstrapConfig(repoRoot) {
   return DEFAULT_WORKTREE_BOOTSTRAP;
 }
 
+function readRepoEnvironmentConfig(repoRoot) {
+  try {
+    const config = withIsolatedEnv(() =>
+      loadConfig(["node", "bosun", "--repo-root", repoRoot]),
+    );
+    const repos = Array.isArray(config?.repositories)
+      ? config.repositories
+      : Array.isArray(config?.repositories?.items)
+        ? config.repositories.items
+        : [];
+    // Match by path/repoRoot or by primary flag
+    const match = repos.find(
+      (r) => {
+        if (r.path && r.path === repoRoot) return true;
+        if (r.repoRoot && r.repoRoot === repoRoot) return true;
+        return false;
+      },
+    ) || repos.find((r) => r.primary === true);
+    if (match?.environment && typeof match.environment === "object") {
+      return match.environment;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 function resolveWorktreeSharedPaths(policy, stackId) {
   const override = policy?.sharedPathsByStack?.[stackId];
   if (Array.isArray(override) && override.length > 0) return override;
@@ -271,13 +296,34 @@ function resolveDefaultBootstrapCommand(stack, worktreePath) {
   }
 }
 
-function buildBootstrapPlan(worktreePath, policy, detection, repoRoot) {
+function buildBootstrapPlan(worktreePath, policy, detection, repoRoot, repoEnvironment) {
   const sharedPaths = [];
   const commands = [];
-  const setupScript = String(policy?.setupScript || "").trim();
+
+  // Per-repo environment worktreeSetupScript takes precedence over global setupScript
+  const setupScript = String(repoEnvironment?.worktreeSetupScript || policy?.setupScript || "").trim();
   if (setupScript) {
     commands.push(setupScript);
   }
+
+  // Per-repo environment installCommands override stack detection
+  if (repoEnvironment?.installCommands?.length) {
+    for (const cmd of repoEnvironment.installCommands) {
+      const c = String(cmd || "").trim();
+      if (c && !commands.includes(c)) commands.push(c);
+    }
+    // Per-repo shared paths
+    const envSharedPaths = Array.isArray(repoEnvironment.sharedPaths) ? repoEnvironment.sharedPaths : [];
+    for (const p of envSharedPaths) {
+      if (p && !sharedPaths.includes(p)) sharedPaths.push(p);
+    }
+    return {
+      sharedPaths,
+      commands,
+      stacks: (detection?.stacks || []).map((stack) => stack.id),
+    };
+  }
+
   for (const stack of detection?.stacks || []) {
     const stackSharedPaths = policy?.linkSharedPaths
       ? resolveWorktreeSharedPaths(policy, stack.id)
@@ -638,7 +684,7 @@ class WorktreeManager {
     const detection = detectProjectStack(worktreePath);
     if (!detection?.primary) return;
 
-    const plan = buildBootstrapPlan(worktreePath, policy, detection, this.repoRoot);
+    const plan = buildBootstrapPlan(worktreePath, policy, detection, this.repoRoot, readRepoEnvironmentConfig(this.repoRoot));
     ensureWorktreeSharedPaths(this.repoRoot, worktreePath, plan.sharedPaths);
 
     const signature = buildBootstrapSignature(plan);
@@ -1596,6 +1642,7 @@ function bootstrapWorktreeForPath(repoRoot, worktreePath) {
     policy,
     detection,
     resolvedRepoRoot,
+    readRepoEnvironmentConfig(resolvedRepoRoot),
   );
   ensureWorktreeSharedPaths(resolvedRepoRoot, resolvedWorktreePath, plan.sharedPaths);
   for (const command of plan.commands) {

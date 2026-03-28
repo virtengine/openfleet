@@ -1,4 +1,4 @@
-import { execSync, spawn, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync, exec } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -34,6 +34,29 @@ import { isMainThread } from "node:worker_threads";
 if (typeof net.setDefaultAutoSelectFamilyAttemptTimeout === "function") {
   net.setDefaultAutoSelectFamilyAttemptTimeout(2000);
 }
+
+/**
+ * Non-blocking async shell exec — avoids blocking the HTTP server event loop.
+ * Use instead of execSync/spawnSync in timer callbacks and request handlers.
+ * @param {string} cmd - Shell command string
+ * @param {{ cwd?: string, timeout?: number, encoding?: string }} [opts]
+ * @returns {Promise<string>} stdout on success, rejects with Error on non-zero exit
+ */
+function execAsync(cmd, { cwd, timeout = 30_000, encoding = "utf8" } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = exec(cmd, { cwd, timeout, encoding, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+    child.on("close", (code) => {
+      if (code === 0 || code === null) resolve(stdout);
+      else reject(Object.assign(new Error(`exec failed (${code}): ${cmd}`), { stdout, stderr, exitCode: code }));
+    });
+    child.on("error", reject);
+  });
+}
+
 
 import { acquireMonitorLock } from "./maintenance.mjs";
 
@@ -251,6 +274,7 @@ import {
 import { resolvePromptTemplate } from "../agent/agent-prompts.mjs";
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
 import { sanitizeMonitorTailForPrompt as sanitizeMonitorTailForPromptShared } from "../monitor-tail-sanitizer.mjs";
+import { webhookEvents as _githubWebhookEvents } from "../github/github-oauth-portal.mjs";
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 // ── Anomaly signal file path (shared with orchestrator) ──────────────────────
@@ -972,6 +996,8 @@ async function ensureWorkflowAutomationEngine() {
             "template-task-finalization-guard",
             "template-agent-session-monitor",
             "template-github-kanban-sync",
+            "template-recover-blocked-task",
+            "template-recover-blocked-worktrees",
           ],
         });
         if (Number(reconcile?.autoUpdated || 0) > 0) {
@@ -1144,6 +1170,67 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
 
 function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
+}
+
+// ── GitHub webhook → workflow-engine bridge ──────────────────────────────────
+// Forwards GitHub App webhook events from the OAuth portal's EventEmitter into
+// the workflow trigger engine so that trigger.event nodes with
+// eventType: "github:*" fire in real-time instead of requiring polling.
+
+const _GITHUB_BRIDGE_EVENTS = [
+  "github:pull_request",
+  "github:pull_request_review",
+  "github:pull_request_review_comment",
+  "github:check_run",
+  "github:check_suite",
+  "github:push",
+  "github:issue_comment",
+  "github:status",
+  "github:workflow_run",
+  "github:workflow_job",
+  "github:installation",
+  "github:installation_repositories",
+];
+
+let _githubWebhookBridgeSetup = false;
+
+function setupGitHubWebhookBridge() {
+  if (_githubWebhookBridgeSetup) return;
+  _githubWebhookBridgeSetup = true;
+  try {
+    for (const eventType of _GITHUB_BRIDGE_EVENTS) {
+      _githubWebhookEvents.on(eventType, ({ action, payload } = {}) => {
+        const pr = payload?.pull_request;
+        const cr = payload?.check_run;
+        queueWorkflowEvent(eventType, {
+          eventType,
+          action:          action ?? null,
+          repo:            payload?.repository?.full_name ?? null,
+          // PR fields (available in pull_request, review, and review_comment events)
+          prNumber:        pr?.number ?? payload?.number ?? cr?.pull_requests?.[0]?.number ?? null,
+          prTitle:         pr?.title ?? null,
+          prBranch:        pr?.head?.ref ?? cr?.head_branch ?? null,
+          prBaseBranch:    pr?.base?.ref ?? null,
+          prAuthor:        pr?.user?.login ?? null,
+          prUrl:           pr?.html_url ?? null,
+          // Check run fields
+          checkName:       cr?.name ?? null,
+          checkConclusion: cr?.conclusion ?? null,
+          checkStatus:     cr?.status ?? null,
+          // Review fields
+          reviewState:     payload?.review?.state ?? null,
+          // Push / ref fields
+          ref:             payload?.ref ?? null,
+          commitSha:       payload?.after ?? payload?.head_commit?.id ?? null,
+          // Full payload available for complex filter expressions
+          payload,
+        });
+      });
+    }
+    console.log("[workflows] GitHub webhook bridge active — forwarding " + _GITHUB_BRIDGE_EVENTS.length + " event type(s)");
+  } catch (err) {
+    console.warn(`[workflows] GitHub webhook bridge setup failed: ${err?.message || err}`);
+  }
 }
 
 function normalizePromptBody(value) {
@@ -2108,6 +2195,10 @@ workflowAutomationEnabled = parseEnvBoolean(
     ? dedupMs
     : 15_000;
 }
+// Wire real-time GitHub webhook events into the workflow trigger engine.
+// queueWorkflowEvent is a no-op when automation is disabled, so this is safe
+// to call unconditionally at module init time.
+if (!process.env.VITEST) setupGitHubWebhookBridge();
 
 // Initialize runtime accumulator for persistent stats across restarts
 const runtimeStats = initRuntimeAccumulator();
@@ -6228,30 +6319,26 @@ function parseGhJsonResult(raw, fallback = []) {
   }
 }
 
-function readEpicPrInfo(headBranch, baseBranch) {
+async function readEpicPrInfo(headBranch, baseBranch) {
   const slug = getRepoSlugForEpic();
   if (!slug || !ghAvailable()) return null;
   const { headInfo, baseInfo } = summarizeEpicBranch(headBranch, baseBranch);
   try {
     const listCmd = `gh pr list --repo ${slug} --head "${headInfo.name}" --base "${baseInfo.name}" --state all --json number,state,url,mergedAt`;
-    const listResult = execSync(listCmd, {
+    const listResult = (await execAsync(listCmd, {
       cwd: repoRoot,
-      encoding: "utf8",
       timeout: 20_000,
-      stdio: ["pipe", "pipe", "ignore"],
-    }).trim();
+    })).trim();
     const entries = parseGhJsonResult(listResult, []);
     if (!entries.length) return null;
     const pr = entries[0];
     let detail = {};
     try {
       const viewCmd = `gh pr view ${pr.number} --repo ${slug} --json number,state,url,mergeable,mergeable_state,mergeStateStatus,baseRefName,headRefName`;
-      const viewResult = execSync(viewCmd, {
+      const viewResult = (await execAsync(viewCmd, {
         cwd: repoRoot,
-        encoding: "utf8",
         timeout: 20_000,
-        stdio: ["pipe", "pipe", "ignore"],
-      }).trim();
+      })).trim();
       detail = parseGhJsonResult(viewResult, {});
     } catch {
       /* best-effort */
@@ -6293,12 +6380,10 @@ async function readRequiredChecks(prNumber) {
   if (!slug || !ghAvailable() || !prNumber) return [];
   try {
     const checksCmd = `gh pr checks ${prNumber} --repo ${slug} --json name,state --required`;
-    const checksResult = execSync(checksCmd, {
+    const checksResult = (await execAsync(checksCmd, {
       cwd: repoRoot,
-      encoding: "utf8",
       timeout: 20_000,
-      stdio: ["pipe", "pipe", "ignore"],
-    }).trim();
+    })).trim();
     return parseGhJsonResult(checksResult, []);
   } catch {
     return [];
@@ -6690,7 +6775,7 @@ async function checkEpicBranches(reason = "interval") {
       continue;
     }
 
-    let prInfo = readEpicPrInfo(epicBranch, DEFAULT_TARGET_BRANCH);
+    let prInfo = await readEpicPrInfo(epicBranch, DEFAULT_TARGET_BRANCH);
     if (!prInfo || prInfo.state === "CLOSED") {
       const created = await createEpicMergePr(
         epicBranch,
@@ -12208,6 +12293,9 @@ function isHeartbeatMonitorEnabled() {
   return !["0", "false", "no", "off"].includes(raw);
 }
 
+/** @type {ReturnType<typeof createHeartbeatMonitor>|null} */
+let runtimeHeartbeatMonitor = null;
+
 function restartHeartbeatMonitor() {
   runtimeHeartbeatMonitor?.stop?.();
   runtimeHeartbeatMonitor = null;
@@ -13914,16 +14002,16 @@ async function syncDivergedWorktrees() {
 
     try {
       // Fetch remote to update tracking refs
-      execSync("git fetch origin --no-tags", {
-        cwd: wtPath, timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+      await execAsync("git fetch origin --no-tags", {
+        cwd: wtPath, timeout: 30_000,
       });
 
       // Check ahead/behind vs remote tracking ref
       const remoteRef = `origin/${branch}`;
       let remoteExists = false;
       try {
-        execSync(`git rev-parse --verify ${remoteRef}`, {
-          cwd: wtPath, timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
+        await execAsync(`git rev-parse --verify ${remoteRef}`, {
+          cwd: wtPath, timeout: 5_000,
         });
         remoteExists = true;
       } catch { /* branch not yet pushed — nothing to sync */ }
@@ -13931,13 +14019,13 @@ async function syncDivergedWorktrees() {
       if (!remoteExists) continue;
 
       const ahead = parseInt(
-        execSync(`git rev-list --count ${remoteRef}..HEAD`, {
-          cwd: wtPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
-        }).trim(), 10);
+        (await execAsync(`git rev-list --count ${remoteRef}..HEAD`, {
+          cwd: wtPath, timeout: 10_000,
+        })).trim(), 10);
       const behind = parseInt(
-        execSync(`git rev-list --count HEAD..${remoteRef}`, {
-          cwd: wtPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
-        }).trim(), 10);
+        (await execAsync(`git rev-list --count HEAD..${remoteRef}`, {
+          cwd: wtPath, timeout: 10_000,
+        })).trim(), 10);
 
       // Only act on diverged worktrees (behind > 0 AND ahead > 0)
       if (ahead === 0 || behind === 0) continue;
@@ -13949,12 +14037,12 @@ async function syncDivergedWorktrees() {
       // Rebase local onto remote tracking ref to incorporate remote commits
       let rebased = false;
       try {
-        execSync(`git rebase ${remoteRef}`, {
-          cwd: wtPath, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"],
+        await execAsync(`git rebase ${remoteRef}`, {
+          cwd: wtPath, timeout: 60_000,
         });
         rebased = true;
       } catch (rebaseErr) {
-        try { execSync("git rebase --abort", { cwd: wtPath, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
+        try { await execAsync("git rebase --abort", { cwd: wtPath, timeout: 10_000 }); } catch { /* ok */ }
         console.warn(
           `[monitor:worktree-sync] ${branch} rebase conflict — skipping push: ${rebaseErr.message?.slice(0, 200)}`,
         );
@@ -13964,8 +14052,8 @@ async function syncDivergedWorktrees() {
 
       // Safety: refuse to push if HEAD now equals origin/main (would wipe PR changes)
       try {
-        const headSha = execSync("git rev-parse HEAD", { cwd: wtPath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
-        const mainSha = execSync("git rev-parse origin/main", { cwd: wtPath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+        const headSha = (await execAsync("git rev-parse HEAD", { cwd: wtPath, timeout: 5_000 })).trim();
+        const mainSha = (await execAsync("git rev-parse origin/main", { cwd: wtPath, timeout: 5_000 })).trim();
         if (headSha === mainSha) {
           console.warn(`[monitor:worktree-sync] ${branch} HEAD matches origin/main after rebase — aborting push to prevent PR wipe`);
           failed++;
@@ -13975,8 +14063,8 @@ async function syncDivergedWorktrees() {
 
       // Push with --force-with-lease (safe: we just fetched fresh remote refs)
       try {
-        execSync(`git push --force-with-lease --set-upstream origin HEAD`, {
-          cwd: wtPath, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+        await execAsync(`git push --force-with-lease --set-upstream origin HEAD`, {
+          cwd: wtPath, timeout: 30_000,
         });
         console.log(`[monitor:worktree-sync] ${branch} sync-pushed successfully`);
         synced++;
@@ -14240,8 +14328,6 @@ let syncEngine = null;
 let errorDetector = null;
 /** @type {import("../agent/agent-supervisor.mjs").AgentSupervisor|null} */
 let agentSupervisor = null;
-/** @type {ReturnType<typeof createHeartbeatMonitor>|null} */
-let runtimeHeartbeatMonitor = null;
 
 if (!isMonitorTestRuntime) {
   if (workflowAutomationEnabled) {

@@ -20,6 +20,28 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 
 const JS_EXTENSIONS = new Set([".mjs", ".js", ".cjs"]);
 
+function resolveLocalModulePath(basePath) {
+  if (existsSync(basePath)) {
+    return basePath;
+  }
+
+  for (const ext of JS_EXTENSIONS) {
+    const withExt = `${basePath}${ext}`;
+    if (existsSync(withExt)) {
+      return withExt;
+    }
+  }
+
+  for (const ext of JS_EXTENSIONS) {
+    const indexPath = resolve(basePath, `index${ext}`);
+    if (existsSync(indexPath)) {
+      return indexPath;
+    }
+  }
+
+  return basePath;
+}
+
 /**
  * Discover all .mjs source modules via git, excluding test/bench/site/desktop.
  */
@@ -147,7 +169,7 @@ export async function validateImports({ rootDir, files } = {}) {
 
     // ── Local import — resolve relative to referencing module ──
     const refDir = dirname(referencingModule.identifier);
-    const resolved = resolve(refDir, specifier);
+    const resolved = resolveLocalModulePath(resolve(refDir, specifier));
 
     // Already parsed / stubbed
     if (moduleCache.has(resolved)) return moduleCache.get(resolved);

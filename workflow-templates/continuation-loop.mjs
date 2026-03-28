@@ -16,14 +16,17 @@ export const CONTINUATION_LOOP_TEMPLATE = {
   id: "template-continuation-loop",
   name: "Continuation Loop",
   description:
-    "Issue-state continuation loop. Polls externalStatus, keeps driving the " +
-    "agent until terminal state or max turns, and handles stuck sessions " +
-    "with retry/escalate/pause.",
+    "Issue-state continuation loop. Fires automatically for any available task " +
+    "(trigger.task_available), drives the agent until a terminal state or max turns, " +
+    "and handles stuck sessions with retry/escalate/pause. " +
+    "taskId and worktreePath are auto-populated from the picked task — " +
+    "no manual input required.",
   category: "reliability",
   enabled: true,
   recommended: false,
-  trigger: "trigger.manual",
+  trigger: "trigger.task_available",
   variables: {
+    maxParallel: 1,
     taskId: "",
     worktreePath: "",
     maxTurns: 8,
@@ -41,7 +44,13 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     timeoutMs: 1800000,
   },
   nodes: [
-    node("trigger", "trigger.manual", "Start Continuation Loop", {}, { x: 420, y: 60 }),
+    node("trigger", "trigger.task_available", "Pick Available Task", {
+      maxParallel: "{{maxParallel}}",
+      status: "inprogress",
+      statuses: ["inprogress", "todo"],
+      filterCodexScoped: true,
+      filterDrafts: true,
+    }, { x: 420, y: 60 }),
 
     node("init-turn", "action.set_variable", "Initialize Turn Counter", {
       key: "continuationTurn",
@@ -336,9 +345,38 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-03-10T00:00:00Z",
-    templateVersion: "1.2.0",
+    templateVersion: "1.3.0",
     tags: ["continuation", "loop", "linear", "external-status", "stuck-detection"],
     configType: "continuation-loop",
+  },
+};
+
+/**
+ * Manual-trigger variant — use this when you want to target a specific task
+ * by ID rather than letting the loop pick from the queue automatically.
+ * taskId and worktreePath must be supplied at install time.
+ */
+export const CONTINUATION_LOOP_MANUAL_TEMPLATE = {
+  ...CONTINUATION_LOOP_TEMPLATE,
+  id: "template-continuation-loop-manual",
+  name: "Continuation Loop (Manual)",
+  description:
+    "Issue-state continuation loop for a specific task. Provide taskId and " +
+    "worktreePath at install time. Drives the agent until a terminal state or " +
+    "max turns, and handles stuck sessions with retry/escalate/pause.",
+  trigger: "trigger.manual",
+  variables: {
+    ...Object.fromEntries(
+      Object.entries(CONTINUATION_LOOP_TEMPLATE.variables).filter(([key]) => key !== "maxParallel"),
+    ),
+  },
+  nodes: [
+    node("trigger", "trigger.manual", "Start Continuation Loop", {}, { x: 420, y: 60 }),
+    ...CONTINUATION_LOOP_TEMPLATE.nodes.slice(1),
+  ],
+  metadata: {
+    ...CONTINUATION_LOOP_TEMPLATE.metadata,
+    tags: [...CONTINUATION_LOOP_TEMPLATE.metadata.tags, "manual"],
   },
 };
 

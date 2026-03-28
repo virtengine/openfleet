@@ -420,8 +420,27 @@ function resolveNodePorts(node) {
   // Merge explicit outputPorts with configuredOutputs so that type-specific
   // ports (yes/no for conditions, case names for switches, etc.) are always
   // present even when outputPorts was auto-persisted with only "default".
+  // When handler ports exist, refresh stored port type/accepts to avoid stale
+  // port metadata causing false validation failures after handler updates.
   let resolvedOutputs;
-  if (outputPorts.length > 0 && configuredOutputs.length > 0) {
+  if (handlerOutputs.length > 0) {
+    const handlerByName = new Map(handlerOutputs.map((p) => [p.name, p]));
+    const storedBase = outputPorts.length > 0 ? outputPorts : configuredOutputs;
+    if (storedBase.length > 0) {
+      // Refresh stored ports with handler type/accepts where names match; preserve
+      // extra stored ports (dynamic switch/condition outputs not in the handler).
+      const refreshed = storedBase.map((p) => {
+        const hp = handlerByName.get(p.name);
+        return hp ? { ...p, type: hp.type, accepts: hp.accepts } : p;
+      });
+      const storedNames = new Set(storedBase.map((p) => p.name));
+      const extra = configuredOutputs.filter((p) => !storedNames.has(p.name) && !handlerByName.has(p.name));
+      const missingHandlerPorts = handlerOutputs.filter((p) => !storedNames.has(p.name));
+      resolvedOutputs = [...refreshed, ...extra, ...missingHandlerPorts];
+    } else {
+      resolvedOutputs = handlerOutputs;
+    }
+  } else if (outputPorts.length > 0 && configuredOutputs.length > 0) {
     const existingNames = new Set(outputPorts.map((p) => p.name));
     const additional = configuredOutputs.filter((p) => !existingNames.has(p.name));
     resolvedOutputs = [...outputPorts, ...additional];
@@ -429,19 +448,21 @@ function resolveNodePorts(node) {
     resolvedOutputs = outputPorts;
   } else if (configuredOutputs.length > 0) {
     resolvedOutputs = configuredOutputs;
-  } else if (handlerOutputs.length > 0) {
-    resolvedOutputs = handlerOutputs;
   } else {
     resolvedOutputs = [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "output", 0)];
   }
 
+  // For inputs, always prefer the handler definition over persisted ports.
+  // Input ports are purely derived from node type registrations — they are never
+  // authored by users — so stale persisted types must not override fresh handler
+  // definitions (which may have expanded accepts lists in later versions).
   return {
-    inputs: inputPorts.length > 0
-      ? inputPorts
-      : (configuredInputs.length > 0
-        ? configuredInputs
-        : (handlerInputs.length > 0
-          ? handlerInputs
+    inputs: handlerInputs.length > 0
+      ? handlerInputs
+      : (inputPorts.length > 0
+        ? inputPorts
+        : (configuredInputs.length > 0
+          ? configuredInputs
           : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "input", 0)])),
     outputs: resolvedOutputs,
   };

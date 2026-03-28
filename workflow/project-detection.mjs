@@ -37,6 +37,9 @@ const STACK_DEFINITIONS = [
         lint: scripts.lint ? `${run} lint` : "",
         syntaxCheck: "node --check",
         typeCheck: "",
+        install: ["npm install"],
+        start: scripts.dev ? `${run} dev` : scripts.start ? `${pm} start` : "",
+        debug: `node --inspect ${scripts.start ? "$(npm run start 2>/dev/null)" : "index.js"}`,
       };
       if (existsSync(resolve(rootDir, "tsconfig.json"))) {
         cmds.typeCheck = `${pm === "npm" ? "npx" : pm} tsc --noEmit`;
@@ -87,7 +90,11 @@ const STACK_DEFINITIONS = [
     },
     detectCommands(rootDir) {
       const pm = this.detectPackageManager(rootDir);
-      const cmds = { test: "", build: "", lint: "", syntaxCheck: "python -m py_compile", typeCheck: "" };
+      const cmds = { test: "", build: "", lint: "", syntaxCheck: "python -m py_compile", typeCheck: "",
+        install: ["pip install -r requirements.txt"],
+        start: "python -m app",
+        debug: "python -m debugpy --listen 5678 -m app",
+      };
 
       // Test command
       if (existsSync(resolve(rootDir, "pytest.ini")) || existsSync(resolve(rootDir, "conftest.py"))) {
@@ -106,6 +113,16 @@ const STACK_DEFINITIONS = [
       if (pm === "poetry") cmds.build = "poetry build";
       else if (pm === "uv") cmds.build = "uv build";
       else cmds.build = "python -m build";
+
+      if (pm === "poetry") {
+        cmds.install = ["poetry install"];
+        cmds.start = "poetry run python -m app";
+        cmds.debug = "poetry run python -m debugpy --listen 5678 -m app";
+      } else if (pm === "uv") {
+        cmds.install = ["uv sync"];
+        cmds.start = "uv run python -m app";
+        cmds.debug = "uv run python -m debugpy --listen 5678 -m app";
+      }
 
       // Lint / type check
       cmds.lint = pm === "poetry" ? "poetry run ruff check ." : "ruff check .";
@@ -138,6 +155,9 @@ const STACK_DEFINITIONS = [
         lint: "golangci-lint run",
         syntaxCheck: "go vet ./...",
         typeCheck: "go vet ./...",
+        install: ["go mod download"],
+        start: "go run ./...",
+        debug: "dlv debug ./...",
       };
     },
     detectFrameworks(rootDir) {
@@ -164,6 +184,9 @@ const STACK_DEFINITIONS = [
         lint: "cargo clippy -- -D warnings",
         syntaxCheck: "cargo check",
         typeCheck: "cargo check",
+        install: [],
+        start: "cargo run",
+        debug: "rust-gdb target/debug/app",
       };
     },
     detectFrameworks(rootDir) {
@@ -196,6 +219,9 @@ const STACK_DEFINITIONS = [
           lint: `${gradlew} checkstyleMain`,
           syntaxCheck: `${gradlew} compileJava`,
           typeCheck: `${gradlew} compileJava`,
+          install: [`${gradlew} dependencies`],
+          start: `${gradlew} bootRun`,
+          debug: `${gradlew} bootRun --debug-jvm`,
         };
       }
       return {
@@ -204,6 +230,9 @@ const STACK_DEFINITIONS = [
         lint: "mvn checkstyle:check",
         syntaxCheck: "mvn compile",
         typeCheck: "mvn compile",
+        install: ["mvn dependency:resolve"],
+        start: "mvn spring-boot:run",
+        debug: "mvnDebug spring-boot:run",
       };
     },
     detectFrameworks(rootDir) {
@@ -233,6 +262,9 @@ const STACK_DEFINITIONS = [
         lint: "dotnet format --verify-no-changes",
         syntaxCheck: "dotnet build --no-restore",
         typeCheck: "dotnet build --no-restore",
+        install: ["dotnet restore"],
+        start: "dotnet run",
+        debug: "dotnet run",
       };
     },
     detectFrameworks(rootDir) {
@@ -260,6 +292,9 @@ const STACK_DEFINITIONS = [
         lint: "bundle exec rubocop",
         syntaxCheck: "ruby -c",
         typeCheck: "",
+        install: ["bundle install"],
+        start: "bundle exec rails server",
+        debug: "ruby -rdebug app.rb",
       };
     },
     detectFrameworks(rootDir) {
@@ -284,6 +319,9 @@ const STACK_DEFINITIONS = [
         lint: "vendor/bin/phpcs",
         syntaxCheck: "php -l",
         typeCheck: "vendor/bin/phpstan analyse",
+        install: ["composer install"],
+        start: "php -S localhost:8000 -t public",
+        debug: "php -dzend_extension=xdebug.so -S localhost:8000 -t public",
       };
     },
     detectFrameworks(rootDir) {
@@ -303,7 +341,8 @@ const STACK_DEFINITIONS = [
     markers: ["Makefile", "makefile", "GNUmakefile"],
     detectPackageManager() { return "make"; },
     detectCommands(rootDir) {
-      const cmds = { test: "make test", build: "make", lint: "make lint", syntaxCheck: "make check", typeCheck: "" };
+      const cmds = { test: "make test", build: "make", lint: "make lint", syntaxCheck: "make check", typeCheck: "",
+        install: [], start: "make run", debug: "make debug" };
       try {
         // Try all known Makefile variants (case-sensitive filesystems may use different names)
         let mf = "";
@@ -317,6 +356,281 @@ const STACK_DEFINITIONS = [
         }
       } catch {}
       return cmds;
+    },
+    detectFrameworks() { return []; },
+  },
+
+  // ── C ────────────────────────────────────────────────────────────────────
+  {
+    id: "c",
+    label: "C",
+    markers: ["CMakeLists.txt", "Makefile", "makefile", "meson.build"],
+    detectPackageManager(rootDir) {
+      if (existsSync(resolve(rootDir, "CMakeLists.txt"))) return "cmake";
+      if (existsSync(resolve(rootDir, "meson.build"))) return "meson";
+      return "make";
+    },
+    detectCommands(rootDir) {
+      const pm = this.detectPackageManager(rootDir);
+      if (pm === "cmake") {
+        return {
+          test: "cd build && ctest --output-on-failure",
+          build: "cmake --build build --config Release",
+          lint: "clang-format --dry-run --Werror src/*.c",
+          syntaxCheck: "cmake --build build",
+          typeCheck: "",
+          install: ["cmake -B build -DCMAKE_BUILD_TYPE=Debug", "cmake --build build"],
+          start: "./build/app",
+          debug: "gdb ./build/app",
+        };
+      }
+      return {
+        test: "make test",
+        build: "make",
+        lint: "make lint",
+        syntaxCheck: "make",
+        typeCheck: "",
+        install: [],
+        start: "./app",
+        debug: "gdb ./app",
+      };
+    },
+    detectFrameworks() { return []; },
+  },
+
+  // ── C++ ───────────────────────────────────────────────────────────────────
+  {
+    id: "cpp",
+    label: "C++",
+    markers: ["CMakeLists.txt", "Makefile", "makefile", "conanfile.txt", "vcpkg.json"],
+    detectPackageManager(rootDir) {
+      if (existsSync(resolve(rootDir, "CMakeLists.txt"))) return "cmake";
+      if (existsSync(resolve(rootDir, "conanfile.txt")) || existsSync(resolve(rootDir, "conanfile.py"))) return "conan";
+      if (existsSync(resolve(rootDir, "vcpkg.json"))) return "vcpkg";
+      return "make";
+    },
+    detectCommands(rootDir) {
+      const pm = this.detectPackageManager(rootDir);
+      if (pm === "cmake") {
+        return {
+          test: "cd build && ctest --output-on-failure",
+          build: "cmake --build build --config Release",
+          lint: "clang-tidy -p build src/*.cpp",
+          syntaxCheck: "cmake --build build",
+          typeCheck: "",
+          install: ["cmake -B build -DCMAKE_BUILD_TYPE=Debug", "cmake --build build"],
+          start: "./build/app",
+          debug: "gdb ./build/app",
+        };
+      }
+      return {
+        test: "make test",
+        build: "make",
+        lint: "make lint",
+        syntaxCheck: "make",
+        typeCheck: "",
+        install: [],
+        start: "./app",
+        debug: "gdb ./app",
+      };
+    },
+    detectFrameworks() { return []; },
+  },
+
+  // ── Swift ──────────────────────────────────────────────────────────────────
+  {
+    id: "swift",
+    label: "Swift",
+    markers: ["Package.swift"],
+    detectPackageManager() { return "spm"; },
+    detectCommands() {
+      return {
+        test: "swift test",
+        build: "swift build -c release",
+        lint: "swiftlint lint",
+        syntaxCheck: "swift build",
+        typeCheck: "swift build",
+        install: ["swift package resolve"],
+        start: "swift run",
+        debug: "lldb .build/debug/app",
+      };
+    },
+    detectFrameworks() { return []; },
+  },
+
+  // ── Kotlin ────────────────────────────────────────────────────────────────
+  {
+    id: "kotlin",
+    label: "Kotlin",
+    markers: ["build.gradle.kts", "settings.gradle.kts"],
+    detectPackageManager(rootDir) {
+      return existsSync(resolve(rootDir, "gradlew")) ? "gradle" : "gradle";
+    },
+    detectCommands(rootDir) {
+      const gradlew = existsSync(resolve(rootDir, "gradlew")) ? "./gradlew" : "gradle";
+      return {
+        test: `${gradlew} test`,
+        build: `${gradlew} build -x test`,
+        lint: `${gradlew} ktlintCheck`,
+        syntaxCheck: `${gradlew} compileKotlin`,
+        typeCheck: `${gradlew} compileKotlin`,
+        install: [`${gradlew} dependencies`],
+        start: `${gradlew} run`,
+        debug: `${gradlew} run --debug-jvm`,
+      };
+    },
+    detectFrameworks() { return []; },
+  },
+
+  // ── Dart / Flutter ────────────────────────────────────────────────────────
+  {
+    id: "dart",
+    label: "Dart / Flutter",
+    markers: ["pubspec.yaml"],
+    detectPackageManager(rootDir) {
+      try {
+        const pubspec = readFileSync(resolve(rootDir, "pubspec.yaml"), "utf8");
+        if (pubspec.includes("flutter:")) return "flutter";
+      } catch {}
+      return "dart";
+    },
+    detectCommands(rootDir) {
+      const pm = this.detectPackageManager(rootDir);
+      if (pm === "flutter") {
+        return {
+          test: "flutter test",
+          build: "flutter build apk",
+          lint: "flutter analyze",
+          syntaxCheck: "flutter analyze",
+          typeCheck: "flutter analyze",
+          install: ["flutter pub get"],
+          start: "flutter run",
+          debug: "flutter run --debug",
+        };
+      }
+      return {
+        test: "dart test",
+        build: "dart compile exe bin/main.dart",
+        lint: "dart analyze",
+        syntaxCheck: "dart analyze",
+        typeCheck: "dart analyze",
+        install: ["dart pub get"],
+        start: "dart run",
+        debug: "dart --enable-vm-service run",
+      };
+    },
+    detectFrameworks() { return []; },
+  },
+
+  // ── Elixir ────────────────────────────────────────────────────────────────
+  {
+    id: "elixir",
+    label: "Elixir",
+    markers: ["mix.exs"],
+    detectPackageManager() { return "mix"; },
+    detectCommands(rootDir) {
+      const isPhoenix = existsSync(resolve(rootDir, "config", "config.exs")) &&
+        (() => {
+          try { return readFileSync(resolve(rootDir, "mix.exs"), "utf8").includes("phoenix"); } catch { return false; }
+        })();
+      return {
+        test: "mix test",
+        build: "mix compile",
+        lint: "mix credo --strict",
+        syntaxCheck: "mix compile",
+        typeCheck: "mix dialyzer",
+        install: ["mix deps.get", "mix compile"],
+        start: isPhoenix ? "mix phx.server" : "mix run",
+        debug: "iex -S mix",
+      };
+    },
+    detectFrameworks(rootDir) {
+      try {
+        const mix = readFileSync(resolve(rootDir, "mix.exs"), "utf8");
+        if (mix.includes("phoenix")) return ["phoenix"];
+        if (mix.includes("nerves")) return ["nerves"];
+      } catch {}
+      return [];
+    },
+  },
+
+  // ── Zig ───────────────────────────────────────────────────────────────────
+  {
+    id: "zig",
+    label: "Zig",
+    markers: ["build.zig", "build.zig.zon"],
+    detectPackageManager() { return "zig"; },
+    detectCommands() {
+      return {
+        test: "zig build test",
+        build: "zig build -Doptimize=ReleaseFast",
+        lint: "zig fmt --check src/",
+        syntaxCheck: "zig build",
+        typeCheck: "zig build",
+        install: [],
+        start: "zig build run",
+        debug: "zig build run",
+      };
+    },
+    detectFrameworks() { return []; },
+  },
+
+  // ── Haskell ───────────────────────────────────────────────────────────────
+  {
+    id: "haskell",
+    label: "Haskell",
+    markers: ["stack.yaml", "cabal.project", "*.cabal"],
+    detectPackageManager(rootDir) {
+      return existsSync(resolve(rootDir, "stack.yaml")) ? "stack" : "cabal";
+    },
+    detectCommands(rootDir) {
+      const pm = this.detectPackageManager(rootDir);
+      if (pm === "stack") {
+        return {
+          test: "stack test",
+          build: "stack build",
+          lint: "hlint src",
+          syntaxCheck: "stack build",
+          typeCheck: "stack build",
+          install: ["stack setup", "stack build --only-dependencies"],
+          start: "stack run",
+          debug: "stack ghci",
+        };
+      }
+      return {
+        test: "cabal test",
+        build: "cabal build",
+        lint: "hlint src",
+        syntaxCheck: "cabal build",
+        typeCheck: "cabal build",
+        install: ["cabal update", "cabal install --only-dependencies"],
+        start: "cabal run",
+        debug: "cabal repl",
+      };
+    },
+    detectFrameworks() { return []; },
+  },
+
+  // ── R ─────────────────────────────────────────────────────────────────────
+  {
+    id: "r",
+    label: "R",
+    markers: ["DESCRIPTION", "renv.lock", ".Rprofile"],
+    detectPackageManager(rootDir) {
+      return existsSync(resolve(rootDir, "renv.lock")) ? "renv" : "r";
+    },
+    detectCommands(rootDir) {
+      const pm = this.detectPackageManager(rootDir);
+      return {
+        test: "Rscript -e 'testthat::test_dir(\"tests\")'",
+        build: "R CMD INSTALL .",
+        lint: "Rscript -e 'lintr::lint_dir(\".\")'",
+        syntaxCheck: "R CMD check --no-tests .",
+        typeCheck: "",
+        install: pm === "renv" ? ["Rscript -e 'renv::restore()'"] : ["Rscript -e 'install.packages(\".\", dependencies=TRUE)'"],
+        start: "Rscript app.R",
+        debug: "Rscript -e 'source(\"app.R\")'",
+      };
     },
     detectFrameworks() { return []; },
   },
@@ -472,14 +786,17 @@ function detectPostEditCommand(rootDir, commands = {}, options = {}) {
  * @property {string[]} frameworks   - Detected frameworks
  *
  * @typedef {object} CommandMap
- * @property {string} test          - Test command
- * @property {string} build         - Build command
- * @property {string} lint          - Lint command
- * @property {string} syntaxCheck   - Syntax/compile check command
- * @property {string} [typeCheck]   - Type-check command
- * @property {string} [qualityGate] - Pre-push / pre-PR validation command
- * @property {string} [postEdit]    - Quick validation command to run after edits
- * @property {string} [testFramework] - Detected test framework name
+ * @property {string}   test          - Test command
+ * @property {string}   build         - Build command
+ * @property {string}   lint          - Lint command
+ * @property {string}   syntaxCheck   - Syntax/compile check command
+ * @property {string}   [typeCheck]   - Type-check command
+ * @property {string}   [qualityGate] - Pre-push / pre-PR validation command
+ * @property {string}   [postEdit]    - Quick validation command to run after edits
+ * @property {string}   [testFramework] - Detected test framework name
+ * @property {string[]} [install]     - Dependency install commands (ordered)
+ * @property {string}   [start]       - Dev-server / process start command
+ * @property {string}   [debug]       - Debug session launch command
  */
 export function detectProjectStack(rootDir) {
   if (!rootDir || !existsSync(rootDir)) {
@@ -527,22 +844,28 @@ export function detectProjectStack(rootDir) {
  */
 export function getCommandPresets(detected) {
   const presets = {
+    install: [],
+    start: [],
     test: [],
     build: [],
     lint: [],
     syntaxCheck: [],
     qualityGate: [],
+    debug: [],
   };
 
   // If we have a detected stack, put its commands first as "Detected" options
   if (detected?.primary) {
     const cmds = detected.primary.commands;
     const label = `${detected.primary.label} (detected)`;
+    if (cmds.install?.length) presets.install.push({ label: `${label}: ${cmds.install[0]}`, value: cmds.install.join(" && "), detected: true });
+    if (cmds.start) presets.start.push({ label: `${label}: ${cmds.start}`, value: cmds.start, detected: true });
     if (cmds.test) presets.test.push({ label: `${label}: ${cmds.test}`, value: cmds.test, detected: true });
     if (cmds.build) presets.build.push({ label: `${label}: ${cmds.build}`, value: cmds.build, detected: true });
     if (cmds.lint) presets.lint.push({ label: `${label}: ${cmds.lint}`, value: cmds.lint, detected: true });
     if (cmds.syntaxCheck) presets.syntaxCheck.push({ label: `${label}: ${cmds.syntaxCheck}`, value: cmds.syntaxCheck, detected: true });
     if (cmds.qualityGate) presets.qualityGate.push({ label: `${label}: ${cmds.qualityGate}`, value: cmds.qualityGate, detected: true });
+    if (cmds.debug) presets.debug.push({ label: `${label}: ${cmds.debug}`, value: cmds.debug, detected: true });
   }
 
   // Add additional detected stacks (monorepo)
@@ -550,6 +873,8 @@ export function getCommandPresets(detected) {
     for (const stack of detected.stacks.slice(1)) {
       const cmds = stack.commands;
       const label = `${stack.label} (detected)`;
+      if (cmds.install?.length) presets.install.push({ label: `${label}: ${cmds.install[0]}`, value: cmds.install.join(" && "), detected: true });
+      if (cmds.start) presets.start.push({ label: `${label}: ${cmds.start}`, value: cmds.start, detected: true });
       if (cmds.test) presets.test.push({ label: `${label}: ${cmds.test}`, value: cmds.test, detected: true });
       if (cmds.build) presets.build.push({ label: `${label}: ${cmds.build}`, value: cmds.build, detected: true });
       if (cmds.lint) presets.lint.push({ label: `${label}: ${cmds.lint}`, value: cmds.lint, detected: true });
@@ -560,6 +885,53 @@ export function getCommandPresets(detected) {
 
   // Add universal presets from all known stacks
   const universalPresets = {
+    install: [
+      { label: "Node.js — npm install", value: "npm install" },
+      { label: "Node.js — yarn install", value: "yarn install" },
+      { label: "Node.js — pnpm install", value: "pnpm install" },
+      { label: "Python — pip install -r requirements.txt", value: "pip install -r requirements.txt" },
+      { label: "Python — poetry install", value: "poetry install" },
+      { label: "Python — uv sync", value: "uv sync" },
+      { label: "Go — go mod download", value: "go mod download" },
+      { label: "Rust — (no install needed)", value: "" },
+      { label: "Java/Maven — mvn dependency:resolve", value: "mvn dependency:resolve" },
+      { label: "Java/Gradle — ./gradlew dependencies", value: "./gradlew dependencies" },
+      { label: ".NET — dotnet restore", value: "dotnet restore" },
+      { label: "Ruby — bundle install", value: "bundle install" },
+      { label: "PHP — composer install", value: "composer install" },
+      { label: "Swift — swift package resolve", value: "swift package resolve" },
+      { label: "Dart/Flutter — flutter pub get", value: "flutter pub get" },
+      { label: "Elixir — mix deps.get", value: "mix deps.get" },
+    ],
+    start: [
+      { label: "Node.js — npm start", value: "npm start" },
+      { label: "Node.js — npm run dev", value: "npm run dev" },
+      { label: "Python — python -m app", value: "python -m app" },
+      { label: "Python — uvicorn main:app --reload", value: "uvicorn main:app --reload" },
+      { label: "Django — python manage.py runserver", value: "python manage.py runserver" },
+      { label: "Go — go run ./...", value: "go run ./..." },
+      { label: "Rust — cargo run", value: "cargo run" },
+      { label: "Java/Spring — mvn spring-boot:run", value: "mvn spring-boot:run" },
+      { label: "Java/Gradle — ./gradlew bootRun", value: "./gradlew bootRun" },
+      { label: ".NET — dotnet run", value: "dotnet run" },
+      { label: "Ruby/Rails — bin/rails server", value: "bin/rails server" },
+      { label: "PHP — php -S localhost:8000", value: "php -S localhost:8000 -t public" },
+      { label: "Swift — swift run", value: "swift run" },
+      { label: "Elixir/Phoenix — mix phx.server", value: "mix phx.server" },
+      { label: "Flutter — flutter run", value: "flutter run" },
+    ],
+    debug: [
+      { label: "Node.js — node --inspect", value: "node --inspect index.js" },
+      { label: "Node.js — node --inspect-brk", value: "node --inspect-brk index.js" },
+      { label: "Python — debugpy", value: "python -m debugpy --listen 5678 -m app" },
+      { label: "Go — dlv debug", value: "dlv debug ./..." },
+      { label: "Rust — rust-gdb", value: "rust-gdb target/debug/app" },
+      { label: "Java — remote debug port 5005", value: "./gradlew bootRun --debug-jvm" },
+      { label: ".NET — dotnet run", value: "dotnet run" },
+      { label: "C/C++ — gdb", value: "gdb ./build/app" },
+      { label: "Swift — lldb", value: "lldb .build/debug/app" },
+      { label: "Elixir — iex -S mix", value: "iex -S mix" },
+    ],
     test: [
       { label: "Node.js — npm test", value: "npm test" },
       { label: "Node.js — yarn test", value: "yarn test" },
@@ -575,6 +947,14 @@ export function getCommandPresets(detected) {
       { label: "Ruby — bundle exec rspec", value: "bundle exec rspec" },
       { label: "PHP — vendor/bin/phpunit", value: "vendor/bin/phpunit" },
       { label: "Make — make test", value: "make test" },
+      { label: "Swift — swift test", value: "swift test" },
+      { label: "Kotlin/Gradle — ./gradlew test", value: "./gradlew test" },
+      { label: "Dart — dart test", value: "dart test" },
+      { label: "Flutter — flutter test", value: "flutter test" },
+      { label: "Elixir — mix test", value: "mix test" },
+      { label: "Zig — zig build test", value: "zig build test" },
+      { label: "Haskell/Stack — stack test", value: "stack test" },
+      { label: "R — Rscript testthat", value: "Rscript -e 'testthat::test_dir(\"tests\")'" },
     ],
     build: [
       { label: "Node.js — npm run build", value: "npm run build" },
@@ -584,11 +964,16 @@ export function getCommandPresets(detected) {
       { label: "Python — poetry build", value: "poetry build" },
       { label: "Go — go build ./...", value: "go build ./..." },
       { label: "Rust — cargo build", value: "cargo build" },
+      { label: "Rust — cargo build --release", value: "cargo build --release" },
       { label: "Java/Maven — mvn package -DskipTests", value: "mvn package -DskipTests" },
       { label: "Java/Gradle — ./gradlew build", value: "./gradlew build" },
       { label: ".NET — dotnet build", value: "dotnet build" },
       { label: "Ruby — bundle exec rake build", value: "bundle exec rake build" },
       { label: "PHP — composer install --no-dev", value: "composer install --no-dev" },
+      { label: "C++/CMake — cmake --build build", value: "cmake --build build --config Release" },
+      { label: "C++/Make — make", value: "make" },
+      { label: "Swift — swift build", value: "swift build -c release" },
+      { label: "Zig — zig build", value: "zig build -Doptimize=ReleaseFast" },
       { label: "Make — make", value: "make" },
     ],
     lint: [
@@ -603,6 +988,10 @@ export function getCommandPresets(detected) {
       { label: ".NET — dotnet format --verify-no-changes", value: "dotnet format --verify-no-changes" },
       { label: "Ruby — bundle exec rubocop", value: "bundle exec rubocop" },
       { label: "PHP — vendor/bin/phpcs", value: "vendor/bin/phpcs" },
+      { label: "Swift — swiftlint lint", value: "swiftlint lint" },
+      { label: "Kotlin — ./gradlew ktlintCheck", value: "./gradlew ktlintCheck" },
+      { label: "Elixir — mix credo --strict", value: "mix credo --strict" },
+      { label: "Zig — zig fmt --check src/", value: "zig fmt --check src/" },
       { label: "Make — make lint", value: "make lint" },
     ],
     syntaxCheck: [
@@ -616,6 +1005,9 @@ export function getCommandPresets(detected) {
       { label: ".NET — dotnet build --no-restore", value: "dotnet build --no-restore" },
       { label: "Ruby — ruby -c", value: "ruby -c" },
       { label: "PHP — php -l", value: "php -l" },
+      { label: "Swift — swift build", value: "swift build" },
+      { label: "Elixir — mix compile", value: "mix compile" },
+      { label: "Zig — zig build", value: "zig build" },
     ],
     qualityGate: [
       { label: "Node.js — npm run prepush:check", value: "npm run prepush:check" },
@@ -643,19 +1035,25 @@ export function getCommandPresets(detected) {
  * Resolve an "auto" command placeholder to the detected command.
  * If the value isn't "auto", returns it unchanged.
  *
- * @param {string} value - The command value (may be "auto" or an actual command)
- * @param {string} commandType - One of "test", "build", "lint", "syntaxCheck", "qualityGate"
+ * @param {string|string[]} value - The command value (may be "auto" or an actual command/array)
+ * @param {string} commandType - One of "test", "build", "lint", "syntaxCheck", "qualityGate", "install", "start", "debug"
  * @param {string} rootDir - Project root for detection
- * @returns {string} The resolved command
+ * @returns {string|string[]} The resolved command or array of commands
  */
 export function resolveAutoCommand(value, commandType, rootDir) {
-  if (!value || value.toLowerCase().trim() !== "auto") return value;
+  const isArrayType = commandType === "install";
+  const str = Array.isArray(value) ? value.join(" && ") : String(value || "");
+  if (!str || str.toLowerCase().trim() !== "auto") return value;
   const detected = detectProjectStack(rootDir);
-  return detected.commands?.[commandType] || "";
+  const resolved = detected.commands?.[commandType];
+  if (!resolved) return isArrayType ? [] : "";
+  if (isArrayType) return Array.isArray(resolved) ? resolved : [resolved];
+  return Array.isArray(resolved) ? resolved.join(" && ") : resolved;
 }
 
 function emptyCommands() {
-  return { test: "", build: "", lint: "", syntaxCheck: "", typeCheck: "", qualityGate: "" };
+  return { test: "", build: "", lint: "", syntaxCheck: "", typeCheck: "", qualityGate: "",
+    install: [], start: "", debug: "" };
 }
 
 // Re-export the stack definitions for introspection
