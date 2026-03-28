@@ -164,6 +164,56 @@ function buildEmptySnapshot() {
   };
 }
 
+function hasIgnorableCliStderr(text) {
+  const stderrText = String(text || "").trim();
+  if (!stderrText) return false;
+  return isIgnorableModelDiscoveryError({
+    message: stderrText,
+    stderr: stderrText,
+  });
+}
+
+function hasIgnorableModelDiscoverySignal(err) {
+  if (isIgnorableModelDiscoveryError(err)) return true;
+
+  const stderrText = String(err?.stderr || "").trim();
+  const stdoutText = String(err?.stdout || "").trim();
+  return (
+    !stdoutText
+    && !!stderrText
+    && isIgnorableModelDiscoveryError({
+      message: stderrText,
+      stderr: stderrText,
+      status: err?.status,
+      response: err?.response,
+      cause: err?.cause,
+    })
+  );
+}
+
+function hasIgnorableModelDiscoveryText(stdout = "", stderr = "") {
+  const stdoutText = String(stdout || "").trim();
+  const stderrText = String(stderr || "").trim();
+  if (!stderrText) return false;
+
+  return isIgnorableModelDiscoveryError({
+    message: !stdoutText ? stderrText : "",
+    stdout: stdoutText,
+    stderr: stderrText,
+  });
+}
+
+function extractRecoverySnapshot(err) {
+  const payload = err?.response?.data;
+  if (!payload || typeof payload !== "object") return null;
+  try {
+    const snapshot = normalizeSDKProviders(payload);
+    return isEmptySnapshot(snapshot) ? null : snapshot;
+  } catch {
+    return null;
+  }
+}
+
 function isEmptySnapshot(snapshot) {
   return Boolean(
     snapshot
@@ -238,16 +288,12 @@ async function invokeProviderEndpoint(endpoint, requestOptions, context = null) 
       return await callEndpoint(requestOptions);
     } catch (err) {
       if (!shouldRetryProviderQueryWithoutDirectory(err)) {
-        return null;
+        throw err;
       }
     }
   }
 
-  try {
-    return await callEndpoint();
-  } catch {
-    return null;
-  }
+  return await callEndpoint();
 }
 
 function normalizeProviderListData(data) {
@@ -316,28 +362,38 @@ async function discoverViaSDK(existingClient = null) {
       ? { query: { directory } }
       : undefined;
 
-    // Fetch provider list + auth methods in parallel
-    const [providerRes, authRes] = await Promise.all([
-      invokeProviderEndpoint(client?.provider?.list, requestOptions, client?.provider),
-      invokeProviderEndpoint(client?.provider?.auth, requestOptions, client?.provider),
-    ]);
+    const providerPromise = invokeProviderEndpoint(client?.provider?.list, requestOptions, client?.provider);
+    const authPromise = invokeProviderEndpoint(client?.provider?.auth, requestOptions, client?.provider);
+    const [providerResult, authResult] = await Promise.allSettled([providerPromise, authPromise]);
 
-    const normalizedProviderData = normalizeProviderListData(providerRes?.data);
-    if (!normalizedProviderData) return null;
+    const normalizedProviderData = normalizeProviderListData(
+      providerResult.status === "fulfilled"
+        ? providerResult.value?.data
+        : providerResult.reason?.response?.data || providerResult.reason?.cause?.response?.data,
+    );
+    if (!normalizedProviderData) {
+      const providerError = providerResult.status === "rejected" ? providerResult.reason : null;
+      const recoveredSnapshot = extractRecoverySnapshot(providerError);
+      if (recoveredSnapshot) {
+        console.warn("[opencode-providers] recovering provider metadata from SDK error payload");
+        return recoveredSnapshot;
+      }
+      if (providerError) {
+        console.warn(`[opencode-providers] SDK discovery failed: ${providerError.message}`);
+      }
+      return null;
+    }
 
-    const authMethods = authRes?.data || {};
+    if (providerResult.status === "rejected") {
+      console.warn("[opencode-providers] recovering provider metadata from SDK error payload");
+    }
+
+    const authMethods = authResult.status === "fulfilled"
+      ? (authResult.value?.data || {})
+      : {};
     return buildSnapshotFromNormalizedProviderData(normalizedProviderData, authMethods);
   } catch (err) {
     console.warn(`[opencode-providers] SDK discovery failed: ${err.message}`);
-
-    const fallbackProviderData = normalizeProviderListData(
-      err?.response?.data || err?.cause?.response?.data,
-    );
-    if (fallbackProviderData) {
-      console.warn("[opencode-providers] recovering provider metadata from SDK error payload");
-      return buildSnapshotFromNormalizedProviderData(fallbackProviderData, {});
-    }
-
     return null;
   }
 }
@@ -377,7 +433,7 @@ async function execOpencode(args, execOpts = {}) {
     const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
-    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+    if (!normalized.stdout.trim() && normalized.stderr.trim() && !hasIgnorableModelDiscoveryText(normalized.stdout, normalized.stderr)) {
       const err = new Error(normalized.stderr.trim());
       err.stderr = normalized.stderr;
       throw err;
@@ -389,7 +445,7 @@ async function execOpencode(args, execOpts = {}) {
     const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
-    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+    if (!normalized.stdout.trim() && normalized.stderr.trim() && !hasIgnorableModelDiscoveryText(normalized.stdout, normalized.stderr)) {
       const err = new Error(normalized.stderr.trim());
       err.stderr = normalized.stderr;
       throw err;
@@ -400,7 +456,7 @@ async function execOpencode(args, execOpts = {}) {
     const normalized = typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
-    if (!normalized.stdout.trim() && normalized.stderr.trim()) {
+    if (!normalized.stdout.trim() && normalized.stderr.trim() && !hasIgnorableModelDiscoveryText(normalized.stdout, normalized.stderr)) {
       const err = new Error(normalized.stderr.trim());
       err.stderr = normalized.stderr;
       throw err;
@@ -580,7 +636,7 @@ async function discoverViaCLI() {
       // fall through to the original verbose failure below
     }
 
-    if (isIgnorableModelDiscoveryError(err)) {
+    if (hasIgnorableModelDiscoverySignal(err)) {
       console.warn(
         `[opencode-providers] CLI model discovery hit ignorable provider error with no basic fallback data: ${err.message}` ,
       );
@@ -636,7 +692,7 @@ async function discoverAllViaCLI() {
       // fall through to the original verbose failure below
     }
 
-    if (isIgnorableModelDiscoveryError(err)) {
+    if (hasIgnorableModelDiscoverySignal(err)) {
       console.warn(
         `[opencode-providers] catalog discovery hit ignorable provider error with no basic fallback data: ${err.message}`,
       );
@@ -670,7 +726,24 @@ export async function discoverProviders(opts = {}) {
   }
 
   // Try SDK first (requires running server)
-  let snapshot = await discoverViaSDK(client);
+  let snapshot = null;
+  try {
+    snapshot = await discoverViaSDK(client);
+  } catch (err) {
+    const recoveredSnapshot = extractRecoverySnapshot(err);
+    if (recoveredSnapshot) {
+      snapshot = recoveredSnapshot;
+    }
+    if (!hasIgnorableModelDiscoverySignal(err)) {
+      throw err;
+    }
+    if (!recoveredSnapshot) {
+      console.warn(
+        `[opencode-providers] SDK discovery hit ignorable provider error; falling back to CLI: ${err.message}`,
+      );
+      snapshot = buildEmptySnapshot();
+    }
+  }
 
   const sdkSnapshotWasEmpty = isEmptySnapshot(snapshot);
 
@@ -810,6 +883,10 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
+
+
+
 
 
 
