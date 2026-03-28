@@ -53,6 +53,60 @@ import {
 } from "./transforms.mjs";
 import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
+
+/**
+ * Non-blocking async replacement for execFileSync / execSync.
+ * Uses spawn internally so the Node.js event loop is never stalled.
+ * Resolves with stdout string; rejects with an error shaped like execFileSync's
+ * errors (err.stdout, err.stderr, err.status, err.exitCode).
+ */
+function spawnAsync(command, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const MAX_BUFFER = 10 * 1024 * 1024;
+    const captureOutput = opts.stdio !== "inherit";
+    const child = spawn(command, args || [], {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: captureOutput ? "pipe" : "inherit",
+      shell: opts.shell || false,
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    if (captureOutput) {
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+        if (stdout.length > MAX_BUFFER) stdout = stdout.slice(stdout.length - MAX_BUFFER);
+      });
+      child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    }
+    let timedOut = false;
+    const timer = opts.timeout > 0 ? setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch {}
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
+    }, opts.timeout) : null;
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        const err = new Error(`Command timed out after ${opts.timeout}ms: ${command}`);
+        err.killed = true; err.stdout = stdout; err.stderr = stderr; err.status = null;
+        return reject(err);
+      }
+      if (code !== 0) {
+        const err = new Error(`Command failed with exit code ${code}`);
+        err.stdout = stdout; err.stderr = stderr; err.status = code; err.exitCode = code;
+        return reject(err);
+      }
+      resolve(stdout);
+    });
+    child.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      err.stdout = stdout; err.stderr = stderr;
+      reject(err);
+    });
+  });
+}
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
@@ -1752,23 +1806,13 @@ registerNodeType("action.run_command", {
     }
     ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
     try {
-      const output = usedArgv
-        ? execFileSync(command, commandArgs, {
-            cwd,
-            timeout,
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-            env: commandEnv,
-          })
-        : execSync(command, {
-            cwd,
-            timeout,
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-            env: commandEnv,
-          });
+      const output = await spawnAsync(command, usedArgv ? commandArgs : [], {
+        cwd,
+        timeout,
+        stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
+        env: commandEnv,
+        shell: !usedArgv,
+      });
       ctx.log(node.id, `Command succeeded`);
       return { success: true, output: parseOutput(output), exitCode: 0 };
     } catch (err) {
@@ -5697,6 +5741,29 @@ registerNodeType("action.acquire_worktree", {
         // Reuse existing worktree — pull latest base if possible
         let recreatedManagedWorktree = invalidateBrokenReusableWorktree(worktreePath, "pre-reuse");
         if (!recreatedManagedWorktree && existsSync(worktreePath)) {
+          try {
+            // Discard any dirty tracked files before rebasing so the pull
+            // doesn't fail with "your local changes would be overwritten".
+            const dirty = execGitArgsSync(["status", "--porcelain"], {
+              cwd: worktreePath, encoding: "utf8",
+              timeout: 5000,
+              stdio: ["ignore", "pipe", "pipe"],
+            }).trim();
+            if (dirty) {
+              execGitArgsSync(["reset", "--hard", "HEAD"], {
+                cwd: worktreePath, encoding: "utf8",
+                timeout: 10000,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+              execGitArgsSync(["clean", "-fd"], {
+                cwd: worktreePath, encoding: "utf8",
+                timeout: 10000,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+            }
+          } catch {
+            /* best-effort — dirty state handled by post-pull invalidity check below */
+          }
           try {
             execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
               cwd: worktreePath, encoding: "utf8",

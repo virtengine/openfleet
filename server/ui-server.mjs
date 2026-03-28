@@ -1,4 +1,6 @@
 import { execSync, spawn, spawnSync, exec } from "node:child_process";
+import { Worker } from "node:worker_threads";
+import { randomUUID as _genCallId } from "node:crypto";
 import * as nodeCrypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile, readdirSync, statSync } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -1282,6 +1284,190 @@ function evaluateVoiceToolPolicy({
   return { allow: true, statusCode: 200, message: "ok" };
 }
 
+// ── Workflow engine Worker-thread proxy ────────────────────────────────────────
+/**
+ * WorkflowEngineProxy hosts the WorkflowEngine in a dedicated Worker thread so
+ * that heavy node execution (execFileSync replacements, agent launches, etc.)
+ * can never block the HTTP / WebSocket event loop in the UI server process.
+ *
+ * The proxy mirrors the WorkflowEngine EventEmitter interface so that
+ * attachWorkflowEngineLiveBridge() works without modification.
+ */
+class WorkflowEngineProxy {
+  constructor() {
+    this._worker = null;
+    this._pending = new Map();  // callId → { resolve, reject }
+    this._listeners = new Map(); // eventName → Set<handler>
+    this._ready = false;
+    this._initPromise = null;
+  }
+
+  /** Start the Worker thread and wait for "ready". */
+  _start(cfg = {}) {
+    if (this._initPromise) return this._initPromise;
+    this._initPromise = new Promise((resolve, reject) => {
+      const workerPath = new URL("./workflow-engine-worker.mjs", import.meta.url).href;
+      this._worker = new Worker(workerPath, {
+        workerData: cfg,
+        /* stdout/stderr inherit so worker logs appear in the same console */
+      });
+
+      const onReady = (msg) => {
+        if (!msg || msg.type !== "ready") return;
+        this._worker.off("message", onReady);
+        this._ready = true;
+        resolve();
+      };
+      this._worker.on("message", onReady);
+      this._worker.once("error", reject);
+
+      this._worker.on("message", (msg) => this._onMessage(msg));
+      this._worker.on("error", (err) => {
+        console.error("[wf-worker] worker thread error:", err.message);
+      });
+      this._worker.on("exit", (code) => {
+        if (code !== 0) console.warn(`[wf-worker] worker exited with code ${code}`);
+        this._ready = false;
+      });
+
+      /* Send init after attaching all listeners */
+      this._worker.postMessage({ type: "init", workerData: cfg });
+    });
+    return this._initPromise;
+  }
+
+  _onMessage(msg) {
+    if (!msg || typeof msg.type !== "string") return;
+
+    if (msg.type === "result" || msg.type === "error") {
+      const p = this._pending.get(msg.callId);
+      if (!p) return;
+      this._pending.delete(msg.callId);
+      if (msg.type === "error") {
+        const err = new Error(msg.error || "workflow engine error");
+        if (msg.stack) err.stack = msg.stack;
+        p.reject(err);
+      } else {
+        p.resolve(msg.result);
+      }
+      return;
+    }
+
+    if (msg.type === "event") {
+      const handlers = this._listeners.get(msg.eventName);
+      if (handlers) {
+        for (const h of handlers) {
+          try { h(msg.payload); } catch { /* best-effort */ }
+        }
+      }
+      return;
+    }
+
+    if (msg.type === "svc-call") {
+      /* Service call from worker → execute in main thread and respond */
+      this._dispatchServiceCall(msg.callId, msg.method, msg.args || []);
+    }
+  }
+
+  async _dispatchServiceCall(callId, method, args) {
+    try {
+      const result = await this._executeService(method, args);
+      this._worker.postMessage({ type: "svc-res", callId, result });
+    } catch (err) {
+      this._worker.postMessage({ type: "svc-res", callId, error: err.message, code: err.code });
+    }
+  }
+
+  async _executeService(method, args) {
+    /* Dispatch to in-process service functions */
+    const [svc, fn] = method.split(".");
+    switch (svc) {
+      case "agentPool": {
+        if (fn === "launchEphemeralThread") return launchEphemeralThread(...args);
+        if (fn === "launchOrResumeThread")  return launchOrResumeThread(...args);
+        if (fn === "execWithRetry")         return execWithRetry(args[0], () => Promise.resolve(), args[2] || {});
+        if (fn === "continueSession") {
+          const [sessionId, prompt, opts = {}] = args;
+          return launchEphemeralThread(prompt, opts.cwd || process.cwd(), opts.timeout || 3600000, { resumeThreadId: sessionId, sdk: opts.sdk });
+        }
+        if (fn === "killSession") {
+          try { invalidateThread(args[0]); return true; } catch { return false; }
+        }
+        break;
+      }
+      case "telegram": {
+        if (fn === "sendMessage") return sendWorkflowTelegramMessage(args[0], args[1], args[2] || {});
+        break;
+      }
+      case "kanban": {
+        const adapter = getKanbanAdapter();
+        if (!adapter) throw new Error("Kanban adapter not available");
+        if (fn === "createTask")       return adapter.createTask?.(...args);
+        if (fn === "updateTaskStatus") return adapter.updateTaskStatus?.(...args);
+        if (fn === "listTasks")        return adapter.listTasks?.(...args);
+        if (fn === "getTask")          return adapter.getTask?.(...args);
+        break;
+      }
+      case "meeting": {
+        const meetMod = await import("../workflow/meeting-workflow-service.mjs").catch(() => null);
+        const svc_ = meetMod?.createMeetingWorkflowService?.();
+        if (svc_ && typeof svc_[fn] === "function") return svc_[fn](...args);
+        break;
+      }
+    }
+    throw new Error(`Unknown service call: ${method}`);
+  }
+
+  /** Proxy a method call to the worker and return a Promise of the result. */
+  _call(method, args) {
+    return new Promise((resolve, reject) => {
+      if (!this._ready || !this._worker) {
+        return reject(new Error("Workflow engine worker not ready"));
+      }
+      const callId = _genCallId();
+      this._pending.set(callId, { resolve, reject });
+      this._worker.postMessage({ type: "call", callId, method, args });
+    });
+  }
+
+  /* ── EventEmitter interface (subset used by attachWorkflowEngineLiveBridge) ── */
+  on(eventName, handler) {
+    let handlers = this._listeners.get(eventName);
+    if (!handlers) { handlers = new Set(); this._listeners.set(eventName, handlers); }
+    handlers.add(handler);
+    return this;
+  }
+  off(eventName, handler) {
+    this._listeners.get(eventName)?.delete(handler);
+    return this;
+  }
+
+  /* ── WorkflowEngine API surface ── */
+  execute(workflowId, input, opts)       { return this._call("execute",              [workflowId, input, opts]); }
+  evaluateTriggers(eventType, payload)   { return this._call("evaluateTriggers",      [eventType, payload]); }
+  get(workflowId)                        { return this._call("get",                   [workflowId]); }
+  list(opts)                             { return this._call("list",                  [opts]); }
+  getRunHistory(workflowId, opts)        { return this._call("getRunHistory",         [workflowId, opts]); }
+  getRunHistoryPage(workflowId, opts)    { return this._call("getRunHistoryPage",     [workflowId, opts]); }
+  getRunDetail(runId, opts)              { return this._call("getRunDetail",          [runId, opts]); }
+  getRunForensics(runId)                 { return this._call("getRunForensics",       [runId]); }
+  getNodeForensics(runId, nodeId)        { return this._call("getNodeForensics",      [runId, nodeId]); }
+  getRetryOptions(runId)                 { return this._call("getRetryOptions",       [runId]); }
+  retryRun(runId, opts)                  { return this._call("retryRun",             [runId, opts]); }
+  restoreFromSnapshot(runId, opts)       { return this._call("restoreFromSnapshot",   [runId, opts]); }
+  cancelRun(runId)                       { return this._call("cancelRun",            [runId]); }
+  createRunSnapshot(runId, opts)         { return this._call("createRunSnapshot",    [runId, opts]); }
+  listSnapshots(workflowId)              { return this._call("listSnapshots",        [workflowId]); }
+  save(workflow)                         { return this._call("save",                 [workflow]); }
+  import(workflow)                       { return this._call("import",               [workflow]); }
+  delete(workflowId)                     { return this._call("delete",              [workflowId]); }
+  getConcurrencyStats()                  { return this._call("getConcurrencyStats",  []); }
+  getTaskTraceEvents(opts)               { return this._call("getTaskTraceEvents",  [opts]); }
+  load()                                 { return this._call("load",                []); }
+  resumeInterruptedRuns()                { return this._call("resumeInterruptedRuns", []); }
+  registerTaskTraceHook()                { return null; /* hooks cannot cross thread boundary */ }
+}
+
 // ── Workflow engine lazy-loader (module-scope cache) ──────────────────────────
 let _wfEngine;
 let _wfNodes;
@@ -1628,23 +1814,43 @@ async function getWorkflowEngineModule() {
         _wfServicesReady = true;
 
         if (shouldBootstrapDefaultWorkflowSingleton()) {
-          const engine = _wfEngine.getWorkflowEngine({ services });
-          attachWorkflowEngineLiveBridge(engine);
-          if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
-            engine.registerTaskTraceHook((event) => {
-              handleTaskWorkflowTraceEvent(event);
+          /* ── Start the workflow engine Worker thread (complete process decoupling) ── */
+          const defaultPaths = getWorkflowStoragePaths(repoRoot);
+          const proxy = new WorkflowEngineProxy();
+          try {
+            await proxy._start({
+              repoRoot,
+              workflowDir: defaultPaths.workflowDir,
+              runsDir:     defaultPaths.runsDir,
             });
-            _wfTaskTraceHookRegistered = true;
-          }
+            const defaultKey = getWorkflowWorkspaceKey(defaultPaths.workspaceRoot);
+            _wfEngineByWorkspace.set(defaultKey, proxy);
+            attachWorkflowEngineLiveBridge(proxy);
+            console.log("[workflows] Workflow engine Worker thread started");
 
-          // Resume any runs that were interrupted by a previous shutdown.
-          // This must happen AFTER services are wired so node executors work.
-          if (typeof engine.resumeInterruptedRuns === "function") {
             setTimeout(() => {
-              engine.resumeInterruptedRuns().catch((err) => {
+              proxy.resumeInterruptedRuns().catch((err) => {
                 console.warn("[workflows] Failed to resume interrupted runs:", err.message);
               });
             }, 0);
+          } catch (err) {
+            console.warn("[workflows] Worker thread start failed, falling back to in-process engine:", err.message);
+            /* Fall back: create engine in-process */
+            const engine = _wfEngine.getWorkflowEngine({ services });
+            attachWorkflowEngineLiveBridge(engine);
+            if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
+              engine.registerTaskTraceHook((event) => {
+                handleTaskWorkflowTraceEvent(event);
+              });
+              _wfTaskTraceHookRegistered = true;
+            }
+            if (typeof engine.resumeInterruptedRuns === "function") {
+              setTimeout(() => {
+                engine.resumeInterruptedRuns().catch((err) => {
+                  console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+                });
+              }, 0);
+            }
           }
         } else {
           _wfRecommendedInstalled = true;
@@ -2348,22 +2554,33 @@ async function getWorkflowRequestContext(reqUrl, options = {}) {
     if (_testDefaultEngine) {
       engine = _testDefaultEngine;
     } else {
-      engine = new wfMod.WorkflowEngine({
-        workflowDir: paths.workflowDir,
-        runsDir: paths.runsDir,
-        detectInterruptedRuns: false,
-        services: _wfServices || {},
-        onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
-      });
-      attachWorkflowEngineLiveBridge(engine);
-      if (typeof engine.registerTaskTraceHook === "function") {
-        engine.registerTaskTraceHook((event) => {
-          handleTaskWorkflowTraceEvent(event);
+      /* Use Worker thread proxy for complete decoupling from the HTTP event loop */
+      const proxy = new WorkflowEngineProxy();
+      try {
+        await proxy._start({
+          repoRoot,
+          workflowDir: paths.workflowDir,
+          runsDir:     paths.runsDir,
         });
+        engine = proxy;
+      } catch (startErr) {
+        console.warn("[workflows] Worker thread unavailable, using in-process engine:", startErr.message);
+        engine = new wfMod.WorkflowEngine({
+          workflowDir: paths.workflowDir,
+          runsDir: paths.runsDir,
+          detectInterruptedRuns: false,
+          services: _wfServices || {},
+          onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
+        });
+        if (typeof engine.registerTaskTraceHook === "function") {
+          engine.registerTaskTraceHook((event) => {
+            handleTaskWorkflowTraceEvent(event);
+          });
+        }
+        engine.load();
       }
-      engine.load();
+      attachWorkflowEngineLiveBridge(engine);
     }
-    attachWorkflowEngineLiveBridge(engine);
     _wfEngineByWorkspace.set(workspaceKey, engine);
   }
   if (options.bootstrapTemplates !== false) {
@@ -10205,10 +10422,16 @@ function broadcastCanonicalEvent(channels, type, payload = {}) {
     payload,
     ts: Date.now(),
   };
-  for (const socket of wsClients) {
-    const subscribed = socket.__channels || new Set(["*"]);
-    const shouldSend = subscribed.has("*") || Array.from(required).some((channel) => subscribed.has(channel));
-    if (shouldSend) sendWsMessage(socket, message);
+  /* Yield the event loop between sends so HTTP requests aren't starved during
+     workflow event bursts (e.g. 20 PRs × many node transitions). */
+  if (wsClients.size > 0) {
+    setImmediate(() => {
+      for (const socket of wsClients) {
+        const subscribed = socket.__channels || new Set(["*"]);
+        const shouldSend = subscribed.has("*") || Array.from(required).some((channel) => subscribed.has(channel));
+        if (shouldSend) sendWsMessage(socket, message);
+      }
+    });
   }
 }
 

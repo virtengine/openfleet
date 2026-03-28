@@ -68,7 +68,7 @@ vi.mock("node:child_process", async (importOriginal) => {
       status: 0, signal: null,
     }),
 
-    spawn: vi.fn(() => {
+    spawn: vi.fn((cmd, args, _opts) => {
       const proc = new EventEmitter();
       proc.stdout = new EventEmitter();
       proc.stderr = new EventEmitter();
@@ -76,7 +76,20 @@ vi.mock("node:child_process", async (importOriginal) => {
       proc.stderr.pipe = vi.fn();
       proc.kill = vi.fn();
       proc.pid = 9999;
-      setTimeout(() => proc.emit("close", 0), 5);
+      // Reconstruct the full command string so _activeDispatch patterns match.
+      // When shell:true the command is already the full string (args=[]).
+      const fullCmd = (Array.isArray(args) && args.length > 0)
+        ? [cmd, ...args].join(" ")
+        : String(cmd || "");
+      setTimeout(() => {
+        try {
+          const result = String(_activeDispatch(fullCmd) || "");
+          if (result) proc.stdout.emit("data", Buffer.from(result));
+        } catch (err) {
+          proc.stderr.emit("data", Buffer.from(String(err?.message || err)));
+        }
+        proc.emit("close", 0);
+      }, 5);
       return proc;
     }),
 

@@ -33,6 +33,58 @@ import {
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
+
+/**
+ * Non-blocking async replacement for execFileSync / execSync.
+ * Resolves with stdout; rejects with err.stdout / err.stderr / err.status like execFileSync errors.
+ */
+function spawnAsync(command, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const MAX_BUFFER = 10 * 1024 * 1024;
+    const captureOutput = opts.stdio !== "inherit";
+    const child = spawn(command, args || [], {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: captureOutput ? "pipe" : "inherit",
+      shell: opts.shell || false,
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    if (captureOutput) {
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+        if (stdout.length > MAX_BUFFER) stdout = stdout.slice(stdout.length - MAX_BUFFER);
+      });
+      child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    }
+    let timedOut = false;
+    const timer = opts.timeout > 0 ? setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch {}
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
+    }, opts.timeout) : null;
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        const err = new Error(`Command timed out after ${opts.timeout}ms: ${command}`);
+        err.killed = true; err.stdout = stdout; err.stderr = stderr; err.status = null;
+        return reject(err);
+      }
+      if (code !== 0) {
+        const err = new Error(`Command failed with exit code ${code}`);
+        err.stdout = stdout; err.stderr = stderr; err.status = code; err.exitCode = code;
+        return reject(err);
+      }
+      resolve(stdout);
+    });
+    child.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      err.stdout = stdout; err.stderr = stderr;
+      reject(err);
+    });
+  });
+}
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
@@ -4609,23 +4661,13 @@ registerBuiltinNodeType("action.run_command", {
     }
     const startedAt = Date.now();
     try {
-      const output = usedArgv
-        ? execFileSync(command, commandArgs, {
-            cwd,
-            timeout,
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-            env: commandEnv,
-          })
-        : execSync(command, {
-            cwd,
-            timeout,
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-            env: commandEnv,
-          });
+      const output = await spawnAsync(command, usedArgv ? commandArgs : [], {
+        cwd,
+        timeout,
+        stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
+        env: commandEnv,
+        shell: !usedArgv,
+      });
       ctx.log(node.id, `Command succeeded`);
       const parsedOutput = parseOutput(output);
       if (shouldParseJson || typeof parsedOutput !== "string") {
