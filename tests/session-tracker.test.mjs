@@ -580,6 +580,18 @@ describe("session-tracker", () => {
         durationMs: 4000,
       }));
       expect(tracker.listAllSessions().find((entry) => entry.id === "task-usage")?.turns?.[0]?.durationMs).toBe(4000);
+      expect(tracker.listAllSessions().find((entry) => entry.id === "task-usage")).toEqual(
+        expect.objectContaining({
+          tokenCount: 165,
+          inputTokens: 120,
+          outputTokens: 45,
+          tokenUsage: expect.objectContaining({
+            inputTokens: 120,
+            outputTokens: 45,
+            totalTokens: 165,
+          }),
+        }),
+      );
     });
 
     it("preserves turn timeline history after session completion", () => {
