@@ -1306,7 +1306,7 @@ class WorkflowEngineProxy {
   _start(cfg = {}) {
     if (this._initPromise) return this._initPromise;
     this._initPromise = new Promise((resolve, reject) => {
-      const workerPath = new URL("./workflow-engine-worker.mjs", import.meta.url).href;
+      const workerPath = fileURLToPath(new URL("./workflow-engine-worker.mjs", import.meta.url));
       this._worker = new Worker(workerPath, {
         workerData: cfg,
         /* stdout/stderr inherit so worker logs appear in the same console */
@@ -12651,11 +12651,16 @@ function withinDays(entry, days) {
 async function readCompletedSessionEntries(maxLines = 100_000) {
   // Check multiple candidate paths — repoRoot may be the monorepo root
   // while data lives under the bosun subdirectory.
-  // When REPO_ROOT is not explicitly set, the module-relative path is added first
-  // so we find the data written by task-executor (__dirname-relative) even when
-  // resolveRepoRoot() returns a workspace clone path instead of the module root.
+  // When REPO_ROOT is not explicitly set, OR when repoRoot resolves to a
+  // workspace clone (e.g. .bosun/workspaces/<ws>/bosun), the module-relative
+  // path is added first so we find the data written by task-executor
+  // (__dirname-relative) even when resolveRepoRoot() returns a workspace clone
+  // path instead of the module root.
+  const repoRootNorm = resolve(repoRoot).replace(/\\/g, "/");
+  const isWorkspaceClone = repoRootNorm.includes("/.bosun/workspaces/");
+  const useModuleRelative = !process.env.REPO_ROOT || isWorkspaceClone;
   const candidates = [
-    ...(!process.env.REPO_ROOT
+    ...(useModuleRelative
       ? [resolve(__dirname, "..", ".cache", "session-accumulator.jsonl")]
       : []),
     resolve(repoRoot, ".cache", "session-accumulator.jsonl"),
@@ -12969,11 +12974,16 @@ async function buildUsageAnalytics(days) {
 }
 
 function resolveAgentWorkLogDir() {
-  // When REPO_ROOT is not explicitly set, the module-relative path is added first
-  // so we find the data written by task-executor (__dirname-relative) even when
-  // resolveRepoRoot() returns a workspace clone path instead of the module root.
+  // When REPO_ROOT is not explicitly set, OR when repoRoot resolves to a
+  // workspace clone (e.g. .bosun/workspaces/<ws>/bosun), the module-relative
+  // path is added first so we find the data written by task-executor
+  // (__dirname-relative) even when resolveRepoRoot() returns a workspace clone
+  // path instead of the module root.
+  const repoRootNorm = resolve(repoRoot).replace(/\\/g, "/");
+  const isWorkspaceClone = repoRootNorm.includes("/.bosun/workspaces/");
+  const useModuleRelative = !process.env.REPO_ROOT || isWorkspaceClone;
   const candidates = [
-    ...(!process.env.REPO_ROOT
+    ...(useModuleRelative
       ? [resolve(__dirname, "..", ".cache", "agent-work-logs")]
       : []),
     resolve(repoRoot, ".cache", "agent-work-logs"),
@@ -13639,9 +13649,33 @@ async function handleApi(req, res, url) {
   if (path === "/api/executor") {
     const executor = uiDeps.getInternalExecutor?.();
     const mode = uiDeps.getExecutorMode?.() || "internal";
+    const execStatus = executor?.getStatus?.() || null;
+    /* Augment with active workflow run counts so Fleet Overview reflects
+       real system load even when no agent subprocess slots are occupied */
+    let activeWorkflowRuns = 0;
+    let workflowRunDetails = [];
+    try {
+      const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false }).catch(() => null);
+      if (wfCtx?.ok && wfCtx.engine) {
+        const runs = await Promise.resolve(wfCtx.engine.list?.() || []).catch(() => []);
+        const active = (Array.isArray(runs) ? runs : []).filter(
+          (r) => String(r?.status || "").toLowerCase() === "running"
+        );
+        activeWorkflowRuns = active.length;
+        workflowRunDetails = active.slice(0, 20).map((r) => ({
+          runId: r.id || r.runId,
+          workflowId: r.workflowId,
+          workflowName: r.workflowName || r.workflowId,
+          startedAt: r.startedAt,
+          activeNodeCount: r.activeNodeCount || 0,
+        }));
+      }
+    } catch {
+      // best-effort: executor data is still returned without workflow augmentation
+    }
     jsonResponse(res, 200, {
       ok: true,
-      data: executor?.getStatus?.() || null,
+      data: execStatus ? { ...execStatus, activeWorkflowRuns, workflowRunDetails } : null,
       mode,
       paused: executor?.isPaused?.() || false,
     });
