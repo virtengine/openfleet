@@ -2111,7 +2111,7 @@ describe("action.acquire_worktree", () => {
       const second = await nt.execute(node, secondCtx);
       expect(second.success).toBe(true);
 
-      const status = gitExec("git status --short", {
+      const status = gitExec("git status --short --untracked-files=no", {
         cwd: second.worktreePath,
         encoding: "utf8",
       }).trim();

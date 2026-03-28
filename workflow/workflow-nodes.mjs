@@ -12899,6 +12899,24 @@ function refreshManagedWorktreeReuse(
       detectedIssues: [],
     };
   }
+  // Discard dirty tracked files before rebasing so the pull --rebase
+  // doesn't fail with "your local changes would be overwritten".
+  try {
+    const dirty = execGitArgsSync(["status", "--porcelain", "--untracked-files=no"], {
+      cwd: worktreePath, encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (dirty) {
+      execGitArgsSync(["reset", "--hard", "HEAD"], {
+        cwd: worktreePath, encoding: "utf8",
+        timeout: 10000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+  } catch {
+    /* best-effort */
+  }
   let refreshError = "";
   try {
     execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
