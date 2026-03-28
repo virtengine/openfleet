@@ -76,7 +76,7 @@ import {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
   getCustomNodeDir,
-  inspectCustomWorkflowNodePlugins,
+  inspectCustomWorkflowNodePlugins as inspectCustomWorkflowNodePluginsImpl,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
@@ -16190,11 +16190,6 @@ registerBuiltinNodeType("flow.parallel", {
     };
   },
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  Export all registered types for introspection
-// ═══════════════════════════════════════════════════════════════════════════
-
 export { registerNodeType, getNodeType, listNodeTypes, unregisterNodeType } from "./workflow-engine.mjs";
 export { evaluateTaskAssignedTriggerConfig };
 export {
@@ -16204,12 +16199,10 @@ export {
 export {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
-  getCustomNodeDir,
-  inspectCustomWorkflowNodePlugins,
-  scaffoldCustomNodeFile,
+  getCustomNodeDir,`r`n  inspectCustomWorkflowNodePlugins as inspectCustomWorkflowNodePluginsImpl,`r`n  scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
-};
+} from "./workflow-nodes/custom-loader.mjs";
 
 export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   if (!customLoadPromise || options.forceReload) {
@@ -16222,6 +16215,10 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
+
+
 
 
 

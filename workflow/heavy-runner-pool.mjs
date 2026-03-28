@@ -275,6 +275,7 @@ function resolveLocalProcessLaunch(parsedCommand) {
   }
   return { launchCommand: executable, launchArgs: args, shell: false };
 }
+
 function buildBlockedResult(policy, attemptCount, message, artifactRoot) {
   const leaseId = randomUUID();
   const leaseDir = ensureLeaseDir(artifactRoot || policy.artifactDir, leaseId);
@@ -356,7 +357,11 @@ async function runLeaseAttempt({
     if (!Array.isArray(commandPrefix) || commandPrefix.length === 0) {
       throw new RunnerLeaseError(`No commandPrefix configured for ${runtime} runner leases.`, { retryable: attempt <= 1 });
     }
-    launchCommand = commandPrefix[0];`r`n    launchArgs = [...commandPrefix.slice(1), parsedCommand.raw];`r`n  } else {`r`n    ({ launchCommand, launchArgs, shell: useShell } = resolveLocalProcessLaunch(parsedCommand));`r`n  }
+    launchCommand = commandPrefix[0];
+    launchArgs = [...commandPrefix.slice(1), parsedCommand.raw];
+  } else {
+    ({ launchCommand, launchArgs, shell: useShell } = resolveLocalProcessLaunch(parsedCommand));
+  }
 
   return await new Promise((resolveRun, rejectRun) => {
     const stdoutStream = createWriteStream(stdoutPath, { encoding: "utf8" });
@@ -369,7 +374,7 @@ async function runLeaseAttempt({
     const child = spawn(launchCommand, launchArgs, {
       cwd,
       env: { ...process.env, ...(env || {}) },
-      shell: false,
+      shell: useShell,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -510,5 +515,3 @@ export async function runCommandInHeavyRunnerLease({
     artifactRoot || policy.artifactDir,
   );
 }
-
-
