@@ -1255,8 +1255,14 @@ async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue
 
   const taskPayload = { ...payload };
   delete taskPayload.projectId;
-  if (projectAwareCreateTask || resolvedProjectId) {
+  if (projectAwareCreateTask) {
     return kanban.createTask(resolvedProjectId, taskPayload);
+  }
+  if (resolvedProjectId) {
+    return kanban.createTask(resolvedProjectId, taskPayload);
+  }
+  if (createTaskParamNames.length === 0) {
+    return kanban.createTask("", taskPayload);
   }
   return kanban.createTask(taskPayload);
 }
