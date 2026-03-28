@@ -156,6 +156,16 @@ function safeFieldValue(v, kind) {
   return JSON.stringify(v, null, 2);
 }
 
+// Normalise an option entry that may be a plain string (from older API responses)
+// or a { value, label } object. Returns null for stale "[Truncated]" sentinels.
+function toMenuOption(opt) {
+  if (opt == null) return null;
+  const v = typeof opt === "string" ? opt : opt.value;
+  const l = typeof opt === "string" ? opt : (opt.label ?? v);
+  if (v == null || v === "[Truncated]") return null;
+  return { value: v, label: l ?? v };
+}
+
 function returnToWorkflowList() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
@@ -1137,7 +1147,7 @@ function ExecuteWorkflowDialog() {
             label=${label + (isRequired ? " *" : "")}
             onChange=${(e) => updateVar(key, e.target.value)}
           >
-            ${options.map((opt) => html`<${MenuItem} key=${String(opt.value)} value=${opt.value}>${opt.label}</${MenuItem}>`)}
+            ${options.flatMap((opt) => { const o = toMenuOption(opt); return o ? [html`<${MenuItem} key=${String(o.value)} value=${o.value}>${o.label}</${MenuItem}>`] : []; })}
           </${Select}>
           <${Typography} variant="caption" sx=${{ color: "text.secondary", mt: 0.5, ml: 1.5 }}>
             ${help || "Preset options"}.
@@ -1463,7 +1473,7 @@ function InstallTemplateDialog() {
             label=${descriptor.label + (descriptor.required ? " *" : "")}
             onChange=${(e) => updateVar(descriptor.key, e.target.value)}
           >
-            ${descriptor.options.map((opt) => html`<${MenuItem} key=${String(opt.value)} value=${opt.value}>${opt.label}</${MenuItem}>`)}
+            ${descriptor.options.flatMap((opt) => { const o = toMenuOption(opt); return o ? [html`<${MenuItem} key=${String(o.value)} value=${o.value}>${o.label}</${MenuItem}>`] : []; })}
           </${Select}>
         </${FormControl}>
       `;
@@ -3712,7 +3722,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
       </div>
 
-      <div style="position: absolute; top: 64px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
+      <div style="position: absolute; top: 108px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
         <div style="pointer-events: auto; background: var(--bg-card, #2b2a27); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; backdrop-filter: blur(8px); box-shadow: var(--shadow-lg, 0 10px 30px rgba(0,0,0,0.28)); overflow: hidden; color: var(--color-text, #e8eaf0);">
           <div style="display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom: 1px solid var(--color-border, #2a3040);">
             <span class="icon-inline">${resolveIcon("chart")}</span>
@@ -6831,18 +6841,19 @@ export function WorkflowsTab() {
     }
 
     if (workflowId) {
+      const wantsCode = Boolean(route.codeView);
       apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`)
         .then((d) => {
           activeWorkflow.value = d?.workflow || activeWorkflow.value;
           if (activeWorkflow.value?.id === workflowId || d?.workflow?.id === workflowId) {
-            viewMode.value = "canvas";
+            viewMode.value = wantsCode ? "code" : "canvas";
           }
         })
         .catch(() => {
           const existing = (workflows.value || []).find((wf) => wf.id === workflowId);
           if (existing) {
             activeWorkflow.value = existing;
-            viewMode.value = "canvas";
+            viewMode.value = wantsCode ? "code" : "canvas";
           }
         });
       return;
@@ -6858,6 +6869,13 @@ export function WorkflowsTab() {
 
   useEffect(() => {
     const mode = viewMode.value;
+    if (mode === "code" && activeWorkflow.value?.id) {
+      setRouteParams(
+        { workflowId: activeWorkflow.value.id, codeView: "1" },
+        { replace: true, skipGuard: true },
+      );
+      return;
+    }
     if (mode === "canvas" && activeWorkflow.value?.id) {
       setRouteParams(
         { workflowId: activeWorkflow.value.id },

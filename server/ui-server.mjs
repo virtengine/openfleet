@@ -8496,7 +8496,7 @@ function scrubStackTraces(payload) {
   return out;
 }
 function normalizeJsonResponsePayload(payload) {
-  return makeJsonSafe(scrubStackTraces(payload), { maxDepth: 6 });
+  return makeJsonSafe(scrubStackTraces(payload), { maxDepth: 12 });
 }
 
 function makeJsonSafe(value, options = {}) {

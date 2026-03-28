@@ -144,6 +144,16 @@ function safeFieldValue(v, kind) {
   return JSON.stringify(v, null, 2);
 }
 
+// Normalise an option entry that may be a plain string (from older API responses)
+// or a { value, label } object. Returns null for stale "[Truncated]" sentinels.
+function toMenuOption(opt) {
+  if (opt == null) return null;
+  const v = typeof opt === "string" ? opt : opt.value;
+  const l = typeof opt === "string" ? opt : (opt.label ?? v);
+  if (v == null || v === "[Truncated]") return null;
+  return { value: v, label: l ?? v };
+}
+
 function returnToWorkflowList() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
@@ -1125,7 +1135,7 @@ function ExecuteWorkflowDialog() {
             label=${label + (isRequired ? " *" : "")}
             onChange=${(e) => updateVar(key, e.target.value)}
           >
-            ${options.map((opt) => html`<${MenuItem} key=${String(opt.value)} value=${opt.value}>${opt.label}</${MenuItem}>`)}
+            ${options.flatMap((opt) => { const o = toMenuOption(opt); return o ? [html`<${MenuItem} key=${String(o.value)} value=${o.value}>${o.label}</${MenuItem}>`] : []; })}
           </${Select}>
           <${Typography} variant="caption" sx=${{ color: "text.secondary", mt: 0.5, ml: 1.5 }}>
             ${help || "Preset options"}.
@@ -1451,7 +1461,7 @@ function InstallTemplateDialog() {
             label=${descriptor.label + (descriptor.required ? " *" : "")}
             onChange=${(e) => updateVar(descriptor.key, e.target.value)}
           >
-            ${descriptor.options.map((opt) => html`<${MenuItem} key=${String(opt.value)} value=${opt.value}>${opt.label}</${MenuItem}>`)}
+            ${descriptor.options.flatMap((opt) => { const o = toMenuOption(opt); return o ? [html`<${MenuItem} key=${String(o.value)} value=${o.value}>${o.label}</${MenuItem}>`] : []; })}
           </${Select}>
         </${FormControl}>
       `;
