@@ -1575,7 +1575,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(inspectNode)).toContain("const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']);");
     expect(getNodeCommandCode(inspectNode)).toContain("classification='conflict';reason='merge_conflict';");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
-    expect(getNodeCommandCode(fixNode)).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
+    expect(getNodeCommandCode(fixNode)).toContain("failedLogExcerpt");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
     expect(getNodeCommandCode(fixNode)).toContain("classification==='conflict'");
     expect(getNodeCommandCode(fixNode)).toContain("mergeable==='BEHIND'");
