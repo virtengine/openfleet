@@ -1,0 +1,7 @@
+[
+  {
+    "install": "npm install",
+    "start": "npm start",
+    "resourceSize": "medium"
+  }
+]
