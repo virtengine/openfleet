@@ -715,7 +715,7 @@ registerNodeType("action.run_agent", {
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
       requireTaskPromptCompleteness: {
         type: "boolean",
-        default: true,
+        default: false,
         description: "Require task description and URL metadata before running the agent",
       },
       failOnError: { type: "boolean", default: false, description: "Throw when agent returns success=false (enables workflow retries)" },
@@ -783,7 +783,7 @@ registerNodeType("action.run_agent", {
       node.config?.includeTaskContext !== false &&
       ctx.data?._taskIncludeContext !== false;
     const requireTaskPromptCompleteness =
-      node.config?.requireTaskPromptCompleteness !== false;
+      node.config?.requireTaskPromptCompleteness === true;
     const configuredSystemPrompt =
       ctx.resolve(node.config?.systemPrompt || "") ||
       ctx.data?._taskSystemPrompt ||
@@ -946,10 +946,16 @@ registerNodeType("action.run_agent", {
         };
         const workflows = Array.isArray(engine.list?.()) ? engine.list() : [];
         const candidate = workflows.find((workflow) => {
-          if (!workflow || workflow.enabled === false) return false;
-          const replacesModule = String(workflow?.metadata?.replaces?.module || "").trim();
+          const hydratedWorkflow =
+            workflow?.id &&
+            (!Array.isArray(workflow?.nodes) || workflow.nodes.length === 0) &&
+            typeof engine.get === "function"
+              ? (engine.get(workflow.id) || workflow)
+              : workflow;
+          if (!hydratedWorkflow || hydratedWorkflow.enabled === false) return false;
+          const replacesModule = String(hydratedWorkflow?.metadata?.replaces?.module || "").trim();
           if (replacesModule !== "primary-agent.mjs") return false;
-          const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+          const nodes = Array.isArray(hydratedWorkflow?.nodes) ? hydratedWorkflow.nodes : [];
           return nodes.some((wfNode) => {
             if (wfNode?.type !== "trigger.task_assigned") return false;
             return evaluateTaskAssignedTriggerConfig(wfNode.config || {}, eventPayload);
@@ -957,7 +963,20 @@ registerNodeType("action.run_agent", {
         });
 
         if (candidate?.id) {
-          const assignTransitionKey = ["assign", node.id, candidate.id, taskIdForDelegate || "task"].join(":");
+          const childRunOpts = {
+            _parentRunId: ctx?.id || null,
+            _rootRunId:
+              String(
+                ctx?.data?._workflowRootRunId ||
+                ctx?.data?._rootRunId ||
+                ctx?.id ||
+                "",
+              ).trim() || ctx?.id || null,
+            _parentExecutionId: `node:${ctx?.id || "run"}:${node.id}`,
+          };
+          const assignTransitionKey =
+            String(ctx.data?._delegationTransitionKey || "").trim() ||
+            ["assign", node.id, candidate.id, taskIdForDelegate || "task"].join(":");
           const existingAssignTransition =
             getExistingDelegationTransition(ctx, assignTransitionKey) ||
             (typeof ctx.getDelegationTransitionGuard === "function"
@@ -1010,10 +1029,14 @@ registerNodeType("action.run_agent", {
             });
           }
 
-          const subRun = await engine.execute(candidate.id, {
-            ...eventPayload,
-            _agentWorkflowActive: true,
-          });
+          const subRun = await engine.execute(
+            candidate.id,
+            {
+              ...eventPayload,
+              _agentWorkflowActive: true,
+            },
+            childRunOpts,
+          );
           const subStatus = deriveWorkflowExecutionSessionStatus(subRun);
           const subFailed = subStatus !== "completed";
           const subTerminalOutput = subRun?.data?._workflowTerminalOutput;
@@ -1029,6 +1052,7 @@ registerNodeType("action.run_agent", {
           recordDelegationAuditEvent(ctx, {
             type: subFailed ? "owner-mismatch" : "handoff-complete",
             eventType: subFailed ? "owner-mismatch" : "handoff-complete",
+            status: subStatus,
             taskId: taskIdForDelegate || null,
             taskTitle: taskTitleForDelegate || null,
             workflowNodeId: node.id,
@@ -1041,8 +1065,8 @@ registerNodeType("action.run_agent", {
           });
           if (tracker && taskIdForDelegate) {
             tracker.recordEvent(taskIdForDelegate, {
-              role: "system",
-              type: subFailed ? "error" : "system",
+              role: subFailed ? "system" : "assistant",
+              type: subFailed ? "error" : "agent_message",
               content: `Agent workflow "${candidate.name || candidate.id}" completed with status=${subStatus}`,
               timestamp: new Date().toISOString(),
               _sessionType: "task",
@@ -7455,8 +7479,5 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
-
-
-
 
 
