@@ -441,6 +441,7 @@ import { ChatTab } from "./tabs/chat.js";
 
 /* â”€â”€ Lazy tab loading â”€â”€ */
 const _lazyTabCache = {};
+const _lazyTabInflight = {};
 
 function resolveLazyTabComponent(mod, exportName) {
   const direct = exportName ? mod?.[exportName] : mod?.default;
@@ -457,13 +458,34 @@ function LazyTab({ loader, fallback, ...props }) {
   const [Comp, setComp] = useState(_lazyTabCache[loader.key] || null);
   const [err, setErr] = useState(null);
   useEffect(() => {
-    if (_lazyTabCache[loader.key]) { setComp(() => _lazyTabCache[loader.key]); return; }
+    setErr(null);
+    if (_lazyTabCache[loader.key]) {
+      setComp(() => _lazyTabCache[loader.key]);
+      return;
+    }
     let cancelled = false;
-    loader().then((mod) => {
-      const C = resolveLazyTabComponent(mod, loader.exportName);
-      _lazyTabCache[loader.key] = C;
-      if (!cancelled) setComp(() => C);
-    }).catch((e) => { if (!cancelled) setErr(e); });
+    const pendingLoad = _lazyTabInflight[loader.key]
+      || loader()
+        .then((mod) => {
+          const C = resolveLazyTabComponent(mod, loader.exportName);
+          _lazyTabCache[loader.key] = C;
+          return C;
+        })
+        .finally(() => {
+          delete _lazyTabInflight[loader.key];
+        });
+    _lazyTabInflight[loader.key] = pendingLoad;
+
+    pendingLoad
+      .then((resolvedComp) => {
+        if (!cancelled) setComp(() => resolvedComp);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setComp(null);
+          setErr(e);
+        }
+      });
     return () => { cancelled = true; };
   }, [loader]);
   if (err) return html`<div style="padding:2rem;color:#ef4444">Failed to load tab: ${err.message}</div>`;

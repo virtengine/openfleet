@@ -249,6 +249,69 @@ describe("review-agent", () => {
       );
       await agent.stop();
     });
+
+    it("keeps the dedupe key stable when only summary and issue wording drift", async () => {
+      const sendTelegram = vi.fn();
+      const { execWithRetry } = await import("../agent/agent-pool.mjs");
+      execWithRetry.mockResolvedValueOnce({
+        output: JSON.stringify({
+          verdict: "changes_requested",
+          issues: [
+            {
+              severity: "major",
+              category: "bug",
+              file: "ui/tabs/agents.js",
+              line: 2102,
+              description: "Clipboard access throws when navigator.clipboard is unavailable.",
+            },
+          ],
+          summary: "Clipboard handling regresses unsupported environments",
+        }),
+        success: true,
+      });
+      execWithRetry.mockResolvedValueOnce({
+        output: JSON.stringify({
+          verdict: "changes_requested",
+          issues: [
+            {
+              severity: "major",
+              category: "bug",
+              file: "ui/tabs/agents.js",
+              line: 2102,
+              description: "Guard clipboard access when the browser API is missing.",
+            },
+          ],
+          summary: "Clipboard path still breaks unsupported browsers",
+        }),
+        success: true,
+      });
+
+      const agent = createReviewAgent({ sendTelegram });
+      agent.start();
+
+      await agent.queueReview({
+        id: "task-telegram-dedup-stable",
+        title: "Clipboard fix",
+        branchName: "ve/clipboard-fix",
+        prUrl: "https://github.com/owner/repo/pull/124",
+      });
+      await waitFor(() => agent.getStatus().completedReviews >= 1);
+
+      await agent.queueReview({
+        id: "task-telegram-dedup-stable",
+        title: "Clipboard fix",
+        branchName: "ve/clipboard-fix",
+        prUrl: "https://github.com/owner/repo/pull/124",
+      });
+      await waitFor(() => agent.getStatus().completedReviews >= 2);
+
+      const firstDedupKey = sendTelegram.mock.calls[0][1]?.dedupKey;
+      const secondDedupKey = sendTelegram.mock.calls[1][1]?.dedupKey;
+      expect(firstDedupKey).toBeTruthy();
+      expect(secondDedupKey).toBe(firstDedupKey);
+
+      await agent.stop();
+    });
   });
 
 

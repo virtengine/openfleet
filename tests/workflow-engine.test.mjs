@@ -915,7 +915,11 @@ describe("WorkflowEngine - run history details", () => {
     );
 
     engine.save(wf);
-    await engine.execute(wf.id, {});
+    await engine.execute(wf.id, {
+      taskId: "task-history-1",
+      taskTitle: "History Detail Task",
+      sessionId: "session-history-1",
+    });
 
     const history = engine.getRunHistory(wf.id, 5);
     expect(history.length).toBeGreaterThan(0);
@@ -929,6 +933,12 @@ describe("WorkflowEngine - run history details", () => {
     expect(typeof latest.activeNodeCount).toBe("number");
     expect(latest.isStuck).toBe(false);
     expect(latest.stuckMs).toBe(0);
+    expect(latest.taskId).toBe("task-history-1");
+    expect(latest.taskIds).toContain("task-history-1");
+    expect(latest.taskTitle).toBe("History Detail Task");
+    expect(latest.sessionId).toBe("session-history-1");
+    expect(latest.primarySessionId).toBe("session-history-1");
+    expect(latest.sessionIds).toContain("session-history-1");
 
     const run = engine.getRunDetail(latest.runId);
     expect(run).toBeTruthy();
@@ -1167,6 +1177,27 @@ describe("WorkflowEngine - run history details", () => {
     expect(page.hasMore).toBe(true);
     expect(page.nextOffset).toBe(2);
   });
+
+  it("paginates run history from summaries without rereading each run detail", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Summary Only History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const detailSpy = vi.spyOn(engine, "getRunDetail");
+    const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+
+    expect(page.count).toBe(1);
+    expect(page.runs).toHaveLength(1);
+    expect(detailSpy).not.toHaveBeenCalled();
+  });
+
   it("paginates global run history beyond the initial page size", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1222,7 +1253,11 @@ describe("WorkflowEngine - run history details", () => {
       );
 
       engine.save(wf);
-      const runPromise = engine.execute(wf.id, {});
+      const runPromise = engine.execute(wf.id, {
+        taskId: "task-active-1",
+        taskTitle: "Active Run Task",
+        sessionId: "session-active-1",
+      });
       // Wait for the long-running node to actually start, then wait beyond
       // the stuck threshold (20ms) so isStuck is true when we query history
       await nodeStarted;
@@ -1237,6 +1272,31 @@ describe("WorkflowEngine - run history details", () => {
       expect(typeof active.duration).toBe("number");
       expect(active.isStuck).toBe(true);
       expect(active.stuckMs).toBeGreaterThanOrEqual(20);
+      expect(active.taskId).toBe("task-active-1");
+      expect(active.taskIds).toContain("task-active-1");
+      expect(active.taskTitle).toBe("Active Run Task");
+      expect(active.primarySessionId).toBe("session-active-1");
+
+      let activeRunEntry = null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const activeRunsPath = join(tmpDir, "runs", "_active-runs.json");
+        if (existsSync(activeRunsPath)) {
+          const entries = JSON.parse(readFileSync(activeRunsPath, "utf8"));
+          activeRunEntry = entries.find((entry) => entry.runId === active.runId) || null;
+          if (activeRunEntry) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(activeRunEntry).toMatchObject({
+        runId: active.runId,
+        workflowId: wf.id,
+        workflowName: "Active Run Visibility Workflow",
+        taskId: "task-active-1",
+        taskTitle: "Active Run Task",
+        sessionId: "session-active-1",
+      });
+      expect(activeRunEntry?.taskIds).toContain("task-active-1");
+      expect(activeRunEntry?.sessionIds).toContain("session-active-1");
 
       const detail = engine.getRunDetail(active.runId);
       expect(detail).toBeTruthy();
@@ -5341,62 +5401,6 @@ it("action.materialize_planner_tasks applies workspace defaults from workflow co
   }));
 });
 
-it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {
-  const handler = getNodeType("action.materialize_planner_tasks");
-  expect(handler).toBeDefined();
-
-  const ctx = new WorkflowContext({});
-  ctx.setNodeOutput("run-planner", {
-    output: "I could not generate tasks in JSON format this run.",
-  });
-
-  const mockEngine = {
-    services: {
-      kanban: {
-        createTask: vi.fn(),
-      },
-    },
-  };
-
-  const node = {
-    id: "materialize",
-    type: "action.materialize_planner_tasks",
-    config: {
-      plannerNodeId: "run-planner",
-      failOnZero: true,
-    },
-  };
-
-  await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
-    /did not include parseable tasks/i,
-  );
-});
-
-it("action.materialize_planner_tasks surfaces upstream planner errors when no output exists", async () => {
-  const handler = getNodeType("action.materialize_planner_tasks");
-  expect(handler).toBeDefined();
-
-  const ctx = new WorkflowContext({});
-  ctx.setNodeOutput("run-planner", {
-    success: false,
-    error: "Agent pool or planner prompt not available",
-    output: "",
-  });
-
-  const node = {
-    id: "materialize-upstream-error",
-    type: "action.materialize_planner_tasks",
-    config: {
-      plannerNodeId: "run-planner",
-      failOnZero: true,
-    },
-  };
-
-  await expect(handler.execute(node, ctx, { services: {} })).rejects.toThrow(
-    /did not include parseable tasks/i,
-  );
-});
-
 it("action.materialize_planner_tasks enforces planner quality gates and persists planner metadata", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
@@ -5893,6 +5897,91 @@ it("action.materialize_planner_tasks preserves resumed DAG ordering and caps to 
     "Create PR handoff",
   ]);
   expect(createdTitles).not.toContain("Extra task that should be ignored");
+  expect(result.parsedCount).toBe(6);
+  expect(result.rankedTasks).toHaveLength(5);
+  expect(result.rankedTasks.map((task) => task.title)).toEqual(createdTitles);
+});
+
+it("action.materialize_planner_tasks skips completed DAG nodes while keeping the next pending node first", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    _plannerFeedback: {
+      issueAdvisor: {
+        nextStepLabel: "Write Tests First",
+      },
+      dagStateSummary: {
+        completedNodes: [
+          { id: "trigger", label: "Trigger", status: "completed" },
+          { id: "plan-work", label: "Plan Work", status: "completed" },
+        ],
+        currentNode: { id: "materialize", label: "Materialize Tasks", status: "running" },
+        pendingNodes: [
+          { id: "write-tests", label: "Write Tests First", status: "pending" },
+          { id: "implement", label: "Implement", status: "pending" },
+          { id: "validation-build", label: "Build", status: "pending" },
+          { id: "validation-tests", label: "Tests", status: "pending" },
+          { id: "create-pr", label: "Create PR", status: "pending" },
+          { id: "follow-up", label: "Follow Up", status: "pending" },
+        ],
+      },
+    },
+  });
+
+  ctx.setNodeOutput("run-planner", {
+    output: JSON.stringify({
+      tasks: [
+        { title: "Plan Work", description: "already completed and must stay out", acceptance_criteria: ["ignored"], verification: ["ignored"], repo_areas: ["workflow"], impact: 0.99, confidence: 0.9, risk: 0.1 },
+        { title: "Implement planner resume handling", description: "Preserve DAG state", acceptance_criteria: ["completed nodes preserved"], verification: ["node --test tests/workflow-engine.test.mjs"], repo_areas: ["workflow"], impact: 0.92, confidence: 0.88, risk: 0.2 },
+        { title: "Write Tests First", description: "Resume from tests", acceptance_criteria: ["tests added"], verification: ["node --test tests/workflow-engine.test.mjs"], repo_areas: ["workflow"], impact: 0.95, confidence: 0.9, risk: 0.2 },
+        { title: "Build validation coverage", description: "Keep build gate intact", acceptance_criteria: ["build task prepared"], verification: ["npm run build"], repo_areas: ["workflow"], impact: 0.7, confidence: 0.8, risk: 0.2 },
+        { title: "Test validation coverage", description: "Keep tests gate intact", acceptance_criteria: ["tests task prepared"], verification: ["npm test"], repo_areas: ["tests"], impact: 0.7, confidence: 0.8, risk: 0.2 },
+        { title: "Create PR handoff", description: "Prepare PR path", acceptance_criteria: ["PR task prepared"], verification: ["manual review"], repo_areas: ["workflow"], impact: 0.6, confidence: 0.75, risk: 0.2 },
+        { title: "Follow Up task", description: "Final pending task", acceptance_criteria: ["follow-up prepared"], verification: ["manual review"], repo_areas: ["workflow"], impact: 0.5, confidence: 0.7, risk: 0.2 }
+      ],
+    }),
+  });
+
+  const createTask = vi.fn(async (_projectId, payload) => ({ id: payload.title }));
+  const listTasks = vi.fn(async () => []);
+
+  const result = await handler.execute(
+    {
+      id: "materialize-resume-completed-filter",
+      type: "action.materialize_planner_tasks",
+      config: {
+        plannerNodeId: "run-planner",
+        projectId: "proj-123",
+        failOnZero: true,
+        dedup: false,
+        minCreated: 5,
+        maxTasks: 5,
+        minImpactScore: 0,
+      },
+    },
+    ctx,
+    {
+      services: {
+        kanban: { createTask, listTasks },
+      },
+    },
+  );
+
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(5);
+  const createdTitles = createTask.mock.calls.map((call) => call[1].title);
+  expect(createdTitles[0]).toBe("Write Tests First");
+  expect(createdTitles).toEqual([
+    "Write Tests First",
+    "Implement planner resume handling",
+    "Build validation coverage",
+    "Test validation coverage",
+    "Create PR handoff",
+  ]);
+  expect(createdTitles).not.toContain("Plan Work");
+  expect(createdTitles).not.toContain("Follow Up task");
+  expect(result.rankedTasks.map((task) => task.title)).toEqual(createdTitles);
 });
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
@@ -6555,15 +6644,14 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     engine.save(wf);
     const firstCtx = await engine.execute(wf.id, {});
     expect(firstCtx.errors.length).toBeGreaterThan(0);
-    const firstRun = engine.getRunHistory(wf.id).at(-1);
+    const firstRun = engine.getRunDetail(firstCtx.id);
     expect(firstRun?.detail?.dagState?.status).toBe("failed");
     expect(firstRun?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
 
     const retry = await engine.retryRun(firstRun.runId, { mode: "from_failed" });
     expect(retry.mode).toBe("from_failed");
 
-    const runs = engine.getRunHistory(wf.id);
-    const retriedRun = runs.find((entry) => entry.runId === retry.retryRunId);
+    const retriedRun = engine.getRunDetail(retry.retryRunId);
     expect(retriedRun?.detail?.dagState?.retryOf).toBe(firstRun.runId);
     expect(retriedRun?.detail?.dagState?.retryMode).toBe("from_failed");
     expect(retriedRun?.detail?.dagState?.revisions?.length).toBeGreaterThanOrEqual(2);

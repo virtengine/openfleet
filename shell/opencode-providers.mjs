@@ -1,3 +1,4 @@
+// CLAUDE:SUMMARY — discovers OpenCode providers/models via SDK and CLI fallbacks, normalizing snapshots and tolerating ignorable model-listing failures.
 /**
  * opencode-providers.mjs  — Dynamic OpenCode provider & model discovery
  *
@@ -741,14 +742,16 @@ export async function discoverProviders(opts = {}) {
       console.warn(
         `[opencode-providers] SDK discovery hit ignorable provider error; falling back to CLI: ${err.message}`,
       );
-      snapshot = buildEmptySnapshot();
+      snapshot = null;
     }
   }
 
-  const sdkSnapshotWasEmpty = isEmptySnapshot(snapshot);
+  const sdkDiscoveryFailed = snapshot == null;
 
-  // Fall back to CLI
-  if (!snapshot || sdkSnapshotWasEmpty) {
+  // Fall back to CLI only when SDK discovery was unavailable or failed.
+  // A successful-but-empty SDK response is authoritative for older SDK
+  // compatibility probes and disconnected environments.
+  if (sdkDiscoveryFailed) {
     snapshot = await discoverViaCLI();
   }
 
@@ -883,6 +886,7 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
 
 
 

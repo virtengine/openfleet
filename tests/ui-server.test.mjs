@@ -2959,7 +2959,7 @@ describe("ui-server mini app", () => {
     expect(detail.data.meta.linkedSessionIds).toContain("session-linked-task-1");
   }, 20000);
 
-  it("preserves stored workflow session links while adding primary session ids from workflow detail", async () => {
+  it("preserves stored workflow session links while merging summary metadata without rereading run detail files", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-merge-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_HOME = isolatedDir;
@@ -2970,28 +2970,11 @@ describe("ui-server mini app", () => {
     const mod = await import("../server/ui-server.mjs");
     const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
     const fakeEngine = {
-      getRunHistory: vi.fn(() => [{ runId: "run-merge-1" }]),
-      getRunDetail: vi.fn(() => ({
-        runId: "run-merge-1",
-        workflowId: "wf-merge-1",
-        workflowName: "Merged workflow",
-        status: "completed",
-        startedAt: "2026-03-15T12:00:00.000Z",
-        endedAt: "2026-03-15T12:02:00.000Z",
-        duration: 120000,
-        detail: {
-          data: {
-            taskId: "__task__",
-            sessionId: "derived-session-1",
-          },
-        },
-      })),
-      getTaskTraceEvents: vi.fn(() => [
-        {
-          taskId: "__task__",
-          meta: { sessionId: "trace-session-1" },
-        },
-      ]),
+      getRunHistory: vi.fn(() => []),
+      getRunDetail: vi.fn(() => {
+        throw new Error("run detail should not be loaded when summary metadata is present");
+      }),
+      getTaskTraceEvents: vi.fn(() => []),
       registerTaskTraceHook: vi.fn(),
       load: vi.fn(),
     };
@@ -3018,25 +3001,20 @@ describe("ui-server mini app", () => {
       expect(created.ok).toBe(true);
       const taskId = created.data.id;
 
-      fakeEngine.getRunDetail.mockImplementation(() => ({
-        runId: "run-merge-1",
-        workflowId: "wf-merge-1",
-        workflowName: "Merged workflow",
-        status: "completed",
-        startedAt: "2026-03-15T12:00:00.000Z",
-        endedAt: "2026-03-15T12:02:00.000Z",
-        duration: 120000,
-        detail: {
-          data: {
-            taskId,
-            sessionId: "derived-session-1",
-          },
-        },
-      }));
-      fakeEngine.getTaskTraceEvents.mockImplementation(() => [
+      fakeEngine.getRunHistory.mockImplementation(() => [
         {
+          runId: "run-merge-1",
+          workflowId: "wf-merge-1",
+          workflowName: "Merged workflow",
+          status: "completed",
+          startedAt: "2026-03-15T12:00:00.000Z",
+          endedAt: "2026-03-15T12:02:00.000Z",
+          duration: 120000,
           taskId,
-          meta: { sessionId: "trace-session-1" },
+          taskIds: [taskId],
+          sessionId: "derived-session-1",
+          primarySessionId: "derived-session-1",
+          sessionIds: ["derived-session-1"],
         },
       ]);
 
@@ -3067,6 +3045,8 @@ describe("ui-server mini app", () => {
         primarySessionId: "derived-session-1",
       });
       expect(mergedRun.meta?.sessionId).toBe("stored-session-1");
+      expect(fakeEngine.getRunDetail).not.toHaveBeenCalled();
+      expect(fakeEngine.getTaskTraceEvents).not.toHaveBeenCalled();
     } finally {
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
@@ -4456,7 +4436,7 @@ describe("ui-server mini app", () => {
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
-  });
+  }, process.platform === "win32" ? 30000 : 15000);
 
   it("sources agent-run analytics from completed session history when session-start events are stale", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-usage-"));

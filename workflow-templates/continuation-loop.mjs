@@ -118,6 +118,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       sdk: "{{sdk}}",
       model: "{{model}}",
       timeoutMs: "{{timeoutMs}}",
+      requireTaskPromptCompleteness: false,
       failOnError: false,
     }, { x: 800, y: 1000 }),
 
@@ -161,7 +162,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
 
     node("stuck-check", "condition.expression", "Session Stuck?", {
       expression:
-        String.raw`(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return true; if (lastProgressAt <= 0) return false; return (Date.now() - lastProgressAt) >= stuckThresholdMs; })()`,
+        String.raw`(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()`,
     }, { x: 980, y: 1820, outputs: ["yes", "no"] }),
 
     node("emit-stuck", "action.emit_event", "Emit session-stuck", {
@@ -179,6 +180,9 @@ export const CONTINUATION_LOOP_TEMPLATE = {
         lastProgressSignature: "{{lastProgressSignature}}",
         currentProgressSignature: "{{currentProgressSignature}}",
         placeholderResponse: "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
+        agentActivityDetected: "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
+        agentItemCount: "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
+        agentStreamCount: "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
         progressSnapshot: "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
         lastAgentSuccess: "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
         lastAgentOutput: "{{$ctx.getNodeOutput('run-agent')?.output || ''}}",
@@ -218,6 +222,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       sdk: "{{sdk}}",
       model: "{{model}}",
       timeoutMs: "{{timeoutMs}}",
+      requireTaskPromptCompleteness: false,
       failOnError: false,
     }, { x: 760, y: 1830 }),
 
@@ -331,7 +336,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-03-10T00:00:00Z",
-    templateVersion: "1.1.0",
+    templateVersion: "1.2.0",
     tags: ["continuation", "loop", "linear", "external-status", "stuck-detection"],
     configType: "continuation-loop",
   },

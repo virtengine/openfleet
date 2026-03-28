@@ -3294,6 +3294,10 @@ describe("action.push_branch", () => {
   it("schema has push safety options including skipHooks", () => {
     const nt = getNodeType("action.push_branch");
     expect(nt.schema.properties.rebaseBeforePush).toBeDefined();
+    expect(nt.schema.properties.mergeBaseBeforePush).toBeDefined();
+    expect(nt.schema.properties.mergeBaseBeforePush.default).toBe(false);
+    expect(nt.schema.properties.autoResolveMergeConflicts).toBeDefined();
+    expect(nt.schema.properties.conflictResolverSdk).toBeDefined();
     expect(nt.schema.properties.skipHooks).toBeDefined();
     expect(nt.schema.properties.skipHooks.default).toBe(true);
     expect(nt.schema.properties.emptyDiffGuard).toBeDefined();
@@ -3808,6 +3812,18 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "handoff-pr-progressor" && e.target === "log-success")).toBeDefined();
   });
 
+  it("routes implementation-complete push failures to blocked", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const blockedPush = t.nodes.find((n) => n.id === "set-blocked-push-failed");
+
+    expect(blockedPush).toBeDefined();
+    expect(blockedPush?.config?.status).toBe("blocked");
+    expect(blockedPush?.config?.blockedReason).toContain("push-branch");
+    expect(t.edges.find((e) => e.source === "push-ok" && e.target === "push-failure-blocking")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "push-failure-blocking" && e.target === "set-blocked-push-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "push-failure-blocking" && e.target === "set-todo-push-failed")).toBeDefined();
+  });
+
   it("runs pre-PR validation before pushing", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t.edges.find((e) => e.source === "has-commits" && e.target === "pre-pr-validation")).toBeDefined();
@@ -3836,6 +3852,7 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "set-todo-stolen" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "log-claim-stolen-recovered" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-push-failed" && e.target === "join-outcomes")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-blocked-push-failed" && e.target === "join-outcomes")).toBeDefined();
     // join-outcomes → release-worktree
     expect(t.edges.find((e) => e.source === "join-outcomes" && e.target === "release-worktree")).toBeDefined();
     // release-worktree → release-claim → release-slot

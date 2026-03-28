@@ -156,7 +156,7 @@ describe("continuation-loop template integration", () => {
     expect(ctx.getNodeStatus("stuck-escalate-budget")).toBe("completed");
     expect(ctx.getNodeStatus("end-escalated")).toBe("completed");
     expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(3);
-  }, 15000);
+  }, process.platform === "win32" ? 30000 : 15000);
 
   it("treats bare continued responses as an immediate stuck signal when no progress changes", async () => {
     const kanban = {

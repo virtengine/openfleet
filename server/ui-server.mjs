@@ -168,6 +168,7 @@ import {
   getManifestPath,
   scaffoldAgentProfiles,
   getBosunHomeDir,
+  hasUnresolvedTemplateTokens,
   syncAutoDiscoveredLibraryEntries,
   resolveAgentProfileLibraryMetadata,
 } from "../infra/library-manager.mjs";
@@ -1915,17 +1916,34 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
     const out = [];
     for (const summary of summaries) {
       if (!summary?.runId) continue;
-      const detail = engine.getRunDetail ? engine.getRunDetail(summary.runId) : null;
-      if (!detail?.detail) continue;
-      const data = detail.detail?.data || {};
-      const primaryTaskId = String(data.taskId || data.activeTaskId || data?.task?.id || "").trim();
-      let matches = primaryTaskId === normalizedTaskId;
+      const summaryTaskIds = Array.isArray(summary?.taskIds)
+        ? summary.taskIds.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      const primaryTaskId = String(summary?.taskId || "").trim();
+      let matches = primaryTaskId === normalizedTaskId || summaryTaskIds.includes(normalizedTaskId);
+      let data = {};
+      let traceEvents = [];
+      if (!matches && engine.getRunDetail) {
+        const detail = engine.getRunDetail(summary.runId);
+        if (!detail?.detail) continue;
+        data = detail.detail?.data || {};
+        const detailTaskId = String(data.taskId || data.activeTaskId || data?.task?.id || "").trim();
+        matches = detailTaskId === normalizedTaskId;
+      }
       if (!matches && typeof engine.getTaskTraceEvents === "function") {
-        const traceEvents = engine.getTaskTraceEvents(summary.runId) || [];
+        traceEvents = engine.getTaskTraceEvents(summary.runId) || [];
         matches = traceEvents.some((event) => String(event?.taskId || "").trim() === normalizedTaskId);
       }
       if (!matches) continue;
       const primarySessionId = (() => {
+        for (const value of [
+          summary?.primarySessionId,
+          summary?.sessionId,
+          ...(Array.isArray(summary?.sessionIds) ? summary.sessionIds : []),
+        ]) {
+          const normalized = String(value || "").trim();
+          if (normalized) return normalized;
+        }
         for (const value of [
           data.sessionId,
           data.threadId,
@@ -1935,9 +1953,6 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
           const normalized = String(value || "").trim();
           if (normalized) return normalized;
         }
-        const traceEvents = typeof engine.getTaskTraceEvents === "function"
-          ? engine.getTaskTraceEvents(summary.runId) || []
-          : [];
         for (let index = traceEvents.length - 1; index >= 0; index -= 1) {
           const event = traceEvents[index];
           for (const value of [
@@ -1953,17 +1968,17 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
         return null;
       })();
       out.push({
-        runId: detail.runId,
-        workflowId: detail.workflowId,
-        workflowName: detail.workflowName,
-        status: detail.status,
-        outcome: detail.status,
-        summary: detail.status === "failed"
-          ? `Workflow run failed (${detail.workflowName || detail.workflowId || detail.runId})`
-          : `Workflow run ${detail.status || "completed"} (${detail.workflowName || detail.workflowId || detail.runId})`,
-        startedAt: detail.startedAt || null,
-        endedAt: detail.endedAt || null,
-        duration: detail.duration || null,
+        runId: summary.runId,
+        workflowId: summary.workflowId,
+        workflowName: summary.workflowName,
+        status: summary.status,
+        outcome: summary.status,
+        summary: summary.status === "failed"
+          ? `Workflow run failed (${summary.workflowName || summary.workflowId || summary.runId})`
+          : `Workflow run ${summary.status || "completed"} (${summary.workflowName || summary.workflowId || summary.runId})`,
+        startedAt: summary.startedAt || null,
+        endedAt: summary.endedAt || null,
+        duration: summary.duration || null,
         sessionId: null,
         primarySessionId,
         source: "workflow",
@@ -2668,30 +2683,41 @@ async function collectBenchmarkWorkflowRuns(reqUrl, taskIds = new Set(), limit =
     const runs = [];
     for (const summary of summaries) {
       if (!summary?.runId) continue;
-      const detail = wfCtx.engine.getRunDetail ? wfCtx.engine.getRunDetail(summary.runId) : null;
-      if (!detail?.detail) continue;
-      const data = detail.detail?.data || {};
-      const primaryTaskId = String(
-        data.taskId || data.activeTaskId || data?.task?.id || "",
-      ).trim();
+      const summaryTaskIds = Array.isArray(summary?.taskIds)
+        ? summary.taskIds.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      const primaryTaskId = String(summary?.taskId || "").trim();
       let matches = Boolean(primaryTaskId && taskIds.has(primaryTaskId));
+      if (!matches && summaryTaskIds.length > 0) {
+        matches = summaryTaskIds.some((taskId) => taskIds.has(taskId));
+      }
+      if (!matches && typeof wfCtx.engine.getRunDetail === "function") {
+        const detail = wfCtx.engine.getRunDetail(summary.runId);
+        if (detail?.detail) {
+          const data = detail.detail?.data || {};
+          const detailTaskId = String(
+            data.taskId || data.activeTaskId || data?.task?.id || "",
+          ).trim();
+          matches = Boolean(detailTaskId && taskIds.has(detailTaskId));
+        }
+      }
       if (!matches && typeof wfCtx.engine.getTaskTraceEvents === "function") {
         const traceEvents = wfCtx.engine.getTaskTraceEvents(summary.runId) || [];
         matches = traceEvents.some((event) => taskIds.has(String(event?.taskId || "").trim()));
       }
       if (!matches) continue;
       runs.push({
-        runId: detail.runId,
-        workflowId: detail.workflowId,
-        workflowName: detail.workflowName,
-        status: detail.status,
-        startedAt: detail.startedAt || null,
-        endedAt: detail.endedAt || null,
-        duration: detail.duration || null,
+        runId: summary.runId,
+        workflowId: summary.workflowId,
+        workflowName: summary.workflowName,
+        status: summary.status,
+        startedAt: summary.startedAt || null,
+        endedAt: summary.endedAt || null,
+        duration: summary.duration || null,
         summary:
-          detail.status === "failed"
-            ? `Workflow run failed (${detail.workflowName || detail.workflowId || detail.runId})`
-            : `Workflow run ${detail.status || "completed"} (${detail.workflowName || detail.workflowId || detail.runId})`,
+          summary.status === "failed"
+            ? `Workflow run failed (${summary.workflowName || summary.workflowId || summary.runId})`
+            : `Workflow run ${summary.status || "completed"} (${summary.workflowName || summary.workflowId || summary.runId})`,
       });
       if (runs.length >= limit) break;
     }
@@ -4009,6 +4035,7 @@ function normalizeCandidatePath(input) {
   if (!input) return "";
   const raw = String(input).trim();
   if (!raw) return "";
+  if (hasUnresolvedTemplateTokens(raw)) return "";
   try {
     return resolve(raw);
   } catch {

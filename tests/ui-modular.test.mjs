@@ -10,6 +10,10 @@ import {
   undoHistory,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
 import {
+  buildNodeStatusesFromRunDetail as buildSiteNodeStatusesFromRunDetail,
+  searchNodeTypes as searchSiteNodeTypes,
+} from "../site/ui/tabs/workflow-canvas-utils.mjs";
+import {
   SETTINGS_SCHEMA as appSettingsSchema,
   validateSetting as validateAppSetting,
 } from "../ui/modules/settings-schema.js";
@@ -108,6 +112,24 @@ describe("workflow canvas helpers", () => {
     expect(workflowsSource).toContain("const WORKFLOW_NODE_HEADER_HEIGHT = 44;");
     expect(workflowsSource).toContain("const NODE_HEADER = WORKFLOW_NODE_HEADER_HEIGHT;");
     expect(workflowsSource).toContain("const NODE_HEADER_H = WORKFLOW_NODE_HEADER_HEIGHT;");
+  });
+
+  it("keeps the hosted demo workflow canvas helper importable and behaviorally aligned", () => {
+    const runDetail = {
+      detail: {
+        nodeStatuses: { "node-1": "completed" },
+        nodeStatusEvents: [{ nodeId: "node-2", status: "running" }],
+      },
+    };
+    const searchableNodes = [{
+      type: "action.run_agent",
+      category: "action",
+      description: "Run an autonomous agent task",
+      schema: { properties: { prompt: { type: "string" } } },
+    }];
+
+    expect(buildSiteNodeStatusesFromRunDetail(runDetail)).toEqual(buildNodeStatusesFromRunDetail(runDetail));
+    expect(searchSiteNodeTypes(searchableNodes, "agent")).toEqual(searchNodeTypes(searchableNodes, "agent"));
   });
 
   it("finds agent nodes with fuzzy partial matches", () => {

@@ -255,7 +255,7 @@ function parseRunnerCommand(command) {
 }
 
 
-function resolveLocalProcessLaunch(parsedCommand) {
+export function resolveLocalProcessLaunch(parsedCommand) {
   const executable = String(parsedCommand?.executable || "").trim();
   const args = Array.isArray(parsedCommand?.args) ? [...parsedCommand.args] : [];
   const raw = String(parsedCommand?.raw || "").trim();
@@ -273,7 +273,7 @@ function resolveLocalProcessLaunch(parsedCommand) {
       shell: true,
     };
   }
-  return { launchCommand: resolvePortableExecutable(executable), launchArgs: args, shell: false };
+  return { launchCommand: executable, launchArgs: args, shell: false };
 }
 
 function buildBlockedResult(policy, attemptCount, message, artifactRoot) {
@@ -517,4 +517,5 @@ export async function runCommandInHeavyRunnerLease({
     artifactRoot || policy.artifactDir,
   );
 }
+
 

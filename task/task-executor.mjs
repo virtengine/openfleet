@@ -3175,46 +3175,49 @@ class TaskExecutor {
         };
       }
 
-      writeFileSync(
-        RUNTIME_STATE_FILE,
-        JSON.stringify(
-          {
-            paused: this._paused,
-            pausedAt: this._pausedAt,
-            pauseUntil: this._pauseUntil,
-            pauseReason: this._pauseReason,
-            nextAgentInstanceId: this._nextAgentInstanceId,
-            repoAreaParallelLimit: this.repoAreaParallelLimit,
-            repoAreaDispatchCycles: this._repoAreaDispatchCycles,
-            repoAreaConflictCount: this._repoAreaConflictCount,
-            repoAreaFairQueueCursor: this._repoAreaFairQueueCursor,
-            repoAreaLockMetrics: Object.fromEntries(this._repoAreaLockMetrics),
-            repoAreaWorkerMetrics: Object.fromEntries(this._repoAreaWorkerMetrics),
-            repoAreaDispatchCycle: {
-              ...this._repoAreaDispatchCycle,
-              blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
-              saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
-              starvingAreas: [...(this._repoAreaDispatchCycle.starvingAreas || [])],
-              cycleAreaMetrics: { ...this._repoAreaDispatchCycle.cycleAreaMetrics },
-              areaLimits: { ...(this._repoAreaDispatchCycle.areaLimits || {}) },
-            },
-            repoAreaTelemetry: Object.fromEntries(this._repoAreaTelemetry),
-            repoAreaBlockedTasks: Object.fromEntries(this._repoAreaBlockedTasks),
-            repoAreaTaskAreas: Object.fromEntries(this._repoAreaTaskAreas),
-            repoAreaTaskStartedAt: Object.fromEntries(this._repoAreaTaskStartedAt),
-            repoAreaContentionEvents: this._repoAreaContentionEvents.slice(
-              -REPO_AREA_CONTENTION_EVENT_LIMIT,
-            ),
-            repoAreaDispatchHistory: this._repoAreaDispatchHistory.slice(-20),
-            repoAreaLockStatus: this._buildRepoAreaLockStatus(),
-            slots,
-            savedAt: new Date().toISOString(),
-          },
-          null,
-          2,
+      const payloadRecord = {
+        paused: this._paused,
+        pausedAt: this._pausedAt,
+        pauseUntil: this._pauseUntil,
+        pauseReason: this._pauseReason,
+        nextAgentInstanceId: this._nextAgentInstanceId,
+        repoAreaParallelLimit: this.repoAreaParallelLimit,
+        repoAreaDispatchCycles: this._repoAreaDispatchCycles,
+        repoAreaConflictCount: this._repoAreaConflictCount,
+        repoAreaFairQueueCursor: this._repoAreaFairQueueCursor,
+        repoAreaLockMetrics: Object.fromEntries(this._repoAreaLockMetrics),
+        repoAreaWorkerMetrics: Object.fromEntries(this._repoAreaWorkerMetrics),
+        repoAreaDispatchCycle: {
+          ...this._repoAreaDispatchCycle,
+          blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
+          saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
+          starvingAreas: [...(this._repoAreaDispatchCycle.starvingAreas || [])],
+          cycleAreaMetrics: { ...this._repoAreaDispatchCycle.cycleAreaMetrics },
+          areaLimits: { ...(this._repoAreaDispatchCycle.areaLimits || {}) },
+        },
+        repoAreaTelemetry: Object.fromEntries(this._repoAreaTelemetry),
+        repoAreaBlockedTasks: Object.fromEntries(this._repoAreaBlockedTasks),
+        repoAreaTaskAreas: Object.fromEntries(this._repoAreaTaskAreas),
+        repoAreaTaskStartedAt: Object.fromEntries(this._repoAreaTaskStartedAt),
+        repoAreaContentionEvents: this._repoAreaContentionEvents.slice(
+          -REPO_AREA_CONTENTION_EVENT_LIMIT,
         ),
-        "utf8",
+        repoAreaDispatchHistory: this._repoAreaDispatchHistory.slice(-20),
+        repoAreaLockStatus: this._buildRepoAreaLockStatus(),
+        slots,
+      };
+      const comparablePayload = JSON.stringify(payloadRecord);
+      if (comparablePayload === this._lastRuntimeStatePayload) return;
+      const payload = JSON.stringify(
+        {
+          ...payloadRecord,
+          savedAt: new Date().toISOString(),
+        },
+        null,
+        2,
       );
+      writeFileSync(RUNTIME_STATE_FILE, payload, "utf8");
+      this._lastRuntimeStatePayload = comparablePayload;
     } catch (err) {
       console.warn(`${TAG} failed to save runtime slot state: ${err.message}`);
     }
@@ -6328,4 +6331,3 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
-

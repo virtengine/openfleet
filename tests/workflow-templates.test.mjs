@@ -539,6 +539,22 @@ describe("workflow-templates", () => {
     expect(triggerNode?.config?.filter).toBeUndefined();
   });
 
+  it("backend agent template requires descriptive commit guidance", () => {
+    const template = getTemplate("template-backend-agent");
+    expect(template).toBeDefined();
+
+    const writeTests = template.nodes.find((n) => n.id === "write-tests");
+    const implement = template.nodes.find((n) => n.id === "implement");
+    const autoFix = template.nodes.find((n) => n.id === "auto-fix");
+
+    expect(String(writeTests?.config?.prompt || "")).toContain("descriptive test commit message");
+    expect(String(writeTests?.config?.prompt || "")).not.toContain("Commit with message \"test: add tests for [feature]\"");
+    expect(String(implement?.config?.prompt || "")).toContain("descriptive feat/fix commit message");
+    expect(String(implement?.config?.prompt || "")).not.toContain("Commit with message \"feat: implement [feature]\"");
+    expect(String(autoFix?.config?.prompt || "")).toContain("descriptive fix commit message");
+    expect(String(autoFix?.config?.prompt || "")).not.toContain("Commit with message \"fix: address validation failures\"");
+  });
+
   it("agent templates only advance to inreview after a real PR is linked", () => {
     const backendTemplate = getTemplate("template-backend-agent");
     expect(backendTemplate).toBeDefined();

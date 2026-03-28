@@ -34,13 +34,23 @@ function normalizeReviewDedupFragment(value) {
 function buildReviewNotificationDedupKey(taskId, result) {
   const issues = Array.isArray(result?.issues) ? result.issues : [];
   const issueFingerprint = issues
+    .map((issue) => ({
+      severity: normalizeReviewDedupFragment(issue?.severity),
+      category: normalizeReviewDedupFragment(issue?.category),
+      file: normalizeReviewDedupFragment(issue?.file),
+      line: Number.isFinite(Number(issue?.line)) ? Number(issue.line) : "",
+    }))
+    .sort((left, right) =>
+      `${left.file}:${left.line}:${left.category}:${left.severity}`.localeCompare(
+        `${right.file}:${right.line}:${right.category}:${right.severity}`,
+      ),
+    )
     .map((issue) =>
       [
-        normalizeReviewDedupFragment(issue?.severity),
-        normalizeReviewDedupFragment(issue?.category),
-        normalizeReviewDedupFragment(issue?.file),
-        Number.isFinite(Number(issue?.line)) ? Number(issue.line) : "",
-        normalizeReviewDedupFragment(issue?.description),
+        issue.severity,
+        issue.category,
+        issue.file,
+        issue.line,
       ].join(":"),
     )
     .join("|");
@@ -48,7 +58,6 @@ function buildReviewNotificationDedupKey(taskId, result) {
     "review",
     normalizeReviewDedupFragment(taskId),
     result?.approved ? "approved" : "changes_requested",
-    normalizeReviewDedupFragment(result?.summary),
     issueFingerprint,
   ].join("|");
 }

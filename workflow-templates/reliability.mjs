@@ -273,12 +273,12 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     }, { x: 400, y: 200 }),
 
     node("rotate-logs", "action.run_command", "Rotate Agent Logs", {
-      command: "find .bosun/logs -name '*.log' -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Rotated'",
+      command: "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','logs');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()&&entry.name.endsWith('.log')){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Rotated '+removed+'\\n');\"",
       continueOnError: true,
     }, { x: 650, y: 200 }),
 
     node("clean-evidence", "action.run_command", "Clean Old Evidence", {
-      command: "find .bosun/evidence -type f -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Cleaned'",
+      command: "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','evidence');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Cleaned '+removed+'\\n');\"",
       continueOnError: true,
     }, { x: 150, y: 380 }),
 

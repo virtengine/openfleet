@@ -65,3 +65,7 @@ reports/mutation/
 tmp/*
 
 node-compile-cache/*
+*/*.tmp
+*/*.log
+*.log
+*.tmp

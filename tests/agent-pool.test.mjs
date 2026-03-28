@@ -1845,6 +1845,37 @@ describe("launchOrResumeThread", () => {
 // 5. execWithRetry
 // ═══════════════════════════════════════════════════════════════════════════
 
+
+describe("sdk cooldown heuristics", () => {
+  it("treats 400 model-list failures as fallback-worthy but not cooldown-worthy errors", async () => {
+    const { __testables } = await import("../agent/agent-pool.mjs");
+    expect(__testables.shouldFallbackForSdkError("Error: Failed to list models: 400")).toBe(true);
+    expect(__testables.shouldApplySdkCooldown("Error: Failed to list models: 400")).toBe(false);
+  });
+
+  it("detects repeated reconnect fingerprints as retry circuit breakers", async () => {
+    const { __testables } = await import("../agent/agent-pool.mjs");
+    const failureFingerprints = new Map([
+      ["[agent-pool] copilot timeout after <ms> waiting for session.idle", 1],
+    ]);
+
+    const classified = __testables.classifyRetryCircuitBreak(
+      {
+        success: false,
+        error: "[agent-pool] copilot timeout after 120000ms waiting for session.idle",
+        output: "",
+        items: [],
+      },
+      {
+        failureFingerprints,
+        consecutiveNoOutputFailures: 0,
+      },
+    );
+
+    expect(classified.shouldBreak).toBe(true);
+    expect(classified.blockedReason).toBe("blocked_by_env");
+  });
+});
 describe("execWithRetry", () => {
   it("retries after timeout without treating the next attempt as externally aborted", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
@@ -1890,6 +1921,45 @@ describe("execWithRetry", () => {
     expect(result.attempts).toBe(2);
     expect(result.error).toBeNull();
     expect(result.output).toContain("recovered-output");
+  });
+
+  it("stops retrying after repeated no-output starts", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementation(() => ({
+      id: "timeout-thread-repeat",
+      runStreamed: async (_prompt, { signal } = {}) => {
+        await new Promise((_, reject) => {
+          const abortNow = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal?.aborted) {
+            abortNow();
+            return;
+          }
+          signal?.addEventListener("abort", abortNow, { once: true });
+        });
+      },
+    }));
+
+    const result = await execWithRetry("repeat no output", {
+      taskKey: "retry-no-output-task",
+      cwd: process.cwd(),
+      timeoutMs: 25,
+      maxRetries: 2,
+      sdk: "codex",
+      abortController: new AbortController(),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.retryCircuitBroken).toBe(true);
+    expect(result.blockedReason).toBe("no_output");
+    expect(result.attempts).toBe(2);
   });
 });
 
@@ -2014,6 +2084,7 @@ describe("resolution and launch integration", () => {
   });
 });
 }
+
 
 
 

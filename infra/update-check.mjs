@@ -100,7 +100,11 @@ function quoteCmdArg(arg) {
 
 function runWindowsCmd(candidate, args, options) {
   const cmdLine = [`"${candidate}"`, ...args.map(quoteCmdArg)].join(" ");
-  return execFileSync("cmd.exe", ["/d", "/s", "/c", cmdLine], options);
+  const cmdExe =
+    process.env.ComSpec ||
+    process.env.COMSPEC ||
+    join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe");
+  return execFileSync(cmdExe, ["/d", "/s", "/c", cmdLine], options);
 }
 
 function runNpmCommand(args, options = {}) {
@@ -894,6 +898,7 @@ export const __autoUpdateTestHooks = {
   isAutoUpdateDisabled,
   classifyInstallError,
   buildDisableNotice,
+  runWindowsCmd,
   AUTO_UPDATE_STATE_FILE,
   AUTO_UPDATE_FAILURE_LIMIT,
   AUTO_UPDATE_DISABLE_WINDOW_MS,

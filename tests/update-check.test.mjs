@@ -199,6 +199,27 @@ describe("update-check", () => {
       );
     });
 
+
+    it("uses ComSpec or SystemRoot cmd.exe for Windows shell fallback", () => {
+      const originalComSpec = process.env.ComSpec;
+      const originalCOMSPEC = process.env.COMSPEC;
+      const originalSystemRoot = process.env.SystemRoot;
+      process.env.ComSpec = "C:\\custom\\cmd.exe";
+      delete process.env.COMSPEC;
+      process.env.SystemRoot = "C:\\Windows";
+
+      const execSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+      try {
+        expect(() => runWindowsCmd("npm.cmd", ["install"], { stdio: "pipe" })).toThrow();
+        expect(execSpy).toBeDefined();
+      } finally {
+        execSpy.mockRestore();
+        if (originalComSpec === undefined) delete process.env.ComSpec; else process.env.ComSpec = originalComSpec;
+        if (originalCOMSPEC === undefined) delete process.env.COMSPEC; else process.env.COMSPEC = originalCOMSPEC;
+        if (originalSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalSystemRoot;
+      }
+    });
+
     it("re-enables when disable window expires", () => {
       const pastState = {
         failureCount: AUTO_UPDATE_FAILURE_LIMIT,

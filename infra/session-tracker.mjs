@@ -52,7 +52,71 @@ const MAX_MESSAGE_CHARS = 100_000;
 
 /** Maximum total sessions to keep in memory. */
 const MAX_SESSIONS = 100;
-const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "idle", "archived"]);
+const TERMINAL_SESSION_STATUSES = new Set([
+  "completed",
+  "failed",
+  "idle",
+  "archived",
+  "stalled",
+  "blocked_by_repo",
+  "blocked_by_env",
+  "no_output",
+  "implementation_done_commit_blocked",
+]);
+
+const SESSION_PLACEHOLDER_OUTPUTS = new Set([
+  "continued",
+  "model response continued",
+  "turn completed",
+  "session completed",
+  "agent is composing a response...",
+  "agent is composing a response…",
+]);
+
+const REPO_BLOCK_PATTERNS = [
+  /merge conflict/i,
+  /unmerged files/i,
+  /protected branch/i,
+  /non-fast-forward/i,
+  /failed to push/i,
+  /push rejected/i,
+  /cannot rebase/i,
+  /pre-push hook/i,
+  /hook declined/i,
+  /working tree has changes/i,
+  /index contains uncommitted changes/i,
+];
+
+const ENV_BLOCK_PATTERNS = [
+  /prompt quality/i,
+  /missing task (description|url)/i,
+  /missing tool/i,
+  /not recognized as an internal or external command/i,
+  /command not found/i,
+  /spawn .*enoent/i,
+  /enoent/i,
+  /permission denied/i,
+  /access is denied/i,
+  /authentication failed/i,
+  /not authenticated/i,
+  /missing credentials/i,
+  /token/i,
+  /connection refused/i,
+  /connection reset/i,
+  /network/i,
+  /timeout/i,
+  /sdk unavailable/i,
+  /failed to list models/i,
+];
+
+const COMMIT_BLOCK_PATTERNS = [
+  /commit blocked/i,
+  /implementation_done_commit_blocked/i,
+  /git commit/i,
+  /git push/i,
+  /pre-push hook/i,
+  /hook/i,
+];
 
 function isTerminalSessionStatus(status) {
   return TERMINAL_SESSION_STATUSES.has(String(status || "").trim().toLowerCase());
@@ -72,7 +136,84 @@ function resolveSessionTrackerPersistDir(options = {}) {
 export const _test = Object.freeze({
   resolveSessionTrackerSourceRepoRoot,
   resolveSessionTrackerPersistDir,
+  deriveTerminalSessionStatus,
 });
+
+function normalizeSessionStatus(status, fallback = "completed") {
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized || fallback;
+}
+
+function getSessionMessageText(message) {
+  return String(message?.content || message?.summary || "").trim();
+}
+
+function hasMeaningfulSessionOutput(session) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  return messages.some((message) => {
+    const text = getSessionMessageText(message);
+    if (!text) return false;
+    const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!normalized || SESSION_PLACEHOLDER_OUTPUTS.has(normalized)) return false;
+    const messageType = String(message?.type || "").trim().toLowerCase();
+    const messageRole = String(message?.role || "").trim().toLowerCase();
+    if (messageType === "agent_message" || messageType === "assistant" || messageRole === "assistant") {
+      return true;
+    }
+    if (message?.type === "tool_call" || message?.type === "tool_result") return true;
+    if (message?.type === "error") return true;
+    return /edit|write|create|patch|commit|push|search|diff|test/i.test(text);
+  });
+}
+
+function classifyBlockedSessionText(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (COMMIT_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "implementation_done_commit_blocked";
+  }
+  if (REPO_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "blocked_by_repo";
+  }
+  if (ENV_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "blocked_by_env";
+  }
+  return null;
+}
+
+function deriveIdleTerminalSessionStatus(session) {
+  return hasMeaningfulSessionOutput(session) ? "stalled" : "no_output";
+}
+
+function deriveTerminalSessionStatus(session, requestedStatus = "completed") {
+  const normalizedRequested = normalizeSessionStatus(requestedStatus);
+  if (
+    normalizedRequested !== "completed" &&
+    normalizedRequested !== "idle" &&
+    normalizedRequested !== "active"
+  ) {
+    return normalizedRequested;
+  }
+
+  if (normalizedRequested === "idle" || normalizedRequested === "active") {
+    return deriveIdleTerminalSessionStatus(session);
+  }
+
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  if (!messages.length || !hasMeaningfulSessionOutput(session)) {
+    return "no_output";
+  }
+
+  const recentText = messages
+    .slice(-8)
+    .map((message) => getSessionMessageText(message))
+    .filter(Boolean)
+    .join("\n");
+  const blockedStatus = classifyBlockedSessionText(recentText);
+  if (blockedStatus) return blockedStatus;
+
+  return "completed";
+}
 
 function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
   if (Number.isFinite(explicitMax)) {
@@ -97,12 +238,12 @@ function buildSessionRecordFromPersistedData(data, idleThresholdMs) {
   const lastActiveAt = String(data.lastActiveAt || data.updatedAt || "").trim() || createdAt;
   const lastActiveMs = Date.parse(lastActiveAt) || Date.parse(createdAt) || Date.now();
 
-  let status = String(data.status || "completed").trim() || "completed";
+  let status = normalizeSessionStatus(data.status || "completed");
   let endedAt = data.endedAt || null;
   if (status === "active" && lastActiveMs > 0) {
     const ageMs = Date.now() - lastActiveMs;
     if (ageMs > idleThresholdMs) {
-      status = "completed";
+      status = deriveIdleTerminalSessionStatus(data);
       endedAt = endedAt || lastActiveMs;
     }
   }
@@ -544,18 +685,18 @@ export class SessionTracker {
   /**
    * Mark a session as completed.
    * @param {string} taskId
-   * @param {"completed"|"failed"|"idle"} [status="completed"]
+   * @param {string} [status="completed"]
    */
   endSession(taskId, status = "completed") {
     const session = this.#sessions.get(taskId);
     if (!session) return;
 
     session.endedAt = Date.now();
-    session.status = status;
+    session.status = deriveTerminalSessionStatus(session, status);
     this.#refreshDerivedState(session);
     this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
-    emitSessionStateEvent(session, "session-ended", { status });
+    emitSessionStateEvent(session, "session-ended", { status: session.status });
   }
 
   /**
@@ -937,14 +1078,16 @@ export class SessionTracker {
   updateSessionStatus(sessionId, status) {
     const session = this.#sessions.get(sessionId);
     if (!session) return;
-    session.status = status;
-    if (status === "completed" || status === "archived" || status === "failed" || status === "idle") {
+    session.status = isTerminalSessionStatus(status)
+      ? deriveTerminalSessionStatus(session, status)
+      : normalizeSessionStatus(status, "active");
+    if (isTerminalSessionStatus(session.status)) {
       session.endedAt = Date.now();
     }
     this.#refreshDerivedState(session);
     this.#accumulateCompletedSession(session, sessionId);
     this.#markDirty(sessionId);
-    emitSessionStateEvent(session, "session-status", { status });
+    emitSessionStateEvent(session, "session-status", { status: session.status });
   }
 
   /**
@@ -1159,7 +1302,7 @@ export class SessionTracker {
       if (session.status !== "active") continue;
       const idleMs = now - (session.lastActivityAt || session.startedAt || now);
       if (idleMs > this.#idleThresholdMs) {
-        session.status = "completed";
+        session.status = deriveIdleTerminalSessionStatus(session);
         session.endedAt = now;
         this.#refreshDerivedState(session);
         this.#accumulateCompletedSession(session, id);

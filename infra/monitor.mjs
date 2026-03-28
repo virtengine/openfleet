@@ -1063,13 +1063,13 @@ async function ensureWorkflowAutomationEngine() {
 
 async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
   try {
-  if (!workflowAutomationEnabled) return false;
+  if (!workflowAutomationEnabled && !opts?.engine) return false;
   const dedupKey = String(opts?.dedupKey || "").trim();
   if (dedupKey && !allowWorkflowEvent(dedupKey)) {
     return false;
   }
 
-  const engine = await ensureWorkflowAutomationEngine();
+  const engine = opts?.engine || await ensureWorkflowAutomationEngine();
   if (!engine?.evaluateTriggers || !engine?.execute) return false;
 
   const payload = buildWorkflowEventPayload(eventType, eventData);
@@ -1086,7 +1086,8 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
   if (!Array.isArray(triggered) || triggered.length === 0) {
     return false;
   }
-
+  const awaitRuns = opts?.awaitRuns === true;
+  const runPromises = [];
   for (const match of triggered) {
     const workflowId = String(match?.workflowId || "").trim();
     if (!workflowId) continue;
@@ -1094,7 +1095,7 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
       ...payload,
       _triggeredBy: match?.triggeredBy || null,
     };
-    void engine
+    const runPromise = engine
       .execute(workflowId, runPayload)
       .then((ctx) => {
         const runId = ctx?.id || "unknown";
@@ -1105,17 +1106,34 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
         console.log(
           `[workflows] auto-run ${runStatus} workflow=${workflowId} runId=${runId} event=${eventType}`,
         );
+        return { workflowId, runId, runStatus, ctx };
       })
       .catch((err) => {
         console.warn(
           `[workflows] auto-run failed workflow=${workflowId} event=${eventType}: ${err?.message || err}`,
         );
+        if (awaitRuns) {
+          throw err;
+        }
+        return null;
       });
+    if (awaitRuns) {
+      runPromises.push(runPromise);
+    } else {
+      void runPromise;
+    }
   }
 
   console.log(
     `[workflows] event "${eventType}" triggered ${triggered.length} workflow run(s)`,
   );
+  if (awaitRuns) {
+    return {
+      triggered: true,
+      triggeredCount: triggered.length,
+      runs: (await Promise.all(runPromises)).filter(Boolean),
+    };
+  }
   return true;
   } catch (err) {
     console.warn(`[workflows] dispatchWorkflowEvent error for ${eventType}: ${err?.message || err}`);
@@ -5907,9 +5925,21 @@ async function checkMergedPRsAndUpdateTasks() {
       const taskStatus = String(task?.status || "").trim().toLowerCase();
       const allowsMergedRecovery =
         taskStatus === "todo" || taskStatus === "inprogress";
+      const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
+      const nowMs = Date.now();
+      const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
+      const ageMs = Number.isFinite(updatedAt) ? nowMs - updatedAt : Infinity;
+      const reviewVerdictCurrent = hasCurrentReviewVerdict(task);
+      const shouldRedispatchRejectedReview =
+        taskStatus === "inreview" &&
+        reviewStatus === "changes_requested" &&
+        reviewVerdictCurrent &&
+        ageMs > 2 * 60 * 1000 &&
+        !hasActiveSession(taskId) &&
+        !isReviewRedispatchCoolingDown(taskId, nowMs);
 
       const approved =
-        String(task?.reviewStatus || "").trim().toLowerCase() === "approved" ||
+        reviewStatus === "approved" ||
         isTaskReviewApprovedForFlow(taskId);
       // inreview tasks must always be checked — their PR may have merged even if
       // the review-approval flag was never set (e.g. FLOW_REQUIRE_REVIEW=false or
@@ -5951,11 +5981,15 @@ async function checkMergedPRsAndUpdateTasks() {
         // bouncing them back to todo. Allow a grace period to avoid racing a
         // freshly created PR that is not discoverable yet.
         if (allowsInreviewMergeCheck) {
-          const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
-          const nowMs = Date.now();
-          const ageMs = Number.isFinite(updatedAt) ? nowMs - updatedAt : Infinity;
-          const reviewVerdictCurrent = hasCurrentReviewVerdict(task);
-          if (
+          if (shouldRedispatchRejectedReview) {
+            console.warn(
+              `[monitor] review reconcile: inreview task ${taskId} still has current changes_requested findings — re-dispatching remediation`,
+            );
+            redispatchInReviewTask(task, "review-reconcile-changes-requested", {
+              workflowEvent: "task.review_fix_requested",
+            });
+            summary.redispatchedReviewFix = (summary.redispatchedReviewFix || 0) + 1;
+          } else if (
             ageMs > 2 * 60 * 1000 &&
             !reviewVerdictCurrent &&
             !isReviewRedispatchCoolingDown(taskId, nowMs)
@@ -5978,7 +6012,20 @@ async function checkMergedPRsAndUpdateTasks() {
       const prState = String(prInfo?.state || "").trim().toUpperCase();
       const mergedAt = String(prInfo?.mergedAt || prInfo?.merged_at || "").trim();
       const isMerged = prState === "MERGED" || Boolean(mergedAt);
-      if (!isMerged) continue;
+      if (!isMerged) {
+        if (shouldRedispatchRejectedReview) {
+          console.warn(
+            `[monitor] review reconcile: inreview task ${taskId} still has current changes_requested findings — re-dispatching remediation`,
+          );
+          redispatchInReviewTask(task, "review-reconcile-changes-requested", {
+            prNumber,
+            prUrl,
+            workflowEvent: "task.review_fix_requested",
+          });
+          summary.redispatchedReviewFix = (summary.redispatchedReviewFix || 0) + 1;
+        }
+        continue;
+      }
 
       const recoverySuffix = allowsMergedRecovery
         ? ` (status=${taskStatus || "unknown"})`
@@ -6962,13 +7009,7 @@ function hasCurrentReviewVerdict(task) {
     return false;
   }
   const reviewedAtMs = Date.parse(String(task?.reviewedAt || ""));
-  if (!Number.isFinite(reviewedAtMs)) {
-    return false;
-  }
-  const updatedAtMs = Date.parse(
-    String(task?.updatedAt || task?.updated_at || ""),
-  );
-  return !Number.isFinite(updatedAtMs) || updatedAtMs <= reviewedAtMs;
+  return Number.isFinite(reviewedAtMs);
 }
 
 function isTaskReviewApprovedForFlow(taskId) {
@@ -7037,6 +7078,7 @@ function redispatchInReviewTask(task, reason, extra = {}) {
   const taskId = String(task?.id || "").trim();
   if (!taskId) return false;
   const normalizedReason = String(reason || "inreview_redispatch").trim() || "inreview_redispatch";
+  const eventType = String(extra.workflowEvent || "task.assigned").trim() || "task.assigned";
   const now = Date.now();
   const existing = reviewRedispatchCooldownByTask.get(taskId);
   if (existing && now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS) {
@@ -7055,8 +7097,11 @@ function redispatchInReviewTask(task, reason, extra = {}) {
     parsePositivePrNumber(task?.pr_number) ||
     null;
   const prUrl = String(extra.prUrl || task?.prUrl || task?.pr_url || "").trim() || null;
+  const reviewIssues = Array.isArray(extra.reviewIssues)
+    ? extra.reviewIssues
+    : (Array.isArray(task?.reviewIssues) ? task.reviewIssues : []);
   queueWorkflowEvent(
-    "task.assigned",
+    eventType,
     {
       taskId,
       taskTitle,
@@ -7065,10 +7110,13 @@ function redispatchInReviewTask(task, reason, extra = {}) {
       worktreePath,
       prNumber,
       prUrl,
+      reviewStatus: String(task?.reviewStatus || "").trim() || null,
+      reviewIssues,
+      reviewIssueCount: reviewIssues.length,
       reviewRedispatchReason: normalizedReason,
       ...extra,
     },
-    { dedupKey: `workflow-event:task.assigned:${taskId}:inreview:${normalizedReason}` },
+    { dedupKey: `workflow-event:${eventType}:${taskId}:inreview:${normalizedReason}` },
   );
   return true;
 }
@@ -10535,7 +10583,8 @@ function installDependencies() {
     return res.status === 0;
   }
 
-  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";`r`n  const npm = spawnSync(npmCommand, ["install"], { cwd, stdio: "inherit" });
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  const npm = spawnSync(npmCommand, ["install"], { cwd, stdio: "inherit" });
   return npm.status === 0;
 }
 
@@ -14611,6 +14660,17 @@ if (isExecutorDisabled()) {
           setInternalTaskStatus(taskId, status, source),
         updateTask: (taskId, updates) =>
           updateInternalTask(taskId, updates),
+        retryReviewThreshold: Number(internalExecutorConfig?.retryReviewThreshold || 0),
+        retryDelayMs: Number(internalExecutorConfig?.retryDelayMs || 15_000),
+        onRetryThresholdExceeded: ({ taskId }) => {
+          const normalizedTaskId = String(taskId || "").trim();
+          if (!normalizedTaskId) return;
+          const task = getInternalTask(normalizedTaskId);
+          if (!task) return;
+          redispatchInReviewTask(task, "retry-threshold-review-fix", {
+            workflowEvent: "task.review_fix_requested",
+          });
+        },
         // broadcastUiEvent is wired later when UI server starts via
         // injectUiDependencies → setBroadcastFn pattern
       });
@@ -14708,6 +14768,7 @@ if (isExecutorDisabled()) {
           );
           redispatchInReviewTask(task || { id: normalizedTaskId, title: normalizedTaskId }, "review-fix-redispatch", {
             reviewIssueCount: issueCount,
+            reviewIssues: issueList,
             workflowEvent: "task.review_fix_requested",
           });
         },
@@ -14828,7 +14889,19 @@ if (isExecutorDisabled()) {
             for (const task of pending) {
               const taskId = String(task?.id || "").trim();
               if (!taskId) continue;
+              const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
               if (hasCurrentReviewVerdict(task)) {
+                if (
+                  reviewStatus === "changes_requested" &&
+                  !hasActiveSession(taskId) &&
+                  !isReviewRedispatchCoolingDown(taskId)
+                ) {
+                  redispatchInReviewTask(task, "review-agent-rehydrate-review-fix", {
+                    workflowEvent: "task.review_fix_requested",
+                  });
+                  redispatchedMissingRefs += 1;
+                  continue;
+                }
                 skippedReviewed += 1;
                 continue;
               }
@@ -15151,6 +15224,7 @@ export {
   // Container runner re-exports
   getContainerStatus,
   isContainerEnabled,
+  dispatchWorkflowEvent,
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };

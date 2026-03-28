@@ -500,6 +500,459 @@ export function buildPlannerSkipReasonHistogram(skipped = []) {
   return histogram;
 }
 
+const DEFAULT_PLANNER_PRIOR_RANKING_CONFIG = Object.freeze({
+  failureThreshold: 2,
+  failurePriorStep: 1.5,
+  maxNegativePrior: 8,
+  signalPenaltyScale: 0.12,
+});
+
+const DEFAULT_PLANNER_FEEDBACK_WEIGHTS = Object.freeze({
+  agentAttempts: 0.6,
+  consecutiveNoCommits: 1.3,
+  blockedReason: 1.8,
+  debtTrend: 0.7,
+  commitSuccess: 2.2,
+  completedSuccess: 0.8,
+});
+
+function normalizePlannerTaskArchetype(task) {
+  const explicitArchetype = String(
+    task?.archetype || task?.taskArchetype || task?.task_archetype || "",
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9()_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (explicitArchetype) return explicitArchetype;
+  const title = String(task?.title || "").trim().toLowerCase();
+  if (!title) return "general";
+  const withoutPrefix = title.replace(/^\[[^\]]+\]\s*/, "").trim();
+  const scoped = withoutPrefix.match(/^([a-z][a-z0-9_-]*)\(([^)]+)\)\s*:/);
+  if (scoped) return scoped[1];
+  const typed = withoutPrefix.match(/^([a-z][a-z0-9_-]*)\s*:/);
+  if (typed) return typed[1];
+  const fallback = withoutPrefix
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .join("_");
+  return fallback || "general";
+}
+
+function resolvePlannerPatternKeys(task) {
+  const archetype = normalizePlannerTaskArchetype(task);
+  const areas = resolveTaskRepoAreas(task);
+  const normalizedAreas = areas.length > 0
+    ? areas.map((area) => normalizePlannerAreaKey(area)).filter(Boolean)
+    : ["global"];
+  return normalizedAreas.map((area) => `${area}::${archetype}`);
+}
+
+function resolvePlannerDebtTrendSignal(task) {
+  const numericCandidates = [
+    task?.debt_trend,
+    task?.debtTrend,
+    task?.meta?.debt_trend,
+    task?.meta?.debtTrend,
+    task?.meta?.planner?.debt_trend,
+    task?.meta?.planner?.debtTrend,
+    task?.meta?.planner?.debt_growth,
+    task?.meta?.planner?.debtGrowth,
+  ];
+  for (const candidate of numericCandidates) {
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) {
+      return Math.max(0, Math.min(5, Math.abs(numeric)));
+    }
+  }
+
+  const textCandidates = [
+    task?.debt_trend,
+    task?.debtTrend,
+    task?.meta?.debt_trend,
+    task?.meta?.debtTrend,
+    task?.meta?.planner?.debt_trend,
+    task?.meta?.planner?.debtTrend,
+    task?.meta?.planner?.why_now,
+    task?.meta?.planner?.whyNow,
+    task?.description,
+  ]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
+  for (const text of textCandidates) {
+    if (/(worsen|worsening|increase|increasing|growth|growing|upward|regress)/.test(text)) {
+      return 2;
+    }
+    if (/(stable|flat|neutral|steady)/.test(text)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+function hasTaskCommitEvidence(task) {
+  const commitCandidates = [
+    task?.hasCommits,
+    task?.meta?.hasCommits,
+    task?.meta?.execution?.hasCommits,
+    task?.meta?.execution?.commitCount,
+    task?.meta?.execution?.commits,
+    task?.commitCount,
+    task?.commits,
+    task?.meta?.commits,
+  ];
+  for (const candidate of commitCandidates) {
+    if (typeof candidate === "boolean") return candidate;
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric) && numeric > 0) return true;
+    if (Array.isArray(candidate) && candidate.length > 0) return true;
+  }
+  return false;
+}
+
+function createEmptyPlannerPatternPrior() {
+  return {
+    failureCount: 0,
+    successCount: 0,
+    failureWeight: 0,
+    successWeight: 0,
+    failureCounter: 0,
+    commitlessFailureCount: 0,
+    commitlessSuccessCount: 0,
+    commitlessFailureCounter: 0,
+    signalTotals: {
+      agentAttempts: 0,
+      consecutiveNoCommits: 0,
+      blockedReason: 0,
+      debtTrend: 0,
+    },
+    lastUpdatedAt: null,
+  };
+}
+
+function normalizePlannerPatternPrior(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return createEmptyPlannerPatternPrior();
+  }
+  const base = createEmptyPlannerPatternPrior();
+  const signalTotals = entry.signalTotals && typeof entry.signalTotals === "object"
+    ? entry.signalTotals
+    : {};
+  return {
+    ...base,
+    ...entry,
+    signalTotals: {
+      agentAttempts: Number(signalTotals.agentAttempts || 0),
+      consecutiveNoCommits: Number(signalTotals.consecutiveNoCommits || 0),
+      blockedReason: Number(signalTotals.blockedReason || 0),
+      debtTrend: Number(signalTotals.debtTrend || 0),
+    },
+  };
+}
+
+function resolvePlannerOutcomeSignals(task, weights) {
+  const attempts = Math.max(0, Number(task?.agentAttempts || task?.meta?.agentAttempts || 0));
+  const noCommits = Math.max(
+    0,
+    Number(task?.consecutiveNoCommits || task?.meta?.consecutiveNoCommits || 0),
+  );
+  const blockedReason = String(task?.blockedReason || task?.meta?.blockedReason || "").trim();
+  const debtTrendSignal = resolvePlannerDebtTrendSignal(task);
+  const commitEvidence = hasTaskCommitEvidence(task);
+  const status = String(task?.status || "").trim().toLowerCase();
+  const completedStatus = ["done", "completed", "closed", "merged"].includes(status);
+  const agentAttemptsPenalty = commitEvidence ? 0 : (attempts * weights.agentAttempts);
+  const consecutiveNoCommitsPenalty = noCommits * weights.consecutiveNoCommits;
+  const blockedPenalty = blockedReason ? weights.blockedReason : 0;
+  const debtTrendPenalty = debtTrendSignal * weights.debtTrend;
+  const failureWeight =
+    agentAttemptsPenalty +
+    consecutiveNoCommitsPenalty +
+    blockedPenalty +
+    debtTrendPenalty;
+  const successWeight =
+    (commitEvidence ? weights.commitSuccess : 0) +
+    ((completedStatus && !blockedReason) ? weights.completedSuccess : 0);
+  const commitlessFailureEvent = attempts > 0 && !commitEvidence;
+
+  return {
+    attempts,
+    noCommits,
+    blockedReason,
+    debtTrendSignal,
+    commitEvidence,
+    commitlessFailureEvent,
+    failureWeight,
+    successWeight,
+    failureComponents: {
+      agentAttemptsPenalty,
+      consecutiveNoCommitsPenalty,
+      blockedPenalty,
+      debtTrendPenalty,
+    },
+  };
+}
+
+export function resolvePlannerPriorStatePath() {
+  const configured = String(process.env.BOSUN_PLANNER_PATTERN_PRIORS_FILE || "").trim();
+  if (configured) return configured;
+  return resolve(process.cwd(), ".bosun", "workflow-runs", "planner-pattern-priors.json");
+}
+
+export function shouldPersistPlannerPriorState() {
+  if (String(process.env.BOSUN_DISABLE_PLANNER_PATTERN_PRIORS || "").trim().toLowerCase() === "true") {
+    return false;
+  }
+  if (process.env.VITEST && process.env.BOSUN_TEST_ENABLE_PLANNER_PRIOR_PERSISTENCE !== "true") {
+    return false;
+  }
+  return true;
+}
+
+export function loadPlannerPriorState(statePath) {
+  const base = { version: 1, patterns: {}, outcomes: {} };
+  if (!statePath || !existsSync(statePath)) return base;
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    if (!parsed || typeof parsed !== "object") return base;
+    return {
+      version: 1,
+      patterns:
+        parsed.patterns && typeof parsed.patterns === "object"
+          ? Object.fromEntries(
+            Object.entries(parsed.patterns).map(([key, value]) => [
+              key,
+              normalizePlannerPatternPrior(value),
+            ]),
+          )
+          : {},
+      outcomes: parsed.outcomes && typeof parsed.outcomes === "object" ? parsed.outcomes : {},
+    };
+  } catch {
+    return base;
+  }
+}
+
+export function savePlannerPriorState(statePath, state) {
+  if (!statePath) return;
+  try {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  } catch {
+    // Best-effort persistence only.
+  }
+}
+
+export function resolvePlannerPriorRankingConfig(candidate = null) {
+  const source = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? candidate
+    : {};
+  return {
+    failureThreshold: Math.max(1, Number(
+      source.failureThreshold ?? source.failurePriorThreshold ?? DEFAULT_PLANNER_PRIOR_RANKING_CONFIG.failureThreshold,
+    ) || DEFAULT_PLANNER_PRIOR_RANKING_CONFIG.failureThreshold),
+    failurePriorStep: Math.max(0, Number(
+      source.failurePriorStep ?? DEFAULT_PLANNER_PRIOR_RANKING_CONFIG.failurePriorStep,
+    ) || DEFAULT_PLANNER_PRIOR_RANKING_CONFIG.failurePriorStep),
+    maxNegativePrior: Math.max(0, Number(
+      source.maxNegativePrior ?? source.maxFailurePriorPenalty ?? DEFAULT_PLANNER_PRIOR_RANKING_CONFIG.maxNegativePrior,
+    ) || DEFAULT_PLANNER_PRIOR_RANKING_CONFIG.maxNegativePrior),
+    signalPenaltyScale: Math.max(0, Number(
+      source.signalPenaltyScale ?? source.feedbackSignalScale ?? DEFAULT_PLANNER_PRIOR_RANKING_CONFIG.signalPenaltyScale,
+    ) || DEFAULT_PLANNER_PRIOR_RANKING_CONFIG.signalPenaltyScale),
+  };
+}
+
+export function resolvePlannerPriorFeedbackWeights(candidate = null) {
+  const source = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? candidate
+    : {};
+  return {
+    agentAttempts: Math.max(0, Number(source.agentAttempts ?? DEFAULT_PLANNER_FEEDBACK_WEIGHTS.agentAttempts) || DEFAULT_PLANNER_FEEDBACK_WEIGHTS.agentAttempts),
+    consecutiveNoCommits: Math.max(0, Number(source.consecutiveNoCommits ?? DEFAULT_PLANNER_FEEDBACK_WEIGHTS.consecutiveNoCommits) || DEFAULT_PLANNER_FEEDBACK_WEIGHTS.consecutiveNoCommits),
+    blockedReason: Math.max(0, Number(source.blockedReason ?? DEFAULT_PLANNER_FEEDBACK_WEIGHTS.blockedReason) || DEFAULT_PLANNER_FEEDBACK_WEIGHTS.blockedReason),
+    debtTrend: Math.max(0, Number(source.debtTrend ?? DEFAULT_PLANNER_FEEDBACK_WEIGHTS.debtTrend) || DEFAULT_PLANNER_FEEDBACK_WEIGHTS.debtTrend),
+    commitSuccess: Math.max(0, Number(source.commitSuccess ?? DEFAULT_PLANNER_FEEDBACK_WEIGHTS.commitSuccess) || DEFAULT_PLANNER_FEEDBACK_WEIGHTS.commitSuccess),
+    completedSuccess: Math.max(0, Number(source.completedSuccess ?? DEFAULT_PLANNER_FEEDBACK_WEIGHTS.completedSuccess) || DEFAULT_PLANNER_FEEDBACK_WEIGHTS.completedSuccess),
+  };
+}
+
+export function replayPlannerOutcomes(existingTasks, priorState, weights) {
+  if (!priorState || typeof priorState !== "object") return;
+  if (!Array.isArray(existingTasks) || existingTasks.length === 0) return;
+  const resolvedWeights = resolvePlannerPriorFeedbackWeights(weights);
+  const nowIso = new Date().toISOString();
+  const maxOutcomes = 5000;
+  priorState.patterns = priorState.patterns && typeof priorState.patterns === "object" ? priorState.patterns : {};
+  priorState.outcomes = priorState.outcomes && typeof priorState.outcomes === "object" ? priorState.outcomes : {};
+
+  for (const task of existingTasks) {
+    const taskId = String(task?.id || task?.task_id || "").trim();
+    if (!taskId) continue;
+    const keys = resolvePlannerPatternKeys(task);
+    if (!keys.length) continue;
+    const signals = resolvePlannerOutcomeSignals(task, resolvedWeights);
+    const signature = JSON.stringify({
+      status: String(task?.status || "").trim().toLowerCase(),
+      attempts: signals.attempts,
+      noCommits: signals.noCommits,
+      blockedReason: signals.blockedReason.toLowerCase(),
+      debtTrendSignal: signals.debtTrendSignal,
+      hasCommits: hasTaskCommitEvidence(task),
+    });
+    if (priorState.outcomes?.[taskId]?.signature === signature) continue;
+    priorState.outcomes[taskId] = { signature, updatedAt: nowIso };
+
+    for (const key of keys) {
+      const current = normalizePlannerPatternPrior(priorState.patterns[key]);
+      const priorCounter = Math.max(0, Number(current.failureCounter || 0));
+      const priorCommitlessCounter = Math.max(0, Number(current.commitlessFailureCounter || 0));
+      if (signals.failureWeight > 0) {
+        current.failureCount = Number(current.failureCount || 0) + 1;
+        current.failureWeight = Number(current.failureWeight || 0) + signals.failureWeight;
+        current.signalTotals.agentAttempts += signals.failureComponents.agentAttemptsPenalty;
+        current.signalTotals.consecutiveNoCommits += signals.failureComponents.consecutiveNoCommitsPenalty;
+        current.signalTotals.blockedReason += signals.failureComponents.blockedPenalty;
+        current.signalTotals.debtTrend += signals.failureComponents.debtTrendPenalty;
+      }
+      if (signals.successWeight > 0) {
+        current.successCount = Number(current.successCount || 0) + 1;
+        current.successWeight = Number(current.successWeight || 0) + signals.successWeight;
+      }
+      if (signals.commitlessFailureEvent) {
+        current.commitlessFailureCount = Number(current.commitlessFailureCount || 0) + 1;
+      }
+      if (signals.commitEvidence) {
+        current.commitlessSuccessCount = Number(current.commitlessSuccessCount || 0) + 1;
+      }
+      current.failureCounter = Number(
+        Math.max(
+          0,
+          (priorCounter * 0.82) + signals.failureWeight - (signals.successWeight * 0.95),
+        ).toFixed(3),
+      );
+      current.commitlessFailureCounter = Number(
+        Math.max(
+          0,
+          (priorCommitlessCounter * 0.86) +
+            (signals.commitlessFailureEvent ? 1.25 : 0) -
+            (signals.commitEvidence ? 1.1 : 0),
+        ).toFixed(3),
+      );
+      current.lastUpdatedAt = nowIso;
+      priorState.patterns[key] = current;
+    }
+  }
+
+  const outcomeEntries = Object.entries(priorState.outcomes || {});
+  if (outcomeEntries.length > maxOutcomes) {
+    outcomeEntries
+      .sort((a, b) => String(a[1]?.updatedAt || "").localeCompare(String(b[1]?.updatedAt || "")))
+      .slice(0, outcomeEntries.length - maxOutcomes)
+      .forEach(([id]) => {
+        delete priorState.outcomes[id];
+      });
+  }
+}
+
+export function rankPlannerTaskCandidates(tasks, priorState = {}, rankingConfig = null) {
+  const resolvedConfig = resolvePlannerPriorRankingConfig(rankingConfig);
+  const patterns = priorState && typeof priorState === "object" && priorState.patterns && typeof priorState.patterns === "object"
+    ? priorState.patterns
+    : {};
+
+  const scored = (Array.isArray(tasks) ? tasks : []).map((task) => {
+    const impact = Number.isFinite(task?.impact) ? Number(task.impact) : 5;
+    const confidence = Number.isFinite(task?.confidence) ? Number(task.confidence) : 5;
+    const riskLevel = String(task?.risk || "").trim().toLowerCase();
+    const riskPenalty = ({ low: 0, medium: 0.4, high: 0.9, critical: 1.6 })[riskLevel] || 0;
+    const baseScore = (impact * 1.15) + (confidence * 0.85) - riskPenalty;
+    const keys = resolvePlannerPatternKeys(task);
+    const penalties = keys.map((key) => {
+      const prior = normalizePlannerPatternPrior(patterns[key]);
+      const failureCount = Number(prior.failureCount || 0);
+      const successCount = Number(prior.successCount || 0);
+      const failureWeight = Number(prior.failureWeight || 0);
+      const successWeight = Number(prior.successWeight || 0);
+      const failureCounter = Number(prior.failureCounter || 0);
+      const commitlessFailureCounter = Number(prior.commitlessFailureCounter || 0);
+      const commitlessFailureCount = Number(prior.commitlessFailureCount || 0);
+      const commitlessSuccessCount = Number(prior.commitlessSuccessCount || 0);
+      const netFailureEvents = Math.max(0, failureCount - successCount);
+      const netFailureWeight = Math.max(0, failureWeight - successWeight);
+      const netCommitlessEvents = Math.max(0, commitlessFailureCount - commitlessSuccessCount);
+      const repeatedFailureSignal = Math.max(
+        netFailureEvents,
+        Math.max(0, failureCounter),
+        netCommitlessEvents,
+        Math.max(0, commitlessFailureCounter),
+      );
+      const signalPenalty = Math.max(
+        netFailureWeight * resolvedConfig.signalPenaltyScale,
+        Math.max(0, failureCounter) * resolvedConfig.signalPenaltyScale,
+      );
+      const negativePrior =
+        repeatedFailureSignal >= resolvedConfig.failureThreshold
+          ? Math.min(
+            resolvedConfig.maxNegativePrior,
+            resolvedConfig.failurePriorStep * (repeatedFailureSignal - resolvedConfig.failureThreshold + 1),
+          )
+          : 0;
+      return {
+        key,
+        signalPenalty,
+        negativePrior,
+      };
+    });
+    const totalPenalty = penalties.reduce((sum, item) => sum + item.signalPenalty + item.negativePrior, 0);
+    const averagePenalty = penalties.length > 0 ? totalPenalty / penalties.length : 0;
+    const rankScore = baseScore - averagePenalty;
+
+    return {
+      ...task,
+      _ranking: {
+        baseScore: Number(baseScore.toFixed(3)),
+        penalty: Number(averagePenalty.toFixed(3)),
+        score: Number(rankScore.toFixed(3)),
+        patternKeys: keys,
+        penalties,
+      },
+    };
+  });
+
+  scored.sort((a, b) => {
+    if ((b?._ranking?.score || 0) !== (a?._ranking?.score || 0)) {
+      return (b?._ranking?.score || 0) - (a?._ranking?.score || 0);
+    }
+    return Number(a?.index || 0) - Number(b?.index || 0);
+  });
+  return scored;
+}
+
+export function rankPlannerTaskCandidatesForResume(tasks, plannerFeedback = null) {
+  const ranked = Array.isArray(tasks) ? [...tasks] : [];
+  const hotTaskTitles = new Set(
+    Array.isArray(plannerFeedback?.taskStore?.hotTasks)
+      ? plannerFeedback.taskStore.hotTasks
+        .map((task) => String(task?.title || "").trim().toLowerCase())
+        .filter(Boolean)
+      : [],
+  );
+  if (hotTaskTitles.size === 0) return ranked;
+  ranked.sort((a, b) => {
+    const aHot = hotTaskTitles.has(String(a?.title || "").trim().toLowerCase()) ? 1 : 0;
+    const bHot = hotTaskTitles.has(String(b?.title || "").trim().toLowerCase()) ? 1 : 0;
+    if (aHot !== bHot) return bHot - aHot;
+    if ((b?._ranking?.score || 0) !== (a?._ranking?.score || 0)) {
+      return (b?._ranking?.score || 0) - (a?._ranking?.score || 0);
+    }
+    return Number(a?.index || 0) - Number(b?.index || 0);
+  });
+  return ranked;
+}
+
 registerNodeType("agent.run_planner", {
   describe: () => "Run the task planner agent to generate new backlog tasks",
   schema: {

@@ -525,6 +525,7 @@ export const BACKEND_AGENT_TEMPLATE = (() => {
       protectedBranches: ["main", "master", "develop", "production"],
       agentSdk: "auto",
       timeoutMs: 3600000,
+      testTimeoutMs: 1800000,
       autoFixTimeoutMs: 1200000,
     },
     nodes: [
@@ -550,7 +551,8 @@ Write comprehensive tests FIRST before any implementation:
 3. Edge cases and error scenarios
 
 Use the project's test command: {{testCommand}}
-Commit with message "test: add tests for [feature]"`,
+Create a descriptive test commit message that names the behavior or surface covered.
+Example: "test: cover portal login validation"`,
         sdk: "{{agentSdk}}",
         timeoutMs: "{{timeoutMs}}",
       }, { x: 400, y: 330 }),
@@ -565,7 +567,8 @@ The tests have been written. Now implement the feature to make them pass:
 4. Do NOT modify the tests — make the code fit the contract
 
 Run \`{{testCommand}}\` after implementation.
-Commit with message "feat: implement [feature]"`,
+Create a descriptive feat/fix commit message that names the shipped capability.
+Example: "feat: add portal login rate limiting"`,
         sdk: "{{agentSdk}}",
         timeoutMs: "{{timeoutMs}}",
       }, { x: 400, y: 490 }),
@@ -583,9 +586,16 @@ Commit with message "feat: implement [feature]"`,
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         rebaseBeforePush: true,
+        mergeBaseBeforePush: true,
+        autoResolveMergeConflicts: true,
+        conflictResolverSdk: "{{agentSdk}}",
         emptyDiffGuard: true,
         protectedBranches: "{{protectedBranches}}",
       }, { x: 250, y: 1110 }),
+
+      node("push-ok", "condition.expression", "Push OK?", {
+        expression: "$ctx.getNodeOutput('push-branch')?.pushed === true",
+      }, { x: 250, y: 1170, outputs: ["yes", "no"] }),
 
       node("create-pr", "action.create_pr", "Handoff PR Lifecycle", {
         title: "feat: {{taskTitle}}",
@@ -634,7 +644,8 @@ Do NOT weaken, remove, or bypass tests.
 Keep the original task scope.
 
 Run build + tests + lint locally before finishing.
-Commit with message "fix: address validation failures"`,
+Create a descriptive fix commit message that names the concrete failure resolved.
+Example: "fix: handle empty workflow assignee validation"`,
         sdk: "{{agentSdk}}",
         timeoutMs: "{{autoFixTimeoutMs}}",
       }, { x: 620, y: 1170 }),
@@ -652,9 +663,16 @@ Commit with message "fix: address validation failures"`,
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         rebaseBeforePush: true,
+        mergeBaseBeforePush: true,
+        autoResolveMergeConflicts: true,
+        conflictResolverSdk: "{{agentSdk}}",
         emptyDiffGuard: true,
         protectedBranches: "{{protectedBranches}}",
       }, { x: 450, y: 1760 }),
+
+      node("push-ok-retry", "condition.expression", "Push OK? (Retry)", {
+        expression: "$ctx.getNodeOutput('push-branch-retry')?.pushed === true",
+      }, { x: 450, y: 1820, outputs: ["yes", "no"] }),
 
       node("create-pr-retry", "action.create_pr", "Handoff PR Lifecycle (After Retry)", {
         title: "feat: {{taskTitle}}",
@@ -696,7 +714,9 @@ Commit with message "fix: address validation failures"`,
       // Main pass → push → PR → handoff
       edge("all-passed", "push-branch", { condition: "$output?.result === true", port: "yes" }),
       edge("all-passed", "set-validation-summary", { condition: "$output?.result !== true", port: "no" }),
-      edge("push-branch", "create-pr"),
+      edge("push-branch", "push-ok"),
+      edge("push-ok", "create-pr", { condition: "$output?.result === true", port: "yes" }),
+      edge("push-ok", "notify-pr-failed", { condition: "$output?.result !== true", port: "no" }),
       wire("create-pr", mainPrHandoff.entryNodeId),
       ...mainPrHandoff.edges,
       wire(mainPrHandoff.exitNodeId, "notify-done"),
@@ -710,7 +730,9 @@ Commit with message "fix: address validation failures"`,
 
       edge("retry-passed", "push-branch-retry", { condition: "$output?.result === true", port: "yes" }),
       edge("retry-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
-      edge("push-branch-retry", "create-pr-retry"),
+      edge("push-branch-retry", "push-ok-retry"),
+      edge("push-ok-retry", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
+      edge("push-ok-retry", "notify-pr-failed-retry", { condition: "$output?.result !== true", port: "no" }),
       wire("create-pr-retry", retryPrHandoff.entryNodeId),
       ...retryPrHandoff.edges,
       wire(retryPrHandoff.exitNodeId, "notify-done-retry"),

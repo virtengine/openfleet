@@ -252,6 +252,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
       rebaseBeforePush: true,
+      mergeBaseBeforePush: true,
+      autoResolveMergeConflicts: true,
+      conflictResolverSdk: "auto",
       emptyDiffGuard: true,
       protectedBranches: "{{protectedBranches}}",
     }, { x: 0, y: 2000 }),
@@ -323,6 +326,17 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskTitle: "{{taskTitle}}",
     }, { x: 180, y: 2260 }),
 
+    node("push-failure-blocking", "condition.expression", "Push Failure Blocks?", {
+      expression: "$ctx.getNodeOutput('push-branch')?.implementationDone === true",
+    }, { x: 360, y: 2195, outputs: ["yes", "no"] }),
+
+    node("set-blocked-push-failed", "action.update_task_status", "Set Blocked (Push Fail)", {
+      taskId: "{{taskId}}",
+      status: "blocked",
+      taskTitle: "{{taskTitle}}",
+      blockedReason: "{{$ctx.getNodeOutput('push-branch')?.blockedReason || $ctx.getNodeOutput('push-branch')?.error || 'implementation_done_commit_blocked'}}",
+    }, { x: 360, y: 2325 }),
+
     // ── CLAIM STOLEN PATH: Log ───────────────────────────────────────────
     node("create-pr-retry", "action.create_pr", "Recover PR Link", {
       title: "{{taskTitle}}",
@@ -378,7 +392,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     node("join-outcomes", "flow.join", "Join Outcome Paths", {
       mode: "all",
-      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-todo-cooldown", "set-todo-validation-failed", "set-todo-stolen", "log-claim-stolen-recovered"],
+      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-blocked-push-failed", "set-todo-cooldown", "set-todo-validation-failed", "set-todo-stolen", "log-claim-stolen-recovered"],
       includeSkipped: true,
     }, { x: 200, y: 2560 }),
 
@@ -540,7 +554,10 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("log-success", "join-outcomes"),
 
     // Push failed path
-    edge("push-ok", "set-todo-push-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("push-ok", "push-failure-blocking", { condition: "$output?.result !== true", port: "no" }),
+    edge("push-failure-blocking", "set-blocked-push-failed", { condition: "$output?.result === true", port: "yes" }),
+    edge("push-failure-blocking", "set-todo-push-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-blocked-push-failed", "join-outcomes"),
     edge("set-todo-push-failed", "join-outcomes"),
 
     // No-commits path

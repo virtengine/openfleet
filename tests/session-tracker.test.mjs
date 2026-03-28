@@ -48,11 +48,24 @@ describe("session-tracker", () => {
 
     it("ends a session with status", () => {
       tracker.startSession("task-1", "Test Task");
+      tracker.recordEvent("task-1", {
+        role: "assistant",
+        content: "Completed work",
+        timestamp: "2026-03-27T09:00:00.000Z",
+      });
       tracker.endSession("task-1", "completed");
 
       const session = tracker.getSession("task-1");
       expect(session.status).toBe("completed");
       expect(session.endedAt).toBeGreaterThan(0);
+    });
+
+    it("downgrades empty completed sessions to no_output", () => {
+      tracker.startSession("task-empty", "Empty Task");
+      tracker.endSession("task-empty", "completed");
+
+      const session = tracker.getSession("task-empty");
+      expect(session?.status).toBe("no_output");
     });
 
     it("resets turnCount on new session start while preserving final turn count on completion", () => {
@@ -668,6 +681,11 @@ describe("session-tracker", () => {
     it("tracks stats", () => {
       tracker.startSession("task-1", "Test 1");
       tracker.startSession("task-2", "Test 2");
+      tracker.recordEvent("task-1", {
+        role: "assistant",
+        content: "Finished",
+        timestamp: "2026-03-27T12:30:00.000Z",
+      });
       tracker.endSession("task-1", "completed");
 
       const stats = tracker.getStats();

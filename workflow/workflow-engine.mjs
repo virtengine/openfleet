@@ -982,6 +982,95 @@ function collectValidationFailures(detail = {}) {
     .filter(Boolean);
 }
 
+function collectRunTaskIds(detail = {}) {
+  const ids = new Set();
+  const push = (value) => {
+    const normalized = String(value || "").trim();
+    if (normalized) ids.add(normalized);
+  };
+
+  push(detail?.data?.taskId);
+  push(detail?.data?.activeTaskId);
+  push(detail?.data?.task?.id);
+  push(detail?.data?.taskInfo?.id);
+  push(detail?.data?.taskDetail?.id);
+
+  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    push(event?.taskId);
+  }
+
+  return [...ids];
+}
+
+function resolveRunTaskTitle(detail = {}) {
+  const direct = [
+    detail?.data?.taskTitle,
+    detail?.data?.task?.title,
+    detail?.data?.taskInfo?.title,
+    detail?.data?.taskDetail?.title,
+  ]
+    .map((value) => String(value || "").trim())
+    .find(Boolean);
+  if (direct) return direct;
+
+  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    const title = String(event?.taskTitle || "").trim();
+    if (title) return title;
+  }
+
+  return null;
+}
+
+function collectRunSessionIds(detail = {}) {
+  const ids = [];
+  const seen = new Set();
+  const push = (value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    ids.push(normalized);
+  };
+
+  for (const value of [
+    detail?.data?.sessionId,
+    detail?.data?.threadId,
+    detail?.data?.task?.sessionId,
+    detail?.data?.task?.threadId,
+  ]) {
+    push(value);
+  }
+
+  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    for (const value of [
+      event?.sessionId,
+      event?.threadId,
+      event?.meta?.sessionId,
+      event?.meta?.threadId,
+    ]) {
+      push(value);
+    }
+  }
+
+  return ids;
+}
+
+function buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx) {
+  const detail = ctx?.toJSON?.(Date.now()) || {};
+  const taskIds = collectRunTaskIds(detail);
+  const sessionIds = collectRunSessionIds(detail);
+  return cleanObject({
+    runId,
+    workflowId,
+    workflowName,
+    startedAt: ctx?.startedAt || Date.now(),
+    taskId: taskIds[0] || undefined,
+    taskIds: taskIds.length > 0 ? taskIds : undefined,
+    taskTitle: resolveRunTaskTitle(detail) || undefined,
+    sessionId: sessionIds[0] || undefined,
+    sessionIds: sessionIds.length > 0 ? sessionIds : undefined,
+  });
+}
+
 export class WorkflowContext {
   constructor(initialData = {}) {
     this.id = randomUUID();
@@ -3035,7 +3124,11 @@ export class WorkflowEngine extends EventEmitter {
             !!eventData?.prEvent;
           if (!hasPrSignal) continue;
         }
-        if (tNode.type === "trigger.task_assigned" && eventType !== "task.assigned") {
+        if (
+          tNode.type === "trigger.task_assigned"
+          && eventType !== "task.assigned"
+          && eventType !== "task.review_fix_requested"
+        ) {
           continue;
         }
         if (tNode.type === "trigger.anomaly") {
@@ -3203,7 +3296,7 @@ export class WorkflowEngine extends EventEmitter {
 
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
-    runs = runs.map((run) => this.getRunDetail(run.runId) || run);
+      runs = runs.map((run) => this.getRunDetail(run.runId) || run);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     if (hasLimit) {
       return runs.slice(0, Math.floor(normalizedLimit));
@@ -3220,7 +3313,14 @@ export class WorkflowEngine extends EventEmitter {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
       : 20;
-    const allRuns = this.getRunHistory(workflowId);
+      const persisted = this._hydrateRunIndexFromDetails(Math.max(offset + limit, 200))
+        .map((entry) => this._normalizeRunSummary(entry))
+        .filter(Boolean);
+      const active = this.getActiveRuns();
+      const activeRunIds = new Set(active.map((run) => run.runId));
+      let allRuns = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
+      if (workflowId) allRuns = allRuns.filter((run) => run.workflowId === workflowId);
+      allRuns.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     const total = allRuns.length;
     const runs = allRuns.slice(offset, offset + limit);
     const nextOffset = offset + runs.length;
@@ -3296,8 +3396,7 @@ export class WorkflowEngine extends EventEmitter {
       if (runs.length > MAX_PERSISTED_RUNS) {
         runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
       }
-      const indexPath = resolve(this.runsDir, "index.json");
-      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      this._writeRunIndex(runs);
       return runs;
     } catch {
       return runs;
@@ -4688,10 +4787,21 @@ export class WorkflowEngine extends EventEmitter {
 
   _readRunIndex() {
     const indexPath = resolve(this.runsDir, "index.json");
-    if (!existsSync(indexPath)) return [];
+    if (!existsSync(indexPath)) {
+      this._runIndexCache = [];
+      this._runIndexCacheMtime = 0;
+      return [];
+    }
     try {
+      const mtimeMs = statSync(indexPath).mtimeMs || 0;
+      if (Array.isArray(this._runIndexCache) && this._runIndexCacheMtime === mtimeMs) {
+        return this._runIndexCache;
+      }
       const index = JSON.parse(readFileSync(indexPath, "utf8"));
-      return Array.isArray(index?.runs) ? index.runs : [];
+      const runs = Array.isArray(index?.runs) ? index.runs : [];
+      this._runIndexCache = runs;
+      this._runIndexCacheMtime = mtimeMs;
+      return runs;
     } catch {
       return [];
     }
@@ -4851,6 +4961,9 @@ export class WorkflowEngine extends EventEmitter {
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
     const dagRevisionCount = Array.isArray(detail?.dagState?.revisions) ? detail.dagState.revisions.length : 0;
     const validationFailures = collectValidationFailures(detail);
+    const taskIds = collectRunTaskIds(detail);
+    const sessionIds = collectRunSessionIds(detail);
+    const taskTitle = resolveRunTaskTitle(detail);
 
     return {
       runId,
@@ -4886,6 +4999,12 @@ export class WorkflowEngine extends EventEmitter {
       issueAdvisorRecommendation,
       issueAdvisorSummary,
       dagRevisionCount,
+      taskId: taskIds[0] || null,
+      taskIds,
+      taskTitle,
+      sessionId: sessionIds[0] || null,
+      sessionIds,
+      primarySessionId: sessionIds[0] || null,
       ...(validationFailures.length > 0
         ? {
             validationFailures,
@@ -4985,7 +5104,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Add to active-runs index
       const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
-      entries.push({ runId, workflowId, workflowName, startedAt: ctx.startedAt });
+      entries.push(buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx));
       this._writeActiveRunsIndex(entries);
 
       // Write initial detail file so we can resume from it
@@ -5057,7 +5176,6 @@ export class WorkflowEngine extends EventEmitter {
    */
   _ensureRunInIndex(runId, workflowId, workflowName, detail) {
     try {
-      const indexPath = resolve(this.runsDir, "index.json");
       const runs = this._readRunIndex();
       const existingIdx = runs.findIndex((r) => r.runId === runId);
 
@@ -5075,7 +5193,7 @@ export class WorkflowEngine extends EventEmitter {
         runs.push(summary);
       }
       if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
-      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      this._writeRunIndex(runs);
     } catch (err) {
       console.error(`${TAG} Failed to ensure run in index:`, err.message);
     }
@@ -5188,9 +5306,8 @@ export class WorkflowEngine extends EventEmitter {
       }
 
       if (interrupted.length > 0) {
-        const indexPath = resolve(this.runsDir, "index.json");
         if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
-        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+        this._writeRunIndex(runs);
       }
 
       // Clear the active-runs index — we've handled recoverable entries.
@@ -5377,13 +5494,12 @@ export class WorkflowEngine extends EventEmitter {
    */
   _markRunUnresumable(runId, reason) {
     try {
-      const indexPath = resolve(this.runsDir, "index.json");
       const runs = this._readRunIndex();
       const idx = runs.findIndex((r) => r.runId === runId);
       if (idx >= 0) {
         runs[idx].resumable = false;
         runs[idx].resumeResult = reason;
-        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+        this._writeRunIndex(runs);
       }
     } catch (err) {
       console.error(`${TAG} Failed to mark run unresumable:`, err.message);
@@ -5406,12 +5522,11 @@ export class WorkflowEngine extends EventEmitter {
       });
 
       // Deduplicate: remove any existing entry for this runId before appending
-      const indexPath = resolve(this.runsDir, "index.json");
       let runs = this._readRunIndex().filter((r) => r.runId !== runId);
       runs.push(summary);
       // Keep last N runs
       if (runs.length > MAX_PERSISTED_RUNS) runs = runs.slice(-MAX_PERSISTED_RUNS);
-      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      this._writeRunIndex(runs);
 
       // Save full run detail
       this._writeRunDetail(runId, detail);
@@ -5423,6 +5538,17 @@ export class WorkflowEngine extends EventEmitter {
   _writeRunDetail(runId, detail) {
     const detailPath = resolve(this.runsDir, `${runId}.json`);
     writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+  }
+
+  _writeRunIndex(runs) {
+    const indexPath = resolve(this.runsDir, "index.json");
+    writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+    this._runIndexCache = runs;
+    try {
+      this._runIndexCacheMtime = statSync(indexPath).mtimeMs || Date.now();
+    } catch {
+      this._runIndexCacheMtime = Date.now();
+    }
   }
 }
 

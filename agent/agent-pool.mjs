@@ -138,6 +138,7 @@ let timeoutClampWarningKey = "";
 const MIN_SILENT_STREAM_FRACTION = 0.25;
 const MAX_SILENT_STREAM_GRACE_MS = 30_000;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
+const COPILOT_IDLE_TIMEOUT_GRACE_MS = 1_000;
 const DEFAULT_MAX_ITEMS_PER_TURN = 600;
 const DEFAULT_MAX_ITEM_CHARS = 12_000;
 const TOOL_OUTPUT_GUARDRAIL = String.raw`
@@ -568,7 +569,6 @@ function shouldFallbackForSdkError(error) {
   if (message.includes("model_not_found")) return true;
   if (message.includes("does not exist")) return true;
   if (message.includes("invalid model")) return true;
-  if (message.includes("failed to list models") && message.includes("400")) return true;
   // Auth / key errors — SDK isn't properly configured
   if (message.includes("unauthorized") || message.includes("401")) return true;
   if (
@@ -594,6 +594,7 @@ function shouldFallbackForSdkError(error) {
   if (message.includes("connection refused")) return true;
   if (message.includes("connection reset")) return true;
   if (message.includes("etimedout")) return true;
+  if (message.includes("failed to list models")) return true;
   // Runtime/provider instability: fail over to next SDK immediately.
   if (message.includes("timeout")) return true;
   if (message.includes("rate limit") || message.includes("429")) return true;
@@ -1035,17 +1036,17 @@ function shouldApplySdkCooldown(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
-  if (message.includes("failed to list models: 400")) return false;
+
   if (
     message.includes("failed to list models")
     && (
+      message.includes("400")
+      ||
       message.includes("bad request")
       || message.includes("invalid url")
       || message.includes("deployment")
       || message.includes("api version")
       || message.includes("/models")
-      || message.includes("list models")
-      || message.includes("400")
     )
   ) {
     return false;
@@ -3878,6 +3879,98 @@ export async function launchOrResumeThread(
 // Error Recovery Wrapper
 // ---------------------------------------------------------------------------
 
+const RETRY_OUTPUT_PLACEHOLDERS = new Set([
+  "",
+  "(agent completed with no text output)",
+  "continued",
+  "model response continued",
+]);
+
+const RETRY_RECONNECT_PATTERNS = [
+  /session\.idle/i,
+  /no events received/i,
+  /first_event_timeout/i,
+  /timeout_no_events/i,
+  /stream disconnection/i,
+  /transient stream error/i,
+  /transport/i,
+  /network/i,
+  /econnreset/i,
+  /socket hang up/i,
+  /connection.*closed/i,
+  /connection.*reset/i,
+  /reconnect/i,
+];
+
+function hasMeaningfulRetryResult(result = {}) {
+  const output = String(result?.output || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!RETRY_OUTPUT_PLACEHOLDERS.has(output)) return true;
+  if (Array.isArray(result?.items) && result.items.length > 0) return true;
+  return false;
+}
+
+function normalizeRetryFailureFingerprint(result = {}) {
+  const errorText = String(result?.error || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!errorText) return "";
+  if (RETRY_RECONNECT_PATTERNS.some((pattern) => pattern.test(errorText))) {
+    return errorText
+      .replace(/\bafter \d+ms\b/g, "after <ms>")
+      .replace(/attempt \d+\/\d+/g, "attempt <n>/<n>")
+      .replace(/[a-f0-9]{8,}/g, "<id>")
+      .slice(0, 160);
+  }
+  return "";
+}
+
+function classifyRetryCircuitBreak(result = {}, state = {}) {
+  if (result?.success) {
+    return {
+      fingerprint: "",
+      repeatedFingerprint: false,
+      noOutputFailure: false,
+      shouldBreak: false,
+      blockedReason: null,
+      error: null,
+    };
+  }
+
+  const fingerprint = normalizeRetryFailureFingerprint(result);
+  const repeatedFingerprint = Boolean(fingerprint) && Number(state.failureFingerprints?.get(fingerprint) || 0) >= 1;
+  const noOutputFailure = !hasMeaningfulRetryResult(result);
+  const repeatedNoOutput = noOutputFailure && Number(state.consecutiveNoOutputFailures || 0) >= 1;
+
+  if (repeatedFingerprint) {
+    return {
+      fingerprint,
+      repeatedFingerprint: true,
+      noOutputFailure,
+      shouldBreak: true,
+      blockedReason: "blocked_by_env",
+      error: `Repeated reconnect fingerprint detected: ${fingerprint}`,
+    };
+  }
+
+  if (repeatedNoOutput) {
+    return {
+      fingerprint,
+      repeatedFingerprint: false,
+      noOutputFailure: true,
+      shouldBreak: true,
+      blockedReason: "no_output",
+      error: "Repeated no-output agent starts detected; stopping retries",
+    };
+  }
+
+  return {
+    fingerprint,
+    repeatedFingerprint: false,
+    noOutputFailure,
+    shouldBreak: false,
+    blockedReason: null,
+    error: null,
+  };
+}
+
 /**
  * Execute a prompt with automatic error recovery via thread resume.
  *
@@ -3938,6 +4031,8 @@ export async function execWithRetry(prompt, options = {}) {
   const totalAttempts = 1 + maxRetries;
   let continuesUsed = 0;
   let attempt = 0;
+  const failureFingerprints = new Map();
+  let consecutiveNoOutputFailures = 0;
 
   while (attempt < totalAttempts + continuesUsed) {
     attempt++;
@@ -4036,6 +4131,33 @@ export async function execWithRetry(prompt, options = {}) {
 
       lastResult._idleContinue = true;
       continue;
+    }
+
+    const retryCircuit = classifyRetryCircuitBreak(lastResult, {
+      failureFingerprints,
+      consecutiveNoOutputFailures,
+    });
+    if (retryCircuit.fingerprint) {
+      failureFingerprints.set(
+        retryCircuit.fingerprint,
+        Number(failureFingerprints.get(retryCircuit.fingerprint) || 0) + 1,
+      );
+    }
+    consecutiveNoOutputFailures = retryCircuit.noOutputFailure
+      ? consecutiveNoOutputFailures + 1
+      : 0;
+
+    if (retryCircuit.shouldBreak) {
+      console.warn(`${TAG} execWithRetry circuit breaker tripped for "${taskKey}": ${retryCircuit.error}`);
+      return {
+        ...lastResult,
+        error: retryCircuit.error,
+        blockedReason: retryCircuit.blockedReason,
+        retryCircuitBroken: true,
+        failureFingerprint: retryCircuit.fingerprint || null,
+        attempts: attempt,
+        continues: continuesUsed,
+      };
     }
 
     // Check if we should retry
@@ -4201,4 +4323,20 @@ export function getActiveThreads() {
   }
   return result;
 }
+
+
+
+export const __testables = {
+  shouldApplySdkCooldown,
+  shouldFallbackForSdkError,
+  hasMeaningfulRetryResult,
+  normalizeRetryFailureFingerprint,
+  classifyRetryCircuitBreak,
+};
+
+
+
+
+
+
 

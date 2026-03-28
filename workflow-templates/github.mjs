@@ -25,6 +25,20 @@ const GITHUB_CI_DIAGNOSTICS_SNIPPET = [
   "function collectCiDiagnostics(repo,run,runner){const info={failedRun:normalizeRun(run),failedJobs:[],failedAnnotations:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId||!repo)return info;let workflowJobs=[];try{const viewRaw=runner(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const apiJobs=safeGhJsonRunner(runner,['api','repos/'+repo+'/actions/runs/'+runId+'/jobs?per_page=100'],{});workflowJobs=Array.isArray(apiJobs?.jobs)?apiJobs.jobs:(Array.isArray(view.jobs)?view.jobs:[]);info.failedJobs=workflowJobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,CI_MAX_JOB_DIAGNOSTICS);}catch(e){info.diagnosticsError=String(e?.message||e);}try{for(const job of info.failedJobs){const checkRunId=parseCheckRunId(job?.checkRunUrl);const annotations=collectCheckRunAnnotations(repo,checkRunId,runner);if(annotations.length===0)continue;info.failedAnnotations.push({name:String(job?.name||''),checkRunId,annotations});if(info.failedAnnotations.length>=CI_MAX_JOB_DIAGNOSTICS)break;}}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}try{info.failedLogExcerpt=truncateText(runner(['run','view',String(runId),'--repo',repo,'--log-failed']),CI_LOG_EXCERPT_MAX_CHARS);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;}",
 ].join("");
 
+const GH_CLI_RESILIENCE_SNIPPET = [
+  "const GH_MAX_BUFFER=25*1024*1024;",
+  "const GH_CACHE_TTL_MS=30000;",
+  "const ghReadCache=new Map();",
+  "let ghRateLimitUntil=0;",
+  "function ghSleep(ms){if(!Number.isFinite(ms)||ms<=0)return;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Math.min(ms,5000));}",
+  "function ghCacheKey(args){return JSON.stringify(Array.isArray(args)?args:[]);}",
+  "function isGhReadOnly(args){const list=Array.isArray(args)?args.map((item)=>String(item||'').trim().toLowerCase()):[];if(list.length===0)return false;const joined=' '+list.join(' ')+' ';return !/( edit | merge | close | reopen | rerun | delete | create | ready | cancel )/.test(joined);}",
+  "function readGhMessage(error){return String(error?.stderr||error?.stdout||error?.message||error||'');}",
+  "function runGh(args){const cacheable=isGhReadOnly(args);const key=cacheable?ghCacheKey(args):'';const now=Date.now();if(cacheable){const cached=ghReadCache.get(key);if(cached&&cached.expiresAt>now)return cached.output;if(now<ghRateLimitUntil&&cached)return cached.output;}let lastError=null;for(let attempt=0;attempt<2;attempt+=1){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(error){const message=readGhMessage(error);lastError=error;const retryAfter=message.match(/retry after\\s+(\\d+)\\s*second/i)||message.match(/try again in\\s+(\\d+)\\s*second/i);if(/secondary rate limit|rate limit exceeded|api rate limit/i.test(message)&&attempt===0){const waitMs=Math.max(1000,Math.min(5000,(Number(retryAfter?.[1]||0)||2)*1000));ghRateLimitUntil=Date.now()+waitMs;ghSleep(waitMs);continue;}if(/ENOBUFS|maxbuffer|stdout maxbuffer length exceeded/i.test(message)&&attempt===0){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER*2}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(innerError){lastError=innerError;}}break;}}throw lastError;}",
+  "function ghJson(args){const out=runGh(args);return out?JSON.parse(out):[];}",
+  "function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}",
+].join("");
+
 export const PR_QUALITY_SIGNAL_SNIPPET = [
   "const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']);",
   "const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']);",
@@ -1164,9 +1178,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();}",
         "function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');}",
         "function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));}",
-        "function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];}",
-        "function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
-        "function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}",
+        GH_CLI_RESILIENCE_SNIPPET,
         "function normalizeList(value){if(Array.isArray(value)) return value.map((entry)=>String(entry||'').trim().toLowerCase()).filter(Boolean); return String(value||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean);}",
         "function parseBool(value,fallback){if(value===undefined||value===null||value==='') return fallback; const raw=String(value).trim().toLowerCase(); if(['1','true','yes','on'].includes(raw)) return true; if(['0','false','no','off'].includes(raw)) return false; return fallback;}",
         "function normalizeCheckKey(name){return String(name||'').trim().toLowerCase().replace(/\\s+/g,' ');}",
@@ -1577,8 +1589,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "let rerunRequested=0;",
         "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
         "const MAX_AUTO_RERUN_ATTEMPT=1;",
-        "function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
-        "function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}",
+        GH_CLI_RESILIENCE_SNIPPET,
         "function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}}",
         "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||job.id||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||job.html_url||''),checkRunUrl:String(job.check_run_url||job.checkRunUrl||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
         "function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;}",

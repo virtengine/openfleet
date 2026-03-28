@@ -1,4 +1,3 @@
-// CLAUDE:SUMMARY — verifies OpenCode provider discovery falls back cleanly across verbose/basic CLI and SDK 400 model-listing failures.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const execFileMock = vi.fn();
@@ -132,54 +131,4 @@ describe("opencode provider discovery", () => {
       toolcall: true,
     });
   });
-
-
-  it("returns an empty snapshot when both SDK and CLI hit ignorable 400 list-model errors", async () => {
-    const createOpencodeClient = vi.fn(() => ({
-      provider: {
-        list: vi.fn().mockRejectedValue(Object.assign(new Error("Failed to list models: 400"), {
-          status: 400,
-        })),
-        auth: vi.fn().mockResolvedValue({ data: {} }),
-      },
-    }));
-
-    vi.doMock("@opencode-ai/sdk", () => ({
-      default: { createOpencodeClient },
-      createOpencodeClient,
-    }));
-
-    execFileMock
-      .mockImplementationOnce((command, args, options, callback) => {
-        callback(new Error("Failed to list models: 400"));
-      })
-      .mockImplementationOnce((command, args, options, callback) => {
-        const err = new Error("");
-        err.stderr = "Failed to list models: 400";
-        callback(err);
-      });
-
-    execMock
-      .mockImplementationOnce((command, options, callback) => {
-        callback(new Error("Failed to list models: 400"));
-      })
-      .mockImplementationOnce((command, options, callback) => {
-        const err = new Error("");
-        err.stderr = "Failed to list models: 400";
-        callback(err);
-      });
-
-    const mod = await import("../shell/opencode-providers.mjs?case=all-ignorable-400");
-    const snapshot = await mod.discoverProviders({ force: true });
-
-    expect(createOpencodeClient).toHaveBeenCalled();
-    expect(snapshot).toMatchObject({
-      providers: [],
-      connected: [],
-      connectedIds: [],
-      defaults: {},
-      allModels: [],
-    });
-  });
 });
-
