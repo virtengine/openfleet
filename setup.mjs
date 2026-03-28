@@ -6543,7 +6543,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     if (commandExists("pnpm")) {
       execSync("pnpm install", { cwd: __dirname, stdio: "inherit" });
     } else {
-      execSync("npm install", { cwd: __dirname, stdio: "inherit" });
+      execSync(`${resolveNpmCommand()} install`, { cwd: __dirname, stdio: "inherit" });
     }
     success("Dependencies installed");
   } catch {
@@ -6765,4 +6765,6 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup)) {
     process.exit(1);
   });
 }
+
+
 
