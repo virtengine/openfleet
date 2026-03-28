@@ -829,6 +829,11 @@ export class SessionTracker {
         || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
           ? turnTokenUsage
           : null);
+      const effectiveTokenUsage = extractUsageFromMeta(tokenUsage) || {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      };
       byId.set(sessionId, {
         id: sessionId,
         taskId: s.taskId,
@@ -1195,7 +1200,16 @@ export class SessionTracker {
     const startedAt = Number.isFinite(Number(session.startedAt))
       ? Number(session.startedAt)
       : endedAt;
-    const tokenUsage = session.insights?.tokenUsage || null;
+    const turns = Array.isArray(session.turns) ? session.turns : [];
+    const turnTokenUsage = turns.reduce((acc, turn) => ({
+      inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
+      outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
+      totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
+    }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    const tokenUsage = session.insights?.tokenUsage
+      || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
+        ? turnTokenUsage
+        : null);
 
     addCompletedSession({
       id: session.id || taskId,

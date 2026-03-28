@@ -268,12 +268,12 @@ function resolveLocalProcessLaunch(parsedCommand) {
   const lowerExecutable = executable.toLowerCase();
   if (lowerExecutable === "npm" || lowerExecutable === "npx") {
     return {
-      launchCommand: process.env.ComSpec || "cmd.exe",
-      launchArgs: ["/d", "/s", "/c", raw],
-      shell: false,
+      launchCommand: executable,
+      launchArgs: args,
+      shell: true,
     };
   }
-  return { launchCommand: executable, launchArgs: args, shell: false };
+  return { launchCommand: resolvePortableExecutable(executable), launchArgs: args, shell: false };
 }
 
 function buildBlockedResult(policy, attemptCount, message, artifactRoot) {
@@ -412,7 +412,9 @@ async function runLeaseAttempt({
     });
 
     child.on("error", (error) => {
-      finishReject(new RunnerLeaseError(`Runner process spawn failed: ${error.message}`, { retryable: true }));
+      const errorCode = String(error?.code || "").trim();
+      const retryable = !(runtime === "local-process" && (errorCode === "ENOENT" || errorCode === "EACCES"));
+      finishReject(new RunnerLeaseError(`Runner process spawn failed: ${error.message}`, { retryable }));
     });
 
     timer = setTimeout(() => {
@@ -515,3 +517,4 @@ export async function runCommandInHeavyRunnerLease({
     artifactRoot || policy.artifactDir,
   );
 }
+

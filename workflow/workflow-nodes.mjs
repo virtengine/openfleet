@@ -76,7 +76,6 @@ import {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
   getCustomNodeDir,
-  inspectCustomWorkflowNodePlugins as inspectCustomWorkflowNodePluginsImpl,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
@@ -717,6 +716,32 @@ function execGitArgsSync(args, options = {}) {
   }
   if (lastEnoent) throw lastEnoent;
   throw new Error("Git executable not found");
+}
+
+function buildPortableCommand(command = "") {
+  const text = String(command || "").trim();
+  if (!text) return { command: text, shell: false };
+  if (process.platform !== "win32") return { command: text, shell: true };
+
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (/^npm(?:\.cmd)?\s+/i.test(normalized) || /^npx(?:\.cmd)?\s+/i.test(normalized)) {
+    return { command: normalized, shell: true };
+  }
+  return { command: normalized, shell: true };
+}
+
+function buildExecSyncOptions(command, { cwd, timeout, encoding = "utf8", stdio = "pipe" } = {}) {
+  const portable = buildPortableCommand(command);
+  return {
+    command: portable.command,
+    options: {
+      cwd,
+      timeout,
+      encoding,
+      stdio,
+      shell: portable.shell,
+    },
+  };
 }
 
 function trimLogText(value, max = 180) {
@@ -6399,7 +6424,8 @@ registerBuiltinNodeType("validation.tests", {
     }
 
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const execution = buildExecSyncOptions(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const output = execSync(execution.command, execution.options);
       ctx.log(node.id, "Tests passed");
       const compacted = await compactWorkflowCommandResult({
         command,
@@ -6526,7 +6552,8 @@ registerBuiltinNodeType("validation.build", {
     }
 
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const execution = buildExecSyncOptions(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const output = execSync(execution.command, execution.options);
       const hasWarnings = /warning/i.test(output || "");
       const compacted = await compactWorkflowCommandResult({
         command,
@@ -6600,7 +6627,8 @@ registerBuiltinNodeType("validation.lint", {
     }
     const startedAt = Date.now();
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const execution = buildExecSyncOptions(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const output = execSync(execution.command, execution.options);
       const compacted = await compactWorkflowCommandResult({
         command,
         output: output?.trim() || "",
@@ -8016,27 +8044,48 @@ function rankPlannerTaskCandidatesForResume(tasks, plannerFeedback) {
   const taskList = Array.isArray(tasks) ? tasks : [];
   if (!resumeFeedback) return taskList;
 
-  const nextStepLabel = String(resumeFeedback?.issueAdvisor?.nextStepLabel || "")
-    .trim()
-    .toLowerCase();
-
   const normalizeResumeText = (value) => String(value || "")
     .trim()
     .toLowerCase()
-    .replace(/\b(validate|validation|stage|step|task|handoff|planner|resume|handling)\b/g, " ")
+    .replace(/(validate|validation|stage|step|task|handoff|planner|resume|handling)/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\\s+/g, " ")
     .trim();
 
+  const nextStepLabel = String(resumeFeedback?.issueAdvisor?.nextStepLabel || "")
+    .trim()
+    .toLowerCase();
   const normalizedNextStep = normalizeResumeText(nextStepLabel);
-  if (!normalizedNextStep) return taskList;
+  const dagStateSummary =
+    resumeFeedback?.dagStateSummary && typeof resumeFeedback.dagStateSummary === "object"
+      ? resumeFeedback.dagStateSummary
+      : null;
+
+  const completedLabels = new Set(
+    (Array.isArray(dagStateSummary?.completedNodes) ? dagStateSummary.completedNodes : [])
+      .map((node) => normalizeResumeText(node?.label || node?.title || node?.name || ""))
+      .filter(Boolean),
+  );
+
+  const pendingNodes = Array.isArray(dagStateSummary?.pendingNodes) ? dagStateSummary.pendingNodes : [];
+  const pendingOrder = new Map();
+  for (const [index, pendingNode] of pendingNodes.entries()) {
+    const normalizedLabel = normalizeResumeText(
+      pendingNode?.label || pendingNode?.title || pendingNode?.name || pendingNode?.id || "",
+    );
+    if (normalizedLabel && !pendingOrder.has(normalizedLabel)) {
+      pendingOrder.set(normalizedLabel, index);
+    }
+  }
 
   const rankedEntries = taskList
     .map((task, originalIndex) => {
       const title = normalizeResumeText(task?.title || "");
       const taskIndex = Number.isFinite(Number(task?.index)) ? Number(task.index) : originalIndex;
-      const exactMatch = title === normalizedNextStep;
-      const containsMatch = !exactMatch && title.includes(normalizedNextStep);
+      const exactMatch = normalizedNextStep && title === normalizedNextStep;
+      const containsMatch = normalizedNextStep && !exactMatch && title.includes(normalizedNextStep);
+      const pendingIndex = pendingOrder.has(title) ? pendingOrder.get(title) : Number.POSITIVE_INFINITY;
+      const completed = completedLabels.has(title);
       return {
         task,
         originalIndex,
@@ -8044,20 +8093,32 @@ function rankPlannerTaskCandidatesForResume(tasks, plannerFeedback) {
         taskIndex,
         exactMatch,
         containsMatch,
+        pendingIndex,
+        completed,
       };
-    });
+    })
+    .filter((entry) => !entry.completed);
 
-  const exactMatchEntry = rankedEntries.find((entry) => entry.exactMatch)
-    || rankedEntries.find((entry) => entry.containsMatch);
-  if (!exactMatchEntry) return taskList;
+  if (!rankedEntries.length) return [];
 
-  const exactTitle = exactMatchEntry.title;
+  const exactMatchEntry = normalizedNextStep
+    ? rankedEntries.find((entry) => entry.exactMatch) || rankedEntries.find((entry) => entry.containsMatch)
+    : null;
+
   return rankedEntries
     .slice()
     .sort((a, b) => {
-      const aBeforeResume = a.taskIndex < exactMatchEntry.taskIndex && a.title !== exactTitle;
-      const bBeforeResume = b.taskIndex < exactMatchEntry.taskIndex && b.title !== exactTitle;
-      if (aBeforeResume !== bBeforeResume) return aBeforeResume ? 1 : -1;
+      const aIsResume = exactMatchEntry ? a === exactMatchEntry : false;
+      const bIsResume = exactMatchEntry ? b === exactMatchEntry : false;
+      if (aIsResume !== bIsResume) return aIsResume ? -1 : 1;
+
+      const aHasPending = Number.isFinite(a.pendingIndex);
+      const bHasPending = Number.isFinite(b.pendingIndex);
+      if (aHasPending !== bHasPending) return aHasPending ? -1 : 1;
+      if (aHasPending && bHasPending && a.pendingIndex !== b.pendingIndex) {
+        return a.pendingIndex - b.pendingIndex;
+      }
+
       return a.taskIndex - b.taskIndex;
     })
     .map(({ task }) => task);
@@ -16199,11 +16260,12 @@ export {
 export {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
-  getCustomNodeDir,`r`n  inspectCustomWorkflowNodePlugins as inspectCustomWorkflowNodePluginsImpl,`r`n  scaffoldCustomNodeFile,
+  getCustomNodeDir,
+  inspectCustomWorkflowNodePlugins,
+  scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
 } from "./workflow-nodes/custom-loader.mjs";
-
 export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   if (!customLoadPromise || options.forceReload) {
     customLoadPromise = ensureCustomWorkflowNodesLoaded(options);
@@ -16215,6 +16277,11 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
+
+
+
 
 
 

@@ -149,7 +149,8 @@
     "mutate": "npx stryker run",
     "mutate:incremental": "npx stryker run --incremental",
     "mutate:report": "node scripts/mutation-report.mjs",
-    "mutate:scoped": "npx stryker run --mutate"
+    "mutate:scoped": "npx stryker run --mutate",
+    "lint": "npm run syntax:check && npm run prompt:lint"
   },
   "files": [
     ".env.example",
@@ -407,6 +408,3 @@
     "gaxios": "7.1.4"
   }
 }
-
-
-
