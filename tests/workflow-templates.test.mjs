@@ -584,7 +584,7 @@ describe("workflow-templates", () => {
   it("continuation loop template exposes configurable turn/stuck controls", () => {
     const template = getTemplate("template-continuation-loop");
     expect(template).toBeDefined();
-    expect(template?.trigger).toBe("trigger.manual");
+    expect(template?.trigger).toBe("trigger.task_available");
 
     expect(template?.variables?.maxTurns).toBe(8);
     expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
@@ -683,7 +683,7 @@ describe("workflow-templates", () => {
   it("continuation loop template includes stuck handling and terminal-state exits", () => {
     const template = getTemplate("template-continuation-loop");
     expect(template).toBeDefined();
-    expect(template?.trigger).toBe("trigger.manual");
+    expect(template?.trigger).toBe("trigger.task_available");
     expect(template?.variables?.onStuck).toBe("escalate");
     expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
 
@@ -842,9 +842,6 @@ describe("template API functions", () => {
       "template-task-repair-worktree",
       "template-task-orphan-worktree-recovery",
       "template-task-status-transition-manager",
-      // template-pr-conflict-resolver deliberately excluded — superseded by
-      // template-bosun-pr-watchdog which owns conflict detection, CI checks,
-      // diff-safety review, and merge in one consolidated workflow.
       "template-agent-session-monitor",
       "template-release-pipeline",
       "template-backend-agent",
@@ -1550,9 +1547,10 @@ describe("github template CLI compatibility", () => {
   it("PR watchdog enriches generic CI fallback with run diagnostics and bounded reruns", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
-    const fixAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
+    const claimNode = watchdogTemplate.nodes.find((n) => n.id === "claim-unclaimed-prs");
+    const dispatchNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agents");
+    const singleFixTemplate = getTemplate("template-pr-fix-single");
     const command = getNodeCommandCode(fixNode);
-
     expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
     expect(command).toContain("collectCiDiagnostics(repo,failedRun,runGh)");
@@ -1565,10 +1563,15 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt");
-    expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
+    expect(getNodeCommandCode(claimNode)).toContain("BOSUN_PROGRAMMATIC_FIX");
+    expect(getNodeCommandCode(claimNode)).toContain("pr-fix-claims.json");
+    expect(getNodeCommandCode(claimNode)).toContain("unclaimedCount");
+    expect(dispatchNode?.type).toBe("loop.for_each");
+    expect(dispatchNode?.config?.items).toContain("d.unclaimed");
+    expect(dispatchNode?.config?.maxConcurrent).toBe("{{maxConcurrentFixes}}");
+    expect(dispatchNode?.config?.workflowId).toBe("template-pr-fix-single");
+    expect(singleFixTemplate?.trigger).toBe("trigger.manual");
   });
-
   it("PR progressor is registered as the immediate single-PR handoff workflow", () => {
     const progressorTemplate = getTemplate("template-bosun-pr-progressor");
     expect(progressorTemplate).toBeDefined();

@@ -430,8 +430,8 @@
         "bosun-attached",
         "safety"
       ],
-      "nodeCount": 19,
-      "edgeCount": 26,
+      "nodeCount": 21,
+      "edgeCount": 29,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -441,19 +441,21 @@
         "labelNeedsReview": "bosun-needs-human-review",
         "repoScope": "auto",
         "maxPrs": 25,
-        "intervalMs": 90000,
+        "intervalMs": 1800000,
         "suspiciousDeletionRatio": 3,
         "minDestructiveDeletions": 500,
         "autoApplySuggestions": true,
         "trustedAuthors": "",
         "allowTrustedFixes": false,
-        "allowTrustedMerges": false
+        "allowTrustedMerges": false,
+        "maxConcurrentFixes": 3,
+        "prFixTtlMinutes": 120
       },
       "metadata": {
         "author": "bosun",
-        "version": 4,
+        "version": 5,
         "createdAt": "2025-07-01T00:00:00Z",
-        "templateVersion": "2.3.0",
+        "templateVersion": "3.0.0",
         "tags": [
           "github",
           "pr",
@@ -469,7 +471,7 @@
             "registerBuiltinHooks (PostPR block)"
           ],
           "calledFrom": [],
-          "description": "v2.3: Adds fast-path update-branch for out-of-date (BEHIND) PRs without conflicts. Consolidates PR polling into one gh pr list fetch per target repo per cycle. Uses deterministic-first remediation and review/merge command nodes; agent execution is now fallback-only for unresolved conflicts or failed automatic remediation attempts. All external PRs (no bosun-attached label) remain untouched."
+          "description": "v3.0: Replaces single mega-agent dispatch with per-PR claim system and parallel fan-out. Each PR gets its own dedicated agent (template-pr-fix-single) with 2-hour budget. PR claims prevent duplicate work across watchdog cycles (TTL=prFixTtlMinutes). All per-PR agents are session-tracked in Fleet/Sessions. v2.3: Adds fast-path update-branch for out-of-date (BEHIND) PRs without conflicts. Consolidates PR polling into one gh pr list fetch per target repo per cycle. Uses deterministic-first remediation and review/merge command nodes; agent execution is now fallback-only for unresolved conflicts or failed automatic remediation attempts. All external PRs (no bosun-attached label) remain untouched."
         }
       },
       "nodes": [
@@ -704,20 +706,58 @@
           ]
         },
         {
-          "id": "dispatch-fix-agent",
-          "type": "action.run_agent",
-          "label": "Dispatch Fix Agent (Fallback)",
+          "id": "claim-unclaimed-prs",
+          "type": "action.run_command",
+          "label": "Claim & Filter Unclaimed PRs",
           "config": {
-            "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nEach unresolved item includes prDigest with the PR body, files, issue comments, reviews, review comments, review requests, and check summaries. Use that context first.\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: start from failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
-            "sdk": "auto",
-            "timeoutMs": 1800000,
-            "maxRetries": 2,
-            "retryDelayMs": 30000,
-            "continueOnError": true
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const raw=String(process.env.BOSUN_PROGRAMMATIC_FIX||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const needsAgent=Array.isArray(payload.needsAgent)?payload.needsAgent:[]; const TTL_MS=Math.max(60000,Number(process.env.PR_FIX_TTL_MINUTES||'120')*60*1000); const CLAIM_DIR=path.join(process.cwd(),'.cache','bosun'); const CLAIM_FILE=path.join(CLAIM_DIR,'pr-fix-claims.json'); function loadClaims(){try{const d=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));return(d&&typeof d==='object'&&d.claims&&typeof d.claims==='object')?d.claims:{};}catch{return {};}} function saveClaims(claims){try{if(!fs.existsSync(CLAIM_DIR))fs.mkdirSync(CLAIM_DIR,{recursive:true});const data={version:1,claims,updatedAt:new Date().toISOString()};const tmp=CLAIM_FILE+'.tmp'+Date.now();fs.writeFileSync(tmp,JSON.stringify(data,null,2),'utf8');fs.renameSync(tmp,CLAIM_FILE);}catch(e){process.stderr.write('[claim] save error: '+String(e?.message||e)+'\\n');}} const now=Date.now(); const claims=loadClaims(); /* Purge expired/stale claims */ for(const key of Object.keys(claims)){if(now>new Date(claims[key].expiresAt||0).getTime())delete claims[key];} const unclaimed=[]; const alreadyClaimed=[]; for(const item of needsAgent){   const repo=String(item?.repo||'').trim();   const number=String(item?.number||item?.n||'').trim();   if(!repo||!number){unclaimed.push({...item,taskId:'pr-fix-unknown',taskTitle:'Unknown PR',claimKey:''});continue;}   const key=repo+'#'+number;   const claim=claims[key];   if(claim&&now<new Date(claim.expiresAt||0).getTime()){     alreadyClaimed.push({key,repo,number,reason:item?.reason||'',claimedAt:claim.claimedAt,expiresAt:claim.expiresAt});     process.stderr.write('[pr-watchdog] '+key+' already claimed (expires '+claim.expiresAt+'), skipping\\n');     continue;   }   const safeRepo=repo.replace(/[^a-z0-9]/gi,'-').replace(/-+/g,'-').replace(/^-|-$/g,'');   const taskId='pr-fix-'+safeRepo+'-'+number;   const taskTitle='Fix PR #'+number+(item?.title?' \\''+String(item.title).slice(0,60)+'\\'':'')+' ('+repo+')';   claims[key]={repo,number,taskId,taskTitle,claimedAt:new Date().toISOString(),expiresAt:new Date(now+TTL_MS).toISOString()};   unclaimed.push({...item,taskId,taskTitle,number,repo,claimKey:key}); } saveClaims(claims); console.log(JSON.stringify({unclaimed,alreadyClaimed,unclaimedCount:unclaimed.length,alreadyClaimedCount:alreadyClaimed.length,totalNeedsAgent:needsAgent.length}));"
+            ],
+            "continueOnError": true,
+            "failOnError": false,
+            "env": {
+              "BOSUN_PROGRAMMATIC_FIX": "{{programmatic-fix.output}}",
+              "PR_FIX_TTL_MINUTES": "{{prFixTtlMinutes}}"
+            }
           },
           "position": {
             "x": 280,
             "y": 970
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-unclaimed-fixes",
+          "type": "condition.expression",
+          "label": "Unclaimed Fixes?",
+          "config": {
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return (Array.isArray(d.unclaimed)?d.unclaimed:[]).length>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 280,
+            "y": 1060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "dispatch-fix-agents",
+          "type": "loop.for_each",
+          "label": "Dispatch Fix Agents (Per PR)",
+          "config": {
+            "items": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return Array.isArray(d.unclaimed)?d.unclaimed:[];}catch{return []}})();",
+            "variable": "item",
+            "maxConcurrent": "{{maxConcurrentFixes}}",
+            "workflowId": "template-pr-fix-single"
+          },
+          "position": {
+            "x": 280,
+            "y": 1160
           },
           "outputs": [
             "default"
@@ -948,9 +988,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-agent-needed->dispatch-fix-agent",
+          "id": "fix-agent-needed->claim-unclaimed-prs",
           "source": "fix-agent-needed",
-          "target": "dispatch-fix-agent",
+          "target": "claim-unclaimed-prs",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -962,8 +1002,28 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "dispatch-fix-agent->review-needed",
-          "source": "dispatch-fix-agent",
+          "id": "claim-unclaimed-prs->has-unclaimed-fixes",
+          "source": "claim-unclaimed-prs",
+          "target": "has-unclaimed-fixes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-unclaimed-fixes->dispatch-fix-agents",
+          "source": "has-unclaimed-fixes",
+          "target": "dispatch-fix-agents",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-unclaimed-fixes->review-needed",
+          "source": "has-unclaimed-fixes",
+          "target": "review-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "dispatch-fix-agents->review-needed",
+          "source": "dispatch-fix-agents",
           "target": "review-needed",
           "sourcePort": "default"
         },
@@ -1239,6 +1299,429 @@
           "id": "sync-agent->done",
           "source": "sync-agent",
           "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-github-check-failure",
+      "name": "GitHub Check Failure Handler",
+      "description": "Event-driven workflow that fires the moment a GitHub check run fails. Identifies the associated PR and applies the bosun-needs-fix label instantly so the PR Watchdog can dispatch a repair agent on its next sweep. Eliminates the up-to-30-minute delay between a CI failure and Bosun's response.",
+      "category": "github",
+      "categoryLabel": "GitHub",
+      "categoryIcon": ":git:",
+      "categoryOrder": 1,
+      "tags": [
+        "github",
+        "ci",
+        "check",
+        "event-driven",
+        "webhook",
+        "reliability"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.event",
+      "variables": {
+        "labelNeedsFix": "bosun-needs-fix",
+        "ignoredCheckNames": "codecov,dependabot,semantic-pr-title"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "github",
+          "ci",
+          "check",
+          "event-driven",
+          "webhook",
+          "reliability"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.event",
+          "label": "Check Run Failed",
+          "config": {
+            "eventType": "github:check_run",
+            "filter": "$event?.action === 'completed' && $event?.checkConclusion === 'failure' && !String($event?.checkName || '').split(',').some(n =>   String($data?.ignoredCheckNames || '').toLowerCase().split(',').map(s => s.trim()).includes(n.trim().toLowerCase()))"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-has-pr",
+          "type": "condition.expression",
+          "label": "Associated PR Found?",
+          "config": {
+            "expression": "Number($data?.prNumber) > 0 && Boolean($data?.repo)"
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "label-fix",
+          "type": "action.run_command",
+          "label": "Label PR: bosun-needs-fix",
+          "config": {
+            "command": "gh",
+            "args": [
+              "pr",
+              "edit",
+              "{{prNumber}}",
+              "--add-label",
+              "{{labelNeedsFix}}",
+              "--repo",
+              "{{repo}}"
+            ],
+            "continueOnError": true
+          },
+          "position": {
+            "x": 250,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-labeled",
+          "type": "notify.log",
+          "label": "Log Fix Label Applied",
+          "config": {
+            "message": ":x: Check '{{checkName}}' failed on PR #{{prNumber}} ({{repo}}). Applied label '{{labelNeedsFix}}' — PR Watchdog will dispatch repair.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-pr",
+          "type": "notify.log",
+          "label": "Log No Associated PR",
+          "config": {
+            "message": "Check '{{checkName}}' failed in {{repo}} (conclusion: {{checkConclusion}}) — no associated PR found.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 620,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-has-pr",
+          "source": "trigger",
+          "target": "check-has-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-has-pr->label-fix",
+          "source": "check-has-pr",
+          "target": "label-fix",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-has-pr->log-no-pr",
+          "source": "check-has-pr",
+          "target": "log-no-pr",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "label-fix->log-labeled",
+          "source": "label-fix",
+          "target": "log-labeled",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-github-pr-event-handler",
+      "name": "GitHub PR Event Handler",
+      "description": "Event-driven workflow that fires as soon as a PR is opened, updated, or reopened via GitHub webhook. Identifies the linked Bosun task by branch name and immediately updates its status to in-review — no polling required. Complements the PR Watchdog which runs every 30 minutes as a fallback.",
+      "category": "github",
+      "categoryLabel": "GitHub",
+      "categoryIcon": ":git:",
+      "categoryOrder": 1,
+      "tags": [
+        "github",
+        "pr",
+        "event-driven",
+        "lifecycle",
+        "webhook"
+      ],
+      "nodeCount": 9,
+      "edgeCount": 8,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.event",
+      "variables": {
+        "labelInReview": "bosun/in-review",
+        "taskBranchPrefix": "task/"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "github",
+          "pr",
+          "event-driven",
+          "lifecycle",
+          "webhook"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.event",
+          "label": "PR Opened / Updated",
+          "config": {
+            "eventType": "github:pull_request",
+            "filter": "['opened','synchronize','reopened'].includes(String($event?.action || '').toLowerCase())"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-bosun-branch",
+          "type": "condition.expression",
+          "label": "Is a Bosun Task Branch?",
+          "config": {
+            "expression": "Boolean($data?.prBranch) && String($data?.prBranch || '').startsWith(String($data?.taskBranchPrefix || 'task/'))"
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "find-task",
+          "type": "action.run_command",
+          "label": "Find Linked Task",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        const branch = process.env.PR_BRANCH || \"\";\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, {}))\n          .then(tasks => {\n            const task = (tasks || []).find(t =>\n              (t.branch || t.metadata?.branch) === branch\n            );\n            console.log(JSON.stringify(task || null));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+            ],
+            "env": {
+              "PR_BRANCH": "{{prBranch}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 250,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-task-found",
+          "type": "condition.expression",
+          "label": "Task Found?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('find-task')?.output?.id)"
+          },
+          "position": {
+            "x": 250,
+            "y": 490
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "update-inreview",
+          "type": "action.update_task_status",
+          "label": "Mark Task In Review",
+          "config": {
+            "taskId": "{{$ctx.getNodeOutput('find-task')?.output?.id || ''}}",
+            "status": "inreview",
+            "taskTitle": "{{$ctx.getNodeOutput('find-task')?.output?.title || prTitle || ''}}",
+            "workflowEvent": "task.in_review",
+            "workflowData": {
+              "source": "github:pr_opened",
+              "prNumber": "{{prNumber}}",
+              "prUrl": "{{prUrl}}",
+              "branch": "{{prBranch}}",
+              "repo": "{{repo}}"
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "add-label-in-review",
+          "type": "action.run_command",
+          "label": "Add In-Review Label",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const {execFileSync}=require('child_process'); const n=String(process.env.PR_NUMBER||'').trim(); const repo=String(process.env.REPO||'').trim(); const label=String(process.env.LABEL_IN_REVIEW||'bosun/in-review').trim(); if(!n||!label){process.exit(0);} try{   const args=['pr','edit',n,'--add-label',label];   if(repo)args.push('--repo',repo);   execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']});   console.log(JSON.stringify({labeled:true,label,pr:n})); }catch(e){   process.stderr.write('label warn: '+String(e?.message||e)+'\\n');   console.log(JSON.stringify({labeled:false,label,pr:n,error:String(e?.message||e)})); }"
+            ],
+            "continueOnError": true,
+            "failOnError": false,
+            "env": {
+              "PR_NUMBER": "{{prNumber}}",
+              "REPO": "{{repo}}",
+              "LABEL_IN_REVIEW": "{{labelInReview}}"
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-updated",
+          "type": "notify.log",
+          "label": "Log In Review",
+          "config": {
+            "message": ":rocket: Task {{$ctx.getNodeOutput('find-task')?.output?.id}} moved to in-review — PR #{{prNumber}} ({{prBranch}}) in {{repo}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-task",
+          "type": "notify.log",
+          "label": "Log No Task Found",
+          "config": {
+            "message": "PR #{{prNumber}} opened on branch {{prBranch}} in {{repo}} — no linked Bosun task found.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 550,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-not-bosun",
+          "type": "notify.log",
+          "label": "Log Non-Bosun Branch",
+          "config": {
+            "message": "PR #{{prNumber}} on {{prBranch}} is not a Bosun task branch — skipping.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 650,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-bosun-branch",
+          "source": "trigger",
+          "target": "check-bosun-branch",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-bosun-branch->find-task",
+          "source": "check-bosun-branch",
+          "target": "find-task",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-bosun-branch->log-not-bosun",
+          "source": "check-bosun-branch",
+          "target": "log-not-bosun",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "find-task->check-task-found",
+          "source": "find-task",
+          "target": "check-task-found",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-task-found->update-inreview",
+          "source": "check-task-found",
+          "target": "update-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-task-found->log-no-task",
+          "source": "check-task-found",
+          "target": "log-no-task",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "update-inreview->add-label-in-review",
+          "source": "update-inreview",
+          "target": "add-label-in-review",
+          "sourcePort": "default"
+        },
+        {
+          "id": "add-label-in-review->log-updated",
+          "source": "add-label-in-review",
+          "target": "log-updated",
           "sourcePort": "default"
         }
       ]
@@ -1543,6 +2026,167 @@
           "target": "notify-failed",
           "sourcePort": "default",
           "condition": "$ctx.getNodeOutput('resolve-conflicts')?.success !== true"
+        }
+      ]
+    },
+    {
+      "id": "template-pr-fix-single",
+      "name": "PR Fix Agent (Single PR)",
+      "description": "Fixes one Bosun-attached PR using a dedicated long-running agent (up to 2 hours). Dispatched by the PR Watchdog loop for each unclaimed PR needing repair. Creates a stable per-PR session (pr-fix-<repo>-<number>) so work is tracked in Fleet/Sessions. Releases the PR claim on completion so the slot is freed for the next watchdog cycle.",
+      "category": "github",
+      "categoryLabel": "GitHub",
+      "categoryIcon": ":git:",
+      "categoryOrder": 1,
+      "tags": [
+        "github",
+        "pr",
+        "ci",
+        "fix",
+        "single-pr",
+        "session-tracked"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.manual",
+      "variables": {},
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-29T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "github",
+          "pr",
+          "ci",
+          "fix",
+          "single-pr",
+          "session-tracked"
+        ],
+        "notes": "Invoked by template-bosun-pr-watchdog via loop.for_each. Do not enable this template as a standalone scheduled workflow. It receives ctx.data.item (PR object with taskId, claimKey, repo, number, prDigest, etc.) from the parent loop and runs entirely from that context."
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.manual",
+          "label": "Start",
+          "config": {},
+          "position": {
+            "x": 100,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "setup-task",
+          "type": "action.set_variable",
+          "label": "Setup PR Task ID",
+          "config": {
+            "key": "taskId",
+            "value": "'pr-fix-' + String($data?.item?.taskId ||   (String($data?.item?.repo || '').replace(/[^a-z0-9]/gi, '-').replace(/-+/g,'-').replace(/^-|-$/g,'') +    '-' + String($data?.item?.number || $data?.item?.n || '0'))).replace(/^-|-$/g, '')",
+            "isExpression": true
+          },
+          "position": {
+            "x": 380,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "setup-title",
+          "type": "action.set_variable",
+          "label": "Setup PR Task Title",
+          "config": {
+            "key": "taskTitle",
+            "value": "'Fix PR #' + String($data?.item?.number || $data?.item?.n || '?') + ($data?.item?.title ? ' \\'' + String($data.item.title).slice(0,60) + '\\'' : '') + ' (' + String($data?.item?.repo || '') + ')'",
+            "isExpression": true
+          },
+          "position": {
+            "x": 660,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fix-agent",
+          "type": "action.run_agent",
+          "label": "Fix PR (Dedicated Agent)",
+          "config": {
+            "prompt": "You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\n\n## PR Data\n\n{{item}}\n\n## Step 0 — Always Do This First (Workspace Setup)\n\nThe agent workspace is Bosun's own repo directory — NOT the target repo. You MUST clone or update the target repo before touching any branches:\n\n```\n# Extract repo from item (e.g. \"virtengine/bosun\")\nREPO=\"<item.repo>\"\nBRANCH=\"<item.branch>\"  # the PR head branch to fix\nBASE=\"<item.baseBranch>\"  # the PR base branch (usually main)\nPR_NUMBER=\"<item.prNumber>\"\n\n# Clone into a temp dir, or update if already present\nWORK_DIR=\"/tmp/pr-fix-${PR_NUMBER}\"\nif [ -d \"$WORK_DIR/.git\" ]; then\n  cd $WORK_DIR && git fetch origin\nelse\n  gh repo clone $REPO $WORK_DIR -- --depth=50 && cd $WORK_DIR\nfi\n\n# Checkout the PR branch to fix\ngit checkout -B $BRANCH origin/$BRANCH\n```\n\n## Fix Instructions\n\nUse `prDigest` (body, files, issueComments, reviews, reviewComments, checks, ciSummary) and CI diagnostics (failedRun, failedJobs, failedLogExcerpt, failedAnnotations) to identify the root cause and apply the MINIMAL fix.\n\n**By `reason` field:**\n- `merge_conflict_requires_code_resolution`: In $WORK_DIR, run `git merge origin/$BASE`,   resolve all conflicts, run tests, commit, then `git push origin $BRANCH --force-with-lease`.\n- `auto_rerun_limit_reached` / `ci_rerun_failed`: Study `failedLogExcerpt` and `failedJobs`   to find the root cause. Fix the code in $WORK_DIR, commit, push.\n- `no_rerunnable_failed_run_found`: Check `recentRuns`, look at the branch directly with   `gh pr checks $PR_NUMBER --repo $REPO`. Diagnose and fix.\n- `branch_update_failed` / `missing_repo_or_branch`: Inspect with `gh pr view $PR_NUMBER --repo $REPO`.\n\n**After successful repair:** Remove the fix label and ensure the PR base is correct:\n```\ngh pr edit $PR_NUMBER --repo $REPO --remove-label bosun-needs-fix\n# Ensure base branch was not changed — reset it if needed:\ngh pr edit $PR_NUMBER --repo $REPO --base $BASE\n```\n\n## Strict Rules\n\n- Fix ONLY the specific issue listed in `reason`. No unrelated changes.\n- Do NOT merge, approve, or close the PR.\n- Do NOT touch any other PRs.\n- Do NOT create new repair branches. Fix the existing PR branch (`item.branch`) in place.\n- Do NOT change the PR's base branch. If the base was incorrectly changed, reset it to `item.baseBranch`.\n- Always work in the cloned $WORK_DIR — never run git commands in the Bosun workspace directory.\n- Commit with a clear message referencing what was fixed.\n- If the fix is blocked (e.g., protected branch, missing creds), document why in a PR comment and stop.",
+            "sdk": "auto",
+            "timeoutMs": 7200000,
+            "maxRetries": 1,
+            "retryDelayMs": 60000,
+            "sessionRetries": 2,
+            "maxContinues": 3,
+            "continueOnSession": true,
+            "continueOnError": true,
+            "failOnError": false
+          },
+          "position": {
+            "x": 940,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "release-claim",
+          "type": "action.run_command",
+          "label": "Release PR Claim",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const claimKey=String(process.env.PR_CLAIM_KEY||'').trim(); if(!claimKey){console.log(JSON.stringify({released:false,reason:'no_claim_key'}));process.exit(0);} const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-fix-claims.json'); try{   if(!fs.existsSync(CLAIM_FILE)){console.log(JSON.stringify({released:false,reason:'no_claim_file'}));process.exit(0);}   const data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));   if(data.claims&&data.claims[claimKey]){     delete data.claims[claimKey];     data.updatedAt=new Date().toISOString();     fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');     console.log(JSON.stringify({released:true,claimKey}));   }else{     console.log(JSON.stringify({released:false,reason:'not_found',claimKey}));   } }catch(e){   console.log(JSON.stringify({released:false,reason:'error',error:String(e?.message||e),claimKey})); }"
+            ],
+            "continueOnError": true,
+            "failOnError": false,
+            "env": {
+              "PR_CLAIM_KEY": "{{item.claimKey}}"
+            }
+          },
+          "position": {
+            "x": 1220,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->setup-task",
+          "source": "trigger",
+          "target": "setup-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "setup-task->setup-title",
+          "source": "setup-task",
+          "target": "setup-title",
+          "sourcePort": "default"
+        },
+        {
+          "id": "setup-title->fix-agent",
+          "source": "setup-title",
+          "target": "fix-agent",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fix-agent->release-claim",
+          "source": "fix-agent",
+          "target": "release-claim",
+          "sourcePort": "default"
         }
       ]
     },
@@ -8417,7 +9061,7 @@
     {
       "id": "template-continuation-loop",
       "name": "Continuation Loop",
-      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "description": "Issue-state continuation loop. Fires automatically for any available task (trigger.task_available), drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause. taskId and worktreePath are auto-populated from the picked task — no manual input required.",
       "category": "reliability",
       "categoryLabel": "Reliability",
       "categoryIcon": ":shield:",
@@ -8433,8 +9077,9 @@
       "edgeCount": 36,
       "recommended": false,
       "enabled": true,
-      "trigger": "trigger.manual",
+      "trigger": "trigger.task_available",
       "variables": {
+        "maxParallel": 1,
         "taskId": "",
         "worktreePath": "",
         "maxTurns": 8,
@@ -8456,7 +9101,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-03-10T00:00:00Z",
-        "templateVersion": "1.2.0",
+        "templateVersion": "1.3.0",
         "tags": [
           "continuation",
           "loop",
@@ -8469,9 +9114,18 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Continuation Loop",
-          "config": {},
+          "type": "trigger.task_available",
+          "label": "Pick Available Task",
+          "config": {
+            "maxParallel": "{{maxParallel}}",
+            "status": "inprogress",
+            "statuses": [
+              "inprogress",
+              "todo"
+            ],
+            "filterCodexScoped": true,
+            "filterDrafts": true
+          },
           "position": {
             "x": 420,
             "y": 60
@@ -9304,7 +9958,7 @@
     {
       "id": "template-continuation-loop",
       "name": "Continuation Loop",
-      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "description": "Issue-state continuation loop. Fires automatically for any available task (trigger.task_available), drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause. taskId and worktreePath are auto-populated from the picked task — no manual input required.",
       "category": "reliability",
       "categoryLabel": "Reliability",
       "categoryIcon": ":shield:",
@@ -9315,6 +9969,904 @@
         "linear",
         "external-status",
         "stuck-detection"
+      ],
+      "nodeCount": 33,
+      "edgeCount": 36,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.task_available",
+      "variables": {
+        "maxParallel": 1,
+        "taskId": "",
+        "worktreePath": "",
+        "maxTurns": 8,
+        "pollIntervalMs": 30000,
+        "terminalStates": [
+          "done",
+          "cancelled"
+        ],
+        "stuckThresholdMs": 300000,
+        "maxStuckAutoRetries": 1,
+        "onStuck": "escalate",
+        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
+        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
+        "sdk": "auto",
+        "model": "",
+        "timeoutMs": 1800000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-10T00:00:00Z",
+        "templateVersion": "1.3.0",
+        "tags": [
+          "continuation",
+          "loop",
+          "linear",
+          "external-status",
+          "stuck-detection"
+        ],
+        "configType": "continuation-loop"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_available",
+          "label": "Pick Available Task",
+          "config": {
+            "maxParallel": "{{maxParallel}}",
+            "status": "inprogress",
+            "statuses": [
+              "inprogress",
+              "todo"
+            ],
+            "filterCodexScoped": true,
+            "filterDrafts": true
+          },
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-turn",
+          "type": "action.set_variable",
+          "label": "Initialize Turn Counter",
+          "config": {
+            "key": "continuationTurn",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-progress-at",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "Date.now()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 280
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-signature",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Initialize Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "poll-task",
+          "type": "action.bosun_function",
+          "label": "Poll External Task State",
+          "config": {
+            "function": "tasks.get",
+            "args": {
+              "taskId": "{{taskId}}"
+            },
+            "outputVariable": "continuationTask"
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-status",
+          "type": "action.set_variable",
+          "label": "Derive External Status",
+          "config": {
+            "key": "currentExternalStatus",
+            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "terminal-check",
+          "type": "condition.expression",
+          "label": "Terminal State Reached?",
+          "config": {
+            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
+          },
+          "position": {
+            "x": 420,
+            "y": 720
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-terminal",
+          "type": "flow.end",
+          "label": "End: Terminal State",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
+            "output": {
+              "reason": "terminal_state",
+              "taskId": "{{taskId}}",
+              "externalStatus": "{{currentExternalStatus}}"
+            }
+          },
+          "position": {
+            "x": 160,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "max-turns-check",
+          "type": "condition.expression",
+          "label": "Max Turns Reached?",
+          "config": {
+            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
+          },
+          "position": {
+            "x": 620,
+            "y": 860
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-max-turns",
+          "type": "flow.end",
+          "label": "End: Max Turns",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
+            "output": {
+              "reason": "max_turns",
+              "taskId": "{{taskId}}",
+              "turns": "{{continuationTurn}}"
+            }
+          },
+          "position": {
+            "x": 460,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent",
+          "type": "action.run_agent",
+          "label": "Drive Agent",
+          "config": {
+            "prompt": "{{continuePrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "requireTaskPromptCompleteness": false,
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "capture-progress",
+          "type": "action.run_command",
+          "label": "Capture Progress Signature",
+          "config": {
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-signature",
+          "type": "action.set_variable",
+          "label": "Derive Signature",
+          "config": {
+            "key": "currentProgressSignature",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 800,
+            "y": 1240
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "progress-changed",
+          "type": "condition.expression",
+          "label": "Progress Changed?",
+          "config": {
+            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
+          },
+          "position": {
+            "x": 800,
+            "y": 1360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "mark-progress-at",
+          "type": "action.set_variable",
+          "label": "Update Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "mark-progress-sig",
+          "type": "action.set_variable",
+          "label": "Update Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "$data?.currentProgressSignature || ''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "reset-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Reset Stuck Retry Count On Progress",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1710
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-check",
+          "type": "condition.expression",
+          "label": "Session Stuck?",
+          "config": {
+            "expression": "(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
+          },
+          "position": {
+            "x": 980,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "emit-stuck",
+          "type": "action.emit_event",
+          "label": "Emit session-stuck",
+          "config": {
+            "eventType": "session-stuck",
+            "payload": {
+              "taskId": "{{taskId}}",
+              "turn": "{{continuationTurn}}",
+              "externalStatus": "{{currentExternalStatus}}",
+              "stuckThresholdMs": "{{stuckThresholdMs}}",
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+              "onStuck": "{{onStuck}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
+              "lastProgressAt": "{{lastProgressAt}}",
+              "lastProgressSignature": "{{lastProgressSignature}}",
+              "currentProgressSignature": "{{currentProgressSignature}}",
+              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
+              "agentActivityDetected": "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
+              "agentItemCount": "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
+              "agentStreamCount": "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
+              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
+            },
+            "outputVariable": "sessionStuckEvent"
+          },
+          "position": {
+            "x": 980,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-route",
+          "type": "condition.switch",
+          "label": "Route onStuck Action",
+          "config": {
+            "value": "$data?.onStuck || 'escalate'",
+            "cases": {
+              "retry": "retry",
+              "escalate": "escalate",
+              "pause": "pause"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "retry",
+            "escalate",
+            "pause",
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-retry-budget",
+          "type": "condition.expression",
+          "label": "Stuck Retry Budget Remaining?",
+          "config": {
+            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
+          },
+          "position": {
+            "x": 760,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "stuck-retry",
+          "type": "action.run_agent",
+          "label": "Retry After Stuck",
+          "config": {
+            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "requireTaskPromptCompleteness": false,
+            "failOnError": false
+          },
+          "position": {
+            "x": 760,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Increment Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "Number($data?.stuckRetryCount || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 980,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate-budget",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session (Retry Limit)",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 760,
+            "y": 2050
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-pause",
+          "type": "notify.log",
+          "label": "Pause Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 1200,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-escalated",
+          "type": "flow.end",
+          "label": "End: Escalated",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_escalated",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-paused",
+          "type": "flow.end",
+          "label": "End: Paused",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_paused",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 1200,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn",
+          "type": "action.delay",
+          "label": "Wait Poll Interval",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 760,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn",
+          "type": "action.set_variable",
+          "label": "Increment Turn",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn-no-stuck",
+          "type": "action.delay",
+          "label": "Wait (No Stuck)",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn-no-stuck",
+          "type": "action.set_variable",
+          "label": "Increment Turn (No Stuck)",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 1080,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->init-turn",
+          "source": "trigger",
+          "target": "init-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-turn->init-progress-at",
+          "source": "init-turn",
+          "target": "init-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-progress-at->init-signature",
+          "source": "init-progress-at",
+          "target": "init-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-signature->init-stuck-retry-count",
+          "source": "init-signature",
+          "target": "init-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-stuck-retry-count->poll-task",
+          "source": "init-stuck-retry-count",
+          "target": "poll-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "poll-task->derive-status",
+          "source": "poll-task",
+          "target": "derive-status",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-status->terminal-check",
+          "source": "derive-status",
+          "target": "terminal-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "terminal-check->end-terminal",
+          "source": "terminal-check",
+          "target": "end-terminal",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "terminal-check->max-turns-check",
+          "source": "terminal-check",
+          "target": "max-turns-check",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "max-turns-check->end-max-turns",
+          "source": "max-turns-check",
+          "target": "end-max-turns",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "max-turns-check->run-agent",
+          "source": "max-turns-check",
+          "target": "run-agent",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-agent->capture-progress",
+          "source": "run-agent",
+          "target": "capture-progress",
+          "sourcePort": "default"
+        },
+        {
+          "id": "capture-progress->derive-signature",
+          "source": "capture-progress",
+          "target": "derive-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-signature->progress-changed",
+          "source": "derive-signature",
+          "target": "progress-changed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "progress-changed->mark-progress-at",
+          "source": "progress-changed",
+          "target": "mark-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-at->mark-progress-sig",
+          "source": "mark-progress-at",
+          "target": "mark-progress-sig",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-sig->reset-stuck-retry-count",
+          "source": "mark-progress-sig",
+          "target": "reset-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reset-stuck-retry-count->stuck-check",
+          "source": "reset-stuck-retry-count",
+          "target": "stuck-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-check->emit-stuck",
+          "source": "stuck-check",
+          "target": "emit-stuck",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-check->wait-next-turn-no-stuck",
+          "source": "stuck-check",
+          "target": "wait-next-turn-no-stuck",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "emit-stuck->stuck-route",
+          "source": "emit-stuck",
+          "target": "stuck-route",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-route->stuck-retry-budget",
+          "source": "stuck-route",
+          "target": "stuck-retry-budget",
+          "sourcePort": "retry"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "escalate"
+        },
+        {
+          "id": "stuck-route->stuck-pause",
+          "source": "stuck-route",
+          "target": "stuck-pause",
+          "sourcePort": "pause"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-retry",
+          "source": "stuck-retry-budget",
+          "target": "stuck-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-escalate-budget",
+          "source": "stuck-retry-budget",
+          "target": "stuck-escalate-budget",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "stuck-retry->increment-stuck-retry-count",
+          "source": "stuck-retry",
+          "target": "increment-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-stuck-retry-count->wait-next-turn",
+          "source": "increment-stuck-retry-count",
+          "target": "wait-next-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate->end-escalated",
+          "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate-budget->end-escalated",
+          "source": "stuck-escalate-budget",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-pause->end-paused",
+          "source": "stuck-pause",
+          "target": "end-paused",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn->increment-turn",
+          "source": "wait-next-turn",
+          "target": "increment-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
+          "source": "wait-next-turn-no-stuck",
+          "target": "increment-turn-no-stuck",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-turn->poll-task",
+          "source": "increment-turn",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        },
+        {
+          "id": "increment-turn-no-stuck->poll-task",
+          "source": "increment-turn-no-stuck",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        }
+      ]
+    },
+    {
+      "id": "template-continuation-loop-manual",
+      "name": "Continuation Loop (Manual)",
+      "description": "Issue-state continuation loop for a specific task. Provide taskId and worktreePath at install time. Drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "category": "reliability",
+      "categoryLabel": "Reliability",
+      "categoryIcon": ":shield:",
+      "categoryOrder": 5,
+      "tags": [
+        "continuation",
+        "loop",
+        "linear",
+        "external-status",
+        "stuck-detection",
+        "manual"
       ],
       "nodeCount": 33,
       "edgeCount": 36,
@@ -9343,13 +10895,14 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-03-10T00:00:00Z",
-        "templateVersion": "1.2.0",
+        "templateVersion": "1.3.0",
         "tags": [
           "continuation",
           "loop",
           "linear",
           "external-status",
-          "stuck-detection"
+          "stuck-detection",
+          "manual"
         ],
         "configType": "continuation-loop"
       },
@@ -11293,6 +12846,498 @@
           "id": "alert-failures->log-partial",
           "source": "alert-failures",
           "target": "log-partial",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-recover-blocked-task",
+      "name": "Recover Blocked Task (Worktree)",
+      "description": "Sub-workflow invoked once per blocked task by template-recover-blocked-worktrees. Sweeps stale worktrees for the task, acquires a clean one, and unblocks the task so it re-enters the normal task lifecycle. Works across all workspace repos — repo context is sourced entirely from the task's own stored metadata.",
+      "category": "reliability",
+      "categoryLabel": "Reliability",
+      "categoryIcon": ":shield:",
+      "categoryOrder": 5,
+      "tags": [
+        "recovery",
+        "worktree",
+        "blocked",
+        "resilience",
+        "sub-workflow"
+      ],
+      "nodeCount": 10,
+      "edgeCount": 9,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.event",
+      "variables": {
+        "baseBranch": "main",
+        "defaultTargetBranch": "origin/main"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "recovery",
+          "worktree",
+          "blocked",
+          "resilience",
+          "sub-workflow"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.event",
+          "label": "Recovery Requested",
+          "config": {
+            "eventType": "task.blocked.recovery_requested"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-context",
+          "type": "condition.expression",
+          "label": "Has Task Context?",
+          "config": {
+            "expression": "Boolean($data?.item?.taskId || $data?.taskId) && Boolean($data?.item?.branch || $data?.branch)"
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-wt",
+          "type": "action.recover_worktree",
+          "label": "Reset Broken Worktree",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "branch": "{{$data?.item?.branch || $data?.branch || ''}}",
+            "repoRoot": "{{$data?.item?.repoRoot || $data?.repoRoot || ''}}",
+            "worktreePath": "{{$data?.item?.worktreePath || $data?.worktreePath || ''}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquire-wt",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Clean Worktree",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "branch": "{{$data?.item?.branch || $data?.branch || ''}}",
+            "repoRoot": "{{$data?.item?.repoRoot || $data?.repoRoot || ''}}",
+            "baseBranch": "{{$data?.item?.baseBranch || $data?.baseBranch || baseBranch}}",
+            "defaultTargetBranch": "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-acquired",
+          "type": "condition.expression",
+          "label": "Worktree Acquired?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-wt')?.success === true"
+          },
+          "position": {
+            "x": 250,
+            "y": 640
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "unblock-task",
+          "type": "action.update_task_status",
+          "label": "Unblock Task",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "status": "todo",
+            "taskTitle": "{{$data?.item?.taskTitle || $data?.taskTitle || $data?.item?.taskId || $data?.taskId || ''}}",
+            "workflowEvent": "task.blocked.recovery_succeeded",
+            "workflowData": {
+              "stage": "worktree_recovery",
+              "result": "recovered",
+              "branch": "{{$data?.item?.branch || $data?.branch || ''}}",
+              "worktreePath": "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}"
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-blocked-meta",
+          "type": "action.bosun_function",
+          "label": "Clear Blocked Metadata",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+              "fields": {
+                "blockedReason": null,
+                "meta": "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-success",
+          "type": "notify.log",
+          "label": "Log Recovery Success",
+          "config": {
+            "message": ":check: Worktree recovery succeeded for task {{$data?.item?.taskId || $data?.taskId}} ({{$data?.item?.taskTitle || $data?.taskTitle || 'unknown'}}). Task unblocked and returned to todo.",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-context",
+          "type": "notify.log",
+          "label": "Log Missing Context",
+          "config": {
+            "message": "Blocked task recovery skipped — missing taskId or branch in dispatch payload. Item: {{JSON.stringify($data?.item || {})}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-acquire-failed",
+          "type": "notify.log",
+          "label": "Log Acquire Failure",
+          "config": {
+            "message": ":warning: Worktree recovery failed for task {{$data?.item?.taskId || $data?.taskId}} — could not acquire a clean worktree. Branch: {{$data?.item?.branch || $data?.branch || 'unknown'}}. Manual intervention may be required.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-context",
+          "source": "trigger",
+          "target": "check-context",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-context->recover-wt",
+          "source": "check-context",
+          "target": "recover-wt",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-context->log-no-context",
+          "source": "check-context",
+          "target": "log-no-context",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-wt->acquire-wt",
+          "source": "recover-wt",
+          "target": "acquire-wt",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-wt->check-acquired",
+          "source": "acquire-wt",
+          "target": "check-acquired",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-acquired->unblock-task",
+          "source": "check-acquired",
+          "target": "unblock-task",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-acquired->log-acquire-failed",
+          "source": "check-acquired",
+          "target": "log-acquire-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "unblock-task->clear-blocked-meta",
+          "source": "unblock-task",
+          "target": "clear-blocked-meta",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-blocked-meta->log-success",
+          "source": "clear-blocked-meta",
+          "target": "log-success",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-recover-blocked-worktrees",
+      "name": "Recover Blocked Worktree Tasks",
+      "description": "Scheduled operator-assist workflow that finds all tasks blocked due to worktree failures, sweeps their stale worktrees, and re-queues each as todo. Works across every repo in the workspace — repo context is read from each task's own metadata, so no repo configuration is needed here.",
+      "category": "reliability",
+      "categoryLabel": "Reliability",
+      "categoryIcon": ":shield:",
+      "categoryOrder": 5,
+      "tags": [
+        "recovery",
+        "worktree",
+        "blocked",
+        "resilience",
+        "automation",
+        "scheduled"
+      ],
+      "nodeCount": 7,
+      "edgeCount": 6,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "scheduleIntervalMs": 1800000,
+        "maxPerSweep": 20,
+        "maxConcurrent": 2
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "recovery",
+          "worktree",
+          "blocked",
+          "resilience",
+          "automation",
+          "scheduled"
+        ],
+        "requiredTemplates": [
+          "template-recover-blocked-task"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Scheduled Worktree Recovery Sweep",
+          "config": {
+            "intervalMs": "{{scheduleIntervalMs}}",
+            "cron": "*/30 * * * *"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "query-blocked",
+          "type": "action.run_command",
+          "label": "Query Blocked Tasks",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, { status: \"blocked\" }))\n          .then(tasks => {\n            const limit = parseInt(process.env.MAX_PER_SWEEP || \"20\");\n            const blocked = (tasks || [])\n              .filter(t => t && t.status === \"blocked\" && t.id && (t.branch || t.metadata?.branch))\n              .slice(0, limit)\n              .map(t => ({\n                taskId:       t.id,\n                taskTitle:    t.title || t.id,\n                branch:       t.branch || t.metadata?.branch || null,\n                repoRoot:     t.metadata?.repoRoot || t.repoRoot || null,\n                worktreePath: t.metadata?.worktreePath || t.worktreePath || null,\n                repository:   t.repository || t.metadata?.repository || null,\n                baseBranch:   t.metadata?.baseBranch || null,\n                meta:         t.meta || {},\n              }));\n            console.log(JSON.stringify(blocked));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+            ],
+            "env": {
+              "MAX_PER_SWEEP": "{{maxPerSweep}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-has-tasks",
+          "type": "condition.expression",
+          "label": "Any Blocked Tasks?",
+          "config": {
+            "expression": "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0"
+          },
+          "position": {
+            "x": 400,
+            "y": 360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-each",
+          "type": "loop.for_each",
+          "label": "Recover Each Blocked Task",
+          "config": {
+            "items": "$ctx.getNodeOutput('query-blocked')?.output || []",
+            "variable": "item",
+            "indexVariable": "recoveryIndex",
+            "maxConcurrent": "{{maxConcurrent}}",
+            "workflowId": "template-recover-blocked-task",
+            "mode": "dispatch"
+          },
+          "position": {
+            "x": 400,
+            "y": 510
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "prune-worktrees",
+          "type": "action.run_command",
+          "label": "Prune Stale Worktree Refs",
+          "config": {
+            "command": "git",
+            "args": [
+              "worktree",
+              "prune",
+              "--verbose"
+            ],
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 650
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-summary",
+          "type": "notify.log",
+          "label": "Log Recovery Summary",
+          "config": {
+            "message": ":broom: Blocked worktree recovery sweep dispatched for {{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-idle",
+          "type": "notify.log",
+          "label": "Log No Blocked Tasks",
+          "config": {
+            "message": "Blocked worktree recovery sweep: no blocked tasks with branch context found.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 620,
+            "y": 510
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->query-blocked",
+          "source": "trigger",
+          "target": "query-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "query-blocked->check-has-tasks",
+          "source": "query-blocked",
+          "target": "check-has-tasks",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-has-tasks->recover-each",
+          "source": "check-has-tasks",
+          "target": "recover-each",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-has-tasks->log-idle",
+          "source": "check-has-tasks",
+          "target": "log-idle",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-each->prune-worktrees",
+          "source": "recover-each",
+          "target": "prune-worktrees",
+          "sourcePort": "default"
+        },
+        {
+          "id": "prune-worktrees->log-summary",
+          "source": "prune-worktrees",
+          "target": "log-summary",
           "sourcePort": "default"
         }
       ]
@@ -21735,7 +23780,7 @@
       "description": "Scans open bosun-attached PRs on a schedule. Makes one gh pr list call per target repo to fetch and classify PRs, then: labels conflicting or failing-CI PRs with bosun-needs-fix and dispatches a repair agent; sends merge candidates through a MANDATORY agent review gate that checks diff stats before any merge — preventing destructive PRs (e.g. -183k lines) from being silently auto-merged. Attached PRs that are not Bosun-created are skipped by default unless explicitly trusted in config.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 19,
+      "nodeCount": 21,
       "trigger": "trigger.schedule",
       "variables": {
         "mergeMethod": "merge",
@@ -21743,13 +23788,15 @@
         "labelNeedsReview": "bosun-needs-human-review",
         "repoScope": "auto",
         "maxPrs": 25,
-        "intervalMs": 90000,
+        "intervalMs": 1800000,
         "suspiciousDeletionRatio": 3,
         "minDestructiveDeletions": 500,
         "autoApplySuggestions": true,
         "trustedAuthors": "",
         "allowTrustedFixes": false,
-        "allowTrustedMerges": false
+        "allowTrustedMerges": false,
+        "maxConcurrentFixes": 3,
+        "prFixTtlMinutes": 120
       },
       "nodes": [
         {
@@ -21983,20 +24030,58 @@
           ]
         },
         {
-          "id": "dispatch-fix-agent",
-          "type": "action.run_agent",
-          "label": "Dispatch Fix Agent (Fallback)",
+          "id": "claim-unclaimed-prs",
+          "type": "action.run_command",
+          "label": "Claim & Filter Unclaimed PRs",
           "config": {
-            "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nEach unresolved item includes prDigest with the PR body, files, issue comments, reviews, review comments, review requests, and check summaries. Use that context first.\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: start from failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
-            "sdk": "auto",
-            "timeoutMs": 1800000,
-            "maxRetries": 2,
-            "retryDelayMs": 30000,
-            "continueOnError": true
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const raw=String(process.env.BOSUN_PROGRAMMATIC_FIX||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const needsAgent=Array.isArray(payload.needsAgent)?payload.needsAgent:[]; const TTL_MS=Math.max(60000,Number(process.env.PR_FIX_TTL_MINUTES||'120')*60*1000); const CLAIM_DIR=path.join(process.cwd(),'.cache','bosun'); const CLAIM_FILE=path.join(CLAIM_DIR,'pr-fix-claims.json'); function loadClaims(){try{const d=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));return(d&&typeof d==='object'&&d.claims&&typeof d.claims==='object')?d.claims:{};}catch{return {};}} function saveClaims(claims){try{if(!fs.existsSync(CLAIM_DIR))fs.mkdirSync(CLAIM_DIR,{recursive:true});const data={version:1,claims,updatedAt:new Date().toISOString()};const tmp=CLAIM_FILE+'.tmp'+Date.now();fs.writeFileSync(tmp,JSON.stringify(data,null,2),'utf8');fs.renameSync(tmp,CLAIM_FILE);}catch(e){process.stderr.write('[claim] save error: '+String(e?.message||e)+'\\n');}} const now=Date.now(); const claims=loadClaims(); /* Purge expired/stale claims */ for(const key of Object.keys(claims)){if(now>new Date(claims[key].expiresAt||0).getTime())delete claims[key];} const unclaimed=[]; const alreadyClaimed=[]; for(const item of needsAgent){   const repo=String(item?.repo||'').trim();   const number=String(item?.number||item?.n||'').trim();   if(!repo||!number){unclaimed.push({...item,taskId:'pr-fix-unknown',taskTitle:'Unknown PR',claimKey:''});continue;}   const key=repo+'#'+number;   const claim=claims[key];   if(claim&&now<new Date(claim.expiresAt||0).getTime()){     alreadyClaimed.push({key,repo,number,reason:item?.reason||'',claimedAt:claim.claimedAt,expiresAt:claim.expiresAt});     process.stderr.write('[pr-watchdog] '+key+' already claimed (expires '+claim.expiresAt+'), skipping\\n');     continue;   }   const safeRepo=repo.replace(/[^a-z0-9]/gi,'-').replace(/-+/g,'-').replace(/^-|-$/g,'');   const taskId='pr-fix-'+safeRepo+'-'+number;   const taskTitle='Fix PR #'+number+(item?.title?' \\''+String(item.title).slice(0,60)+'\\'':'')+' ('+repo+')';   claims[key]={repo,number,taskId,taskTitle,claimedAt:new Date().toISOString(),expiresAt:new Date(now+TTL_MS).toISOString()};   unclaimed.push({...item,taskId,taskTitle,number,repo,claimKey:key}); } saveClaims(claims); console.log(JSON.stringify({unclaimed,alreadyClaimed,unclaimedCount:unclaimed.length,alreadyClaimedCount:alreadyClaimed.length,totalNeedsAgent:needsAgent.length}));"
+            ],
+            "continueOnError": true,
+            "failOnError": false,
+            "env": {
+              "BOSUN_PROGRAMMATIC_FIX": "{{programmatic-fix.output}}",
+              "PR_FIX_TTL_MINUTES": "{{prFixTtlMinutes}}"
+            }
           },
           "position": {
             "x": 280,
             "y": 970
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-unclaimed-fixes",
+          "type": "condition.expression",
+          "label": "Unclaimed Fixes?",
+          "config": {
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return (Array.isArray(d.unclaimed)?d.unclaimed:[]).length>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 280,
+            "y": 1060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "dispatch-fix-agents",
+          "type": "loop.for_each",
+          "label": "Dispatch Fix Agents (Per PR)",
+          "config": {
+            "items": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return Array.isArray(d.unclaimed)?d.unclaimed:[];}catch{return []}})();",
+            "variable": "item",
+            "maxConcurrent": "{{maxConcurrentFixes}}",
+            "workflowId": "template-pr-fix-single"
+          },
+          "position": {
+            "x": 280,
+            "y": 1160
           },
           "outputs": [
             "default"
@@ -22227,9 +24312,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-agent-needed->dispatch-fix-agent",
+          "id": "fix-agent-needed->claim-unclaimed-prs",
           "source": "fix-agent-needed",
-          "target": "dispatch-fix-agent",
+          "target": "claim-unclaimed-prs",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -22241,8 +24326,28 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "dispatch-fix-agent->review-needed",
-          "source": "dispatch-fix-agent",
+          "id": "claim-unclaimed-prs->has-unclaimed-fixes",
+          "source": "claim-unclaimed-prs",
+          "target": "has-unclaimed-fixes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-unclaimed-fixes->dispatch-fix-agents",
+          "source": "has-unclaimed-fixes",
+          "target": "dispatch-fix-agents",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-unclaimed-fixes->review-needed",
+          "source": "has-unclaimed-fixes",
+          "target": "review-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "dispatch-fix-agents->review-needed",
+          "source": "dispatch-fix-agents",
           "target": "review-needed",
           "sourcePort": "default"
         },
@@ -22280,8 +24385,8 @@
         "templateState": {
           "templateId": "template-bosun-pr-watchdog",
           "templateName": "Bosun PR Watchdog",
-          "templateVersion": "2.3.0",
-          "installedTemplateVersion": "2.3.0",
+          "templateVersion": "3.0.0",
+          "installedTemplateVersion": "3.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -22502,6 +24607,403 @@
         "templateState": {
           "templateId": "template-github-kanban-sync",
           "templateName": "GitHub ↔ Kanban Sync",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-github-check-failure",
+      "name": "GitHub Check Failure Handler",
+      "description": "Event-driven workflow that fires the moment a GitHub check run fails. Identifies the associated PR and applies the bosun-needs-fix label instantly so the PR Watchdog can dispatch a repair agent on its next sweep. Eliminates the up-to-30-minute delay between a CI failure and Bosun's response.",
+      "category": "github",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.event",
+      "variables": {
+        "labelNeedsFix": "bosun-needs-fix",
+        "ignoredCheckNames": "codecov,dependabot,semantic-pr-title"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.event",
+          "label": "Check Run Failed",
+          "config": {
+            "eventType": "github:check_run",
+            "filter": "$event?.action === 'completed' && $event?.checkConclusion === 'failure' && !String($event?.checkName || '').split(',').some(n =>   String($data?.ignoredCheckNames || '').toLowerCase().split(',').map(s => s.trim()).includes(n.trim().toLowerCase()))"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-has-pr",
+          "type": "condition.expression",
+          "label": "Associated PR Found?",
+          "config": {
+            "expression": "Number($data?.prNumber) > 0 && Boolean($data?.repo)"
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "label-fix",
+          "type": "action.run_command",
+          "label": "Label PR: bosun-needs-fix",
+          "config": {
+            "command": "gh",
+            "args": [
+              "pr",
+              "edit",
+              "{{prNumber}}",
+              "--add-label",
+              "{{labelNeedsFix}}",
+              "--repo",
+              "{{repo}}"
+            ],
+            "continueOnError": true
+          },
+          "position": {
+            "x": 250,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-labeled",
+          "type": "notify.log",
+          "label": "Log Fix Label Applied",
+          "config": {
+            "message": ":x: Check '{{checkName}}' failed on PR #{{prNumber}} ({{repo}}). Applied label '{{labelNeedsFix}}' — PR Watchdog will dispatch repair.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-pr",
+          "type": "notify.log",
+          "label": "Log No Associated PR",
+          "config": {
+            "message": "Check '{{checkName}}' failed in {{repo}} (conclusion: {{checkConclusion}}) — no associated PR found.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 620,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-has-pr",
+          "source": "trigger",
+          "target": "check-has-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-has-pr->label-fix",
+          "source": "check-has-pr",
+          "target": "label-fix",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-has-pr->log-no-pr",
+          "source": "check-has-pr",
+          "target": "log-no-pr",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "label-fix->log-labeled",
+          "source": "label-fix",
+          "target": "log-labeled",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-04T12:00:00.000Z",
+        "updatedAt": "2026-03-04T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-github-check-failure",
+          "templateName": "GitHub Check Failure Handler",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-github-pr-event-handler",
+      "name": "GitHub PR Event Handler",
+      "description": "Event-driven workflow that fires as soon as a PR is opened, updated, or reopened via GitHub webhook. Identifies the linked Bosun task by branch name and immediately updates its status to in-review — no polling required. Complements the PR Watchdog which runs every 30 minutes as a fallback.",
+      "category": "github",
+      "enabled": true,
+      "nodeCount": 9,
+      "trigger": "trigger.event",
+      "variables": {
+        "labelInReview": "bosun/in-review",
+        "taskBranchPrefix": "task/"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.event",
+          "label": "PR Opened / Updated",
+          "config": {
+            "eventType": "github:pull_request",
+            "filter": "['opened','synchronize','reopened'].includes(String($event?.action || '').toLowerCase())"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-bosun-branch",
+          "type": "condition.expression",
+          "label": "Is a Bosun Task Branch?",
+          "config": {
+            "expression": "Boolean($data?.prBranch) && String($data?.prBranch || '').startsWith(String($data?.taskBranchPrefix || 'task/'))"
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "find-task",
+          "type": "action.run_command",
+          "label": "Find Linked Task",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        const branch = process.env.PR_BRANCH || \"\";\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, {}))\n          .then(tasks => {\n            const task = (tasks || []).find(t =>\n              (t.branch || t.metadata?.branch) === branch\n            );\n            console.log(JSON.stringify(task || null));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+            ],
+            "env": {
+              "PR_BRANCH": "{{prBranch}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 250,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-task-found",
+          "type": "condition.expression",
+          "label": "Task Found?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('find-task')?.output?.id)"
+          },
+          "position": {
+            "x": 250,
+            "y": 490
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "update-inreview",
+          "type": "action.update_task_status",
+          "label": "Mark Task In Review",
+          "config": {
+            "taskId": "{{$ctx.getNodeOutput('find-task')?.output?.id || ''}}",
+            "status": "inreview",
+            "taskTitle": "{{$ctx.getNodeOutput('find-task')?.output?.title || prTitle || ''}}",
+            "workflowEvent": "task.in_review",
+            "workflowData": {
+              "source": "github:pr_opened",
+              "prNumber": "{{prNumber}}",
+              "prUrl": "{{prUrl}}",
+              "branch": "{{prBranch}}",
+              "repo": "{{repo}}"
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "add-label-in-review",
+          "type": "action.run_command",
+          "label": "Add In-Review Label",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const {execFileSync}=require('child_process'); const n=String(process.env.PR_NUMBER||'').trim(); const repo=String(process.env.REPO||'').trim(); const label=String(process.env.LABEL_IN_REVIEW||'bosun/in-review').trim(); if(!n||!label){process.exit(0);} try{   const args=['pr','edit',n,'--add-label',label];   if(repo)args.push('--repo',repo);   execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']});   console.log(JSON.stringify({labeled:true,label,pr:n})); }catch(e){   process.stderr.write('label warn: '+String(e?.message||e)+'\\n');   console.log(JSON.stringify({labeled:false,label,pr:n,error:String(e?.message||e)})); }"
+            ],
+            "continueOnError": true,
+            "failOnError": false,
+            "env": {
+              "PR_NUMBER": "{{prNumber}}",
+              "REPO": "{{repo}}",
+              "LABEL_IN_REVIEW": "{{labelInReview}}"
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-updated",
+          "type": "notify.log",
+          "label": "Log In Review",
+          "config": {
+            "message": ":rocket: Task {{$ctx.getNodeOutput('find-task')?.output?.id}} moved to in-review — PR #{{prNumber}} ({{prBranch}}) in {{repo}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-task",
+          "type": "notify.log",
+          "label": "Log No Task Found",
+          "config": {
+            "message": "PR #{{prNumber}} opened on branch {{prBranch}} in {{repo}} — no linked Bosun task found.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 550,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-not-bosun",
+          "type": "notify.log",
+          "label": "Log Non-Bosun Branch",
+          "config": {
+            "message": "PR #{{prNumber}} on {{prBranch}} is not a Bosun task branch — skipping.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 650,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-bosun-branch",
+          "source": "trigger",
+          "target": "check-bosun-branch",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-bosun-branch->find-task",
+          "source": "check-bosun-branch",
+          "target": "find-task",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-bosun-branch->log-not-bosun",
+          "source": "check-bosun-branch",
+          "target": "log-not-bosun",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "find-task->check-task-found",
+          "source": "find-task",
+          "target": "check-task-found",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-task-found->update-inreview",
+          "source": "check-task-found",
+          "target": "update-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-task-found->log-no-task",
+          "source": "check-task-found",
+          "target": "log-no-task",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "update-inreview->add-label-in-review",
+          "source": "update-inreview",
+          "target": "add-label-in-review",
+          "sourcePort": "default"
+        },
+        {
+          "id": "add-label-in-review->log-updated",
+          "source": "add-label-in-review",
+          "target": "log-updated",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-05T12:00:00.000Z",
+        "updatedAt": "2026-03-05T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-github-pr-event-handler",
+          "templateName": "GitHub PR Event Handler",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
@@ -22774,13 +25276,159 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-04T12:00:00.000Z",
-        "updatedAt": "2026-03-04T12:00:00.000Z",
+        "createdAt": "2026-03-06T12:00:00.000Z",
+        "updatedAt": "2026-03-06T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-conflict-resolver",
           "templateName": "PR Conflict Resolver",
           "templateVersion": "2.0.0",
           "installedTemplateVersion": "2.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-pr-fix-single",
+      "name": "PR Fix Agent (Single PR)",
+      "description": "Fixes one Bosun-attached PR using a dedicated long-running agent (up to 2 hours). Dispatched by the PR Watchdog loop for each unclaimed PR needing repair. Creates a stable per-PR session (pr-fix-<repo>-<number>) so work is tracked in Fleet/Sessions. Releases the PR claim on completion so the slot is freed for the next watchdog cycle.",
+      "category": "github",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.manual",
+      "variables": {},
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.manual",
+          "label": "Start",
+          "config": {},
+          "position": {
+            "x": 100,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "setup-task",
+          "type": "action.set_variable",
+          "label": "Setup PR Task ID",
+          "config": {
+            "key": "taskId",
+            "value": "'pr-fix-' + String($data?.item?.taskId ||   (String($data?.item?.repo || '').replace(/[^a-z0-9]/gi, '-').replace(/-+/g,'-').replace(/^-|-$/g,'') +    '-' + String($data?.item?.number || $data?.item?.n || '0'))).replace(/^-|-$/g, '')",
+            "isExpression": true
+          },
+          "position": {
+            "x": 380,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "setup-title",
+          "type": "action.set_variable",
+          "label": "Setup PR Task Title",
+          "config": {
+            "key": "taskTitle",
+            "value": "'Fix PR #' + String($data?.item?.number || $data?.item?.n || '?') + ($data?.item?.title ? ' \\'' + String($data.item.title).slice(0,60) + '\\'' : '') + ' (' + String($data?.item?.repo || '') + ')'",
+            "isExpression": true
+          },
+          "position": {
+            "x": 660,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fix-agent",
+          "type": "action.run_agent",
+          "label": "Fix PR (Dedicated Agent)",
+          "config": {
+            "prompt": "You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\n\n## PR Data\n\n{{item}}\n\n## Step 0 — Always Do This First (Workspace Setup)\n\nThe agent workspace is Bosun's own repo directory — NOT the target repo. You MUST clone or update the target repo before touching any branches:\n\n```\n# Extract repo from item (e.g. \"virtengine/bosun\")\nREPO=\"<item.repo>\"\nBRANCH=\"<item.branch>\"  # the PR head branch to fix\nBASE=\"<item.baseBranch>\"  # the PR base branch (usually main)\nPR_NUMBER=\"<item.prNumber>\"\n\n# Clone into a temp dir, or update if already present\nWORK_DIR=\"/tmp/pr-fix-${PR_NUMBER}\"\nif [ -d \"$WORK_DIR/.git\" ]; then\n  cd $WORK_DIR && git fetch origin\nelse\n  gh repo clone $REPO $WORK_DIR -- --depth=50 && cd $WORK_DIR\nfi\n\n# Checkout the PR branch to fix\ngit checkout -B $BRANCH origin/$BRANCH\n```\n\n## Fix Instructions\n\nUse `prDigest` (body, files, issueComments, reviews, reviewComments, checks, ciSummary) and CI diagnostics (failedRun, failedJobs, failedLogExcerpt, failedAnnotations) to identify the root cause and apply the MINIMAL fix.\n\n**By `reason` field:**\n- `merge_conflict_requires_code_resolution`: In $WORK_DIR, run `git merge origin/$BASE`,   resolve all conflicts, run tests, commit, then `git push origin $BRANCH --force-with-lease`.\n- `auto_rerun_limit_reached` / `ci_rerun_failed`: Study `failedLogExcerpt` and `failedJobs`   to find the root cause. Fix the code in $WORK_DIR, commit, push.\n- `no_rerunnable_failed_run_found`: Check `recentRuns`, look at the branch directly with   `gh pr checks $PR_NUMBER --repo $REPO`. Diagnose and fix.\n- `branch_update_failed` / `missing_repo_or_branch`: Inspect with `gh pr view $PR_NUMBER --repo $REPO`.\n\n**After successful repair:** Remove the fix label and ensure the PR base is correct:\n```\ngh pr edit $PR_NUMBER --repo $REPO --remove-label bosun-needs-fix\n# Ensure base branch was not changed — reset it if needed:\ngh pr edit $PR_NUMBER --repo $REPO --base $BASE\n```\n\n## Strict Rules\n\n- Fix ONLY the specific issue listed in `reason`. No unrelated changes.\n- Do NOT merge, approve, or close the PR.\n- Do NOT touch any other PRs.\n- Do NOT create new repair branches. Fix the existing PR branch (`item.branch`) in place.\n- Do NOT change the PR's base branch. If the base was incorrectly changed, reset it to `item.baseBranch`.\n- Always work in the cloned $WORK_DIR — never run git commands in the Bosun workspace directory.\n- Commit with a clear message referencing what was fixed.\n- If the fix is blocked (e.g., protected branch, missing creds), document why in a PR comment and stop.",
+            "sdk": "auto",
+            "timeoutMs": 7200000,
+            "maxRetries": 1,
+            "retryDelayMs": 60000,
+            "sessionRetries": 2,
+            "maxContinues": 3,
+            "continueOnSession": true,
+            "continueOnError": true,
+            "failOnError": false
+          },
+          "position": {
+            "x": 940,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "release-claim",
+          "type": "action.run_command",
+          "label": "Release PR Claim",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const claimKey=String(process.env.PR_CLAIM_KEY||'').trim(); if(!claimKey){console.log(JSON.stringify({released:false,reason:'no_claim_key'}));process.exit(0);} const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-fix-claims.json'); try{   if(!fs.existsSync(CLAIM_FILE)){console.log(JSON.stringify({released:false,reason:'no_claim_file'}));process.exit(0);}   const data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));   if(data.claims&&data.claims[claimKey]){     delete data.claims[claimKey];     data.updatedAt=new Date().toISOString();     fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');     console.log(JSON.stringify({released:true,claimKey}));   }else{     console.log(JSON.stringify({released:false,reason:'not_found',claimKey}));   } }catch(e){   console.log(JSON.stringify({released:false,reason:'error',error:String(e?.message||e),claimKey})); }"
+            ],
+            "continueOnError": true,
+            "failOnError": false,
+            "env": {
+              "PR_CLAIM_KEY": "{{item.claimKey}}"
+            }
+          },
+          "position": {
+            "x": 1220,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->setup-task",
+          "source": "trigger",
+          "target": "setup-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "setup-task->setup-title",
+          "source": "setup-task",
+          "target": "setup-title",
+          "sourcePort": "default"
+        },
+        {
+          "id": "setup-title->fix-agent",
+          "source": "setup-title",
+          "target": "fix-agent",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fix-agent->release-claim",
+          "source": "fix-agent",
+          "target": "release-claim",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-07T12:00:00.000Z",
+        "updatedAt": "2026-03-07T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-pr-fix-single",
+          "templateName": "PR Fix Agent (Single PR)",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -23341,8 +25989,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-05T12:00:00.000Z",
-        "updatedAt": "2026-03-05T12:00:00.000Z",
+        "createdAt": "2026-03-08T12:00:00.000Z",
+        "updatedAt": "2026-03-08T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-merge-strategy",
           "templateName": "PR Merge Strategy",
@@ -23605,8 +26253,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-06T12:00:00.000Z",
-        "updatedAt": "2026-03-06T12:00:00.000Z",
+        "createdAt": "2026-03-09T12:00:00.000Z",
+        "updatedAt": "2026-03-09T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-triage",
           "templateName": "PR Triage & Labels",
@@ -23781,8 +26429,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-07T12:00:00.000Z",
-        "updatedAt": "2026-03-07T12:00:00.000Z",
+        "createdAt": "2026-03-10T12:00:00.000Z",
+        "updatedAt": "2026-03-10T12:00:00.000Z",
         "templateState": {
           "templateId": "template-release-drafter",
           "templateName": "Release Drafter",
@@ -23939,8 +26587,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-08T12:00:00.000Z",
-        "updatedAt": "2026-03-08T12:00:00.000Z",
+        "createdAt": "2026-03-11T12:00:00.000Z",
+        "updatedAt": "2026-03-11T12:00:00.000Z",
         "templateState": {
           "templateId": "template-review-agent",
           "templateName": "Review Agent",
@@ -24389,8 +27037,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-09T12:00:00.000Z",
-        "updatedAt": "2026-03-09T12:00:00.000Z",
+        "createdAt": "2026-03-12T12:00:00.000Z",
+        "updatedAt": "2026-03-12T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sdk-conflict-resolver",
           "templateName": "SDK Conflict Resolver",
@@ -24610,8 +27258,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-10T12:00:00.000Z",
-        "updatedAt": "2026-03-10T12:00:00.000Z",
+        "createdAt": "2026-03-13T12:00:00.000Z",
+        "updatedAt": "2026-03-13T12:00:00.000Z",
         "templateState": {
           "templateId": "template-stale-pr-reaper",
           "templateName": "Stale PR Reaper",
@@ -24835,8 +27483,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-11T12:00:00.000Z",
-        "updatedAt": "2026-03-11T12:00:00.000Z",
+        "createdAt": "2026-03-14T12:00:00.000Z",
+        "updatedAt": "2026-03-14T12:00:00.000Z",
         "templateState": {
           "templateId": "template-agent-session-monitor",
           "templateName": "Agent Session Monitor",
@@ -25009,8 +27657,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-12T12:00:00.000Z",
-        "updatedAt": "2026-03-12T12:00:00.000Z",
+        "createdAt": "2026-03-15T12:00:00.000Z",
+        "updatedAt": "2026-03-15T12:00:00.000Z",
         "templateState": {
           "templateId": "template-custom-agent",
           "templateName": "Custom Agent Profile",
@@ -25429,8 +28077,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-13T12:00:00.000Z",
-        "updatedAt": "2026-03-13T12:00:00.000Z",
+        "createdAt": "2026-03-16T12:00:00.000Z",
+        "updatedAt": "2026-03-16T12:00:00.000Z",
         "templateState": {
           "templateId": "template-frontend-agent",
           "templateName": "Frontend Agent",
@@ -25805,8 +28453,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-14T12:00:00.000Z",
-        "updatedAt": "2026-03-14T12:00:00.000Z",
+        "createdAt": "2026-03-17T12:00:00.000Z",
+        "updatedAt": "2026-03-17T12:00:00.000Z",
         "templateState": {
           "templateId": "template-meeting-subworkflow-chain",
           "templateName": "Meeting Orchestrator + Subworkflow Chain",
@@ -26583,8 +29231,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-15T12:00:00.000Z",
-        "updatedAt": "2026-03-15T12:00:00.000Z",
+        "createdAt": "2026-03-18T12:00:00.000Z",
+        "updatedAt": "2026-03-18T12:00:00.000Z",
         "templateState": {
           "templateId": "template-backend-agent",
           "templateName": "Task Completion Agent",
@@ -26875,8 +29523,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-16T12:00:00.000Z",
-        "updatedAt": "2026-03-16T12:00:00.000Z",
+        "createdAt": "2026-03-19T12:00:00.000Z",
+        "updatedAt": "2026-03-19T12:00:00.000Z",
         "templateState": {
           "templateId": "template-voice-video-parallel-rollout",
           "templateName": "Voice + Video Rollout (Parallel Lanes)",
@@ -27027,8 +29675,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-17T12:00:00.000Z",
-        "updatedAt": "2026-03-17T12:00:00.000Z",
+        "createdAt": "2026-03-20T12:00:00.000Z",
+        "updatedAt": "2026-03-20T12:00:00.000Z",
         "templateState": {
           "templateId": "template-build-deploy",
           "templateName": "Build & Deploy",
@@ -27317,8 +29965,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-18T12:00:00.000Z",
-        "updatedAt": "2026-03-18T12:00:00.000Z",
+        "createdAt": "2026-03-21T12:00:00.000Z",
+        "updatedAt": "2026-03-21T12:00:00.000Z",
         "templateState": {
           "templateId": "template-canary-deploy",
           "templateName": "Canary Deploy",
@@ -27674,8 +30322,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-19T12:00:00.000Z",
-        "updatedAt": "2026-03-19T12:00:00.000Z",
+        "createdAt": "2026-03-22T12:00:00.000Z",
+        "updatedAt": "2026-03-22T12:00:00.000Z",
         "templateState": {
           "templateId": "template-release-pipeline",
           "templateName": "Release Pipeline",
@@ -27841,8 +30489,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-20T12:00:00.000Z",
-        "updatedAt": "2026-03-20T12:00:00.000Z",
+        "createdAt": "2026-03-23T12:00:00.000Z",
+        "updatedAt": "2026-03-23T12:00:00.000Z",
         "templateState": {
           "templateId": "template-nightly-report",
           "templateName": "Nightly Report",
@@ -28101,8 +30749,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-21T12:00:00.000Z",
-        "updatedAt": "2026-03-21T12:00:00.000Z",
+        "createdAt": "2026-03-24T12:00:00.000Z",
+        "updatedAt": "2026-03-24T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sprint-retrospective",
           "templateName": "Sprint Retrospective",
@@ -28387,8 +31035,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-22T12:00:00.000Z",
-        "updatedAt": "2026-03-22T12:00:00.000Z",
+        "createdAt": "2026-03-25T12:00:00.000Z",
+        "updatedAt": "2026-03-25T12:00:00.000Z",
         "templateState": {
           "templateId": "template-task-planner",
           "templateName": "Task Planner",
@@ -28577,8 +31225,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-23T12:00:00.000Z",
-        "updatedAt": "2026-03-23T12:00:00.000Z",
+        "createdAt": "2026-03-26T12:00:00.000Z",
+        "updatedAt": "2026-03-26T12:00:00.000Z",
         "templateState": {
           "templateId": "template-task-replenish",
           "templateName": "Task Replenish (Scheduled)",
@@ -28970,8 +31618,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-24T12:00:00.000Z",
-        "updatedAt": "2026-03-24T12:00:00.000Z",
+        "createdAt": "2026-03-27T12:00:00.000Z",
+        "updatedAt": "2026-03-27T12:00:00.000Z",
         "templateState": {
           "templateId": "template-weekly-fitness-summary",
           "templateName": "Weekly Fitness Summary",
@@ -29231,8 +31879,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-25T12:00:00.000Z",
-        "updatedAt": "2026-03-25T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-anomaly-watchdog",
           "templateName": "Anomaly Watchdog",
@@ -29246,12 +31894,13 @@
     {
       "id": "wf-continuation-loop",
       "name": "Continuation Loop",
-      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "description": "Issue-state continuation loop. Fires automatically for any available task (trigger.task_available), drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause. taskId and worktreePath are auto-populated from the picked task — no manual input required.",
       "category": "reliability",
       "enabled": true,
       "nodeCount": 33,
-      "trigger": "trigger.manual",
+      "trigger": "trigger.task_available",
       "variables": {
+        "maxParallel": 1,
         "taskId": "",
         "worktreePath": "",
         "maxTurns": 8,
@@ -29272,9 +31921,18 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Continuation Loop",
-          "config": {},
+          "type": "trigger.task_available",
+          "label": "Pick Available Task",
+          "config": {
+            "maxParallel": "{{maxParallel}}",
+            "status": "inprogress",
+            "statuses": [
+              "inprogress",
+              "todo"
+            ],
+            "filterCodexScoped": true,
+            "filterDrafts": true
+          },
           "position": {
             "x": 420,
             "y": 60
@@ -30105,13 +32763,13 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-26T12:00:00.000Z",
-        "updatedAt": "2026-03-26T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-continuation-loop",
           "templateName": "Continuation Loop",
-          "templateVersion": "1.2.0",
-          "installedTemplateVersion": "1.2.0",
+          "templateVersion": "1.3.0",
+          "installedTemplateVersion": "1.3.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -30120,7 +32778,891 @@
     {
       "id": "wf-continuation-loop",
       "name": "Continuation Loop",
-      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "description": "Issue-state continuation loop. Fires automatically for any available task (trigger.task_available), drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause. taskId and worktreePath are auto-populated from the picked task — no manual input required.",
+      "category": "reliability",
+      "enabled": true,
+      "nodeCount": 33,
+      "trigger": "trigger.task_available",
+      "variables": {
+        "maxParallel": 1,
+        "taskId": "",
+        "worktreePath": "",
+        "maxTurns": 8,
+        "pollIntervalMs": 30000,
+        "terminalStates": [
+          "done",
+          "cancelled"
+        ],
+        "stuckThresholdMs": 300000,
+        "maxStuckAutoRetries": 1,
+        "onStuck": "escalate",
+        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
+        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
+        "sdk": "auto",
+        "model": "",
+        "timeoutMs": 1800000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_available",
+          "label": "Pick Available Task",
+          "config": {
+            "maxParallel": "{{maxParallel}}",
+            "status": "inprogress",
+            "statuses": [
+              "inprogress",
+              "todo"
+            ],
+            "filterCodexScoped": true,
+            "filterDrafts": true
+          },
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-turn",
+          "type": "action.set_variable",
+          "label": "Initialize Turn Counter",
+          "config": {
+            "key": "continuationTurn",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-progress-at",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "Date.now()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 280
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-signature",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Initialize Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "poll-task",
+          "type": "action.bosun_function",
+          "label": "Poll External Task State",
+          "config": {
+            "function": "tasks.get",
+            "args": {
+              "taskId": "{{taskId}}"
+            },
+            "outputVariable": "continuationTask"
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-status",
+          "type": "action.set_variable",
+          "label": "Derive External Status",
+          "config": {
+            "key": "currentExternalStatus",
+            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "terminal-check",
+          "type": "condition.expression",
+          "label": "Terminal State Reached?",
+          "config": {
+            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
+          },
+          "position": {
+            "x": 420,
+            "y": 720
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-terminal",
+          "type": "flow.end",
+          "label": "End: Terminal State",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
+            "output": {
+              "reason": "terminal_state",
+              "taskId": "{{taskId}}",
+              "externalStatus": "{{currentExternalStatus}}"
+            }
+          },
+          "position": {
+            "x": 160,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "max-turns-check",
+          "type": "condition.expression",
+          "label": "Max Turns Reached?",
+          "config": {
+            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
+          },
+          "position": {
+            "x": 620,
+            "y": 860
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-max-turns",
+          "type": "flow.end",
+          "label": "End: Max Turns",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
+            "output": {
+              "reason": "max_turns",
+              "taskId": "{{taskId}}",
+              "turns": "{{continuationTurn}}"
+            }
+          },
+          "position": {
+            "x": 460,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent",
+          "type": "action.run_agent",
+          "label": "Drive Agent",
+          "config": {
+            "prompt": "{{continuePrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "requireTaskPromptCompleteness": false,
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "capture-progress",
+          "type": "action.run_command",
+          "label": "Capture Progress Signature",
+          "config": {
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-signature",
+          "type": "action.set_variable",
+          "label": "Derive Signature",
+          "config": {
+            "key": "currentProgressSignature",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 800,
+            "y": 1240
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "progress-changed",
+          "type": "condition.expression",
+          "label": "Progress Changed?",
+          "config": {
+            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
+          },
+          "position": {
+            "x": 800,
+            "y": 1360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "mark-progress-at",
+          "type": "action.set_variable",
+          "label": "Update Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "mark-progress-sig",
+          "type": "action.set_variable",
+          "label": "Update Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "$data?.currentProgressSignature || ''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "reset-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Reset Stuck Retry Count On Progress",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1710
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-check",
+          "type": "condition.expression",
+          "label": "Session Stuck?",
+          "config": {
+            "expression": "(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
+          },
+          "position": {
+            "x": 980,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "emit-stuck",
+          "type": "action.emit_event",
+          "label": "Emit session-stuck",
+          "config": {
+            "eventType": "session-stuck",
+            "payload": {
+              "taskId": "{{taskId}}",
+              "turn": "{{continuationTurn}}",
+              "externalStatus": "{{currentExternalStatus}}",
+              "stuckThresholdMs": "{{stuckThresholdMs}}",
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+              "onStuck": "{{onStuck}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
+              "lastProgressAt": "{{lastProgressAt}}",
+              "lastProgressSignature": "{{lastProgressSignature}}",
+              "currentProgressSignature": "{{currentProgressSignature}}",
+              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
+              "agentActivityDetected": "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
+              "agentItemCount": "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
+              "agentStreamCount": "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
+              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
+            },
+            "outputVariable": "sessionStuckEvent"
+          },
+          "position": {
+            "x": 980,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-route",
+          "type": "condition.switch",
+          "label": "Route onStuck Action",
+          "config": {
+            "value": "$data?.onStuck || 'escalate'",
+            "cases": {
+              "retry": "retry",
+              "escalate": "escalate",
+              "pause": "pause"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "retry",
+            "escalate",
+            "pause",
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-retry-budget",
+          "type": "condition.expression",
+          "label": "Stuck Retry Budget Remaining?",
+          "config": {
+            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
+          },
+          "position": {
+            "x": 760,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "stuck-retry",
+          "type": "action.run_agent",
+          "label": "Retry After Stuck",
+          "config": {
+            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "requireTaskPromptCompleteness": false,
+            "failOnError": false
+          },
+          "position": {
+            "x": 760,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Increment Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "Number($data?.stuckRetryCount || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 980,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate-budget",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session (Retry Limit)",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 760,
+            "y": 2050
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-pause",
+          "type": "notify.log",
+          "label": "Pause Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 1200,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-escalated",
+          "type": "flow.end",
+          "label": "End: Escalated",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_escalated",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-paused",
+          "type": "flow.end",
+          "label": "End: Paused",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_paused",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 1200,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn",
+          "type": "action.delay",
+          "label": "Wait Poll Interval",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 760,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn",
+          "type": "action.set_variable",
+          "label": "Increment Turn",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn-no-stuck",
+          "type": "action.delay",
+          "label": "Wait (No Stuck)",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn-no-stuck",
+          "type": "action.set_variable",
+          "label": "Increment Turn (No Stuck)",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 1080,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->init-turn",
+          "source": "trigger",
+          "target": "init-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-turn->init-progress-at",
+          "source": "init-turn",
+          "target": "init-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-progress-at->init-signature",
+          "source": "init-progress-at",
+          "target": "init-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-signature->init-stuck-retry-count",
+          "source": "init-signature",
+          "target": "init-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-stuck-retry-count->poll-task",
+          "source": "init-stuck-retry-count",
+          "target": "poll-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "poll-task->derive-status",
+          "source": "poll-task",
+          "target": "derive-status",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-status->terminal-check",
+          "source": "derive-status",
+          "target": "terminal-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "terminal-check->end-terminal",
+          "source": "terminal-check",
+          "target": "end-terminal",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "terminal-check->max-turns-check",
+          "source": "terminal-check",
+          "target": "max-turns-check",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "max-turns-check->end-max-turns",
+          "source": "max-turns-check",
+          "target": "end-max-turns",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "max-turns-check->run-agent",
+          "source": "max-turns-check",
+          "target": "run-agent",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-agent->capture-progress",
+          "source": "run-agent",
+          "target": "capture-progress",
+          "sourcePort": "default"
+        },
+        {
+          "id": "capture-progress->derive-signature",
+          "source": "capture-progress",
+          "target": "derive-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-signature->progress-changed",
+          "source": "derive-signature",
+          "target": "progress-changed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "progress-changed->mark-progress-at",
+          "source": "progress-changed",
+          "target": "mark-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-at->mark-progress-sig",
+          "source": "mark-progress-at",
+          "target": "mark-progress-sig",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-sig->reset-stuck-retry-count",
+          "source": "mark-progress-sig",
+          "target": "reset-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reset-stuck-retry-count->stuck-check",
+          "source": "reset-stuck-retry-count",
+          "target": "stuck-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-check->emit-stuck",
+          "source": "stuck-check",
+          "target": "emit-stuck",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-check->wait-next-turn-no-stuck",
+          "source": "stuck-check",
+          "target": "wait-next-turn-no-stuck",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "emit-stuck->stuck-route",
+          "source": "emit-stuck",
+          "target": "stuck-route",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-route->stuck-retry-budget",
+          "source": "stuck-route",
+          "target": "stuck-retry-budget",
+          "sourcePort": "retry"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "escalate"
+        },
+        {
+          "id": "stuck-route->stuck-pause",
+          "source": "stuck-route",
+          "target": "stuck-pause",
+          "sourcePort": "pause"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-retry",
+          "source": "stuck-retry-budget",
+          "target": "stuck-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-escalate-budget",
+          "source": "stuck-retry-budget",
+          "target": "stuck-escalate-budget",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "stuck-retry->increment-stuck-retry-count",
+          "source": "stuck-retry",
+          "target": "increment-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-stuck-retry-count->wait-next-turn",
+          "source": "increment-stuck-retry-count",
+          "target": "wait-next-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate->end-escalated",
+          "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate-budget->end-escalated",
+          "source": "stuck-escalate-budget",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-pause->end-paused",
+          "source": "stuck-pause",
+          "target": "end-paused",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn->increment-turn",
+          "source": "wait-next-turn",
+          "target": "increment-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
+          "source": "wait-next-turn-no-stuck",
+          "target": "increment-turn-no-stuck",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-turn->poll-task",
+          "source": "increment-turn",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        },
+        {
+          "id": "increment-turn-no-stuck->poll-task",
+          "source": "increment-turn-no-stuck",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-continuation-loop",
+          "templateName": "Continuation Loop",
+          "templateVersion": "1.3.0",
+          "installedTemplateVersion": "1.3.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-continuation-loop-manual",
+      "name": "Continuation Loop (Manual)",
+      "description": "Issue-state continuation loop for a specific task. Provide taskId and worktreePath at install time. Drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
       "category": "reliability",
       "enabled": true,
       "nodeCount": 33,
@@ -30979,13 +34521,13 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-27T12:00:00.000Z",
-        "updatedAt": "2026-03-27T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
-          "templateId": "template-continuation-loop",
-          "templateName": "Continuation Loop",
-          "templateVersion": "1.2.0",
-          "installedTemplateVersion": "1.2.0",
+          "templateId": "template-continuation-loop-manual",
+          "templateName": "Continuation Loop (Manual)",
+          "templateVersion": "1.3.0",
+          "installedTemplateVersion": "1.3.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -32006,6 +35548,469 @@
           "templateName": "Kanban Sync Engine",
           "templateVersion": "1.0.1",
           "installedTemplateVersion": "1.0.1",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-recover-blocked-task",
+      "name": "Recover Blocked Task (Worktree)",
+      "description": "Sub-workflow invoked once per blocked task by template-recover-blocked-worktrees. Sweeps stale worktrees for the task, acquires a clean one, and unblocks the task so it re-enters the normal task lifecycle. Works across all workspace repos — repo context is sourced entirely from the task's own stored metadata.",
+      "category": "reliability",
+      "enabled": true,
+      "nodeCount": 10,
+      "trigger": "trigger.event",
+      "variables": {
+        "baseBranch": "main",
+        "defaultTargetBranch": "origin/main"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.event",
+          "label": "Recovery Requested",
+          "config": {
+            "eventType": "task.blocked.recovery_requested"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-context",
+          "type": "condition.expression",
+          "label": "Has Task Context?",
+          "config": {
+            "expression": "Boolean($data?.item?.taskId || $data?.taskId) && Boolean($data?.item?.branch || $data?.branch)"
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-wt",
+          "type": "action.recover_worktree",
+          "label": "Reset Broken Worktree",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "branch": "{{$data?.item?.branch || $data?.branch || ''}}",
+            "repoRoot": "{{$data?.item?.repoRoot || $data?.repoRoot || ''}}",
+            "worktreePath": "{{$data?.item?.worktreePath || $data?.worktreePath || ''}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquire-wt",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Clean Worktree",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "branch": "{{$data?.item?.branch || $data?.branch || ''}}",
+            "repoRoot": "{{$data?.item?.repoRoot || $data?.repoRoot || ''}}",
+            "baseBranch": "{{$data?.item?.baseBranch || $data?.baseBranch || baseBranch}}",
+            "defaultTargetBranch": "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-acquired",
+          "type": "condition.expression",
+          "label": "Worktree Acquired?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-wt')?.success === true"
+          },
+          "position": {
+            "x": 250,
+            "y": 640
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "unblock-task",
+          "type": "action.update_task_status",
+          "label": "Unblock Task",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "status": "todo",
+            "taskTitle": "{{$data?.item?.taskTitle || $data?.taskTitle || $data?.item?.taskId || $data?.taskId || ''}}",
+            "workflowEvent": "task.blocked.recovery_succeeded",
+            "workflowData": {
+              "stage": "worktree_recovery",
+              "result": "recovered",
+              "branch": "{{$data?.item?.branch || $data?.branch || ''}}",
+              "worktreePath": "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}"
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-blocked-meta",
+          "type": "action.bosun_function",
+          "label": "Clear Blocked Metadata",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+              "fields": {
+                "blockedReason": null,
+                "meta": "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-success",
+          "type": "notify.log",
+          "label": "Log Recovery Success",
+          "config": {
+            "message": ":check: Worktree recovery succeeded for task {{$data?.item?.taskId || $data?.taskId}} ({{$data?.item?.taskTitle || $data?.taskTitle || 'unknown'}}). Task unblocked and returned to todo.",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-context",
+          "type": "notify.log",
+          "label": "Log Missing Context",
+          "config": {
+            "message": "Blocked task recovery skipped — missing taskId or branch in dispatch payload. Item: {{JSON.stringify($data?.item || {})}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-acquire-failed",
+          "type": "notify.log",
+          "label": "Log Acquire Failure",
+          "config": {
+            "message": ":warning: Worktree recovery failed for task {{$data?.item?.taskId || $data?.taskId}} — could not acquire a clean worktree. Branch: {{$data?.item?.branch || $data?.branch || 'unknown'}}. Manual intervention may be required.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-context",
+          "source": "trigger",
+          "target": "check-context",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-context->recover-wt",
+          "source": "check-context",
+          "target": "recover-wt",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-context->log-no-context",
+          "source": "check-context",
+          "target": "log-no-context",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-wt->acquire-wt",
+          "source": "recover-wt",
+          "target": "acquire-wt",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-wt->check-acquired",
+          "source": "acquire-wt",
+          "target": "check-acquired",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-acquired->unblock-task",
+          "source": "check-acquired",
+          "target": "unblock-task",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-acquired->log-acquire-failed",
+          "source": "check-acquired",
+          "target": "log-acquire-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "unblock-task->clear-blocked-meta",
+          "source": "unblock-task",
+          "target": "clear-blocked-meta",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-blocked-meta->log-success",
+          "source": "clear-blocked-meta",
+          "target": "log-success",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-recover-blocked-task",
+          "templateName": "Recover Blocked Task (Worktree)",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-recover-blocked-worktrees",
+      "name": "Recover Blocked Worktree Tasks",
+      "description": "Scheduled operator-assist workflow that finds all tasks blocked due to worktree failures, sweeps their stale worktrees, and re-queues each as todo. Works across every repo in the workspace — repo context is read from each task's own metadata, so no repo configuration is needed here.",
+      "category": "reliability",
+      "enabled": true,
+      "nodeCount": 7,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "scheduleIntervalMs": 1800000,
+        "maxPerSweep": 20,
+        "maxConcurrent": 2
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Scheduled Worktree Recovery Sweep",
+          "config": {
+            "intervalMs": "{{scheduleIntervalMs}}",
+            "cron": "*/30 * * * *"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "query-blocked",
+          "type": "action.run_command",
+          "label": "Query Blocked Tasks",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, { status: \"blocked\" }))\n          .then(tasks => {\n            const limit = parseInt(process.env.MAX_PER_SWEEP || \"20\");\n            const blocked = (tasks || [])\n              .filter(t => t && t.status === \"blocked\" && t.id && (t.branch || t.metadata?.branch))\n              .slice(0, limit)\n              .map(t => ({\n                taskId:       t.id,\n                taskTitle:    t.title || t.id,\n                branch:       t.branch || t.metadata?.branch || null,\n                repoRoot:     t.metadata?.repoRoot || t.repoRoot || null,\n                worktreePath: t.metadata?.worktreePath || t.worktreePath || null,\n                repository:   t.repository || t.metadata?.repository || null,\n                baseBranch:   t.metadata?.baseBranch || null,\n                meta:         t.meta || {},\n              }));\n            console.log(JSON.stringify(blocked));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+            ],
+            "env": {
+              "MAX_PER_SWEEP": "{{maxPerSweep}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-has-tasks",
+          "type": "condition.expression",
+          "label": "Any Blocked Tasks?",
+          "config": {
+            "expression": "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0"
+          },
+          "position": {
+            "x": 400,
+            "y": 360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-each",
+          "type": "loop.for_each",
+          "label": "Recover Each Blocked Task",
+          "config": {
+            "items": "$ctx.getNodeOutput('query-blocked')?.output || []",
+            "variable": "item",
+            "indexVariable": "recoveryIndex",
+            "maxConcurrent": "{{maxConcurrent}}",
+            "workflowId": "template-recover-blocked-task",
+            "mode": "dispatch"
+          },
+          "position": {
+            "x": 400,
+            "y": 510
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "prune-worktrees",
+          "type": "action.run_command",
+          "label": "Prune Stale Worktree Refs",
+          "config": {
+            "command": "git",
+            "args": [
+              "worktree",
+              "prune",
+              "--verbose"
+            ],
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 650
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-summary",
+          "type": "notify.log",
+          "label": "Log Recovery Summary",
+          "config": {
+            "message": ":broom: Blocked worktree recovery sweep dispatched for {{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-idle",
+          "type": "notify.log",
+          "label": "Log No Blocked Tasks",
+          "config": {
+            "message": "Blocked worktree recovery sweep: no blocked tasks with branch context found.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 620,
+            "y": 510
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->query-blocked",
+          "source": "trigger",
+          "target": "query-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "query-blocked->check-has-tasks",
+          "source": "query-blocked",
+          "target": "check-has-tasks",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-has-tasks->recover-each",
+          "source": "check-has-tasks",
+          "target": "recover-each",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-has-tasks->log-idle",
+          "source": "check-has-tasks",
+          "target": "log-idle",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-each->prune-worktrees",
+          "source": "recover-each",
+          "target": "prune-worktrees",
+          "sourcePort": "default"
+        },
+        {
+          "id": "prune-worktrees->log-summary",
+          "source": "prune-worktrees",
+          "target": "log-summary",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-recover-blocked-worktrees",
+          "templateName": "Recover Blocked Worktree Tasks",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -41581,7 +45586,7 @@
       "workflowId": "wf-bosun-pr-watchdog",
       "workflowName": "Bosun PR Watchdog",
       "status": "completed",
-      "nodeCount": 19,
+      "nodeCount": 21,
       "duration": 29000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -41602,10 +45607,10 @@
     },
     {
       "runId": "run-004",
-      "workflowId": "wf-pr-conflict-resolver",
-      "workflowName": "PR Conflict Resolver",
+      "workflowId": "wf-github-check-failure",
+      "workflowName": "GitHub Check Failure Handler",
       "status": "completed",
-      "nodeCount": 11,
+      "nodeCount": 5,
       "duration": 47000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -41614,10 +45619,10 @@
     },
     {
       "runId": "run-005",
-      "workflowId": "wf-pr-merge-strategy",
-      "workflowName": "PR Merge Strategy",
+      "workflowId": "wf-github-pr-event-handler",
+      "workflowName": "GitHub PR Event Handler",
       "status": "failed",
-      "nodeCount": 20,
+      "nodeCount": 9,
       "duration": 56000,
       "errorCount": 1,
       "triggerSource": "manual",
@@ -41626,10 +45631,10 @@
     },
     {
       "runId": "run-006",
-      "workflowId": "wf-pr-triage",
-      "workflowName": "PR Triage & Labels",
+      "workflowId": "wf-pr-conflict-resolver",
+      "workflowName": "PR Conflict Resolver",
       "status": "completed",
-      "nodeCount": 10,
+      "nodeCount": 11,
       "duration": 65000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -41638,10 +45643,10 @@
     },
     {
       "runId": "run-007",
-      "workflowId": "wf-release-drafter",
-      "workflowName": "Release Drafter",
+      "workflowId": "wf-pr-fix-single",
+      "workflowName": "PR Fix Agent (Single PR)",
       "status": "completed",
-      "nodeCount": 7,
+      "nodeCount": 5,
       "duration": 74000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -41650,10 +45655,10 @@
     },
     {
       "runId": "run-008",
-      "workflowId": "wf-review-agent",
-      "workflowName": "Review Agent",
+      "workflowId": "wf-pr-merge-strategy",
+      "workflowName": "PR Merge Strategy",
       "status": "completed",
-      "nodeCount": 6,
+      "nodeCount": 20,
       "duration": 83000,
       "errorCount": 0,
       "triggerSource": "manual",

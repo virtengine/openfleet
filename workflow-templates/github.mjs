@@ -7,9 +7,11 @@
  *   - PR Conflict Resolver (superseded by Watchdog)
  *   - Stale PR Reaper (recommended)
  *   - Release Drafter
- *   - Bosun PR Watchdog (recommended — replaces pr-cleanup-daemon.mjs)
+ *   - Bosun PR Watchdog (recommended — replaces pr-cleanup-daemon.mjs; 30 min fallback)
  *   - GitHub ↔ Kanban Sync (recommended — replaces github-reconciler.mjs)
  *   - SDK Conflict Resolver (recommended — replaces sdk-conflict-resolver.mjs)
+ *   - GitHub PR Event Handler (recommended — event-driven; reacts to PR opened/updated)
+ *   - GitHub Check Failure Handler (recommended — event-driven; labels failing PRs immediately)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -1132,7 +1134,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     // all/current/<owner/repo>/comma,list also supported.
     repoScope:          "auto",
     maxPrs:             25,
-    intervalMs:         90_000,                     // 90 seconds
+    intervalMs:         1_800_000,                  // 30 min — safety-net fallback; event-driven templates handle real-time responses
     // Merge-safety thresholds checked by the review agent:
     // If net deletions > additions × ratio AND deletions > minDestructiveDeletions → HOLD
     suspiciousDeletionRatio: 3,    // e.g. deletes 3× more lines than it adds
@@ -1141,6 +1143,9 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     trustedAuthors:         "",
     allowTrustedFixes:      false,
     allowTrustedMerges:     false,
+    // Per-PR parallel fix dispatch (replaces single mega-agent):
+    maxConcurrentFixes:     3,     // how many PR fix agents run in parallel
+    prFixTtlMinutes:        120,   // minutes before a PR claim expires (allows re-dispatch)
   },
   nodes: [
     node("trigger", "trigger.schedule", "Poll Every 90s", {
@@ -1663,25 +1668,84 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "}catch(e){return false;}})()",
     }, { x: 280, y: 860 }),
 
-    node("dispatch-fix-agent", "action.run_agent", "Dispatch Fix Agent (Fallback)", {
-      prompt:
-        "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. " +
-        "Only work unresolved items from this JSON:\n\n" +
-        "{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\n" +
-        "Each unresolved item includes prDigest with the PR body, files, issue comments, reviews, review comments, review requests, and check summaries. Use that context first.\n" +
-        "For conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\n" +
-        "For CI-failure items: start from failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\n" +
-        "After successful repair remove bosun-needs-fix label.\n\n" +
-        "STRICT RULES:\n" +
-        "- Fix only CI/conflict issues. No scope creep.\n" +
-        "- Do NOT merge/close/approve PRs.\n" +
-        "- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
-      sdk: "auto",
-      timeoutMs: 1_800_000,
-      maxRetries: 2,
-      retryDelayMs: 30_000,
+    // ─────────────────────────────────────────────────────────────────────────
+    // STEP 3a: Claim unclaimed PRs — prevents duplicate work across watchdog
+    // cycles. Each PR gets a time-locked claim (TTL=prFixTtlMinutes). If a
+    // claim is active the PR is skipped; stale/expired claims are purged.
+    // ─────────────────────────────────────────────────────────────────────────
+    node("claim-unclaimed-prs", "action.run_command", "Claim & Filter Unclaimed PRs", {
+      command: "node",
+      args: ["-e", [
+        "const fs=require('fs');",
+        "const path=require('path');",
+        "const raw=String(process.env.BOSUN_PROGRAMMATIC_FIX||'');",
+        "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
+        "const needsAgent=Array.isArray(payload.needsAgent)?payload.needsAgent:[];",
+        "const TTL_MS=Math.max(60000,Number(process.env.PR_FIX_TTL_MINUTES||'120')*60*1000);",
+        "const CLAIM_DIR=path.join(process.cwd(),'.cache','bosun');",
+        "const CLAIM_FILE=path.join(CLAIM_DIR,'pr-fix-claims.json');",
+        "function loadClaims(){try{const d=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));return(d&&typeof d==='object'&&d.claims&&typeof d.claims==='object')?d.claims:{};}catch{return {};}}",
+        "function saveClaims(claims){try{if(!fs.existsSync(CLAIM_DIR))fs.mkdirSync(CLAIM_DIR,{recursive:true});const data={version:1,claims,updatedAt:new Date().toISOString()};const tmp=CLAIM_FILE+'.tmp'+Date.now();fs.writeFileSync(tmp,JSON.stringify(data,null,2),'utf8');fs.renameSync(tmp,CLAIM_FILE);}catch(e){process.stderr.write('[claim] save error: '+String(e?.message||e)+'\\n');}}",
+        "const now=Date.now();",
+        "const claims=loadClaims();",
+        "/* Purge expired/stale claims */",
+        "for(const key of Object.keys(claims)){if(now>new Date(claims[key].expiresAt||0).getTime())delete claims[key];}",
+        "const unclaimed=[];",
+        "const alreadyClaimed=[];",
+        "for(const item of needsAgent){",
+        "  const repo=String(item?.repo||'').trim();",
+        "  const number=String(item?.number||item?.n||'').trim();",
+        "  if(!repo||!number){unclaimed.push({...item,taskId:'pr-fix-unknown',taskTitle:'Unknown PR',claimKey:''});continue;}",
+        "  const key=repo+'#'+number;",
+        "  const claim=claims[key];",
+        "  if(claim&&now<new Date(claim.expiresAt||0).getTime()){",
+        "    alreadyClaimed.push({key,repo,number,reason:item?.reason||'',claimedAt:claim.claimedAt,expiresAt:claim.expiresAt});",
+        "    process.stderr.write('[pr-watchdog] '+key+' already claimed (expires '+claim.expiresAt+'), skipping\\n');",
+        "    continue;",
+        "  }",
+        "  const safeRepo=repo.replace(/[^a-z0-9]/gi,'-').replace(/-+/g,'-').replace(/^-|-$/g,'');",
+        "  const taskId='pr-fix-'+safeRepo+'-'+number;",
+        "  const taskTitle='Fix PR #'+number+(item?.title?' \\''+String(item.title).slice(0,60)+'\\'':'')+' ('+repo+')';",
+        "  claims[key]={repo,number,taskId,taskTitle,claimedAt:new Date().toISOString(),expiresAt:new Date(now+TTL_MS).toISOString()};",
+        "  unclaimed.push({...item,taskId,taskTitle,number,repo,claimKey:key});",
+        "}",
+        "saveClaims(claims);",
+        "console.log(JSON.stringify({unclaimed,alreadyClaimed,unclaimedCount:unclaimed.length,alreadyClaimedCount:alreadyClaimed.length,totalNeedsAgent:needsAgent.length}));",
+      ].join(" ")],
       continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_PROGRAMMATIC_FIX: "{{programmatic-fix.output}}",
+        PR_FIX_TTL_MINUTES: "{{prFixTtlMinutes}}",
+      },
     }, { x: 280, y: 970 }),
+
+    node("has-unclaimed-fixes", "condition.expression", "Unclaimed Fixes?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('claim-unclaimed-prs');" +
+        "const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');" +
+        "return (Array.isArray(d.unclaimed)?d.unclaimed:[]).length>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 280, y: 1060 }),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STEP 3b: Per-PR parallel dispatch — one dedicated long-running agent per
+    // PR (up to maxConcurrentFixes in parallel). Each agent is session-tracked
+    // and has a 2-hour budget for complex fixes. The claim system prevents the
+    // next watchdog cycle from re-dispatching PRs already in-flight.
+    // ─────────────────────────────────────────────────────────────────────────
+    node("dispatch-fix-agents", "loop.for_each", "Dispatch Fix Agents (Per PR)", {
+      items:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('claim-unclaimed-prs');" +
+        "const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');" +
+        "return Array.isArray(d.unclaimed)?d.unclaimed:[];" +
+        "}catch{return []}})();",
+      variable: "item",
+      maxConcurrent: "{{maxConcurrentFixes}}",
+      workflowId: "template-pr-fix-single",
+    }, { x: 280, y: 1160 }),
 
     // ─────────────────────────────────────────────────────────────────────────
     // STEP 2b: Review gate — MANDATORY before any merge.
@@ -1856,9 +1920,12 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     edge("generic-fix-needed", "programmatic-fix", { condition: "$output?.result === true" }),
     edge("generic-fix-needed", "review-needed",    { condition: "$output?.result !== true" }),
     edge("programmatic-fix", "fix-agent-needed"),
-    edge("fix-agent-needed", "dispatch-fix-agent", { condition: "$output?.result === true" }),
+    edge("fix-agent-needed", "claim-unclaimed-prs", { condition: "$output?.result === true" }),
     edge("fix-agent-needed", "review-needed",      { condition: "$output?.result !== true" }),
-    edge("dispatch-fix-agent","review-needed"),
+    edge("claim-unclaimed-prs", "has-unclaimed-fixes"),
+    edge("has-unclaimed-fixes", "dispatch-fix-agents", { condition: "$output?.result === true" }),
+    edge("has-unclaimed-fixes", "review-needed",       { condition: "$output?.result !== true" }),
+    edge("dispatch-fix-agents","review-needed"),
     // Review gate (merge candidates)
     edge("review-needed",    "programmatic-review", { condition: "$output?.result === true" }),
     edge("review-needed",    "notify",          { condition: "$output?.result !== true" }),
@@ -1868,15 +1935,19 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
   ],
   metadata: {
     author: "bosun",
-    version: 4,
+    version: 5,
     createdAt: "2025-07-01T00:00:00Z",
-    templateVersion: "2.3.0",
+    templateVersion: "3.0.0",
     tags: ["github", "pr", "ci", "merge", "watchdog", "bosun-attached", "safety"],
     replaces: {
       module: "agent-hooks.mjs",
       functions: ["registerBuiltinHooks (PostPR block)"],
       calledFrom: [],
       description:
+        "v3.0: Replaces single mega-agent dispatch with per-PR claim system and parallel fan-out. " +
+        "Each PR gets its own dedicated agent (template-pr-fix-single) with 2-hour budget. " +
+        "PR claims prevent duplicate work across watchdog cycles (TTL=prFixTtlMinutes). " +
+        "All per-PR agents are session-tracked in Fleet/Sessions. " +
         "v2.3: Adds fast-path update-branch for out-of-date (BEHIND) PRs without conflicts. " +
         "Consolidates PR polling into one gh pr list fetch per target repo per cycle. " +
         "Uses deterministic-first remediation and review/merge command nodes; " +
@@ -1884,6 +1955,183 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "automatic remediation attempts. All external PRs (no bosun-attached label) " +
         "remain untouched.",
     },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PR Fix Agent — Single PR
+//  Invoked by the PR Watchdog's loop.for_each per-PR dispatch. Handles ONE
+//  PR with a dedicated long-running agent session (up to 2 hours). Receives
+//  the PR item as ctx.data.item from the loop parent.
+//
+//  Key properties:
+//   - Sets a stable taskId (pr-fix-<repo>-<number>) so the agent run is
+//     tracked as a named session in Fleet/Sessions across watchdog cycles.
+//   - Releases the PR claim on completion (allows re-claim after TTL anyway,
+//     but explicit release makes the slot available immediately on success).
+//   - continueOnSession: true — if the process crashes mid-run, the next
+//     watchdog cycle can resume rather than restart from scratch.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const PR_FIX_SINGLE_TEMPLATE = {
+  id: "template-pr-fix-single",
+  name: "PR Fix Agent (Single PR)",
+  description:
+    "Fixes one Bosun-attached PR using a dedicated long-running agent (up to 2 hours). " +
+    "Dispatched by the PR Watchdog loop for each unclaimed PR needing repair. " +
+    "Creates a stable per-PR session (pr-fix-<repo>-<number>) so work is tracked " +
+    "in Fleet/Sessions. Releases the PR claim on completion so the slot is freed " +
+    "for the next watchdog cycle.",
+  category: "github",
+  enabled: true,
+  core: true,
+  trigger: "trigger.manual",
+  variables: {},
+  nodes: [
+    node("trigger", "trigger.manual", "Start"),
+
+    // ── 1. Establish stable per-PR task identity ─────────────────────────────
+    // Sets ctx.data.taskId and ctx.data.taskTitle from the PR item so that
+    // the action.run_agent node creates/resumes a named session for this PR.
+    node("setup-task", "action.set_variable", "Setup PR Task ID", {
+      key: "taskId",
+      value:
+        "'pr-fix-' + " +
+        "String($data?.item?.taskId || " +
+        "  (String($data?.item?.repo || '').replace(/[^a-z0-9]/gi, '-').replace(/-+/g,'-').replace(/^-|-$/g,'') + " +
+        "   '-' + String($data?.item?.number || $data?.item?.n || '0'))).replace(/^-|-$/g, '')",
+      isExpression: true,
+    }),
+
+    node("setup-title", "action.set_variable", "Setup PR Task Title", {
+      key: "taskTitle",
+      value:
+        "'Fix PR #' + String($data?.item?.number || $data?.item?.n || '?') + " +
+        "($data?.item?.title ? ' \\'' + String($data.item.title).slice(0,60) + '\\'' : '') + " +
+        "' (' + String($data?.item?.repo || '') + ')'",
+      isExpression: true,
+    }),
+
+    // ── 2. Run focused repair agent for this single PR ───────────────────────
+    // The 2-hour timeout allows complex fixes (e.g., resolving deep conflicts,
+    // debugging flaky CI, iterative testing). The PR item JSON is embedded in
+    // the prompt including prDigest (body, files, comments, checks) and CI
+    // diagnostics (failedRun, failedJobs, failedLogExcerpt).
+    node("fix-agent", "action.run_agent", "Fix PR (Dedicated Agent)", {
+      prompt:
+        "You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\n\n" +
+        "## PR Data\n\n" +
+        "{{item}}\n\n" +
+        "## Step 0 — Always Do This First (Workspace Setup)\n\n" +
+        "The agent workspace is Bosun's own repo directory — NOT the target repo. " +
+        "You MUST clone or update the target repo before touching any branches:\n\n" +
+        "```\n" +
+        "# Extract repo from item (e.g. \"virtengine/bosun\")\n" +
+        "REPO=\"<item.repo>\"\n" +
+        "BRANCH=\"<item.branch>\"  # the PR head branch to fix\n" +
+        "BASE=\"<item.baseBranch>\"  # the PR base branch (usually main)\n" +
+        "PR_NUMBER=\"<item.prNumber>\"\n\n" +
+        "# Clone into a temp dir, or update if already present\n" +
+        "WORK_DIR=\"/tmp/pr-fix-${PR_NUMBER}\"\n" +
+        "if [ -d \"$WORK_DIR/.git\" ]; then\n" +
+        "  cd $WORK_DIR && git fetch origin\n" +
+        "else\n" +
+        "  gh repo clone $REPO $WORK_DIR -- --depth=50 && cd $WORK_DIR\n" +
+        "fi\n\n" +
+        "# Checkout the PR branch to fix\n" +
+        "git checkout -B $BRANCH origin/$BRANCH\n" +
+        "```\n\n" +
+        "## Fix Instructions\n\n" +
+        "Use `prDigest` (body, files, issueComments, reviews, reviewComments, checks, ciSummary) " +
+        "and CI diagnostics (failedRun, failedJobs, failedLogExcerpt, failedAnnotations) to " +
+        "identify the root cause and apply the MINIMAL fix.\n\n" +
+        "**By `reason` field:**\n" +
+        "- `merge_conflict_requires_code_resolution`: In $WORK_DIR, run `git merge origin/$BASE`, " +
+        "  resolve all conflicts, run tests, commit, then `git push origin $BRANCH --force-with-lease`.\n" +
+        "- `auto_rerun_limit_reached` / `ci_rerun_failed`: Study `failedLogExcerpt` and `failedJobs` " +
+        "  to find the root cause. Fix the code in $WORK_DIR, commit, push.\n" +
+        "- `no_rerunnable_failed_run_found`: Check `recentRuns`, look at the branch directly with " +
+        "  `gh pr checks $PR_NUMBER --repo $REPO`. Diagnose and fix.\n" +
+        "- `branch_update_failed` / `missing_repo_or_branch`: Inspect with `gh pr view $PR_NUMBER --repo $REPO`.\n\n" +
+        "**After successful repair:** Remove the fix label and ensure the PR base is correct:\n" +
+        "```\n" +
+        "gh pr edit $PR_NUMBER --repo $REPO --remove-label bosun-needs-fix\n" +
+        "# Ensure base branch was not changed — reset it if needed:\n" +
+        "gh pr edit $PR_NUMBER --repo $REPO --base $BASE\n" +
+        "```\n\n" +
+        "## Strict Rules\n\n" +
+        "- Fix ONLY the specific issue listed in `reason`. No unrelated changes.\n" +
+        "- Do NOT merge, approve, or close the PR.\n" +
+        "- Do NOT touch any other PRs.\n" +
+        "- Do NOT create new repair branches. Fix the existing PR branch (`item.branch`) in place.\n" +
+        "- Do NOT change the PR's base branch. If the base was incorrectly changed, reset it to `item.baseBranch`.\n" +
+        "- Always work in the cloned $WORK_DIR — never run git commands in the Bosun workspace directory.\n" +
+        "- Commit with a clear message referencing what was fixed.\n" +
+        "- If the fix is blocked (e.g., protected branch, missing creds), document why in a PR comment and stop.",
+      sdk: "auto",
+      timeoutMs: 7_200_000,    // 2 hours — complex fixes need time
+      maxRetries: 1,
+      retryDelayMs: 60_000,
+      sessionRetries: 2,
+      maxContinues: 3,
+      continueOnSession: true,  // resume if process restarted mid-fix
+      continueOnError: true,
+      failOnError: false,
+    }),
+
+    // ── 3. Release the PR claim ───────────────────────────────────────────────
+    // On success or failure, release the claim so the slot is freed. The claim
+    // TTL will expire anyway, but explicit release lets the next cycle retry
+    // failed PRs sooner (e.g., if the agent crashed before completing).
+    node("release-claim", "action.run_command", "Release PR Claim", {
+      command: "node",
+      args: ["-e", [
+        "const fs=require('fs');",
+        "const path=require('path');",
+        "const claimKey=String(process.env.PR_CLAIM_KEY||'').trim();",
+        "if(!claimKey){console.log(JSON.stringify({released:false,reason:'no_claim_key'}));process.exit(0);}",
+        "const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-fix-claims.json');",
+        "try{",
+        "  if(!fs.existsSync(CLAIM_FILE)){console.log(JSON.stringify({released:false,reason:'no_claim_file'}));process.exit(0);}",
+        "  const data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));",
+        "  if(data.claims&&data.claims[claimKey]){",
+        "    delete data.claims[claimKey];",
+        "    data.updatedAt=new Date().toISOString();",
+        "    fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');",
+        "    console.log(JSON.stringify({released:true,claimKey}));",
+        "  }else{",
+        "    console.log(JSON.stringify({released:false,reason:'not_found',claimKey}));",
+        "  }",
+        "}catch(e){",
+        "  console.log(JSON.stringify({released:false,reason:'error',error:String(e?.message||e),claimKey}));",
+        "}",
+      ].join(" ")],
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        PR_CLAIM_KEY: "{{item.claimKey}}",
+      },
+    }),
+  ],
+  edges: [
+    edge("trigger",       "setup-task"),
+    edge("setup-task",    "setup-title"),
+    edge("setup-title",   "fix-agent"),
+    edge("fix-agent",     "release-claim"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-29T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "ci", "fix", "single-pr", "session-tracked"],
+    notes:
+      "Invoked by template-bosun-pr-watchdog via loop.for_each. " +
+      "Do not enable this template as a standalone scheduled workflow. " +
+      "It receives ctx.data.item (PR object with taskId, claimKey, repo, number, prDigest, etc.) " +
+      "from the parent loop and runs entirely from that context.",
   },
 };
 
@@ -2387,5 +2635,219 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
         "marker verification, and push become auditable nodes. Chains " +
         "into PR Merge Strategy after successful resolution.",
     },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GitHub PR Event Handler — event-driven (replaces 90s polling for PR opens)
+//  Fires instantly when a PR is opened, updated (synchronize), or reopened.
+//  Finds the linked Bosun task via branch name and marks it in-review.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const GITHUB_PR_EVENT_HANDLER_TEMPLATE = {
+  id: "template-github-pr-event-handler",
+  name: "GitHub PR Event Handler",
+  description:
+    "Event-driven workflow that fires as soon as a PR is opened, updated, or reopened " +
+    "via GitHub webhook. Identifies the linked Bosun task by branch name and " +
+    "immediately updates its status to in-review — no polling required. " +
+    "Complements the PR Watchdog which runs every 30 minutes as a fallback.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    labelInReview: "bosun/in-review",
+    taskBranchPrefix: "task/",
+  },
+  nodes: [
+    node("trigger", "trigger.event", "PR Opened / Updated", {
+      eventType: "github:pull_request",
+      filter: "['opened','synchronize','reopened'].includes(String($event?.action || '').toLowerCase())",
+    }, { x: 400, y: 50 }),
+
+    node("check-bosun-branch", "condition.expression", "Is a Bosun Task Branch?", {
+      expression: "Boolean($data?.prBranch) && String($data?.prBranch || '').startsWith(String($data?.taskBranchPrefix || 'task/'))",
+    }, { x: 400, y: 190, outputs: ["yes", "no"] }),
+
+    node("find-task", "action.run_command", "Find Linked Task", {
+      command: "node",
+      args: ["-e", `
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const { pathToFileURL } = require("node:url");
+        let repoRoot = process.cwd();
+        const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
+        if (repoRoot.toLowerCase().includes(mirrorMarker)) {
+          const r = path.resolve(repoRoot, "..", "..", "..", "..");
+          if (fs.existsSync(path.join(r, "kanban", "kanban-adapter.mjs"))) repoRoot = r;
+        }
+        const kanbanUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
+        const branch = process.env.PR_BRANCH || "";
+        import(kanbanUrl)
+          .then(k => k.listTasks(undefined, {}))
+          .then(tasks => {
+            const task = (tasks || []).find(t =>
+              (t.branch || t.metadata?.branch) === branch
+            );
+            console.log(JSON.stringify(task || null));
+          })
+          .catch(e => { console.error(e.message); process.exit(1); });
+      `],
+      env: { PR_BRANCH: "{{prBranch}}" },
+      parseJson: true,
+    }, { x: 250, y: 340 }),
+
+    node("check-task-found", "condition.expression", "Task Found?", {
+      expression: "Boolean($ctx.getNodeOutput('find-task')?.output?.id)",
+    }, { x: 250, y: 490, outputs: ["yes", "no"] }),
+
+    node("update-inreview", "action.update_task_status", "Mark Task In Review", {
+      taskId:        "{{$ctx.getNodeOutput('find-task')?.output?.id || ''}}",
+      status:        "inreview",
+      taskTitle:     "{{$ctx.getNodeOutput('find-task')?.output?.title || prTitle || ''}}",
+      workflowEvent: "task.in_review",
+      workflowData: {
+        source:   "github:pr_opened",
+        prNumber: "{{prNumber}}",
+        prUrl:    "{{prUrl}}",
+        branch:   "{{prBranch}}",
+        repo:     "{{repo}}",
+      },
+    }, { x: 250, y: 640 }),
+
+    node("add-label-in-review", "action.run_command", "Add In-Review Label", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const n=String(process.env.PR_NUMBER||'').trim();",
+        "const repo=String(process.env.REPO||'').trim();",
+        "const label=String(process.env.LABEL_IN_REVIEW||'bosun/in-review').trim();",
+        "if(!n||!label){process.exit(0);}",
+        "try{",
+        "  const args=['pr','edit',n,'--add-label',label];",
+        "  if(repo)args.push('--repo',repo);",
+        "  execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']});",
+        "  console.log(JSON.stringify({labeled:true,label,pr:n}));",
+        "}catch(e){",
+        "  process.stderr.write('label warn: '+String(e?.message||e)+'\\n');",
+        "  console.log(JSON.stringify({labeled:false,label,pr:n,error:String(e?.message||e)}));",
+        "}",
+      ].join(" ")],
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        PR_NUMBER: "{{prNumber}}",
+        REPO: "{{repo}}",
+        LABEL_IN_REVIEW: "{{labelInReview}}",
+      },
+    }, { x: 250, y: 720 }),
+
+    node("log-updated", "notify.log", "Log In Review", {
+      message: ":rocket: Task {{$ctx.getNodeOutput('find-task')?.output?.id}} moved to in-review — PR #{{prNumber}} ({{prBranch}}) in {{repo}}",
+      level: "info",
+    }, { x: 250, y: 790 }),
+
+    node("log-no-task", "notify.log", "Log No Task Found", {
+      message: "PR #{{prNumber}} opened on branch {{prBranch}} in {{repo}} — no linked Bosun task found.",
+      level: "debug",
+    }, { x: 550, y: 490 }),
+
+    node("log-not-bosun", "notify.log", "Log Non-Bosun Branch", {
+      message: "PR #{{prNumber}} on {{prBranch}} is not a Bosun task branch — skipping.",
+      level: "debug",
+    }, { x: 650, y: 340 }),
+  ],
+  edges: [
+    edge("trigger",         "check-bosun-branch"),
+    edge("check-bosun-branch", "find-task",       { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-bosun-branch", "log-not-bosun",   { condition: "$output?.result !== true",  port: "no" }),
+    edge("find-task",       "check-task-found"),
+    edge("check-task-found", "update-inreview",   { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-task-found", "log-no-task",       { condition: "$output?.result !== true",  port: "no" }),
+    edge("update-inreview", "add-label-in-review"),
+    edge("add-label-in-review", "log-updated"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "event-driven", "lifecycle", "webhook"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GitHub Check Failure Handler — event-driven
+//  Fires instantly when a GitHub check run fails on a PR branch.
+//  Labels the PR bosun-needs-fix so the Watchdog's next sweep picks it up
+//  for agent repair — no 30-minute wait to know a check failed.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const GITHUB_CHECK_FAILURE_TEMPLATE = {
+  id: "template-github-check-failure",
+  name: "GitHub Check Failure Handler",
+  description:
+    "Event-driven workflow that fires the moment a GitHub check run fails. " +
+    "Identifies the associated PR and applies the bosun-needs-fix label instantly " +
+    "so the PR Watchdog can dispatch a repair agent on its next sweep. " +
+    "Eliminates the up-to-30-minute delay between a CI failure and Bosun's response.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    labelNeedsFix: "bosun-needs-fix",
+    ignoredCheckNames: "codecov,dependabot,semantic-pr-title",
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Check Run Failed", {
+      eventType: "github:check_run",
+      filter:
+        "$event?.action === 'completed' && " +
+        "$event?.checkConclusion === 'failure' && " +
+        "!String($event?.checkName || '').split(',').some(n => " +
+        "  String($data?.ignoredCheckNames || '').toLowerCase().split(',').map(s => s.trim()).includes(n.trim().toLowerCase())" +
+        ")",
+    }, { x: 400, y: 50 }),
+
+    node("check-has-pr", "condition.expression", "Associated PR Found?", {
+      expression: "Number($data?.prNumber) > 0 && Boolean($data?.repo)",
+    }, { x: 400, y: 190, outputs: ["yes", "no"] }),
+
+    node("label-fix", "action.run_command", "Label PR: bosun-needs-fix", {
+      command: "gh",
+      args: ["pr", "edit", "{{prNumber}}", "--add-label", "{{labelNeedsFix}}", "--repo", "{{repo}}"],
+      continueOnError: true,
+    }, { x: 250, y: 340 }),
+
+    node("log-labeled", "notify.log", "Log Fix Label Applied", {
+      message:
+        ":x: Check '{{checkName}}' failed on PR #{{prNumber}} ({{repo}}). " +
+        "Applied label '{{labelNeedsFix}}' — PR Watchdog will dispatch repair.",
+      level: "warn",
+    }, { x: 250, y: 490 }),
+
+    node("log-no-pr", "notify.log", "Log No Associated PR", {
+      message: "Check '{{checkName}}' failed in {{repo}} (conclusion: {{checkConclusion}}) — no associated PR found.",
+      level: "debug",
+    }, { x: 620, y: 340 }),
+  ],
+  edges: [
+    edge("trigger",     "check-has-pr"),
+    edge("check-has-pr", "label-fix",    { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-has-pr", "log-no-pr",    { condition: "$output?.result !== true",  port: "no" }),
+    edge("label-fix",   "log-labeled"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "ci", "check", "event-driven", "webhook", "reliability"],
   },
 };

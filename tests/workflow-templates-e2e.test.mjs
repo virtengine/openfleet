@@ -900,7 +900,7 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  describe("Continuation Loop (template-continuation-loop)", () => {
+  describe("Continuation Loop (template-continuation-loop-manual)", () => {
     it("advances through mocked external statuses and exits on terminal state", async () => {
       const statuses = ["inprogress", "inreview", "done"];
       mockServices.kanban.getTask.mockImplementation(async (id) => ({
@@ -910,7 +910,7 @@ describe("workflow-templates E2E execution", () => {
         externalStatus: statuses.shift() || "done",
       }));
 
-      const installed = installTemplate("template-continuation-loop", engine, {
+      const installed = installTemplate("template-continuation-loop-manual", engine, {
         taskId: "LIN-123",
         worktreePath: "/tmp/worktree/lin-123",
         maxTurns: 8,
@@ -936,7 +936,7 @@ describe("workflow-templates E2E execution", () => {
         externalStatus: "inprogress",
       }));
 
-      const installed = installTemplate("template-continuation-loop", engine, {
+      const installed = installTemplate("template-continuation-loop-manual", engine, {
         taskId: "LIN-STUCK-1",
         worktreePath: "/tmp/worktree/lin-stuck-1",
         maxTurns: 3,

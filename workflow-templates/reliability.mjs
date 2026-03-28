@@ -13,6 +13,8 @@
  *   - Incident Response (recommended)
  *   - Task Archiver (recommended)
  *   - Sync Engine (recommended)
+ *   - Recover Blocked Task (Worktree) (recommended) — sub-workflow
+ *   - Recover Blocked Worktree Tasks (recommended) — orchestrator
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -1451,5 +1453,246 @@ export const SYNC_ENGINE_TEMPLATE = {
         "Event-driven triggers replace the fixed-interval timer, and " +
         "failure alerting is built into the flow.",
     },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Recover Blocked Task (Worktree) — sub-workflow
+//  Invoked by template-recover-blocked-worktrees via loop.for_each dispatch.
+//  Each item arrives as $data.item; falls back to $data.* for standalone use.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const RECOVER_BLOCKED_TASK_TEMPLATE = {
+  id: "template-recover-blocked-task",
+  name: "Recover Blocked Task (Worktree)",
+  description:
+    "Sub-workflow invoked once per blocked task by template-recover-blocked-worktrees. " +
+    "Sweeps stale worktrees for the task, acquires a clean one, and unblocks the task " +
+    "so it re-enters the normal task lifecycle. Works across all workspace repos — " +
+    "repo context is sourced entirely from the task's own stored metadata.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    baseBranch: "main",
+    defaultTargetBranch: "origin/main",
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Recovery Requested", {
+      eventType: "task.blocked.recovery_requested",
+    }, { x: 400, y: 50 }),
+
+    node("check-context", "condition.expression", "Has Task Context?", {
+      expression:
+        "Boolean($data?.item?.taskId || $data?.taskId) && " +
+        "Boolean($data?.item?.branch || $data?.branch)",
+    }, { x: 400, y: 190, outputs: ["yes", "no"] }),
+
+    node("recover-wt", "action.recover_worktree", "Reset Broken Worktree", {
+      taskId:       "{{$data?.item?.taskId || $data?.taskId || ''}}",
+      branch:       "{{$data?.item?.branch || $data?.branch || ''}}",
+      repoRoot:     "{{$data?.item?.repoRoot || $data?.repoRoot || ''}}",
+      worktreePath: "{{$data?.item?.worktreePath || $data?.worktreePath || ''}}",
+    }, { x: 250, y: 340 }),
+
+    node("acquire-wt", "action.acquire_worktree", "Acquire Clean Worktree", {
+      taskId:               "{{$data?.item?.taskId || $data?.taskId || ''}}",
+      branch:               "{{$data?.item?.branch || $data?.branch || ''}}",
+      repoRoot:             "{{$data?.item?.repoRoot || $data?.repoRoot || ''}}",
+      baseBranch:           "{{$data?.item?.baseBranch || $data?.baseBranch || baseBranch}}",
+      defaultTargetBranch:  "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || defaultTargetBranch}}",
+    }, { x: 250, y: 490 }),
+
+    node("check-acquired", "condition.expression", "Worktree Acquired?", {
+      expression: "$ctx.getNodeOutput('acquire-wt')?.success === true",
+    }, { x: 250, y: 640, outputs: ["yes", "no"] }),
+
+    node("unblock-task", "action.update_task_status", "Unblock Task", {
+      taskId:        "{{$data?.item?.taskId || $data?.taskId || ''}}",
+      status:        "todo",
+      taskTitle:     "{{$data?.item?.taskTitle || $data?.taskTitle || $data?.item?.taskId || $data?.taskId || ''}}",
+      workflowEvent: "task.blocked.recovery_succeeded",
+      workflowData: {
+        stage:  "worktree_recovery",
+        result: "recovered",
+        branch: "{{$data?.item?.branch || $data?.branch || ''}}",
+        worktreePath: "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}",
+      },
+    }, { x: 250, y: 790 }),
+
+    node("clear-blocked-meta", "action.bosun_function", "Clear Blocked Metadata", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{$data?.item?.taskId || $data?.taskId || ''}}",
+        fields: {
+          blockedReason: null,
+          meta: "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}",
+        },
+      },
+    }, { x: 250, y: 940 }),
+
+    node("log-success", "notify.log", "Log Recovery Success", {
+      message:
+        ":check: Worktree recovery succeeded for task " +
+        "{{$data?.item?.taskId || $data?.taskId}} " +
+        "({{$data?.item?.taskTitle || $data?.taskTitle || 'unknown'}}). " +
+        "Task unblocked and returned to todo.",
+      level: "info",
+    }, { x: 250, y: 1090 }),
+
+    node("log-no-context", "notify.log", "Log Missing Context", {
+      message:
+        "Blocked task recovery skipped — missing taskId or branch in dispatch payload. " +
+        "Item: {{JSON.stringify($data?.item || {})}}",
+      level: "warn",
+    }, { x: 620, y: 340 }),
+
+    node("log-acquire-failed", "notify.log", "Log Acquire Failure", {
+      message:
+        ":warning: Worktree recovery failed for task " +
+        "{{$data?.item?.taskId || $data?.taskId}} — could not acquire a clean worktree. " +
+        "Branch: {{$data?.item?.branch || $data?.branch || 'unknown'}}. Manual intervention may be required.",
+      level: "warn",
+    }, { x: 620, y: 790 }),
+  ],
+  edges: [
+    edge("trigger", "check-context"),
+    edge("check-context", "recover-wt",       { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-context", "log-no-context",   { condition: "$output?.result !== true",  port: "no" }),
+    edge("recover-wt",    "acquire-wt"),
+    edge("acquire-wt",    "check-acquired"),
+    edge("check-acquired", "unblock-task",        { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-acquired", "log-acquire-failed",  { condition: "$output?.result !== true",  port: "no" }),
+    edge("unblock-task",      "clear-blocked-meta"),
+    edge("clear-blocked-meta", "log-success"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["recovery", "worktree", "blocked", "resilience", "sub-workflow"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Recover Blocked Worktree Tasks — orchestrator
+//  Scheduled sweep that finds all blocked tasks and dispatches the sub-workflow
+//  for each one. Completely repo-agnostic — no repoRoot template variable.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const RECOVER_BLOCKED_WORKTREES_TEMPLATE = {
+  id: "template-recover-blocked-worktrees",
+  name: "Recover Blocked Worktree Tasks",
+  description:
+    "Scheduled operator-assist workflow that finds all tasks blocked due to worktree " +
+    "failures, sweeps their stale worktrees, and re-queues each as todo. Works across " +
+    "every repo in the workspace — repo context is read from each task's own metadata, " +
+    "so no repo configuration is needed here.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    scheduleIntervalMs: 1800000,
+    maxPerSweep: 20,
+    maxConcurrent: 2,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Scheduled Worktree Recovery Sweep", {
+      intervalMs: "{{scheduleIntervalMs}}",
+      cron: "*/30 * * * *",
+    }, { x: 400, y: 50 }),
+
+    node("query-blocked", "action.run_command", "Query Blocked Tasks", {
+      command: "node",
+      args: ["-e", `
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const { pathToFileURL } = require("node:url");
+        let repoRoot = process.cwd();
+        const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
+        if (repoRoot.toLowerCase().includes(mirrorMarker)) {
+          const r = path.resolve(repoRoot, "..", "..", "..", "..");
+          if (fs.existsSync(path.join(r, "kanban", "kanban-adapter.mjs"))) repoRoot = r;
+        }
+        const kanbanUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
+        import(kanbanUrl)
+          .then(k => k.listTasks(undefined, { status: "blocked" }))
+          .then(tasks => {
+            const limit = parseInt(process.env.MAX_PER_SWEEP || "20");
+            const blocked = (tasks || [])
+              .filter(t => t && t.status === "blocked" && t.id && (t.branch || t.metadata?.branch))
+              .slice(0, limit)
+              .map(t => ({
+                taskId:       t.id,
+                taskTitle:    t.title || t.id,
+                branch:       t.branch || t.metadata?.branch || null,
+                repoRoot:     t.metadata?.repoRoot || t.repoRoot || null,
+                worktreePath: t.metadata?.worktreePath || t.worktreePath || null,
+                repository:   t.repository || t.metadata?.repository || null,
+                baseBranch:   t.metadata?.baseBranch || null,
+                meta:         t.meta || {},
+              }));
+            console.log(JSON.stringify(blocked));
+          })
+          .catch(e => { console.error(e.message); process.exit(1); });
+      `],
+      env: { MAX_PER_SWEEP: "{{maxPerSweep}}" },
+      parseJson: true,
+    }, { x: 400, y: 190 }),
+
+    node("check-has-tasks", "condition.expression", "Any Blocked Tasks?", {
+      expression: "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0",
+    }, { x: 400, y: 360, outputs: ["yes", "no"] }),
+
+    node("recover-each", "loop.for_each", "Recover Each Blocked Task", {
+      items:         "$ctx.getNodeOutput('query-blocked')?.output || []",
+      variable:      "item",
+      indexVariable: "recoveryIndex",
+      maxConcurrent: "{{maxConcurrent}}",
+      workflowId:    "template-recover-blocked-task",
+      mode:          "dispatch",
+    }, { x: 400, y: 510 }),
+
+    node("prune-worktrees", "action.run_command", "Prune Stale Worktree Refs", {
+      command: "git",
+      args: ["worktree", "prune", "--verbose"],
+      continueOnError: true,
+    }, { x: 400, y: 650 }),
+
+    node("log-summary", "notify.log", "Log Recovery Summary", {
+      message:
+        ":broom: Blocked worktree recovery sweep dispatched for " +
+        "{{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). " +
+        "maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
+      level: "info",
+    }, { x: 250, y: 790 }),
+
+    node("log-idle", "notify.log", "Log No Blocked Tasks", {
+      message: "Blocked worktree recovery sweep: no blocked tasks with branch context found.",
+      level: "debug",
+    }, { x: 620, y: 510 }),
+  ],
+  edges: [
+    edge("trigger",         "query-blocked"),
+    edge("query-blocked",   "check-has-tasks"),
+    edge("check-has-tasks", "recover-each",  { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-has-tasks", "log-idle",      { condition: "$output?.result !== true",  port: "no" }),
+    edge("recover-each",    "prune-worktrees"),
+    edge("prune-worktrees", "log-summary"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["recovery", "worktree", "blocked", "resilience", "automation", "scheduled"],
+    requiredTemplates: ["template-recover-blocked-task"],
   },
 };
