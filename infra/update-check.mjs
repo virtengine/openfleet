@@ -49,6 +49,31 @@ const NPM_LAUNCH_ERROR_CODES = new Set([
   "EPERM",
   "ETXTBSY",
 ]);
+const BUILTIN_AGENT_SKILL_FILES = [
+  "agent-coordination.md",
+  "background-task-execution.md",
+  "bosun-agent-api.md",
+  "code-quality-anti-patterns.md",
+  "commit-conventions.md",
+  "custom-tool-creation.md",
+  "error-recovery.md",
+  "pr-workflow.md",
+  "skill-codebase-audit.md",
+  "tdd-pattern.md",
+];
+
+function isUpdateCheckTestRuntime() {
+  return Boolean(process.env.VITEST) ||
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.JEST_WORKER_ID);
+}
+
+function isSourceCheckoutRuntime(opts = {}) {
+  if (opts.allowSourceCheckoutAutoUpdate === true) return false;
+  if (process.env.BOSUN_FORCE_AUTO_UPDATE === "1") return false;
+  if (isUpdateCheckTestRuntime()) return false;
+  return existsSync(resolve(__dirname, "..", ".git"));
+}
 
 function sanitizeNpmEnv(baseEnv = process.env) {
   const env = { ...baseEnv };
@@ -494,7 +519,12 @@ export function getCurrentVersion() {
 }
 
 function getRequiredRuntimeFiles() {
-  const required = [resolve(__dirname, "monitor.mjs")];
+  const required = [
+    resolve(__dirname, "monitor.mjs"),
+    resolve(__dirname, "..", "agent", "bosun-skills.mjs"),
+    ...BUILTIN_AGENT_SKILL_FILES.map((file) =>
+      resolve(__dirname, "..", "agent", "skills", file)),
+  ];
   const copilotDir = resolve(__dirname, "..", "node_modules", "@github", "copilot");
   if (process.platform === "win32" && existsSync(copilotDir)) {
     required.push(resolve(copilotDir, "conpty_console_list_agent.js"));
@@ -563,6 +593,12 @@ function isSuppressedStreamNoiseError(err) {
 export function startAutoUpdateLoop(opts = {}) {
   if (process.env.BOSUN_SKIP_AUTO_UPDATE === "1") {
     console.log("[auto-update] Disabled via BOSUN_SKIP_AUTO_UPDATE=1");
+    return;
+  }
+  if (isSourceCheckoutRuntime(opts)) {
+    console.log(
+      "[auto-update] Disabled in source checkout (set BOSUN_FORCE_AUTO_UPDATE=1 to override)",
+    );
     return;
   }
 
@@ -896,6 +932,8 @@ export const __autoUpdateTestHooks = {
   resetAutoUpdateState,
   recordAutoUpdateFailure,
   isAutoUpdateDisabled,
+  isSourceCheckoutRuntime,
+  getRequiredRuntimeFiles,
   classifyInstallError,
   buildDisableNotice,
   runWindowsCmd,

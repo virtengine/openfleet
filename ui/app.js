@@ -1,8 +1,8 @@
-﻿/* VirtEngine Control Center “ Preact + HTM Entry Point
+/* VirtEngine Control Center – Preact + HTM Entry Point
  *  Modular SPA for Telegram Mini App (no build step)
  */
 
-// Error telemetry ring buffer (max 50 entries, persisted to sessionStorage) â”€â”€
+// Error telemetry ring buffer (max 50 entries, persisted to sessionStorage) ──
 const MAX_ERROR_LOG = 50;
 function getErrorLog() {
   try { return JSON.parse(sessionStorage.getItem("ve_error_log") || "[]"); } catch { return []; }
@@ -44,7 +44,7 @@ function maybeRemountUi(message) {
   }
 }
 
-/* â”€â”€ Global error handlers â€” catch unhandled errors before they freeze the UI â”€â”€ */
+/* ── Global error handlers — catch unhandled errors before they freeze the UI ── */
 globalThis.addEventListener?.("error", (e) => {
   console.error("[ve:global-error]", e.error || e.message);
   appendErrorLog({ type: "global", message: e.message, stack: e.error?.stack });
@@ -79,12 +79,12 @@ function normalizeRenderableType(type) {
 
 function h(type, props, ...rest) {
   if (Array.isArray(type)) {
-    console.warn("[h-guard] Array passed as element type â€” rendering as Fragment", type.length, "items");
+    console.warn("[h-guard] Array passed as element type — rendering as Fragment", type.length, "items");
     return _h(_PreactFragment, null, ...type);
   }
   const normalizedType = normalizeRenderableType(type);
   if (normalizedType == null) {
-    console.warn("[h-guard] Invalid object passed as element type â€” rendering empty Fragment", type);
+    console.warn("[h-guard] Invalid object passed as element type — rendering empty Fragment", type);
     return _h(_PreactFragment, props, ...rest);
   }
   return _h(normalizedType, props, ...rest);
@@ -103,7 +103,7 @@ const html = htm.bind(h);
     } else if (vnode.type != null && typeof vnode.type === "object" && typeof vnode.type !== "function") {
       const normalizedType = normalizeRenderableType(vnode.type);
       if (normalizedType == null) {
-        console.warn("[vnode-guard] Invalid object used as element type â€” converting to Fragment", vnode.type);
+        console.warn("[vnode-guard] Invalid object used as element type — converting to Fragment", vnode.type);
         vnode.type = _PreactFragment;
       } else {
         vnode.type = normalizedType;
@@ -113,8 +113,8 @@ const html = htm.bind(h);
   };
 })();
 
-// â”€â”€ Visibility-aware polling â”€â”€
-// Pauses or slows intervals 10Ã— when tab is hidden; resumes immediately on focus.
+// ── Visibility-aware polling ──
+// Pauses or slows intervals 10× when tab is hidden; resumes immediately on focus.
 const _pageVisible = signal(!document.hidden);
 document.addEventListener("visibilitychange", () => { _pageVisible.value = !document.hidden; });
 function visibilityInterval(fn, activeMs, opts = {}) {
@@ -360,7 +360,7 @@ function writeFloatingCallState(nextState) {
   }
 }
 
-/* â”€â”€ Module imports â”€â”€ */
+/* ── Module imports ── */
 import { ICONS } from "./modules/icons.js";
 import { iconText, resolveIcon } from "./modules/icon-utils.js";
 import {
@@ -411,7 +411,7 @@ import {
 import { buildSessionInsights, formatCompactCount } from "./modules/session-insights.js";
 import { VeTheme, CssBaseline, AppBar, Toolbar, Tabs, Tab, Drawer, Box, IconButton, Typography, Chip, Badge, BottomNavigation, BottomNavigationAction, Tooltip, Avatar, Stack, Paper, CircularProgress, Button, Divider, Menu, MenuItem, Fab, Snackbar, Alert } from "./modules/mui.js";
 
-/* â”€â”€ Component imports â”€â”€ */
+/* ── Component imports ── */
 import { ToastContainer, Modal } from "./components/shared.js";
 import { PullToRefresh } from "./components/forms.js";
 import {
@@ -435,11 +435,11 @@ import {
 } from "./components/command-palette.js";
 import { VoiceOverlay } from "./modules/voice-overlay.js";
 
-/* â”€â”€ Tab imports (eager â€” loaded with app.js) â”€â”€ */
+/* ── Tab imports (eager — loaded with app.js) ── */
 import { DashboardTab } from "./tabs/dashboard.js";
 import { ChatTab } from "./tabs/chat.js";
 
-/* â”€â”€ Lazy tab loading â”€â”€ */
+/* ── Lazy tab loading ── */
 const _lazyTabCache = {};
 const _lazyTabInflight = {};
 
@@ -505,7 +505,7 @@ function lazyTab(tabPath, exportName, nativeLoader) {
   return (props) => html`<${LazyTab} loader=${loader} ...${props} />`;
 }
 
-/* â”€â”€ Lazy tab definitions â”€â”€ */
+/* ── Lazy tab definitions ── */
 const TasksTab = lazyTab("./tabs/tasks.js", "TasksTab", () => import("./tabs/tasks.js"));
 const BenchmarksTab = lazyTab("./tabs/benchmarks.js", "BenchmarksTab", () => import("./tabs/benchmarks.js"));
 const AgentsTab = lazyTab("./tabs/agents.js", "AgentsTab", () => import("./tabs/agents.js"));
@@ -520,10 +520,10 @@ const LibraryTab = lazyTab("./tabs/library.js", "LibraryTab", () => import("./ta
 const LibraryMarketplaceTab = lazyTab("./tabs/library.js", "LibraryMarketplaceTab", () => import("./tabs/library.js"));
 const ManualFlowsTab = lazyTab("./tabs/manual-flows.js", "ManualFlowsTab", () => import("./tabs/manual-flows.js"));
 
-/* â”€â”€ Shared components â”€â”€ */
+/* ── Shared components ── */
 
 /**
- * AnimatedNumber â€” smoothly counts from previous to new value using rAF.
+ * AnimatedNumber — smoothly counts from previous to new value using rAF.
  */
 function AnimatedNumber({ value, duration = 600, className = "" }) {
   const displayRef = useRef(value);
@@ -551,11 +551,11 @@ function AnimatedNumber({ value, duration = 600, className = "" }) {
 }
 
 /**
- * KeyboardShortcutsModal â€” shows available keyboard shortcuts.
+ * KeyboardShortcutsModal — shows available keyboard shortcuts.
  */
 function KeyboardShortcutsModal({ onClose }) {
   const shortcuts = [
-    { key: "1â€“8", desc: "Switch tabs" },
+    { key: "1–8", desc: "Switch tabs" },
     { key: "c",   desc: "Create task (on Dashboard)" },
     { key: "?",   desc: "Show keyboard shortcuts" },
     { key: "Esc", desc: "Close modal / palette" },
@@ -574,7 +574,7 @@ function KeyboardShortcutsModal({ onClose }) {
   `;
 }
 
-/* â”€â”€ Backend health helpers â”€â”€ */
+/* ── Backend health helpers ── */
 
 function formatTimeAgo(ts) {
   return formatRelative(ts);
@@ -650,7 +650,7 @@ function useBackendHealth() {
       backendLastSeen.value = Date.now();
       backendRetryCount.value = 0;
     } catch (err) {
-      // Only mark as down if WS is also disconnected â€” WS is the primary
+      // Only mark as down if WS is also disconnected — WS is the primary
       // connectivity signal; the health check is a fallback.
       if (!wsConnected.value) {
         backendDown.value = true;
@@ -686,10 +686,10 @@ function useBackendHealth() {
 }
 
 function OfflineBanner() {
-  // Don't call useBackendHealth() here â€” the App component already runs it.
+  // Don't call useBackendHealth() here — the App component already runs it.
   // Calling it here caused a mount/unmount oscillation: App health check fails
-  // (no auth) â†’ backendDown=true â†’ OfflineBanner mounts â†’ effect corrects it
-  // â†’ backendDown=false â†’ unmount â†’ repeat every 10s.
+  // (no auth) → backendDown=true → OfflineBanner mounts → effect corrects it
+  // → backendDown=false → unmount → repeat every 10s.
   const manualRetry = useCallback(async () => {
     try {
       const res = await apiFetch("/api/health", { _silent: true });
@@ -717,20 +717,20 @@ function OfflineBanner() {
       sx=${{m: 1, mx: 2, animation: "slideDown 0.3s ease-out"}}
       action=${html`<${Button} color="inherit" size="small" onClick=${manualRetry}>Retry</${Button}>`}
     >
-      <strong>${title}</strong> â€” ${backendError.value || "Connection lost"}
+      <strong>${title}</strong> — ${backendError.value || "Connection lost"}
       ${backendLastSeen.value
         ? html`<${Typography} variant="caption" display="block">Last connected: ${formatTimeAgo(backendLastSeen.value)}</${Typography}>`
         : null}
       <${Typography} variant="caption" display="block">
         ${countdown != null && countdown > 0
-          ? `Reconnecting in ${countdown}sâ€¦`
+          ? `Reconnecting in ${countdown}s…`
           : `Retry attempt #${retryCount}`}
       </${Typography}>
     </${Alert}>
   `;
 }
 
-/* â”€â”€ Error Boundary â€” catches render errors in child components â”€â”€ */
+/* ── Error Boundary — catches render errors in child components ── */
 class TabErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -791,7 +791,7 @@ class TabErrorBoundary extends Component {
   }
 }
 
-/* â”€â”€ Tab component map â”€â”€ */
+/* ── Tab component map ── */
 const TAB_COMPONENTS = {
   dashboard: DashboardTab,
   tasks: TasksTab,
@@ -834,9 +834,9 @@ function inferUiConnected() {
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════
  *  Header
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+ * ═══════════════════════════════════════════════ */
 function Header() {
   const isConn = inferUiConnected();
   const user = getTelegramUser();
@@ -864,7 +864,7 @@ function Header() {
     connLabel = "Live";
     connClass = "connected";
   } else if (reconnect != null && reconnect > 0) {
-    connLabel = `Reconnecting in ${reconnect}sâ€¦`;
+    connLabel = `Reconnecting in ${reconnect}s…`;
     connClass = "reconnecting";
   }
 
@@ -872,7 +872,7 @@ function Header() {
   let freshnessLabel = "";
   if (freshness != null && Number.isFinite(freshness)) {
     const rel = formatRelative(freshness);
-    if (rel && rel !== "â€”" && !rel.includes("NaN")) {
+    if (rel && rel !== "—" && !rel.includes("NaN")) {
       freshnessLabel = rel === "just now" ? "Updated just now" : `Updated ${rel}`;
     }
   }
@@ -889,7 +889,7 @@ function Header() {
         <div class="app-breadcrumbs" aria-label="Breadcrumb">
           ${breadcrumbParts.map((part, index) => html`
             <span class="app-breadcrumb-part" key=${`${part}-${index}`}>
-              ${index > 0 ? html`<span class="app-breadcrumb-separator" aria-hidden="true">â€º</span>` : null}
+              ${index > 0 ? html`<span class="app-breadcrumb-separator" aria-hidden="true">›</span>` : null}
               <span>${part}</span>
             </span>
           `)}
@@ -918,9 +918,9 @@ function Header() {
   `;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════
  *  Desktop Sidebar + Session Rail
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+ * ═══════════════════════════════════════════════ */
 function SidebarNav({ collapsed = false, onToggle }) {
   const user = getTelegramUser();
   const isConn = inferUiConnected();
@@ -1147,7 +1147,7 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
         <div class="rail-header-inner">
           <div class="rail-title">Sessions</div>
           <div class="rail-meta">
-            ${liveRuntimeCount} live runtime Â· ${sessions.length} total
+            ${liveRuntimeCount} live runtime · ${sessions.length} total
           </div>
         </div>
         <${IconButton}
@@ -1214,12 +1214,12 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
   const [insights, setInsights] = useState(null);
   const [insightState, setInsightState] = useState("idle");
   const workspaceHint = resolveSessionWorkspaceHint(session, "active");
-  const lastActiveLabel = lastActive ? formatRelative(lastActive) : "â€”";
+  const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
   const apiStatusLabel = inferUiConnected() ? "Connected" : "Offline";
   const wsStatusLabel = wsConnected.value ? "Live" : "Closed";
   const backendLastSeenLabel = backendLastSeen.value
     ? formatRelative(backendLastSeen.value)
-    : "â€”";
+    : "—";
 
   useEffect(() => {
     if (!isSessionTab) return;
@@ -1401,7 +1401,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
         aria-label=${collapsed ? "Expand inspector" : "Collapse inspector"}
         aria-pressed=${collapsed ? "true" : "false"}
         title=${collapsed ? "Expand inspector" : "Collapse inspector"}
-      >${collapsed ? "âŸ¨" : "âŸ©"}</button>
+      >${collapsed ? "⟨" : "⟩"}</button>
       <div class="inspector-section">
         <div class="inspector-title">Focus</div>
         ${session
@@ -1454,7 +1454,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
                                 ${(contextWindow.usedTokens || contextWindow.totalTokens) &&
                                   html`
                                     <div class="inspector-kv"><span>Token Fill</span><strong>
-                                      ${contextWindow.usedTokens != null ? formatCompactCount(contextWindow.usedTokens) : "â€”"}
+                                      ${contextWindow.usedTokens != null ? formatCompactCount(contextWindow.usedTokens) : "—"}
                                       ${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)}` : ""}
                                     </strong></div>
                                   `}
@@ -1492,7 +1492,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
                           </div>
                         `}
                     `
-                  : html`<div class="inspector-empty">Tracking session metricsâ€¦</div>`}
+                  : html`<div class="inspector-empty">Tracking session metrics…</div>`}
               <div class="inspector-subtitle">Recent Warning/Error Logs</div>
               ${smartLogsContent}
               <${Button} variant="text" size="small" onClick=${() => navigateTo("logs")}>
@@ -1523,9 +1523,9 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
   `;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════
  *  Bottom Navigation
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+ * ═══════════════════════════════════════════════ */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
 const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "marketplace", "workflows", "manual-flows", "settings"];
 
@@ -1670,7 +1670,7 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
               <span class="more-menu-bot-label">Bot Controls</span>
               <span class="more-menu-bot-sub">Commands, executor, routing</span>
             </div>
-            <span class="more-menu-bot-chevron">â€º</span>
+            <span class="more-menu-bot-chevron">›</span>
           <//>
         </div>
       </div>
@@ -1678,11 +1678,11 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
   `;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- *  Bot Controls â€” multi-level command panel
+/* ═══════════════════════════════════════════════
+ *  Bot Controls — multi-level command panel
  *  Triggered from the "More" sheet (not a floating FAB so it
  *  doesn't obscure content on small screens / mobile).
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+ * ═══════════════════════════════════════════════ */
 const BOT_SCREENS = {
   home: {
     title: ":sliders: Bosun Control Center",
@@ -1809,7 +1809,7 @@ function BotControlsSheet({ open, onClose }) {
         setCmdError(result?.error || "Command failed");
       }
     } catch (err) {
-      setCmdError(err.message || "Connection error â€” is bosun running?");
+      setCmdError(err.message || "Connection error — is bosun running?");
     } finally {
       setCmdLoading(false);
     }
@@ -1826,7 +1826,7 @@ function BotControlsSheet({ open, onClose }) {
         ${navStack.length > 0 ? html`
           <div class="bot-controls-breadcrumb">
             <${Button} variant="text" size="small" type="button" onClick=${botGoBack} aria-label="Go back">
-              â† Back
+              ← Back
             <//>
             ${navStack.length > 1 ? html`
               <${Button} variant="text" size="small" type="button" onClick=${botGoHome} aria-label="Go to home">
@@ -1841,7 +1841,7 @@ function BotControlsSheet({ open, onClose }) {
         ${cmdLoading ? html`
           <div class="bot-controls-spinner">
             <div class="ptr-spinner-icon"></div>
-            <span>Runningâ€¦</span>
+            <span>Running…</span>
           </div>
         ` : null}
 
@@ -1876,9 +1876,9 @@ function BotControlsSheet({ open, onClose }) {
   `;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════
  *  App Root
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+ * ═══════════════════════════════════════════════ */
 function App() {
   const forcedLayoutMode = readForcedLayoutMode();
   const initialLayout = resolveLayoutFlags(globalThis.window, forcedLayoutMode);
@@ -1889,7 +1889,7 @@ function App() {
   const [showScrollTop, setShowScrollTop] = useState(false);
   const scrollVisibilityRef = useRef(false);
 
-  // â”€â”€ Top loading bar state â”€â”€
+  // ── Top loading bar state ──
   const [loadingPct, setLoadingPct] = useState(0);
   const [loadingVisible, setLoadingVisible] = useState(false);
   const loadingTimerRef = useRef(null);
@@ -2152,7 +2152,7 @@ function App() {
     if (isDesktop) {
       document.documentElement.dataset.desktop = "true";
       delete document.documentElement.dataset.tablet;
-      // Close drawers when switching to desktop â€” panels are always visible
+      // Close drawers when switching to desktop — panels are always visible
       setSidebarDrawerOpen(false);
       setInspectorDrawerOpen(false);
     } else if (isTablet) {
@@ -2168,7 +2168,7 @@ function App() {
 
   const closeMore = useCallback(() => setIsMoreOpen(false), []);
 
-  // â”€â”€ Bot Controls sheet state â”€â”€
+  // ── Bot Controls sheet state ──
   const [isBotOpen, setIsBotOpen] = useState(false);
   const openBot  = useCallback(() => setIsBotOpen(true), []);
   const closeBot = useCallback(() => setIsBotOpen(false), []);
@@ -2360,7 +2360,7 @@ function App() {
         }
         const nextTier = Number(cfg?.tier) === 1 ? 1 : 2;
 
-        // Always open the voice overlay inline â€” even in Electron.
+        // Always open the voice overlay inline — even in Electron.
         // The desktop follow window (always-on-top pop-out) is available
         // via the tray menu or the "externalize" button inside the overlay.
         // Auto-delegating to the follow window on mic-button click was
@@ -2496,7 +2496,7 @@ function App() {
         }
       }
       // Wait for UI components and the voice-mode event listener to mount.
-      // Cold-start Electron windows need more time â€” JS bundles are still
+      // Cold-start Electron windows need more time — JS bundles are still
       // being parsed.  We retry the dispatch up to 5 times with increasing
       // delays to ensure the listener is registered before we give up.
       const delays = [400, 600, 1000, 1500, 2000];
@@ -2505,7 +2505,7 @@ function App() {
         await new Promise((resolve) => setTimeout(resolve, delay));
         if (cancelled) return;
         // Check if voice overlay is already open (a previous dispatch succeeded).
-        // Use the ref to read current state â€” the closure-captured useState
+        // Use the ref to read current state — the closure-captured useState
         // value is stale inside this async loop.
         if (voiceOverlayOpenRef.current) return;
         globalThis.dispatchEvent?.(
@@ -2710,7 +2710,7 @@ function App() {
           onClick=${toggleMore}
           aria-label=${isMoreOpen ? "Close navigation menu" : "Open navigation menu"}
         >
-          â‹¯ Navigation
+          ⋯ Navigation
         <//>
       `
     : null;
@@ -2802,7 +2802,7 @@ function App() {
                   mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
                 }}
               >
-                â†‘
+                ↑
               </${Fab}>
             </${Tooltip}>
           `}
@@ -2979,7 +2979,7 @@ function App() {
   </${VeTheme}>`;
 }
 
-/* â”€â”€â”€ Mount â”€â”€â”€ */
+/* ─── Mount ─── */
 const mountRoot = () => document.getElementById("app");
 const signalAppMounted = () => {
   globalThis.dispatchEvent?.(new Event("bosun:app-mounted"));

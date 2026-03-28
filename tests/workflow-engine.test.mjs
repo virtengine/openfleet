@@ -41,6 +41,7 @@ function makeSimpleWorkflow(nodes, edges, opts = {}) {
     nodes,
     edges,
     variables: opts.variables || {},
+    metadata: opts.metadata,
   };
 }
 
@@ -1334,6 +1335,34 @@ describe("WorkflowEngine - run history details", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(existsSync(detailPath)).toBe(false);
+  });
+
+  it("sanitizes live timeout handles before checkpoint persistence", async () => {
+    const runId = "run-timeout-checkpoint";
+    const timer = setTimeout(() => {}, 60_000);
+    if (typeof timer?.unref === "function") timer.unref();
+
+    const ctx = new WorkflowContext({
+      _workflowId: "wf-checkpoint-timeout",
+      _workflowName: "Checkpoint Timeout",
+      timeoutHandle: timer,
+    });
+    ctx.id = runId;
+
+    engine._activeRuns.set(runId, {
+      ctx,
+      workflowId: "wf-checkpoint-timeout",
+      workflowName: "Checkpoint Timeout",
+      status: WorkflowStatus.RUNNING,
+    });
+
+    try {
+      const detail = engine._serializeRunContext(ctx, true);
+      expect(detail.data.timeoutHandle).toBe("[Timeout]");
+    } finally {
+      clearTimeout(timer);
+      engine._activeRuns.delete(runId);
+    }
   });
 
   it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
@@ -3480,10 +3509,12 @@ describe("WorkflowEngine trigger evaluation", () => {
 
 describe("Session chaining - action.run_agent", () => {
   beforeEach(() => {
+    makeTmpEngine();
     resetSessionTracker({ persistDir: null });
   });
 
   afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
     resetSessionTracker({ persistDir: null });
   });
   it("propagates threadId to context and streams agent events into run logs", async () => {
@@ -4804,8 +4835,12 @@ describe("Session chaining - action.run_agent", () => {
 
     expect(ctx.errors).toEqual([]);
     const detail = engine.getRunDetail(ctx.id);
-    expect(Array.isArray(detail?.detail?.data?._delegationAuditTrail)).toBe(true);
-    expect(detail.detail.data._delegationAuditTrail).toEqual(
+    const persistedTrail =
+      detail?.detail?.data?._delegationAuditTrail ??
+      detail?.detail?.delegationAuditTrail ??
+      detail?.delegationAuditTrail;
+    expect(Array.isArray(persistedTrail)).toBe(true);
+    expect(persistedTrail).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: "assign" }),
         expect.objectContaining({ type: "handoff-complete", status: "completed" }),
@@ -7156,6 +7191,3 @@ describe("delegation audit trail hydration", () => {
     ]));
   });
 });
-
-
-

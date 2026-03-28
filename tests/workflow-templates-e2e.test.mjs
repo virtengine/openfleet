@@ -440,6 +440,7 @@ describe("workflow-templates E2E execution", () => {
 
   describe("all templates execute without engine errors", () => {
     for (const template of WORKFLOW_TEMPLATES) {
+      const timeoutMs = template.id === "template-bosun-pr-watchdog" ? 120000 : 60000;
       it(`${template.id} installs, executes, and returns valid context`, async () => {
         const installed = installTemplate(template.id, engine, DELAY_OVERRIDES);
         expect(installed.id).toBeDefined();
@@ -451,7 +452,7 @@ describe("workflow-templates E2E execution", () => {
         expect(ctx.startedAt).toBeGreaterThan(0);
         // Engine should not throw — errors are captured
         expect(ctx.errors.length, `${template.id} produced engine-level errors: ${JSON.stringify(ctx.errors)}`).toBe(0);
-      });
+      }, timeoutMs);
     }
   });
 

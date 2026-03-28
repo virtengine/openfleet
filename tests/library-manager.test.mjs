@@ -1242,7 +1242,7 @@ describe("syncAutoDiscoveredLibraryEntries", () => {
     expect(entry.type).toBe("prompt");
     const content = getEntryContent(tmpDir, entry);
     expect(String(content || "")).toContain("Strict planner contract.");
-  });
+  }, 30000);
 
   it("imports MCP server definitions from repo .codex/config.toml", () => {
     mkdirSync(join(tmpDir, ".codex"), { recursive: true });

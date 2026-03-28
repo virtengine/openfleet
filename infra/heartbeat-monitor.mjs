@@ -1,5 +1,7 @@
+import { request as httpRequest } from "node:http";
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { open } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { dirname, resolve } from "node:path";
 
@@ -43,17 +45,127 @@ function resolveUiLastPortPath(configDir) {
   return resolve(String(configDir || process.cwd()), ".cache", UI_LAST_PORT_FILE);
 }
 
-function readUiLastPort(configDir) {
+function normalizeUiProbeHost(host) {
+  const normalized = String(host || "").trim().toLowerCase();
+  if (
+    !normalized ||
+    normalized === "0.0.0.0" ||
+    normalized === "::" ||
+    normalized === "[::]" ||
+    normalized === "::0"
+  ) {
+    return "127.0.0.1";
+  }
+  return normalized === "localhost" ? "127.0.0.1" : normalized;
+}
+
+function buildProbeUrl({ protocol = "http", host = "127.0.0.1", port = 0, healthPath = "/healthz" } = {}) {
+  const safeProtocol = String(protocol || "").trim().toLowerCase() === "https" ? "https" : "http";
+  const safeHost = normalizeUiProbeHost(host);
+  const safePort = Number(port);
+  if (!Number.isFinite(safePort) || safePort <= 0 || safePort > 65535) return null;
+  const safeHealthPath = String(healthPath || "/healthz").startsWith("/")
+    ? String(healthPath || "/healthz")
+    : `/${String(healthPath || "healthz")}`;
+  return `${safeProtocol}://${safeHost}:${Math.trunc(safePort)}${safeHealthPath}`;
+}
+
+function readUiProbeTarget(configDir, fallbackHost = "127.0.0.1", healthPath = "/healthz") {
   try {
     const portPath = resolveUiLastPortPath(configDir);
-    if (!existsSync(portPath)) return 0;
+    if (!existsSync(portPath)) {
+      return {
+        port: 0,
+        host: normalizeUiProbeHost(fallbackHost),
+        protocol: "http",
+        url: null,
+      };
+    }
     const payload = JSON.parse(readFileSync(portPath, "utf8"));
     const port = Number(payload?.port || 0);
-    if (!Number.isFinite(port) || port <= 0 || port > 65535) return 0;
-    return Math.trunc(port);
+    if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+      return {
+        port: 0,
+        host: normalizeUiProbeHost(fallbackHost),
+        protocol: "http",
+        url: null,
+      };
+    }
+    let protocol = String(payload?.protocol || "").trim().toLowerCase() === "https" ? "https" : "http";
+    let host = normalizeUiProbeHost(payload?.host || fallbackHost);
+    const rawUrl = String(payload?.url || "").trim();
+    if (rawUrl) {
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.port) {
+          const parsedPort = Number(parsed.port);
+          if (Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535) {
+            host = normalizeUiProbeHost(parsed.hostname || host);
+            protocol = parsed.protocol === "https:" ? "https" : "http";
+          }
+        }
+      } catch {
+        // Fall back to discrete metadata fields.
+      }
+    }
+    return {
+      port: Math.trunc(port),
+      host,
+      protocol,
+      url: buildProbeUrl({ protocol, host, port, healthPath }),
+    };
   } catch {
-    return 0;
+    return {
+      port: 0,
+      host: normalizeUiProbeHost(fallbackHost),
+      protocol: "http",
+      url: null,
+    };
   }
+}
+
+async function probeWithNodeRequest(target, timeoutMs) {
+  const requestImpl = target.protocol === "https" ? httpsRequest : httpRequest;
+  return await new Promise((resolveProbe, rejectProbe) => {
+    const req = requestImpl(
+      {
+        protocol: target.protocol === "https" ? "https:" : "http:",
+        host: target.host,
+        port: target.port,
+        path: target.path,
+        method: "GET",
+        timeout: timeoutMs,
+        rejectUnauthorized: false,
+        headers: { accept: "application/json" },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          let payload = null;
+          try {
+            payload = text ? JSON.parse(text) : null;
+          } catch {
+            payload = text ? { raw: text } : null;
+          }
+          resolveProbe({
+            ok: Number(res.statusCode || 0) >= 200 && Number(res.statusCode || 0) < 300,
+            status: Number(res.statusCode || 0),
+            text: async () => text,
+            payload,
+          });
+        });
+      },
+    );
+    req.on("error", rejectProbe);
+    req.on("timeout", () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      try { req.destroy(error); } catch { /* best effort */ }
+    });
+    req.end();
+  });
 }
 
 async function readTail(filePath, { maxLines = DEFAULT_TAIL_LINES, maxBytes = DEFAULT_TAIL_BYTES } = {}) {
@@ -95,7 +207,7 @@ async function readCorrelatedLogContext(logDir, options = {}) {
 export function createHeartbeatMonitor(options = {}) {
   const configDir = String(options.configDir || process.cwd());
   const logDir = String(options.logDir || process.cwd());
-  const fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : globalThis.fetch;
+  const fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
   const logger = options.logger && typeof options.logger === "object" ? options.logger : console;
   const host = String(options.host || "127.0.0.1");
   const healthPath = String(options.healthPath || "/healthz");
@@ -147,12 +259,13 @@ export function createHeartbeatMonitor(options = {}) {
       const startedAt = Date.now();
       const eventLoop = summarizeEventLoopDelay(histogram);
       histogram.reset();
-      const port = readUiLastPort(configDir);
+      const target = readUiProbeTarget(configDir, options.host || host, healthPath);
+      const port = Number(target?.port || 0);
       const baseEntry = {
         ts: new Date(startedAt).toISOString(),
         trigger,
         port,
-        url: port > 0 ? `http://${host}:${port}${healthPath}` : null,
+        url: target?.url || null,
         timeoutMs,
         eventLoop,
       };
@@ -185,16 +298,32 @@ export function createHeartbeatMonitor(options = {}) {
       let payload = null;
       let errorMessage = "";
       try {
-        const response = await fetchImpl(`http://${host}:${port}${healthPath}`, {
-          signal: controller.signal,
-          headers: { accept: "application/json" },
-        });
+        const response = typeof fetchImpl === "function"
+          ? await fetchImpl(target.url, {
+              signal: controller.signal,
+              headers: { accept: "application/json" },
+            })
+          : await probeWithNodeRequest(
+              {
+                protocol: target.protocol,
+                host: target.host,
+                port: target.port,
+                path: String(healthPath || "/healthz").startsWith("/")
+                  ? String(healthPath || "/healthz")
+                  : `/${String(healthPath || "healthz")}`,
+              },
+              timeoutMs,
+            );
         statusCode = Number(response?.status || 0);
-        const text = await response.text();
-        try {
-          payload = text ? JSON.parse(text) : null;
-        } catch {
-          payload = text ? { raw: text } : null;
+        if (response?.payload !== undefined) {
+          payload = response.payload;
+        } else {
+          const text = await response.text();
+          try {
+            payload = text ? JSON.parse(text) : null;
+          } catch {
+            payload = text ? { raw: text } : null;
+          }
         }
         if (!response.ok) {
           outcome = "http_error";

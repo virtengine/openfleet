@@ -181,7 +181,7 @@
     "agent/primary-agent.mjs",
     "agent/retry-queue.mjs",
     "agent/review-agent.mjs",
-    "agent/skills/skill-codebase-audit.md",
+    "agent/skills/",
     "bench/benchmark-mode.mjs",
     "bench/benchmark-registry.mjs",
     "bench/swebench/bosun-swebench.mjs",

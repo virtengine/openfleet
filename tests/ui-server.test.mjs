@@ -151,6 +151,42 @@ describe("ui-server mini app", () => {
     expect(typeof mod.getLocalLanIp).toBe("function");
   }, 15000);
 
+  it("reclaims stale live-pid instance locks when the recorded UI is unresponsive", async () => {
+    const cacheDir = join(process.env.BOSUN_HOME, ".cache");
+    const lockPath = join(cacheDir, "ui-server.instance.lock.json");
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: Math.max(1, Number(process.ppid || 1)),
+        port: 6552,
+        host: "127.0.0.1",
+        protocol: "http",
+        url: "http://127.0.0.1:6552",
+        startedAt: Date.now() - 10 * 60 * 1000,
+      }, null, 2),
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: false,
+      skipAutoOpen: true,
+      instanceLockStaleGraceMs: 0,
+      instanceLockProbeTimeoutMs: 100,
+    });
+    try {
+      expect(server).toBeTruthy();
+      const payload = JSON.parse(readFileSync(lockPath, "utf8"));
+      expect(payload.pid).toBe(process.pid);
+      expect(payload.port).toBe(server.address().port);
+    } finally {
+      mod.stopTelegramUiServer();
+    }
+  }, 15000);
+
   it("surfaces worktree recovery state through status, infra, and worktree endpoints", async () => {
     const repoRoot = process.cwd();
     const statusDir = resolve(repoRoot, ".cache");
@@ -409,6 +445,7 @@ describe("ui-server mini app", () => {
     });
     expect(third.status).toBe(200);
     expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
+    expect(String(third.headers.get("cache-control") || "")).toContain("no-cache");
   });
 
   it("serves shared /lib modules after local bootstrap", async () => {
@@ -2379,7 +2416,7 @@ describe("ui-server mini app", () => {
     expect(paused.ok).toBe(true);
     expect(paused.lifecycle.action).toBe("pause");
     expect(abortTask).toHaveBeenCalledWith(taskId, "task_lifecycle_pause");
-  });
+  }, 20000);
 
   it("serves retry queue snapshots from the agent event bus when available", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -4309,6 +4346,100 @@ describe("ui-server mini app", () => {
       if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves persisted historic session detail and diff payloads", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const previousRepoRoot = process.env.REPO_ROOT;
+    delete process.env.REPO_ROOT;
+
+    const repoDir = mkdtempSync(join(tmpdir(), "bosun-persisted-session-diff-"));
+    const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-history-"));
+    const filePath = join(repoDir, "notes.txt");
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    writeFileSync(filePath, "line one\n", "utf8");
+    execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    writeFileSync(filePath, "line one\nline two\n", "utf8");
+
+    const trackerMod = await import("../infra/session-tracker.mjs");
+    trackerMod._resetSingleton({ persistDir });
+    const tracker = trackerMod.getSessionTracker();
+    tracker.startSession("TASK-201", "Historic Task 201");
+    const liveSession = tracker.getSession("TASK-201");
+    liveSession.metadata.workspaceDir = repoDir;
+    liveSession.metadata.branch = "main";
+    tracker.recordEvent("TASK-201", {
+      role: "user",
+      content: "Inspect persisted history",
+      timestamp: "2026-03-28T14:00:00.000Z",
+    });
+    tracker.recordEvent("TASK-201", {
+      role: "assistant",
+      content: "Persisted history ready",
+      timestamp: "2026-03-28T14:00:03.000Z",
+    });
+    tracker.endSession("TASK-201", "completed");
+
+    trackerMod._resetSingleton({ persistDir });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const detailPayload = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("TASK-201")}?workspace=all&full=1`,
+      ).then((r) => r.json());
+      expect(detailPayload?.ok).toBe(true);
+      expect(detailPayload?.session).toEqual(expect.objectContaining({
+        id: "TASK-201",
+        status: "completed",
+      }));
+
+      const diffPayload = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("TASK-201")}/diff?workspace=all`,
+      ).then((r) => r.json());
+      expect(diffPayload?.ok).toBe(true);
+      expect(diffPayload?.diff?.totalFiles).toBeGreaterThan(0);
+      expect(diffPayload?.source).toMatchObject({
+        kind: "session",
+        detail: repoDir,
+      });
+
+      const taskDiffPayload = await fetch(`http://127.0.0.1:${port}/api/tasks/diff`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task: {
+            id: "TASK-201",
+            title: "Historic Task 201",
+            sessionId: "TASK-201",
+          },
+        }),
+      }).then((r) => r.json());
+      expect(taskDiffPayload?.ok).toBe(true);
+      expect(taskDiffPayload?.diff?.totalFiles).toBeGreaterThan(0);
+      expect(taskDiffPayload?.source).toMatchObject({
+        kind: "worktree",
+        detail: repoDir,
+      });
+    } finally {
+      trackerMod._resetSingleton({ persistDir: null });
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(persistDir, { recursive: true, force: true });
+      await new Promise((resolve) => server.close(resolve));
     }
   });
 

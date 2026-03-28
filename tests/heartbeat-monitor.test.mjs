@@ -21,7 +21,16 @@ describe("heartbeat-monitor", () => {
     const logDir = resolve(sandboxDir, "logs");
     mkdirSync(cacheDir, { recursive: true });
     mkdirSync(logDir, { recursive: true });
-    writeFileSync(resolve(cacheDir, "ui-last-port.json"), JSON.stringify({ port: 18432 }, null, 2), "utf8");
+    writeFileSync(
+      resolve(cacheDir, "ui-last-port.json"),
+      JSON.stringify({
+        port: 18432,
+        host: "192.168.0.183",
+        protocol: "https",
+        url: "https://192.168.0.183:18432",
+      }, null, 2),
+      "utf8",
+    );
     writeFileSync(resolve(logDir, "monitor.log"), "2026-03-28T00:00:00.000Z [INFO] monitor heartbeat\n", "utf8");
     writeFileSync(resolve(logDir, "monitor-error.log"), "2026-03-28T00:00:01.000Z [ERROR] workflow timeout\n", "utf8");
     return { configDir, cacheDir, logDir };
@@ -59,10 +68,17 @@ describe("heartbeat-monitor", () => {
         trigger: "timeout-test",
         outcome: "timeout",
         port: 18432,
+        url: "https://192.168.0.183:18432/healthz",
         correlatedLogs: expect.objectContaining({
           monitorLogTail: expect.stringContaining("monitor heartbeat"),
           monitorErrorLogTail: expect.stringContaining("workflow timeout"),
         }),
+      }),
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://192.168.0.183:18432/healthz",
+      expect.objectContaining({
+        headers: { accept: "application/json" },
       }),
     );
 

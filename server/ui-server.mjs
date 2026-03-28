@@ -2,8 +2,8 @@ import { execSync, spawn, spawnSync } from "node:child_process";
 import * as nodeCrypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile, readdirSync, statSync } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
-import { get as httpsGet } from "node:https";
+import { createServer, request as httpRequest } from "node:http";
+import { get as httpsGet, request as httpsRequest } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
 import { networkInterfaces, homedir, userInfo as getOsUserInfo } from "node:os";
 import { connect as netConnect } from "node:net";
@@ -99,7 +99,10 @@ async function getOrComputeCachedApiResponse(key, ttlMs, producer) {
 // Static file ETag + cache header helper
 function cacheControlForPath(pathname) {
   if (pathname.endsWith(".html")) return "no-cache";
-  if (/\.(js|mjs|css|svg|png|jpg|jpeg|gif|webp|ico|woff2?)$/i.test(pathname)) {
+  if (/\.(js|mjs|css)$/i.test(pathname)) {
+    return "no-cache";
+  }
+  if (/\.(svg|png|jpg|jpeg|gif|webp|ico|woff2?)$/i.test(pathname)) {
     return "public, max-age=3600, stale-while-revalidate=86400";
   }
   return "public, max-age=300";
@@ -5257,6 +5260,8 @@ const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
 const UI_SESSION_TOKEN_FILE = "ui-session-token.json";
 const TUI_SESSION_TOKEN_FILE = "ui-token";
 const UI_LAST_PORT_FILE = "ui-last-port.json";
+const DEFAULT_UI_INSTANCE_PROBE_TIMEOUT_MS = 1500;
+const DEFAULT_UI_INSTANCE_STALE_GRACE_MS = 2 * 60 * 1000;
 const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
 const DEFAULT_SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const wsClients = new Set();
@@ -5530,7 +5535,114 @@ function writeUiInstanceLock(path, payload = {}) {
   }
 }
 
-function tryAcquireUiInstanceLock({ preferredPort = 0 } = {}) {
+function clearUiInstanceLockFile(path) {
+  try {
+    if (path && existsSync(path)) unlinkSync(path);
+  } catch {
+    // best effort
+  }
+}
+
+function describeUiInstanceTarget(payload = {}) {
+  return payload?.url
+    || (payload?.port
+      ? `${payload?.protocol || "http"}://${payload?.host || "127.0.0.1"}:${payload.port}`
+      : "unknown");
+}
+
+function normalizeUiProbeHost(host) {
+  const normalized = String(host || "").trim().toLowerCase();
+  if (
+    !normalized ||
+    normalized === "0.0.0.0" ||
+    normalized === "::" ||
+    normalized === "[::]" ||
+    normalized === "::0"
+  ) {
+    return "127.0.0.1";
+  }
+  return normalized === "localhost" ? "127.0.0.1" : normalized;
+}
+
+async function probeUiHealth(urlText, timeoutMs = DEFAULT_UI_INSTANCE_PROBE_TIMEOUT_MS) {
+  try {
+    const parsed = new URL(String(urlText || ""));
+    const isHttps = parsed.protocol === "https:";
+    const requestImpl = isHttps ? httpsRequest : httpRequest;
+    const host = normalizeUiProbeHost(parsed.hostname);
+    return await new Promise((resolveProbe) => {
+      let settled = false;
+      const settle = (value) => {
+        if (settled) return;
+        settled = true;
+        resolveProbe(Boolean(value));
+      };
+      const req = requestImpl(
+        {
+          protocol: isHttps ? "https:" : "http:",
+          host,
+          port: parsed.port ? Number(parsed.port) : (isHttps ? 443 : 80),
+          path: "/healthz",
+          method: "GET",
+          timeout: Math.max(100, Math.trunc(Number(timeoutMs) || DEFAULT_UI_INSTANCE_PROBE_TIMEOUT_MS)),
+          rejectUnauthorized: false,
+        },
+        (res) => {
+          res.resume();
+          settle(Number(res.statusCode || 0) >= 200 && Number(res.statusCode || 0) < 500);
+        },
+      );
+      req.on("error", () => settle(false));
+      req.on("timeout", () => {
+        try { req.destroy(new Error("timeout")); } catch { /* best effort */ }
+        settle(false);
+      });
+      req.end();
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function isUiInstanceResponsive(existing, { probeTimeoutMs } = {}) {
+  const port = Number(existing?.port || 0);
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) return false;
+  const protocol = String(existing?.protocol || "").trim().toLowerCase() === "https" ? "https" : "http";
+  const candidateUrls = [];
+  if (existing?.url) candidateUrls.push(String(existing.url));
+  const host = normalizeUiProbeHost(existing?.host);
+  candidateUrls.push(`${protocol}://${host}:${port}`);
+  if (host !== "127.0.0.1") {
+    candidateUrls.push(`${protocol}://127.0.0.1:${port}`);
+  }
+  for (const candidate of new Set(candidateUrls.filter(Boolean))) {
+    if (await probeUiHealth(candidate, probeTimeoutMs)) return true;
+  }
+  return false;
+}
+
+async function shouldTreatUiInstanceLockAsStale(
+  existing,
+  {
+    staleGraceMs = DEFAULT_UI_INSTANCE_STALE_GRACE_MS,
+    probeTimeoutMs = DEFAULT_UI_INSTANCE_PROBE_TIMEOUT_MS,
+  } = {},
+) {
+  if (!existing || existing.pid === process.pid) return false;
+  if (!isPidRunning(existing.pid)) return true;
+  const startedAt = Number(existing.startedAt || 0);
+  const ageMs = startedAt > 0 ? Math.max(0, Date.now() - startedAt) : Number.POSITIVE_INFINITY;
+  if (ageMs < Math.max(0, Math.trunc(Number(staleGraceMs) || DEFAULT_UI_INSTANCE_STALE_GRACE_MS))) {
+    return false;
+  }
+  return !(await isUiInstanceResponsive(existing, { probeTimeoutMs }));
+}
+
+async function tryAcquireUiInstanceLock({
+  preferredPort = 0,
+  staleGraceMs = DEFAULT_UI_INSTANCE_STALE_GRACE_MS,
+  probeTimeoutMs = DEFAULT_UI_INSTANCE_PROBE_TIMEOUT_MS,
+} = {}) {
   const lockPath = resolveUiInstanceLockPath();
   uiInstanceLockPath = lockPath;
   const payload = {
@@ -5562,14 +5674,15 @@ function tryAcquireUiInstanceLock({ preferredPort = 0 } = {}) {
 
   const current = readUiInstanceLock(lockPath);
   if (current && current.pid !== process.pid && isPidRunning(current.pid)) {
-    return { ok: false, existing: current };
+    if (!(await shouldTreatUiInstanceLockAsStale(current, { staleGraceMs, probeTimeoutMs }))) {
+      return { ok: false, existing: current };
+    }
+    console.warn(
+      `[telegram-ui] stale ui runtime lock detected (pid=${current.pid}) — reclaiming ${describeUiInstanceTarget(current)}`,
+    );
   }
 
-  try {
-    if (existsSync(lockPath)) unlinkSync(lockPath);
-  } catch {
-    // best effort
-  }
+  clearUiInstanceLockFile(lockPath);
 
   try {
     return tryCreateLock();
@@ -5752,19 +5865,40 @@ function ensureSessionToken() {
 }
 
 function readLastUiPort() {
+  return readLastUiPortRecord()?.port || 0;
+}
+
+function readLastUiPortRecord() {
   try {
     const portPath = resolveUiCachePath(UI_LAST_PORT_FILE);
-    if (!existsSync(portPath)) return 0;
+    if (!existsSync(portPath)) return null;
     const payload = JSON.parse(readFileSync(portPath, "utf8"));
     const port = Number(payload?.port || 0);
-    if (!Number.isFinite(port) || port <= 0 || port > 65535) return 0;
-    return Math.trunc(port);
+    if (!Number.isFinite(port) || port <= 0 || port > 65535) return null;
+    return {
+      port: Math.trunc(port),
+      updatedAt: Number(payload?.updatedAt || 0) || 0,
+      pid: Number(payload?.pid || 0) || 0,
+      host: String(payload?.host || ""),
+      protocol: String(payload?.protocol || ""),
+      url: String(payload?.url || ""),
+      configDir: String(payload?.configDir || ""),
+    };
   } catch {
-    return 0;
+    return null;
   }
 }
 
-function persistLastUiPort(port) {
+function clearLastUiPort() {
+  try {
+    const portPath = resolveUiCachePath(UI_LAST_PORT_FILE);
+    if (existsSync(portPath)) unlinkSync(portPath);
+  } catch {
+    // best effort
+  }
+}
+
+function persistLastUiPort(port, metadata = {}) {
   const normalized = Number(port || 0);
   if (!Number.isFinite(normalized) || normalized <= 0 || normalized > 65535) {
     return;
@@ -5778,6 +5912,10 @@ function persistLastUiPort(port) {
           port: Math.trunc(normalized),
           updatedAt: Date.now(),
           pid: process.pid,
+          host: String(metadata.host || ""),
+          protocol: String(metadata.protocol || ""),
+          url: String(metadata.url || ""),
+          configDir: resolveUiConfigDir(),
         },
         null,
         2,
@@ -13022,7 +13160,10 @@ async function resolveTaskLinkedWorktreePath(task, tracker = null) {
 
   const sessionTracker = tracker || getSessionTracker();
   for (const sessionId of collectTaskLinkedSessionIds(task, sessionTracker)) {
-    const session = sessionTracker?.getSession?.(sessionId);
+    const session =
+      sessionTracker?.getSessionById?.(sessionId) ||
+      sessionTracker?.getSessionMessages?.(sessionId) ||
+      sessionTracker?.getSession?.(sessionId);
     const worktreePath = await resolveSessionWorktreePath(session);
     if (worktreePath && existsSync(worktreePath)) return worktreePath;
   }
@@ -20931,14 +21072,17 @@ if (path === "/api/agent-logs/context") {
       if (!session) return null;
       return sessionMatchesWorkspaceContext(session, workspaceContext) ? session : null;
     };
+    const getScopedSessionRecord = ({ includeMessages = false } = {}) => {
+      const session = includeMessages
+        ? tracker.getSessionMessages(sessionId)
+        : (tracker.getSessionById(sessionId) || tracker.getSessionMessages(sessionId));
+      if (!session) return null;
+      return sessionMatchesWorkspaceContext(session, workspaceContext) ? session : null;
+    };
 
     if (!action && req.method === "GET") {
       try {
-        if (!getScopedSession()) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        const session = tracker.getSessionMessages(sessionId);
+        const session = getScopedSessionRecord({ includeMessages: true });
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -21365,7 +21509,7 @@ if (path === "/api/agent-logs/context") {
 
     if (action === "diff" && req.method === "GET") {
       try {
-        const session = getScopedSession();
+        const session = getScopedSessionRecord();
         if (!session) {
           jsonResponse(res, 200, {
             ok: true,
@@ -22849,13 +22993,16 @@ export async function startTelegramUiServer(options = {}) {
   }
   const skipInstanceLock =
     options.skipInstanceLock === true ||
-    process.env.BOSUN_UI_SKIP_INSTANCE_LOCK === "1" ||
-    isTestRun;
+    (options.skipInstanceLock !== false && (
+      process.env.BOSUN_UI_SKIP_INSTANCE_LOCK === "1" ||
+      isTestRun
+    ));
   const allowEphemeralPort =
     options.allowEphemeralPort === true ||
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
     isTestRun;
-  const persistedPort = readLastUiPort();
+  const persistedPortRecord = readLastUiPortRecord();
+  const persistedPort = persistedPortRecord?.port || 0;
   const shouldReusePersistedPort =
     options.port == null &&
     configuredPort === 0 &&
@@ -22899,15 +23046,15 @@ export async function startTelegramUiServer(options = {}) {
   );
 
   if (!skipInstanceLock) {
-    const lockResult = tryAcquireUiInstanceLock({ preferredPort: port });
+    const lockResult = await tryAcquireUiInstanceLock({
+      preferredPort: port,
+      staleGraceMs: options.instanceLockStaleGraceMs,
+      probeTimeoutMs: options.instanceLockProbeTimeoutMs,
+    });
     if (!lockResult.ok) {
       const existing = lockResult.existing || {};
-      const existingTarget = existing.url
-        || (existing.port
-          ? `${existing.protocol || "http"}://${existing.host || "127.0.0.1"}:${existing.port}`
-          : "unknown");
       console.warn(
-        `[telegram-ui] duplicate runtime detected (pid=${existing.pid}) — skipping secondary UI server start (${existingTarget})`,
+        `[telegram-ui] duplicate runtime detected (pid=${existing.pid}) — skipping secondary UI server start (${describeUiInstanceTarget(existing)})`,
       );
       return null;
     }
@@ -23590,6 +23737,9 @@ export async function startTelegramUiServer(options = {}) {
       }
     }
   } catch (err) {
+    if (shouldReusePersistedPort) {
+      clearLastUiPort();
+    }
     releaseUiInstanceLock();
     throw err;
   }
@@ -23635,7 +23785,7 @@ export async function startTelegramUiServer(options = {}) {
     url: uiServerUrl,
     startedAt: Date.now(),
   });
-  persistLastUiPort(actualPort);
+  persistLastUiPort(actualPort, { host, protocol, url: uiServerUrl });
   setComponentStatus("server", "running");
   console.log(`[telegram-ui] server listening on ${uiServerUrl}`);
   if (uiServerTls) {
@@ -23823,6 +23973,7 @@ export function stopTelegramUiServer() {
     /* best effort */
   }
   uiServer = null;
+  uiServerUrl = null;
   uiServerTls = false;
   resetProjectSyncWebhookMetrics();
   releaseUiInstanceLock();

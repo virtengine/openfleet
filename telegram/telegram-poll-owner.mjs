@@ -1,4 +1,7 @@
 import {
+  createHash,
+} from "node:crypto";
+import {
   existsSync,
   mkdirSync,
   readFileSync,
@@ -23,6 +26,74 @@ let ownerUpdateLockFile = resolve(
   defaultCacheDir,
   "telegram-getupdates-owner.lock",
 );
+let legacyOwnerStateFile = resolve(
+  defaultCacheDir,
+  "telegram-getupdates-owner.json",
+);
+let legacyOwnerUpdateLockFile = resolve(
+  defaultCacheDir,
+  "telegram-getupdates-owner.lock",
+);
+
+function resolveTelegramPollSharedBaseDir(options = {}) {
+  const explicit = String(options.sharedBaseDir || "").trim();
+  if (explicit) return resolve(explicit);
+  const envExplicit = String(process.env.BOSUN_TELEGRAM_SHARED_DIR || "").trim();
+  if (envExplicit) return resolve(envExplicit);
+  const baseDir =
+    process.env.APPDATA ||
+    process.env.LOCALAPPDATA ||
+    process.env.USERPROFILE ||
+    process.env.HOME ||
+    null;
+  if (baseDir) {
+    return resolve(baseDir, "bosun");
+  }
+  return resolve(repoRoot, ".bosun");
+}
+
+export function resolveTelegramPollScopeId(token = "") {
+  const normalized = String(token || "").trim();
+  if (!normalized) return "default";
+  return createHash("sha1").update(normalized).digest("hex").slice(0, 12);
+}
+
+export function resolveTelegramPollPaths(options = {}) {
+  const sharedBaseDir = resolveTelegramPollSharedBaseDir(options);
+  const cacheDir = resolve(sharedBaseDir, ".cache");
+  const scopeId = resolveTelegramPollScopeId(options.token);
+  const prefix =
+    scopeId === "default"
+      ? "telegram-getupdates"
+      : `telegram-getupdates-${scopeId}`;
+  return {
+    cacheDir,
+    scopeId,
+    ownerStateFile: resolve(cacheDir, `${prefix}-owner.json`),
+    ownerUpdateLockFile: resolve(cacheDir, `${prefix}-owner.lock`),
+    pollLockFile: resolve(cacheDir, `${prefix}.lock`),
+    conflictStateFile: resolve(cacheDir, `${prefix}-conflict.json`),
+    legacyOwnerStateFile: resolve(defaultCacheDir, "telegram-getupdates-owner.json"),
+    legacyOwnerUpdateLockFile: resolve(
+      defaultCacheDir,
+      "telegram-getupdates-owner.lock",
+    ),
+    legacyPollLockFile: resolve(defaultCacheDir, "telegram-getupdates.lock"),
+    legacyConflictStateFile: resolve(
+      defaultCacheDir,
+      "telegram-getupdates-conflict.json",
+    ),
+  };
+}
+
+export function configureTelegramPollOwnerScope(options = {}) {
+  const next = resolveTelegramPollPaths(options);
+  ownerStateFile = next.ownerStateFile;
+  ownerUpdateLockFile = next.ownerUpdateLockFile;
+  legacyOwnerStateFile = next.legacyOwnerStateFile;
+  legacyOwnerUpdateLockFile = next.legacyOwnerUpdateLockFile;
+  return next;
+}
 
 function canSignalProcess(pid) {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -69,12 +140,32 @@ function readOwnerStateSync() {
   }
 }
 
+function readOwnerStateSyncFrom(filePath) {
+  try {
+    if (!filePath || !existsSync(filePath)) return null;
+    return parseOwnerState(readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function getActiveOwnerSync(nowMs = Date.now()) {
-  const state = readOwnerStateSync();
-  if (!state) return null;
-  if (state.expiresAt <= nowMs) return null;
-  if (!canSignalProcess(state.pid)) return null;
-  return state;
+  const seen = new Set();
+  const candidates = [ownerStateFile, legacyOwnerStateFile]
+    .map((filePath) => String(filePath || "").trim())
+    .filter((filePath) => {
+      if (!filePath || seen.has(filePath)) return false;
+      seen.add(filePath);
+      return true;
+    });
+  for (const filePath of candidates) {
+    const state = readOwnerStateSyncFrom(filePath);
+    if (!state) continue;
+    if (state.expiresAt <= nowMs) continue;
+    if (!canSignalProcess(state.pid)) continue;
+    return state;
+  }
+  return null;
 }
 
 function parseUpdateLock(raw) {
@@ -225,13 +316,24 @@ export async function releaseTelegramPollOwner(owner, options = {}) {
 export function __setTelegramPollOwnerPathsForTest(paths = {}) {
   const nextOwner = String(paths.ownerStateFile || "").trim();
   const nextLock = String(paths.ownerUpdateLockFile || "").trim();
-  if (nextOwner) ownerStateFile = resolve(nextOwner);
-  if (nextLock) ownerUpdateLockFile = resolve(nextLock);
+  if (nextOwner) {
+    ownerStateFile = resolve(nextOwner);
+    legacyOwnerStateFile = resolve(nextOwner);
+  }
+  if (nextLock) {
+    ownerUpdateLockFile = resolve(nextLock);
+    legacyOwnerUpdateLockFile = resolve(nextLock);
+  }
 }
 
 export function __resetTelegramPollOwnerPathsForTest() {
   ownerStateFile = resolve(defaultCacheDir, "telegram-getupdates-owner.json");
   ownerUpdateLockFile = resolve(defaultCacheDir, "telegram-getupdates-owner.lock");
+  legacyOwnerStateFile = resolve(defaultCacheDir, "telegram-getupdates-owner.json");
+  legacyOwnerUpdateLockFile = resolve(
+    defaultCacheDir,
+    "telegram-getupdates-owner.lock",
+  );
 }
 
 export function __clearTelegramPollOwnerFilesForTest() {
