@@ -133,6 +133,17 @@ function cloneVars(input) {
   return JSON.parse(JSON.stringify(input));
 }
 
+/**
+ * Safely coerce a variable/config value to a type suitable for an HTML input.
+ * Objects are serialized to JSON; number and select inputs fall back to "".
+ */
+function safeFieldValue(v, kind) {
+  if (v == null) return "";
+  if (typeof v !== "object") return v;
+  if (kind === "number" || kind === "select") return "";
+  return JSON.stringify(v, null, 2);
+}
+
 function returnToWorkflowList() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
@@ -1077,7 +1088,7 @@ function ExecuteWorkflowDialog() {
           key=${key}
           label=${label + (isRequired ? " *" : "")}
           type="number"
-          value=${current ?? ""}
+          value=${safeFieldValue(current, "number")}
           onChange=${(e) => updateVar(key, e.target.value === "" ? "" : Number(e.target.value))}
           helperText=${help}
           size="small"
@@ -1092,7 +1103,7 @@ function ExecuteWorkflowDialog() {
         <${TextField}
           key=${key}
           label=${label + (isRequired ? " *" : "")}
-          value=${current ?? ""}
+          value=${safeFieldValue(current, "json")}
           onChange=${(e) => updateVar(key, e.target.value)}
           helperText=${help || "JSON object or array"}
           size="small"
@@ -1110,7 +1121,7 @@ function ExecuteWorkflowDialog() {
         <${FormControl} key=${key} fullWidth size="small" sx=${{ mb: 1.5 }}>
           <${InputLabel}>${label + (isRequired ? " *" : "")}</${InputLabel}>
           <${Select}
-            value=${current ?? ""}
+            value=${safeFieldValue(current, "select")}
             label=${label + (isRequired ? " *" : "")}
             onChange=${(e) => updateVar(key, e.target.value)}
           >
@@ -1128,7 +1139,7 @@ function ExecuteWorkflowDialog() {
       <${TextField}
         key=${key}
         label=${label + (isRequired ? " *" : "")}
-        value=${current ?? ""}
+        value=${safeFieldValue(current)}
         onChange=${(e) => updateVar(key, e.target.value)}
         helperText=${help}
         size="small"
@@ -1405,7 +1416,7 @@ function InstallTemplateDialog() {
           key=${descriptor.key}
           label=${descriptor.label + (descriptor.required ? " *" : "")}
           type="number"
-          value=${current ?? ""}
+          value=${safeFieldValue(current, "number")}
           onChange=${(e) => updateVar(descriptor.key, e.target.value === "" ? "" : Number(e.target.value))}
           helperText=${descriptor.help}
           size="small"
@@ -1419,7 +1430,7 @@ function InstallTemplateDialog() {
         <${TextField}
           key=${descriptor.key}
           label=${descriptor.label + (descriptor.required ? " *" : "")}
-          value=${current ?? ""}
+          value=${safeFieldValue(current, "json")}
           onChange=${(e) => updateVar(descriptor.key, e.target.value)}
           helperText=${descriptor.help || "JSON object or array"}
           size="small"
@@ -1436,7 +1447,7 @@ function InstallTemplateDialog() {
         <${FormControl} key=${descriptor.key} fullWidth size="small" sx=${{ mb: 1.5 }}>
           <${InputLabel}>${descriptor.label + (descriptor.required ? " *" : "")}</${InputLabel}>
           <${Select}
-            value=${current ?? ""}
+            value=${safeFieldValue(current, "select")}
             label=${descriptor.label + (descriptor.required ? " *" : "")}
             onChange=${(e) => updateVar(descriptor.key, e.target.value)}
           >
@@ -1450,7 +1461,7 @@ function InstallTemplateDialog() {
       <${TextField}
         key=${descriptor.key}
         label=${descriptor.label + (descriptor.required ? " *" : "")}
-        value=${current ?? ""}
+        value=${safeFieldValue(current)}
         onChange=${(e) => updateVar(descriptor.key, e.target.value)}
         helperText=${descriptor.help}
         size="small"
@@ -1647,7 +1658,8 @@ function openInstallTemplateDialog(templateId) {
   for (const variable of variableList) {
     const key = String(variable?.key || "").trim();
     if (!key) continue;
-    defaults[key] = cloneVars(variable?.defaultValue ?? "");
+    const dv = variable?.defaultValue ?? "";
+    defaults[key] = (dv !== null && typeof dv === "object") ? JSON.stringify(dv) : dv;
   }
   installDialogTemplate.value = template;
   installDialogVars.value = defaults;
@@ -4569,14 +4581,14 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
                   type="number"
                   size="small"
                   variant="outlined"
-                  value=${value}
+                  value=${typeof value === "object" ? "" : value}
                   onInput=${(e) => onFieldChange(key, Number(e.target.value))}
                   fullWidth
                   placeholder=${fieldSchema.default != null ? `Default: ${fieldSchema.default}` : ""}
                 />
               ` : fieldSchema.enum ? html`
                 <${Select}
-                  value=${value}
+                  value=${typeof value === "object" ? "" : value}
                   onChange=${(e) => onFieldChange(key, e.target.value)}
                   size="small"
                   fullWidth
