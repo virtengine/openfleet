@@ -3330,6 +3330,7 @@ registerBuiltinNodeType("action.run_agent", {
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
+    const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
     const configuredCwd = ctx.resolve(node.config?.cwd || "");
     const runtimeWorktreePath = String(ctx.data?.worktreePath || "").trim();
     const cwd = isUnresolvedTemplateToken(configuredCwd)
