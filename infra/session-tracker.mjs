@@ -399,6 +399,7 @@ function updateTurnTimeline(session, msg) {
 
 /** Debounce interval for disk writes (ms). */
 const FLUSH_INTERVAL_MS = 2000;
+const PERSISTED_SESSION_LIST_CACHE_TTL_MS = 5000;
 
 const SESSION_EVENT_LISTENERS = new Set();
 const SESSION_STATE_LISTENERS = new Set();
@@ -493,6 +494,9 @@ export class SessionTracker {
 
   /** @type {Set<string>} session IDs with pending disk writes */
   #dirty = new Set();
+
+  /** @type {{ loadedAt: number, sessions: Array<Object> }} */
+  #persistedSummaryCache = { loadedAt: 0, sessions: [] };
 
   /** @type {ReturnType<typeof setInterval>|null} */
   #flushTimer = null;
@@ -864,6 +868,7 @@ export class SessionTracker {
     this.#accumulateCompletedSession(session, taskId);
     this.#sessions.delete(taskId);
     this.#dirty.delete(taskId);
+    this.#invalidatePersistedSummaryCache();
     // Remove persisted session file if it exists
     if (this.#persistDir) {
       try {
@@ -941,9 +946,11 @@ export class SessionTracker {
   /**
    * List all sessions (metadata only, no full messages).
    * Sorted by lastActiveAt descending.
+   * @param {{ includePersisted?: boolean }} [options]
    * @returns {Array<Object>}
    */
-  listAllSessions() {
+  listAllSessions(options = {}) {
+    const includePersisted = options.includePersisted !== false;
     const byId = new Map();
     const addSummary = (s, options = {}) => {
       if (!s) return;
@@ -1009,21 +1016,17 @@ export class SessionTracker {
       addSummary(s);
     }
 
-    if (this.#persistDir && existsSync(this.#persistDir)) {
-      try {
-        const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
-        for (const file of files) {
-          try {
-            const raw = readFileSync(resolve(this.#persistDir, file), "utf8");
-            const restored = buildSessionRecordFromPersistedData(JSON.parse(raw || "{}"), this.#idleThresholdMs);
-            if (!restored || byId.has(restored.id || restored.taskId)) continue;
-            addSummary(restored, { includeRuntimeProgress: false });
-          } catch {
-            /* ignore corrupt session file */
-          }
-        }
-      } catch {
-        /* best-effort disk-backed listing */
+    if (includePersisted) {
+      for (const persisted of this.#readPersistedSessionSummaries()) {
+        if (!persisted) continue;
+        const sessionId = persisted.id || persisted.taskId;
+        if (!sessionId || byId.has(sessionId)) continue;
+        byId.set(sessionId, {
+          ...persisted,
+          turns: Array.isArray(persisted.turns)
+            ? persisted.turns.map((turn) => ({ ...turn }))
+            : [],
+        });
       }
     }
 
@@ -1209,6 +1212,7 @@ export class SessionTracker {
   refreshFromDisk() {
     if (!this.#persistDir) return;
     this.#ensureDir();
+    this.#invalidatePersistedSummaryCache();
     let files = [];
     try {
       files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
@@ -1568,6 +1572,7 @@ export class SessionTracker {
       }
     }
     this.#dirty.clear();
+    this.#invalidatePersistedSummaryCache();
   }
 
   /** @type {Set<string>} filenames loaded during #loadFromDisk (for purge) */
@@ -1604,6 +1609,103 @@ export class SessionTracker {
     } catch {
       // Directory read failed — proceed without disk data
     }
+    this.#invalidatePersistedSummaryCache();
+  }
+
+  #invalidatePersistedSummaryCache() {
+    this.#persistedSummaryCache = { loadedAt: 0, sessions: [] };
+  }
+
+  #readPersistedSessionSummaries() {
+    if (!this.#persistDir || !existsSync(this.#persistDir)) {
+      return [];
+    }
+
+    const now = Date.now();
+    if (
+      Array.isArray(this.#persistedSummaryCache.sessions) &&
+      now - Number(this.#persistedSummaryCache.loadedAt || 0) <
+        PERSISTED_SESSION_LIST_CACHE_TTL_MS
+    ) {
+      return this.#persistedSummaryCache.sessions;
+    }
+
+    const sessions = [];
+    try {
+      const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
+      for (const file of files) {
+        try {
+          const raw = readFileSync(resolve(this.#persistDir, file), "utf8");
+          const restored = buildSessionRecordFromPersistedData(
+            JSON.parse(raw || "{}"),
+            this.#idleThresholdMs,
+          );
+          if (!restored) continue;
+          const sessionId = restored.id || restored.taskId;
+          const lastActiveAt =
+            restored.lastActiveAt || new Date(restored.lastActivityAt).toISOString();
+          const turns = Array.isArray(restored.turns)
+            ? restored.turns.map((turn) => ({ ...turn }))
+            : [];
+          const turnTokenUsage = turns.reduce((acc, turn) => ({
+            inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
+            outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
+            totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
+          }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+          const tokenUsage = restored.insights?.tokenUsage
+            || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
+              ? turnTokenUsage
+              : null);
+          const effectiveTokenUsage = extractUsageFromMeta(tokenUsage) || {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          };
+          sessions.push({
+            id: sessionId,
+            taskId: restored.taskId,
+            title: restored.taskTitle || restored.title || null,
+            type: restored.type || "task",
+            status: restored.status || "completed",
+            lifecycleStatus: restored.status || "completed",
+            runtimeState: null,
+            runtimeUpdatedAt: lastActiveAt,
+            runtimeIsLive: false,
+            workspaceId: String(restored?.metadata?.workspaceId || "").trim() || null,
+            workspaceDir: String(restored?.metadata?.workspaceDir || "").trim() || null,
+            branch: String(restored?.metadata?.branch || "").trim() || null,
+            turnCount: restored.turnCount || 0,
+            turns,
+            tokenCount: effectiveTokenUsage.totalTokens || 0,
+            inputTokens: effectiveTokenUsage.inputTokens || 0,
+            outputTokens: effectiveTokenUsage.outputTokens || 0,
+            tokenUsage: effectiveTokenUsage,
+            createdAt: restored.createdAt || new Date(restored.startedAt).toISOString(),
+            lastActiveAt,
+            idleMs: 0,
+            elapsedMs: Math.max(
+              0,
+              Number(restored.endedAt || Date.now()) - Number(restored.startedAt || Date.now()),
+            ),
+            recommendation: "none",
+            preview: this.#lastMessagePreview(restored),
+            lastMessage: this.#lastMessagePreview(restored),
+            insights: restored.insights || null,
+          });
+        } catch {
+          // Ignore corrupt session files in summary listing
+        }
+      }
+    } catch {
+      // Best-effort disk-backed listing only
+    }
+
+    sessions.sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+    this.#persistedSummaryCache = {
+      loadedAt: now,
+      sessions,
+    };
+    return sessions;
   }
 
   /**
@@ -2057,10 +2159,11 @@ ${items.join("\n")}` : "todo updated";
 
 /**
  * List all sessions (metadata only).
+ * @param {{ includePersisted?: boolean }} [options]
  * @returns {Array<Object>}
  */
-export function listAllSessions() {
-  return getSessionTracker().listAllSessions();
+export function listAllSessions(options) {
+  return getSessionTracker().listAllSessions(options);
 }
 
 /**

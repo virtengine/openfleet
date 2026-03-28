@@ -2002,6 +2002,48 @@ function sanitizeTaskDiagnosticText(value, maxLength = 240) {
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
+const TASK_LOG_DIAGNOSTICS_TAIL_BYTES = 256 * 1024;
+const TASK_LOG_DIAGNOSTICS_CACHE_MS = 5000;
+
+function createEmptyTaskLogDiagnostics() {
+  return {
+    counts: {
+      prePrValidationFailed: 0,
+      worktreeFailed: 0,
+      blockedTransitions: 0,
+      createPrFailed: 0,
+    },
+    entries: [],
+  };
+}
+
+async function readLogTailChunk(filePath, maxBytes = TASK_LOG_DIAGNOSTICS_TAIL_BYTES) {
+  const handle = await open(filePath, "r");
+  try {
+    const info = await handle.stat();
+    const size = Number(info?.size || 0);
+    if (!Number.isFinite(size) || size <= 0) return "";
+    const length = Math.max(1, Math.min(size, Math.max(1, Math.trunc(maxBytes))));
+    const offset = Math.max(0, size - length);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, offset);
+    let text = buffer.toString("utf8");
+    if (offset > 0) {
+      const firstNewline = text.indexOf("\n");
+      if (firstNewline >= 0) {
+        text = text.slice(firstNewline + 1);
+      }
+    }
+    return text;
+  } finally {
+    try {
+      await handle.close();
+    } catch {
+      // best effort
+    }
+  }
+}
+
 function collectTaskTimelineDiagnostics(task, limit = 8) {
   const timeline = Array.isArray(task?.timeline) ? task.timeline : [];
   const relevant = [];
@@ -2035,22 +2077,17 @@ function collectTaskTimelineDiagnostics(task, limit = 8) {
   return relevant.slice(-Math.max(1, limit));
 }
 
-function collectTaskLogDiagnostics(task, workspaceDir = "", limit = 8) {
+async function collectTaskLogDiagnostics(task, workspaceDir = "", limit = 8) {
   const taskId = String(task?.id || task?.taskId || "").trim();
   if (!taskId) {
-    return {
-      counts: {
-        prePrValidationFailed: 0,
-        worktreeFailed: 0,
-        blockedTransitions: 0,
-        createPrFailed: 0,
-      },
-      entries: [],
-    };
+    return createEmptyTaskLogDiagnostics();
   }
 
   const taskBranch = String(task?.branch || task?.branchName || "").trim();
   const needles = [taskId, taskBranch].filter((value) => value && value.length >= 8);
+  if (needles.length === 0) {
+    return createEmptyTaskLogDiagnostics();
+  }
   const logPaths = [];
   const pushLogPath = (candidate) => {
     if (!candidate || !existsSync(candidate) || logPaths.includes(candidate)) return;
@@ -2063,57 +2100,69 @@ function collectTaskLogDiagnostics(task, workspaceDir = "", limit = 8) {
   pushLogPath(resolve(repoRoot, ".bosun", "logs", "monitor-error.log"));
   pushLogPath(resolve(repoRoot, ".bosun", "logs", "monitor.log"));
 
-  const counts = {
-    prePrValidationFailed: 0,
-    worktreeFailed: 0,
-    blockedTransitions: 0,
-    createPrFailed: 0,
-  };
-  const entries = [];
+  const cacheKey = `task-log-diagnostics:${taskId}:${taskBranch}:${normalizeCandidatePath(workspaceDir) || repoRoot}`;
+  return getOrComputeCachedApiResponse(cacheKey, TASK_LOG_DIAGNOSTICS_CACHE_MS, async () => {
+    const counts = {
+      prePrValidationFailed: 0,
+      worktreeFailed: 0,
+      blockedTransitions: 0,
+      createPrFailed: 0,
+    };
+    const entries = [];
+    const logChunks = await Promise.all(
+      logPaths.map(async (logPath) => {
+        try {
+          return {
+            logPath,
+            raw: await readLogTailChunk(logPath),
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
 
-  for (const logPath of logPaths) {
-    let raw = "";
-    try {
-      raw = readFileSync(logPath, "utf8");
-    } catch {
-      continue;
+    for (const chunk of logChunks) {
+      if (!chunk?.raw) continue;
+      const logName = /monitor-error\.log$/i.test(chunk.logPath)
+        ? "monitor-error.log"
+        : "monitor.log";
+      for (const line of chunk.raw.split(/\r?\n/)) {
+        if (!line) continue;
+        if (!needles.some((needle) => line.includes(needle))) continue;
+        const text = sanitizeTaskDiagnosticText(line, 320);
+        let matched = false;
+        if (/pre-PR validation failed/i.test(text)) {
+          counts.prePrValidationFailed += 1;
+          matched = true;
+        }
+        if (/Worktree failed for/i.test(text) || /Worktree acquisition failed/i.test(text)) {
+          counts.worktreeFailed += 1;
+          matched = true;
+        }
+        if (/-> blocked/i.test(text) || /status: .*blocked/i.test(text)) {
+          counts.blockedTransitions += 1;
+          matched = true;
+        }
+        if (/create-pr FAILED/i.test(text)) {
+          counts.createPrFailed += 1;
+          matched = true;
+        }
+        if (!matched) continue;
+        entries.push({
+          source: logName,
+          message: text,
+          kind: "log",
+        });
+        if (entries.length > limit) entries.shift();
+      }
     }
-    const logName = /monitor-error\.log$/i.test(logPath) ? "monitor-error.log" : "monitor.log";
-    for (const line of raw.split(/\r?\n/)) {
-      if (!line) continue;
-      if (!needles.some((needle) => line.includes(needle))) continue;
-      const text = sanitizeTaskDiagnosticText(line, 320);
-      let matched = false;
-      if (/pre-PR validation failed/i.test(text)) {
-        counts.prePrValidationFailed += 1;
-        matched = true;
-      }
-      if (/Worktree failed for/i.test(text) || /Worktree acquisition failed/i.test(text)) {
-        counts.worktreeFailed += 1;
-        matched = true;
-      }
-      if (/-> blocked/i.test(text) || /status: .*blocked/i.test(text)) {
-        counts.blockedTransitions += 1;
-        matched = true;
-      }
-      if (/create-pr FAILED/i.test(text)) {
-        counts.createPrFailed += 1;
-        matched = true;
-      }
-      if (!matched) continue;
-      entries.push({
-        source: logName,
-        message: text,
-        kind: "log",
-      });
-      if (entries.length > limit) entries.shift();
-    }
-  }
 
-  return { counts, entries };
+    return { counts, entries };
+  });
 }
 
-function buildTaskBlockedContext(task, options = {}) {
+async function buildTaskBlockedContext(task, options = {}) {
   const currentTask = task && typeof task === "object" ? task : {};
   const canStart = options.canStart && typeof options.canStart === "object"
     ? options.canStart
@@ -2133,7 +2182,7 @@ function buildTaskBlockedContext(task, options = {}) {
       ? currentTask.workflowRuns
       : [];
   const timelineEvidence = collectTaskTimelineDiagnostics(currentTask, 6);
-  const logDiagnostics = collectTaskLogDiagnostics(
+  const logDiagnostics = await collectTaskLogDiagnostics(
     currentTask,
     normalizeCandidatePath(options.workspaceDir),
     6,
@@ -2394,7 +2443,7 @@ function collectTaskLinkedSessionIds(task, tracker = null) {
   const taskKeySet = new Set(taskKeys);
   const sessionTracker = tracker || getSessionTracker();
   const sessions = typeof sessionTracker?.listAllSessions === "function"
-    ? sessionTracker.listAllSessions()
+    ? sessionTracker.listAllSessions({ includePersisted: true })
     : [];
   for (const session of sessions) {
     const sessionTaskId = normalizeDiffTaskRef(session?.taskId);
@@ -4942,7 +4991,7 @@ async function buildWorktreePeek(wt) {
 
   const tracker = getSessionTracker();
   const sessions = tracker
-    .listAllSessions()
+    .listAllSessions({ includePersisted: false })
     .filter((s) => s.taskId === wt.taskKey || s.id === wt.taskKey);
 
   return {
@@ -5283,7 +5332,7 @@ let _activeSessions = [];
 
 function getLiveSessionSnapshot({ includeHidden = false } = {}) {
   const tracker = getSessionTracker();
-  let sessions = tracker.listAllSessions();
+  let sessions = tracker.listAllSessions({ includePersisted: false });
   if (!includeHidden) {
     sessions = sessions.filter((session) => {
       const detailed = tracker.getSessionById(session.id) || session;
@@ -10025,7 +10074,9 @@ function broadcastCanonicalEvent(channels, type, payload = {}) {
 function getCurrentSessionSnapshot() {
   try {
     const tracker = getSessionTracker();
-    return buildSessionsUpdatePayload(tracker?.listAllSessions?.() || []);
+    return buildSessionsUpdatePayload(
+      tracker?.listAllSessions?.({ includePersisted: false }) || [],
+    );
   } catch {
     return [];
   }
@@ -13051,24 +13102,29 @@ async function handleApi(req, res, url) {
   }
 
   if (path === "/api/health-stats") {
-    const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-    const cutoff = new Date(Date.now() - SIX_HOURS_MS).toISOString();
-    let successRuns = 0;
-    let failedRuns = 0;
-    try {
-      const tasks = getAllInternalTasks();
-      for (const task of tasks) {
-        for (const entry of (task.statusHistory || [])) {
-          if (entry.timestamp < cutoff) continue;
-          const normalizedStatus = String(entry.status || "").toLowerCase();
-          if (normalizedStatus === "done") successRuns++;
-          else if (normalizedStatus === "error" || normalizedStatus === "failed" || normalizedStatus === "blocked") failedRuns++;
+    const payload = await getOrComputeCachedApiResponse("health-stats", 30_000, async () => {
+      const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+      const cutoff = new Date(Date.now() - SIX_HOURS_MS).toISOString();
+      let successRuns = 0;
+      let failedRuns = 0;
+      try {
+        const tasks = getAllInternalTasks();
+        for (const task of tasks) {
+          for (const entry of (task.statusHistory || [])) {
+            if (entry.timestamp < cutoff) continue;
+            const normalizedStatus = String(entry.status || "").toLowerCase();
+            if (normalizedStatus === "done") successRuns++;
+            else if (normalizedStatus === "error" || normalizedStatus === "failed" || normalizedStatus === "blocked") failedRuns++;
+          }
         }
+      } catch {
+        // Task store not loaded or unavailable
       }
-    } catch { /* task store not loaded or unavailable */ }
-    const total = successRuns + failedRuns;
-    const failRate = total > 0 ? failedRuns / total : 0;
-    jsonResponse(res, 200, { ok: true, successRuns, failedRuns, total, failRate, windowHours: 6 });
+      const total = successRuns + failedRuns;
+      const failRate = total > 0 ? failedRuns / total : 0;
+      return { ok: true, successRuns, failedRuns, total, failRate, windowHours: 6 };
+    });
+    jsonResponse(res, 200, payload);
     return;
   }
 
@@ -13799,7 +13855,7 @@ async function handleApi(req, res, url) {
         const sprintId = resolveTaskSprintId(detailTask);
         const sprintDag = includeDag && sprintId ? await getSprintDagData(sprintId) : null;
         const globalDag = includeDag ? await getGlobalDagData() : null;
-        const blockedContext = buildTaskBlockedContext(detailTask, {
+        const blockedContext = await buildTaskBlockedContext(detailTask, {
           canStart,
           workflowRuns: mergedWorkflowRuns,
           workspaceDir: workspaceContext?.workspaceDir || repoRoot,

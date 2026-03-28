@@ -3343,6 +3343,70 @@ describe("ui-server mini app", () => {
     expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
   });
 
+  it("reads task log diagnostics from bounded monitor-log tails on task detail", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod._testInjectWorkflowEngine(null, null);
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const logsDir = resolve(process.cwd(), ".bosun", "logs");
+    mkdirSync(logsDir, { recursive: true });
+    const monitorErrorPath = resolve(logsDir, "monitor-error.log");
+    const previousMonitorError = existsSync(monitorErrorPath)
+      ? readFileSync(monitorErrorPath, "utf8")
+      : null;
+
+    try {
+      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "blocked worktree task",
+          description: "collect recent worktree failure evidence",
+          status: "blocked",
+          branchName: "ve/task-log-tail-12345678",
+        }),
+      }).then((r) => r.json());
+
+      expect(created.ok).toBe(true);
+      const taskId = created.data.id;
+      const filler = Array.from({ length: 8000 }, (_, index) => `2026-03-04T04:00:${String(index % 60).padStart(2, "0")}.000Z filler line ${index}`);
+      filler.push(
+        `2026-03-04T04:30:00.000Z [ERROR] Worktree acquisition failed for ${taskId} branch ve/task-log-tail-12345678`,
+      );
+      writeFileSync(monitorErrorPath, `${filler.join("\n")}\n`, "utf8");
+
+      const detail = await fetch(
+        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+      ).then((r) => r.json());
+
+      expect(detail.ok).toBe(true);
+      expect(detail.data.blockedContext.worktreeFailureCount).toBeGreaterThan(0);
+      expect(detail.data.blockedContext.logEvidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: "monitor-error.log",
+            message: expect.stringContaining("Worktree acquisition failed"),
+          }),
+        ]),
+      );
+    } finally {
+      if (previousMonitorError == null) {
+        rmSync(monitorErrorPath, { force: true });
+      } else {
+        writeFileSync(monitorErrorPath, previousMonitorError, "utf8");
+      }
+    }
+  });
+
   it("surfaces repo-area contention summaries on /api/telemetry/summary", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 

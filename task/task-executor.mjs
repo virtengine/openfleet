@@ -120,6 +120,8 @@ const MAX_NO_COMMIT_ATTEMPTS = 3; // Stop picking up a task after N consecutive 
 const NO_COMMIT_COOLDOWN_BASE_MS = 15 * 60 * 1000; // 15 minutes base cooldown for no-commit
 const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const LIST_TASKS_CACHE_TTL_MS = 5000;
+const LIST_TASKS_CACHE_MAX_ENTRIES = 12;
 const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
 const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
 const REPO_AREA_STARVATION_WAIT_MS = 2 * 60 * 1000;
@@ -2532,6 +2534,8 @@ class TaskExecutor {
     this._listTasksFailureCount = 0;
     this._listTasksBackoffUntil = 0;
     this._listTasksBackoffReason = "";
+    this._listTasksCache = new Map();
+    this._listTasksInflight = new Map();
     // Throttle draft-task filtering log messages (every 5 min max)
     this._lastDraftFilterLogAt = 0;
     this._projectResolveFailureWindowStart = 0;
@@ -3970,6 +3974,49 @@ class TaskExecutor {
     return this._projectResolvePromise;
   }
 
+  _buildListTasksCacheKey(projectId, options = {}) {
+    const normalizedProjectId = String(projectId || "").trim() || "*";
+    const normalizedStatus = String(options?.status || "").trim().toLowerCase() || "*";
+    return `${normalizedProjectId}|${normalizedStatus}`;
+  }
+
+  _storeListTasksCacheEntry(key, tasks) {
+    this._listTasksCache.set(key, {
+      ts: Date.now(),
+      tasks: Array.isArray(tasks) ? tasks : [],
+    });
+    if (this._listTasksCache.size > LIST_TASKS_CACHE_MAX_ENTRIES) {
+      const oldestKey = this._listTasksCache.keys().next().value;
+      if (oldestKey) this._listTasksCache.delete(oldestKey);
+    }
+  }
+
+  async _listTasksCached(projectId, options = {}, ttlMs = LIST_TASKS_CACHE_TTL_MS) {
+    const key = this._buildListTasksCacheKey(projectId, options);
+    const now = Date.now();
+    const cached = this._listTasksCache.get(key);
+    if (cached && now - Number(cached.ts || 0) <= ttlMs) {
+      return cached.tasks;
+    }
+
+    const inflight = this._listTasksInflight.get(key);
+    if (inflight) return inflight;
+
+    const pending = Promise.resolve()
+      .then(() => listTasks(projectId || undefined, options))
+      .then((tasks) => {
+        const normalized = Array.isArray(tasks) ? tasks : [];
+        this._storeListTasksCacheEntry(key, normalized);
+        return normalized;
+      })
+      .finally(() => {
+        this._listTasksInflight.delete(key);
+      });
+
+    this._listTasksInflight.set(key, pending);
+    return pending;
+  }
+
   async _recoverInterruptedInProgressTasks() {
     if (!this._running) return;
     if (this._paused) return;
@@ -3985,7 +4032,7 @@ class TaskExecutor {
 
     let inProgressTasks = [];
     try {
-      const fetched = await listTasks(projectId || undefined, {
+      const fetched = await this._listTasksCached(projectId || undefined, {
         status: "inprogress",
       });
       if (Array.isArray(fetched)) {
@@ -5595,7 +5642,7 @@ class TaskExecutor {
       return { completed: false, reason: "project_not_found", createdCount: 0 };
     }
 
-    const tasks = await listTasks(projectId || undefined);
+    const tasks = await this._listTasksCached(projectId || undefined);
     const allTasks = Array.isArray(tasks) ? tasks : [];
     const sinceMs = parseTaskTimestamp(task) || Date.now();
     const candidates = allTasks.filter((candidate) => {

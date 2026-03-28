@@ -895,6 +895,43 @@ describe("session-tracker", () => {
       }
     }, 15000);
 
+    it("can skip persisted archive scans for live-only snapshots", () => {
+      const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
+      try {
+        for (let index = 0; index < 101; index += 1) {
+          const id = `hist-live-${String(index).padStart(3, "0")}`;
+          const timestamp = new Date(Date.now() + index * 1000).toISOString();
+          writeFileSync(join(persistDir, `${id}.json`), JSON.stringify({
+            id,
+            taskId: id,
+            taskTitle: `Historic Session ${index}`,
+            type: "primary",
+            status: "completed",
+            createdAt: timestamp,
+            lastActiveAt: timestamp,
+            startedAt: Date.parse(timestamp),
+            endedAt: Date.parse(timestamp),
+            messages: [{ role: "assistant", content: `historic ${index}`, timestamp }],
+            metadata: { workspaceId: "ws-main" },
+          }, null, 2));
+        }
+
+        const liveTracker = createSessionTracker({ maxMessages: 5, persistDir });
+        liveTracker.createSession({ id: "live-001", type: "primary" });
+        const liveOnly = liveTracker.listAllSessions({ includePersisted: false });
+        const withPersisted = liveTracker.listAllSessions();
+
+        expect(liveOnly.length).toBeLessThan(withPersisted.length);
+        expect(withPersisted).toHaveLength(102);
+        expect(withPersisted.map((entry) => entry.id)).toContain("hist-live-000");
+        expect(liveOnly.map((entry) => entry.id)).not.toContain("hist-live-000");
+
+        liveTracker.destroy();
+      } finally {
+        rmSync(persistDir, { recursive: true, force: true });
+      }
+    });
+
     it("marks failed or long runs as resumable and trims short summaries", () => {
       tracker = createSessionTracker({ maxMessages: 50, persistDir: null });
       tracker.createSession({ id: "chat-resume", type: "primary" });
@@ -943,4 +980,3 @@ describe("session-tracker", () => {
     });
   });
 });
-

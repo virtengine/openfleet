@@ -68,7 +68,7 @@ ADJACENCY_MAP=(
   "task/|task-*|workflow-task-lifecycle*|kanban-*|ve-orchestrator*|vk-api*|ve-kanban*"
   "kanban/|kanban-*|task-store*|task-claims*|ve-kanban*|ve-orchestrator*|vk-api*"
   "workspace/|workspace-*|shared-state*|worktree-*|sync-engine*"
-  "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"
+  "infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"
   "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*"
   "bench/|bench-swebench*|benchmark-*|task-*"
   "config/|config-*|workspace-health*|bosun-skills*|codex-config*"

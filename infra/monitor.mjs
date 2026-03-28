@@ -85,6 +85,7 @@ import {
 import { loadConfig } from "../config/config.mjs";
 import { formatPreflightReport, runPreflightChecks } from "./preflight.mjs";
 import { startAutoUpdateLoop, stopAutoUpdateLoop } from "./update-check.mjs";
+import { createHeartbeatMonitor } from "./heartbeat-monitor.mjs";
 import {
   isWhatsAppEnabled,
   startWhatsAppChannel,
@@ -3514,6 +3515,7 @@ function restartSelf(reason) {
       ),
     );
   }
+  stopHeartbeatMonitor();
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -12198,6 +12200,42 @@ function stopMonitorMonitorSupervisor({ preserveRunning = false } = {}) {
   }
 }
 
+function isHeartbeatMonitorEnabled() {
+  if (isMonitorTestRuntime) return false;
+  const raw = String(process.env.BOSUN_HEARTBEAT_MONITOR_ENABLED || "true")
+    .trim()
+    .toLowerCase();
+  return !["0", "false", "no", "off"].includes(raw);
+}
+
+function restartHeartbeatMonitor() {
+  runtimeHeartbeatMonitor?.stop?.();
+  runtimeHeartbeatMonitor = null;
+
+  if (!isHeartbeatMonitorEnabled()) return;
+  const configDir = String(config?.configDir || "").trim();
+  if (!configDir) return;
+
+  runtimeHeartbeatMonitor = createHeartbeatMonitor({
+    configDir,
+    logDir,
+    intervalMs: Number(process.env.BOSUN_HEARTBEAT_INTERVAL_MS || 30_000),
+    timeoutMs: Number(process.env.BOSUN_HEARTBEAT_TIMEOUT_MS || 5_000),
+    successLogIntervalMs: Number(
+      process.env.BOSUN_HEARTBEAT_SUCCESS_LOG_INTERVAL_MS || 10 * 60_000,
+    ),
+    eventLoopWarnMs: Number(process.env.BOSUN_HEARTBEAT_LAG_WARN_MS || 1000),
+    logger: console,
+  });
+  runtimeHeartbeatMonitor.start();
+  console.log("[monitor] heartbeat monitor started");
+}
+
+function stopHeartbeatMonitor() {
+  runtimeHeartbeatMonitor?.stop?.();
+  runtimeHeartbeatMonitor = null;
+}
+
 /**
  * Called when a Live Digest window is sealed.
  * This provides fresh high-priority context and triggers an immediate run.
@@ -13365,6 +13403,7 @@ function applyConfig(nextConfig, options = {}) {
   } else {
     stopMonitorMonitorSupervisor();
   }
+  restartHeartbeatMonitor();
   restartGitHubReconciler();
 
   const nextArgs = scriptArgs?.join(" ") || "";
@@ -13398,6 +13437,7 @@ async function reloadConfig(reason) {
 process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
+  stopHeartbeatMonitor();
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -13445,6 +13485,7 @@ process.on("SIGINT", async () => {
 process.on("exit", () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
+  stopHeartbeatMonitor();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
   runDetachedDuringShutdown("workspace-monitor-shutdown:exit", () =>
@@ -13458,6 +13499,7 @@ process.on("exit", () => {
 process.on("SIGTERM", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
+  stopHeartbeatMonitor();
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -14198,6 +14240,8 @@ let syncEngine = null;
 let errorDetector = null;
 /** @type {import("../agent/agent-supervisor.mjs").AgentSupervisor|null} */
 let agentSupervisor = null;
+/** @type {ReturnType<typeof createHeartbeatMonitor>|null} */
+let runtimeHeartbeatMonitor = null;
 
 if (!isMonitorTestRuntime) {
   if (workflowAutomationEnabled) {
@@ -15228,4 +15272,3 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
