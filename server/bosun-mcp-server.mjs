@@ -4,18 +4,11 @@ import { resolve } from "node:path";
 import { format } from "node:util";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  ResolvedCallToolRequestSchema,
-  ResolvedListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import {
-  CallToolRequest,
-  ListToolsRequest,
-} from "@modelcontextprotocol/sdk/types.js";
+import * as McpTypes from "@modelcontextprotocol/sdk/types.js";
 
 const TAG = "[bosun-mcp]";
-const ResolvedCallToolRequestSchema = CallToolRequestSchema ?? CallToolRequest?.schema;
-const ResolvedListToolsRequestSchema = ListToolsRequestSchema ?? ListToolsRequest?.schema;
+const ResolvedCallToolRequestSchema = McpTypes.CallToolRequestSchema ?? McpTypes.CallToolRequest?.schema;
+const ResolvedListToolsRequestSchema = McpTypes.ListToolsRequestSchema ?? McpTypes.ListToolsRequest?.schema;
 const DEFAULT_DISCOVERY_PORTS = [3080, 4400];
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const ENV_KEYS_FOR_EMBEDDED = [
