@@ -413,6 +413,42 @@ function detectQualityGateCommand(rootDir, commands = {}, options = {}) {
   return commands.test || commands.lint || commands.build || commands.syntaxCheck || "";
 }
 
+function detectPostEditCommand(rootDir, commands = {}, options = {}) {
+  const packageManager = String(options.packageManager || "").trim().toLowerCase();
+  const scripts = readPackageJsonScripts(rootDir);
+  for (const scriptName of [
+    "postedit:check",
+    "post-edit:check",
+    "check:quick",
+    "quick:check",
+    "check:fast",
+    "lint:quick",
+    "format:check",
+    "lint",
+    "syntax:check",
+    "check",
+  ]) {
+    if (typeof scripts[scriptName] === "string" && scripts[scriptName].trim()) {
+      return buildPackageScriptCommand(packageManager, scriptName);
+    }
+  }
+
+  const makeTarget = findMakeTarget(rootDir, [
+    "postedit-check",
+    "post-edit-check",
+    "check-quick",
+    "quick-check",
+    "format-check",
+    "lint",
+    "check",
+  ]);
+  if (makeTarget) {
+    return `make ${makeTarget}`;
+  }
+
+  return commands.lint || commands.syntaxCheck || "";
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -442,6 +478,7 @@ function detectQualityGateCommand(rootDir, commands = {}, options = {}) {
  * @property {string} syntaxCheck   - Syntax/compile check command
  * @property {string} [typeCheck]   - Type-check command
  * @property {string} [qualityGate] - Pre-push / pre-PR validation command
+ * @property {string} [postEdit]    - Quick validation command to run after edits
  * @property {string} [testFramework] - Detected test framework name
  */
 export function detectProjectStack(rootDir) {
@@ -457,6 +494,7 @@ export function detectProjectStack(rootDir) {
     const pm = def.detectPackageManager(rootDir);
     const commands = def.detectCommands(rootDir);
     commands.qualityGate = detectQualityGateCommand(rootDir, commands, { packageManager: pm });
+    commands.postEdit = detectPostEditCommand(rootDir, commands, { packageManager: pm });
     const frameworks = def.detectFrameworks(rootDir);
     stacks.push({
       id: def.id,
