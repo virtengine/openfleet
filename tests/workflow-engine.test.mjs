@@ -6603,6 +6603,7 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     });
     expect(rerun.mode).toBe("from_failed");
     expect(rerun.reason).toBe("issue_advisor.resume_remaining");
+    expect(rerun.suggestedRetryMode).toBe("from_failed");
 
     const rerunSameStep = engine._chooseRetryModeFromDetail({
       issueAdvisor: { recommendedAction: "rerun_same_step", summary: "Rerun the timed out test step." },

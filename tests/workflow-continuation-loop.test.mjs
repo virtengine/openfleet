@@ -226,5 +226,31 @@ describe("continuation-loop template integration", () => {
     expect(ctxLike.data._plannerFeedback.issueAdvisor.nextStepGuidance).toContain("Preserve completed work");
     expect(ctxLike.data._plannerFeedback.dagStateSummary.counts.failed).toBe(1);
   });
+
+  it("summarizes resume guidance from the first pending node when work is partially completed", async () => {
+    makeTmpEngine();
+    const ctxLike = {
+      data: {
+        _dagState: {
+          runId: "run-124",
+          workflowId: "wf-124",
+          status: "running",
+          nodes: {
+            trigger: { nodeId: "trigger", label: "Trigger", status: "completed" },
+            writeTests: { nodeId: "write-tests", label: "Write Tests First", status: "pending" },
+            implement: { nodeId: "implement", label: "Implement", status: "waiting" },
+          },
+        },
+      },
+    };
+
+    const advisor = engine._refreshDagState(ctxLike, "running");
+    expect(advisor.recommendedAction).toBe("resume_remaining");
+    expect(advisor.summary).toBe("Resume from Write Tests First.");
+    expect(advisor.nextStepGuidance).toContain("Preserve completed work and continue from the next pending node.");
+    expect(advisor.nextStepGuidance).toContain("Next step: Write Tests First.");
+    expect(ctxLike.data._plannerFeedback.issueAdvisorSummary).toContain("Resume from Write Tests First.");
+    expect(ctxLike.data._plannerFeedback.issueAdvisorSummary).toContain("Next step: Write Tests First.");
+  });
 });
 

@@ -2886,6 +2886,7 @@ export class WorkflowEngine extends EventEmitter {
     return {
       mode,
       reason,
+      suggestedRetryMode: mode,
       fallbackMode,
       completedCount,
       failedCount,
