@@ -11,7 +11,7 @@
  * @module session-tracker
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -239,6 +239,19 @@ function updateTurnTimeline(session, msg) {
     turn.inputTokens = Math.max(turn.inputTokens || 0, usage.inputTokens || 0);
     turn.outputTokens = Math.max(turn.outputTokens || 0, usage.outputTokens || 0);
     turn.totalTokens = Math.max(turn.totalTokens || 0, usage.totalTokens || 0);
+    if (!session.insights || typeof session.insights !== "object") {
+      session.insights = {};
+    }
+    const priorUsage = extractUsageFromMeta(session.insights.tokenUsage) || {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    };
+    session.insights.tokenUsage = {
+      inputTokens: Math.max(priorUsage.inputTokens, usage.inputTokens || 0),
+      outputTokens: Math.max(priorUsage.outputTokens, usage.outputTokens || 0),
+      totalTokens: Math.max(priorUsage.totalTokens, usage.totalTokens || 0),
+    };
   }
   turn.durationMs = Math.max(0, Number(turn.endedAt || timestampMs) - Number(turn.startedAt || timestampMs));
 }
@@ -791,10 +804,12 @@ export class SessionTracker {
    */
   listAllSessions() {
     const byId = new Map();
-    const addSummary = (s) => {
+    const addSummary = (s, options = {}) => {
       if (!s) return;
-      const progress = s.status === "active"
-        ? this.getProgressStatus(s.id || s.taskId)
+      const sessionId = s.id || s.taskId;
+      const includeRuntimeProgress = options.includeRuntimeProgress !== false;
+      const progress = includeRuntimeProgress && s.status === "active"
+        ? this.getProgressStatus(sessionId)
         : null;
       const derivedStatus = progress?.status === "ended"
         ? "completed"
@@ -805,8 +820,17 @@ export class SessionTracker {
         : (Array.isArray(s.insights?.turnTimeline)
           ? s.insights.turnTimeline.map((turn) => ({ ...turn }))
           : []);
-      byId.set(s.id || s.taskId, {
-        id: s.id || s.taskId,
+      const turnTokenUsage = turns.reduce((acc, turn) => ({
+        inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
+        outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
+        totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
+      }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+      const tokenUsage = s.insights?.tokenUsage
+        || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
+          ? turnTokenUsage
+          : null);
+      byId.set(sessionId, {
+        id: sessionId,
         taskId: s.taskId,
         title: s.taskTitle || s.title || null,
         type: s.type || "task",
@@ -820,6 +844,10 @@ export class SessionTracker {
         branch: String(s?.metadata?.branch || "").trim() || null,
         turnCount: s.turnCount || 0,
         turns,
+        tokenCount: effectiveTokenUsage?.totalTokens || 0,
+        inputTokens: effectiveTokenUsage?.inputTokens || 0,
+        outputTokens: effectiveTokenUsage?.outputTokens || 0,
+        tokenUsage: effectiveTokenUsage,
         createdAt: s.createdAt || new Date(s.startedAt).toISOString(),
         lastActiveAt,
         idleMs: progress?.idleMs ?? 0,
@@ -843,7 +871,7 @@ export class SessionTracker {
             const raw = readFileSync(resolve(this.#persistDir, file), "utf8");
             const restored = buildSessionRecordFromPersistedData(JSON.parse(raw || "{}"), this.#idleThresholdMs);
             if (!restored || byId.has(restored.id || restored.taskId)) continue;
-            addSummary(restored);
+            addSummary(restored, { includeRuntimeProgress: false });
           } catch {
             /* ignore corrupt session file */
           }
@@ -1334,6 +1362,14 @@ export class SessionTracker {
     }
   }
 
+  #safeSessionFileMtime(file) {
+    try {
+      return statSync(resolve(this.#persistDir, file)).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
   #sessionFilePath(sessionId) {
     // Sanitize sessionId for filesystem safety
     const safe = String(sessionId).replace(/[^a-zA-Z0-9_\-\.]/g, "_");
@@ -1385,41 +1421,27 @@ export class SessionTracker {
     try {
       const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
 
-      // Pre-parse all session files with their timestamps for sorting
-      /** @type {Array<{file: string, data: Object, lastActive: number}>} */
-      const parsed = [];
-      for (const file of files) {
+      // Keep startup bounded by loading only the newest session files into memory.
+      // Older sessions remain on disk and are listed/lazy-loaded on demand.
+      const recentFiles = files
+        .map((file) => ({ file, mtimeMs: Number(this.#safeSessionFileMtime(file)) || 0 }))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .slice(0, MAX_SESSIONS);
+
+      for (const { file } of recentFiles) {
         try {
           const raw = readFileSync(resolve(this.#persistDir, file), "utf8");
           const data = JSON.parse(raw);
           if (!data.id && !data.taskId) continue;
-          const id = data.id || data.taskId;
-          if (this.#sessions.has(id)) continue; // don't overwrite in-memory
-          const lastActive = data.lastActiveAt
-            ? new Date(data.lastActiveAt).getTime()
-            : data.createdAt
-              ? new Date(data.createdAt).getTime()
-              : 0;
-          parsed.push({ file, data, lastActive });
+          const restored = buildSessionRecordFromPersistedData(data, this.#idleThresholdMs);
+          if (!restored) continue;
+          const id = restored.id;
+          if (this.#sessions.has(id)) continue;
+          this.#sessions.set(id, restored);
+          // Skip completed-session accumulation during startup hydration to keep disk-backed reloads fast.
+          // Sessions are still available for listing and lazy message reads from disk.
         } catch {
           // Skip corrupt files
-        }
-      }
-
-      // Sort by lastActive descending (newest first) and keep only MAX_SESSIONS in memory.
-      // Older session files remain on disk and are listed/lazy-loaded on demand.
-      parsed.sort((a, b) => b.lastActive - a.lastActive);
-      const toLoad = parsed.slice(0, MAX_SESSIONS);
-
-      for (const { data } of toLoad) {
-        const restored = buildSessionRecordFromPersistedData(data, this.#idleThresholdMs);
-        if (!restored) continue;
-        const id = restored.id;
-        this.#sessions.set(id, restored);
-        if (restored && isTerminalSessionStatus(restored.status) && !restored.accumulatedAt) {
-          if (this.#accumulateCompletedSession(restored, id)) {
-            this.#markDirty(id);
-          }
         }
       }
     } catch {
