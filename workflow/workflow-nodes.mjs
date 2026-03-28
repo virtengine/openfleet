@@ -8505,9 +8505,12 @@ registerBuiltinNodeType("agent.run_planner", {
         ctx.data[outputVariable] = String(result.output || "").trim();
       }
       const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
+      const plannerOutput = String(result.output || "").trim();
       return {
         success: result.success,
-        output: result.output,
+        output: plannerOutput,
+        text: plannerOutput,
+        result: plannerOutput,
         summary: digest.summary,
         narrative: digest.narrative,
         thoughts: digest.thoughts,

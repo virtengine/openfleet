@@ -563,6 +563,7 @@ function shouldFallbackForSdkError(error) {
   if (message.includes("model_not_found")) return true;
   if (message.includes("does not exist")) return true;
   if (message.includes("invalid model")) return true;
+  if (message.includes("failed to list models") && message.includes("400")) return true;
   // Auth / key errors — SDK isn't properly configured
   if (message.includes("unauthorized") || message.includes("401")) return true;
   if (
@@ -957,6 +958,18 @@ const SDK_ADAPTERS = {
  */
 let SDK_FALLBACK_ORDER = ["codex", "copilot", "claude"];
 
+function getSdkFallbackOrder() {
+  const envOrder = String(process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER || "").trim();
+  if (envOrder) {
+    const parsed = envOrder
+      .split(",")
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter((value, index, arr) => SDK_ADAPTERS[value] && arr.indexOf(value) === index);
+    if (parsed.length > 0) return parsed;
+  }
+  return SDK_FALLBACK_ORDER;
+}
+
 // Attempt to load custom fallback order from config
 try {
   const cfg = loadConfig();
@@ -1201,7 +1214,7 @@ function resolvePoolSdkName() {
   }
 
   // 4. Fallback chain: first non-disabled SDK
-  for (const name of SDK_FALLBACK_ORDER) {
+  for (const name of getSdkFallbackOrder()) {
     if (!isDisabled(name)) {
       resolvedSdkName = name;
       logResolution(name, "fallback chain");
@@ -2608,7 +2621,7 @@ export async function launchEphemeralThread(
     ? [primaryName]
     : [
         primaryName,
-        ...SDK_FALLBACK_ORDER.filter((name) => name !== primaryName),
+        ...getSdkFallbackOrder().filter((name) => name !== primaryName),
       ];
 
   let lastAttemptResult = null;
@@ -4183,5 +4196,3 @@ export function getActiveThreads() {
   }
   return result;
 }
-
-
