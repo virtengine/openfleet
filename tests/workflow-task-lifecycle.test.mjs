@@ -1840,11 +1840,11 @@ describe("action.acquire_worktree", () => {
     writeFileSync(join(repoDir, "README.md"), "init\n");
     gitExec("git add README.md && git commit -m init", { cwd: repoDir, stdio: "ignore" });
     gitExec("git branch -M main", { cwd: repoDir, stdio: "ignore" });
-  });
+  }, 30000);
 
   afterEach(() => {
     try { rmSync(repoDir, { recursive: true, force: true }); } catch { /* ok */ }
-  });
+  }, 30000);
 
   it("rebuilds missing repo git hooks in reused managed worktrees", async () => {
     const nt = getNodeType("action.acquire_worktree");

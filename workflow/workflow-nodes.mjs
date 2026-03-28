@@ -8031,17 +8031,34 @@ function rankPlannerTaskCandidatesForResume(tasks, plannerFeedback) {
   const normalizedNextStep = normalizeResumeText(nextStepLabel);
   if (!normalizedNextStep) return taskList;
 
-  return taskList
-    .map((task, originalIndex) => ({ task, originalIndex }))
+  const rankedEntries = taskList
+    .map((task, originalIndex) => {
+      const title = normalizeResumeText(task?.title || "");
+      const taskIndex = Number.isFinite(Number(task?.index)) ? Number(task.index) : originalIndex;
+      const exactMatch = title === normalizedNextStep;
+      const containsMatch = !exactMatch && title.includes(normalizedNextStep);
+      return {
+        task,
+        originalIndex,
+        title,
+        taskIndex,
+        exactMatch,
+        containsMatch,
+      };
+    });
+
+  const exactMatchEntry = rankedEntries.find((entry) => entry.exactMatch)
+    || rankedEntries.find((entry) => entry.containsMatch);
+  if (!exactMatchEntry) return taskList;
+
+  const exactTitle = exactMatchEntry.title;
+  return rankedEntries
+    .slice()
     .sort((a, b) => {
-      const titleA = normalizeResumeText(a?.task?.title || "");
-      const titleB = normalizeResumeText(b?.task?.title || "");
-      const isNextA = titleA === normalizedNextStep;
-      const isNextB = titleB === normalizedNextStep;
-      if (isNextA !== isNextB) return isNextA ? -1 : 1;
-      const indexA = Number.isFinite(Number(a?.task?.index)) ? Number(a.task.index) : a.originalIndex;
-      const indexB = Number.isFinite(Number(b?.task?.index)) ? Number(b.task.index) : b.originalIndex;
-      return indexA - indexB;
+      const aBeforeResume = a.taskIndex < exactMatchEntry.taskIndex && a.title !== exactTitle;
+      const bBeforeResume = b.taskIndex < exactMatchEntry.taskIndex && b.title !== exactTitle;
+      if (aBeforeResume !== bBeforeResume) return aBeforeResume ? 1 : -1;
+      return a.taskIndex - b.taskIndex;
     })
     .map(({ task }) => task);
 }
@@ -11478,7 +11495,8 @@ registerBuiltinNodeType("transform.mcp_extract", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Module-scope lazy caches for task lifecycle imports. */
-let _taskClaimsMod = null;`r`nconst _taskClaimsInitPromises = new Map();
+let _taskClaimsMod = null;
+const _taskClaimsInitPromises = new Map();
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
@@ -11598,15 +11616,16 @@ async function ensureTaskClaimsInitialized(ctx, claims, explicitRepoRoot = "") {
     resolveTaskRepositoryRoot("", requestedRepoRoot)
     || requestedRepoRoot
     || process.cwd();
-  if (!_taskClaimsInitPromise || !sameResolvedPath(_taskClaimsInitRepoRoot, repoRoot)) {
-    _taskClaimsInitRepoRoot = repoRoot;
-    _taskClaimsInitPromise = claims.initTaskClaims({ repoRoot }).catch((err) => {
-      _taskClaimsInitPromise = null;
-      _taskClaimsInitRepoRoot = "";
+  const repoKey = resolve(repoRoot);
+  let initPromise = _taskClaimsInitPromises.get(repoKey);
+  if (!initPromise) {
+    initPromise = claims.initTaskClaims({ repoRoot }).catch((err) => {
+      _taskClaimsInitPromises.delete(repoKey);
       throw err;
     });
+    _taskClaimsInitPromises.set(repoKey, initPromise);
   }
-  await _taskClaimsInitPromise;
+  await initPromise;
 }
 function isSharedStateOwnershipActive(state, now = Date.now()) {
   if (!state || typeof state !== "object") return false;
@@ -16176,13 +16195,12 @@ registerBuiltinNodeType("flow.parallel", {
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
 
-export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+export { registerNodeType, getNodeType, listNodeTypes, unregisterNodeType } from "./workflow-engine.mjs";
 export { evaluateTaskAssignedTriggerConfig };
 export {
   CALIBRATED_MAX_RISK_WITHOUT_HUMAN,
   normalizePlannerAreaKey,
 };
-export { unregisterNodeType };
 export {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
@@ -16191,7 +16209,7 @@ export {
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
-} from "./workflow-nodes/custom-loader.mjs";
+};
 
 export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   if (!customLoadPromise || options.forceReload) {
@@ -16204,6 +16222,8 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
 
 
 
