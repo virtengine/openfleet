@@ -101,7 +101,16 @@ for (const { relPath, source } of sourceFiles) {
       expect(surroundingChunk).not.toMatch(/key=\$\{i\}\s*\n/);
     });
 
-    it("agent threads list uses stable keys, not array indices", () => {
+
+    it("renders live turn counts in agent cards and exposes the turns detail tab", () => {
+      expect(source).toContain("fleet-slot-meta-turns");
+      expect(source).toContain("Turns ${Number(entry.session?.turnCount || 0)}");
+      expect(source).toContain('detailTab === "turns"');
+      expect(source).toContain('iconText(":repeat: Turns")');
+      expect(source).toContain("fleet-turn-timeline");
+      expect(source).toContain("formatTurnTokens(turn)");
+      expect(source).toContain("formatMsDuration(turn.durationMs || 0)");
+    });    it("agent threads list uses stable keys, not array indices", () => {
       // The "Agent Threads" section should key on a stable identifier
       const threadsSection = source.slice(
         source.indexOf("Agent Threads"),

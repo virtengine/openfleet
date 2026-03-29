@@ -2827,6 +2827,7 @@ function App() {
 /* ─── Mount ─── */
 const mountRoot = () => document.getElementById("app");
 const signalAppMounted = () => {
+  globalThis.__bosunAppMounted = true;
   globalThis.dispatchEvent?.(new Event("bosun:app-mounted"));
 };
 const mountApp = () => {

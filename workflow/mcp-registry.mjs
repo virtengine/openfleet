@@ -258,6 +258,89 @@ export function getCatalogEntry(id) {
   return CURATED_MCP_CATALOG.find((e) => e.id === normalized) || null;
 }
 
+function normalizeMcpEnv(env = {}, { requireAuth = true } = {}) {
+  const normalized = {};
+  const missing = [];
+  for (const [key, value] of Object.entries(env || {})) {
+    const trimmedValue = String(value ?? "").trim();
+    if (trimmedValue) {
+      normalized[key] = trimmedValue;
+      continue;
+    }
+    const inheritedValue = String(process.env[key] ?? "").trim();
+    if (inheritedValue) {
+      normalized[key] = inheritedValue;
+      continue;
+    }
+    if (requireAuth) {
+      missing.push(key);
+    }
+  }
+  return { env: normalized, missing };
+}
+
+function finalizeResolvedServer(server, options = {}) {
+  const requireAuth = options.requireAuth !== false;
+  const normalizedId = String(server?.id || "").trim();
+  if (!normalizedId) {
+    return {
+      server: null,
+      error: `${TAG} resolved MCP server is missing an id`,
+    };
+  }
+
+  const transport = String(server?.transport || "stdio")
+    .trim()
+    .toLowerCase();
+  const { env, missing } = normalizeMcpEnv(server?.env || {}, { requireAuth });
+  if (missing.length > 0) {
+    return {
+      server: null,
+      error: `${TAG} MCP server "${normalizedId}" missing required auth env: ${missing.join(", ")}`,
+    };
+  }
+
+  if (transport === "url") {
+    const url = String(server?.url || "").trim();
+    if (!url) {
+      return {
+        server: null,
+        error: `${TAG} MCP server "${normalizedId}" is missing a url`,
+      };
+    }
+    return {
+      server: {
+        id: normalizedId,
+        name: server?.name || normalizedId,
+        transport,
+        url,
+        env,
+      },
+      error: null,
+    };
+  }
+
+  const command = String(server?.command || "").trim();
+  if (!command) {
+    return {
+      server: null,
+      error: `${TAG} MCP server "${normalizedId}" is missing a command`,
+    };
+  }
+  return {
+    server: {
+      id: normalizedId,
+      name: server?.name || normalizedId,
+      transport,
+      command,
+      args: Array.isArray(server?.args) ? [...server.args] : [],
+      url: null,
+      env,
+    },
+    error: null,
+  };
+}
+
 // ── Install / Uninstall ───────────────────────────────────────────────────────
 
 /**
@@ -373,7 +456,11 @@ export async function getInstalledMcpServer(rootDir, id) {
  * @returns {Promise<Array<Object>>} — resolved server configs
  */
 export async function resolveMcpServersForAgent(rootDir, mcpServerIds = [], options = {}) {
-  const { defaultServers = [], catalogOverrides = {} } = options;
+  const {
+    defaultServers = [],
+    catalogOverrides = {},
+    requireAuth = true,
+  } = options;
 
   // Merge requested IDs with defaults (deduplicate)
   const allIds = [...new Set([...defaultServers, ...mcpServerIds])];
@@ -391,15 +478,54 @@ export async function resolveMcpServersForAgent(rootDir, mcpServerIds = [], opti
       if (catalogOverrides[id]) {
         config.env = { ...(config.env || {}), ...catalogOverrides[id] };
       }
-      resolved.push({
-        id: entry.id,
-        name: entry.name,
-        transport: config.transport || entry.meta?.transport || "stdio",
-        command: config.command || entry.meta?.command || null,
-        args: config.args || entry.meta?.args || [],
-        url: config.url || entry.meta?.url || null,
-        env: config.env || entry.meta?.env || {},
-      });
+      const finalized = finalizeResolvedServer(
+        {
+          id: entry.id,
+          name: entry.name,
+          transport: config.transport || entry.meta?.transport || "stdio",
+          command: config.command || entry.meta?.command || null,
+          args: config.args || entry.meta?.args || [],
+          url: config.url || entry.meta?.url || null,
+          env: config.env || entry.meta?.env || {},
+        },
+        { requireAuth },
+      );
+      if (finalized.server) {
+        resolved.push(finalized.server);
+      } else {
+        const catalogEntry = getCatalogEntry(id);
+        if (catalogEntry) {
+          const fallbackConfig = { ...catalogEntry };
+          if (catalogOverrides[id]) {
+            fallbackConfig.env = {
+              ...(fallbackConfig.env || {}),
+              ...catalogOverrides[id],
+            };
+          }
+          const fallback = finalizeResolvedServer(
+            {
+              id: fallbackConfig.id,
+              name: fallbackConfig.name,
+              transport: fallbackConfig.transport,
+              command: fallbackConfig.command || null,
+              args: fallbackConfig.args || [],
+              url: fallbackConfig.url || null,
+              env: fallbackConfig.env || {},
+            },
+            { requireAuth },
+          );
+          if (fallback.server) {
+            console.warn(
+              `${TAG} MCP server "${id}" installed config invalid; falling back to curated catalog`,
+            );
+            resolved.push(fallback.server);
+          } else if (fallback.error) {
+            console.warn(fallback.error);
+          }
+        } else if (finalized.error) {
+          console.warn(finalized.error);
+        }
+      }
     } else {
       // Check catalog as fallback (auto-install from catalog)
       const catalogEntry = getCatalogEntry(id);
@@ -408,15 +534,23 @@ export async function resolveMcpServersForAgent(rootDir, mcpServerIds = [], opti
         if (catalogOverrides[id]) {
           config.env = { ...(config.env || {}), ...catalogOverrides[id] };
         }
-        resolved.push({
-          id: config.id,
-          name: config.name,
-          transport: config.transport,
-          command: config.command || null,
-          args: config.args || [],
-          url: config.url || null,
-          env: config.env || {},
-        });
+        const finalized = finalizeResolvedServer(
+          {
+            id: config.id,
+            name: config.name,
+            transport: config.transport,
+            command: config.command || null,
+            args: config.args || [],
+            url: config.url || null,
+            env: config.env || {},
+          },
+          { requireAuth },
+        );
+        if (finalized.server) {
+          resolved.push(finalized.server);
+        } else if (finalized.error) {
+          console.warn(finalized.error);
+        }
       } else {
         console.warn(`${TAG} MCP server "${id}" not found (installed or catalog), skipping`);
       }

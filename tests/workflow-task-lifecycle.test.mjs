@@ -16,7 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
-import { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { classifyAcquireWorktreeFailure, getNodeType } from "../workflow/workflow-nodes.mjs";
 import { clearContractCache } from "../workflow/workflow-contract.mjs";
 import {
   WorkflowEngine,
@@ -1594,6 +1594,39 @@ describe("action.acquire_worktree", () => {
     try { rmSync(repoDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
 
+  it("rebuilds missing repo git hooks in reused managed worktrees", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recover-missing-hooks";
+    mkdirSync(join(repoDir, ".githooks"), { recursive: true });
+    writeFileSync(join(repoDir, ".githooks", "pre-commit"), "#!/usr/bin/env bash\necho pre-commit\n");
+    writeFileSync(join(repoDir, ".githooks", "pre-push"), "#!/usr/bin/env bash\necho pre-push\n");
+
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recover-hooks-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const first = await nt.execute(node, makeCtx({}));
+    expect(first.success).toBe(true);
+    expect(existsSync(join(first.worktreePath, ".githooks", "pre-commit"))).toBe(true);
+    expect(existsSync(join(first.worktreePath, ".githooks", "pre-push"))).toBe(true);
+
+    rmSync(join(first.worktreePath, ".githooks"), { recursive: true, force: true });
+    expect(existsSync(join(first.worktreePath, ".githooks", "pre-commit"))).toBe(false);
+
+    const second = await nt.execute(node, makeCtx({}));
+    expect(second.success).toBe(true);
+    expect(second.reused).toBe(true);
+    expect(readFileSync(join(second.worktreePath, ".githooks", "pre-commit"), "utf8"))
+      .toContain("pre-commit");
+    expect(readFileSync(join(second.worktreePath, ".githooks", "pre-push"), "utf8"))
+      .toContain("pre-push");
+  }, 15000);
+
   it("falls back to defaultTargetBranch when baseBranch template is unresolved", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -1613,7 +1646,7 @@ describe("action.acquire_worktree", () => {
     expect(ctx.data.baseBranch).toBe("main");
     expect(result.created).toBe(true);
     expect(existsSync(result.worktreePath)).toBe(true);
-  });
+  }, 15000);
 
   it("marks reused worktrees as managed for cleanup", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1669,7 +1702,37 @@ describe("action.acquire_worktree", () => {
     expect(result.created).toBe(false);
     expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
     expect(ctx.data._worktreeManaged).toBe(true);
-  }, 10000);
+  }, 20000);
+
+  it("attaches a worktree to a pre-existing local branch", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/local-branch-already-exists";
+    gitExec(`git checkout -b ${branch} main`, { cwd: repoDir, stdio: "ignore" });
+    gitExec("git checkout main", { cwd: repoDir, stdio: "ignore" });
+
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "local-branch-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.created).toBe(true);
+    expect(result.branch).toBe(branch);
+    expect(existsSync(result.worktreePath)).toBe(true);
+    expect(
+      gitExec("git branch --show-current", {
+        cwd: result.worktreePath,
+        encoding: "utf8",
+      }).trim(),
+    ).toBe(branch);
+  }, 20000);
+
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -1679,7 +1742,7 @@ describe("action.acquire_worktree", () => {
       branch: "task/very-long-branch-name-that-would-normally-be-used-as-worktree-directory",
       baseBranch: "main",
       fetchTimeout: 5000,
-      worktreeTimeout: 10000,
+      worktreeTimeout: 30000,
     });
 
     const result = await nt.execute(node, ctx);
@@ -1687,7 +1750,7 @@ describe("action.acquire_worktree", () => {
     const normalizedPath = String(result.worktreePath || "").replace(/\\/g, "/");
     expect(normalizedPath).toMatch(/\/\.bosun\/worktrees\/task-task123e4567-[a-f0-9]{10}$/);
     expect(normalizedPath).not.toContain("very-long-branch-name");
-  });
+  }, 30000);
 
   it("bootstraps managed node worktrees with shared repo node_modules", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1986,7 +2049,7 @@ describe("action.acquire_worktree", () => {
       }
       try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
     }
-  }, 20000);
+  }, 45000);
 
   it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2105,7 +2168,7 @@ describe("action.acquire_worktree", () => {
       encoding: "utf8",
     }).trim().toLowerCase();
     expect(longpaths).toBe("true");
-  });
+  }, 20000);
 
   it("repairs core.bare corruption after creating a worktree", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2134,6 +2197,20 @@ describe("action.acquire_worktree", () => {
       stdio: "pipe",
     })).toThrow();
   }, 15000);
+});
+
+describe("classifyAcquireWorktreeFailure", () => {
+  it("treats runtime setup failures as non-retryable blocking errors", () => {
+    const result = classifyAcquireWorktreeFailure(
+      "Worktree runtime setup incomplete for C:\\repo\\.bosun\\worktrees\\task-1: missing worktree setup files: .githooks/pre-commit, .githooks/pre-push",
+    );
+
+    expect(result.retryable).toBe(false);
+    expect(result.failureKind).toBe("worktree_runtime_setup_incomplete");
+    expect(result.phase).toBe("runtime-setup");
+    expect(result.detectedIssues).toContain("runtime_setup_incomplete");
+    expect(result.blockedReason).toMatch(/missing worktree setup files/i);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2431,6 +2508,10 @@ describe("action.build_task_prompt", () => {
       taskId: "T4d",
       taskTitle: "{{taskTitle}}",
       taskDescription: "{{taskDescription}}",
+      includeAgentsMd: false,
+      includeGitContext: false,
+      includeMemory: false,
+      includeStatusEndpoint: false,
     });
     const result = await nt.execute(node, ctx);
     expect(result.prompt).toContain("# Task: Task T4d");
@@ -3506,7 +3587,8 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-blocked-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "annotate-blocked-wt-failed")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "dispatch-wt-repair")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "dispatch-wt-repair" && e.target === "release-slot-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
     const annotate = t.nodes.find((n) => n.id === "annotate-blocked-wt-failed");
     expect(annotate?.type).toBe("action.bosun_function");

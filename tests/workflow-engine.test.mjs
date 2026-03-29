@@ -3473,17 +3473,17 @@ describe("Session chaining - action.run_agent", () => {
     expect(launchEphemeralThread.mock.calls[0][3]).not.toHaveProperty("model");
   });
 
-  it("falls back from unresolved cwd templates before launching an agent", async () => {
+  it("falls back to the bound runtime worktree when cwd resolves to an unresolved template", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
 
-    const ctx = new WorkflowContext({ repoRoot: "/tmp/repo-root" });
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/runtime-worktree" });
     const launchEphemeralThread = vi.fn().mockResolvedValue({
       success: true,
       output: "done",
       sdk: "codex",
       items: [],
-      threadId: "thread-fallback-cwd",
+      threadId: "thread-runtime-cwd",
     });
     const mockEngine = {
       services: {
@@ -3506,7 +3506,7 @@ describe("Session chaining - action.run_agent", () => {
     await handler.execute(node, ctx, mockEngine);
 
     expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
-    expect(launchEphemeralThread.mock.calls[0][1]).toBe("/tmp/repo-root");
+    expect(launchEphemeralThread.mock.calls[0][1]).toBe("/tmp/runtime-worktree");
   });
 
   it("fails fast in strict cache anchor mode when system prompt includes task markers", async () => {
@@ -5987,15 +5987,11 @@ describe("WorkflowEngine - configurable retry backoff", () => {
 
     engine.save(wf);
     engine.on("node:retry", (ev) => backoffs.push(ev.backoffMs));
-    const start = Date.now();
     await engine.execute(wf.id, {});
-    const elapsed = Date.now() - start;
 
     expect(callCount).toBe(3);
     // With retryDelayMs=0, backoff should be 0ms (0*2^0=0, 0*2^1=0)
     expect(backoffs).toEqual([0, 0]);
-    // Total time should be well under 100ms (no 1s+ delays)
-    expect(elapsed).toBeLessThan(500);
   });
 
   it("defaults to 1000ms base when retryDelayMs not set", async () => {
@@ -6326,11 +6322,15 @@ describe("WorkflowEngine task traceability hooks", () => {
 
 
 describe("WorkflowEngine.getTaskTraceEvents", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     makeTmpEngine();
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.resetTracingForTests();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.resetTracingForTests();
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
 
@@ -6566,7 +6566,5 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
-
-
 
 

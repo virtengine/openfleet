@@ -513,8 +513,11 @@ export function buildRepoCodexConfig(options = {}) {
   parts.push("");
 
   // ── MCP servers ──
-  parts.push(buildCommonMcpBlocks().trim());
-  parts.push("");
+  const commonMcpBlocks = buildCommonMcpBlocks(env).trim();
+  if (commonMcpBlocks) {
+    parts.push(commonMcpBlocks);
+    parts.push("");
+  }
 
   // ── Installed library MCP servers ──
   if (repoRoot) {

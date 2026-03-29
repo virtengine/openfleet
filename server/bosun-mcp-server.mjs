@@ -2,13 +2,24 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { format } from "node:util";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import * as McpTypes from "@modelcontextprotocol/sdk/types.js";
+import * as mcpServer from "@modelcontextprotocol/sdk/server/index.js";
+import * as mcpStdio from "@modelcontextprotocol/sdk/server/stdio.js";
+import * as mcpTypes from "@modelcontextprotocol/sdk/types.js";
+
+const Server = mcpServer.Server ?? mcpServer.default?.Server;
+const StdioServerTransport =
+  mcpStdio.StdioServerTransport ??
+  mcpStdio.default?.StdioServerTransport;
+const CallToolRequestSchema =
+  mcpTypes.CallToolRequestSchema ??
+  mcpTypes.default?.CallToolRequestSchema;
+const ListToolsRequestSchema =
+  mcpTypes.ListToolsRequestSchema ??
+  mcpTypes.default?.ListToolsRequestSchema;
 
 const TAG = "[bosun-mcp]";
-const ResolvedCallToolRequestSchema = McpTypes.CallToolRequestSchema ?? McpTypes.CallToolRequest?.schema;
-const ResolvedListToolsRequestSchema = McpTypes.ListToolsRequestSchema ?? McpTypes.ListToolsRequest?.schema;
+const ResolvedCallToolRequestSchema = CallToolRequestSchema;
+const ResolvedListToolsRequestSchema = ListToolsRequestSchema;
 const DEFAULT_DISCOVERY_PORTS = [3080, 4400];
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const ENV_KEYS_FOR_EMBEDDED = [

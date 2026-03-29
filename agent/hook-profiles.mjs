@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { detectProjectStack } from "../workflow/project-detection.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -77,31 +78,6 @@ const PRESET_COMMANDS = Object.freeze({
       timeout: 10_000,
     },
   ]),
-  PrePush: Object.freeze([
-    {
-      id: "prepush-go-vet",
-      command: "go vet ./...",
-      description: "Run go vet before push",
-      blocking: true,
-      timeout: 120_000,
-    },
-    {
-      id: "prepush-go-build",
-      command: "go build ./...",
-      description: "Verify Go build succeeds before push",
-      blocking: true,
-      timeout: 300_000,
-    },
-  ]),
-  PreCommit: Object.freeze([
-    {
-      id: "precommit-gofmt",
-      command: "gofmt -l .",
-      description: "Check Go formatting before commit",
-      blocking: false,
-      timeout: 30_000,
-    },
-  ]),
   TaskComplete: Object.freeze([
     {
       id: "task-complete-audit",
@@ -109,6 +85,27 @@ const PRESET_COMMANDS = Object.freeze({
       description: "Audit log for task completion",
       blocking: false,
       timeout: 10_000,
+    },
+  ]),
+});
+
+const PORTABLE_VALIDATION_COMMANDS = Object.freeze({
+  PrePush: Object.freeze([
+    {
+      id: "prepush-git-diff-check",
+      command: "git diff --check",
+      description: "Check tracked changes for whitespace and conflict-marker issues before push",
+      blocking: true,
+      timeout: 30_000,
+    },
+  ]),
+  PreCommit: Object.freeze([
+    {
+      id: "precommit-git-staged-diff-check",
+      command: "git diff --cached --check",
+      description: "Check staged changes for whitespace and conflict-marker issues before commit",
+      blocking: false,
+      timeout: 30_000,
     },
   ]),
 });
@@ -168,6 +165,86 @@ function isCopilotBridgeCommandPortable(commandTokens) {
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function slugifyHookId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "hook";
+}
+
+function createHookEntry({
+  id,
+  command,
+  description,
+  blocking = false,
+  timeout = DEFAULT_TIMEOUT_MS,
+}) {
+  return {
+    id,
+    command,
+    description,
+    blocking,
+    timeout,
+    sdks: ["*"],
+  };
+}
+
+function buildDetectedValidationCommands(rootDir) {
+  const detected = detectProjectStack(rootDir);
+  const qualityGate = String(detected?.commands?.qualityGate || "").trim();
+  const lint = String(detected?.commands?.lint || "").trim();
+  const syntaxCheck = String(detected?.commands?.syntaxCheck || "").trim();
+
+  return {
+    PrePush: qualityGate
+      ? [
+          createHookEntry({
+            id: `prepush-detected-${slugifyHookId(qualityGate)}`,
+            command: qualityGate,
+            description: `Run detected repository quality gate before push (${detected?.primary?.label || "project"})`,
+            blocking: true,
+            timeout: 300_000,
+          }),
+        ]
+      : [],
+    PreCommit: (lint || syntaxCheck)
+      ? [
+          createHookEntry({
+            id: `precommit-detected-${slugifyHookId(lint || syntaxCheck)}`,
+            command: lint || syntaxCheck,
+            description: `Run detected repository validation before commit (${detected?.primary?.label || "project"})`,
+            blocking: false,
+            timeout: 120_000,
+          }),
+        ]
+      : [],
+  };
+}
+
+function buildDefaultHooksForEvent(event, rootDir) {
+  const defaults = [
+    ...deepClone(PORTABLE_VALIDATION_COMMANDS[event] || []),
+  ];
+
+  if (rootDir && existsSync(rootDir)) {
+    defaults.push(...buildDetectedValidationCommands(rootDir)[event]);
+  }
+
+  const seen = new Set();
+  return defaults
+    .filter((entry) => {
+      const command = String(entry?.command || "").trim();
+      if (!command || seen.has(command)) return false;
+      seen.add(command);
+      return true;
+    })
+    .map((entry) => ({
+      ...entry,
+      sdks: ["*"],
+    }));
 }
 
 function normalizeProfile(profile) {
@@ -269,6 +346,7 @@ export function buildCanonicalHookConfig(options = {}) {
   const profile = normalizeProfile(options.profile);
   const flags = { ...PRESET_FLAGS[profile] };
   const commandOverrides = options.commands || {};
+  const rootDir = options.repoRoot ? resolve(options.repoRoot) : "";
 
   const hooks = {};
 
@@ -285,16 +363,10 @@ export function buildCanonicalHookConfig(options = {}) {
     }));
   }
   if (flags.includePrePush) {
-    hooks.PrePush = deepClone(PRESET_COMMANDS.PrePush).map((item) => ({
-      ...item,
-      sdks: ["*"],
-    }));
+    hooks.PrePush = buildDefaultHooksForEvent("PrePush", rootDir);
   }
   if (flags.includePreCommit) {
-    hooks.PreCommit = deepClone(PRESET_COMMANDS.PreCommit).map((item) => ({
-      ...item,
-      sdks: ["*"],
-    }));
+    hooks.PreCommit = buildDefaultHooksForEvent("PreCommit", rootDir);
   }
   if (flags.includeTaskComplete) {
     hooks.TaskComplete = deepClone(PRESET_COMMANDS.TaskComplete).map(
@@ -583,7 +655,10 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
     return result;
   }
 
-  const codexHookConfig = buildCanonicalHookConfig(options);
+  const codexHookConfig = buildCanonicalHookConfig({
+    ...options,
+    repoRoot: root,
+  });
   result.env = buildDisableEnv(codexHookConfig);
 
   if (targets.includes("codex")) {

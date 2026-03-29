@@ -436,6 +436,23 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       },
     }, { x: 470, y: 1480 }),
 
+    node("dispatch-wt-repair", "action.execute_workflow", "Dispatch WT Repair", {
+      workflowId: "template-task-repair-worktree",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        repoRoot: "{{repoRoot}}",
+        worktreePath: "{{$ctx.getNodeOutput('acquire-worktree')?.worktreePath || ''}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        defaultTargetBranch: "{{defaultTargetBranch}}",
+        error: "{{$ctx.getNodeOutput('acquire-worktree')?.error || $ctx.getNodeOutput('acquire-worktree')?.blockedReason || 'worktree acquisition failed'}}",
+        failureKind: "{{$ctx.getNodeOutput('acquire-worktree')?.failureKind || 'branch_refresh_conflict'}}",
+        repairArtifacts: "{{$ctx.getNodeOutput('acquire-worktree')?.repairArtifacts || null}}",
+      },
+    }, { x: 470, y: 1610 }),
+
     node("set-todo-wt-failed", "action.update_task_status", "Set Todo (WT Fail)", {
       taskId: "{{taskId}}",
       status: "todo",
@@ -570,7 +587,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("wt-failure-blocking", "set-blocked-wt-failed", { condition: "$output?.result === true", port: "yes" }),
     edge("wt-failure-blocking", "set-todo-wt-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("set-blocked-wt-failed", "annotate-blocked-wt-failed"),
-    edge("annotate-blocked-wt-failed", "release-slot-wt-failed"),
+    edge("annotate-blocked-wt-failed", "dispatch-wt-repair"),
+    edge("dispatch-wt-repair", "release-slot-wt-failed"),
     edge("set-todo-wt-failed", "release-slot-wt-failed"),
     edge("release-slot-wt-failed", "notify-wt-failed"),
   ],
@@ -580,7 +598,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     createdAt: "2026-03-01T00:00:00Z",
     templateVersion: "2.1.0",
     tags: ["task", "lifecycle", "executor", "workflow-first", "core"],
-    requiredTemplates: ["template-bosun-pr-progressor"],
+    requiredTemplates: ["template-bosun-pr-progressor", "template-task-repair-worktree"],
     replaces: {
       module: "task-executor.mjs",
       functions: [

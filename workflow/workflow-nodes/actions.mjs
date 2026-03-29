@@ -44,7 +44,7 @@ import {
   isUnresolvedTemplateToken,
   pickGitRef,
 } from "./transforms.mjs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
@@ -322,19 +322,11 @@ registerNodeType("action.run_agent", {
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
-    const resolvedCwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
-    const cwdFallback = [ctx.data?.worktreePath, ctx.data?.repoRoot, process.cwd()]
-      .map((value) => String(value || "").trim())
-      .find((value) => value && !isUnresolvedTemplateToken(value)) || process.cwd();
-    const cwd = isUnresolvedTemplateToken(resolvedCwd) ? cwdFallback : resolvedCwd;
-    if (cwd !== resolvedCwd) {
-      ctx.log(
-        node.id,
-        `Agent cwd resolved from unresolved template (${resolvedCwd}) to ${cwd}`,
-        "warn",
-      );
-    }
-      const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId);
+    const configuredCwd = ctx.resolve(node.config?.cwd || "");
+    const runtimeWorktreePath = String(ctx.data?.worktreePath || "").trim();
+    const cwd = isUnresolvedTemplateToken(configuredCwd)
+      ? runtimeWorktreePath || process.cwd()
+      : configuredCwd || runtimeWorktreePath || process.cwd();
     const trackedTaskId = String(
       ctx.data?.taskId ||
         ctx.data?.task?.id ||
@@ -432,7 +424,6 @@ registerNodeType("action.run_agent", {
         (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
         [],
       cwd,
-      repoRoot: ctx.data?.repoRoot || cwd,
       repoRoot:
         String(ctx.data?.repoRoot || "").trim() && !isUnresolvedTemplateToken(ctx.data?.repoRoot)
           ? ctx.data.repoRoot
@@ -1775,7 +1766,20 @@ registerNodeType("action.create_pr", {
     required: ["title"],
   },
   async execute(node, ctx) {
-    const title = ctx.resolve(node.config?.title || "");
+    const PR_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const PR_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
+    const normalizePrText = (value) => {
+      if (value == null) return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      if (PR_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      return text
+        .replace(PR_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim();
+    };
+
+    const title = normalizePrText(ctx.resolve(node.config?.title || ""));
     const body = ctx.resolve(node.config?.body || "");
     const resolvedBody = appendBosunCreatedPrFooter(body);
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
@@ -1802,6 +1806,11 @@ registerNodeType("action.create_pr", {
       BOSUN_CREATED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+    if (!title) {
+      const error = "PR title is required";
+      ctx.log(node.id, error);
+      return { success: false, error, title, base, branch: branch || null, repoSlug: repoSlug || null };
+    }
     const execOptions = {
       cwd,
       encoding: "utf8",
@@ -2499,6 +2508,30 @@ async function getCustomToolsMod() {
   return _customToolsMod;
 }
 
+function resolveBosunNativeRootDir(ctx, engine, explicitRoot = "") {
+  const resolvedExplicit = String(explicitRoot || "").trim();
+  if (resolvedExplicit) return resolvedExplicit;
+
+  const ctxRoot = String(ctx?.data?.worktreePath || ctx?.data?.repoRoot || "").trim();
+  if (ctxRoot) return ctxRoot;
+
+  const workflowDir = String(engine?.workflowDir || "").trim();
+  if (workflowDir) {
+    const normalizedWorkflowDir = resolve(workflowDir);
+    const workflowDirName = basename(normalizedWorkflowDir).toLowerCase();
+    if (workflowDirName === "workflows") {
+      const parentDir = dirname(normalizedWorkflowDir);
+      if (basename(parentDir).toLowerCase() === ".bosun") {
+        return dirname(parentDir);
+      }
+      return parentDir;
+    }
+    return dirname(normalizedWorkflowDir);
+  }
+
+  return process.cwd();
+}
+
 let _kanbanMod = null;
 async function getKanbanMod() {
   if (!_kanbanMod) {
@@ -2588,11 +2621,11 @@ registerNodeType("action.bosun_tool", {
     },
     required: ["toolId"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const toolId = ctx.resolve(node.config?.toolId || "");
     if (!toolId) throw new Error("action.bosun_tool: 'toolId' is required");
 
-    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const rootDir = resolveBosunNativeRootDir(ctx, engine);
     const cwd = ctx.resolve(node.config?.cwd || "") || rootDir;
     const timeoutMs = node.config?.timeoutMs || 60000;
 
@@ -2959,18 +2992,18 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
   "tools.list": {
     description: "List all available Bosun tools (built-in + custom + global)",
     params: ["rootDir"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       return mod.listCustomTools(rootDir, { includeBuiltins: true });
     },
   },
   "tools.get": {
     description: "Get details of a specific Bosun tool by ID",
     params: ["rootDir", "toolId"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       const result = mod.getCustomTool(rootDir, args.toolId);
       if (!result) return { found: false, toolId: args.toolId };
       return { found: true, ...result.entry };
@@ -4809,6 +4842,19 @@ registerNodeType("action.acquire_worktree", {
         return "";
       };
 
+      const localBranchExists = () => {
+        try {
+          execGitArgsSync(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+            cwd: repoRoot,
+            timeout: 5000,
+            stdio: ["ignore", "ignore", "ignore"],
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
       const invalidateBrokenReusableWorktree = (candidatePath, phaseLabel) => {
         const state = inspectManagedWorktreeState(candidatePath);
         if (!state.invalid) return false;
@@ -4892,9 +4938,12 @@ registerNodeType("action.acquire_worktree", {
       }
 
       // Create fresh worktree
+      const branchExistsLocally = localBranchExists();
       try {
         execGitArgsSync(
-          ["worktree", "add", worktreePath, "-b", branch, baseBranch],
+          branchExistsLocally
+            ? ["worktree", "add", worktreePath, branch]
+            : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
       } catch (createErr) {
@@ -4907,7 +4956,9 @@ registerNodeType("action.acquire_worktree", {
           if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
             fixGitConfigCorruption(repoRoot);
             execGitArgsSync(
-              ["worktree", "add", worktreePath, "-b", branch, baseBranch],
+              branchExistsLocally
+                ? ["worktree", "add", worktreePath, branch]
+                : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
               { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
             );
             recreatedAttachedWorktree = true;
@@ -6437,7 +6488,5 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
-
-
 
 

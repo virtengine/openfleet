@@ -31,7 +31,7 @@ import {
   MAX_NO_COMMIT_ATTEMPTS,
 } from "./workflow-nodes/transforms.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
@@ -570,11 +570,18 @@ function registerBuiltinNodeType(type, handler) {
 }
 
 function shouldBypassGhPrCreationForTests() {
-  return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GH !== "true";
+  const runningUnderVitest = Boolean(process.env.VITEST);
+  const runningUnderNodeTest = process.argv.includes("--test") || Boolean(process.env.NODE_TEST_CONTEXT);
+  return (runningUnderVitest || runningUnderNodeTest) && process.env.BOSUN_TEST_ALLOW_GH !== "true";
 }
 
 function shouldSkipGitRefreshForTests() {
   return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GIT_REFRESH !== "true";
+}
+
+function getNoopGitEditorCommand() {
+  const nodeBinary = JSON.stringify(process.execPath);
+  return `${nodeBinary} -e ""`;
 }
 
 function makeIsolatedGitEnv(extra = {}) {
@@ -590,6 +597,12 @@ function makeIsolatedGitEnv(extra = {}) {
   ]) {
     delete env[key];
   }
+  // Force git to stay non-interactive inside Bosun-managed automation paths.
+  env.GIT_TERMINAL_PROMPT = env.GIT_TERMINAL_PROMPT || "0";
+  env.GCM_INTERACTIVE = env.GCM_INTERACTIVE || "never";
+  env.GIT_MERGE_AUTOEDIT = env.GIT_MERGE_AUTOEDIT || "no";
+  env.GIT_EDITOR = env.GIT_EDITOR || getNoopGitEditorCommand();
+  env.GIT_SEQUENCE_EDITOR = env.GIT_SEQUENCE_EDITOR || env.GIT_EDITOR;
   return env;
 }
 
@@ -1609,6 +1622,35 @@ async function compactWorkflowCommandResult({
     },
   );
 
+  const envelopeMeta = compacted.contextEnvelope?.meta && typeof compacted.contextEnvelope.meta === "object"
+    ? compacted.contextEnvelope.meta
+    : null;
+  const synthesizedDiagnostics = compacted.commandDiagnostics || (
+    envelopeMeta && (
+      envelopeMeta.summary ||
+      envelopeMeta.deltaSummary ||
+      envelopeMeta.suggestedRerun ||
+      envelopeMeta.hint ||
+      envelopeMeta.lowSignal === true
+    )
+      ? {
+          family: envelopeMeta.family || compacted.compactionFamily || null,
+          runner: null,
+          commandKey: null,
+          summary: String(envelopeMeta.summary || ""),
+          failedTargets: [],
+          fileAnchors: [],
+          insufficientSignal: envelopeMeta.lowSignal === true,
+          deltaSummary: String(envelopeMeta.deltaSummary || ""),
+          resolvedTargets: [],
+          remainingTargets: [],
+          newTargets: [],
+          suggestedRerun: String(envelopeMeta.suggestedRerun || "") || null,
+          hint: String(envelopeMeta.hint || ""),
+        }
+      : null
+  );
+
   return {
     output: compacted.text || rawOutput || rawStderr,
     outputCompacted: compacted.compacted,
@@ -1621,11 +1663,11 @@ async function compactWorkflowCommandResult({
     outputBudgetPolicy: compacted.budgetPolicy || null,
     outputBudgetReason: compacted.budgetReason || "",
     outputContextEnvelope: compacted.contextEnvelope || null,
-    outputDiagnostics: compacted.commandDiagnostics || null,
-    outputSuggestedRerun: compacted.commandDiagnostics?.suggestedRerun || null,
-    outputDeltaSummary: compacted.commandDiagnostics?.deltaSummary || "",
-    outputHint: compacted.commandDiagnostics?.hint || "",
-    outputInsufficientSignal: compacted.commandDiagnostics?.insufficientSignal === true,
+    outputDiagnostics: synthesizedDiagnostics,
+    outputSuggestedRerun: synthesizedDiagnostics?.suggestedRerun || null,
+    outputDeltaSummary: synthesizedDiagnostics?.deltaSummary || "",
+    outputHint: synthesizedDiagnostics?.hint || "",
+    outputInsufficientSignal: synthesizedDiagnostics?.insufficientSignal === true,
     items: compacted.item ? [compacted.item] : [],
   };
 }
@@ -2978,11 +3020,11 @@ registerBuiltinNodeType("action.run_agent", {
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
-    const rawConfiguredCwd = node.config?.cwd;
-    const resolvedCwd = ctx.resolve(rawConfiguredCwd || ctx.data?.worktreePath || process.cwd());
-    const cwdHasUnresolvedTemplate = /\{\{[^}]+\}\}/.test(String(resolvedCwd || ""));
-    const cwdFallback = ctx.resolve(ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd());
-    const cwd = cwdHasUnresolvedTemplate ? cwdFallback : resolvedCwd;
+    const configuredCwd = ctx.resolve(node.config?.cwd || "");
+    const runtimeWorktreePath = String(ctx.data?.worktreePath || "").trim();
+    const cwd = isUnresolvedTemplateToken(configuredCwd)
+      ? runtimeWorktreePath || process.cwd()
+      : configuredCwd || runtimeWorktreePath || process.cwd();
     const trackedTaskId = String(
       ctx.data?.taskId ||
         ctx.data?.task?.id ||
@@ -5432,17 +5474,40 @@ registerBuiltinNodeType("action.create_pr", {
     required: ["title"],
   },
   async execute(node, ctx, engine) {
-    const title = ctx.resolve(node.config?.title || "");
-    const body = appendBosunCreatedPrFooter(ctx.resolve(node.config?.body || ""));
-    const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    const resolveNodeValue = (value, fallback = "") => {
+      try {
+        const resolved = typeof ctx?.resolve === "function" ? ctx.resolve(value ?? fallback) : (value ?? fallback);
+        return resolved ?? fallback;
+      } catch (err) {
+        ctx.log(node.id, `Failed to resolve PR node value: ${err?.message || err}`);
+        return fallback;
+      }
+    };
+
+    const PR_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const PR_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
+    const normalizePrText = (value) => {
+      if (value == null) return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      if (PR_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      return text
+        .replace(PR_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim();
+    };
+
+    const title = normalizePrText(resolveNodeValue(node.config?.title, ""));
+    const body = appendBosunCreatedPrFooter(String(resolveNodeValue(node.config?.body, "")));
+    const baseInput = resolveNodeValue(node.config?.base ?? node.config?.baseBranch, "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
       base = normalizeBaseBranch(base).branch;
     } catch {
     }
-    const branch = ctx.resolve(node.config?.branch || "");
+    const branch = String(resolveNodeValue(node.config?.branch, "")).trim();
     const repoSlug = String(
-      ctx.resolve(node.config?.repoSlug || ctx.data?.repoSlug || ctx.data?.repository || ""),
+      resolveNodeValue(node.config?.repoSlug ?? ctx.data?.repoSlug ?? ctx.data?.repository, ""),
     ).trim();
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
@@ -5451,12 +5516,15 @@ registerBuiltinNodeType("action.create_pr", {
       false,
     );
     const autoMergeMethodRaw = String(
-      ctx.resolve(node.config?.autoMergeMethod || node.config?.mergeMethod || process.env.BOSUN_MERGE_METHOD || "merge"),
+      resolveNodeValue(
+        node.config?.autoMergeMethod ?? node.config?.mergeMethod ?? process.env.BOSUN_MERGE_METHOD,
+        "merge",
+      ),
     ).trim().toLowerCase();
     const autoMergeMethod = ["merge", "squash", "rebase"].includes(autoMergeMethodRaw)
       ? autoMergeMethodRaw
       : (process.env.BOSUN_MERGE_METHOD || "merge");
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const cwd = String(resolveNodeValue(node.config?.cwd ?? ctx.data?.worktreePath, process.cwd())).trim() || process.cwd();
 
     // Normalize labels/reviewers to arrays
     const toList = (v) => {
@@ -5465,11 +5533,17 @@ registerBuiltinNodeType("action.create_pr", {
       return String(v).split(",").map((s) => s.trim()).filter(Boolean);
     };
     const labels = Array.from(new Set([
-      ...toList(ctx.resolve(node.config?.labels || "")),
+      ...toList(resolveNodeValue(node.config?.labels, "")),
       BOSUN_ATTACHED_PR_LABEL,
       BOSUN_CREATED_PR_LABEL,
     ]));
-    const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+    const reviewers = toList(resolveNodeValue(node.config?.reviewers, ""));
+
+    if (!title) {
+      const error = "PR title is required";
+      ctx.log(node.id, error);
+      return { success: false, error, title, base, branch: branch || null, repoSlug: repoSlug || null };
+    }
 
     // Resolve Bosun's best available GitHub token and inject as GH_TOKEN so that
     // `gh pr create` uses a user OAuth / App installation token rather than the
@@ -5737,11 +5811,11 @@ registerBuiltinNodeType("action.create_pr", {
       if (failOnError) {
         return { success: false, error: errorMsg, command: cmd };
       }
-      // Graceful fallback — record handoff for Bosun management, but mark as failed
-      // so the task-lifecycle pr-created gate routes back to todo for retry.
+      // Graceful fallback — preserve the PR payload and hand off lifecycle management
+      // to Bosun without treating the node contract itself as a failure.
       ctx.log(node.id, `Falling back to Bosun-managed PR lifecycle handoff`);
       return {
-        success: false,
+        success: true,
         handedOff: true,
         lifecycle: "bosun_managed",
         action: "pr_handoff",
@@ -9261,6 +9335,30 @@ async function getCustomToolsMod() {
   return _customToolsMod;
 }
 
+function resolveBosunNativeRootDir(ctx, engine, explicitRoot = "") {
+  const resolvedExplicit = String(explicitRoot || "").trim();
+  if (resolvedExplicit) return resolvedExplicit;
+
+  const ctxRoot = String(ctx?.data?.worktreePath || ctx?.data?.repoRoot || "").trim();
+  if (ctxRoot) return ctxRoot;
+
+  const workflowDir = String(engine?.workflowDir || "").trim();
+  if (workflowDir) {
+    const normalizedWorkflowDir = resolve(workflowDir);
+    const workflowDirName = basename(normalizedWorkflowDir).toLowerCase();
+    if (workflowDirName === "workflows") {
+      const parentDir = dirname(normalizedWorkflowDir);
+      if (basename(parentDir).toLowerCase() === ".bosun") {
+        return dirname(parentDir);
+      }
+      return parentDir;
+    }
+    return dirname(normalizedWorkflowDir);
+  }
+
+  return process.cwd();
+}
+
 let _kanbanMod = null;
 async function getKanbanMod() {
   if (!_kanbanMod) {
@@ -9354,7 +9452,7 @@ registerBuiltinNodeType("action.bosun_tool", {
     const toolId = ctx.resolve(node.config?.toolId || "");
     if (!toolId) throw new Error("action.bosun_tool: 'toolId' is required");
 
-    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const rootDir = resolveBosunNativeRootDir(ctx, engine);
     const cwd = ctx.resolve(node.config?.cwd || "") || rootDir;
     const timeoutMs = node.config?.timeoutMs || 60000;
 
@@ -9774,18 +9872,18 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
   "tools.list": {
     description: "List all available Bosun tools (built-in + custom + global)",
     params: ["rootDir"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       return mod.listCustomTools(rootDir, { includeBuiltins: true });
     },
   },
   "tools.get": {
     description: "Get details of a specific Bosun tool by ID",
     params: ["rootDir", "toolId"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       const result = mod.getCustomTool(rootDir, args.toolId);
       if (!result) return { found: false, toolId: args.toolId };
       return { found: true, ...result.entry };
@@ -11566,6 +11664,21 @@ function findExistingWorktreePathForBranch(repoRoot, branch) {
   return "";
 }
 
+function localBranchExists(repoRoot, branch) {
+  const normalizedBranch = String(branch || "").trim().replace(/^refs\/heads\//, "");
+  if (!normalizedBranch) return false;
+  try {
+    execGitArgsSync(["show-ref", "--verify", "--quiet", `refs/heads/${normalizedBranch}`], {
+      cwd: repoRoot,
+      timeout: 5000,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isValidGitWorktreePath(worktreePath) {
   if (!worktreePath || !existsSync(worktreePath)) return false;
   try {
@@ -11781,7 +11894,8 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
     execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
       cwd: repoRoot,
       encoding: "utf8",
-      timeout: 30000,
+      // Best-effort cleanup should fail fast instead of hanging the workflow.
+      timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
@@ -11803,7 +11917,7 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
     execGitArgsSync(["worktree", "prune"], {
       cwd: repoRoot,
       encoding: "utf8",
-      timeout: 15000,
+      timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
@@ -12828,6 +12942,46 @@ registerBuiltinNodeType("action.resolve_executor", {
 
 // ── action.acquire_worktree ─────────────────────────────────────────────────
 
+export function classifyAcquireWorktreeFailure(errorInput) {
+  const errorMessage = String(errorInput?.message || errorInput || "worktree_acquisition_failed");
+  const normalized = errorMessage.trim();
+
+  if (/managed worktree was removed after stale refresh state/i.test(normalized)) {
+    return {
+      errorMessage: normalized,
+      retryable: false,
+      failureKind: "branch_refresh_conflict",
+      blockedReason: "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.",
+      detectedIssues: ["refresh_conflict"],
+      phase: "post-pull",
+    };
+  }
+
+  if (
+    /worktree runtime setup incomplete/i.test(normalized) ||
+    /missing worktree setup files/i.test(normalized) ||
+    /git core\.hooksPath/i.test(normalized)
+  ) {
+    return {
+      errorMessage: normalized,
+      retryable: false,
+      failureKind: "worktree_runtime_setup_incomplete",
+      blockedReason: normalized,
+      detectedIssues: ["runtime_setup_incomplete"],
+      phase: "runtime-setup",
+    };
+  }
+
+  return {
+    errorMessage: normalized,
+    retryable: true,
+    failureKind: "worktree_acquisition_failed",
+    blockedReason: normalized,
+    detectedIssues: [],
+    phase: null,
+  };
+}
+
 registerBuiltinNodeType("action.acquire_worktree", {
   describe: () =>
     "Create or checkout a git worktree for isolated task execution. " +
@@ -13002,16 +13156,94 @@ registerBuiltinNodeType("action.acquire_worktree", {
 
       // Create fresh worktree
       let attachedExistingBranch = false;
+      const branchExistsLocally = localBranchExists(repoRoot, branch);
+      let existingBranchWorktree = branchExistsLocally
+        ? findExistingWorktreePathForBranch(repoRoot, branch)
+        : "";
+      if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
+        ctx.log(
+          node.id,
+          `Pruning stale registered worktree for branch ${branch}: ${existingBranchWorktree}`,
+        );
+        notePoisonedWorktree("attached-branch", existingBranchWorktree, ["missing_git_metadata"]);
+        cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+        existingBranchWorktree = "";
+      }
+      if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+        const existingWorktreeIsBroken = (
+          !isValidGitWorktreePath(existingBranchWorktree) ||
+          hasUnresolvedGitOperation(existingBranchWorktree)
+        ) && isManagedBosunWorktree(existingBranchWorktree, repoRoot);
+        if (existingWorktreeIsBroken) {
+          ctx.log(
+            node.id,
+            `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
+          );
+          notePoisonedWorktree("attached-branch", existingBranchWorktree, [
+            !isValidGitWorktreePath(existingBranchWorktree)
+              ? "missing_git_metadata"
+              : "unresolved_git_operation",
+          ]);
+          cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+          existingBranchWorktree = "";
+        }
+      }
+      if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+        isValidGitWorktreePath(existingBranchWorktree) &&
+        !hasUnresolvedGitOperation(existingBranchWorktree)
+      ) {
+        const refreshResult = refreshManagedWorktreeReuse(
+          node.id,
+          ctx,
+          repoRoot,
+          existingBranchWorktree,
+          baseBranch,
+          baseBranchShort,
+          fetchTimeout,
+          { taskId, branch },
+        );
+        if (refreshResult?.repairArtifacts) {
+          recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+        }
+        if (existsSync(existingBranchWorktree) &&
+          isValidGitWorktreePath(existingBranchWorktree) &&
+          !hasUnresolvedGitOperation(existingBranchWorktree)
+        ) {
+          ctx.data.worktreePath = existingBranchWorktree;
+          ctx.data._worktreeCreated = false;
+          ctx.data._worktreeManaged = true;
+          ensureManagedTaskWorktreeReady(repoRoot, existingBranchWorktree);
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath: existingBranchWorktree,
+          });
+          ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+          const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
+          if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
+          return {
+            success: true,
+            worktreePath: existingBranchWorktree,
+            created: false,
+            reused: true,
+            reusedExistingBranch: true,
+            branch,
+            baseBranch,
+          };
+        }
+      }
       try {
         execGitArgsSync(
-          ["worktree", "add", worktreePath, "-b", branch, baseBranch],
+          branchExistsLocally
+            ? ["worktree", "add", worktreePath, branch]
+            : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
+        attachedExistingBranch = branchExistsLocally;
       } catch (createErr) {
-        if (!isExistingBranchWorktreeError(createErr)) {
+        if (!isExistingBranchWorktreeError(createErr) && !isMissingRegisteredWorktreeError(createErr)) {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
-        const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+        existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
         if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
           ctx.log(
             node.id,
@@ -13215,19 +13447,23 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
-      const errorMessage = String(err?.message || err || "worktree_acquisition_failed");
-      const retryable = !/managed worktree was removed after stale refresh state/i.test(errorMessage);
+      const classified = classifyAcquireWorktreeFailure(err);
+      const {
+        errorMessage,
+        retryable,
+        failureKind,
+        blockedReason,
+        detectedIssues,
+        phase,
+      } = classified;
       const recordedAt = new Date().toISOString();
       const autoRecoverDelayMs = retryable ? 0 : getNonRetryableWorktreeRecoveryMs();
       const retryAt = retryable ? null : new Date(Date.now() + autoRecoverDelayMs).toISOString();
-      const blockedReason = retryable
-        ? errorMessage
-        : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
       if (!retryable) {
         await recordWorktreeRecoveryEvent(repoRoot, {
           outcome: "recreation_failed",
           reason: "poisoned_worktree",
-          phase: "post-pull",
+          phase,
           branch,
           taskId,
           worktreePath: resolve(
@@ -13236,7 +13472,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             "worktrees",
             deriveManagedWorktreeDirName(taskId, branch)
           ),
-          detectedIssues: ["refresh_conflict"],
+          detectedIssues,
           error: errorMessage,
         });
       }
@@ -13247,7 +13483,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
         branch,
         baseBranch,
         retryable,
-        failureKind: retryable ? "worktree_acquisition_failed" : "branch_refresh_conflict",
+        failureKind,
         recordedAt,
         autoRecoverDelayMs,
         retryAt,
@@ -15595,8 +15831,3 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
-
-
-
-
-

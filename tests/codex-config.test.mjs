@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -16,8 +16,15 @@ import {
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
 
 describe("codex-config defaults", () => {
-  it("includes expanded MCP server defaults", () => {
+  it("omits default MCP server blocks unless explicitly enabled", () => {
     const block = buildCommonMcpBlocks();
+    expect(block).toBe("");
+  });
+
+  it("includes expanded MCP server defaults when explicitly enabled", () => {
+    const block = buildCommonMcpBlocks({
+      BOSUN_MCP_ALLOW_DEFAULT_SERVERS: "1",
+    });
     expect(block).toContain("[mcp_servers.context7]");
     expect(block).toContain("[mcp_servers.sequential-thinking]");
     expect(block).toContain("[mcp_servers.playwright]");
@@ -205,6 +212,28 @@ describe("codex-config defaults", () => {
     expect(toml).toContain('sandbox_mode = "danger-full-access"');
   });
 
+  it("does not seed default MCP servers into repo Codex config unless enabled", () => {
+    const toml = buildRepoCodexConfig({
+      repoRoot: "/tmp/virtengine",
+      env: {},
+    });
+
+    expect(toml).not.toContain("[mcp_servers.context7]");
+    expect(toml).not.toContain("[mcp_servers.microsoft-docs]");
+  });
+
+  it("can opt back into default MCP servers when building repo Codex config", () => {
+    const toml = buildRepoCodexConfig({
+      repoRoot: "/tmp/virtengine",
+      env: {
+        BOSUN_MCP_ALLOW_DEFAULT_SERVERS: "1",
+      },
+    });
+
+    expect(toml).toContain("[mcp_servers.context7]");
+    expect(toml).toContain("[mcp_servers.microsoft-docs]");
+  });
+
   it("supports legacy sandbox_permissions helper names", () => {
     const line = buildSandboxPermissions("disk-full-write-access");
     expect(line).toContain('sandbox_mode = "workspace-write"');
@@ -254,7 +283,48 @@ describe("codex-config defaults", () => {
     expect(result.toml).toContain('base_url = "https://example-resource.openai.azure.com/openai/v1"');
     expect(result.toml).not.toContain('/openai/deployments/gpt-5/chat/completions');
   });
+  it("selects the Azure provider whose endpoint matches OPENAI_BASE_URL", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-home-"));
+    const codexDir = join(home, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      join(codexDir, "config.toml"),
+      [
+        'model = "gpt-5-deployment"',
+        'model_provider = "azure-sweden"',
+        "",
+        "[model_providers.azure-us]",
+        'name = "Azure OpenAI US"',
+        'base_url = "https://us-resource.openai.azure.com/openai/v1"',
+        'env_key = "AZURE_OPENAI_API_KEY"',
+        'wire_api = "responses"',
+        "",
+        "[model_providers.azure-sweden]",
+        'name = "Azure OpenAI Sweden"',
+        'base_url = "https://sweden-resource.openai.azure.com/openai/v1"',
+        'env_key = "AZURE_SWEDEN_OPENAI_API_KEY"',
+        'wire_api = "responses"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = resolveCodexProfileRuntime({
+      HOME: home,
+      OPENAI_BASE_URL: "https://us-resource.openai.azure.com/openai/v1",
+      OPENAI_API_KEY: "shared-openai-key",
+      AZURE_OPENAI_API_KEY: "us-key",
+      AZURE_SWEDEN_OPENAI_API_KEY: "sweden-key",
+    });
+
+    expect(result.provider).toBe("azure");
+    expect(result.configProvider).toEqual({
+      name: "azure-us",
+      envKey: "AZURE_OPENAI_API_KEY",
+      baseUrl: "https://us-resource.openai.azure.com/openai/v1",
+    });
+    expect(result.env.OPENAI_BASE_URL).toBe("https://us-resource.openai.azure.com/openai/v1");
+    expect(result.env.AZURE_OPENAI_API_KEY).toBe("us-key");
+  });
 });
-
-
 

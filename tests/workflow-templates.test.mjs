@@ -1399,7 +1399,6 @@ describe("github template CLI compatibility", () => {
 
     const gateNode = mergeTemplate.nodes.find((n) => n.id === "automation-eligible");
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
-    expect(gateNode?.config?.expression).toContain("bosun-pr-bosun-created");
     expect(gateNode?.config?.expression).toContain("labels.includes('bosun-pr-bosun-created')");
     expect(getNodeCommandCode(checkCi)).toContain("gh pr checks");
     expect(getNodeCommandCode(checkCi)).toContain("--json name,state");
@@ -1546,8 +1545,8 @@ describe("github template CLI compatibility", () => {
 
     expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
-    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs'])");
-    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
+    expect(command).toContain("collectCiDiagnostics(repo,failedRun,runGh)");
+    expect(command).toContain("runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8'])");
     expect(command).toContain("reason:'auto_rerun_limit_reached'");
     expect(command).toContain("failedLogExcerpt");
     expect(command).toContain("failedJobs");
@@ -1581,8 +1580,9 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(inspectNode)).toContain("const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']);");
     expect(getNodeCommandCode(inspectNode)).toContain("classification='conflict';reason='merge_conflict';");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
-    expect(getNodeCommandCode(fixNode)).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
+    expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
+    expect(getNodeCommandCode(fixNode)).toContain("classification==='conflict'");
     expect(getNodeCommandCode(fixNode)).toContain("mergeable==='BEHIND'");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'branch_updated_from_base'");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs=['pr','merge'");
@@ -1611,8 +1611,20 @@ describe("github template CLI compatibility", () => {
     expect(lifecycleTemplate.edges.find((e) => e.source === "handoff-pr-progressor" && e.target === "log-success")).toBeDefined();
     expect(lifecycleTemplate.edges.find((e) => e.source === "set-inreview-stolen" && e.target === "handoff-pr-progressor-stolen")).toBeDefined();
     expect(finalizationTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
-    expect(repairTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(repairTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "clear-repair-blocked-success")).toBeDefined();
+    expect(repairTemplate.edges.find((e) => e.source === "clear-repair-blocked-success" && e.target === "handoff-pr-progressor")).toBeDefined();
     expect(batchPrTemplate.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+  });
+
+  it("task lifecycle dispatches repair workflow for blocked non-retryable worktree failures", () => {
+    const lifecycleTemplate = getTemplate("template-task-lifecycle");
+    const repairDispatch = lifecycleTemplate.nodes.find((n) => n.id === "dispatch-wt-repair");
+
+    expect(repairDispatch?.type).toBe("action.execute_workflow");
+    expect(repairDispatch?.config?.workflowId).toBe("template-task-repair-worktree");
+    expect(repairDispatch?.config?.mode).toBe("dispatch");
+    expect(lifecycleTemplate.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "dispatch-wt-repair")).toBeDefined();
+    expect(lifecycleTemplate.edges.find((e) => e.source === "dispatch-wt-repair" && e.target === "release-slot-wt-failed")).toBeDefined();
   });
 
   it("PR watchdog and GitHub sync pass node outputs via template interpolation env vars", () => {
@@ -1738,7 +1750,7 @@ describe("template category coverage", () => {
   });
 
   it("categories have valid structure", () => {
-    for (const [key, val] of Object.entries(TEMPLATE_CATEGORIES)) {
+    for (const [, val] of Object.entries(TEMPLATE_CATEGORIES)) {
       expect(typeof val.label).toBe("string");
       expect(typeof val.icon).toBe("string");
       expect(typeof val.order).toBe("number");

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findPackageRoot,
   findVitestEntry,
+  isDirectExecution,
   resolveVitestArgs,
 } from "../tools/vitest-runner.mjs";
 
@@ -98,6 +99,14 @@ describe("vitest-runner", () => {
 
     expect(prePushHook).toContain("node tools/vitest-runner.mjs run --config vitest.config.mjs");
     expect(prePushHook).not.toContain("node node_modules/vitest/vitest.mjs");
+  });
+
+  it("detects direct execution for Windows-style script paths", () => {
+    const scriptPath = resolve(process.cwd(), "tools", "vitest-runner.mjs");
+
+    expect(
+      isDirectExecution([process.execPath, scriptPath]),
+    ).toBe(true);
   });
 });
 
