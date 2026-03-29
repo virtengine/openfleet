@@ -3784,7 +3784,7 @@ registerBuiltinNodeType("action.run_agent", {
         for (let idx = 1; idx <= configuredCandidateCount; idx += 1) {
           const candidateBranch =
             `${safeBranchPart(currentBranch)}-cand-${idx}-${batchToken}`.slice(0, 120);
-          execSync(`git checkout -B "${candidateBranch}" "${baselineHead}"`, {
+          execFileSync("git", ["checkout", "-B", candidateBranch, baselineHead], {
             cwd,
             stdio: ["ignore", "pipe", "pipe"],
             encoding: "utf8",
@@ -3867,7 +3867,7 @@ registerBuiltinNodeType("action.run_agent", {
       }
 
       const selectedHead = selected.hasCommit ? selected.head : baselineHead;
-      execSync(`git checkout -B "${currentBranch}" "${selectedHead}"`, {
+      execFileSync("git", ["checkout", "-B", currentBranch, selectedHead], {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         encoding: "utf8",
@@ -3876,7 +3876,7 @@ registerBuiltinNodeType("action.run_agent", {
       for (const candidate of candidateRuns) {
         if (!candidate?.branch) continue;
         try {
-          execSync(`git branch -D "${candidate.branch}"`, {
+          execFileSync("git", ["branch", "-D", candidate.branch], {
             cwd,
             stdio: ["ignore", "pipe", "pipe"],
             encoding: "utf8",
