@@ -3041,7 +3041,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});}",
         "}",
         "const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim());",
-        "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));",
+        "console.log(JSON.stringify({updated:updates.length,updates,unresolved,actionableUnresolved,needsAgent:actionableUnresolved.length>0}));",
       ].join(" ")],
       continueOnError: true,
       failOnError: false,
