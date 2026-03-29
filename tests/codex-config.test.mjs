@@ -161,6 +161,38 @@ describe("codex-config defaults", () => {
     expect(toml).toContain("remote_models = false");
   });
 
+  it("keeps remote_models enabled when config defaults to openai-direct", () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "codex-openai-direct-"));
+    mkdirSync(join(homeDir, ".codex"), { recursive: true });
+    writeFileSync(
+      join(homeDir, ".codex", "config.toml"),
+      [
+        'model = "gpt-5.4"',
+        'model_provider = "openai-direct"',
+        "",
+        "[model_providers.azure]",
+        'name = "Azure OpenAI"',
+        'base_url = "https://example-resource.openai.azure.com/openai/v1"',
+        'env_key = "AZURE_OPENAI_API_KEY"',
+        "",
+        "[model_providers.openai-direct]",
+        'name = "OpenAI"',
+        'env_key = "OPENAI_API_KEY"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const input = ["[features]", "remote_models = true", ""].join("\n");
+    const { toml } = ensureFeatureFlags(input, {
+      USERPROFILE: homeDir,
+      OPENAI_API_KEY: "openai-key",
+      CODEX_MODEL: "gpt-5.4",
+    });
+
+    expect(toml).toContain("remote_models = true");
+  });
+
   it("keeps remote_models enabled for non-Azure runtimes", () => {
     const input = ["[features]", "remote_models = true", ""].join("\n");
     const { toml } = ensureFeatureFlags(input, {
@@ -396,4 +428,3 @@ describe("codex-config defaults", () => {
     expect(result.env.AZURE_OPENAI_API_KEY).toBe("us-key");
   });
 });
-
