@@ -5346,7 +5346,7 @@
             return {
               ok: true,
               data: buildFallbackCommitSummaries(repoName, count),
-              error: String(error?.message || error || 'Failed to fetch live commits'),
+              error: 'Failed to fetch live commits',
             };
           }
         }
@@ -5365,12 +5365,12 @@
               return {
                 ok: true,
                 data: fallback,
-                error: String(error?.message || error || 'Failed to fetch commit detail'),
+                error: 'Failed to fetch commit detail',
               };
             }
             return {
               ok: false,
-              error: String(error?.message || error || 'Failed to fetch commit detail'),
+              error: 'Failed to fetch commit detail',
             };
           }
         }
@@ -6625,7 +6625,24 @@
       function showBootFailure(message) {
         var el = document.getElementById('boot-loader');
         if (!el) return;
-        el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">:alert: Failed to load</div><div style="font-size:12px;color:#64748b">' + message + '</div></div>';
+        var wrapper = document.createElement('div');
+        wrapper.style.textAlign = 'center';
+        wrapper.style.padding = '40px';
+        wrapper.style.fontFamily = 'Inter, sans-serif';
+        wrapper.style.color = '#94a3b8';
+
+        var title = document.createElement('div');
+        title.style.fontSize = '18px';
+        title.style.marginBottom = '8px';
+        title.textContent = ':alert: Failed to load';
+
+        var detail = document.createElement('div');
+        detail.style.fontSize = '12px';
+        detail.style.color = '#64748b';
+        detail.textContent = String(message ?? 'Unknown error');
+
+        wrapper.append(title, detail);
+        el.replaceChildren(wrapper);
       }
 
       var bootReady = false;
