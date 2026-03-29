@@ -5035,6 +5035,33 @@ function setDelegationTransitionResult(ctx, transitionKey, value) {
   return value;
 }
 
+/**
+ * Look up an existing delegation transition guard by key, checking both the
+ * non-persisted runtime store (getExistingDelegationTransition) and the
+ * persisted ctx.data store (ctx.getDelegationTransitionGuard), so that replay
+ * safety works both for in-flight runs and resumed runs.
+ */
+function lookupDelegationTransition(ctx, transitionKey) {
+  if (!transitionKey) return null;
+  return (
+    getExistingDelegationTransition(ctx, transitionKey) ||
+    (typeof ctx.getDelegationTransitionGuard === "function"
+      ? ctx.getDelegationTransitionGuard(transitionKey)
+      : null)
+  );
+}
+
+/**
+ * Persist a completed delegation transition in both the runtime store and the
+ * persisted ctx.data store so it survives context reloads/replays.
+ */
+function persistDelegationTransition(ctx, transitionKey, value) {
+  setDelegationTransitionResult(ctx, transitionKey, value);
+  if (typeof ctx.setDelegationTransitionGuard === "function") {
+    ctx.setDelegationTransitionGuard(transitionKey, value);
+  }
+}
+
 // ── action.claim_task ───────────────────────────────────────────────────────
 
 registerNodeType("action.claim_task", {
@@ -5078,12 +5105,7 @@ registerNodeType("action.claim_task", {
       delegationTransitionKey ||
       cfgOrCtx(node, ctx, "idempotencyKey", "") || `${node.id || "claim_task"}:${taskId}:${ctx.data?._workflowRunId || ctx.id || "run"}`,
     ).trim();
-    const existingTransition = idempotencyKey
-      ? (getExistingDelegationTransition(ctx, idempotencyKey) ||
-         (typeof ctx.getDelegationTransitionGuard === "function"
-           ? ctx.getDelegationTransitionGuard(idempotencyKey)
-           : null))
-      : null;
+    const existingTransition = lookupDelegationTransition(ctx, idempotencyKey);
     if (existingTransition && existingTransition.type === "claim_task") {
       if (existingTransition.claimToken) ctx.data._claimToken = existingTransition.claimToken;
       if (existingTransition.instanceId) ctx.data._claimInstanceId = existingTransition.instanceId;
@@ -5214,16 +5236,12 @@ registerNodeType("action.claim_task", {
       ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
       const successResult = { success: true, taskId, claimToken: token, instanceId };
       if (idempotencyKey) {
-        const guardValue = {
+        persistDelegationTransition(ctx, idempotencyKey, {
           type: "claim_task",
           claimToken: token,
           instanceId,
           result: { ...successResult },
-        };
-        setDelegationTransitionResult(ctx, idempotencyKey, guardValue);
-        if (typeof ctx.setDelegationTransitionGuard === "function") {
-          ctx.setDelegationTransitionGuard(idempotencyKey, guardValue);
-        }
+        });
       }
       return successResult;
     }
@@ -5276,11 +5294,7 @@ registerNodeType("action.release_claim", {
     const releaseTransitionKey = rawTransitionKey ||
       (taskId ? `release_claim:${taskId}:${ctx.data?._workflowRunId || ctx.id || "run"}` : "");
     if (releaseTransitionKey) {
-      const existingRelease =
-        getExistingDelegationTransition(ctx, releaseTransitionKey) ||
-        (typeof ctx.getDelegationTransitionGuard === "function"
-          ? ctx.getDelegationTransitionGuard(releaseTransitionKey)
-          : null);
+      const existingRelease = lookupDelegationTransition(ctx, releaseTransitionKey);
       if (existingRelease && existingRelease.type === "release_claim") {
         ctx.data._claimToken = null;
         ctx.data._claimInstanceId = null;
@@ -5316,11 +5330,10 @@ registerNodeType("action.release_claim", {
       ctx.log(node.id, `Claim released for ${taskId}`);
       const releaseResult = { success: true, taskId };
       if (releaseTransitionKey) {
-        const guardValue = { type: "release_claim", result: { ...releaseResult } };
-        setDelegationTransitionResult(ctx, releaseTransitionKey, guardValue);
-        if (typeof ctx.setDelegationTransitionGuard === "function") {
-          ctx.setDelegationTransitionGuard(releaseTransitionKey, guardValue);
-        }
+        persistDelegationTransition(ctx, releaseTransitionKey, {
+          type: "release_claim",
+          result: { ...releaseResult },
+        });
       }
       return releaseResult;
     } catch (err) {
