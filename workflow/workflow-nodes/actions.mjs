@@ -5079,7 +5079,10 @@ registerNodeType("action.claim_task", {
       cfgOrCtx(node, ctx, "idempotencyKey", "") || `${node.id || "claim_task"}:${taskId}:${ctx.data?._workflowRunId || ctx.id || "run"}`,
     ).trim();
     const existingTransition = idempotencyKey
-      ? getExistingDelegationTransition(ctx, idempotencyKey)
+      ? (getExistingDelegationTransition(ctx, idempotencyKey) ||
+         (typeof ctx.getDelegationTransitionGuard === "function"
+           ? ctx.getDelegationTransitionGuard(idempotencyKey)
+           : null))
       : null;
     if (existingTransition && existingTransition.type === "claim_task") {
       if (existingTransition.claimToken) ctx.data._claimToken = existingTransition.claimToken;
@@ -5211,12 +5214,16 @@ registerNodeType("action.claim_task", {
       ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
       const successResult = { success: true, taskId, claimToken: token, instanceId };
       if (idempotencyKey) {
-        setDelegationTransitionResult(ctx, idempotencyKey, {
+        const guardValue = {
           type: "claim_task",
           claimToken: token,
           instanceId,
           result: { ...successResult },
-        });
+        };
+        setDelegationTransitionResult(ctx, idempotencyKey, guardValue);
+        if (typeof ctx.setDelegationTransitionGuard === "function") {
+          ctx.setDelegationTransitionGuard(idempotencyKey, guardValue);
+        }
       }
       return successResult;
     }
@@ -5243,6 +5250,8 @@ registerNodeType("action.release_claim", {
       taskId: { type: "string", description: "Task ID to release claim for" },
       claimToken: { type: "string", description: "Claim token (auto-read from ctx)" },
       instanceId: { type: "string", description: "Instance ID (auto-read from ctx)" },
+      transitionKey: { type: "string", description: "Idempotency key for replay safety" },
+      idempotencyKey: { type: "string", description: "Alias for transitionKey" },
     },
   },
   async execute(node, ctx) {
@@ -5258,6 +5267,26 @@ registerNodeType("action.release_claim", {
     }
     runtimeState.claimRenewTimer = null;
     ctx.data._claimRenewTimer = null;
+
+    // Idempotency: check if this release was already performed
+    const rawTransitionKey = String(
+      cfgOrCtx(node, ctx, "transitionKey") ||
+      cfgOrCtx(node, ctx, "idempotencyKey") || "",
+    ).trim();
+    const releaseTransitionKey = rawTransitionKey ||
+      (taskId ? `release_claim:${taskId}:${ctx.data?._workflowRunId || ctx.id || "run"}` : "");
+    if (releaseTransitionKey) {
+      const existingRelease =
+        getExistingDelegationTransition(ctx, releaseTransitionKey) ||
+        (typeof ctx.getDelegationTransitionGuard === "function"
+          ? ctx.getDelegationTransitionGuard(releaseTransitionKey)
+          : null);
+      if (existingRelease && existingRelease.type === "release_claim") {
+        ctx.data._claimToken = null;
+        ctx.data._claimInstanceId = null;
+        return { ...existingRelease.result, idempotentReplay: true };
+      }
+    }
 
     if (!taskId || !claimToken) {
       ctx.log(node.id, `No claim to release for ${taskId || "(unknown)"}`);
@@ -5285,7 +5314,15 @@ registerNodeType("action.release_claim", {
       ctx.data._claimToken = null;
       ctx.data._claimInstanceId = null;
       ctx.log(node.id, `Claim released for ${taskId}`);
-      return { success: true, taskId };
+      const releaseResult = { success: true, taskId };
+      if (releaseTransitionKey) {
+        const guardValue = { type: "release_claim", result: { ...releaseResult } };
+        setDelegationTransitionResult(ctx, releaseTransitionKey, guardValue);
+        if (typeof ctx.setDelegationTransitionGuard === "function") {
+          ctx.setDelegationTransitionGuard(releaseTransitionKey, guardValue);
+        }
+      }
+      return releaseResult;
     } catch (err) {
       // Release is best-effort — log but don't fail
       ctx.log(node.id, `Claim release warning: ${err.message}`);

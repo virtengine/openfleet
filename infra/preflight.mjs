@@ -190,8 +190,9 @@ function checkToolVersion(label, command, args, hint) {
   return { label, ok: true, version };
 }
 
-function checkHookShell(repoRoot) {
-  if (!isWindows || !existsSync(resolve(repoRoot, ".githooks"))) {
+function checkHookShell(repoRoot, rawRoot) {
+  const looksLikeWindowsPath = /^[a-zA-Z]:[/\\]/.test(rawRoot || repoRoot);
+  if ((!isWindows && !looksLikeWindowsPath) || !existsSync(resolve(repoRoot, ".githooks"))) {
     return { ok: true, issue: null, resolvedPath: null, allPaths: [] };
   }
 
@@ -409,7 +410,7 @@ export function runPreflightChecks(options = {}) {
     });
   }
 
-  const hookShell = checkHookShell(repoRoot);
+  const hookShell = checkHookShell(repoRoot, options.repoRoot);
   if (!hookShell.ok) {
     warnings.push({
       title: "Windows hook shell may be misconfigured",

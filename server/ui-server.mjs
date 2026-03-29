@@ -1312,22 +1312,32 @@ class WorkflowEngineProxy {
         /* stdout/stderr inherit so worker logs appear in the same console */
       });
 
+      let settled = false;
+      const settle = (fn, val) => {
+        if (settled) return;
+        settled = true;
+        fn(val);
+      };
+
       const onReady = (msg) => {
         if (!msg || msg.type !== "ready") return;
         this._worker.off("message", onReady);
         this._ready = true;
-        resolve();
+        settle(resolve);
       };
       this._worker.on("message", onReady);
-      this._worker.once("error", reject);
 
       this._worker.on("message", (msg) => this._onMessage(msg));
       this._worker.on("error", (err) => {
+        settle(reject, err);
         console.error("[wf-worker] worker thread error:", err.message);
       });
       this._worker.on("exit", (code) => {
-        if (code !== 0) console.warn(`[wf-worker] worker exited with code ${code}`);
         this._ready = false;
+        if (code !== 0) {
+          console.warn(`[wf-worker] worker exited with code ${code}`);
+          settle(reject, new Error(`workflow engine worker exited with code ${code}`));
+        }
       });
 
       /* Send init after attaching all listeners */
@@ -2554,17 +2564,34 @@ async function getWorkflowRequestContext(reqUrl, options = {}) {
     if (_testDefaultEngine) {
       engine = _testDefaultEngine;
     } else {
-      /* Use Worker thread proxy for complete decoupling from the HTTP event loop */
-      const proxy = new WorkflowEngineProxy();
-      try {
-        await proxy._start({
-          repoRoot,
-          workflowDir: paths.workflowDir,
-          runsDir:     paths.runsDir,
-        });
-        engine = proxy;
-      } catch (startErr) {
-        console.warn("[workflows] Worker thread unavailable, using in-process engine:", startErr.message);
+      /* Use Worker thread proxy for complete decoupling from the HTTP event loop.
+       * In test environments, skip the worker proxy and go straight to in-process engine. */
+      if (shouldBootstrapDefaultWorkflowSingleton()) {
+        const proxy = new WorkflowEngineProxy();
+        try {
+          await proxy._start({
+            repoRoot,
+            workflowDir: paths.workflowDir,
+            runsDir:     paths.runsDir,
+          });
+          engine = proxy;
+        } catch (startErr) {
+          console.warn("[workflows] Worker thread unavailable, using in-process engine:", startErr.message);
+          engine = new wfMod.WorkflowEngine({
+            workflowDir: paths.workflowDir,
+            runsDir: paths.runsDir,
+            detectInterruptedRuns: false,
+            services: _wfServices || {},
+            onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
+          });
+          if (typeof engine.registerTaskTraceHook === "function") {
+            engine.registerTaskTraceHook((event) => {
+              handleTaskWorkflowTraceEvent(event);
+            });
+          }
+          engine.load();
+        }
+      } else {
         engine = new wfMod.WorkflowEngine({
           workflowDir: paths.workflowDir,
           runsDir: paths.runsDir,
