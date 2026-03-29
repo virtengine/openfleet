@@ -486,19 +486,19 @@ export function listWorkspaces(configDir, opts = {}) {
     const repos = (ws.repos || []).map((repo) => {
       const standardPath = resolve(wsPath, repo.name);
       const standardExists = existsSync(standardPath);
-      let effectivePath = standardPath;
-      let exists = standardExists;
       const repoUrlRaw = String(repo.url || "").trim();
       const looksLikeRemoteUrl =
         /^https?:\/\//i.test(repoUrlRaw) ||
         /^git@[^:]+:/i.test(repoUrlRaw) ||
         /^ssh:\/\//i.test(repoUrlRaw);
       const repoUrlPath = repoUrlRaw && !looksLikeRemoteUrl ? resolve(repoUrlRaw) : null;
-      if (!standardExists && repoUrlPath && existsSync(repoUrlPath)) {
-        effectivePath = repoUrlPath;
-        exists = true;
-      }
-      if (!standardExists && repoRootOverride) {
+      const repoUrlExists = Boolean(repoUrlPath && existsSync(repoUrlPath));
+      // An explicitly configured local filesystem repo should outrank the
+      // managed workspace clone so workspace-scoped APIs point at the live
+      // checkout rather than a stale shadow copy under .bosun/workspaces/.
+      let effectivePath = repoUrlExists ? repoUrlPath : standardPath;
+      let exists = repoUrlExists || standardExists;
+      if (!exists && repoRootOverride) {
         const altPath = resolve(repoRootOverride, repo.name);
         if (existsSync(altPath)) {
           effectivePath = altPath;

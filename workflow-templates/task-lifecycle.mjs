@@ -236,16 +236,67 @@ export const TASK_LIFECYCLE_TEMPLATE = {
         "})()",
     }, { x: -120, y: 2060, outputs: ["yes", "no"] }),
 
-    node("log-validation-failed", "notify.log", "Log Validation Failed", {
-      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
-      level: "warn",
+    // ── REMEDIATION PATH: auto-fix validation failures before giving up ──
+    node("set-fix-summary", "action.set_variable", "Summarize Validation Output", {
+      key: "fixSummary",
+      value:
+        "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; return ['- exitCode: ' + (out.exitCode ?? 'unknown'), '- success: ' + (out.success === true), '', 'Command output:', String(out.output || out.stdout || '').slice(0, 8000), '', 'Stderr:', String(out.stderr || '').slice(0, 4000)].join('\\n'); })()",
+      isExpression: true,
     }, { x: 300, y: 2000 }),
 
-    node("set-todo-validation-failed", "action.update_task_status", "Set Todo (Validation Fail)", {
+    agentPhase("auto-fix-validation", "Auto-Fix Validation",
+      `# Fix Pre-PR Validation Failures
+
+Task: **{{taskTitle}}**
+
+The pre-PR validation command failed. Fix the code so validation passes.
+
+Validation output:
+{{fixSummary}}
+
+RULES:
+- Study the SPECIFIC errors above.
+- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify.
+- Keep the original task scope — do not revert the feature.
+- Run the validation command locally and confirm it passes before finishing.
+- Create a descriptive commit: "fix: <concrete failure resolved>"`,
+      {}, { x: 300, y: 2080 }),
+
+    node("retry-pre-pr-validation", "action.run_command", "Retry Pre-PR Validation", {
+      command: "{{prePrValidationCommand}}",
+      commandType: "qualityGate",
+      cwd: "{{worktreePath}}",
+      failOnError: false,
+    }, { x: 300, y: 2160 }),
+
+    node("retry-validation-ok", "condition.expression", "Retry Validation Passed?", {
+      expression:
+        "(() => {" +
+        "const enabled = $data?.prePrValidationEnabled !== false;" +
+        "if (!enabled) return true;" +
+        "const out = $ctx.getNodeOutput('retry-pre-pr-validation');" +
+        "if (!out) return false;" +
+        "if (out.success === true) return true;" +
+        "const code = Number(out.exitCode);" +
+        "return Number.isFinite(code) && code === 0;" +
+        "})()",
+    }, { x: 300, y: 2240, outputs: ["yes", "no"] }),
+
+    node("log-validation-failed", "notify.log", "Log Validation Failed", {
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after auto-fix remediation, blocking task",
+      level: "warn",
+    }, { x: 480, y: 2300 }),
+
+    node("set-blocked-validation-failed", "action.update_task_status", "Block Task (Validation Fail)", {
       taskId: "{{taskId}}",
-      status: "todo",
+      status: "blocked",
       taskTitle: "{{taskTitle}}",
-    }, { x: 300, y: 2130 }),
+      blockedReason: "Pre-PR validation failed after automated remediation attempt",
+    }, { x: 480, y: 2380 }),
+
+    node("notify-validation-blocked", "notify.telegram", "Notify Validation Blocked", {
+      message: ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after automated remediation. Manual review needed.",
+    }, { x: 480, y: 2460 }),
     // ── SUCCESS PATH: Push branch (with rebase + empty-diff guard) ───────
     node("push-branch", "action.push_branch", "Push Branch", {
       worktreePath: "{{worktreePath}}",
@@ -392,7 +443,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     node("join-outcomes", "flow.join", "Join Outcome Paths", {
       mode: "all",
-      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-blocked-push-failed", "set-todo-cooldown", "set-todo-validation-failed", "set-todo-stolen", "log-claim-stolen-recovered"],
+      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-blocked-push-failed", "set-todo-cooldown", "notify-validation-blocked", "set-todo-stolen", "log-claim-stolen-recovered"],
       includeSkipped: true,
     }, { x: 200, y: 2560 }),
 
@@ -543,9 +594,17 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("has-commits", "pre-pr-validation", { condition: "$output?.result === true", port: "yes" }),
     edge("pre-pr-validation", "pre-pr-validation-ok"),
     edge("pre-pr-validation-ok", "push-branch", { condition: "$output?.result === true", port: "yes" }),
-    edge("pre-pr-validation-ok", "log-validation-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("log-validation-failed", "set-todo-validation-failed"),
-    edge("set-todo-validation-failed", "join-outcomes"),
+
+    // Validation failed → auto-fix remediation → retry
+    edge("pre-pr-validation-ok", "set-fix-summary", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-fix-summary", "auto-fix-validation"),
+    edge("auto-fix-validation", "retry-pre-pr-validation"),
+    edge("retry-pre-pr-validation", "retry-validation-ok"),
+    edge("retry-validation-ok", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+    edge("retry-validation-ok", "log-validation-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("log-validation-failed", "set-blocked-validation-failed"),
+    edge("set-blocked-validation-failed", "notify-validation-blocked"),
+    edge("notify-validation-blocked", "join-outcomes"),
     edge("push-branch", "push-ok"),
     edge("push-ok", "create-pr", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr", "pr-created"),
@@ -613,10 +672,10 @@ export const TASK_LIFECYCLE_TEMPLATE = {
   ],
   metadata: {
     author: "bosun",
-    version: 2,
+    version: 3,
     createdAt: "2026-03-01T00:00:00Z",
-    templateVersion: "2.1.0",
-    tags: ["task", "lifecycle", "executor", "workflow-first", "core"],
+    templateVersion: "3.0.0",
+    tags: ["task", "lifecycle", "executor", "workflow-first", "core", "auto-remediation"],
     requiredTemplates: ["template-bosun-pr-progressor", "template-task-repair-worktree"],
     replaces: {
       module: "task-executor.mjs",

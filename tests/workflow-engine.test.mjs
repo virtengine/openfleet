@@ -4385,9 +4385,8 @@ describe("Session chaining - action.run_agent", () => {
         id: "TASK-DELEGATE-1",
         title: "Add API endpoint",
         tags: ["backend", "api"],
-  });
-
-  it("records assign and handoff delegation events for delegated agent runs", async () => {
+        branchName: "feat/api-endpoint",
+      },
     });
 
     const execute = vi.fn().mockResolvedValue({ errors: [] });
@@ -7093,8 +7092,6 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(childSpan.attributes["bosun.workflow.parent_run_id"]).toBe(parentCtx.id);
   });
   it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
-    // TODO: Implement regression test for DAGState replanning from a failed boundary.
-  });
     let attempts = 0;
     registerNodeType("test.replan_once", {
       describe: () => "Fails once so retry planning can revise the active DAG",

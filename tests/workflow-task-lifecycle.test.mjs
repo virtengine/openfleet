@@ -3191,11 +3191,11 @@ describe("action.release_worktree", () => {
     });
     const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
     const node = makeNode("action.claim_task", {
+      taskId: "task-replay-1",
       idempotencyKey: "claim:task-replay-1",
       taskTitle: "Replay-safe claim",
       instanceId: "inst-replay",
       renewIntervalMs: 0,
-      idempotencyKey: "claim:task-replay-1",
     });
 
     try {
@@ -3207,7 +3207,7 @@ describe("action.release_worktree", () => {
         taskId: "task-replay-1",
         claimToken: "claim-replay-token",
       }));
-        idempotentReplay: true,
+      expect(second).toEqual(expect.objectContaining({
         success: true,
         taskId: "task-replay-1",
         claimToken: "claim-replay-token",
@@ -3493,7 +3493,7 @@ describe("template-task-lifecycle", () => {
       "resolve-executor", "record-head", "read-workflow-contract",
       "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
-      "pre-pr-validation", "pre-pr-validation-ok", "log-validation-failed", "set-todo-validation-failed",
+      "pre-pr-validation", "pre-pr-validation-ok", "set-fix-summary", "auto-fix-validation", "retry-pre-pr-validation", "retry-validation-ok", "log-validation-failed", "set-blocked-validation-failed", "notify-validation-blocked",
       "push-branch", "push-ok", "create-pr", "set-inreview", "handoff-pr-progressor", "log-success",
       "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "handoff-pr-progressor-stolen", "log-claim-stolen-recovered",
       "release-worktree", "release-claim", "release-slot",
@@ -3566,9 +3566,15 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "has-commits" && e.target === "pre-pr-validation")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pre-pr-validation" && e.target === "pre-pr-validation-ok")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pre-pr-validation-ok" && e.target === "push-branch")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "pre-pr-validation-ok" && e.target === "log-validation-failed")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "log-validation-failed" && e.target === "set-todo-validation-failed")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "set-todo-validation-failed" && e.target === "join-outcomes")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pre-pr-validation-ok" && e.target === "set-fix-summary")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-fix-summary" && e.target === "auto-fix-validation")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "auto-fix-validation" && e.target === "retry-pre-pr-validation")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "retry-pre-pr-validation" && e.target === "retry-validation-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "retry-validation-ok" && e.target === "push-branch")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "retry-validation-ok" && e.target === "log-validation-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "log-validation-failed" && e.target === "set-blocked-validation-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-blocked-validation-failed" && e.target === "notify-validation-blocked")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "notify-validation-blocked" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "push-branch" && e.target === "push-ok")).toBeDefined();
   });
 
@@ -3724,8 +3730,6 @@ describe("template-task-lifecycle", () => {
     }
   });
 });
-
-
 
 
 

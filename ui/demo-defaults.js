@@ -1348,7 +1348,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));"
+              "const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,actionableUnresolved,needsAgent:actionableUnresolved.length>0}));"
             ],
             "continueOnError": true,
             "failOnError": false,
@@ -6110,10 +6110,11 @@
         "task-completion",
         "test-first",
         "tdd",
-        "multi-language"
+        "multi-language",
+        "multi-remediation"
       ],
-      "nodeCount": 31,
-      "edgeCount": 32,
+      "nodeCount": 46,
+      "edgeCount": 48,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -6135,15 +6136,16 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 2,
+        "version": 3,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "2.0.0",
+        "templateVersion": "3.0.0",
         "tags": [
           "agent",
           "task-completion",
           "test-first",
           "tdd",
-          "multi-language"
+          "multi-language",
+          "multi-remediation"
         ],
         "replaces": {
           "module": "primary-agent.mjs",
@@ -6662,15 +6664,262 @@
           ]
         },
         {
-          "id": "notify-fail",
-          "type": "notify.telegram",
-          "label": "Checks Failed",
+          "id": "set-retry2-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Retry-1 Output",
           "config": {
-            "message": ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
+            "key": "retry2Summary",
+            "value": "(() => { const build1 = $ctx.getNodeOutput('main-build') || {}; const test1 = $ctx.getNodeOutput('main-test') || {}; const lint1 = $ctx.getNodeOutput('main-lint') || {}; const build2 = $ctx.getNodeOutput('retry-build') || {}; const test2 = $ctx.getNodeOutput('retry-test') || {}; const lint2 = $ctx.getNodeOutput('retry-lint') || {}; return ['=== ORIGINAL validation (failed) ===', '- build.passed: ' + (build1.passed === true), '- test.passed: ' + (test1.passed === true), '- lint.passed: ' + (lint1.passed === true), '', 'Build output:', String(build1.output || '').slice(0, 4000), 'Test output:', String(test1.output || '').slice(0, 4000), 'Lint output:', String(lint1.output || '').slice(0, 4000), '', '=== RETRY-1 validation (also failed) ===', '- build.passed: ' + (build2.passed === true), '- test.passed: ' + (test2.passed === true), '- lint.passed: ' + (lint2.passed === true), '', 'Build output:', String(build2.output || '').slice(0, 4000), 'Test output:', String(test2.output || '').slice(0, 4000), 'Lint output:', String(lint2.output || '').slice(0, 4000)].join('\\n'); })()",
+            "isExpression": true
           },
           "position": {
             "x": 820,
             "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix-2",
+          "type": "action.run_agent",
+          "label": "Auto-Fix (Escalated, Pass 2)",
+          "config": {
+            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\nPlan:\n{{plan}}\n\nFULL history of both failed validation passes:\n{{retry2Summary}}\n\nCRITICAL RULES:\n- Study the SPECIFIC errors above — do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.\n- If the build/lint/test commands themselves are misconfigured, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun build + tests + lint locally and confirm ALL pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{autoFixTimeoutMs}}"
+          },
+          "position": {
+            "x": 820,
+            "y": 1900
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-build",
+          "type": "validation.build",
+          "label": "Build Check",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 400,
+            "y": 0
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-test",
+          "type": "validation.tests",
+          "label": "Test Run",
+          "config": {
+            "command": "{{testCommand}}",
+            "timeoutMs": "{{testTimeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-lint",
+          "type": "validation.lint",
+          "label": "Lint Check",
+          "config": {
+            "command": "{{lintCommand}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 260
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-passed",
+          "type": "condition.expression",
+          "label": "Retry-2 Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('retry2-build')?.passed === true && $ctx.getNodeOutput('retry2-test')?.passed === true && $ctx.getNodeOutput('retry2-lint')?.passed === true"
+          },
+          "position": {
+            "x": 820,
+            "y": 2400
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch-retry2",
+          "type": "action.push_branch",
+          "label": "Push Branch (Retry 2)",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "mergeBaseBeforePush": true,
+            "autoResolveMergeConflicts": true,
+            "conflictResolverSdk": "{{agentSdk}}",
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 650,
+            "y": 2470
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok-retry2",
+          "type": "condition.expression",
+          "label": "Push OK? (Retry 2)",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch-retry2')?.pushed === true"
+          },
+          "position": {
+            "x": 650,
+            "y": 2530
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr-retry2",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle (After Retry 2)",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task after two auto-fix passes.\n\n**Plan:**\n{{plan}}\n\nValidation passed after 2nd remediation. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 650,
+            "y": 2530
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-pr-ok",
+          "type": "condition.expression",
+          "label": "PR Created?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
+          },
+          "position": {
+            "x": 400,
+            "y": 0
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "retry2-set-inreview",
+          "type": "action.update_task_status",
+          "label": "Set In-Review",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-handoff-progressor",
+          "type": "action.execute_workflow",
+          "label": "Handoff PR Progressor",
+          "config": {
+            "workflowId": "template-bosun-pr-progressor",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}"
+            }
+          },
+          "position": {
+            "x": 300,
+            "y": 260
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done-retry2",
+          "type": "notify.log",
+          "label": "Task Complete (After Retry 2)",
+          "config": {
+            "message": "Task completion agent finished task after 2nd retry — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 560,
+            "y": 2690
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-validation",
+          "type": "action.update_task_status",
+          "label": "Block Task (Validation Exhausted)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "Validation failed after 2 automated remediation passes"
+          },
+          "position": {
+            "x": 1020,
+            "y": 2470
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-fail",
+          "type": "notify.telegram",
+          "label": "Checks Failed (Exhausted)",
+          "config": {
+            "message": ":alert: Backend agent: validation failed for task {{taskTitle}} even after 2 remediation passes. Task blocked — manual review needed."
+          },
+          "position": {
+            "x": 1020,
+            "y": 2560
           },
           "outputs": [
             "default"
@@ -6686,6 +6935,21 @@
           "position": {
             "x": 620,
             "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed-retry2",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Failure (Retry 2)",
+          "config": {
+            "message": ":alert: Task completion agent 2nd remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed. Manual follow-up required."
+          },
+          "position": {
+            "x": 820,
+            "y": 2690
           },
           "outputs": [
             "default"
@@ -6838,9 +7102,9 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "retry-passed->notify-fail",
+          "id": "retry-passed->set-retry2-summary",
           "source": "retry-passed",
-          "target": "notify-fail",
+          "target": "set-retry2-summary",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
@@ -6892,6 +7156,107 @@
           "id": "retry-pr-ok->notify-pr-failed-retry",
           "source": "retry-pr-ok",
           "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-retry2-summary->auto-fix-2",
+          "source": "set-retry2-summary",
+          "target": "auto-fix-2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-2->retry2-build",
+          "source": "auto-fix-2",
+          "target": "retry2-build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-build->retry2-test",
+          "source": "retry2-build",
+          "target": "retry2-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-test->retry2-lint",
+          "source": "retry2-test",
+          "target": "retry2-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-lint->retry2-passed",
+          "source": "retry2-lint",
+          "target": "retry2-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-passed->push-branch-retry2",
+          "source": "retry2-passed",
+          "target": "push-branch-retry2",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry2-passed->set-blocked-validation",
+          "source": "retry2-passed",
+          "target": "set-blocked-validation",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-validation->notify-fail",
+          "source": "set-blocked-validation",
+          "target": "notify-fail",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-branch-retry2->push-ok-retry2",
+          "source": "push-branch-retry2",
+          "target": "push-ok-retry2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok-retry2->create-pr-retry2",
+          "source": "push-ok-retry2",
+          "target": "create-pr-retry2",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok-retry2->notify-pr-failed-retry2",
+          "source": "push-ok-retry2",
+          "target": "notify-pr-failed-retry2",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr-retry2->retry2-pr-ok",
+          "source": "create-pr-retry2",
+          "target": "retry2-pr-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-pr-ok->retry2-set-inreview",
+          "source": "retry2-pr-ok",
+          "target": "retry2-set-inreview",
+          "sourcePort": "yes"
+        },
+        {
+          "id": "retry2-set-inreview->retry2-handoff-progressor",
+          "source": "retry2-set-inreview",
+          "target": "retry2-handoff-progressor",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-handoff-progressor->notify-done-retry2",
+          "source": "retry2-handoff-progressor",
+          "target": "notify-done-retry2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-pr-ok->notify-pr-failed-retry2",
+          "source": "retry2-pr-ok",
+          "target": "notify-pr-failed-retry2",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         }
@@ -22124,10 +22489,11 @@
         "lifecycle",
         "executor",
         "workflow-first",
-        "core"
+        "core",
+        "auto-remediation"
       ],
-      "nodeCount": 62,
-      "edgeCount": 71,
+      "nodeCount": 67,
+      "edgeCount": 77,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -22155,15 +22521,16 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 2,
+        "version": 3,
         "createdAt": "2026-03-01T00:00:00Z",
-        "templateVersion": "2.1.0",
+        "templateVersion": "3.0.0",
         "tags": [
           "task",
           "lifecycle",
           "executor",
           "workflow-first",
-          "core"
+          "core",
+          "auto-remediation"
         ],
         "requiredTemplates": [
           "template-bosun-pr-progressor",
@@ -22597,12 +22964,13 @@
           ]
         },
         {
-          "id": "log-validation-failed",
-          "type": "notify.log",
-          "label": "Log Validation Failed",
+          "id": "set-fix-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Validation Output",
           "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
-            "level": "warn"
+            "key": "fixSummary",
+            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; return ['- exitCode: ' + (out.exitCode ?? 'unknown'), '- success: ' + (out.success === true), '', 'Command output:', String(out.output || out.stdout || '').slice(0, 8000), '', 'Stderr:', String(out.stderr || '').slice(0, 4000)].join('\\n'); })()",
+            "isExpression": true
           },
           "position": {
             "x": 300,
@@ -22613,17 +22981,108 @@
           ]
         },
         {
-          "id": "set-todo-validation-failed",
-          "type": "action.update_task_status",
-          "label": "Set Todo (Validation Fail)",
+          "id": "auto-fix-validation",
+          "type": "action.run_agent",
+          "label": "Auto-Fix Validation",
           "config": {
+            "prompt": "# Fix Pre-PR Validation Failures\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Fix the code so validation passes.\n\nValidation output:\n{{fixSummary}}\n\nRULES:\n- Study the SPECIFIC errors above.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify.\n- Keep the original task scope — do not revert the feature.\n- Run the validation command locally and confirm it passes before finishing.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
             "taskId": "{{taskId}}",
-            "status": "todo",
-            "taskTitle": "{{taskTitle}}"
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
           },
           "position": {
             "x": 300,
-            "y": 2130
+            "y": 2080
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Retry Pre-PR Validation",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 300,
+            "y": 2160
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-validation-ok",
+          "type": "condition.expression",
+          "label": "Retry Validation Passed?",
+          "config": {
+            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
+          },
+          "position": {
+            "x": 300,
+            "y": 2240
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after auto-fix remediation, blocking task",
+            "level": "warn"
+          },
+          "position": {
+            "x": 480,
+            "y": 2300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-validation-failed",
+          "type": "action.update_task_status",
+          "label": "Block Task (Validation Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "Pre-PR validation failed after automated remediation attempt"
+          },
+          "position": {
+            "x": 480,
+            "y": 2380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-validation-blocked",
+          "type": "notify.telegram",
+          "label": "Notify Validation Blocked",
+          "config": {
+            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after automated remediation. Manual review needed."
+          },
+          "position": {
+            "x": 480,
+            "y": 2460
           },
           "outputs": [
             "default"
@@ -22987,7 +23446,7 @@
               "set-todo-push-failed",
               "set-blocked-push-failed",
               "set-todo-cooldown",
-              "set-todo-validation-failed",
+              "notify-validation-blocked",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -23451,21 +23910,59 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "pre-pr-validation-ok->log-validation-failed",
+          "id": "pre-pr-validation-ok->set-fix-summary",
           "source": "pre-pr-validation-ok",
+          "target": "set-fix-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-fix-summary->auto-fix-validation",
+          "source": "set-fix-summary",
+          "target": "auto-fix-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-validation->retry-pre-pr-validation",
+          "source": "auto-fix-validation",
+          "target": "retry-pre-pr-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-pre-pr-validation->retry-validation-ok",
+          "source": "retry-pre-pr-validation",
+          "target": "retry-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-validation-ok->push-branch",
+          "source": "retry-validation-ok",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-validation-ok->log-validation-failed",
+          "source": "retry-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "log-validation-failed->set-todo-validation-failed",
+          "id": "log-validation-failed->set-blocked-validation-failed",
           "source": "log-validation-failed",
-          "target": "set-todo-validation-failed",
+          "target": "set-blocked-validation-failed",
           "sourcePort": "default"
         },
         {
-          "id": "set-todo-validation-failed->join-outcomes",
-          "source": "set-todo-validation-failed",
+          "id": "set-blocked-validation-failed->notify-validation-blocked",
+          "source": "set-blocked-validation-failed",
+          "target": "notify-validation-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "notify-validation-blocked->join-outcomes",
+          "source": "notify-validation-blocked",
           "target": "join-outcomes",
           "sourcePort": "default"
         },
@@ -25392,7 +25889,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));"
+              "const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,actionableUnresolved,needsAgent:actionableUnresolved.length>0}));"
             ],
             "continueOnError": true,
             "failOnError": false,
@@ -29877,7 +30374,7 @@
       "description": "General-purpose task completion agent with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR. Works with any language/framework — commands are auto-detected from your project or fully customizable.",
       "category": "agents",
       "enabled": true,
-      "nodeCount": 31,
+      "nodeCount": 46,
       "trigger": "trigger.task_assigned",
       "variables": {
         "testCommand": "npm test",
@@ -30401,15 +30898,262 @@
           ]
         },
         {
-          "id": "notify-fail",
-          "type": "notify.telegram",
-          "label": "Checks Failed",
+          "id": "set-retry2-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Retry-1 Output",
           "config": {
-            "message": ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
+            "key": "retry2Summary",
+            "value": "(() => { const build1 = $ctx.getNodeOutput('main-build') || {}; const test1 = $ctx.getNodeOutput('main-test') || {}; const lint1 = $ctx.getNodeOutput('main-lint') || {}; const build2 = $ctx.getNodeOutput('retry-build') || {}; const test2 = $ctx.getNodeOutput('retry-test') || {}; const lint2 = $ctx.getNodeOutput('retry-lint') || {}; return ['=== ORIGINAL validation (failed) ===', '- build.passed: ' + (build1.passed === true), '- test.passed: ' + (test1.passed === true), '- lint.passed: ' + (lint1.passed === true), '', 'Build output:', String(build1.output || '').slice(0, 4000), 'Test output:', String(test1.output || '').slice(0, 4000), 'Lint output:', String(lint1.output || '').slice(0, 4000), '', '=== RETRY-1 validation (also failed) ===', '- build.passed: ' + (build2.passed === true), '- test.passed: ' + (test2.passed === true), '- lint.passed: ' + (lint2.passed === true), '', 'Build output:', String(build2.output || '').slice(0, 4000), 'Test output:', String(test2.output || '').slice(0, 4000), 'Lint output:', String(lint2.output || '').slice(0, 4000)].join('\\n'); })()",
+            "isExpression": true
           },
           "position": {
             "x": 820,
             "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix-2",
+          "type": "action.run_agent",
+          "label": "Auto-Fix (Escalated, Pass 2)",
+          "config": {
+            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\nPlan:\n{{plan}}\n\nFULL history of both failed validation passes:\n{{retry2Summary}}\n\nCRITICAL RULES:\n- Study the SPECIFIC errors above — do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.\n- If the build/lint/test commands themselves are misconfigured, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun build + tests + lint locally and confirm ALL pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{autoFixTimeoutMs}}"
+          },
+          "position": {
+            "x": 820,
+            "y": 1900
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-build",
+          "type": "validation.build",
+          "label": "Build Check",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 400,
+            "y": 0
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-test",
+          "type": "validation.tests",
+          "label": "Test Run",
+          "config": {
+            "command": "{{testCommand}}",
+            "timeoutMs": "{{testTimeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-lint",
+          "type": "validation.lint",
+          "label": "Lint Check",
+          "config": {
+            "command": "{{lintCommand}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 260
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-passed",
+          "type": "condition.expression",
+          "label": "Retry-2 Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('retry2-build')?.passed === true && $ctx.getNodeOutput('retry2-test')?.passed === true && $ctx.getNodeOutput('retry2-lint')?.passed === true"
+          },
+          "position": {
+            "x": 820,
+            "y": 2400
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch-retry2",
+          "type": "action.push_branch",
+          "label": "Push Branch (Retry 2)",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "mergeBaseBeforePush": true,
+            "autoResolveMergeConflicts": true,
+            "conflictResolverSdk": "{{agentSdk}}",
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 650,
+            "y": 2470
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok-retry2",
+          "type": "condition.expression",
+          "label": "Push OK? (Retry 2)",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch-retry2')?.pushed === true"
+          },
+          "position": {
+            "x": 650,
+            "y": 2530
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr-retry2",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle (After Retry 2)",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task after two auto-fix passes.\n\n**Plan:**\n{{plan}}\n\nValidation passed after 2nd remediation. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 650,
+            "y": 2530
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-pr-ok",
+          "type": "condition.expression",
+          "label": "PR Created?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
+          },
+          "position": {
+            "x": 400,
+            "y": 0
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "retry2-set-inreview",
+          "type": "action.update_task_status",
+          "label": "Set In-Review",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-handoff-progressor",
+          "type": "action.execute_workflow",
+          "label": "Handoff PR Progressor",
+          "config": {
+            "workflowId": "template-bosun-pr-progressor",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}"
+            }
+          },
+          "position": {
+            "x": 300,
+            "y": 260
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done-retry2",
+          "type": "notify.log",
+          "label": "Task Complete (After Retry 2)",
+          "config": {
+            "message": "Task completion agent finished task after 2nd retry — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 560,
+            "y": 2690
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-validation",
+          "type": "action.update_task_status",
+          "label": "Block Task (Validation Exhausted)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "Validation failed after 2 automated remediation passes"
+          },
+          "position": {
+            "x": 1020,
+            "y": 2470
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-fail",
+          "type": "notify.telegram",
+          "label": "Checks Failed (Exhausted)",
+          "config": {
+            "message": ":alert: Backend agent: validation failed for task {{taskTitle}} even after 2 remediation passes. Task blocked — manual review needed."
+          },
+          "position": {
+            "x": 1020,
+            "y": 2560
           },
           "outputs": [
             "default"
@@ -30425,6 +31169,21 @@
           "position": {
             "x": 620,
             "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed-retry2",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Failure (Retry 2)",
+          "config": {
+            "message": ":alert: Task completion agent 2nd remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed. Manual follow-up required."
+          },
+          "position": {
+            "x": 820,
+            "y": 2690
           },
           "outputs": [
             "default"
@@ -30577,9 +31336,9 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "retry-passed->notify-fail",
+          "id": "retry-passed->set-retry2-summary",
           "source": "retry-passed",
-          "target": "notify-fail",
+          "target": "set-retry2-summary",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
@@ -30633,6 +31392,107 @@
           "target": "notify-pr-failed-retry",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-retry2-summary->auto-fix-2",
+          "source": "set-retry2-summary",
+          "target": "auto-fix-2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-2->retry2-build",
+          "source": "auto-fix-2",
+          "target": "retry2-build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-build->retry2-test",
+          "source": "retry2-build",
+          "target": "retry2-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-test->retry2-lint",
+          "source": "retry2-test",
+          "target": "retry2-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-lint->retry2-passed",
+          "source": "retry2-lint",
+          "target": "retry2-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-passed->push-branch-retry2",
+          "source": "retry2-passed",
+          "target": "push-branch-retry2",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry2-passed->set-blocked-validation",
+          "source": "retry2-passed",
+          "target": "set-blocked-validation",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-validation->notify-fail",
+          "source": "set-blocked-validation",
+          "target": "notify-fail",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-branch-retry2->push-ok-retry2",
+          "source": "push-branch-retry2",
+          "target": "push-ok-retry2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok-retry2->create-pr-retry2",
+          "source": "push-ok-retry2",
+          "target": "create-pr-retry2",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok-retry2->notify-pr-failed-retry2",
+          "source": "push-ok-retry2",
+          "target": "notify-pr-failed-retry2",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr-retry2->retry2-pr-ok",
+          "source": "create-pr-retry2",
+          "target": "retry2-pr-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-pr-ok->retry2-set-inreview",
+          "source": "retry2-pr-ok",
+          "target": "retry2-set-inreview",
+          "sourcePort": "yes"
+        },
+        {
+          "id": "retry2-set-inreview->retry2-handoff-progressor",
+          "source": "retry2-set-inreview",
+          "target": "retry2-handoff-progressor",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-handoff-progressor->notify-done-retry2",
+          "source": "retry2-handoff-progressor",
+          "target": "notify-done-retry2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-pr-ok->notify-pr-failed-retry2",
+          "source": "retry2-pr-ok",
+          "target": "notify-pr-failed-retry2",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         }
       ],
       "metadata": {
@@ -30642,8 +31502,8 @@
         "templateState": {
           "templateId": "template-backend-agent",
           "templateName": "Task Completion Agent",
-          "templateVersion": "2.0.0",
-          "installedTemplateVersion": "2.0.0",
+          "templateVersion": "3.0.0",
+          "installedTemplateVersion": "3.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -45081,7 +45941,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 62,
+      "nodeCount": 67,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -45517,12 +46377,13 @@
           ]
         },
         {
-          "id": "log-validation-failed",
-          "type": "notify.log",
-          "label": "Log Validation Failed",
+          "id": "set-fix-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Validation Output",
           "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
-            "level": "warn"
+            "key": "fixSummary",
+            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; return ['- exitCode: ' + (out.exitCode ?? 'unknown'), '- success: ' + (out.success === true), '', 'Command output:', String(out.output || out.stdout || '').slice(0, 8000), '', 'Stderr:', String(out.stderr || '').slice(0, 4000)].join('\\n'); })()",
+            "isExpression": true
           },
           "position": {
             "x": 300,
@@ -45533,17 +46394,108 @@
           ]
         },
         {
-          "id": "set-todo-validation-failed",
-          "type": "action.update_task_status",
-          "label": "Set Todo (Validation Fail)",
+          "id": "auto-fix-validation",
+          "type": "action.run_agent",
+          "label": "Auto-Fix Validation",
           "config": {
+            "prompt": "# Fix Pre-PR Validation Failures\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Fix the code so validation passes.\n\nValidation output:\n{{fixSummary}}\n\nRULES:\n- Study the SPECIFIC errors above.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify.\n- Keep the original task scope — do not revert the feature.\n- Run the validation command locally and confirm it passes before finishing.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
             "taskId": "{{taskId}}",
-            "status": "todo",
-            "taskTitle": "{{taskTitle}}"
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
           },
           "position": {
             "x": 300,
-            "y": 2130
+            "y": 2080
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Retry Pre-PR Validation",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 300,
+            "y": 2160
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-validation-ok",
+          "type": "condition.expression",
+          "label": "Retry Validation Passed?",
+          "config": {
+            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
+          },
+          "position": {
+            "x": 300,
+            "y": 2240
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after auto-fix remediation, blocking task",
+            "level": "warn"
+          },
+          "position": {
+            "x": 480,
+            "y": 2300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-validation-failed",
+          "type": "action.update_task_status",
+          "label": "Block Task (Validation Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "Pre-PR validation failed after automated remediation attempt"
+          },
+          "position": {
+            "x": 480,
+            "y": 2380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-validation-blocked",
+          "type": "notify.telegram",
+          "label": "Notify Validation Blocked",
+          "config": {
+            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after automated remediation. Manual review needed."
+          },
+          "position": {
+            "x": 480,
+            "y": 2460
           },
           "outputs": [
             "default"
@@ -45907,7 +46859,7 @@
               "set-todo-push-failed",
               "set-blocked-push-failed",
               "set-todo-cooldown",
-              "set-todo-validation-failed",
+              "notify-validation-blocked",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -46371,21 +47323,59 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "pre-pr-validation-ok->log-validation-failed",
+          "id": "pre-pr-validation-ok->set-fix-summary",
           "source": "pre-pr-validation-ok",
+          "target": "set-fix-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-fix-summary->auto-fix-validation",
+          "source": "set-fix-summary",
+          "target": "auto-fix-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-validation->retry-pre-pr-validation",
+          "source": "auto-fix-validation",
+          "target": "retry-pre-pr-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-pre-pr-validation->retry-validation-ok",
+          "source": "retry-pre-pr-validation",
+          "target": "retry-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-validation-ok->push-branch",
+          "source": "retry-validation-ok",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-validation-ok->log-validation-failed",
+          "source": "retry-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "log-validation-failed->set-todo-validation-failed",
+          "id": "log-validation-failed->set-blocked-validation-failed",
           "source": "log-validation-failed",
-          "target": "set-todo-validation-failed",
+          "target": "set-blocked-validation-failed",
           "sourcePort": "default"
         },
         {
-          "id": "set-todo-validation-failed->join-outcomes",
-          "source": "set-todo-validation-failed",
+          "id": "set-blocked-validation-failed->notify-validation-blocked",
+          "source": "set-blocked-validation-failed",
+          "target": "notify-validation-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "notify-validation-blocked->join-outcomes",
+          "source": "notify-validation-blocked",
           "target": "join-outcomes",
           "sourcePort": "default"
         },
@@ -46691,8 +47681,8 @@
         "templateState": {
           "templateId": "template-task-lifecycle",
           "templateName": "Task Lifecycle",
-          "templateVersion": "2.1.0",
-          "installedTemplateVersion": "2.1.0",
+          "templateVersion": "3.0.0",
+          "installedTemplateVersion": "3.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }

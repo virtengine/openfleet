@@ -696,11 +696,7 @@ function resolveGitDirForWorktree(worktreePath) {
       cwd: worktreePath,
       encoding: "utf8",
       timeout: 5000,
-          const existingAssignTransition =
-            getExistingDelegationTransition(ctx, assignTransitionKey) ||
-            (typeof ctx.getDelegationTransitionGuard === "function"
-              ? ctx.getDelegationTransitionGuard(assignTransitionKey)
-              : null);
+      stdio: ["ignore", "pipe", "pipe"],
     }).trim();
     const normalize = (value) =>
       resolve(String(value || ""))
@@ -8119,7 +8115,6 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
-
 
 
 

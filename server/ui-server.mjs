@@ -2962,6 +2962,75 @@ function taskMatchesWorkspaceContext(task, workspaceContext) {
   );
 }
 
+function resolveWorkspaceFleetConfig(workspaceContext = {}) {
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return null;
+  const listed = listManagedWorkspaces(configDir, { repoRoot });
+  const workspaceId = String(workspaceContext?.workspaceId || "").trim().toLowerCase();
+  const workspace =
+    (workspaceId
+      ? listed.find((entry) => String(entry?.id || "").trim().toLowerCase() === workspaceId)
+      : null) ||
+    getActiveManagedWorkspace(configDir) ||
+    listed[0] ||
+    null;
+  return workspace && typeof workspace === "object" ? workspace : null;
+}
+
+function buildWorkspaceExecutorSummary(execStatus, workspaceContext) {
+  if (!execStatus || typeof execStatus !== "object" || !workspaceContext) return null;
+  const allSlots = Array.isArray(execStatus.slots)
+    ? execStatus.slots.map((slot, slotIndex) => ({ ...slot, slotIndex }))
+    : [];
+  const workspace = resolveWorkspaceFleetConfig(workspaceContext);
+  const executors =
+    workspace?.executors && typeof workspace.executors === "object"
+      ? workspace.executors
+      : null;
+  const configuredSlots = Math.max(0, Number(executors?.maxConcurrent || 0) || 0);
+  const globalMaxParallel = Math.max(
+    0,
+    Number(execStatus.maxParallel || 0) || allSlots.length,
+  );
+  const taskIndex = new Map();
+  for (const task of getAllInternalTasks()) {
+    const taskId = String(task?.id || task?.taskId || "").trim();
+    if (taskId) taskIndex.set(taskId, task);
+  }
+  const slots = workspaceContext.allWorkspaces
+    ? allSlots
+    : allSlots.filter((slot) => {
+      const taskId = String(slot?.taskId || "").trim();
+      const task = taskIndex.get(taskId) || { id: taskId, workspace: "", meta: {} };
+      return taskMatchesWorkspaceContext(task, workspaceContext);
+    });
+  const activeSlots = slots.filter((slot) => {
+    const status = String(slot?.status || "").trim().toLowerCase();
+    return status === "running" || status === "busy";
+  }).length;
+  const maxParallel = configuredSlots > 0
+    ? configuredSlots
+    : Math.max(globalMaxParallel, slots.length, activeSlots);
+  return {
+    workspaceId: String(workspaceContext.workspaceId || "").trim(),
+    workspaceDir: normalizeCandidatePath(workspaceContext.workspaceDir) || repoRoot,
+    workspaceRoot:
+      normalizeCandidatePath(workspaceContext.workspaceRoot)
+      || normalizeCandidatePath(workspaceContext.workspaceDir)
+      || repoRoot,
+    workspaceName: String(workspace?.name || workspace?.id || workspaceContext.workspaceId || "All workspaces").trim(),
+    pool: String(executors?.pool || "shared").trim() || "shared",
+    configuredSlots,
+    maxParallel,
+    activeSlots,
+    freeSlots: Math.max(0, maxParallel - activeSlots),
+    capacityPct: maxParallel > 0 ? Math.round((activeSlots / maxParallel) * 100) : 0,
+    globalMaxParallel,
+    globalActiveSlots: Math.max(0, Number(execStatus.activeSlots || 0) || 0),
+    slots,
+  };
+}
+
 async function listTasksForWorkspaceContext(workspaceContext, { status = "", projectId = "" } = {}) {
   const adapter = getKanbanAdapter();
   const projects = await adapter.listProjects();
@@ -13688,12 +13757,14 @@ async function handleApi(req, res, url) {
     const executor = uiDeps.getInternalExecutor?.();
     const mode = uiDeps.getExecutorMode?.() || "internal";
     const execStatus = executor?.getStatus?.() || null;
+    const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
+      || resolveActiveWorkspaceExecutionContext();
     /* Augment with active workflow run counts so Fleet Overview reflects
        real system load even when no agent subprocess slots are occupied */
     let activeWorkflowRuns = 0;
     let workflowRunDetails = [];
     try {
-      const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false }).catch(() => null);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
       if (wfCtx?.ok && wfCtx.engine) {
         const runs = await Promise.resolve(wfCtx.engine.list?.() || []).catch(() => []);
         const active = (Array.isArray(runs) ? runs : []).filter(
@@ -13711,9 +13782,14 @@ async function handleApi(req, res, url) {
     } catch {
       // best-effort: executor data is still returned without workflow augmentation
     }
+    const workspaceSummary = execStatus
+      ? buildWorkspaceExecutorSummary(execStatus, workspaceContext)
+      : null;
     jsonResponse(res, 200, {
       ok: true,
-      data: execStatus ? { ...execStatus, activeWorkflowRuns, workflowRunDetails } : null,
+      data: execStatus
+        ? { ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails }
+        : null,
       mode,
       paused: executor?.isPaused?.() || false,
     });
