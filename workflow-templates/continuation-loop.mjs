@@ -145,6 +145,12 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       isExpression: true,
     }, { x: 800, y: 1240 }),
 
+    node("derive-stuck-ms", "action.set_variable", "Derive Stuck Duration", {
+      key: "stuckForMs",
+      value: "Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))",
+      isExpression: true,
+    }, { x: 1080, y: 1230 }),
+
     node("progress-changed", "condition.expression", "Progress Changed?", {
       expression: "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')",
     }, { x: 800, y: 1360, outputs: ["yes", "no"] }),
@@ -181,7 +187,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
         turn: "{{continuationTurn}}",
         externalStatus: "{{currentExternalStatus}}",
         stuckThresholdMs: "{{stuckThresholdMs}}",
-        stuckForMs: "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+        stuckForMs: "{{stuckForMs}}",
         onStuck: "{{onStuck}}",
         stuckRetryCount: "{{stuckRetryCount}}",
         maxStuckAutoRetries: "{{maxStuckAutoRetries}}",
@@ -244,13 +250,13 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     node("stuck-escalate", "notify.log", "Escalate Stuck Session", {
       level: "warn",
       message:
-        "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
+        "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
     }, { x: 980, y: 1830 }),
 
     node("stuck-escalate-budget", "notify.log", "Escalate Stuck Session (Retry Limit)", {
       level: "warn",
       message:
-        "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
+        "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
     }, { x: 760, y: 2050 }),
 
     node("stuck-pause", "notify.log", "Pause Stuck Session", {
@@ -317,7 +323,8 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     edge("max-turns-check", "run-agent", { condition: "$output?.result !== true", port: "no" }),
     edge("run-agent", "capture-progress"),
     edge("capture-progress", "derive-signature"),
-    edge("derive-signature", "progress-changed"),
+    edge("derive-signature", "derive-stuck-ms"),
+    edge("derive-stuck-ms", "progress-changed"),
     edge("progress-changed", "mark-progress-at"),
     edge("mark-progress-at", "mark-progress-sig"),
     edge("mark-progress-sig", "reset-stuck-retry-count"),
