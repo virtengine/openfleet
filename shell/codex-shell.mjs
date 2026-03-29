@@ -12,6 +12,7 @@
  * thread_id so we can resume the same conversation across restarts.
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -202,8 +203,10 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
 
   Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
 
-  if (providerSectionNameResolved && env.CODEX_MODEL) {
+  if (providerSectionNameResolved) {
     config.model_provider = providerSectionNameResolved;
+  }
+  if (env.CODEX_MODEL) {
     config.model = env.CODEX_MODEL;
   }
 

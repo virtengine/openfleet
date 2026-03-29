@@ -933,6 +933,29 @@ export function rankPlannerTaskCandidates(tasks, priorState = {}, rankingConfig 
 
 export function rankPlannerTaskCandidatesForResume(tasks, plannerFeedback = null) {
   const ranked = Array.isArray(tasks) ? [...tasks] : [];
+  const normalizeResumeText = (value) => String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\b(validate|validation|stage|step|task|handoff|planner|resume|handling)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokenizeResumeText = (value) =>
+    normalizeResumeText(value)
+      .split(" ")
+      .map((token) => {
+        if (token.length > 3 && token.endsWith("s")) {
+          return token.slice(0, -1);
+        }
+        return token;
+      })
+      .filter(Boolean);
+  const matchesResumeLabel = (taskTokens, taskText, labelTokens, labelText) => {
+    if (!labelText) return false;
+    if (taskText === labelText) return true;
+    if (taskText.includes(labelText)) return true;
+    return labelTokens.length > 0 && labelTokens.every((token) => taskTokens.includes(token));
+  };
   const hotTaskTitles = new Set(
     Array.isArray(plannerFeedback?.taskStore?.hotTasks)
       ? plannerFeedback.taskStore.hotTasks
@@ -940,17 +963,79 @@ export function rankPlannerTaskCandidatesForResume(tasks, plannerFeedback = null
         .filter(Boolean)
       : [],
   );
-  if (hotTaskTitles.size === 0) return ranked;
-  ranked.sort((a, b) => {
-    const aHot = hotTaskTitles.has(String(a?.title || "").trim().toLowerCase()) ? 1 : 0;
-    const bHot = hotTaskTitles.has(String(b?.title || "").trim().toLowerCase()) ? 1 : 0;
-    if (aHot !== bHot) return bHot - aHot;
-    if ((b?._ranking?.score || 0) !== (a?._ranking?.score || 0)) {
-      return (b?._ranking?.score || 0) - (a?._ranking?.score || 0);
+  const completedLabels = (Array.isArray(plannerFeedback?.dagStateSummary?.completedNodes)
+    ? plannerFeedback.dagStateSummary.completedNodes
+    : [])
+    .map((node) => {
+      const labelText = normalizeResumeText(node?.label || node?.title || node?.name || "");
+      return {
+        labelText,
+        labelTokens: tokenizeResumeText(labelText),
+      };
+    })
+    .filter((entry) => entry.labelText);
+  const pendingOrder = (Array.isArray(plannerFeedback?.dagStateSummary?.pendingNodes)
+    ? plannerFeedback.dagStateSummary.pendingNodes
+    : [])
+    .map((node, index) => {
+      const labelText = normalizeResumeText(node?.label || node?.title || node?.name || node?.id || "");
+      return {
+        index,
+        labelText,
+        labelTokens: tokenizeResumeText(labelText),
+      };
+    })
+    .filter((entry) => entry.labelText);
+  const nextStepLabel = normalizeResumeText(plannerFeedback?.issueAdvisor?.nextStepLabel || "");
+  const filtered = ranked
+    .map((task, originalIndex) => {
+      const titleText = normalizeResumeText(task?.title || "");
+      const titleTokens = tokenizeResumeText(titleText);
+      const pendingMatch = pendingOrder.find((entry) =>
+        matchesResumeLabel(titleTokens, titleText, entry.labelTokens, entry.labelText),
+      );
+      const completed = completedLabels.some((entry) =>
+        matchesResumeLabel(titleTokens, titleText, entry.labelTokens, entry.labelText),
+      );
+      return {
+        task,
+        originalIndex,
+        titleText,
+        titleTokens,
+        pendingIndex: pendingMatch ? pendingMatch.index : Number.POSITIVE_INFINITY,
+        nextStepMatch: matchesResumeLabel(
+          titleTokens,
+          titleText,
+          tokenizeResumeText(nextStepLabel),
+          nextStepLabel,
+        ),
+      };
+    })
+    .filter((entry) => !completedLabels.length || !completedLabels.some((label) =>
+      matchesResumeLabel(entry.titleTokens, entry.titleText, label.labelTokens, label.labelText),
+    ));
+  if (hotTaskTitles.size === 0 && pendingOrder.length === 0 && !nextStepLabel) {
+    return filtered.map((entry) => entry.task);
+  }
+  filtered.sort((a, b) => {
+    const aNext = a.nextStepMatch ? 1 : 0;
+    const bNext = b.nextStepMatch ? 1 : 0;
+    if (aNext !== bNext) return bNext - aNext;
+    const aHasPending = Number.isFinite(a.pendingIndex);
+    const bHasPending = Number.isFinite(b.pendingIndex);
+    if (aHasPending !== bHasPending) return aHasPending ? -1 : 1;
+    if (aHasPending && bHasPending && a.pendingIndex !== b.pendingIndex) {
+      return a.pendingIndex - b.pendingIndex;
     }
-    return Number(a?.index || 0) - Number(b?.index || 0);
+    const aHot = hotTaskTitles.has(String(a?.task?.title || "").trim().toLowerCase()) ? 1 : 0;
+    const bHot = hotTaskTitles.has(String(b?.task?.title || "").trim().toLowerCase()) ? 1 : 0;
+    if (aHot !== bHot) return bHot - aHot;
+    if ((b?.task?._ranking?.score || 0) !== (a?.task?._ranking?.score || 0)) {
+      return (b?.task?._ranking?.score || 0) - (a?.task?._ranking?.score || 0);
+    }
+    return Number(a?.task?.index || a.originalIndex || 0) - Number(b?.task?.index || b.originalIndex || 0);
   });
-  return ranked;
+  return filtered.map(({ task }) => task);
 }
 
 registerNodeType("agent.run_planner", {

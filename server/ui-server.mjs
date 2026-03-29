@@ -1,4 +1,4 @@
-import { execSync, spawn, spawnSync, exec } from "node:child_process";
+import { execSync as nodeExecSync, spawn, spawnSync, exec } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import { randomUUID as _genCallId } from "node:crypto";
 import * as nodeCrypto from "node:crypto";
@@ -19,6 +19,13 @@ import * as wsModule from "ws";
 import Ajv2020 from "ajv/dist/2020.js";
 
 const gzipAsync = promisify(zlibGzip);
+
+function execSync(command, options = {}) {
+  return nodeExecSync(command, {
+    ...options,
+    windowsHide: options.windowsHide ?? (process.platform === "win32"),
+  });
+}
 
 const {
   createHash,
@@ -1294,6 +1301,8 @@ function evaluateVoiceToolPolicy({
  * attachWorkflowEngineLiveBridge() works without modification.
  */
 class WorkflowEngineProxy {
+  isWorkflowEngineProxy = true;
+
   constructor() {
     this._worker = null;
     this._pending = new Map();  // callId → { resolve, reject }
@@ -1304,7 +1313,7 @@ class WorkflowEngineProxy {
 
   /** Start the Worker thread and wait for "ready". */
   _start(cfg = {}) {
-    if (this._initPromise) return this._initPromise;
+    if (this._initPromise !== null) return this._initPromise;
     this._initPromise = new Promise((resolve, reject) => {
       const workerPath = fileURLToPath(new URL("./workflow-engine-worker.mjs", import.meta.url));
       this._worker = new Worker(workerPath, {
@@ -1312,32 +1321,40 @@ class WorkflowEngineProxy {
         /* stdout/stderr inherit so worker logs appear in the same console */
       });
 
-      let settled = false;
-      const settle = (fn, val) => {
-        if (settled) return;
-        settled = true;
-        fn(val);
+      const failStart = (err) => {
+        if (!this._worker) {
+          reject(err);
+          return;
+        }
+        this._worker.off("message", onReady);
+        this._worker.off("message", onInitError);
+        reject(err);
       };
 
       const onReady = (msg) => {
         if (!msg || msg.type !== "ready") return;
         this._worker.off("message", onReady);
+        this._worker.off("message", onInitError);
         this._ready = true;
-        settle(resolve);
+        resolve();
+      };
+      const onInitError = (msg) => {
+        if (!msg || msg.type !== "error" || msg.callId != null) return;
+        const err = new Error(msg.error || "workflow engine worker failed to initialize");
+        if (msg.stack) err.stack = msg.stack;
+        failStart(err);
       };
       this._worker.on("message", onReady);
+      this._worker.on("message", onInitError);
+      this._worker.once("error", failStart);
 
       this._worker.on("message", (msg) => this._onMessage(msg));
       this._worker.on("error", (err) => {
-        settle(reject, err);
         console.error("[wf-worker] worker thread error:", err.message);
       });
       this._worker.on("exit", (code) => {
+        if (code !== 0) console.warn(`[wf-worker] worker exited with code ${code}`);
         this._ready = false;
-        if (code !== 0) {
-          console.warn(`[wf-worker] worker exited with code ${code}`);
-          settle(reject, new Error(`workflow engine worker exited with code ${code}`));
-        }
       });
 
       /* Send init after attaching all listeners */
@@ -1872,7 +1889,13 @@ async function getWorkflowEngineModule() {
 
     if (!_wfRecommendedInstalled && _wfTemplates && shouldBootstrapDefaultWorkflowSingleton()) {
       try {
-        const engine = _wfEngine.getWorkflowEngine();
+        const defaultPaths = getWorkflowStoragePaths(repoRoot);
+        const defaultKey = getWorkflowWorkspaceKey(defaultPaths.workspaceRoot);
+        const engine = _wfEngineByWorkspace.get(defaultKey) || _wfEngine.getWorkflowEngine();
+        if (engine?.isWorkflowEngineProxy) {
+          _wfRecommendedInstalled = true;
+          return;
+        }
         attachWorkflowEngineLiveBridge(engine);
         const selection = resolveWorkflowBootstrapSelection(_wfTemplates);
         let result = { installed: [], skipped: [], errors: [] };
@@ -2564,9 +2587,9 @@ async function getWorkflowRequestContext(reqUrl, options = {}) {
     if (_testDefaultEngine) {
       engine = _testDefaultEngine;
     } else {
-      /* Use Worker thread proxy for complete decoupling from the HTTP event loop.
-       * In test environments, skip the worker proxy and go straight to in-process engine. */
-      if (shouldBootstrapDefaultWorkflowSingleton()) {
+      const preferInProcessEngine = Boolean(process.env.VITEST);
+      if (!preferInProcessEngine) {
+        /* Use Worker thread proxy for complete decoupling from the HTTP event loop */
         const proxy = new WorkflowEngineProxy();
         try {
           await proxy._start({
@@ -2577,21 +2600,9 @@ async function getWorkflowRequestContext(reqUrl, options = {}) {
           engine = proxy;
         } catch (startErr) {
           console.warn("[workflows] Worker thread unavailable, using in-process engine:", startErr.message);
-          engine = new wfMod.WorkflowEngine({
-            workflowDir: paths.workflowDir,
-            runsDir: paths.runsDir,
-            detectInterruptedRuns: false,
-            services: _wfServices || {},
-            onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
-          });
-          if (typeof engine.registerTaskTraceHook === "function") {
-            engine.registerTaskTraceHook((event) => {
-              handleTaskWorkflowTraceEvent(event);
-            });
-          }
-          engine.load();
         }
-      } else {
+      }
+      if (!engine) {
         engine = new wfMod.WorkflowEngine({
           workflowDir: paths.workflowDir,
           runsDir: paths.runsDir,
@@ -5832,7 +5843,6 @@ async function probeUiHealth(urlText, timeoutMs = DEFAULT_UI_INSTANCE_PROBE_TIME
           path: "/healthz",
           method: "GET",
           timeout: Math.max(100, Math.trunc(Number(timeoutMs) || DEFAULT_UI_INSTANCE_PROBE_TIMEOUT_MS)),
-          rejectUnauthorized: false,
         },
         (res) => {
           res.resume();
@@ -8075,6 +8085,7 @@ async function spawnCloudflared(cfBin, args, maxRetries = 3) {
       return spawn(cfBin, args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
+        windowsHide: true,
       });
     } catch (err) {
       if (err.code === "ETXTBSY" && attempt < maxRetries) {
@@ -18763,7 +18774,7 @@ if (path === "/api/agent-logs/context") {
           return { __error: true, status: wfCtx.status, body: { ok: false, error: wfCtx.error } };
         }
         const engine = wfCtx.engine;
-        const all = engine.list().filter((workflow) => !shouldHideGeneratedWorkflowFromList(workflow));
+        const all = (await engine.list()).filter((workflow) => !shouldHideGeneratedWorkflowFromList(workflow));
         return {
           ok: true,
           workflows: all.map((w) => ({
@@ -18828,7 +18839,12 @@ if (path === "/api/agent-logs/context") {
   // GET /api/workflows/concurrency — live concurrency stats for dashboard
   if (path === "/api/workflows/concurrency" && req.method === "GET") {
     try {
-      const stats = engine.getConcurrencyStats();
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const stats = await wfCtx.engine.getConcurrencyStats();
       jsonResponse(res, 200, { ok: true, ...stats });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -19153,10 +19169,10 @@ if (path === "/api/agent-logs/context") {
         ? Math.min(rawLimit, 5000)
         : 20;
       const page = typeof engine.getRunHistoryPage === "function"
-        ? engine.getRunHistoryPage(null, { offset, limit })
+        ? await engine.getRunHistoryPage(null, { offset, limit })
         : {
-            runs: engine.getRunHistory ? engine.getRunHistory(null, limit) : [],
-            total: engine.getRunHistory ? engine.getRunHistory(null).length : 0,
+            runs: engine.getRunHistory ? await engine.getRunHistory(null, limit) : [],
+            total: engine.getRunHistory ? (await engine.getRunHistory(null)).length : 0,
             offset,
             limit,
           };
@@ -19202,7 +19218,7 @@ if (path === "/api/agent-logs/context") {
       }
 
       if (action === "copilot-context" && (req.method === "GET" || req.method === "POST")) {
-        const run = typeof engine.getRunDetail === "function" ? engine.getRunDetail(runId) : null;
+        const run = typeof engine.getRunDetail === "function" ? await engine.getRunDetail(runId) : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;
@@ -19215,14 +19231,14 @@ if (path === "/api/agent-logs/context") {
           requestBody?.nodeId || url.searchParams.get("nodeId") || "",
         ).trim();
         const workflow = typeof engine.get === "function"
-          ? engine.get(String(run?.workflowId || "").trim())
+          ? await engine.get(String(run?.workflowId || "").trim())
           : null;
         const nodeForensics =
           nodeId && typeof engine.getNodeForensics === "function"
-            ? engine.getNodeForensics(runId, nodeId)
+            ? await engine.getNodeForensics(runId, nodeId)
             : null;
         const runForensics = typeof engine.getRunForensics === "function"
-          ? engine.getRunForensics(runId)
+          ? await engine.getRunForensics(runId)
           : null;
         const payload = buildRunCopilotContextPayload(run, {
           intent,
@@ -19249,7 +19265,7 @@ if (path === "/api/agent-logs/context") {
         }
         const body = await readJsonBody(req);
         const reason = String(body?.reason || "Run cancellation requested from UI").trim() || "Run cancellation requested from UI";
-        const result = engine.cancelRun(runId, { reason });
+        const result = await engine.cancelRun(runId, { reason });
         if (!result?.ok) {
           const statusCode = String(result?.error || "").includes("not found") ? 404 : 409;
           jsonResponse(res, statusCode, {
@@ -19275,7 +19291,7 @@ if (path === "/api/agent-logs/context") {
       // If mode is omitted, returns available retry options so the UI can
       // present a choice to the user.
       if (action === "retry" && req.method === "POST") {
-        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;
@@ -19288,7 +19304,7 @@ if (path === "/api/agent-logs/context") {
         const mode = body?.mode;
         if (!mode) {
           const retryOptions = typeof engine.getRetryOptions === "function"
-            ? engine.getRetryOptions(runId)
+            ? await engine.getRetryOptions(runId)
             : null;
           if (retryOptions) {
             jsonResponse(res, 200, {
@@ -19332,7 +19348,7 @@ if (path === "/api/agent-logs/context") {
           return;
         }
         const forensics = typeof engine.getNodeForensics === "function"
-          ? engine.getNodeForensics(runId, nodeId)
+          ? await engine.getNodeForensics(runId, nodeId)
           : null;
         if (!forensics) {
           jsonResponse(res, 404, { ok: false, error: "Node not found in run" });
@@ -19345,7 +19361,7 @@ if (path === "/api/agent-logs/context") {
       // ── GET /api/workflows/runs/:id/forensics — full run forensics ──
       if (action === "forensics" && req.method === "GET") {
         const forensics = typeof engine.getRunForensics === "function"
-          ? engine.getRunForensics(runId)
+          ? await engine.getRunForensics(runId)
           : null;
         if (!forensics) {
           jsonResponse(res, 404, { ok: false, error: "Run not found" });
@@ -19357,7 +19373,7 @@ if (path === "/api/agent-logs/context") {
 
       // ── GET /api/workflows/runs/:id/evaluate — run evaluation ───────
       if (action === "evaluate" && req.method === "GET") {
-        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;
@@ -19375,7 +19391,7 @@ if (path === "/api/agent-logs/context") {
           jsonResponse(res, 501, { ok: false, error: "Snapshots not supported" });
           return;
         }
-        const result = engine.createRunSnapshot(runId);
+        const result = await engine.createRunSnapshot(runId);
         if (!result) {
           jsonResponse(res, 404, { ok: false, error: "Run not found" });
           return;
@@ -19386,10 +19402,10 @@ if (path === "/api/agent-logs/context") {
 
       // ── GET /api/workflows/runs/:id/snapshots — list snapshots ──────
       if (action === "snapshots" && req.method === "GET") {
-        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
         const workflowId = run?.workflowId || run?.detail?.data?._workflowId || null;
         const snapshots = typeof engine.listSnapshots === "function"
-          ? engine.listSnapshots(workflowId)
+          ? await engine.listSnapshots(workflowId)
           : [];
         jsonResponse(res, 200, { ok: true, snapshots });
         return;
@@ -19416,7 +19432,7 @@ if (path === "/api/agent-logs/context") {
 
       // ── POST /api/workflows/runs/:id/remediate — apply fix actions ──
       if (action === "remediate" && req.method === "POST") {
-        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;

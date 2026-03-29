@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 describe("monitor workflow startup guards", () => {
   const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
   const maintenanceSource = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
+  const normalizedMonitorSource = monitorSource.replace(/\r\n/g, "\n");
 
   it("initializes workflow automation before runtime subsystems in non-test mode", () => {
     expect(monitorSource).toContain("if (!isMonitorTestRuntime) {");
@@ -68,9 +69,9 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("configWorkflowRecovery?.startupStepDelayMs");
     expect(monitorSource).not.toContain('engine.resumeInterruptedRuns().catch((err) => {');
     expect(
-      monitorSource.indexOf("function scheduleStartupWorkflowRecovery(name, handler, step = 0)"),
+      normalizedMonitorSource.indexOf("function scheduleStartupWorkflowRecovery(name, handler, step = 0)"),
     ).toBeLessThan(
-      monitorSource.indexOf("if (!isMonitorTestRuntime) {\n  if (workflowAutomationEnabled) {")
+      normalizedMonitorSource.indexOf("if (!isMonitorTestRuntime) {\n  if (workflowAutomationEnabled) {")
     );
   });
 

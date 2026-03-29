@@ -991,6 +991,79 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.dagState?.edges?.[0]?.source).toBe("trigger");
   });
 
+  it("hydrates delegation audit trail and guard maps into run detail and history", async () => {
+    const engine = new WorkflowEngine({ persistRuns: true, runRetention: 20 });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "start", type: "trigger.manual", position: { x: 0, y: 0 } },
+        { id: "log", type: "notify.log", position: { x: 180, y: 0 }, config: { message: "delegation detail" } },
+      ],
+      [{ source: "start", target: "log" }],
+      { name: "Delegation Detail Workflow" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {
+      taskId: "task-delegation-history",
+      _delegationAuditTrail: [
+        {
+          type: "assign",
+          eventType: "assign",
+          taskId: "task-delegation-history",
+          transitionKey: "assign:task-delegation-history:owner-a",
+          at: 10,
+          timestamp: new Date(10).toISOString(),
+        },
+        {
+          type: "handoff-complete",
+          eventType: "handoff-complete",
+          taskId: "task-delegation-history",
+          transitionKey: "handoff-complete:task-delegation-history:owner-b",
+          at: 20,
+          timestamp: new Date(20).toISOString(),
+        },
+      ],
+      _delegationTransitionGuards: {
+        "assign:task-delegation-history:owner-a": {
+          transitionKey: "assign:task-delegation-history:owner-a",
+          status: "completed",
+          claimToken: "claim-history-1",
+        },
+      },
+    });
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail.delegationAuditTrail).toHaveLength(2);
+    expect(detail.delegationTrail).toHaveLength(2);
+    expect(detail.latestDelegationEvent?.type).toBe("handoff-complete");
+    expect(detail.delegationTransitionGuards["assign:task-delegation-history:owner-a"]).toEqual(
+      expect.objectContaining({
+        status: "completed",
+        claimToken: "claim-history-1",
+      }),
+    );
+    expect(detail.detail.delegationAuditTrail).toHaveLength(2);
+    expect(detail.detail.delegationTrail).toHaveLength(2);
+    expect(detail.detail.data._workflowDelegationTrail).toHaveLength(2);
+    expect(detail.detail.data._delegationTrail).toHaveLength(2);
+    expect(detail.detail.data._delegationTransitionGuards).toEqual(
+      expect.objectContaining({
+        "assign:task-delegation-history:owner-a": expect.objectContaining({
+          status: "completed",
+          claimToken: "claim-history-1",
+        }),
+      }),
+    );
+
+    const summary = engine.getRunHistory(wf.id, 5)[0];
+    expect(summary.delegationAuditTrail).toHaveLength(2);
+    expect(summary.delegationTrail).toHaveLength(2);
+    expect(summary.latestDelegationEvent?.type).toBe("handoff-complete");
+    expect(summary.delegationTransitionGuards["assign:task-delegation-history:owner-a"]).toEqual(
+      expect.objectContaining({ status: "completed" }),
+    );
+  });
+
   it("threads validation diagnostics into run detail and history summaries", async () => {
     makeTmpEngine({
       scheduler: {
@@ -3570,6 +3643,74 @@ describe("Session chaining - action.run_agent", () => {
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).toMatch(/Tool call: apply_patch/);
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
+  });
+
+  it("marks action.run_agent as waiting until a shared agent slot is acquired", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const originalSetNodeStatus = ctx.setNodeStatus.bind(ctx);
+    ctx.setNodeStatus = vi.fn((nodeId, status) => originalSetNodeStatus(nodeId, status));
+    const launchEphemeralThread = vi.fn().mockImplementation(async (_prompt, _cwd, _timeoutMs, extra) => {
+      extra?.onSlotQueued?.({
+        ownerKey: "slot-owner",
+        activeSlots: 1,
+        queuedSlots: 1,
+        queueDepth: 1,
+        maxParallel: 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      extra?.onSlotAcquired?.({
+        slotId: "agent-slot-test",
+        ownerKey: "slot-owner",
+        activeSlots: 1,
+        queuedSlots: 0,
+        maxParallel: 1,
+        waitedMs: 10,
+      });
+      return {
+        success: true,
+        output: "done",
+        sdk: "codex",
+        items: [],
+        threadId: "thread-slot-test",
+      };
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "a-slot-wait",
+      type: "action.run_agent",
+      config: { prompt: "Test prompt", autoRecover: false, failOnError: true },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({
+        slotOwnerKey: expect.stringContaining(":a-slot-wait"),
+        onSlotQueued: expect.any(Function),
+        onSlotAcquired: expect.any(Function),
+      }),
+    );
+    expect(ctx.setNodeStatus.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["a-slot-wait", "waiting"],
+        ["a-slot-wait", "running"],
+      ]),
+    );
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).toMatch(/waiting for shared agent slot/i);
+    expect(runLogText).toMatch(/acquired shared agent slot/i);
   });
 
   it("ignores unresolved model placeholders when launching an agent", async () => {

@@ -206,6 +206,7 @@ export async function spawnAsync(cmd, args = [], options = {}) {
     const proc = spawn(normalizedCommand, args, {
       ...options,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: options.windowsHide ?? true,
     });
     proc.stdout.on("data", (d) => stdoutChunks.push(d));
     proc.stderr.on("data", (d) => stderrChunks.push(d));

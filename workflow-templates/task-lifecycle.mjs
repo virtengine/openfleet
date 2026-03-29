@@ -429,13 +429,15 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 600, y: 1090 }),
 
     node("wt-failure-blocking", "condition.expression", "Non-Retryable WT Failure?", {
-      expression: "$ctx.getNodeOutput('acquire-worktree')?.retryable === false",
+      expression:
+        "(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const latest = retry && retry.success === false ? retry : $ctx.getNodeOutput('acquire-worktree'); return latest?.retryable === false; })()",
     }, { x: 600, y: 1220, outputs: ["yes", "no"] }),
 
     node("set-blocked-wt-failed", "action.update_task_status", "Set Blocked (WT Fail)", {
       taskId: "{{taskId}}",
       status: "blocked",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.blockedReason || $ctx.getNodeOutput('retry-acquire-wt')?.error || '') : ($ctx.getNodeOutput('acquire-worktree')?.blockedReason || $ctx.getNodeOutput('acquire-worktree')?.error || '')}}",
     }, { x: 470, y: 1350 }),
     
     node("annotate-blocked-wt-failed", "action.bosun_function", "Annotate Blocked (WT Fail)", {
@@ -443,9 +445,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       args: {
         taskId: "{{taskId}}",
         fields: {
-          cooldownUntil: "{{acquire-worktree.retryAt}}",
-          blockedReason: "{{acquire-worktree.blockedReason}}",
-          meta: "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null, repairArtifacts: output.repairArtifacts || null } }; })()}}",
+          cooldownUntil: "{{(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); return output.retryAt || null; })()}}",
+          blockedReason: "{{(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); return output.blockedReason || output.error || null; })()}}",
+          meta: "{{(() => { const current = ($data.meta && typeof $data.meta === 'object') ? $data.meta : (($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}); const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); const worktreePath = output.worktreePath || $data.worktreePath || ''; const repoRoot = $data.repoRoot || $data.workspace || current.repoRoot || current.workspace || ''; const branch = $data.branch || $data.branchName || current.branch || current.branchName || ''; const baseBranch = $data.baseBranch || current.baseBranch || ''; const defaultTargetBranch = $data.defaultTargetBranch || current.defaultTargetBranch || ''; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || output.error || '', error: output.error || '', recordedAt: output.recordedAt || null, repairArtifacts: output.repairArtifacts || null, branch, repoRoot, baseBranch, defaultTargetBranch, worktreePath } }; })()}}",
         },
       },
     }, { x: 470, y: 1480 }),
@@ -457,13 +459,13 @@ export const TASK_LIFECYCLE_TEMPLATE = {
         taskId: "{{taskId}}",
         taskTitle: "{{taskTitle}}",
         repoRoot: "{{repoRoot}}",
-        worktreePath: "{{$ctx.getNodeOutput('acquire-worktree')?.worktreePath || ''}}",
+        worktreePath: "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.worktreePath || $data.worktreePath || '') : ($ctx.getNodeOutput('acquire-worktree')?.worktreePath || $data.worktreePath || '')}}",
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         defaultTargetBranch: "{{defaultTargetBranch}}",
-        error: "{{$ctx.getNodeOutput('acquire-worktree')?.error || $ctx.getNodeOutput('acquire-worktree')?.blockedReason || 'worktree acquisition failed'}}",
-        failureKind: "{{$ctx.getNodeOutput('acquire-worktree')?.failureKind || 'branch_refresh_conflict'}}",
-        repairArtifacts: "{{$ctx.getNodeOutput('acquire-worktree')?.repairArtifacts || null}}",
+        error: "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.error || $ctx.getNodeOutput('retry-acquire-wt')?.blockedReason || 'worktree acquisition failed') : ($ctx.getNodeOutput('acquire-worktree')?.error || $ctx.getNodeOutput('acquire-worktree')?.blockedReason || 'worktree acquisition failed')}}",
+        failureKind: "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.failureKind || 'branch_refresh_conflict') : ($ctx.getNodeOutput('acquire-worktree')?.failureKind || 'branch_refresh_conflict')}}",
+        repairArtifacts: "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.repairArtifacts || null) : ($ctx.getNodeOutput('acquire-worktree')?.repairArtifacts || null)}}",
       },
     }, { x: 470, y: 1610 }),
 
@@ -478,7 +480,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 600, y: 1480 }),
 
     node("notify-wt-failed", "notify.telegram", "Notify WT Failed", {
-      message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}",
+      message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.recoveryNote || '') : ($ctx.getNodeOutput('acquire-worktree')?.recoveryNote || '')}}",
     }, { x: 600, y: 1740 }),
 
     // ── AUTO-RECOVERY: Retry worktree acquisition once after cleanup ─────

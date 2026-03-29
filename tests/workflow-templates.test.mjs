@@ -1520,7 +1520,10 @@ describe("github template CLI compatibility", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
     const securityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
-    const securityAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agent");
+    const securityDispatchNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agents");
+    const securityTemplate = getTemplate("template-pr-security-fix-single");
+    const securityPromptNode = securityTemplate?.nodes.find((n) => n.id === "setup-prompt");
+    const securityFixAgentNode = securityTemplate?.nodes.find((n) => n.id === "fix-agent");
 
     expect(getNodeCommandCode(fetchNode)).toContain("SECURITY_CHECK_RE");
     expect(getNodeCommandCode(fetchNode)).toContain("securityFailures");
@@ -1534,14 +1537,17 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(securityNode)).toContain("reviewComments");
     expect(getNodeCommandCode(securityNode)).toContain("digestSummary");
     expect(getNodeCommandCode(securityNode)).toContain("reason:'security_code_scanning_failure'");
-    expect(securityAgentNode?.config?.prompt).toContain("CodeQL or GitHub code scanning");
-    expect(securityAgentNode?.config?.prompt).toContain("Only fix the listed code-scanning or CodeQL findings");
-    expect(securityAgentNode?.config?.prompt).toContain("prDigest.body");
-    expect(securityAgentNode?.config?.prompt).toContain("prDigest.reviewComments");
+    expect(securityDispatchNode?.type).toBe("loop.for_each");
+    expect(securityDispatchNode?.config?.workflowId).toBe("template-pr-security-fix-single");
+    expect(securityPromptNode?.config?.value).toContain("security remediation");
+    expect(securityPromptNode?.config?.value).toContain("Fix ONLY the security/CodeQL findings");
+    expect(securityPromptNode?.config?.value).toContain("prDigest.reviewComments");
+    expect(securityFixAgentNode?.config?.prompt).toContain("Fix ONLY the listed security/CodeQL findings");
+    expect(securityFixAgentNode?.config?.prompt).toContain("code-scanning/alerts");
 
     expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "security-fix-needed")).toBeDefined();
-    expect(watchdogTemplate.edges.find((e) => e.source === "security-agent-needed" && e.target === "dispatch-security-fix-agent")).toBeDefined();
-    expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agent" && e.target === "generic-fix-needed")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "has-unclaimed-security-fixes" && e.target === "dispatch-security-fix-agents")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agents" && e.target === "generic-fix-needed")).toBeDefined();
   });
 
   it("PR watchdog enriches generic CI fallback with run diagnostics and bounded reruns", () => {

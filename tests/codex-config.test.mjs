@@ -1,8 +1,8 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { buildRepoCodexConfig } from "../config/repo-config.mjs";
+import { buildRepoCodexConfig, ensureRepoConfigs } from "../config/repo-config.mjs";
 import {
   buildCommonMcpBlocks,
   buildSandboxPermissions,
@@ -29,6 +29,7 @@ describe("codex-config defaults", () => {
     expect(block).toContain("[mcp_servers.sequential-thinking]");
     expect(block).toContain("[mcp_servers.playwright]");
     expect(block).toContain("[mcp_servers.microsoft-docs]");
+    expect(block).not.toContain("tools = [");
   });
 
   it("forces critical features back to true when disabled", () => {
@@ -197,7 +198,7 @@ describe("codex-config defaults", () => {
       },
     });
     expect(toml).toContain("use_linux_sandbox_bwrap = false");
-    expect(toml).toContain(`\"${tempRoot.replace(/\\/g, "\\\\")}\"`);
+    expect(toml).toContain(`"${tempRoot.replaceAll("\\", "\\\\")}"`);
     expect(toml).not.toContain('writable_roots = ["/tmp"');
   });
 
@@ -232,6 +233,74 @@ describe("codex-config defaults", () => {
 
     expect(toml).toContain("[mcp_servers.context7]");
     expect(toml).toContain("[mcp_servers.microsoft-docs]");
+  });
+
+  it("does not duplicate common MCP servers from installed library entries", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "repo-codex-mcp-"));
+    mkdirSync(join(repoRoot, ".bosun"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, ".bosun", "library.json"),
+      JSON.stringify(
+        {
+          entries: [
+            {
+              id: "playwright",
+              type: "mcp",
+              meta: {
+                command: "npx",
+                args: ["-y", "@playwright/mcp@latest"],
+              },
+            },
+            {
+              id: "microsoft-docs",
+              type: "mcp",
+              meta: {
+                transport: "url",
+                url: "https://learn.microsoft.com/api/mcp",
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const toml = buildRepoCodexConfig({
+      repoRoot,
+      env: {
+        BOSUN_MCP_ALLOW_DEFAULT_SERVERS: "1",
+      },
+    });
+
+    expect(toml.match(/^\[mcp_servers\.playwright\]$/gm)?.length ?? 0).toBe(1);
+    expect(toml.match(/^\[mcp_servers\.microsoft-docs\]$/gm)?.length ?? 0).toBe(1);
+  });
+
+  it("sanitizes legacy microsoft-docs tools arrays when merging repo config", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "repo-codex-merge-"));
+    mkdirSync(join(repoRoot, ".codex"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, ".codex", "config.toml"),
+      [
+        "[mcp_servers.microsoft-docs]",
+        'url = "https://learn.microsoft.com/api/mcp"',
+        'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    ensureRepoConfigs(repoRoot, {
+      env: {
+        BOSUN_MCP_ALLOW_DEFAULT_SERVERS: "1",
+      },
+    });
+
+    const merged = readFileSync(join(repoRoot, ".codex", "config.toml"), "utf8");
+    expect(merged).toContain("[mcp_servers.microsoft-docs]");
+    expect(merged).not.toContain("tools = [");
   });
 
   it("supports legacy sandbox_permissions helper names", () => {

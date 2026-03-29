@@ -177,6 +177,44 @@ function extractGithubSlug(url) {
   return extractSlug(raw);
 }
 
+function readWorkspaceRepoRemoteUrls(childProcess, repoPath) {
+  try {
+    const raw = childProcess.execSync("git remote", {
+      cwd: repoPath,
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "ignore"],
+      env: sanitizeGitProcessEnv(),
+    }).trim();
+    const names = raw.split(/\r?\n/).map((value) => String(value || "").trim()).filter(Boolean);
+    return names.map((name) => {
+      try {
+        const url = childProcess.execSync(`git remote get-url ${name}`, {
+          cwd: repoPath,
+          encoding: "utf8",
+          timeout: 3000,
+          stdio: ["pipe", "pipe", "ignore"],
+          env: sanitizeGitProcessEnv(),
+        }).trim();
+        return { name, url, slug: extractSlug(url), githubSlug: extractGithubSlug(url) };
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function pickPreferredWorkspaceRemoteUrl(childProcess, repoPath) {
+  const remotes = readWorkspaceRepoRemoteUrls(childProcess, repoPath);
+  if (remotes.length === 0) return "";
+  return remotes.find((remote) => remote.githubSlug)?.url
+    || remotes.find((remote) => remote.slug)?.url
+    || remotes[0]?.url
+    || "";
+}
+
 function resolveRepoUrl(repo) {
   return repo.url || (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
 }
@@ -1121,13 +1159,7 @@ export function detectWorkspaces(configDir) {
       if (existsSync(resolve(subPath, ".git"))) {
         let slug = "";
         try {
-          const remote = childProcess.execSync("git remote get-url origin", {
-            cwd: subPath,
-            encoding: "utf8",
-            timeout: 3000,
-            stdio: ["pipe", "pipe", "ignore"],
-            env: sanitizeGitProcessEnv(),
-          }).trim();
+          const remote = pickPreferredWorkspaceRemoteUrl(childProcess, subPath);
           slug = extractSlug(remote);
         } catch { /* no remote */ }
         repos.push({

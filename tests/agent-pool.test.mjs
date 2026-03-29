@@ -327,6 +327,10 @@ let getPoolSdkName,
   resetPoolSdkCache,
   setSdkFailureCooldownForTest,
   getAvailableSdks,
+  getAvailableSlots,
+  getAgentExecutionSlotStatus,
+  allocateSlot,
+  releaseSlot,
   launchEphemeralThread,
   execPooledPrompt,
   launchOrResumeThread,
@@ -352,6 +356,10 @@ beforeEach(async () => {
   resetPoolSdkCache = mod.resetPoolSdkCache;
   setSdkFailureCooldownForTest = mod.setSdkFailureCooldownForTest;
   getAvailableSdks = mod.getAvailableSdks;
+  getAvailableSlots = mod.getAvailableSlots;
+  getAgentExecutionSlotStatus = mod.getAgentExecutionSlotStatus;
+  allocateSlot = mod.allocateSlot;
+  releaseSlot = mod.releaseSlot;
   launchEphemeralThread = mod.launchEphemeralThread;
   execPooledPrompt = mod.execPooledPrompt;
   launchOrResumeThread = mod.launchOrResumeThread;
@@ -386,6 +394,68 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. SDK Resolution
 // ═══════════════════════════════════════════════════════════════════════════
+
+describe("agent execution slot queue", () => {
+  it("keeps later requests pending until a shared slot is released", async () => {
+    process.env.AGENT_POOL_MAX_PARALLEL = "1";
+
+    const first = await allocateSlot("slot-owner-1", {
+      taskKey: "slot-owner-1",
+      workflowId: "wf-a",
+    });
+    expect(first.slotId).toMatch(/^agent-slot-/);
+    expect(getAvailableSlots()).toBe(0);
+
+    const queuedSnapshots = [];
+    const acquiredSnapshots = [];
+    let secondResolved = false;
+    const secondPromise = allocateSlot("slot-owner-2", {
+      taskKey: "slot-owner-2",
+      workflowId: "wf-b",
+      onQueued: (snapshot) => queuedSnapshots.push(snapshot),
+      onAcquired: (snapshot) => acquiredSnapshots.push(snapshot),
+    }).then((lease) => {
+      secondResolved = true;
+      return lease;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(secondResolved).toBe(false);
+    expect(getAgentExecutionSlotStatus()).toMatchObject({
+      activeSlots: 1,
+      queuedSlots: 1,
+      maxParallel: 1,
+    });
+    expect(queuedSnapshots).toHaveLength(1);
+    expect(queuedSnapshots[0]).toMatchObject({
+      ownerKey: "slot-owner-2",
+      activeSlots: 1,
+      queuedSlots: 1,
+      maxParallel: 1,
+    });
+
+    await releaseSlot(first);
+    const second = await secondPromise;
+
+    expect(secondResolved).toBe(true);
+    expect(second.ownerKey).toBe("slot-owner-2");
+    expect(acquiredSnapshots).toHaveLength(1);
+    expect(acquiredSnapshots[0]).toMatchObject({
+      ownerKey: "slot-owner-2",
+      slotId: second.slotId,
+      activeSlots: 1,
+      maxParallel: 1,
+    });
+
+    await releaseSlot(second);
+    expect(getAgentExecutionSlotStatus()).toMatchObject({
+      activeSlots: 0,
+      queuedSlots: 0,
+      maxParallel: 1,
+    });
+    expect(getAvailableSlots()).toBe(1);
+  });
+});
 
 describe("SDK resolution", () => {
   it("uses AGENT_POOL_SDK env var when set", () => {

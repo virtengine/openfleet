@@ -14,27 +14,6 @@ import {
   traceTaskExecution,
   traceToolCall,
 } from "../infra/tracing.mjs";
-if (typeof vi.stubEnv !== "function") {
-  const originalEnv = { ...process.env };
-  vi.stubEnv = (name, value) => {
-    if (value === undefined) {
-      delete process.env[name];
-      return;
-    }
-    process.env[name] = String(value);
-  };
-  vi.unstubAllEnvs = () => {
-    for (const key of Object.keys(process.env)) {
-      if (!(key in originalEnv)) {
-        delete process.env[key];
-      }
-    }
-    for (const [key, value] of Object.entries(originalEnv)) {
-      process.env[key] = value;
-    }
-  };
-}
-
 
 describe("infra/tracing", () => {
   let rootDir;
@@ -115,4 +94,3 @@ describe("infra/tracing", () => {
     expect(taskSpan.events).toEqual(expect.arrayContaining([expect.objectContaining({ name: "agent:task-started" })]));
   });
 });
-

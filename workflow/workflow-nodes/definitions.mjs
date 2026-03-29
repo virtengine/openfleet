@@ -181,6 +181,7 @@ function execGitArgsSync(args, options = {}) {
       return execFileSync(gitBinary, gitArgs, {
         ...options,
         env: buildGitExecutionEnv(env, gitBinary),
+        windowsHide: options.windowsHide ?? true,
       });
     } catch (error) {
       if (error?.code === "ENOENT") {
@@ -550,6 +551,18 @@ function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
 
   if (task && typeof task === "object") {
     ctx.data.task = task;
+    const taskWorktreePath = String(
+      task.worktreePath ||
+      task.workspacePath ||
+      task.meta?.worktreePath ||
+      task.meta?.workspacePath ||
+      task.metadata?.worktreePath ||
+      task.metadata?.workspacePath ||
+      "",
+    ).trim();
+    if (taskWorktreePath && !String(ctx.data.worktreePath || "").trim()) {
+      ctx.data.worktreePath = taskWorktreePath;
+    }
   }
 }
 async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue = "") {

@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /**
  * bosun — Setup Wizard
  *
@@ -26,6 +24,7 @@ import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import "./infra/windows-hidden-child-processes.mjs";
 import {
   readCodexConfig,
   getConfigPath,
@@ -6649,7 +6648,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
           const portalChild = _spawn(
             launcher.executable,
             launcher.args || [],
-            { detached: true, stdio: "ignore", windowsHide: false },
+            { detached: true, stdio: "ignore", windowsHide: true },
           );
           portalChild.unref();
           success("Bosun portal is opening...");

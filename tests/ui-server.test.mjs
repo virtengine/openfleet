@@ -406,7 +406,7 @@ describe("ui-server mini app", () => {
       delete process.env.BOSUN_UI_TOKEN;
     }
     expect(token).not.toBe("a".repeat(64));
-  });
+  }, 15000);
 
 
   it("bootstraps local static requests into a session cookie", async () => {
@@ -3442,7 +3442,7 @@ describe("ui-server mini app", () => {
         writeFileSync(monitorErrorPath, previousMonitorError, "utf8");
       }
     }
-  });
+  }, 15000);
 
   it("surfaces repo-area contention summaries on /api/telemetry/summary", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

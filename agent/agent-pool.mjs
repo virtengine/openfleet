@@ -44,11 +44,13 @@
  *   getAvailableSdks()   → returns list of non-disabled SDKs
  */
 
+import { randomUUID } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import "../infra/windows-hidden-child-processes.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { resolveAgentSdkModuleEntry, resolveCodexSdkInstall } from "./agent-sdk.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
@@ -104,9 +106,296 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 
 /** Tag for console logging */
 const TAG = "[agent-pool]";
+const DEFAULT_AGENT_EXECUTION_MAX_PARALLEL = 3;
 const require = createRequire(import.meta.url);
 const CODEX_SDK_SPECIFIER = "@openai/codex-sdk";
 const MODULE_PRESENCE_CACHE = new Map();
+const activeAgentExecutionSlots = new Map();
+const queuedAgentExecutionSlots = [];
+
+function parsePositiveInt(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(1, Math.trunc(parsed));
+}
+
+function resolveAgentExecutionMaxParallel(explicit = null) {
+  const direct = parsePositiveInt(explicit);
+  if (direct) return direct;
+  const envValue =
+    parsePositiveInt(process.env.AGENT_POOL_MAX_PARALLEL) ||
+    parsePositiveInt(process.env.WORKFLOW_AGENT_MAX_PARALLEL);
+  if (envValue) return envValue;
+  try {
+    const cfg = loadConfig();
+    const configValue =
+      parsePositiveInt(cfg?.agentPool?.maxParallel) ||
+      parsePositiveInt(cfg?.internalExecutor?.maxParallel);
+    if (configValue) return configValue;
+  } catch {
+    // Best-effort only; fall back to a safe default.
+  }
+  return DEFAULT_AGENT_EXECUTION_MAX_PARALLEL;
+}
+
+function summarizeAgentSlotMeta(meta = {}) {
+  if (!meta || typeof meta !== "object") return {};
+  const summary = {};
+  const scalarKeys = [
+    "taskKey",
+    "taskId",
+    "taskTitle",
+    "workflowRunId",
+    "workflowId",
+    "workflowName",
+    "workflowNodeId",
+    "workflowNodeLabel",
+    "cwd",
+    "sdk",
+    "model",
+    "sessionType",
+  ];
+  for (const key of scalarKeys) {
+    const value = meta[key];
+    if (value == null) continue;
+    const normalized = String(value).trim();
+    if (normalized) summary[key] = normalized;
+  }
+  return summary;
+}
+
+function emitAgentSlotHook(hook, payload) {
+  if (typeof hook !== "function") return;
+  try {
+    hook(payload);
+  } catch {
+    // Slot telemetry must never break agent execution.
+  }
+}
+
+function buildAgentSlotSnapshot(overrides = {}) {
+  const maxParallel = resolveAgentExecutionMaxParallel(overrides.maxParallel);
+  return {
+    maxParallel,
+    activeSlots: activeAgentExecutionSlots.size,
+    queuedSlots: queuedAgentExecutionSlots.length,
+    ...overrides,
+  };
+}
+
+function grantQueuedAgentExecutionSlot(request) {
+  const grantedAt = Date.now();
+  const lease = {
+    slotId: request.slotId,
+    ownerKey: request.ownerKey,
+    requestedAt: request.requestedAt,
+    queuedAt: request.queuedAt,
+    acquiredAt: grantedAt,
+    waitedMs: Math.max(0, grantedAt - request.requestedAt),
+    maxParallel: request.maxParallel,
+    meta: request.meta,
+    onReleased: request.onReleased,
+  };
+  activeAgentExecutionSlots.set(lease.slotId, lease);
+  const payload = buildAgentSlotSnapshot({
+    slotId: lease.slotId,
+    ownerKey: lease.ownerKey,
+    queuedAt: lease.queuedAt,
+    acquiredAt: lease.acquiredAt,
+    requestedAt: lease.requestedAt,
+    waitedMs: lease.waitedMs,
+    maxParallel: lease.maxParallel,
+    meta: lease.meta,
+  });
+  emitAgentSlotHook(request.onAcquired, payload);
+  request.resolve(lease);
+}
+
+function pumpQueuedAgentExecutionSlots() {
+  while (queuedAgentExecutionSlots.length > 0) {
+    const next = queuedAgentExecutionSlots[0];
+    const maxParallel = resolveAgentExecutionMaxParallel(next.maxParallel);
+    if (activeAgentExecutionSlots.size >= maxParallel) break;
+    queuedAgentExecutionSlots.shift();
+    grantQueuedAgentExecutionSlot(next);
+  }
+}
+
+export function getAvailableSlots(maxParallel = null) {
+  return Math.max(
+    0,
+    resolveAgentExecutionMaxParallel(maxParallel) - activeAgentExecutionSlots.size,
+  );
+}
+
+export function getAgentExecutionSlotStatus() {
+  return {
+    maxParallel: resolveAgentExecutionMaxParallel(),
+    activeSlots: activeAgentExecutionSlots.size,
+    queuedSlots: queuedAgentExecutionSlots.length,
+    active: Array.from(activeAgentExecutionSlots.values()).map((lease) => ({
+      slotId: lease.slotId,
+      ownerKey: lease.ownerKey,
+      requestedAt: lease.requestedAt,
+      queuedAt: lease.queuedAt,
+      acquiredAt: lease.acquiredAt,
+      waitedMs: lease.waitedMs,
+      maxParallel: lease.maxParallel,
+      meta: { ...lease.meta },
+    })),
+    queued: queuedAgentExecutionSlots.map((request) => ({
+      slotId: request.slotId,
+      ownerKey: request.ownerKey,
+      requestedAt: request.requestedAt,
+      queuedAt: request.queuedAt,
+      maxParallel: request.maxParallel,
+      meta: { ...request.meta },
+    })),
+  };
+}
+
+export async function allocateSlot(ownerKey = "", options = {}) {
+  const normalizedOwnerKey =
+    String(
+      ownerKey ||
+      options.taskKey ||
+      options.taskId ||
+      options.workflowRunId ||
+      options.workflowId ||
+      "",
+    ).trim() || `agent-slot:${randomUUID()}`;
+  const slotId = `agent-slot-${randomUUID().slice(0, 8)}`;
+  const requestedAt = Date.now();
+  const maxParallel = resolveAgentExecutionMaxParallel(options.maxParallel);
+  const meta = summarizeAgentSlotMeta({
+    ...options.meta,
+    taskKey: options.taskKey,
+    taskId: options.taskId,
+    taskTitle: options.taskTitle,
+    workflowRunId: options.workflowRunId,
+    workflowId: options.workflowId,
+    workflowName: options.workflowName,
+    workflowNodeId: options.workflowNodeId,
+    workflowNodeLabel: options.workflowNodeLabel,
+    cwd: options.cwd,
+    sdk: options.sdk,
+    model: options.model,
+    sessionType: options.sessionType,
+  });
+  const request = {
+    slotId,
+    ownerKey: normalizedOwnerKey,
+    requestedAt,
+    queuedAt: null,
+    maxParallel,
+    meta,
+    onAcquired: options.onAcquired,
+    onReleased: options.onReleased,
+    resolve: null,
+    reject: null,
+  };
+
+  if (activeAgentExecutionSlots.size < maxParallel) {
+    return await new Promise((resolve) => {
+      request.resolve = resolve;
+      grantQueuedAgentExecutionSlot(request);
+    });
+  }
+
+  request.queuedAt = Date.now();
+  emitAgentSlotHook(
+    options.onQueued,
+    buildAgentSlotSnapshot({
+      slotId,
+      ownerKey: normalizedOwnerKey,
+      requestedAt,
+      queuedAt: request.queuedAt,
+      maxParallel,
+      queuedSlots: queuedAgentExecutionSlots.length + 1,
+      meta,
+      queueDepth: queuedAgentExecutionSlots.length + 1,
+    }),
+  );
+  return await new Promise((resolve, reject) => {
+    request.resolve = resolve;
+    request.reject = reject;
+    queuedAgentExecutionSlots.push(request);
+  });
+}
+
+export async function releaseSlot(slotRef = null) {
+  const slotId =
+    typeof slotRef === "string"
+      ? slotRef
+      : String(slotRef?.slotId || "").trim();
+  if (!slotId) {
+    return buildAgentSlotSnapshot({ released: false, reason: "missing_slot_id" });
+  }
+  const lease = activeAgentExecutionSlots.get(slotId);
+  if (!lease) {
+    return buildAgentSlotSnapshot({ released: false, slotId, reason: "slot_not_found" });
+  }
+  activeAgentExecutionSlots.delete(slotId);
+  const releasedAt = Date.now();
+  const payload = buildAgentSlotSnapshot({
+    slotId,
+    ownerKey: lease.ownerKey,
+    requestedAt: lease.requestedAt,
+    queuedAt: lease.queuedAt,
+    acquiredAt: lease.acquiredAt,
+    releasedAt,
+    waitedMs: lease.waitedMs,
+    runDurationMs: Math.max(0, releasedAt - lease.acquiredAt),
+    maxParallel: lease.maxParallel,
+    meta: lease.meta,
+    released: true,
+  });
+  emitAgentSlotHook(lease.onReleased, payload);
+  pumpQueuedAgentExecutionSlots();
+  return payload;
+}
+
+async function withAgentExecutionSlot(cwd, extra = {}, runner) {
+  if (extra?.slotLease) {
+    return await runner(extra.slotLease);
+  }
+  const slotOwnerKey =
+    String(
+      extra?.slotOwnerKey ||
+      extra?.taskKey ||
+      extra?.taskId ||
+      extra?.workflowRunId ||
+      extra?.workflowId ||
+      "",
+    ).trim() || `agent-slot:${randomUUID()}`;
+  let slotLease = null;
+  try {
+    slotLease = await allocateSlot(slotOwnerKey, {
+      taskKey: extra?.taskKey,
+      taskId: extra?.taskId,
+      taskTitle: extra?.taskTitle,
+      workflowRunId: extra?.workflowRunId,
+      workflowId: extra?.workflowId,
+      workflowName: extra?.workflowName,
+      workflowNodeId: extra?.workflowNodeId,
+      workflowNodeLabel: extra?.workflowNodeLabel,
+      cwd,
+      sdk: extra?.sdk,
+      model: extra?.model,
+      sessionType: extra?.sessionType,
+      meta: extra?.slotMeta,
+      maxParallel: extra?.slotMaxParallel,
+      onQueued: extra?.onSlotQueued,
+      onAcquired: extra?.onSlotAcquired,
+      onReleased: extra?.onSlotReleased,
+    });
+    return await runner(slotLease);
+  } finally {
+    if (slotLease?.slotId) {
+      await releaseSlot(slotLease);
+    }
+  }
+}
 
 function hasOptionalModule(specifier) {
   if (MODULE_PRESENCE_CACHE.has(specifier)) {
@@ -2560,6 +2849,7 @@ export async function launchEphemeralThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  return await withAgentExecutionSlot(cwd, extra, async (slotLease) => {
   const resolvedGithubToken = await resolveGithubSessionToken();
   const baseRuntimeEnv =
     extra?.envOverrides && typeof extra.envOverrides === "object"
@@ -2569,6 +2859,7 @@ export async function launchEphemeralThread(
   const launchExtra = {
     ...extra,
     envOverrides: sessionEnv,
+    slotLease,
   };
 
   // ── Resolve MCP servers for this launch ──────────────────────────────────
@@ -2901,6 +3192,7 @@ export async function launchEphemeralThread(
     sdk: primaryName,
     threadId: null,
   };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3555,6 +3847,7 @@ export async function launchOrResumeThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  return await withAgentExecutionSlot(cwd, extra, async (slotLease) => {
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
   const resolvedGithubToken = await resolveGithubSessionToken();
@@ -3567,6 +3860,7 @@ export async function launchOrResumeThread(
     resolvedGithubToken,
   );
   restExtra.envOverrides = applyNodeWarningSuppressionEnv(restExtra.envOverrides);
+  restExtra.slotLease = slotLease;
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
   if (restExtra.sdk && restExtra.pinSdk === true) {
@@ -3873,6 +4167,7 @@ export async function launchOrResumeThread(
   }
 
   return { ...result, threadId: finalThreadId, resumed: false };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -4016,6 +4311,12 @@ export async function execWithRetry(prompt, options = {}) {
     sessionType = "task",
     onEvent,
     onAbortControllerReplaced,
+    slotOwnerKey,
+    slotMeta,
+    slotMaxParallel,
+    onSlotQueued,
+    onSlotAcquired,
+    onSlotReleased,
   } = options;
 
   // AbortController can be replaced on idle_continue, so track it mutably
@@ -4106,6 +4407,12 @@ export async function execWithRetry(prompt, options = {}) {
       onEvent,
       abortController,
       ignoreSdkCooldown: attempt > 1,
+      slotOwnerKey,
+      slotMeta,
+      slotMaxParallel,
+      onSlotQueued,
+      onSlotAcquired,
+      onSlotReleased,
     });
 
     // Check post-launch if aborted with idle_continue (race: abort fired during execution)

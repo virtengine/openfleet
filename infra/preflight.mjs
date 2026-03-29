@@ -190,20 +190,8 @@ function checkToolVersion(label, command, args, hint) {
   return { label, ok: true, version };
 }
 
-/**
- * Check if the Windows hook shell (bash) resolves to WSL bash first, which
- * would prevent Git hooks from running correctly in Windows worktrees.
- *
- * @param {string} repoRoot - Resolved absolute path to the repo root.
- * @param {string} [rawRoot] - The original (unresolved) repoRoot option, used
- *   to detect Windows-style paths (e.g. "C:\\repo") when running on Linux for
- *   cross-platform test coverage.
- */
-function checkHookShell(repoRoot, rawRoot) {
-  // Use the raw (pre-resolve) path for Windows detection so that Windows-style
-  // paths like "C:\\repo" are recognised even when running on Linux.
-  const looksLikeWindowsPath = /^[a-zA-Z]:[/\\]/.test(rawRoot || repoRoot);
-  if ((!isWindows && !looksLikeWindowsPath) || !existsSync(resolve(repoRoot, ".githooks"))) {
+function checkHookShell(repoRoot) {
+  if (!isWindows || !existsSync(resolve(repoRoot, ".githooks"))) {
     return { ok: true, issue: null, resolvedPath: null, allPaths: [] };
   }
 
@@ -421,7 +409,7 @@ export function runPreflightChecks(options = {}) {
     });
   }
 
-  const hookShell = checkHookShell(repoRoot, options.repoRoot);
+  const hookShell = checkHookShell(repoRoot);
   if (!hookShell.ok) {
     warnings.push({
       title: "Windows hook shell may be misconfigured",

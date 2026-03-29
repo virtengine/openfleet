@@ -28,6 +28,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, execSync, spawn } from "node:child_process";
 import os from "node:os";
 import { Worker } from "node:worker_threads";
+import "./infra/windows-hidden-child-processes.mjs";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
 import {
@@ -499,6 +500,22 @@ function isProcessAlive(pid) {
     return true;
   } catch (err) {
     if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+      if (process.platform === "win32") {
+        try {
+          const output = execFileSync(
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              `Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(pid)}" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessId`,
+            ],
+            { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000, windowsHide: true },
+          ).trim();
+          return output === String(Number(pid));
+        } catch {
+          return false;
+        }
+      }
       return true;
     }
     return false;
@@ -1182,7 +1199,7 @@ function taskkillPidsElevated(pids, { force = false } = {}) {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 30000,
-        windowsHide: false,
+        windowsHide: true,
       },
     );
   } catch {

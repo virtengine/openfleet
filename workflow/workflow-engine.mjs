@@ -49,6 +49,7 @@ import { getTemplate } from "./workflow-templates.mjs";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
+import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -2334,12 +2335,21 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {{ activeRuns: number, maxConcurrentRuns: number, queuedRuns: number, maxConcurrentBranches: number }}
    */
   getConcurrencyStats() {
+    let agentSlots;
+    try { agentSlots = getAgentExecutionSlotStatus(); } catch { agentSlots = null; }
     return {
       activeRuns: this._runSlots,
       maxConcurrentRuns: MAX_CONCURRENT_RUNS,
       queuedRuns: this._runQueue.length,
       sharedRootRuns: this._rootRunSlotRefs.size,
       maxConcurrentBranches: MAX_CONCURRENT_BRANCHES,
+      ...(agentSlots && {
+        agentSlots: {
+          active: agentSlots.activeSlots,
+          max: agentSlots.maxParallel,
+          queued: agentSlots.queuedSlots,
+        },
+      }),
     };
   }
 
@@ -3438,6 +3448,7 @@ export class WorkflowEngine extends EventEmitter {
     const runs = allRuns.slice(offset, offset + limit);
     const nextOffset = offset + runs.length;
     return {
+      items: runs,
       runs,
       total,
       offset,
@@ -3646,8 +3657,14 @@ export class WorkflowEngine extends EventEmitter {
       if (!Array.isArray(detail.data._workflowDelegationTrail)) {
         detail.data._workflowDelegationTrail = delegationTrail.map((entry) => ({ ...entry }));
       }
+      if (!Array.isArray(detail.data._delegationTrail)) {
+        detail.data._delegationTrail = delegationTrail.map((entry) => ({ ...entry }));
+      }
       if (!Array.isArray(detail.delegationAuditTrail)) {
         detail.delegationAuditTrail = delegationTrail.map((entry) => ({ ...entry }));
+      }
+      if (!Array.isArray(detail.delegationTrail)) {
+        detail.delegationTrail = delegationTrail.map((entry) => ({ ...entry }));
       }
     }
     return {
@@ -5724,6 +5741,49 @@ export class WorkflowEngine extends EventEmitter {
       this._runIndexCacheMtime = Date.now();
     }
   }
+
+  /**
+   * Delete run detail files older than the most recent `keepCount` files.
+   * Keeps index.json and active-runs.json untouched.
+   * Safe to call on startup and periodically (e.g. daily).
+   *
+   * @param {number} [keepCount] Number of most-recent run files to retain (default MAX_PERSISTED_RUNS).
+   * @returns {{ deleted: number, kept: number, errors: number }}
+   */
+  pruneOldRunFiles(keepCount = MAX_PERSISTED_RUNS) {
+    const PROTECTED = new Set(["index.json", ACTIVE_RUNS_INDEX]);
+    const normalizedKeep = Math.max(20, Math.floor(Number(keepCount) || MAX_PERSISTED_RUNS));
+
+    if (!existsSync(this.runsDir)) return { deleted: 0, kept: 0, errors: 0 };
+
+    let allFiles;
+    try {
+      allFiles = readdirSync(this.runsDir)
+        .filter((f) => f.endsWith(".json") && !PROTECTED.has(f))
+        .map((f) => {
+          const p = resolve(this.runsDir, f);
+          let mtimeMs = 0;
+          try { mtimeMs = statSync(p).mtimeMs || 0; } catch { /* ignore */ }
+          return { file: f, path: p, mtimeMs };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    } catch {
+      return { deleted: 0, kept: 0, errors: 1 };
+    }
+
+    const toDelete = allFiles.slice(normalizedKeep);
+    let deleted = 0;
+    let errors = 0;
+    for (const entry of toDelete) {
+      try {
+        unlinkSync(entry.path);
+        deleted++;
+      } catch {
+        errors++;
+      }
+    }
+    return { deleted, kept: allFiles.length - toDelete.length, errors };
+  }
 }
 
 // ── Module-level convenience functions ──────────────────────────────────────
@@ -5816,3 +5876,4 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+

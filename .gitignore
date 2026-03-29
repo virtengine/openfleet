@@ -69,3 +69,6 @@ node-compile-cache/*
 */*.log
 *.log
 *.tmp
+{{*}}
+*tmp*
+*null*

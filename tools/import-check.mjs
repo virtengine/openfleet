@@ -17,6 +17,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, relative, extname } from "node:path";
 import { execSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+
+const _require = createRequire(import.meta.url);
 
 const JS_EXTENSIONS = new Set([".mjs", ".js", ".cjs"]);
 
@@ -113,30 +116,120 @@ export async function validateImports({ rootDir, files } = {}) {
   /**
    * Create a SyntheticModule stub for an external dependency.
    * Dynamically imports the real module to mirror its export names.
+   *
+   * Resolution strategy (in order):
+   * 1. ESM dynamic import() — works for most packages
+   * 2. CJS require() fallback — for packages where ESM import fails
+   * 3. Parse the package's "module" ESM entry with regex — for packages like
+   *    @mui/material whose CJS build requires missing peer deps (@babel/runtime)
+   *    but whose ESM entry (package.json "module" field) uses standard re-export
+   *    syntax that we can scan for named exports without executing the file
+   * 4. Last resort: stub with ["default"] only
+   *
+   * The Promise is cached immediately (before awaiting) so that concurrent
+   * linker calls for the same specifier (which happen when many browser files
+   * all import '@mui/material') all await the same creation Promise and get
+   * back the identical SyntheticModule instance.
    */
-  async function stubExternal(specifier) {
+  function stubExternal(specifier) {
     if (externalCache.has(specifier)) return externalCache.get(specifier);
 
-    let exportNames = ["default"];
-    try {
-      const real = await import(specifier);
-      exportNames = Object.keys(real);
-      if (!exportNames.includes("default")) exportNames.push("default");
-    } catch {
-      // Cannot import (optional dep, missing, etc.) — stub with default only.
-    }
+    const promise = (async () => {
+      let exportNames = ["default"];
+      let resolved = false;
 
-    const synth = new vm.SyntheticModule(
-      exportNames,
-      function () {
-        for (const name of exportNames) this.setExport(name, undefined);
-      },
-      { identifier: `external:${specifier}`, context },
-    );
-    // SyntheticModules have no dependencies, so linker is never called.
-    await synth.link(() => {});
-    externalCache.set(specifier, synth);
-    return synth;
+      // Strategy 1: ESM dynamic import
+      try {
+        const real = await import(specifier);
+        exportNames = Object.keys(real);
+        if (!exportNames.includes("default")) exportNames.push("default");
+        resolved = true;
+      } catch { /* try next */ }
+
+      // Strategy 2: CJS require()
+      if (!resolved) {
+        try {
+          const cjs = _require(specifier);
+          const keys = Object.keys(cjs instanceof Object ? cjs : {});
+          if (keys.length > 0) {
+            exportNames = ["default", ...keys.filter((k) => k !== "default")];
+            resolved = true;
+          }
+        } catch { /* try next */ }
+      }
+
+      // Strategy 3: Parse the package's ESM entry via package.json "module" field.
+      // We use regex to extract explicit named exports without executing the file,
+      // so missing peer deps (like @babel/runtime) do not matter.
+      // We also walk one level of `export * from './submodule'` chains to pick up
+      // re-exported names (e.g., ThemeProvider is in @mui/material/styles/index.js).
+      if (!resolved) {
+        try {
+          const pkgJson = JSON.parse(
+            readFileSync(resolve(rootDir, "node_modules", specifier, "package.json"), "utf8"),
+          );
+          const esmEntry = pkgJson.module || pkgJson["jsnext:main"];
+          if (esmEntry) {
+            const esmPath = resolve(rootDir, "node_modules", specifier, esmEntry);
+            if (existsSync(esmPath)) {
+              const names = new Set(["default"]);
+
+              function extractNamesFromSrc(src) {
+                // export { Foo, Bar as Baz }
+                for (const m of src.matchAll(/^export\s*\{([^}]+)\}/gm)) {
+                  for (const part of m[1].split(",")) {
+                    const alias = part.trim().split(/\s+as\s+/).pop().trim();
+                    if (alias && /^[A-Za-z_$]/.test(alias)) names.add(alias);
+                  }
+                }
+                // export default / export class / export function / export const
+                for (const m of src.matchAll(/^export\s+(?:default\s+)?(?:class|function|const|let|var)\s+([A-Za-z_$]\w*)/gm)) {
+                  if (m[1]) names.add(m[1]);
+                }
+              }
+
+              const rootSrc = readFileSync(esmPath, "utf8");
+              extractNamesFromSrc(rootSrc);
+
+              // Walk one level of `export * from './subpath'` chains
+              const esmDir = dirname(esmPath);
+              for (const m of rootSrc.matchAll(/^export\s+\*\s+from\s+['"]([^'"]+)['"]/gm)) {
+                try {
+                  const subPath = resolve(esmDir, m[1]);
+                  // Resolve: exact file, then .js extension, then /index.js
+                  const subFile = existsSync(subPath + ".js") ? subPath + ".js"
+                    : existsSync(resolve(subPath, "index.js")) ? resolve(subPath, "index.js")
+                    : existsSync(subPath) && !subPath.includes("*") ? subPath
+                    : null;
+                  if (subFile) extractNamesFromSrc(readFileSync(subFile, "utf8"));
+                } catch { /* skip unresolvable re-export */ }
+              }
+
+              if (names.size > 1) {
+                exportNames = [...names];
+                resolved = true;
+              }
+            }
+          }
+        } catch { /* fall through to default-only */ }
+      }
+
+      const synth = new vm.SyntheticModule(
+        exportNames,
+        function () {
+          for (const name of exportNames) this.setExport(name, undefined);
+        },
+        { identifier: `external:${specifier}`, context },
+      );
+      // SyntheticModules have no dependencies, so linker is never called.
+      await synth.link(() => {});
+      return synth;
+    })();
+
+    // Cache the Promise immediately so concurrent calls get the same Promise.
+    // The vm linker accepts a Promise<Module> as the return value.
+    externalCache.set(specifier, promise);
+    return promise;
   }
 
   /**

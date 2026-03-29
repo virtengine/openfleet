@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const { execSyncMock } = vi.hoisted(() => ({
   execSyncMock: vi.fn(),
@@ -34,7 +36,7 @@ describe("validation command portability", () => {
     expect(result.passed).toBe(true);
     expect(execSyncMock).toHaveBeenCalledWith(
       "npm run build",
-      expect.objectContaining({ shell: true, cwd: process.cwd() }),
+      expect.objectContaining({ shell: true, cwd: process.cwd(), windowsHide: true }),
     );
   });
 
@@ -52,7 +54,21 @@ describe("validation command portability", () => {
     expect(result.passed).toBe(true);
     expect(execSyncMock).toHaveBeenCalledWith(
       "npm test",
-      expect.objectContaining({ shell: true, cwd: process.cwd() }),
+      expect.objectContaining({ shell: true, cwd: process.cwd(), windowsHide: true }),
     );
+  });
+
+  it("workflow source does not contain mojibake markers", () => {
+    const source = readFileSync(resolve(process.cwd(), "workflow/workflow-nodes.mjs"), "utf8");
+    expect(source).not.toMatch(/ÔÇö|ÔåÆ|ÔÇª|ÔöÇ/);
+  });
+
+  it("setup surfaces do not contain replacement-character title corruption", () => {
+    const uiSource = readFileSync(resolve(process.cwd(), "ui/setup.html"), "utf8");
+    const siteSource = readFileSync(resolve(process.cwd(), "site/ui/setup.html"), "utf8");
+    expect(uiSource).not.toContain("�️ Sentinel / Watchdog");
+    expect(uiSource).not.toContain("�🚀 Launch & Startup");
+    expect(siteSource).not.toContain("�️ Sentinel / Watchdog");
+    expect(siteSource).not.toContain("�🚀 Launch & Startup");
   });
 });

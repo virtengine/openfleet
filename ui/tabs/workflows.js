@@ -40,6 +40,7 @@ import {
   canUpdateCanvasEdgePortMapping,
 } from "./workflow-canvas-utils.mjs";
 import { createSession } from "../components/session-list.js";
+import { activeWorkspaceId } from "../components/workspace-switcher.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 import {
@@ -122,6 +123,44 @@ function resetWorkflowRunsState(scopeWorkflowId = null) {
   workflowRunsLoadingMore.value = false;
   workflowRunsScopeId.value = scopeWorkflowId ? String(scopeWorkflowId) : null;
   workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
+}
+
+function buildWorkflowRunApiPath(path) {
+  const workspaceId = String(
+    activeWorkspaceId.value ||
+    (typeof window !== "undefined" ? window.__bosunWorkspaceId : "") ||
+    "",
+  ).trim();
+  if (!workspaceId) return path;
+  try {
+    const url = new URL(path, window.location.origin);
+    url.searchParams.set("workspace", workspaceId);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    const joiner = path.includes("?") ? "&" : "?";
+    return `${path}${joiner}workspace=${encodeURIComponent(workspaceId)}`;
+  }
+}
+
+function appendQueryParams(path, params = {}) {
+  try {
+    const url = new URL(path, window.location.origin);
+    for (const [key, value] of Object.entries(params)) {
+      if (value == null) continue;
+      url.searchParams.set(key, String(value));
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value == null) continue;
+      search.set(key, String(value));
+    }
+    const query = search.toString();
+    if (!query) return path;
+    const joiner = path.includes("?") ? "&" : "?";
+    return `${path}${joiner}${query}`;
+  }
 }
 
 function mergeWorkflowRunPages(existingRuns, nextRuns) {
@@ -1798,11 +1837,11 @@ async function loadRuns(workflowId, opts = {}) {
       Number.isFinite(rawOffset) && rawOffset > 0
         ? Math.max(0, Math.floor(rawOffset))
         : 0;
-    const baseUrl = scopedWorkflowId
+    const baseUrl = buildWorkflowRunApiPath(scopedWorkflowId
       ? `/api/workflows/${scopedWorkflowId}/runs`
-      : "/api/workflows/runs";
+      : "/api/workflows/runs");
     if (append) workflowRunsLoadingMore.value = true;
-    const data = await apiFetch(`${baseUrl}?limit=${limit}&offset=${offset}`);
+    const data = await apiFetch(appendQueryParams(baseUrl, { limit, offset }));
     if (data?.runs) {
       const pageRuns = Array.isArray(data.runs) ? data.runs : [];
       const mergedRuns = append
@@ -1828,7 +1867,9 @@ async function loadRuns(workflowId, opts = {}) {
 async function loadRunDetail(runId, opts = {}) {
   if (!runId) return;
   try {
-    const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`);
+    const data = await apiFetch(
+      buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(runId)}`),
+    );
     if (data?.run) {
       const scopedWorkflowId = String(opts?.workflowId || workflowRunsScopeId.value || data.run.workflowId || "").trim() || null;
       if (scopedWorkflowId) {

@@ -114,6 +114,7 @@ async function getGhCliToken() {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 5000,
+      windowsHide: process.platform === "win32",
     }).trim();
     return token || null;
   } catch {

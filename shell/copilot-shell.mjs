@@ -7,11 +7,12 @@
  * as the primary executor.
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
 import { existsSync, readFileSync, appendFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execSync as nodeExecSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { loadConfig } from "../config/config.mjs";
@@ -22,6 +23,13 @@ import {
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
+
+function execSync(command, options = {}) {
+  return nodeExecSync(command, {
+    ...options,
+    windowsHide: options.windowsHide ?? (process.platform === "win32"),
+  });
+}
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const require = createRequire(import.meta.url);

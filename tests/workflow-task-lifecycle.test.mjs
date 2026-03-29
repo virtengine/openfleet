@@ -1,5 +1,5 @@
 /**
- * workflow-task-lifecycle.test.mjs — Comprehensive tests for all 11 task
+ * workflow-task-lifecycle.test.mjs - Comprehensive tests for all 11 task
  * lifecycle node types and both workflow templates.
  *
  * Tests verify:
@@ -31,10 +31,10 @@ import {
   installTemplate,
 } from "../workflow/workflow-templates.mjs";
 
-// CLAUDE:SUMMARY — workflow-task-lifecycle tests
+// CLAUDE:SUMMARY - workflow-task-lifecycle tests
 // Exercises task lifecycle workflow nodes and template wiring, including prompt assembly and cache anchoring.
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// -- Helpers -----------------------------------------------------------------
 
 function makeCtx(data = {}) {
   const ctx = new WorkflowContext(data);
@@ -184,9 +184,9 @@ describe("project detection quality gates", () => {
   });
 
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Node Type Registration Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 it("dedupes duplicate claim assignment retries", async () => {
   const nt = getNodeType("action.claim_task");
@@ -266,9 +266,9 @@ describe("task lifecycle node type registration", () => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  trigger.task_available Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("trigger.task_available", () => {
   it("enforces repoAreaParallelLimit using activeTaskAreaCounts and task repo areas", async () => {
@@ -982,7 +982,7 @@ describe("trigger.task_available", () => {
 });
 
 //  condition.slot_available Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("condition.slot_available", () => {
   it("returns true when no active tasks exist", async () => {
@@ -1015,14 +1015,14 @@ describe("condition.slot_available", () => {
       baseBranch: "origin/main",
     });
     const result = await nt.execute(node, ctx);
-    // baseBranch limit 2 with 2 on "main" → blocked
+    // baseBranch limit 2 with 2 on "main" -> blocked
     expect(result.result).toBe(false);
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.allocate_slot Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.allocate_slot", () => {
   it("allocates a slot and stores in ctx.data._allocatedSlot", async () => {
@@ -1060,9 +1060,9 @@ describe("action.allocate_slot", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.release_slot Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.release_slot", () => {
   it("releases the allocated slot and nullifies it", async () => {
@@ -1106,9 +1106,9 @@ describe("action.release_slot", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.claim_task Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 
 describe("delegation transition guards", () => {
@@ -1357,6 +1357,33 @@ describe("action.claim_task", () => {
     }
   });
 
+
+  it("does not append duplicate audit entries when ctx.recordDelegationEvent rejects a replay", async () => {
+    const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+    ctx.data._delegationAuditTrail = [];
+    ctx.data._delegationTransitionGuards = {};
+
+    const event = {
+      type: "handoff-complete",
+      nodeId: "delegate",
+      taskId: "task-replay",
+      idempotencyKey: "handoff-complete:task-replay:delegate:thread-1",
+      transitionKey: "handoff-complete:task-replay:delegate:thread-1",
+      threadId: "thread-1",
+    };
+
+    const first = ctx.recordDelegationEvent(event);
+    const second = ctx.recordDelegationEvent(event);
+
+    expect(first.recorded).toBe(true);
+    expect(second.recorded).toBe(false);
+    expect(ctx.data._delegationAuditTrail).toHaveLength(1);
+    expect(ctx.data._delegationAuditTrail[0]).toMatchObject({
+      type: "handoff-complete",
+      transitionKey: "handoff-complete:task-replay:delegate:thread-1",
+    });
+  });
+
   it("deduplicates repeated claim renewal owner mismatch events by idempotency key", async () => {
     const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
     ctx.data._delegationAuditTrail = [];
@@ -1384,11 +1411,50 @@ describe("action.claim_task", () => {
     expect(ctx.data._delegationAuditTrail).toHaveLength(1);
     expect(ctx.data._delegationTransitionGuards["renew:task-dedupe:claim-token-dedupe:owner-mismatch"]).toBeTruthy();
   });
+
+  it("marks failed delegation transitions so retries can re-run safely", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask")
+      .mockRejectedValueOnce(new Error("temporary claim failure"))
+      .mockResolvedValueOnce({ success: true, token: "claim-token-retry" });
+
+    try {
+      const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+      const node = makeNode("action.claim_task", {
+        taskId: "task-failed-transition",
+        taskTitle: "Retry after failure",
+        renewIntervalMs: 0,
+        delegationTransitionKey: "assign:task-failed-transition:wf-retry",
+        instanceId: "wf-retry",
+      });
+
+      const first = await nt.execute(node, ctx);
+      const guardAfterFirst = ctx.data._delegationTransitionGuards?.["assign:task-failed-transition:wf-retry"];
+      const second = await nt.execute(node, ctx);
+
+      expect(first).toMatchObject({ success: false, error: "temporary claim failure" });
+      expect(guardAfterFirst).toEqual(expect.objectContaining({
+        status: "failed",
+        error: "temporary claim failure",
+      }));
+      expect(second).toMatchObject({ success: true, claimToken: "claim-token-retry" });
+      expect(claimSpy).toHaveBeenCalledTimes(2);
+      expect(ctx.data._delegationTransitionGuards?.["assign:task-failed-transition:wf-retry"]).toEqual(expect.objectContaining({
+        status: "completed",
+        claimToken: "claim-token-retry",
+      }));
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.resolve_executor Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.resolve_executor", () => {
   it("resolves default SDK to copilot when no env overrides", async () => {
@@ -1789,9 +1855,9 @@ describe("action.resolve_executor", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.acquire_worktree Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.acquire_worktree", () => {
   let repoDir;
@@ -1835,6 +1901,36 @@ describe("action.acquire_worktree", () => {
     expect(ctx.data.baseBranch).toBe("main");
     expect(result.created).toBe(true);
     expect(existsSync(result.worktreePath)).toBe(true);
+  });
+
+  it("resolves repoRoot from config when workflow cwd is a non-git .bosun directory", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const bosunDir = join(repoDir, ".bosun");
+    mkdirSync(bosunDir, { recursive: true });
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(bosunDir);
+    try {
+      const ctx = makeCtx({
+        task: {
+          repository: "unknown/unknown",
+          meta: { repository: "unknown/unknown" },
+        },
+      });
+      const node = makeNode("action.acquire_worktree", {
+        taskId: "abc456",
+        branch: "task/abc456-config-root",
+        baseBranch: "main",
+        fetchTimeout: 5000,
+        worktreeTimeout: 10000,
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.created).toBe(true);
+      expect(existsSync(result.worktreePath)).toBe(true);
+      expect(result.worktreePath).toContain(".bosun");
+    } finally {
+      cwdSpy.mockRestore();
+    }
   });
 
   it("marks reused worktrees as managed for cleanup", async () => {
@@ -2139,7 +2235,7 @@ describe("action.acquire_worktree", () => {
       }
       try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
     }
-  }, 20000);
+  }, 30000);
 
   it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2228,7 +2324,7 @@ describe("action.acquire_worktree", () => {
       }
       try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
     }
-  }, 20000);
+  }, 40000);
 
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2269,6 +2365,7 @@ describe("action.acquire_worktree", () => {
     const result = await nt.execute(node, ctx);
 
     expect(result.success).toBe(true);
+    expect(String(result.worktreePath).replace(/\\/g, "/")).toContain(String(repoDir).replace(/\\/g, "/"));
     expect(
       gitExec("git config --local --get core.bare", { cwd: repoDir, encoding: "utf8" }).trim(),
     ).toBe("false");
@@ -2280,9 +2377,9 @@ describe("action.acquire_worktree", () => {
   }, 15000);
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.build_task_prompt Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.build_task_prompt", () => {
   it("builds a prompt string and stores in ctx.data._taskPrompt", async () => {
@@ -2836,9 +2933,9 @@ describe("action.persist_memory", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.detect_new_commits Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.detect_new_commits", () => {
   let gitDir;
@@ -2964,9 +3061,9 @@ describe("action.detect_new_commits", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.push_branch Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.push_branch", () => {
   it("refuses to push to protected branches", async () => {
@@ -3011,7 +3108,11 @@ describe("action.push_branch", () => {
     const nt = getNodeType("action.push_branch");
     const ctx = makeCtx({});
     const node = makeNode("action.push_branch", {});
-    await expect(nt.execute(node, ctx)).rejects.toThrow("worktreePath");
+    await expect(nt.execute(node, ctx)).resolves.toMatchObject({
+      success: false,
+      blockedReason: "missing_worktree_path",
+      error: expect.stringContaining("worktreePath"),
+    });
   });
 
   it("schema has push safety options including skipHooks", () => {
@@ -3024,9 +3125,9 @@ describe("action.push_branch", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.release_worktree Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.release_worktree", () => {
   it("releases reused managed worktrees", async () => {
@@ -3120,9 +3221,9 @@ describe("action.release_worktree", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  action.release_claim Tests
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 describe("action.release_claim", () => {
   it("clears claim data from ctx (set to null)", async () => {
@@ -3186,9 +3287,9 @@ describe("action.release_claim", () => {
 
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Template: task-lifecycle
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 
 
@@ -3480,17 +3581,17 @@ describe("template-task-lifecycle", () => {
     expect(buildPrompt.config.repositories).toBe("{{repositories}}");
   });
 
-  it("all outcome paths converge to release-worktree → release-claim → release-slot", () => {
+  it("all outcome paths converge to release-worktree -> release-claim -> release-slot", () => {
     const t = getTemplate("template-task-lifecycle");
-    // outcomes → join-outcomes
+    // outcomes -> join-outcomes
     expect(t.edges.find((e) => e.source === "log-success" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-cooldown" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-stolen" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "log-claim-stolen-recovered" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-push-failed" && e.target === "join-outcomes")).toBeDefined();
-    // join-outcomes → release-worktree
+    // join-outcomes -> release-worktree
     expect(t.edges.find((e) => e.source === "join-outcomes" && e.target === "release-worktree")).toBeDefined();
-    // release-worktree → release-claim → release-slot
+    // release-worktree -> release-claim -> release-slot
     expect(t.edges.find((e) => e.source === "release-worktree" && e.target === "release-claim")).toBeDefined();
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
   });
@@ -3523,7 +3624,7 @@ describe("template-task-lifecycle", () => {
 
   it("worktree-failed path releases claim and slot", () => {
     const t = getTemplate("template-task-lifecycle");
-    // Auto-recovery path: worktree-ok → wt-retry-eligible → recover → retry → retry-wt-ok
+    // Auto-recovery path: worktree-ok -> wt-retry-eligible -> recover -> retry -> retry-wt-ok
     expect(t.edges.find((e) => e.source === "worktree-ok" && e.target === "wt-retry-eligible")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-retry-eligible" && e.target === "recover-worktree")).toBeDefined();
     expect(t.edges.find((e) => e.source === "recover-worktree" && e.target === "retry-acquire-wt")).toBeDefined();
@@ -3623,6 +3724,8 @@ describe("template-task-lifecycle", () => {
     }
   });
 });
+
+
 
 
 

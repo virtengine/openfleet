@@ -35,6 +35,10 @@ if (typeof net.setDefaultAutoSelectFamilyAttemptTimeout === "function") {
   net.setDefaultAutoSelectFamilyAttemptTimeout(2000);
 }
 
+const heartbeatRuntimeState = {
+  current: null,
+};
+
 /**
  * Non-blocking async shell exec — avoids blocking the HTTP server event loop.
  * Use instead of execSync/spawnSync in timer callbacks and request handlers.
@@ -995,6 +999,8 @@ async function ensureWorkflowAutomationEngine() {
             "template-task-lifecycle",
             "template-task-finalization-guard",
             "template-agent-session-monitor",
+            "template-bosun-pr-watchdog",
+            "template-bosun-pr-progressor",
             "template-github-kanban-sync",
             "template-recover-blocked-task",
             "template-recover-blocked-worktrees",
@@ -12293,18 +12299,15 @@ function isHeartbeatMonitorEnabled() {
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-/** @type {ReturnType<typeof createHeartbeatMonitor>|null} */
-let runtimeHeartbeatMonitor = null;
-
 function restartHeartbeatMonitor() {
-  runtimeHeartbeatMonitor?.stop?.();
-  runtimeHeartbeatMonitor = null;
+  heartbeatRuntimeState.current?.stop?.();
+  heartbeatRuntimeState.current = null;
 
   if (!isHeartbeatMonitorEnabled()) return;
   const configDir = String(config?.configDir || "").trim();
   if (!configDir) return;
 
-  runtimeHeartbeatMonitor = createHeartbeatMonitor({
+  heartbeatRuntimeState.current = createHeartbeatMonitor({
     configDir,
     logDir,
     intervalMs: Number(process.env.BOSUN_HEARTBEAT_INTERVAL_MS || 30_000),
@@ -12315,13 +12318,13 @@ function restartHeartbeatMonitor() {
     eventLoopWarnMs: Number(process.env.BOSUN_HEARTBEAT_LAG_WARN_MS || 1000),
     logger: console,
   });
-  runtimeHeartbeatMonitor.start();
+  heartbeatRuntimeState.current.start();
   console.log("[monitor] heartbeat monitor started");
 }
 
 function stopHeartbeatMonitor() {
-  runtimeHeartbeatMonitor?.stop?.();
-  runtimeHeartbeatMonitor = null;
+  heartbeatRuntimeState.current?.stop?.();
+  heartbeatRuntimeState.current = null;
 }
 
 /**
@@ -12533,6 +12536,7 @@ async function startProcess() {
 
   const child = spawn(orchestratorCmd, orchestratorArgs, {
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
   currentChild = child;
 
@@ -13973,6 +13977,22 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
 safeSetInterval("workflow-schedule-check", async () => {
   await pollWorkflowSchedulesOnce();
 }, scheduleCheckIntervalMs);
+
+// ── Periodic workflow run file pruning: once per day ─────────────────────
+// Deletes run detail files beyond MAX_PERSISTED_RUNS to keep the workflow-runs
+// directory bounded and prevent O(n) dir-scan slowdown on history API calls.
+safeSetInterval("workflow-run-file-prune", async () => {
+  try {
+    const engine = await ensureWorkflowAutomationEngine();
+    if (typeof engine?.pruneOldRunFiles !== "function") return;
+    const result = engine.pruneOldRunFiles();
+    if (result.deleted > 0) {
+      console.log(`[workflows] pruned ${result.deleted} old run file(s), kept ${result.kept}`);
+    }
+  } catch (err) {
+    console.warn(`[workflows] run-file prune error: ${err?.message || err}`);
+  }
+}, 24 * 60 * 60 * 1000);
 
 safeSetInterval("workflow-review-merge-reconcile", async () => {
   const result = await checkMergedPRsAndUpdateTasks();

@@ -399,6 +399,7 @@ function updateTurnTimeline(session, msg) {
 
 /** Debounce interval for disk writes (ms). */
 const FLUSH_INTERVAL_MS = 2000;
+const DERIVED_STATE_REFRESH_MS = 250;
 const PERSISTED_SESSION_LIST_CACHE_TTL_MS = 5000;
 
 const SESSION_EVENT_LISTENERS = new Set();
@@ -503,6 +504,9 @@ export class SessionTracker {
 
   /** @type {ReturnType<typeof setInterval>|null} */
   #reaperTimer = null;
+
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  #derivedRefreshTimers = new Map();
 
   /**
    * @param {Object} [options]
@@ -620,7 +624,7 @@ export class SessionTracker {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
       this.#appendTrajectoryStep(session, event);
-      this.#refreshDerivedState(session);
+      this.#scheduleDerivedStateRefresh(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
       return;
@@ -659,7 +663,7 @@ export class SessionTracker {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
       this.#appendTrajectoryStep(session, event);
-      this.#refreshDerivedState(session);
+      this.#scheduleDerivedStateRefresh(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
       return;
@@ -681,7 +685,7 @@ export class SessionTracker {
       while (session.messages.length > maxMessages) session.messages.shift();
     }
     this.#appendTrajectoryStep(session, event);
-    this.#refreshDerivedState(session);
+    this.#scheduleDerivedStateRefresh(session);
     this.#markDirty(taskId);
     emitSessionEvent(session, msg);
   }
@@ -697,7 +701,7 @@ export class SessionTracker {
 
     session.endedAt = Date.now();
     session.status = deriveTerminalSessionStatus(session, status);
-    this.#refreshDerivedState(session);
+    this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
     emitSessionStateEvent(session, "session-ended", { status: session.status });
@@ -1087,7 +1091,7 @@ export class SessionTracker {
     if (isTerminalSessionStatus(session.status)) {
       session.endedAt = Date.now();
     }
-    this.#refreshDerivedState(session);
+    this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#accumulateCompletedSession(session, sessionId);
     this.#markDirty(sessionId);
     emitSessionStateEvent(session, "session-status", { status: session.status });
@@ -1169,7 +1173,7 @@ export class SessionTracker {
     target.editedAt = new Date().toISOString();
     session.lastActivityAt = Date.now();
     session.lastActiveAt = new Date().toISOString();
-    this.#refreshDerivedState(session);
+    this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#markDirty(sessionId);
 
     return { ok: true, message: { ...target }, index: idx };
@@ -1200,6 +1204,12 @@ export class SessionTracker {
     if (this.#reaperTimer) {
       clearInterval(this.#reaperTimer);
       this.#reaperTimer = null;
+    }
+    for (const [sessionId, timer] of this.#derivedRefreshTimers.entries()) {
+      clearTimeout(timer);
+      this.#derivedRefreshTimers.delete(sessionId);
+      const session = this.#sessions.get(sessionId);
+      if (session) this.#refreshDerivedState(session);
     }
     this.#flushDirty();
   }
@@ -1517,6 +1527,44 @@ export class SessionTracker {
     }
   }
 
+  #scheduleDerivedStateRefresh(session, options = {}) {
+    if (!session) return;
+    const sessionId = String(session.id || session.taskId || "").trim();
+    if (!sessionId) {
+      this.#refreshDerivedState(session);
+      return;
+    }
+    const force = options.force === true;
+    const existingTimer = this.#derivedRefreshTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.#derivedRefreshTimers.delete(sessionId);
+    }
+    if (force) {
+      this.#refreshDerivedState(session);
+      session._derivedStateRefreshedAt = Date.now();
+      return;
+    }
+    const now = Date.now();
+    const lastRefreshedAt = Number(session._derivedStateRefreshedAt || 0);
+    const elapsedMs = now - lastRefreshedAt;
+    if (elapsedMs >= DERIVED_STATE_REFRESH_MS) {
+      this.#refreshDerivedState(session);
+      session._derivedStateRefreshedAt = now;
+      return;
+    }
+    const delayMs = Math.max(0, DERIVED_STATE_REFRESH_MS - elapsedMs);
+    const timer = setTimeout(() => {
+      this.#derivedRefreshTimers.delete(sessionId);
+      const currentSession = this.#sessions.get(sessionId);
+      if (!currentSession) return;
+      this.#refreshDerivedState(currentSession);
+      currentSession._derivedStateRefreshedAt = Date.now();
+    }, delayMs);
+    if (timer.unref) timer.unref();
+    this.#derivedRefreshTimers.set(sessionId, timer);
+  }
+
   #ensureDir() {
     if (this.#persistDir && !existsSync(this.#persistDir)) {
       mkdirSync(this.#persistDir, { recursive: true });
@@ -1544,6 +1592,8 @@ export class SessionTracker {
       const session = this.#sessions.get(sessionId);
       if (!session) continue;
       try {
+        this.#refreshDerivedState(session);
+        session._derivedStateRefreshedAt = Date.now();
         const filePath = this.#sessionFilePath(sessionId);
         const data = {
           id: session.id || session.taskId,

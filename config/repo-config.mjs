@@ -33,6 +33,13 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const _missingCodexHelpersWarned = new Set();
+const COMMON_DEFAULT_MCP_SERVER_IDS = new Set([
+  "context7",
+  "sequential-thinking",
+  "playwright",
+  "microsoft-docs",
+  "microsoft_docs",
+]);
 
 function warnMissingCodexHelper(name) {
   if (_missingCodexHelpersWarned.has(name)) return;
@@ -156,8 +163,19 @@ function fallbackBuildCommonMcpBlocks() {
   return [
     "",
     "[mcp_servers.context7]",
+    "startup_timeout_sec = 120",
     'command = "npx"',
     'args = ["-y", "@upstash/context7-mcp"]',
+    "",
+    "[mcp_servers.sequential-thinking]",
+    "startup_timeout_sec = 120",
+    'command = "npx"',
+    'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
+    "",
+    "[mcp_servers.playwright]",
+    "startup_timeout_sec = 120",
+    'command = "npx"',
+    'args = ["-y", "@playwright/mcp@latest"]',
     "",
     "[mcp_servers.microsoft-docs]",
     'url = "https://learn.microsoft.com/api/mcp"',
@@ -173,7 +191,8 @@ function fallbackBuildCommonMcpBlocks() {
  * @param {string} repoRoot — workspace root directory
  * @returns {string} — TOML blocks for installed MCP servers
  */
-function buildInstalledMcpBlocks(repoRoot) {
+function buildInstalledMcpBlocks(repoRoot, options = {}) {
+  const { skipServerIds = new Set() } = options;
   try {
     const manifestPath = resolve(repoRoot, ".bosun", "library.json");
     if (!existsSync(manifestPath)) return "";
@@ -187,7 +206,7 @@ function buildInstalledMcpBlocks(repoRoot) {
       const safeId = String(entry.id).replace(/[^a-zA-Z0-9_-]/g, "_");
 
       // Skip entries that are already covered by common blocks
-      if (safeId === "context7" || safeId === "microsoft-docs") {
+      if (skipServerIds.has(safeId)) {
         continue;
       }
 
@@ -385,6 +404,30 @@ function stripDeprecatedSandboxPermissions(toml) {
   );
 }
 
+function stripUnsupportedMicrosoftDocsToolsConfig(toml) {
+  let nextToml = String(toml || "");
+  for (const name of ["microsoft-docs", "microsoft_docs"]) {
+    const header = `[mcp_servers.${name}]`;
+    const headerIdx = nextToml.indexOf(header);
+    if (headerIdx === -1) continue;
+
+    const afterHeader = headerIdx + header.length;
+    const nextSection = nextToml.indexOf("\n[", afterHeader);
+    const resolvedSectionEnd = nextSection === -1 ? nextToml.length : nextSection;
+    const section = nextToml.substring(afterHeader, resolvedSectionEnd);
+    const cleaned = section.replace(
+      /^\s*tools\s*=\s*\[[^\n]*\]\s*(?:\r?\n)?/gm,
+      "",
+    );
+
+    if (cleaned !== section) {
+      nextToml =
+        nextToml.substring(0, afterHeader) + cleaned + nextToml.substring(resolvedSectionEnd);
+    }
+  }
+  return nextToml;
+}
+
 function ensureMcpStartupTimeout(toml, name, timeoutSec = 120) {
   const header = `[mcp_servers.${name}]`;
   const headerIdx = toml.indexOf(header);
@@ -502,7 +545,9 @@ export function buildRepoCodexConfig(options = {}) {
 
   // ── Installed library MCP servers ──
   if (repoRoot) {
-    const installedBlocks = buildInstalledMcpBlocks(repoRoot).trim();
+    const installedBlocks = buildInstalledMcpBlocks(repoRoot, {
+      skipServerIds: commonMcpBlocks ? COMMON_DEFAULT_MCP_SERVER_IDS : new Set(),
+    }).trim();
     if (installedBlocks) {
       parts.push(installedBlocks);
       parts.push("");
@@ -546,7 +591,9 @@ function mergeCodexToml(existing, generated) {
     if (keyMatch) topLevelKeys.push(keyMatch[1]);
   }
 
-  let result = stripDeprecatedSandboxPermissions(existing.trimEnd());
+  let result = stripUnsupportedMicrosoftDocsToolsConfig(
+    stripDeprecatedSandboxPermissions(existing.trimEnd()),
+  );
 
   // Add missing top-level keys
   for (const key of topLevelKeys) {
@@ -577,7 +624,9 @@ function mergeCodexToml(existing, generated) {
   result = ensureMcpStartupTimeout(result, "sequential-thinking", 120);
   result = ensureMcpStartupTimeout(result, "playwright", 120);
 
-  return stripDeprecatedSandboxPermissions(result).trimEnd() + "\n";
+  return stripUnsupportedMicrosoftDocsToolsConfig(
+    stripDeprecatedSandboxPermissions(result),
+  ).trimEnd() + "\n";
 }
 
 // ── 2. Claude settings.local.json ───────────────────────────────────────────

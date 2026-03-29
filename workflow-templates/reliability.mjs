@@ -1488,22 +1488,23 @@ export const RECOVER_BLOCKED_TASK_TEMPLATE = {
     node("check-context", "condition.expression", "Has Task Context?", {
       expression:
         "Boolean($data?.item?.taskId || $data?.taskId) && " +
-        "Boolean($data?.item?.branch || $data?.branch)",
+        "Boolean($data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch) && " +
+        "Boolean($data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot)",
     }, { x: 400, y: 190, outputs: ["yes", "no"] }),
 
     node("recover-wt", "action.recover_worktree", "Reset Broken Worktree", {
       taskId:       "{{$data?.item?.taskId || $data?.taskId || ''}}",
-      branch:       "{{$data?.item?.branch || $data?.branch || ''}}",
-      repoRoot:     "{{$data?.item?.repoRoot || $data?.repoRoot || ''}}",
-      worktreePath: "{{$data?.item?.worktreePath || $data?.worktreePath || ''}}",
+      branch:       "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+      repoRoot:     "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
+      worktreePath: "{{$data?.item?.worktreePath || $data?.worktreePath || $data?.item?.meta?.worktreeFailure?.worktreePath || $data?.meta?.worktreeFailure?.worktreePath || ''}}",
     }, { x: 250, y: 340 }),
 
     node("acquire-wt", "action.acquire_worktree", "Acquire Clean Worktree", {
       taskId:               "{{$data?.item?.taskId || $data?.taskId || ''}}",
-      branch:               "{{$data?.item?.branch || $data?.branch || ''}}",
-      repoRoot:             "{{$data?.item?.repoRoot || $data?.repoRoot || ''}}",
-      baseBranch:           "{{$data?.item?.baseBranch || $data?.baseBranch || baseBranch}}",
-      defaultTargetBranch:  "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || defaultTargetBranch}}",
+      branch:               "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+      repoRoot:             "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
+      baseBranch:           "{{$data?.item?.baseBranch || $data?.baseBranch || $data?.item?.meta?.worktreeFailure?.baseBranch || $data?.meta?.worktreeFailure?.baseBranch || baseBranch}}",
+      defaultTargetBranch:  "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || $data?.item?.meta?.worktreeFailure?.defaultTargetBranch || $data?.meta?.worktreeFailure?.defaultTargetBranch || defaultTargetBranch}}",
     }, { x: 250, y: 490 }),
 
     node("check-acquired", "condition.expression", "Worktree Acquired?", {
@@ -1518,7 +1519,7 @@ export const RECOVER_BLOCKED_TASK_TEMPLATE = {
       workflowData: {
         stage:  "worktree_recovery",
         result: "recovered",
-        branch: "{{$data?.item?.branch || $data?.branch || ''}}",
+        branch: "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
         worktreePath: "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}",
       },
     }, { x: 250, y: 790 }),
@@ -1529,7 +1530,7 @@ export const RECOVER_BLOCKED_TASK_TEMPLATE = {
         taskId: "{{$data?.item?.taskId || $data?.taskId || ''}}",
         fields: {
           blockedReason: null,
-          meta: "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}",
+          meta: "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.autoRecovery; delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}",
         },
       },
     }, { x: 250, y: 940 }),
@@ -1627,18 +1628,29 @@ export const RECOVER_BLOCKED_WORKTREES_TEMPLATE = {
           .then(tasks => {
             const limit = parseInt(process.env.MAX_PER_SWEEP || "20");
             const blocked = (tasks || [])
-              .filter(t => t && t.status === "blocked" && t.id && (t.branch || t.metadata?.branch))
+              .map(t => {
+                const meta = t && typeof t.meta === "object" ? t.meta : {};
+                const worktreeFailure = meta && typeof meta.worktreeFailure === "object" ? meta.worktreeFailure : {};
+                const branch = t?.branch || t?.branchName || t?.metadata?.branch || meta?.branch || worktreeFailure?.branch || null;
+                const repoRoot = t?.repoRoot || t?.workspace || t?.metadata?.repoRoot || t?.metadata?.workspace || meta?.repoRoot || meta?.workspace || worktreeFailure?.repoRoot || null;
+                const worktreePath = t?.worktreePath || t?.metadata?.worktreePath || meta?.worktreePath || worktreeFailure?.worktreePath || null;
+                const baseBranch = t?.baseBranch || t?.metadata?.baseBranch || meta?.baseBranch || worktreeFailure?.baseBranch || null;
+                const defaultTargetBranch = t?.defaultTargetBranch || t?.metadata?.defaultTargetBranch || meta?.defaultTargetBranch || worktreeFailure?.defaultTargetBranch || null;
+                return {
+                  taskId:       t?.id,
+                  taskTitle:    t?.title || t?.id,
+                  branch,
+                  repoRoot,
+                  worktreePath,
+                  repository:   t?.repository || t?.metadata?.repository || meta?.repository || null,
+                  baseBranch,
+                  defaultTargetBranch,
+                  meta,
+                };
+              })
+              .filter(t => t && t.taskId && t.branch && t.repoRoot)
               .slice(0, limit)
-              .map(t => ({
-                taskId:       t.id,
-                taskTitle:    t.title || t.id,
-                branch:       t.branch || t.metadata?.branch || null,
-                repoRoot:     t.metadata?.repoRoot || t.repoRoot || null,
-                worktreePath: t.metadata?.worktreePath || t.worktreePath || null,
-                repository:   t.repository || t.metadata?.repository || null,
-                baseBranch:   t.metadata?.baseBranch || null,
-                meta:         t.meta || {},
-              }));
+              ;
             console.log(JSON.stringify(blocked));
           })
           .catch(e => { console.error(e.message); process.exit(1); });

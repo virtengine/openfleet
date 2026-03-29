@@ -6,7 +6,22 @@ const defineConfig =
   vitestConfig.default?.defineConfig ??
   ((config) => config);
 
+const stripShebangPlugin = {
+  name: "strip-shebang",
+  enforce: "pre",
+  transform(code, id) {
+    if (!/\.(?:[cm]?js|mjs)$/.test(id)) return null;
+    const normalized = String(code || "");
+    if (!/^\ufeff?#!/.test(normalized)) return null;
+    return {
+      code: normalized.replace(/^\ufeff?#![^\n]*\r?\n?/, ""),
+      map: null,
+    };
+  },
+};
+
 export default defineConfig({
+  plugins: [stripShebangPlugin],
   resolve: {
     alias: {
       "@openai/codex-sdk": resolve(process.cwd(), "tests", "shims", "codex-sdk.mjs"),

@@ -49,7 +49,9 @@ import {
   getWorkflowRuntimeState,
   isExistingBranchWorktreeError,
   isUnresolvedTemplateToken,
+  pickTaskString,
   pickGitRef,
+  resolveTaskRepositoryRoot,
 } from "./transforms.mjs";
 import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
@@ -107,11 +109,41 @@ function spawnAsync(command, args, opts = {}) {
     });
   });
 }
+
+function resolveWorkflowCwdValue(rawValue, fallback = process.cwd()) {
+  const fallbackText = String(fallback || process.cwd()).trim() || process.cwd();
+  const text = String(rawValue || "").trim();
+  if (!text || isUnresolvedTemplateToken(text)) return fallbackText;
+  return text;
+}
+
+function applyResolvedWorkflowEnv(baseEnv, resolvedEnvConfig) {
+  const commandEnv = { ...baseEnv };
+  if (!resolvedEnvConfig || typeof resolvedEnvConfig !== "object" || Array.isArray(resolvedEnvConfig)) {
+    return commandEnv;
+  }
+  for (const [key, value] of Object.entries(resolvedEnvConfig)) {
+    const name = String(key || "").trim();
+    if (!name) continue;
+    if (value == null) {
+      delete commandEnv[name];
+      continue;
+    }
+    const normalizedValue = typeof value === "string" ? value : JSON.stringify(value);
+    if (isUnresolvedTemplateToken(normalizedValue)) {
+      delete commandEnv[name];
+      continue;
+    }
+    commandEnv[name] = normalizedValue;
+  }
+  return commandEnv;
+}
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { readConfigDocument } from "../../config/config.mjs";
+import { resolveRepoRoot as resolveConfiguredRepoRoot } from "../../config/repo-root.mjs";
 import { shouldRequireManagedPrePush } from "../../infra/guardrails.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { recordWorktreeRecoveryEvent } from "../../infra/worktree-recovery-state.mjs";
@@ -131,6 +163,7 @@ import {
   initSharedKnowledge,
   retrieveKnowledgeEntries,
 } from "../../workspace/shared-knowledge.mjs";
+import { repairCommonMojibake } from "../../lib/mojibake-repair.mjs";
 import { bootstrapWorktreeForPath, fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 
 import {
@@ -188,6 +221,204 @@ import {
 // Implements built-in workflow action nodes, including task prompt assembly and execution helpers.
 const BOSUN_CREATED_PR_MARKER = "<!-- bosun-created -->";
 const markdownSafetyPolicyCache = new Map();
+
+function isUsableGitRepoRoot(candidate) {
+  const repoRoot = String(candidate || "").trim();
+  if (!repoRoot) return false;
+  try {
+    const topLevel = execGitArgsSync(["rev-parse", "--show-toplevel"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return Boolean(topLevel);
+  } catch {
+    return false;
+  }
+}
+
+function hasGitMetadata(candidate) {
+  const repoRoot = String(candidate || "").trim();
+  if (!repoRoot) return false;
+  try {
+    return existsSync(resolve(repoRoot, ".git"));
+  } catch {
+    return false;
+  }
+}
+
+function findContainingGitRepoRoot(candidate) {
+  let current = String(candidate || "").trim();
+  if (!current) return "";
+  try {
+    current = resolve(current);
+  } catch {
+    return "";
+  }
+  while (current) {
+    if (hasGitMetadata(current) || isUsableGitRepoRoot(current)) {
+      return current;
+    }
+    const parent = resolve(current, "..");
+    if (!parent || parent === current) break;
+    current = parent;
+  }
+  return "";
+}
+
+function extractGitHubRepoSlug(remoteUrl) {
+  const raw = String(remoteUrl || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\\/g, "/");
+  const match = normalized.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i);
+  return match?.[1] ? String(match[1]).replace(/\.git$/i, "") : "";
+}
+
+function isLocalFilesystemGitRemote(remoteUrl) {
+  const raw = String(remoteUrl || "").trim();
+  if (!raw) return true;
+  const normalized = raw.replace(/\\/g, "/");
+  if (
+    /github\.com[:/]/i.test(normalized) ||
+    /^(?:https?|ssh|git):\/\//i.test(raw) ||
+    /^[^@\s]+@[^:\s]+:.+/.test(raw)
+  ) {
+    return false;
+  }
+  return /^(?:[A-Za-z]:\/|\/|\.{1,2}\/|file:\/\/|\/\/)/.test(normalized);
+}
+
+function resolvePreferredPushRemote(worktreePath, preferredRemote, repoHint = "") {
+  const fallbackRemote = String(preferredRemote || "origin").trim() || "origin";
+  let remoteListRaw = "";
+  try {
+    remoteListRaw = execGitArgsSync(["remote"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return fallbackRemote;
+  }
+  const remoteNames = remoteListRaw.split(/\r?\n/).map((value) => String(value || "").trim()).filter(Boolean);
+  if (remoteNames.length === 0) return fallbackRemote;
+  const normalizedRepoHint = String(repoHint || "").trim().replace(/\.git$/i, "").toLowerCase();
+  const remotes = remoteNames.map((name) => {
+    let url = "";
+    try {
+      url = execGitArgsSync(["remote", "get-url", name], {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    } catch {
+      // ignore unreadable remote
+    }
+    const slug = extractGitHubRepoSlug(url).toLowerCase();
+    return {
+      name,
+      url,
+      slug,
+      isLocal: isLocalFilesystemGitRemote(url),
+    };
+  });
+  const preferred = remotes.find((remote) => remote.name === fallbackRemote);
+  if (
+    preferred &&
+    !preferred.isLocal &&
+    (!normalizedRepoHint || !preferred.slug || preferred.slug === normalizedRepoHint)
+  ) {
+    return preferred.name;
+  }
+  const repoMatched = remotes.find((remote) => !remote.isLocal && normalizedRepoHint && remote.slug === normalizedRepoHint);
+  if (repoMatched) return repoMatched.name;
+  const githubRemote = remotes.find((remote) => !remote.isLocal && remote.slug);
+  if (githubRemote) return githubRemote.name;
+  const networkRemote = remotes.find((remote) => !remote.isLocal);
+  return networkRemote?.name || fallbackRemote;
+}
+
+function resolveWorkflowRepoRoot(node, ctx) {
+  const taskPayload =
+    ctx?.data?.task && typeof ctx.data.task === "object"
+      ? ctx.data.task
+      : null;
+  const taskMeta =
+    taskPayload?.meta && typeof taskPayload.meta === "object"
+      ? taskPayload.meta
+      : null;
+  const repositoryHint = pickTaskString(
+    cfgOrCtx(node, ctx, "repository"),
+    ctx?.data?.repository,
+    taskPayload?.repository,
+    taskPayload?.repo,
+    taskMeta?.repository,
+    taskMeta?.repo,
+  );
+  const workspaceHint = pickTaskString(
+    cfgOrCtx(node, ctx, "workspace"),
+    ctx?.data?.workspace,
+    taskPayload?.workspace,
+    taskPayload?.workspaceId,
+    taskMeta?.workspace,
+    taskMeta?.workspaceId,
+  );
+  const explicitCandidates = [];
+  for (const rawCandidate of [
+    cfgOrCtx(node, ctx, "repoRoot"),
+    ctx?.data?.repoRoot,
+    taskPayload?.repoRoot,
+    taskMeta?.repoRoot,
+  ]) {
+    const candidate = String(rawCandidate || "").trim();
+    if (!candidate) continue;
+    explicitCandidates.push(resolve(candidate));
+  }
+  for (const candidate of explicitCandidates) {
+    if (repositoryHint) {
+      const inferred = resolveTaskRepositoryRoot(repositoryHint, candidate, workspaceHint);
+      if (inferred && hasGitMetadata(inferred)) return resolve(inferred);
+    }
+    if (hasGitMetadata(candidate)) return resolve(candidate);
+  }
+  if (!repositoryHint && explicitCandidates.length > 0) {
+    return explicitCandidates[0];
+  }
+  const cwdCandidate = String(process.cwd() || "").trim();
+  const containingCwdRepo = findContainingGitRepoRoot(cwdCandidate);
+  const candidateSet = new Set();
+  for (const rawCandidate of [
+    cfgOrCtx(node, ctx, "repoRoot"),
+    ctx?.data?.repoRoot,
+    taskPayload?.repoRoot,
+    taskMeta?.repoRoot,
+    containingCwdRepo,
+    resolveConfiguredRepoRoot({ cwd: process.cwd() }),
+    process.cwd(),
+  ]) {
+    const candidate = String(rawCandidate || "").trim();
+    if (!candidate) continue;
+    candidateSet.add(resolve(candidate));
+  }
+  const candidates = [...candidateSet];
+  for (const candidate of candidates) {
+    if (repositoryHint) {
+      const inferred = resolveTaskRepositoryRoot(repositoryHint, candidate, workspaceHint);
+      if (inferred && isUsableGitRepoRoot(inferred)) return resolve(inferred);
+    }
+    if (isUsableGitRepoRoot(candidate)) return resolve(candidate);
+  }
+  if (repositoryHint) {
+    for (const candidate of candidates) {
+      const inferred = resolveTaskRepositoryRoot(repositoryHint, candidate, workspaceHint);
+      if (inferred) return resolve(inferred);
+    }
+  }
+  return candidates[0] || resolve(process.cwd());
+}
 
 function getRepoMarkdownSafetyPolicy(repoRoot) {
   const normalizedRoot = resolve(repoRoot || process.cwd());
@@ -1319,6 +1550,52 @@ registerNodeType("action.run_agent", {
         if (sessionId) launchExtra.resumeThreadId = sessionId;
         if (sdkOverride) launchExtra.sdk = sdkOverride;
         if (modelOverride) launchExtra.model = modelOverride;
+        const slotOwnerKey = `${recoveryTaskKey}:${node.id}`;
+        const slotMeta = {
+          taskKey: recoveryTaskKey,
+          taskId: trackedTaskId || null,
+          taskTitle: trackedTaskTitle || null,
+          workflowRunId: String(ctx.id || "").trim() || null,
+          workflowId: String(ctx.data?._workflowId || "").trim() || null,
+          workflowName: String(ctx.data?._workflowName || ctx.data?._workflowId || "").trim() || null,
+          workflowNodeId: node.id,
+          workflowNodeLabel: String(node.label || node.id || "").trim() || null,
+          cwd,
+          sdk: sdkOverride || null,
+          model: modelOverride || null,
+          sessionType: trackedSessionType,
+        };
+        let slotWaitAnnounced = false;
+        launchExtra.slotOwnerKey = slotOwnerKey;
+        launchExtra.slotMeta = slotMeta;
+        launchExtra.onSlotQueued = (slotState) => {
+          slotWaitAnnounced = true;
+          if (typeof ctx.setNodeStatus === "function") {
+            ctx.setNodeStatus(node.id, "waiting");
+          }
+          const queueDepth = Math.max(
+            1,
+            Number(slotState?.queueDepth ?? slotState?.queuedSlots ?? 0),
+          );
+          const maxParallel = Math.max(1, Number(slotState?.maxParallel || 1));
+          const activeSlots = Math.max(0, Number(slotState?.activeSlots || maxParallel));
+          ctx.log(
+            node.id,
+            `${passLabel || "Agent"} waiting for shared agent slot (${activeSlots}/${maxParallel} active, queue=${queueDepth})`,
+          );
+        };
+        launchExtra.onSlotAcquired = (slotState) => {
+          if (typeof ctx.setNodeStatus === "function") {
+            ctx.setNodeStatus(node.id, "running");
+          }
+          const waitedMs = Math.max(0, Number(slotState?.waitedMs || 0));
+          if (slotWaitAnnounced || waitedMs > 0) {
+            ctx.log(
+              node.id,
+              `${passLabel || "Agent"} acquired shared agent slot after ${Math.max(1, Math.round(waitedMs / 1000))}s`,
+            );
+          }
+        };
         launchExtra.onEvent = (event) => {
           try {
             if (tracker && trackedTaskId) {
@@ -1362,6 +1639,10 @@ registerNodeType("action.run_agent", {
                 cwd,
                 sdk: sdkOverride,
                 model: modelOverride,
+                slotOwnerKey,
+                slotMeta,
+                onSlotQueued: launchExtra.onSlotQueued,
+                onSlotAcquired: launchExtra.onSlotAcquired,
               });
               if (result?.success) {
                 ctx.log(node.id, `${passLabel} Recovery: continue-session succeeded`.trim());
@@ -1399,6 +1680,10 @@ registerNodeType("action.run_agent", {
               model: modelOverride,
               onEvent: launchExtra.onEvent,
               systemPrompt: effectiveSystemPrompt,
+              slotOwnerKey,
+              slotMeta,
+              onSlotQueued: launchExtra.onSlotQueued,
+              onSlotAcquired: launchExtra.onSlotAcquired,
             });
           }
 
@@ -1411,12 +1696,22 @@ registerNodeType("action.run_agent", {
               model: modelOverride,
               onEvent: launchExtra.onEvent,
               systemPrompt: effectiveSystemPrompt,
+              slotOwnerKey,
+              slotMeta,
+              onSlotQueued: launchExtra.onSlotQueued,
+              onSlotAcquired: launchExtra.onSlotAcquired,
             });
           }
 
           if (!result) {
-            launchExtra.systemPrompt = effectiveSystemPrompt;
-            result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
+            result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, {
+              ...launchExtra,
+              systemPrompt: effectiveSystemPrompt,
+              slotOwnerKey,
+              slotMeta,
+              onSlotQueued: launchExtra.onSlotQueued,
+              onSlotAcquired: launchExtra.onSlotAcquired,
+            });
           }
           success = result?.success === true;
         } finally {
@@ -1777,20 +2072,12 @@ registerNodeType("action.run_command", {
   async execute(node, ctx) {
     const resolvedCommand = ctx.resolve(node.config?.command || "");
     const command = normalizeLegacyWorkflowCommand(resolvedCommand);
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const cwd = resolveWorkflowCwdValue(
+      ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd()),
+      ctx.data?.worktreePath || process.cwd(),
+    );
     const resolvedEnvConfig = resolveWorkflowNodeValue(node.config?.env ?? {}, ctx);
-    const commandEnv = { ...process.env };
-    if (resolvedEnvConfig && typeof resolvedEnvConfig === "object" && !Array.isArray(resolvedEnvConfig)) {
-      for (const [key, value] of Object.entries(resolvedEnvConfig)) {
-        const name = String(key || "").trim();
-        if (!name) continue;
-        if (value == null) {
-          delete commandEnv[name];
-          continue;
-        }
-        commandEnv[name] = typeof value === "string" ? value : JSON.stringify(value);
-      }
-    }
+    const commandEnv = applyResolvedWorkflowEnv(process.env, resolvedEnvConfig);
     const timeout = node.config?.timeoutMs || 300000;
     const resolvedArgsConfig = resolveWorkflowNodeValue(node.config?.args ?? [], ctx);
     const commandArgs = Array.isArray(resolvedArgsConfig)
@@ -2547,7 +2834,8 @@ registerNodeType("action.write_file", {
   },
   async execute(node, ctx) {
     const filePath = ctx.resolve(node.config?.path || "");
-    const content = ctx.resolve(node.config?.content || "");
+    const rawContent = ctx.resolve(node.config?.content || "");
+    const content = repairCommonMojibake(rawContent);
     if (node.config?.mkdir) {
       mkdirSync(dirname(filePath), { recursive: true });
     }
@@ -2557,8 +2845,9 @@ registerNodeType("action.write_file", {
     } else {
       writeFileSync(filePath, content, "utf8");
     }
-    ctx.log(node.id, `Wrote ${filePath}`);
-    return { success: true, path: filePath };
+    const repairedMojibake = content !== String(rawContent ?? "");
+    ctx.log(node.id, `Wrote ${filePath}${repairedMojibake ? " (encoding repaired)" : ""}`);
+    return { success: true, path: filePath, repairedMojibake };
   },
 });
 
@@ -5039,31 +5328,14 @@ function setDelegationTransitionResult(ctx, transitionKey, value) {
   return value;
 }
 
-/**
- * Look up an existing delegation transition guard by key, checking both the
- * non-persisted runtime store (getExistingDelegationTransition) and the
- * persisted ctx.data store (ctx.getDelegationTransitionGuard), so that replay
- * safety works both for in-flight runs and resumed runs.
- */
-function lookupDelegationTransition(ctx, transitionKey) {
-  if (!transitionKey) return null;
-  return (
-    getExistingDelegationTransition(ctx, transitionKey) ||
-    (typeof ctx.getDelegationTransitionGuard === "function"
-      ? ctx.getDelegationTransitionGuard(transitionKey)
-      : null)
-  );
-}
-
-/**
- * Persist a completed delegation transition in both the runtime store and the
- * persisted ctx.data store so it survives context reloads/replays.
- */
-function persistDelegationTransition(ctx, transitionKey, value) {
-  setDelegationTransitionResult(ctx, transitionKey, value);
-  if (typeof ctx.setDelegationTransitionGuard === "function") {
-    ctx.setDelegationTransitionGuard(transitionKey, value);
-  }
+function persistDelegationTransitionGuard(ctx, transitionKey, value = {}) {
+  const key = String(transitionKey || "").trim();
+  if (!key || typeof ctx?.setDelegationTransitionGuard !== "function") return null;
+  return ctx.setDelegationTransitionGuard(key, {
+    ...value,
+    transitionKey: value?.transitionKey || key,
+    idempotencyKey: value?.idempotencyKey || key,
+  });
 }
 
 // ── action.claim_task ───────────────────────────────────────────────────────
@@ -5105,162 +5377,289 @@ registerNodeType("action.claim_task", {
     }
     const delegationTransitionType = String(cfgOrCtx(node, ctx, "delegationTransitionType") || "").trim();
     const delegationTransitionKey = String(cfgOrCtx(node, ctx, "delegationTransitionKey") || "").trim();
+    const stableDefaultTransitionKey = [
+      delegationTransitionType || "assign",
+      taskId,
+    ].join(":");
     const idempotencyKey = String(
       delegationTransitionKey ||
-      cfgOrCtx(node, ctx, "idempotencyKey", "") || `${node.id || "claim_task"}:${taskId}:${ctx.data?._workflowRunId || ctx.id || "run"}`,
+      cfgOrCtx(node, ctx, "idempotencyKey", "") || stableDefaultTransitionKey,
     ).trim();
-    const existingTransition = lookupDelegationTransition(ctx, idempotencyKey);
-    if (existingTransition && existingTransition.type === "claim_task") {
-      if (existingTransition.claimToken) ctx.data._claimToken = existingTransition.claimToken;
-      if (existingTransition.instanceId) ctx.data._claimInstanceId = existingTransition.instanceId;
+    const transition = idempotencyKey
+      ? (runtimeState.delegationTransitionResults[idempotencyKey] ||= {
+          type: "claim_task",
+          transitionKey: idempotencyKey,
+          inFlightPromise: null,
+          result: null,
+          completed: false,
+        })
+      : null;
+    const existingTransition = idempotencyKey
+      ? getExistingDelegationTransition(ctx, idempotencyKey)
+      : null;
+    const persistedTransition = !existingTransition && idempotencyKey && typeof ctx.getDelegationTransitionGuard === "function"
+      ? ctx.getDelegationTransitionGuard(idempotencyKey)
+      : null;
+    const replayTransition = existingTransition || persistedTransition;
+    if (replayTransition && replayTransition.type === "claim_task") {
+      if (replayTransition.claimToken) ctx.data._claimToken = replayTransition.claimToken;
+      if (replayTransition.instanceId) ctx.data._claimInstanceId = replayTransition.instanceId;
       return {
-        ...existingTransition.result,
+        ...(replayTransition.result || {
+          success: true,
+          taskId,
+          claimToken: replayTransition.claimToken || null,
+          instanceId: replayTransition.instanceId || instanceId,
+        }),
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+    }
+
+    if (transition?.completed && transition.result) {
+      if (transition.claimToken) ctx.data._claimToken = transition.claimToken;
+      if (transition.instanceId) ctx.data._claimInstanceId = transition.instanceId;
+      return {
+        ...transition.result,
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+    }
+
+    if (transition?.inFlightPromise) {
+      const inFlightResult = await transition.inFlightPromise;
+      return {
+        ...inFlightResult,
+        replayed: true,
+        deduped: true,
         idempotentReplay: true,
       };
     }
 
     const claims = await ensureTaskClaimsMod();
-    try {
-      await ensureTaskClaimsInitialized(ctx, claims);
-    } catch (initErr) {
-      ctx.log(node.id, `Claim init failed: ${initErr.message}`);
-      return { success: false, error: initErr.message, taskId, alreadyClaimed: false };
-    }
-
-    let claimResult;
-    try {
-      claimResult = await claims.claimTask({
-        taskId,
-        instanceId,
-        ttlMinutes,
-        metadata: {
-          task_title: taskTitle,
-          branch,
-          owner: "workflow-engine",
-          sdk,
-          model: model || null,
-          pid: process.pid,
-        },
-      });
-    } catch (err) {
-      ctx.log(node.id, `Claim failed: ${err.message}`);
-      return { success: false, error: err.message, taskId, alreadyClaimed: false };
-    }
-
-    if (claimResult?.success) {
-      const token = claimResult.token || claimResult.claim?.claim_token || null;
-      ctx.data._claimToken = token;
-      ctx.data._claimInstanceId = instanceId;
-      recordDelegationAuditEvent(ctx, {
-        type: delegationTransitionType || "assign",
-        eventType: delegationTransitionType || "assign",
-        nodeId: node.id,
-        taskId,
-        instanceId,
-        claimToken: token,
-        at: Date.now(),
-        timestamp: new Date().toISOString(),
-        transitionKey: delegationTransitionKey || [delegationTransitionType || "assign", taskId, instanceId].join(":"),
-      });
-
-      const claimRuntimeState = runtimeState;
-      // Start renewal timer (stored in non-serializable runtime state for cleanup by release_claim)
-      const renewClaimFn =
-        typeof claims.renewTaskClaim === "function"
+    const renewClaimFn =
+      typeof claims.renewClaim === "function"
+        ? claims.renewClaim.bind(claims)
+        : typeof claims.renewTaskClaim === "function"
           ? claims.renewTaskClaim.bind(claims)
-          : typeof claims.renewClaim === "function"
-            ? claims.renewClaim.bind(claims)
-            : null;
-      if (renewIntervalMs > 0 && renewClaimFn) {
-        const renewTimer = setInterval(async () => {
-          const handleClaimRenewFailure = (rawReason) => {
-            const reason = String(rawReason || "unknown");
-            const fatal = [
-              "claimed_by_different_instance",
-              "claim_token_mismatch",
-              "attempt_token_mismatch",
-              "task_not_claimed",
-              "owner_mismatch",
-            ].some((entry) => reason.includes(entry));
-            if (fatal) {
-              recordDelegationAuditEvent(ctx, {
-                type: reason.includes("owner_mismatch") ? "owner-mismatch" : "claim-renew",
-                eventType: reason.includes("owner_mismatch") ? "owner-mismatch" : "claim-renew",
-                nodeId: node.id,
-                taskId,
-                instanceId,
-                claimToken: token,
-                reason,
-                error: reason,
-                at: Date.now(),
-                timestamp: new Date().toISOString(),
-                transitionKey: [reason.includes("owner_mismatch") ? "owner-mismatch" : "claim-renew-fatal", taskId, instanceId, token || "none", reason].join(":"),
-              });
-              ctx.log(node.id, `Claim renewal fatal: ${reason} — aborting task`);
-              clearInterval(renewTimer);
-              claimRuntimeState.claimRenewTimer = null;
-              ctx.data._claimRenewTimer = null;
-              // Signal abort to downstream nodes via context
-              ctx.data._claimStolen = true;
-              return;
-            }
-            ctx.log(node.id, `Claim renewal warning: ${reason}`);
-          };
-          try {
-            const renewResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
-            if (renewResult?.success) {
-              recordDelegationAuditEvent(ctx, {
-                type: "claim-renew",
-                eventType: "claim-renew",
-                nodeId: node.id,
-                taskId,
-                instanceId,
-                claimToken: token,
-                at: Date.now(),
-                timestamp: new Date().toISOString(),
-                transitionKey: ["claim-renew", taskId, instanceId, token || "none"].join(":"),
-              });
-            }
-            if (renewResult && renewResult.success === false) {
-              handleClaimRenewFailure(
-                renewResult.error || renewResult.reason || "claim_renew_failed",
-              );
-            }
-          } catch (renewErr) {
-            handleClaimRenewFailure(renewErr?.message || String(renewErr));
-          }
-        }, renewIntervalMs);
-        // Prevent timer from keeping the process alive
-        if (renewTimer.unref) renewTimer.unref();
-        claimRuntimeState.claimRenewTimer = renewTimer;
-        // Keep serialized context JSON-safe.
-        ctx.data._claimRenewTimer = null;
+          : null;
+    const handleFatalRenewal = (message, token) => {
+      ctx.log(node.id, `Claim renewal fatal: ${message} — aborting task`);
+      if (runtimeState.claimRenewTimer) {
+        try { clearInterval(runtimeState.claimRenewTimer); } catch { }
+      }
+      runtimeState.claimRenewTimer = null;
+      ctx.data._claimRenewTimer = null;
+      ctx.data._claimStolen = true;
+      const ownerMismatchKey = ["owner-mismatch", taskId, instanceId, token || ctx.data?._claimToken || "none", "renew"].join(":");
+      recordDelegationAuditEvent(ctx, {
+        type: "owner-mismatch",
+        eventType: "owner-mismatch",
+        taskId,
+        claimToken: token || ctx.data?._claimToken || null,
+        instanceId,
+        reason: message,
+        error: message,
+        nodeId: node.id,
+        transitionKey: ownerMismatchKey,
+        idempotencyKey: ownerMismatchKey,
+      });
+    };
+
+    const claimExecution = (async () => {
+      persistDelegationTransitionGuard(ctx, idempotencyKey, {
+        type: "claim_task",
+        status: "in_progress",
+        taskId,
+        instanceId,
+      });
+      try {
+        await ensureTaskClaimsInitialized(ctx, claims);
+      } catch (initErr) {
+        ctx.log(node.id, `Claim init failed: ${initErr.message}`);
+        const failureResult = { success: false, error: initErr.message, taskId, alreadyClaimed: false };
+        if (transition) {
+          transition.completed = false;
+          transition.result = null;
+        }
+        persistDelegationTransitionGuard(ctx, idempotencyKey, {
+          type: "claim_task",
+          status: "failed",
+          taskId,
+          instanceId,
+          error: initErr.message,
+          result: { ...failureResult },
+        });
+        return failureResult;
       }
 
-      ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
-      const successResult = { success: true, taskId, claimToken: token, instanceId };
-      if (idempotencyKey) {
-        persistDelegationTransition(ctx, idempotencyKey, {
+      let claimResult;
+      try {
+        claimResult = await claims.claimTask({
+          taskId,
+          instanceId,
+          ttlMinutes,
+          metadata: {
+            task_title: taskTitle,
+            branch,
+            owner: "workflow-engine",
+            sdk,
+            model: model || null,
+            pid: process.pid,
+            idempotency_key: idempotencyKey || null,
+          },
+        });
+      } catch (err) {
+        ctx.log(node.id, `Claim failed: ${err.message}`);
+        const failureResult = { success: false, error: err.message, taskId, alreadyClaimed: false };
+        if (transition) {
+          transition.completed = false;
+          transition.result = null;
+        }
+        persistDelegationTransitionGuard(ctx, idempotencyKey, {
           type: "claim_task",
+          status: "failed",
+          taskId,
+          instanceId,
+          error: err.message,
+          result: { ...failureResult },
+        });
+        return failureResult;
+      }
+
+      if (claimResult?.success) {
+        const token = claimResult.token || claimResult.claim?.claim_token || null;
+        ctx.data._claimToken = token;
+        ctx.data._claimInstanceId = instanceId;
+        if (transition) {
+          transition.completed = true;
+          transition.claimToken = token;
+          transition.instanceId = instanceId;
+        }
+        recordDelegationAuditEvent(ctx, {
+          type: delegationTransitionType || "assign",
+          eventType: delegationTransitionType || "assign",
+          nodeId: node.id,
+          taskId,
+          instanceId,
+          claimToken: token,
+          at: Date.now(),
+          timestamp: new Date().toISOString(),
+          transitionKey: delegationTransitionKey || [delegationTransitionType || "assign", taskId, instanceId].join(":"),
+          idempotencyKey: delegationTransitionKey || idempotencyKey,
+        });
+
+        if (renewIntervalMs > 0 && renewClaimFn && !runtimeState.claimRenewTimer) {
+          const renewTimer = setInterval(async () => {
+            try {
+              const renewResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+              if (renewResult && renewResult.success === false) {
+                const resultError = String(renewResult.error || renewResult.reason || "claim_renew_failed");
+                const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch", "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"]
+                  .some((entry) => resultError.includes(entry));
+                if (fatalResult) {
+                  handleFatalRenewal(resultError, token);
+                } else {
+                  ctx.log(node.id, `Claim renewal warning: ${resultError}`);
+                }
+              } else if (renewResult?.success) {
+                const claimRenewKey = ["claim-renew", taskId, instanceId, token || "none"].join(":");
+                recordDelegationAuditEvent(ctx, {
+                  type: "claim-renew",
+                  eventType: "claim-renew",
+                  nodeId: node.id,
+                  taskId,
+                  instanceId,
+                  claimToken: token,
+                  at: Date.now(),
+                  timestamp: new Date().toISOString(),
+                  transitionKey: claimRenewKey,
+                  idempotencyKey: claimRenewKey,
+                });
+              }
+            } catch (renewErr) {
+              const msg = renewErr?.message || String(renewErr);
+              const fatal = ["claimed_by_different_instance", "claim_token_mismatch", "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"]
+                .some((entry) => msg.includes(entry));
+              if (fatal) {
+                handleFatalRenewal(msg, token);
+              } else {
+                ctx.log(node.id, `Claim renewal warning: ${msg}`);
+              }
+            }
+          }, renewIntervalMs);
+          if (renewTimer.unref) renewTimer.unref();
+          runtimeState.claimRenewTimer = renewTimer;
+          ctx.data._claimRenewTimer = null;
+        }
+
+        ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
+        const successResult = { success: true, taskId, claimToken: token, instanceId };
+        if (transition) transition.result = { ...successResult };
+        persistDelegationTransitionGuard(ctx, idempotencyKey, {
+          type: "claim_task",
+          status: "completed",
+          taskId,
           claimToken: token,
           instanceId,
           result: { ...successResult },
         });
+        if (idempotencyKey) {
+          setDelegationTransitionResult(ctx, idempotencyKey, {
+            type: "claim_task",
+            claimToken: token,
+            instanceId,
+            result: { ...successResult },
+          });
+        }
+        return successResult;
       }
-      return successResult;
-    }
 
-    if (claimResult?.error === "task_already_claimed") {
-      const owner = claimResult?.existing_instance || claimResult?.existing_claim?.instance_id || "unknown";
-      ctx.log(node.id, `Task "${taskTitle}" already claimed by ${owner}`);
-      return { success: false, taskId, alreadyClaimed: true, claimedBy: owner, error: "task_already_claimed" };
-    }
+      if (claimResult?.alreadyClaimed) {
+        const owner = claimResult?.claim?.holder?.instance_id || claimResult?.claim?.instance_id || null;
+        const failureResult = { success: false, taskId, alreadyClaimed: true, claimedBy: owner, error: "task_already_claimed" };
+        if (transition) {
+          transition.completed = false;
+          transition.result = null;
+        }
+        persistDelegationTransitionGuard(ctx, idempotencyKey, {
+          type: "claim_task",
+          status: "failed",
+          taskId,
+          instanceId,
+          claimedBy: owner,
+          error: "task_already_claimed",
+          result: { ...failureResult },
+        });
+        return failureResult;
+      }
 
-    ctx.log(node.id, `Claim error: ${claimResult?.error || "unknown"}`);
-    return { success: false, taskId, error: claimResult?.error || "unknown", alreadyClaimed: false };
+      ctx.log(node.id, `Claim error: ${claimResult?.error || "unknown"}`);
+      const failureResult = { success: false, taskId, error: claimResult?.error || "unknown", alreadyClaimed: false };
+      if (transition) {
+        transition.completed = false;
+        transition.result = null;
+      }
+      persistDelegationTransitionGuard(ctx, idempotencyKey, {
+        type: "claim_task",
+        status: "failed",
+        taskId,
+        instanceId,
+        error: claimResult?.error || "unknown",
+        result: { ...failureResult },
+      });
+      return failureResult;
+    })();
+    if (transition) transition.inFlightPromise = claimExecution;
+    try {
+      return await claimExecution;
+    } finally {
+      if (transition) transition.inFlightPromise = null;
+    }
   },
 });
-
 // ── action.release_claim ────────────────────────────────────────────────────
 
 registerNodeType("action.release_claim", {
@@ -5272,14 +5671,34 @@ registerNodeType("action.release_claim", {
       taskId: { type: "string", description: "Task ID to release claim for" },
       claimToken: { type: "string", description: "Claim token (auto-read from ctx)" },
       instanceId: { type: "string", description: "Instance ID (auto-read from ctx)" },
-      transitionKey: { type: "string", description: "Idempotency key for replay safety" },
-      idempotencyKey: { type: "string", description: "Alias for transitionKey" },
     },
   },
   async execute(node, ctx) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const claimToken = cfgOrCtx(node, ctx, "claimToken") || ctx.data?._claimToken || "";
     const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._claimInstanceId || "";
+    const transitionKey = String(
+      cfgOrCtx(node, ctx, "transitionKey") ||
+      cfgOrCtx(node, ctx, "idempotencyKey") ||
+      (taskId ? `release:${taskId}` : "")
+    ).trim();
+    const existingTransition = transitionKey
+      ? getExistingDelegationTransition(ctx, transitionKey)
+      : null;
+    const persistedTransition = !existingTransition && transitionKey && typeof ctx.getDelegationTransitionGuard === "function"
+      ? ctx.getDelegationTransitionGuard(transitionKey)
+      : null;
+    const replayTransition = existingTransition || persistedTransition;
+    if (replayTransition?.type === "release_claim" && replayTransition?.status === "completed") {
+      ctx.data._claimToken = null;
+      ctx.data._claimInstanceId = null;
+      return {
+        ...(replayTransition.result || { success: true, taskId }),
+        deduped: true,
+        idempotentReplay: true,
+      };
+    }
+
 
     // Always cancel the renewal timer first.
     const runtimeState = getWorkflowRuntimeState(ctx);
@@ -5289,22 +5708,6 @@ registerNodeType("action.release_claim", {
     }
     runtimeState.claimRenewTimer = null;
     ctx.data._claimRenewTimer = null;
-
-    // Idempotency: check if this release was already performed
-    const rawTransitionKey = String(
-      cfgOrCtx(node, ctx, "transitionKey") ||
-      cfgOrCtx(node, ctx, "idempotencyKey") || "",
-    ).trim();
-    const releaseTransitionKey = rawTransitionKey ||
-      (taskId ? `release_claim:${taskId}:${ctx.data?._workflowRunId || ctx.id || "run"}` : "");
-    if (releaseTransitionKey) {
-      const existingRelease = lookupDelegationTransition(ctx, releaseTransitionKey);
-      if (existingRelease && existingRelease.type === "release_claim") {
-        ctx.data._claimToken = null;
-        ctx.data._claimInstanceId = null;
-        return { ...existingRelease.result, idempotentReplay: true };
-      }
-    }
 
     if (!taskId || !claimToken) {
       ctx.log(node.id, `No claim to release for ${taskId || "(unknown)"}`);
@@ -5332,20 +5735,45 @@ registerNodeType("action.release_claim", {
       ctx.data._claimToken = null;
       ctx.data._claimInstanceId = null;
       ctx.log(node.id, `Claim released for ${taskId}`);
-      const releaseResult = { success: true, taskId };
-      if (releaseTransitionKey) {
-        persistDelegationTransition(ctx, releaseTransitionKey, {
+      const successResult = { success: true, taskId };
+      if (transitionKey) {
+        setDelegationTransitionResult(ctx, transitionKey, {
           type: "release_claim",
-          result: { ...releaseResult },
+          status: "completed",
+          taskId,
+          result: { ...successResult },
+        });
+        persistDelegationTransitionGuard(ctx, transitionKey, {
+          type: "release_claim",
+          status: "completed",
+          taskId,
+          result: { ...successResult },
         });
       }
-      return releaseResult;
+      return successResult;
     } catch (err) {
       // Release is best-effort — log but don't fail
       ctx.log(node.id, `Claim release warning: ${err.message}`);
       ctx.data._claimToken = null;
       ctx.data._claimInstanceId = null;
-      return { success: true, taskId, warning: err.message };
+      const warningResult = { success: true, taskId, warning: err.message };
+      if (transitionKey) {
+        setDelegationTransitionResult(ctx, transitionKey, {
+          type: "release_claim",
+          status: "completed",
+          taskId,
+          warning: err.message,
+          result: { ...warningResult },
+        });
+        persistDelegationTransitionGuard(ctx, transitionKey, {
+          type: "release_claim",
+          status: "completed",
+          taskId,
+          warning: err.message,
+          result: { ...warningResult },
+        });
+      }
+      return warningResult;
     }
   },
 });
@@ -5370,7 +5798,7 @@ registerNodeType("action.resolve_executor", {
     const defaultSdk = cfgOrCtx(node, ctx, "defaultSdk", "auto");
     const sdkOverride = cfgOrCtx(node, ctx, "sdkOverride");
     const modelOverride = cfgOrCtx(node, ctx, "modelOverride");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || ctx.data?.repoRoot || process.cwd();
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle") || ctx.data?.taskTitle || ctx.data?.task?.title || "";
     const taskDescription =
       cfgOrCtx(node, ctx, "taskDescription") ||
@@ -5502,6 +5930,17 @@ function resolveWorktreeGitDir(worktreePath) {
   }
 }
 
+function isManagedWorktreeGitDir(gitDir, repoRoot) {
+  const normalizedGitDir = resolve(String(gitDir || ""));
+  if (!normalizedGitDir) return false;
+  const managedGitDirRoot = resolve(String(repoRoot || process.cwd()), ".git", "worktrees");
+  return (
+    normalizedGitDir === managedGitDirRoot ||
+    normalizedGitDir.startsWith(`${managedGitDirRoot}\\`) ||
+    normalizedGitDir.startsWith(`${managedGitDirRoot}/`)
+  );
+}
+
 export function classifyAcquireWorktreeFailure(errorInput) {
   const errorMessage = String(errorInput?.message || errorInput || "worktree_acquisition_failed").trim();
 
@@ -5583,8 +6022,8 @@ function inspectManagedWorktreeState(worktreePath) {
   };
 }
 
-function clearWorktreeGitState(gitDir) {
-  if (!gitDir) return;
+function clearWorktreeGitState(gitDir, repoRoot = "") {
+  if (!isManagedWorktreeGitDir(gitDir, repoRoot)) return;
   for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD"]) {
     try {
       rmSync(resolve(gitDir, marker), { recursive: true, force: true });
@@ -5595,7 +6034,7 @@ function clearWorktreeGitState(gitDir) {
 }
 
 function resetManagedWorktree(repoRoot, worktreePath, gitDir = "") {
-  clearWorktreeGitState(gitDir);
+  clearWorktreeGitState(gitDir, repoRoot);
   try {
     execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
       cwd: repoRoot,
@@ -5655,7 +6094,8 @@ registerNodeType("action.acquire_worktree", {
   async execute(node, ctx) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const branch = cfgOrCtx(node, ctx, "branch");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const resolvedRepoRoot = resolveWorkflowRepoRoot(node, ctx);
+    let repoRoot = findContainingGitRepoRoot(resolvedRepoRoot) || resolvedRepoRoot;
     const baseBranchRaw = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
     const defaultTargetBranch = cfgOrCtx(node, ctx, "defaultTargetBranch", "origin/main");
     const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
@@ -5696,7 +6136,24 @@ registerNodeType("action.acquire_worktree", {
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
 
     // Non-git directory — agent spawns directly
-    const isGit = existsSync(resolve(repoRoot, ".git"));
+    let isGit = existsSync(resolve(repoRoot, ".git"));
+    if (!isGit) {
+      const parentRepoRoot = resolve(repoRoot, "..");
+      if (
+        basename(String(repoRoot || "").trim()).toLowerCase() === ".bosun"
+        && existsSync(resolve(parentRepoRoot, ".git"))
+      ) {
+        repoRoot = parentRepoRoot;
+        isGit = true;
+      }
+    }
+    if (!isGit) {
+      const containingRepoRoot = findContainingGitRepoRoot(repoRoot);
+      if (containingRepoRoot && containingRepoRoot !== repoRoot) {
+        repoRoot = containingRepoRoot;
+        isGit = existsSync(resolve(repoRoot, ".git"));
+      }
+    }
     if (!isGit) {
       ctx.data.worktreePath = repoRoot;
       ctx.data._worktreeCreated = false;
@@ -5704,6 +6161,9 @@ registerNodeType("action.acquire_worktree", {
       ctx.log(node.id, `Non-git directory — using ${repoRoot} directly`);
       return { success: true, worktreePath: repoRoot, created: false, noGit: true };
     }
+
+    // Repair known main-repo git metadata/config corruption before any worktree command runs.
+    fixGitConfigCorruption(repoRoot);
 
     try {
       const findAttachedWorktreeForBranch = async () => {
@@ -5844,6 +6304,7 @@ registerNodeType("action.acquire_worktree", {
           recreatedManagedWorktree = invalidateBrokenReusableWorktree(worktreePath, "post-pull");
         }
         if (!recreatedManagedWorktree && existsSync(worktreePath)) {
+          fixGitConfigCorruption(repoRoot);
           ctx.data.worktreePath = worktreePath;
           ctx.data.baseBranch = baseBranch;
           ctx.data._worktreeCreated = false;
@@ -5867,59 +6328,77 @@ registerNodeType("action.acquire_worktree", {
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
       } catch (createErr) {
-        if (!isExistingBranchWorktreeError(createErr)) {
-          throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
-        }
-        const attachedPath = await findAttachedWorktreeForBranch();
-        let recreatedAttachedWorktree = false;
-        if (attachedPath && existsSync(attachedPath)) {
-          if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
-            fixGitConfigCorruption(repoRoot);
-            execGitArgsSync(
-              branchExistsLocally
-                ? ["worktree", "add", worktreePath, branch]
-                : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
-              { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
-            );
-            recreatedAttachedWorktree = true;
-          } else {
-            ctx.data.worktreePath = attachedPath;
-            ctx.data.baseBranch = baseBranch;
-            ctx.data._worktreeCreated = false;
-            ctx.data._worktreeManaged = true;
-            await persistRecoveryEvent({
-              outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
-              worktreePath: attachedPath,
-            });
-            ctx.log(node.id, `Reusing existing branch worktree: ${attachedPath}`);
-            return {
-              success: true,
-              worktreePath: attachedPath,
-              created: false,
-              reused: true,
-              reusedExistingBranch: true,
-              branch,
-              baseBranch,
-            };
-          }
-        }
-        if (!recreatedAttachedWorktree) {
-          // Branch already exists — attach worktree to existing branch.
+        const createErrDetail = String(createErr?.stderr || createErr?.message || "");
+
+        // "invalid reference" means a previous failed worktree-add left an orphaned
+        // local branch ref (branch exists in git metadata but has no valid object).
+        // Delete it and create fresh from base so the task can proceed.
+        if (branchExistsLocally && /invalid reference/i.test(createErrDetail)) {
           try {
-            execGitArgsSync(
-              ["worktree", "add", worktreePath, branch],
-              { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
-            );
-          } catch (reuseErr) {
-            throw new Error(
-              `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
-              `reuse failed: ${formatExecSyncError(reuseErr)}`,
-            );
+            execGitArgsSync(["branch", "-D", branch], {
+              cwd: repoRoot, encoding: "utf8", timeout: 5000,
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+          } catch { /* best-effort cleanup */ }
+          // Retry fresh creation — let any failure propagate as a normal error
+          execGitArgsSync(["worktree", "add", worktreePath, "-b", branch, baseBranch], {
+            cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout,
+          });
+        } else if (!isExistingBranchWorktreeError(createErr)) {
+          throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
+        } else {
+          const attachedPath = await findAttachedWorktreeForBranch();
+          let recreatedAttachedWorktree = false;
+          if (attachedPath && existsSync(attachedPath)) {
+            if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
+              fixGitConfigCorruption(repoRoot);
+              execGitArgsSync(
+                branchExistsLocally
+                  ? ["worktree", "add", worktreePath, branch]
+                  : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
+                { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
+              );
+              recreatedAttachedWorktree = true;
+            } else {
+              fixGitConfigCorruption(repoRoot);
+              ctx.data.worktreePath = attachedPath;
+              ctx.data.baseBranch = baseBranch;
+              ctx.data._worktreeCreated = false;
+              ctx.data._worktreeManaged = true;
+              await persistRecoveryEvent({
+                outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+                worktreePath: attachedPath,
+              });
+              ctx.log(node.id, `Reusing existing branch worktree: ${attachedPath}`);
+              return {
+                success: true,
+                worktreePath: attachedPath,
+                created: false,
+                reused: true,
+                reusedExistingBranch: true,
+                branch,
+                baseBranch,
+              };
+            }
+          }
+          if (!recreatedAttachedWorktree) {
+            // Branch already exists — attach worktree to existing branch.
+            try {
+              execGitArgsSync(
+                ["worktree", "add", worktreePath, branch],
+                { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
+              );
+            } catch (reuseErr) {
+              throw new Error(
+                `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
+                `reuse failed: ${formatExecSyncError(reuseErr)}`,
+              );
+            }
           }
         }
       }
+      clearWorktreeGitState(resolveWorktreeGitDir(worktreePath), repoRoot);
       fixGitConfigCorruption(repoRoot);
-      clearWorktreeGitState(resolveWorktreeGitDir(worktreePath));
 
       ctx.data.worktreePath = worktreePath;
       ctx.data.baseBranch = baseBranch;
@@ -5999,7 +6478,7 @@ registerNodeType("action.release_worktree", {
   },
   async execute(node, ctx) {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const shouldPrune = node.config?.prune === true;
     const removeTimeout = node.config?.removeTimeout ?? 30000;
@@ -6091,7 +6570,7 @@ registerNodeType("action.build_task_prompt", {
     const branch = cfgOrCtx(node, ctx, "branch");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch");
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
     const repoSlug = cfgOrCtx(node, ctx, "repoSlug");
     const retryReason = cfgOrCtx(node, ctx, "retryReason");
     const includeAgentsMd = node.config?.includeAgentsMd !== false;
@@ -6805,7 +7284,7 @@ registerNodeType("action.persist_memory", {
       taskPayload?.meta && typeof taskPayload.meta === "object"
         ? taskPayload.meta
         : null;
-    const repoRoot = pickFirstString(resolveValue("repoRoot"), process.cwd()) || process.cwd();
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
     const repoSlug = pickFirstString(
       resolveValue("repoSlug"),
       taskPayload?.repository,
@@ -7146,8 +7625,18 @@ registerNodeType("action.push_branch", {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
     const branch = cfgOrCtx(node, ctx, "branch", "");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || ctx.data.repoRoot || process.cwd();
-    const remote = node.config?.remote || "origin";
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
+    const configuredRemote = String(node.config?.remote || "origin").trim() || "origin";
+    const repoHint = pickTaskString(
+      ctx?.data?.repo,
+      ctx?.data?.repository,
+      ctx?.data?.repoSlug,
+      ctx?.data?.task?.repo,
+      ctx?.data?.task?.repository,
+      ctx?.data?.task?.meta?.repo,
+      ctx?.data?.task?.meta?.repository,
+    );
+    const remote = resolvePreferredPushRemote(worktreePath, configuredRemote, repoHint);
     const forceWithLease = node.config?.forceWithLease !== false;
     const skipHooks = typeof node.config?.skipHooks === "boolean"
       ? node.config.skipHooks
@@ -7167,14 +7656,30 @@ registerNodeType("action.push_branch", {
     ctx.data._pushConflictFiles = [];
     ctx.data._pushConflictResolved = false;
 
-    if (!worktreePath) throw new Error("action.push_branch: worktreePath is required");
+    if (!worktreePath) {
+      ctx.log(node.id, "action.push_branch: worktreePath not set - refusing push");
+      return {
+        success: false,
+        pushed: false,
+        branch: branch.replace(/^origin\//, ""),
+        remote,
+        error: "action.push_branch: worktreePath is required",
+        implementationDone: false,
+        blockedReason: "missing_worktree_path",
+        implementationState: null,
+      };
+    }
+
+    const cleanBranch = branch.replace(/^origin\//, "");
+    if (remote !== configuredRemote) {
+      ctx.log(node.id, `Remapped push remote ${configuredRemote} -> ${remote} for ${repoHint || cleanBranch || "worktree"}`);
+    }
 
     if (shouldEnforceManagedPushHook(repoRoot, worktreePath)) {
       bootstrapWorktreeForPath(repoRoot, worktreePath);
     }
 
     // Safety check: don't push to protected branches
-    const cleanBranch = branch.replace(/^origin\//, "");
     if (protectedBranches.includes(cleanBranch)) {
       ctx.log(node.id, `Refusing to push to protected branch: ${cleanBranch}`);
       return {
@@ -7188,7 +7693,7 @@ registerNodeType("action.push_branch", {
     }
 
     try {
-      execSync(`git fetch ${remote} --no-tags`, {
+      execGitArgsSync(["fetch", remote, "--no-tags"], {
         cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (fetchErr) {
@@ -7198,23 +7703,23 @@ registerNodeType("action.push_branch", {
     if (rebaseBeforePush || mergeBaseBeforePush) {
       const remoteTrackingRef = `${remote}/${cleanBranch}`;
       try {
-        execSync(`git rev-parse --verify ${remoteTrackingRef}`, {
+        execGitArgsSync(["rev-parse", "--verify", remoteTrackingRef], {
           cwd: worktreePath, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
         });
-        const behindCount = execSync(
-          `git rev-list --count HEAD..${remoteTrackingRef}`,
+        const behindCount = execGitArgsSync(
+          ["rev-list", "--count", `HEAD..${remoteTrackingRef}`],
           { cwd: worktreePath, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] },
         ).trim();
         if (parseInt(behindCount, 10) > 0) {
           try {
-            execSync(`git rebase ${remoteTrackingRef}`, {
+            execGitArgsSync(["rebase", remoteTrackingRef], {
               cwd: worktreePath, encoding: "utf8", timeout: 60000,
               stdio: ["ignore", "pipe", "pipe"],
             });
             ctx.log(node.id, `Synced local with ${remoteTrackingRef} (was ${behindCount} behind)`);
           } catch (syncErr) {
             try {
-              execSync("git rebase --abort", {
+              execGitArgsSync(["rebase", "--abort"], {
                 cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
               });
             } catch {
@@ -7304,14 +7809,14 @@ registerNodeType("action.push_branch", {
         }
       } else {
         try {
-          execSync(`git rebase ${baseBranch}`, {
+          execGitArgsSync(["rebase", baseBranch], {
             cwd: worktreePath, encoding: "utf8", timeout: 60000,
             stdio: ["ignore", "pipe", "pipe"],
           });
           ctx.log(node.id, `Rebased onto ${baseBranch}`);
         } catch (rebaseErr) {
           try {
-            execSync("git rebase --abort", {
+            execGitArgsSync(["rebase", "--abort"], {
               cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
             });
           } catch {
@@ -7325,14 +7830,14 @@ registerNodeType("action.push_branch", {
     // ── Optional: sync base branch with main (for module branches) ──
     if (syncMain && baseBranch !== "origin/main" && baseBranch !== "main") {
       try {
-        execSync(`git merge origin/main --no-edit`, {
+        execGitArgsSync(["merge", `${remote}/main`, "--no-edit"], {
           cwd: worktreePath, timeout: 30000,
           stdio: ["ignore", "pipe", "pipe"],
         });
-        ctx.log(node.id, "Synced with origin/main for module branch");
+        ctx.log(node.id, `Synced with ${remote}/main for module branch`);
       } catch (mergeErr) {
         try {
-          execSync("git merge --abort", {
+          execGitArgsSync(["merge", "--abort"], {
             cwd: worktreePath, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
           });
         } catch { /* already aborted */ }
@@ -7343,7 +7848,7 @@ registerNodeType("action.push_branch", {
     // ── Empty diff guard ──
     if (emptyDiffGuard) {
       try {
-        const diffOutput = execSync(`git diff --name-only ${baseBranch}..HEAD`, {
+        const diffOutput = execGitArgsSync(["diff", "--name-only", `${baseBranch}..HEAD`], {
           cwd: worktreePath, encoding: "utf8", timeout: 10000,
           stdio: ["ignore", "pipe", "pipe"],
         }).trim();
@@ -7368,18 +7873,18 @@ registerNodeType("action.push_branch", {
     }
 
     try {
-      const headSha = execSync("git rev-parse HEAD", {
+      const headSha = execGitArgsSync(["rev-parse", "HEAD"], {
         cwd: worktreePath, encoding: "utf8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
       }).trim();
-      const mainSha = execSync("git rev-parse origin/main", {
+      const mainSha = execGitArgsSync(["rev-parse", `${remote}/main`], {
         cwd: worktreePath, encoding: "utf8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
       }).trim();
       if (headSha && mainSha && headSha === mainSha) {
-        ctx.log(node.id, "HEAD is identical to origin/main — aborting push to prevent PR wipe");
+        ctx.log(node.id, `HEAD is identical to ${remote}/main — aborting push to prevent PR wipe`);
         ctx.data._pushSkipped = true;
         return {
           success: false,
-          error: "HEAD matches origin/main — refusing push",
+          error: `HEAD matches ${remote}/main — refusing push`,
           pushed: false,
           implementationDone: false,
           blockedReason: null,
@@ -7391,13 +7896,13 @@ registerNodeType("action.push_branch", {
     }
 
     // ── Push ──
-    const pushFlags = [];
-    if (forceWithLease) pushFlags.push("--force-with-lease");
-    if (skipHooks) pushFlags.push("--no-verify");
-    const cmd = `git push ${pushFlags.join(" ")} --set-upstream ${remote} HEAD`.trim();
+    const pushArgs = ["push"];
+    if (forceWithLease) pushArgs.push("--force-with-lease");
+    if (skipHooks) pushArgs.push("--no-verify");
+    pushArgs.push("--set-upstream", remote, "HEAD");
 
     try {
-      const output = execSync(cmd, {
+      const output = execGitArgsSync(pushArgs, {
         cwd: worktreePath, encoding: "utf8", timeout: pushTimeout,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -7614,5 +8119,8 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
+
+
+
 
 

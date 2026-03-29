@@ -45,9 +45,9 @@ async function initEngine(cfg = {}) {
   const base = pathToFileURL(repoRoot + "/").href;
 
   const [wfEngineMod, wfNodesMod, wfTemplatesMod] = await Promise.all([
-    import(new URL("../workflow/workflow-engine.mjs", base).href),
-    import(new URL("../workflow/workflow-nodes.mjs",  base).href),
-    import(new URL("../workflow/workflow-templates.mjs", base).href),
+    import(new URL("./workflow/workflow-engine.mjs", base).href),
+    import(new URL("./workflow/workflow-nodes.mjs",  base).href),
+    import(new URL("./workflow/workflow-templates.mjs", base).href),
   ]);
 
   if (typeof wfNodesMod?.ensureWorkflowNodeTypesLoaded === "function") {

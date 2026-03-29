@@ -135,7 +135,6 @@ async function probeWithNodeRequest(target, timeoutMs) {
         path: target.path,
         method: "GET",
         timeout: timeoutMs,
-        rejectUnauthorized: false,
         headers: { accept: "application/json" },
       },
       (res) => {

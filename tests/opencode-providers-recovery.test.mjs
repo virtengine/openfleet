@@ -131,4 +131,30 @@ describe("opencode provider discovery", () => {
       toolcall: true,
     });
   });
+
+  it("treats a plain SDK 400 model-list failure as ignorable and falls back to CLI", async () => {
+    const createOpencodeClient = vi.fn(() => ({
+      provider: {
+        list: vi.fn().mockRejectedValue(Object.assign(new Error("Failed to list models: 400"), {
+          status: 400,
+        })),
+        auth: vi.fn().mockResolvedValue({ data: {} }),
+      },
+    }));
+
+    vi.doMock("@opencode-ai/sdk", () => ({
+      default: { createOpencodeClient },
+      createOpencodeClient,
+    }));
+
+    execFileMock.mockImplementation((command, args, options, callback) => callback(null, "openai/gpt-4.1\n", ""));
+    execMock.mockImplementation((command, options, callback) => callback(null, "openai/gpt-4.1\n", ""));
+
+    const mod = await import("../shell/opencode-providers.mjs?case=sdk400-cli-fallback");
+    const snapshot = await mod.discoverProviders({ force: true });
+
+    expect(createOpencodeClient).toHaveBeenCalled();
+    expect(snapshot.connectedIds).toEqual(["openai"]);
+    expect(snapshot.allModels.map((model) => model.fullId)).toEqual(["openai/gpt-4.1"]);
+  });
 });

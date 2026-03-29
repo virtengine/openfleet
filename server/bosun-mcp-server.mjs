@@ -13,6 +13,7 @@ import { format } from "node:util";
 import * as mcpServer from "@modelcontextprotocol/sdk/server/index.js";
 import * as mcpStdio from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as mcpTypes from "@modelcontextprotocol/sdk/types.js";
+import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 
 const Server = mcpServer.Server ?? mcpServer.default?.Server;
 const StdioServerTransport =
@@ -718,7 +719,12 @@ const GREP_SKIP_DIRS = new Set(["node_modules", ".git", ".bosun", "dist", "build
 function matchGlob(filePath, pattern) {
   if (!pattern || pattern === "**/*") return true;
   // Simple glob: supports *.ext and **/*.ext patterns only
-  const ext = pattern.replace(/.*\*\./, "").replace("**/*.", "");
+  let ext = "";
+  if (pattern.startsWith("*.")) {
+    ext = pattern.slice(2);
+  } else if (pattern.startsWith("**/*.")) {
+    ext = pattern.slice(5);
+  }
   if (ext && !pattern.includes("/")) return filePath.endsWith(`.${ext}`);
   return true;
 }
@@ -1057,7 +1063,7 @@ const BOSUN_TOOL_HANDLERS = {
     if (!existsSync(absPath)) throw new Error(`File not found: ${absPath}`);
     const original = readFileSync(absPath, "utf8");
     const oldStr = String(args.old_str ?? "");
-    const newStr = String(args.new_str ?? "");
+    const newStr = repairCommonMojibake(String(args.new_str ?? ""));
     if (!oldStr) throw new Error("old_str must not be empty");
     const idx = original.indexOf(oldStr);
     if (idx === -1) {
@@ -1077,17 +1083,30 @@ const BOSUN_TOOL_HANDLERS = {
     const updated = original.slice(0, idx) + newStr + original.slice(idx + oldStr.length);
     writeFileSync(absPath, updated, "utf8");
     const lineNum = original.slice(0, idx).split("\n").length;
-    return { success: true, path: absPath, replaced_at_line: lineNum, occurrences_checked: occurrences };
+    return {
+      success: true,
+      path: absPath,
+      replaced_at_line: lineNum,
+      occurrences_checked: occurrences,
+      repairedMojibake: newStr !== String(args.new_str ?? ""),
+    };
   },
 
   write_file(_runtime, args) {
     const absPath = resolveFilePath(args.path, args.workspace_path);
-    const content = String(args.content ?? "");
+    const rawContent = String(args.content ?? "");
+    const content = repairCommonMojibake(rawContent);
     const dir = dirname(absPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(absPath, content, "utf8");
     const lineCount = content.split("\n").length;
-    return { success: true, path: absPath, bytes_written: Buffer.byteLength(content, "utf8"), lines: lineCount };
+    return {
+      success: true,
+      path: absPath,
+      bytes_written: Buffer.byteLength(content, "utf8"),
+      lines: lineCount,
+      repairedMojibake: content !== rawContent,
+    };
   },
 
   read_file(_runtime, args) {

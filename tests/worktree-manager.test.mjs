@@ -46,7 +46,7 @@ vi.mock("../workspace/worktree-setup.mjs", () => ({
 }));
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync, symlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 
 import {
   WorktreeManager,
@@ -55,6 +55,7 @@ import {
   resetWorktreeManager,
   sanitizeBranchName,
   gitEnv,
+  fixGitConfigCorruption,
   TAG,
   DEFAULT_BASE_DIR,
   DEFAULT_MANAGED_TASK_BASE_DIR,
@@ -951,6 +952,99 @@ describe("worktree-manager", () => {
     it("returns empty array when no stdout", () => {
       spawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "" });
       expect(mgr.listAllWorktrees()).toEqual([]);
+    });
+  });
+
+  describe("fixGitConfigCorruption", () => {
+    it("recreates missing HEAD and config metadata before git config repair", () => {
+      existsSync.mockImplementation((path) => {
+        const normalized = normalizePathForAssert(path);
+        if (normalized.endsWith("/.git")) return true;
+        if (normalized.endsWith("/.git/HEAD")) return false;
+        if (normalized.endsWith("/.git/config")) return false;
+        if (normalized.endsWith("/.git/refs/remotes/origin/HEAD")) return true;
+        if (normalized.endsWith("/package.json")) return true;
+        return false;
+      });
+      statSync.mockImplementation((path) => ({
+        mtimeMs: Date.now(),
+        isDirectory: () => normalizePathForAssert(path).endsWith("/.git"),
+      }));
+      readFileSync.mockImplementation((path) => {
+        const normalized = normalizePathForAssert(path);
+        if (normalized.endsWith("/.git/refs/remotes/origin/HEAD")) {
+          return "ref: refs/remotes/origin/main\n";
+        }
+        if (normalized.endsWith("/package.json")) {
+          return JSON.stringify({
+            repository: { url: "git+https://github.com/virtengine/bosun.git" },
+          });
+        }
+        return "{}";
+      });
+      spawnSync.mockImplementation((_cmd, args) => {
+        if (args?.[0] === "config" && args.includes("core.bare")) {
+          return { status: 0, stdout: "false\n", stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+
+      fixGitConfigCorruption(REPO_ROOT);
+
+      const calls = writeFileSync.mock.calls.map(([pathValue, content, encoding]) => ({
+        path: normalizePathForAssert(pathValue),
+        content,
+        encoding,
+      }));
+      expect(calls).toEqual(expect.arrayContaining([
+        {
+          path: expect.stringMatching(/\/\.git\/HEAD$/),
+          content: "ref: refs/heads/main\n",
+          encoding: "utf8",
+        },
+        {
+          path: expect.stringMatching(/\/\.git\/config$/),
+          content: expect.stringContaining("https://github.com/virtengine/bosun.git"),
+          encoding: "utf8",
+        },
+      ]));
+    });
+
+    it("rewrites invalid core.bare/core.worktree settings directly in config", () => {
+      existsSync.mockImplementation((path) => {
+        const normalized = normalizePathForAssert(path);
+        return normalized.endsWith("/.git") || normalized.endsWith("/.git/config");
+      });
+      statSync.mockImplementation((path) => ({
+        mtimeMs: Date.now(),
+        isDirectory: () => normalizePathForAssert(path).endsWith("/.git"),
+      }));
+      readFileSync.mockImplementation((path) => {
+        const normalized = normalizePathForAssert(path);
+        if (normalized.endsWith("/.git/config")) {
+          return "[core]\n\tbare = true\n\tworktree = /broken/path\n";
+        }
+        return "{}";
+      });
+      spawnSync.mockImplementation((_cmd, args) => {
+        if (args?.[0] === "config" && args.includes("core.bare")) {
+          return { status: 0, stdout: "false\n", stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+
+      fixGitConfigCorruption(REPO_ROOT);
+
+      const calls = writeFileSync.mock.calls.map(([pathValue, content, encoding]) => ({
+        path: normalizePathForAssert(pathValue),
+        content,
+        encoding,
+      }));
+      expect(calls).toContainEqual({
+        path: expect.stringMatching(/\/\.git\/config$/),
+        content: "[core]\n\tbare = false\n",
+        encoding: "utf8",
+      });
     });
   });
 

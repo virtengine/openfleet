@@ -129,6 +129,8 @@ function shouldRetryProviderQueryWithoutDirectory(err) {
 function isIgnorableModelDiscoveryError(err) {
   if (!err) return false;
 
+  if (isIgnorableModelDiscoveryCause(err?.cause)) return true;
+
   const status = Number(
     err?.status ?? err?.response?.status ?? err?.cause?.status ?? NaN,
   );
@@ -148,6 +150,35 @@ function isIgnorableModelDiscoveryError(err) {
     haystack.includes("bad request") ||
     haystack.includes("/models") ||
     haystack.includes("list models") ||
+    haystack.includes("invalid url") ||
+    haystack.includes("deployment") ||
+    haystack.includes("api version")
+  );
+}
+
+function isIgnorableModelDiscoveryCause(cause) {
+  if (!cause) return false;
+
+  const code = String(cause?.code || "").toUpperCase();
+  const statusCode = Number(cause?.statusCode ?? cause?.status ?? cause?.response?.status ?? cause?.response?.statusCode ?? cause?.response?.data?.status ?? cause?.response?.data?.statusCode ?? NaN);
+  if (statusCode === 400) return true;
+
+  const bodyText = String(
+    cause?.body
+    ?? cause?.responseBody
+    ?? cause?.response?.body
+    ?? cause?.response?.data?.error?.message
+    ?? cause?.response?.data?.message
+    ?? "",
+  ).toLowerCase();
+  const message = String(cause?.message || "").toLowerCase();
+  const haystack = `${code} ${message} ${bodyText}`;
+  return (
+    haystack.includes("failed to list models: 400") ||
+    haystack.includes(" 400") ||
+    haystack.includes("status code 400") ||
+    haystack.includes("bad request") ||
+    haystack.includes("/models") ||
     haystack.includes("invalid url") ||
     haystack.includes("deployment") ||
     haystack.includes("api version")
@@ -380,7 +411,11 @@ async function discoverViaSDK(existingClient = null) {
         return recoveredSnapshot;
       }
       if (providerError) {
-        console.warn(`[opencode-providers] SDK discovery failed: ${providerError.message}`);
+        if (hasIgnorableModelDiscoverySignal(providerError)) {
+          console.warn(`[opencode-providers] SDK discovery hit ignorable provider error: ${providerError.message}`);
+        } else {
+          console.warn(`[opencode-providers] SDK discovery failed: ${providerError.message}`);
+        }
       }
       return null;
     }
@@ -424,6 +459,7 @@ async function execOpencode(args, execOpts = {}) {
     timeout: 30_000,
     maxBuffer: 10 * 1024 * 1024,
     encoding: "utf-8",
+    windowsHide: process.platform === "win32",
     ...execOpts,
   };
   const escaped = args.map((a) => `"${a}"`).join(" ");
@@ -886,6 +922,7 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
 
 
 

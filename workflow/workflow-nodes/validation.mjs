@@ -334,6 +334,7 @@ registerNodeType("validation.tests", {
         timeout,
         encoding: "utf8",
         stdio: "pipe",
+        windowsHide: true,
         ...(useShell ? { shell: true } : {}),
       });
       ctx.log(node.id, "Tests passed");
@@ -374,6 +375,7 @@ registerNodeType("validation.build", {
         timeout,
         encoding: "utf8",
         stdio: "pipe",
+        windowsHide: true,
         ...(useShell ? { shell: true } : {}),
       });
       const hasWarnings = /warning/i.test(output || "");
