@@ -699,6 +699,11 @@ describe("ui-server mini app", () => {
     const workspaceDir = mkdtempSync(join(tmpdir(), "bosun-guardrails-workspace-"));
     const configDir = mkdtempSync(join(tmpdir(), "bosun-guardrails-config-"));
     const configPath = join(configDir, "bosun.config.json");
+    // Clear higher-priority workspace hints so BOSUN_HOME is used
+    const savedMonitorHome = process.env.CODEX_MONITOR_HOME;
+    const savedMonitorDir = process.env.CODEX_MONITOR_DIR;
+    delete process.env.CODEX_MONITOR_HOME;
+    delete process.env.CODEX_MONITOR_DIR;
     process.env.BOSUN_HOME = workspaceDir;
     process.env.BOSUN_CONFIG_PATH = configPath;
     delete process.env.BOSUN_FLOW_REQUIRE_REVIEW;
@@ -760,6 +765,9 @@ describe("ui-server mini app", () => {
 
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(configDir, { recursive: true, force: true });
+    // Restore higher-priority workspace hints
+    if (savedMonitorHome !== undefined) process.env.CODEX_MONITOR_HOME = savedMonitorHome;
+    if (savedMonitorDir !== undefined) process.env.CODEX_MONITOR_DIR = savedMonitorDir;
   });
 
   it("reflects runtime kanban backend switches via config update", async () => {

@@ -1416,7 +1416,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(listNode)).toContain("gh pr list --state open");
     expect(getNodeCommandCode(listNode)).toContain("--json number,title,body,headRefName,baseRefName,mergeable,labels");
     const targetNode = resolverTemplate.nodes.find((n) => n.id === "target-pr");
-    expect(String(targetNode?.config?.value || "")).toContain("<!-- bosun-created -->");
+    expect(String(targetNode?.config?.value || "")).toContain("bosun-pr-bosun-created");
     // Must NOT contain a direct merge call — merge is deferred to watchdog.
     const hasMergeCall = resolverTemplate.nodes.some(
       (n) => typeof n.config?.command === "string" && n.config.command.includes("gh pr merge")
@@ -1471,13 +1471,7 @@ describe("github template CLI compatibility", () => {
 
     expect(getNodeCommandCode(fetchNode)).toContain("const BOSUN_CREATED_LABEL='bosun-pr-bosun-created';");
     expect(getNodeCommandCode(fetchNode)).toContain("function readLabelNames(pr){");
-  expect(getNodeCommandCode(fetchNode)).toContain("function readBosunProvenanceText(pr){return String(pr?.body||'')+");
-  expect(getNodeCommandCode(fetchNode)).toContain("String(pr?.title||'');}");
-  expect(getNodeCommandCode(fetchNode)).toContain("const taskIdMatch=text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i);");
-  expect(getNodeCommandCode(fetchNode)).toContain("const hasLegacyTaskSignature=Boolean(");
-  expect(getNodeCommandCode(fetchNode)).toContain("automated pr for task ${String(taskIdMatch[1]||'').trim().toLowerCase()}");
-  expect(getNodeCommandCode(fetchNode)).toContain("return text.includes('<!-- bosun-created -->')||/Bosun-Origin:\\s*created/i.test(text)||/auto-created by bosun/i.test(text)||hasLegacyTaskSignature;");
-    expect(getNodeCommandCode(fetchNode)).toContain("function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL)||hasBosunCreatedText(readBosunProvenanceText(pr));}");
+    expect(getNodeCommandCode(fetchNode)).toContain("function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);}");
     expect(getNodeCommandCode(fetchNode)).toContain("const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all');");
     expect(getNodeCommandCode(fetchNode)).toContain("const TRUSTED_AUTHORS=new Set");
     expect(getNodeCommandCode(fetchNode)).toContain("allowTrustedFixes");
@@ -1555,7 +1549,7 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
+    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt");
     expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
   });
 

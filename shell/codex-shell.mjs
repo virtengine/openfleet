@@ -22,6 +22,7 @@ import { resolveRepoRoot } from "../config/repo-root.mjs";
 import {
   resolveCodexProfileRuntime,
   readCodexConfigRuntimeDefaults,
+  getProviderEndpointEnvKeys,
 } from "./codex-model-profiles.mjs";
 import { buildTaskWritableRoots } from "./codex-config.mjs";
 import {
@@ -161,6 +162,16 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
         delete env[otherEnvKey];
         if (!unsetEnvKeys.includes(otherEnvKey)) {
           unsetEnvKeys.push(otherEnvKey);
+        }
+        // Also remove endpoint/base URL env keys associated with the non-selected provider
+        const endpointKeys = getProviderEndpointEnvKeys(sectionName, "azure");
+        for (const epKey of endpointKeys) {
+          if (epKey in env) {
+            delete env[epKey];
+            if (!unsetEnvKeys.includes(epKey)) {
+              unsetEnvKeys.push(epKey);
+            }
+          }
         }
       }
     } catch {

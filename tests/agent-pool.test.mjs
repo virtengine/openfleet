@@ -1201,7 +1201,7 @@ describe("launchEphemeralThread", () => {
       'base_url = "https://example-sweden.openai.azure.com/openai/v1"',
       'env_key = "AZURE_OPENAI_API_KEY_SWEDEN"',
       '',
-    ].join("`n"), "utf8");
+    ].join("\n"), "utf8");
 
     const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
       sdk: "codex",

@@ -460,7 +460,7 @@ export class AgentSupervisor {
   assess(taskId, context = {}) {
     const state = this._ensureTaskState(taskId);
     const signals = this._gatherSignals(taskId, context);
-    const situation = this._diagnose(signals, context);
+    const situation = this._diagnose(signals, context) ?? SITUATION.HEALTHY;
     const healthScore = this._computeHealthScore(signals);
     const recoveryOverride = this._selectRecoveryIntervention(taskId, situation, context, state);
     const attemptIndex = Math.min(

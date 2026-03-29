@@ -96,7 +96,7 @@ function hasEnvValue(env, key) {
   return Boolean(key && clean(env?.[key]));
 }
 
-function getProviderEndpointEnvKeys(sectionName, providerKind) {
+export function getProviderEndpointEnvKeys(sectionName, providerKind) {
   const normalizedName = clean(sectionName).toUpperCase().replace(/[^A-Z0-9]+/g, "_");
   if (providerKind === "azure") {
     const keys = ["AZURE_OPENAI_ENDPOINT"];
