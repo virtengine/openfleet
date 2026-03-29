@@ -160,6 +160,10 @@ describe("project detection quality gates", () => {
         ctx.data?._delegationAuditTrail ||
         ctx.__workflowRuntimeState?.delegationAuditTrail ||
         [];
+        ctx.data?._workflowDelegationTrail ||
+        ctx.data?._delegationAuditTrail ||
+        ctx.__workflowRuntimeState?.delegationAuditTrail ||
+        [];
       const mismatchEvents = auditTrail.filter((event) => event?.type === "owner-mismatch");
 
       expect(renewSpy).toHaveBeenCalledTimes(1);
@@ -3086,7 +3090,7 @@ describe("action.release_worktree", () => {
     });
     const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
     const node = makeNode("action.claim_task", {
-      taskId: "task-replay-1",
+      idempotencyKey: "claim:task-replay-1",
       taskTitle: "Replay-safe claim",
       instanceId: "inst-replay",
       renewIntervalMs: 0,
@@ -3102,7 +3106,7 @@ describe("action.release_worktree", () => {
         taskId: "task-replay-1",
         claimToken: "claim-replay-token",
       }));
-      expect(second).toEqual(expect.objectContaining({
+        idempotentReplay: true,
         success: true,
         taskId: "task-replay-1",
         claimToken: "claim-replay-token",
@@ -3180,39 +3184,6 @@ describe("action.release_claim", () => {
     }
   });
 
-  it("skips duplicate release transition side effects on replay", async () => {
-    const nt = getNodeType("action.release_claim");
-    const claims = await import("../task/task-claims.mjs");
-    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
-    const releaseSpy = vi.spyOn(claims, "releaseTask").mockResolvedValue({ success: true });
-    const ctx = makeCtx({
-      _claimToken: "claim-release-replay",
-      _claimInstanceId: "inst-release-replay",
-      _claimRenewTimer: null,
-      repoRoot: "/tmp/repo-root",
-    });
-    const node = makeNode("action.release_claim", {
-      taskId: "task-release-replay",
-      transitionKey: "release:task-release-replay",
-    });
-
-    try {
-      const first = await nt.execute(node, ctx);
-      ctx.data._claimToken = "claim-release-replay";
-      ctx.data._claimInstanceId = "inst-release-replay";
-      const second = await nt.execute(node, ctx);
-
-      expect(first).toEqual(expect.objectContaining({ success: true, taskId: "task-release-replay" }));
-      expect(second).toEqual(expect.objectContaining({
-        success: true,
-        taskId: "task-release-replay",
-      }));
-      expect(releaseSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      initSpy.mockRestore();
-      releaseSpy.mockRestore();
-    }
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

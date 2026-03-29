@@ -465,7 +465,11 @@ function resolveGitDirForWorktree(worktreePath) {
       cwd: worktreePath,
       encoding: "utf8",
       timeout: 5000,
-      stdio: ["ignore", "pipe", "pipe"],
+          const existingAssignTransition =
+            getExistingDelegationTransition(ctx, assignTransitionKey) ||
+            (typeof ctx.getDelegationTransitionGuard === "function"
+              ? ctx.getDelegationTransitionGuard(assignTransitionKey)
+              : null);
     }).trim();
     const normalize = (value) =>
       resolve(String(value || ""))

@@ -205,8 +205,20 @@ function normalizeDelegationTrail(raw) {
     .filter((entry) => entry && typeof entry === "object")
     .map((entry) => ({ ...entry }))
     .sort((a, b) => {
-      const aTime = Number(a?.at || a?.timestamp || 0);
-      const bTime = Number(b?.at || b?.timestamp || 0);
+      const aRaw = a?.at || a?.timestamp || 0;
+      const bRaw = b?.at || b?.timestamp || 0;
+
+      let aTime = Number(aRaw);
+      if (!Number.isFinite(aTime) && typeof aRaw === "string") {
+        const parsed = Date.parse(aRaw);
+        aTime = Number.isFinite(parsed) ? parsed : 0;
+      }
+
+      let bTime = Number(bRaw);
+      if (!Number.isFinite(bTime) && typeof bRaw === "string") {
+        const parsed = Date.parse(bRaw);
+        bTime = Number.isFinite(parsed) ? parsed : 0;
+      }
       return aTime - bTime;
     });
 }
