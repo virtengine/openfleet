@@ -1,6 +1,6 @@
-﻿/* â”€â”€â”€ Layout: Header, Main Content, Bottom Nav, FAB â€” Mission Control â”€â”€â”€ */
+/* ─── Layout: Header, Main Content, Bottom Nav, FAB — Mission Control ─── */
 
-/* â”€â”€â”€ Header â”€â”€â”€ */
+/* ─── Header ─── */
 .app-header {
   display: flex;
   align-items: center;
@@ -131,7 +131,7 @@
   white-space: nowrap;
 }
 
-/* â”€â”€â”€ Connection Pill â”€â”€â”€ */
+/* ─── Connection Pill ─── */
 .connection-pill {
   display: inline-flex;
   align-items: center;
@@ -179,7 +179,7 @@
   100% { transform: scale(2); opacity: 0; }
 }
 
-/* â”€â”€â”€ Main Content â”€â”€â”€ */
+/* ─── Main Content ─── */
 .main-content {
   flex: 1;
   min-height: 0;
@@ -197,7 +197,7 @@
   z-index: 1;
 }
 
-/* Compact mode â€” activated when bottom-nav is visible (mobile).
+/* Compact mode — activated when bottom-nav is visible (mobile).
    Reduces side/top padding so content gets more vertical space.
    Bottom padding is kept via the base rule to clear the fixed nav. */
 .main-content.compact {
@@ -214,7 +214,7 @@
   z-index: 0;
 }
 
-/* â”€â”€â”€ Tab Panel â”€â”€â”€ */
+/* ─── Tab Panel ─── */
 .tab-panel {
   display: none;
   animation: fadeIn 0.25s ease;
@@ -242,7 +242,7 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* â”€â”€â”€ Bottom Navigation â€” Clean pill bar â”€â”€â”€ */
+/* ─── Bottom Navigation — Clean pill bar ─── */
 .bottom-nav {
   position: fixed;
   bottom: calc(8px + var(--safe-bottom));
@@ -346,7 +346,7 @@
   pointer-events: none;
 }
 
-/* â”€â”€â”€ More Menu (Modal Sheet) â”€â”€â”€ */
+/* ─── More Menu (Modal Sheet) ─── */
 .more-menu {
   display: flex;
   flex-direction: column;
@@ -409,7 +409,7 @@
   text-align: center;
 }
 
-/* â”€â”€â”€ FAB â”€â”€â”€ */
+/* ─── FAB ─── */
 .fab {
   position: fixed;
   right: calc(16px + var(--safe-right));
@@ -467,7 +467,7 @@
   box-shadow: var(--shadow-md);
 }
 
-/* â”€â”€â”€ Responsive â”€â”€â”€ */
+/* ─── Responsive ─── */
 @media (max-width: 380px) {
   .nav-label {
     font-size: 9px;
@@ -634,7 +634,7 @@
   }
 }
 
-/* â”€â”€â”€ Desktop Shell: Sidebar + Session Rail â”€â”€â”€ */
+/* ─── Desktop Shell: Sidebar + Session Rail ─── */
 .app-shell {
   /* flex:1 + min-height:0 constrains the shell to the bounded #app height.
      Avoids the min-height:100% trap where children grow past the viewport
@@ -944,10 +944,10 @@
   display: none;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- *  Tablet Breakpoint (768px â€“ 1399px)
+/* ═══════════════════════════════════════════════
+ *  Tablet Breakpoint (768px – 1399px)
  *  Sidebar & Inspector as slide-over drawers
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+ * ═══════════════════════════════════════════════ */
 
 /* --- Drawer overlay --- */
 .drawer-overlay {
@@ -1069,7 +1069,7 @@
   }
 }
 
-/* â”€â”€â”€ Sidebar styling â”€â”€â”€ */
+/* ─── Sidebar styling ─── */
   .sidebar-brand {
     display: flex;
     align-items: center;
@@ -1214,7 +1214,7 @@
   color: var(--text-hint);
 }
 
-/* â”€â”€â”€ Session rail tweaks â”€â”€â”€ */
+/* ─── Session rail tweaks ─── */
 .session-rail .session-list {
   background: transparent;
   border: none;
@@ -1264,7 +1264,7 @@
   background: var(--bg-secondary);
 }
 
-/* â”€â”€â”€ Inspector styling â”€â”€â”€ */
+/* ─── Inspector styling ─── */
 .inspector-section {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -1374,6 +1374,92 @@
   flex-direction: column;
   gap: 6px;
   background: var(--bg-secondary);
+}
+
+.inspector-ctx-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.inspector-ctx-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.inspector-ctx-pct-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(59, 130, 246, 0.1);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.inspector-ctx-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.inspector-ctx-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  min-width: 2px;
+}
+
+.inspector-ctx-summary {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.inspector-ctx-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.inspector-ctx-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-hint);
+  margin-bottom: 1px;
+}
+
+.inspector-ctx-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.inspector-ctx-row-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inspector-ctx-tokens {
+  color: var(--text-hint);
+  font-size: 10px;
+}
+
+.inspector-ctx-pct {
+  color: var(--text-bright);
+  font-weight: 600;
+  min-width: 32px;
+  text-align: right;
 }
 
 .inspector-pill-row {
@@ -1490,7 +1576,7 @@
   min-height: 0;
 }
 
-/* Prevent chat-input-area from collapsing on mobile â€” it must stay visible
+/* Prevent chat-input-area from collapsing on mobile — it must stay visible
    above the bottom-nav, even when vertical space is tight. */
 .app-shell[data-tab="chat"] .main-content .chat-input-area {
   flex: 0 0 auto;
@@ -1649,13 +1735,13 @@ body.is-resizing * {
   }
 }
 
-/* â”€â”€ MUI nav icon sizing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+/* ── MUI nav icon sizing ─────────────────────────────────────────────────
    The ICONS map returns bare <svg viewBox="0 0 24 24"> with no width/height.
    Primary fix is in the MUI theme (mui.js styleOverrides); these rules are
    fallback for any edge cases where theme styles aren't injected yet.
- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+ ──────────────────────────────────────────────────────────────────────── */
 
-/* Vertical sidebar Tabs â€” fallback */
+/* Vertical sidebar Tabs — fallback */
 .sidebar .MuiTab-root {
   flex-direction: row !important;
   gap: 8px !important;
@@ -1686,16 +1772,16 @@ body.is-resizing * {
   height: 100% !important;
 }
 
-/* Bottom Navigation â€” fallback */
+/* Bottom Navigation — fallback */
 .MuiBottomNavigationAction-root svg {
   width: 24px !important;
   height: 24px !important;
   flex-shrink: 0 !important;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    Sidebar: icon-only collapsed mode (VS Code style)
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+═══════════════════════════════════════════════════════ */
 
 .sidebar {
   transition: width 0.22s cubic-bezier(0.32, 0.72, 0, 1),
@@ -1738,12 +1824,12 @@ body.is-resizing * {
     display: flex;
   }
 
-  /* â”€â”€ Override --sidebar-width CSS var when sidebar is collapsed â”€â”€ */
+  /* ── Override --sidebar-width CSS var when sidebar is collapsed ── */
   .app-shell[data-sidebar-collapsed="true"] {
     --sidebar-width: 54px;
   }
 
-  /* â”€â”€ Icon-only sidebar styles â”€â”€ */
+  /* ── Icon-only sidebar styles ── */
   .sidebar.sidebar-icon-only,
   .app-shell[data-sidebar-collapsed="true"] > .sidebar {
     padding: 12px 8px;
@@ -1842,12 +1928,12 @@ body.is-resizing * {
   }
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* ═══════════════════════════════════════════════════════
    SessionRail: icon-only collapsed mode
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+═══════════════════════════════════════════════════════ */
 
 @media (min-width: 1400px) {
-  /* â”€â”€ Override --rail-width when rail is collapsed â”€â”€ */
+  /* ── Override --rail-width when rail is collapsed ── */
   .app-shell[data-rail-collapsed="true"] {
     --rail-width: 54px;
   }
@@ -1856,7 +1942,7 @@ body.is-resizing * {
     transition: width 0.22s cubic-bezier(0.32, 0.72, 0, 1);
   }
 
-  /* â”€â”€ Collapsed icon strip â”€â”€ */
+  /* ── Collapsed icon strip ── */
   .session-rail.session-rail--collapsed {
     padding: 8px 6px;
     align-items: center;
@@ -1920,7 +2006,7 @@ body.is-resizing * {
     background: var(--bg-hover, rgba(148,163,184,0.12));
   }
 
-  /* â”€â”€ Dot strip â”€â”€ */
+  /* ── Dot strip ── */
   .rail-dots {
     display: flex;
     flex-direction: column;
@@ -1975,13 +2061,13 @@ body.is-resizing * {
     gap: 4px;
   }
 
-  /* â”€â”€ Collapsed full-rail: hide normal list â”€â”€ */
+  /* ── Collapsed full-rail: hide normal list ── */
   .session-rail.session-rail--collapsed > :not(.rail-header):not(.rail-dots):not(.rail-icon-footer) {
     display: none !important;
   }
 }
 
-/* â”€â”€â”€ Reduced Motion â”€â”€â”€ */
+/* ─── Reduced Motion ─── */
 /* Respect the user's OS-level preference to reduce motion. */
 @media (prefers-reduced-motion: reduce) {
   /* Disable decorative entrance/exit animations */

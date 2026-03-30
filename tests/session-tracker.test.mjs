@@ -1,3 +1,5 @@
+// CLAUDE:SUMMARY — session-tracker tests
+// Covers session lifecycle, timeline, persistence, and summary payload regressions.
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,11 +48,24 @@ describe("session-tracker", () => {
 
     it("ends a session with status", () => {
       tracker.startSession("task-1", "Test Task");
+      tracker.recordEvent("task-1", {
+        role: "assistant",
+        content: "Completed work",
+        timestamp: "2026-03-27T09:00:00.000Z",
+      });
       tracker.endSession("task-1", "completed");
 
       const session = tracker.getSession("task-1");
       expect(session.status).toBe("completed");
       expect(session.endedAt).toBeGreaterThan(0);
+    });
+
+    it("downgrades empty completed sessions to no_output", () => {
+      tracker.startSession("task-empty", "Empty Task");
+      tracker.endSession("task-empty", "completed");
+
+      const session = tracker.getSession("task-empty");
+      expect(session?.status).toBe("no_output");
     });
 
     it("resets turnCount on new session start while preserving final turn count on completion", () => {
@@ -580,6 +595,18 @@ describe("session-tracker", () => {
         durationMs: 4000,
       }));
       expect(tracker.listAllSessions().find((entry) => entry.id === "task-usage")?.turns?.[0]?.durationMs).toBe(4000);
+      expect(tracker.listAllSessions().find((entry) => entry.id === "task-usage")).toEqual(
+        expect.objectContaining({
+          tokenCount: 165,
+          inputTokens: 120,
+          outputTokens: 45,
+          tokenUsage: expect.objectContaining({
+            inputTokens: 120,
+            outputTokens: 45,
+            totalTokens: 165,
+          }),
+        }),
+      );
     });
 
     it("preserves turn timeline history after session completion", () => {
@@ -654,6 +681,11 @@ describe("session-tracker", () => {
     it("tracks stats", () => {
       tracker.startSession("task-1", "Test 1");
       tracker.startSession("task-2", "Test 2");
+      tracker.recordEvent("task-1", {
+        role: "assistant",
+        content: "Finished",
+        timestamp: "2026-03-27T12:30:00.000Z",
+      });
       tracker.endSession("task-1", "completed");
 
       const stats = tracker.getStats();
@@ -863,6 +895,43 @@ describe("session-tracker", () => {
       }
     }, 15000);
 
+    it("can skip persisted archive scans for live-only snapshots", () => {
+      const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
+      try {
+        for (let index = 0; index < 101; index += 1) {
+          const id = `hist-live-${String(index).padStart(3, "0")}`;
+          const timestamp = new Date(Date.now() + index * 1000).toISOString();
+          writeFileSync(join(persistDir, `${id}.json`), JSON.stringify({
+            id,
+            taskId: id,
+            taskTitle: `Historic Session ${index}`,
+            type: "primary",
+            status: "completed",
+            createdAt: timestamp,
+            lastActiveAt: timestamp,
+            startedAt: Date.parse(timestamp),
+            endedAt: Date.parse(timestamp),
+            messages: [{ role: "assistant", content: `historic ${index}`, timestamp }],
+            metadata: { workspaceId: "ws-main" },
+          }, null, 2));
+        }
+
+        const liveTracker = createSessionTracker({ maxMessages: 5, persistDir });
+        liveTracker.createSession({ id: "live-001", type: "primary" });
+        const liveOnly = liveTracker.listAllSessions({ includePersisted: false });
+        const withPersisted = liveTracker.listAllSessions();
+
+        expect(liveOnly.length).toBeLessThan(withPersisted.length);
+        expect(withPersisted).toHaveLength(102);
+        expect(withPersisted.map((entry) => entry.id)).toContain("hist-live-000");
+        expect(liveOnly.map((entry) => entry.id)).not.toContain("hist-live-000");
+
+        liveTracker.destroy();
+      } finally {
+        rmSync(persistDir, { recursive: true, force: true });
+      }
+    });
+
     it("marks failed or long runs as resumable and trims short summaries", () => {
       tracker = createSessionTracker({ maxMessages: 50, persistDir: null });
       tracker.createSession({ id: "chat-resume", type: "primary" });
@@ -911,4 +980,3 @@ describe("session-tracker", () => {
     });
   });
 });
-

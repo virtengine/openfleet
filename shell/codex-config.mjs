@@ -1095,8 +1095,6 @@ const COMMON_MCP_SERVER_DEFS = [
     lines: [
       "[mcp_servers.microsoft-docs]",
       'url = "https://learn.microsoft.com/api/mcp"',
-      '# NOTE: Tool list intentionally limited to avoid Azure Responses API schema-size/parser issues.',
-      'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
     ],
     isPresent: hasMicrosoftDocsMcp,
   },
@@ -1160,6 +1158,30 @@ function ensureMcpStartupTimeout(toml, name, timeoutSec = 120) {
     toml: toml.substring(0, afterHeader) + section + toml.substring(sectionEnd),
     changed: true,
   };
+}
+
+function stripUnsupportedMicrosoftDocsToolsConfig(toml) {
+  let nextToml = String(toml || "");
+  for (const name of ["microsoft-docs", "microsoft_docs"]) {
+    const header = `[mcp_servers.${name}]`;
+    const headerIdx = nextToml.indexOf(header);
+    if (headerIdx === -1) continue;
+
+    const afterHeader = headerIdx + header.length;
+    const nextSection = nextToml.indexOf("\n[", afterHeader);
+    const sectionEnd = nextSection === -1 ? nextToml.length : nextSection;
+    const section = nextToml.substring(afterHeader, sectionEnd);
+    const cleaned = section.replace(
+      /^\s*tools\s*=\s*\[[^\n]*\]\s*(?:\r?\n)?/gm,
+      "",
+    );
+
+    if (cleaned !== section) {
+      nextToml =
+        nextToml.substring(0, afterHeader) + cleaned + nextToml.substring(sectionEnd);
+    }
+  }
+  return nextToml;
 }
 
 function stripDeprecatedSandboxPermissions(toml) {
@@ -1603,7 +1625,9 @@ function initializeCodexConfigState(result) {
   }
   return {
     originalToml,
-    toml: stripDeprecatedSandboxPermissions(originalToml),
+    toml: stripUnsupportedMicrosoftDocsToolsConfig(
+      stripDeprecatedSandboxPermissions(originalToml),
+    ),
   };
 }
 

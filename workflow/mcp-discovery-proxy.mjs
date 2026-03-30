@@ -173,6 +173,7 @@ function createStdioRequest(server, method, params, timeoutMs = DEFAULT_TIMEOUT_
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(server.command, server.args || [], {
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
       env: {
         ...process.env,
         ...(server.env || {}),

@@ -393,6 +393,38 @@ describe("action.build_task_prompt", () => {
     expect(userPrompt).toContain("replan_subgraph");
     expect(userPrompt).toContain("DAG Revisions");
   });
+
+  it("includes a task reference section when taskUrl is provided", async () => {
+    const handler = getNodeType("action.build_task_prompt");
+    const repoRoot = makeTmpDir();
+    const node = {
+      id: "prompt-task-url",
+      type: "action.build_task_prompt",
+      config: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        taskDescription: "{{taskDescription}}",
+        taskUrl: "{{taskUrl}}",
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      },
+    };
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-URL",
+      taskTitle: "Track prompt reference",
+      taskDescription: "Follow the linked task.",
+      taskUrl: "https://github.com/acme/widgets/issues/42",
+      repoRoot,
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-url"),
+    });
+
+    const result = await handler.execute(node, ctx);
+    const userPrompt = result.userPrompt || result.prompt;
+
+    expect(userPrompt).toContain("## Task Reference");
+    expect(userPrompt).toContain("https://github.com/acme/widgets/issues/42");
+  });
 });
 
 describe("action.continue_session", () => {

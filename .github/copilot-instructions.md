@@ -20,7 +20,7 @@ Bootstrap:
 Fast local validation:
 
 - `npm run syntax:check`  
-	Verified success in ~2s. This uses `tools/syntax-check.mjs` and rejects browser-served modules with top-level `await`.
+	Verified success in ~2s. This uses `tools/syntax-check.mjs`, rejects browser-served modules with top-level `await`, and validates local import/export bindings for browser `.js` and `.mjs` files under `ui/` and `site/ui/`.
 - `npm run prompt:lint`  
 	Verified success in <1s. Run this whenever you touch prompts, hooks, agent instructions, or `.bosun/agents` content.
 - `node cli.mjs --help`  
@@ -64,6 +64,7 @@ Run commands:
 - Local pre-push always runs syntax, prepublish check, and packed CLI smoke, then chooses targeted tests or the full suite based on changed files.
 - If you add a new module or test file, update `ADJACENCY_MAP` in `.githooks/pre-push` so smart pre-push routing can still find the right tests.
 - Site deploy uses Node 20 and resolves the local `site/ui` symlink into a real copy before publishing; remember that GitHub Pages will not follow symlinks.
+- Hosted demo fixes often require touching both `ui/` and `site/ui/`. If a site tab imports a helper from `site/ui/tabs/`, make sure the file actually exists there rather than only in `ui/tabs/`.
 
 ## High-Signal Layout
 

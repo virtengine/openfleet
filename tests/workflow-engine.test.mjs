@@ -41,6 +41,7 @@ function makeSimpleWorkflow(nodes, edges, opts = {}) {
     nodes,
     edges,
     variables: opts.variables || {},
+    metadata: opts.metadata,
   };
 }
 
@@ -915,7 +916,11 @@ describe("WorkflowEngine - run history details", () => {
     );
 
     engine.save(wf);
-    await engine.execute(wf.id, {});
+    await engine.execute(wf.id, {
+      taskId: "task-history-1",
+      taskTitle: "History Detail Task",
+      sessionId: "session-history-1",
+    });
 
     const history = engine.getRunHistory(wf.id, 5);
     expect(history.length).toBeGreaterThan(0);
@@ -929,6 +934,12 @@ describe("WorkflowEngine - run history details", () => {
     expect(typeof latest.activeNodeCount).toBe("number");
     expect(latest.isStuck).toBe(false);
     expect(latest.stuckMs).toBe(0);
+    expect(latest.taskId).toBe("task-history-1");
+    expect(latest.taskIds).toContain("task-history-1");
+    expect(latest.taskTitle).toBe("History Detail Task");
+    expect(latest.sessionId).toBe("session-history-1");
+    expect(latest.primarySessionId).toBe("session-history-1");
+    expect(latest.sessionIds).toContain("session-history-1");
 
     const run = engine.getRunDetail(latest.runId);
     expect(run).toBeTruthy();
@@ -978,6 +989,79 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.issueAdvisor?.issueFindings?.[0]?.source).toBe("validation");
     expect(Array.isArray(detail?.detail?.dagState?.edges)).toBe(true);
     expect(detail?.detail?.dagState?.edges?.[0]?.source).toBe("trigger");
+  });
+
+  it("hydrates delegation audit trail and guard maps into run detail and history", async () => {
+    const engine = new WorkflowEngine({ persistRuns: true, runRetention: 20 });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "start", type: "trigger.manual", position: { x: 0, y: 0 } },
+        { id: "log", type: "notify.log", position: { x: 180, y: 0 }, config: { message: "delegation detail" } },
+      ],
+      [{ source: "start", target: "log" }],
+      { name: "Delegation Detail Workflow" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {
+      taskId: "task-delegation-history",
+      _delegationAuditTrail: [
+        {
+          type: "assign",
+          eventType: "assign",
+          taskId: "task-delegation-history",
+          transitionKey: "assign:task-delegation-history:owner-a",
+          at: 10,
+          timestamp: new Date(10).toISOString(),
+        },
+        {
+          type: "handoff-complete",
+          eventType: "handoff-complete",
+          taskId: "task-delegation-history",
+          transitionKey: "handoff-complete:task-delegation-history:owner-b",
+          at: 20,
+          timestamp: new Date(20).toISOString(),
+        },
+      ],
+      _delegationTransitionGuards: {
+        "assign:task-delegation-history:owner-a": {
+          transitionKey: "assign:task-delegation-history:owner-a",
+          status: "completed",
+          claimToken: "claim-history-1",
+        },
+      },
+    });
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail.delegationAuditTrail).toHaveLength(2);
+    expect(detail.delegationTrail).toHaveLength(2);
+    expect(detail.latestDelegationEvent?.type).toBe("handoff-complete");
+    expect(detail.delegationTransitionGuards["assign:task-delegation-history:owner-a"]).toEqual(
+      expect.objectContaining({
+        status: "completed",
+        claimToken: "claim-history-1",
+      }),
+    );
+    expect(detail.detail.delegationAuditTrail).toHaveLength(2);
+    expect(detail.detail.delegationTrail).toHaveLength(2);
+    expect(detail.detail.data._workflowDelegationTrail).toHaveLength(2);
+    expect(detail.detail.data._delegationTrail).toHaveLength(2);
+    expect(detail.detail.data._delegationTransitionGuards).toEqual(
+      expect.objectContaining({
+        "assign:task-delegation-history:owner-a": expect.objectContaining({
+          status: "completed",
+          claimToken: "claim-history-1",
+        }),
+      }),
+    );
+
+    const summary = engine.getRunHistory(wf.id, 5)[0];
+    expect(summary.delegationAuditTrail).toHaveLength(2);
+    expect(summary.delegationTrail).toHaveLength(2);
+    expect(summary.latestDelegationEvent?.type).toBe("handoff-complete");
+    expect(summary.delegationTransitionGuards["assign:task-delegation-history:owner-a"]).toEqual(
+      expect.objectContaining({ status: "completed" }),
+    );
   });
 
   it("threads validation diagnostics into run detail and history summaries", async () => {
@@ -1167,6 +1251,27 @@ describe("WorkflowEngine - run history details", () => {
     expect(page.hasMore).toBe(true);
     expect(page.nextOffset).toBe(2);
   });
+
+  it("paginates run history from summaries without rereading each run detail", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Summary Only History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const detailSpy = vi.spyOn(engine, "getRunDetail");
+    const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+
+    expect(page.count).toBe(1);
+    expect(page.runs).toHaveLength(1);
+    expect(detailSpy).not.toHaveBeenCalled();
+  });
+
   it("paginates global run history beyond the initial page size", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1222,7 +1327,11 @@ describe("WorkflowEngine - run history details", () => {
       );
 
       engine.save(wf);
-      const runPromise = engine.execute(wf.id, {});
+      const runPromise = engine.execute(wf.id, {
+        taskId: "task-active-1",
+        taskTitle: "Active Run Task",
+        sessionId: "session-active-1",
+      });
       // Wait for the long-running node to actually start, then wait beyond
       // the stuck threshold (20ms) so isStuck is true when we query history
       await nodeStarted;
@@ -1237,6 +1346,31 @@ describe("WorkflowEngine - run history details", () => {
       expect(typeof active.duration).toBe("number");
       expect(active.isStuck).toBe(true);
       expect(active.stuckMs).toBeGreaterThanOrEqual(20);
+      expect(active.taskId).toBe("task-active-1");
+      expect(active.taskIds).toContain("task-active-1");
+      expect(active.taskTitle).toBe("Active Run Task");
+      expect(active.primarySessionId).toBe("session-active-1");
+
+      let activeRunEntry = null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const activeRunsPath = join(tmpDir, "runs", "_active-runs.json");
+        if (existsSync(activeRunsPath)) {
+          const entries = JSON.parse(readFileSync(activeRunsPath, "utf8"));
+          activeRunEntry = entries.find((entry) => entry.runId === active.runId) || null;
+          if (activeRunEntry) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(activeRunEntry).toMatchObject({
+        runId: active.runId,
+        workflowId: wf.id,
+        workflowName: "Active Run Visibility Workflow",
+        taskId: "task-active-1",
+        taskTitle: "Active Run Task",
+        sessionId: "session-active-1",
+      });
+      expect(activeRunEntry?.taskIds).toContain("task-active-1");
+      expect(activeRunEntry?.sessionIds).toContain("session-active-1");
 
       const detail = engine.getRunDetail(active.runId);
       expect(detail).toBeTruthy();
@@ -1274,6 +1408,34 @@ describe("WorkflowEngine - run history details", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(existsSync(detailPath)).toBe(false);
+  });
+
+  it("sanitizes live timeout handles before checkpoint persistence", async () => {
+    const runId = "run-timeout-checkpoint";
+    const timer = setTimeout(() => {}, 60_000);
+    if (typeof timer?.unref === "function") timer.unref();
+
+    const ctx = new WorkflowContext({
+      _workflowId: "wf-checkpoint-timeout",
+      _workflowName: "Checkpoint Timeout",
+      timeoutHandle: timer,
+    });
+    ctx.id = runId;
+
+    engine._activeRuns.set(runId, {
+      ctx,
+      workflowId: "wf-checkpoint-timeout",
+      workflowName: "Checkpoint Timeout",
+      status: WorkflowStatus.RUNNING,
+    });
+
+    try {
+      const detail = engine._serializeRunContext(ctx, true);
+      expect(detail.data.timeoutHandle).toBe("[Timeout]");
+    } finally {
+      clearTimeout(timer);
+      engine._activeRuns.delete(runId);
+    }
   });
 
   it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
@@ -2427,6 +2589,50 @@ describe("action.execute_workflow", () => {
     }
   });
 
+  it("hydrates delegation audit trail from persisted run detail into history and detail views", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "delegation-audit-hydration", name: "Delegation Audit Hydration" },
+    );
+    engine.save(wf);
+
+    const runId = "delegation-audit-run-1";
+    const startedAt = Date.now() - 5000;
+    const endedAt = startedAt + 1000;
+    const detailPath = join(engine.runsDir, `${runId}.json`);
+    const detail = {
+      startedAt,
+      endedAt,
+      duration: endedAt - startedAt,
+      status: "completed",
+      data: {
+        _workflowId: wf.id,
+        _workflowName: wf.name,
+        _delegationAuditTrail: [
+          { type: "assign", idempotencyKey: "k1", taskId: "task-1", at: startedAt + 10 },
+          { type: "claim-renew", idempotencyKey: "k2", taskId: "task-1", at: startedAt + 20 },
+          { type: "owner-mismatch", idempotencyKey: "k3", taskId: "task-1", at: startedAt + 30 },
+          { type: "handoff-complete", idempotencyKey: "k4", taskId: "task-1", at: startedAt + 40 },
+        ],
+      },
+      logs: [],
+      errors: [],
+      nodeStatuses: {},
+      nodeStatusEvents: [],
+      dagState: {},
+    };
+    writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+
+    const historyEntry = engine.getRunHistory(wf.id, 10).find((entry) => entry.runId === runId);
+    expect(historyEntry).toBeTruthy();
+    expect(historyEntry.delegationAuditTrail).toEqual(detail.data._delegationAuditTrail);
+
+    const runDetail = engine.getRunDetail(runId);
+    expect(runDetail).toBeTruthy();
+    expect(runDetail.delegationAuditTrail).toEqual(detail.data._delegationAuditTrail);
+    expect(runDetail.detail?.data?._delegationAuditTrail).toEqual(detail.data._delegationAuditTrail);
+  });
   it("dispatch mode accepts synchronous engine return values", async () => {
     const handler = getNodeType("action.execute_workflow");
     expect(handler).toBeDefined();
@@ -3376,10 +3582,12 @@ describe("WorkflowEngine trigger evaluation", () => {
 
 describe("Session chaining - action.run_agent", () => {
   beforeEach(() => {
+    makeTmpEngine();
     resetSessionTracker({ persistDir: null });
   });
 
   afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
     resetSessionTracker({ persistDir: null });
   });
   it("propagates threadId to context and streams agent events into run logs", async () => {
@@ -3435,6 +3643,74 @@ describe("Session chaining - action.run_agent", () => {
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).toMatch(/Tool call: apply_patch/);
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
+  });
+
+  it("marks action.run_agent as waiting until a shared agent slot is acquired", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const originalSetNodeStatus = ctx.setNodeStatus.bind(ctx);
+    ctx.setNodeStatus = vi.fn((nodeId, status) => originalSetNodeStatus(nodeId, status));
+    const launchEphemeralThread = vi.fn().mockImplementation(async (_prompt, _cwd, _timeoutMs, extra) => {
+      extra?.onSlotQueued?.({
+        ownerKey: "slot-owner",
+        activeSlots: 1,
+        queuedSlots: 1,
+        queueDepth: 1,
+        maxParallel: 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      extra?.onSlotAcquired?.({
+        slotId: "agent-slot-test",
+        ownerKey: "slot-owner",
+        activeSlots: 1,
+        queuedSlots: 0,
+        maxParallel: 1,
+        waitedMs: 10,
+      });
+      return {
+        success: true,
+        output: "done",
+        sdk: "codex",
+        items: [],
+        threadId: "thread-slot-test",
+      };
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "a-slot-wait",
+      type: "action.run_agent",
+      config: { prompt: "Test prompt", autoRecover: false, failOnError: true },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({
+        slotOwnerKey: expect.stringContaining(":a-slot-wait"),
+        onSlotQueued: expect.any(Function),
+        onSlotAcquired: expect.any(Function),
+      }),
+    );
+    expect(ctx.setNodeStatus.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["a-slot-wait", "waiting"],
+        ["a-slot-wait", "running"],
+      ]),
+    );
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).toMatch(/waiting for shared agent slot/i);
+    expect(runLogText).toMatch(/acquired shared agent slot/i);
   });
 
   it("ignores unresolved model placeholders when launching an agent", async () => {
@@ -4109,6 +4385,7 @@ describe("Session chaining - action.run_agent", () => {
         id: "TASK-DELEGATE-1",
         title: "Add API endpoint",
         tags: ["backend", "api"],
+        branchName: "feat/api-endpoint",
       },
     });
 
@@ -4253,6 +4530,153 @@ describe("Session chaining - action.run_agent", () => {
     const messages = Array.isArray(session.messages) ? session.messages : [];
     expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
     expect(messages.some((msg) => String(msg?.content || "").toLowerCase().includes("failed"))).toBe(true);
+  });
+
+  it("persists ordered delegation audit trail in run detail and history", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const workflowDir = mkdtempSync(join(tmpdir(), "wf-delegation-audit-defs-"));
+    const runsDir = mkdtempSync(join(tmpdir(), "wf-delegation-audit-runs-"));
+    const auditEngine = new WorkflowEngine({ workflowDir, runsDir, detectInterruptedRuns: false });
+
+    try {
+      const delegatedWorkflow = {
+        id: "wf-audit-child",
+        name: "Audit Child",
+        enabled: true,
+        metadata: { replaces: { module: "primary-agent.mjs" } },
+        nodes: [
+          { id: "trigger", type: "trigger.task_assigned", config: { taskPattern: "audit" } },
+          { id: "end", type: "flow.end", config: { status: "completed", message: "done" } },
+        ],
+        edges: [],
+      };
+      auditEngine.save(delegatedWorkflow);
+
+      const ctx = new WorkflowContext({
+        taskId: "TASK-DELEGATE-AUDIT",
+        taskTitle: "Audit delegation history",
+        task: { id: "TASK-DELEGATE-AUDIT", title: "Audit delegation history" },
+        _workflowId: "wf-parent-audit",
+        _workflowName: "Parent Audit Workflow",
+      });
+
+      const node = {
+        id: "delegated-agent-audit",
+        type: "action.run_agent",
+        config: { prompt: "Delegate for audit" },
+      };
+
+      const result = await handler.execute(node, ctx, auditEngine);
+      expect(result).toMatchObject({
+        success: true,
+        delegated: true,
+        subWorkflowId: "wf-audit-child",
+      });
+
+      auditEngine._persistRun(ctx.id, "wf-parent-audit", ctx);
+      const detail = auditEngine.getRunDetail(ctx.id);
+      expect(Array.isArray(detail?.delegationTrail)).toBe(true);
+
+      const eventTypes = detail.delegationTrail.map((entry) => entry?.eventType);
+      expect(eventTypes).toEqual(["assign", "handoff-complete"]);
+      expect(detail.delegationTrail[0]).toEqual(expect.objectContaining({
+        taskId: "TASK-DELEGATE-AUDIT",
+        workflowNodeId: "delegated-agent-audit",
+        delegatedWorkflowId: "wf-audit-child",
+      }));
+
+      const historyEntry = auditEngine.getRunHistory("wf-parent-audit", 1)[0];
+      expect(Array.isArray(historyEntry?.delegationTrail)).toBe(true);
+      expect(historyEntry.delegationTrail.map((entry) => entry?.eventType)).toEqual(["assign", "handoff-complete"]);
+    } finally {
+      try { rmSync(workflowDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(runsDir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+
+  it("exposes delegation audit trail in run history and run detail", async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "workflow-delegation-history-"));
+    const engine = new WorkflowEngine({
+      workflowsDir: join(tmpRoot, "workflows"),
+      runsDir: join(tmpRoot, "runs"),
+    });
+
+    const workflow = {
+      id: "wf-delegation-history",
+      name: "Delegation History Workflow",
+      trigger: "manual",
+      nodes: [
+        { id: "start", type: "trigger.manual", config: {} },
+      ],
+      edges: [],
+    };
+
+    engine.save(workflow);
+    const ctx = new WorkflowContext({
+      _workflowId: workflow.id,
+      _workflowName: workflow.name,
+    });
+    ctx.recordDelegationEvent({
+      type: "assign",
+      nodeId: "delegated-agent",
+      taskId: "TASK-HISTORY-1",
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      idempotencyKey: "assign:TASK-HISTORY-1",
+    });
+    ctx.recordDelegationEvent({
+      type: "handoff-complete",
+      nodeId: "delegated-agent",
+      taskId: "TASK-HISTORY-1",
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      idempotencyKey: "handoff:TASK-HISTORY-1",
+    });
+
+    engine._persistRun(ctx.id, workflow.id, ctx);
+    const historyEntry = engine.getRunHistory(workflow.id, 10)[0];
+    const detail = engine.getRunDetail(ctx.id);
+
+    expect(historyEntry.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
+    expect(detail.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
+    expect(detail.detail.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
+  });
+
+  it("records assign and handoff delegation events for delegated agent runs", async () => {
+    const handler = getNodeType("action.run_agent");
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      threadId: "thread-delegation-1",
+      output: "ok",
+    });
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATION-AUDIT",
+      taskTitle: "Delegation audit",
+      task: { id: "TASK-DELEGATION-AUDIT", title: "Delegation audit" },
+    });
+    const engine = {
+      services: { agentPool: { launchEphemeralThread } },
+      workflows: new Map(),
+    };
+    const node = {
+      id: "delegate-agent",
+      type: "action.run_agent",
+      config: { prompt: "do the thing", sdk: "codex", model: "gpt-5" },
+    };
+
+    const result = await handler.execute(node, ctx, engine);
+    const trail = ctx.getDelegationAuditTrail();
+
+    expect(result.success).toBe(true);
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(trail.map((entry) => entry.type)).toEqual(expect.arrayContaining(["assign", "handoff-complete"]));
+    expect(trail.find((entry) => entry.type === "handoff-complete")).toEqual(expect.objectContaining({
+      taskId: "TASK-DELEGATION-AUDIT",
+      threadId: "thread-delegation-1",
+    }));
   });
   it("records delegated runs in session tracker for task visibility", async () => {
     const handler = getNodeType("action.run_agent");
@@ -4511,6 +4935,117 @@ describe("Session chaining - action.run_agent", () => {
     expect(session.id).toBe("TASK-DELEGATE-REUSE");
     expect(session.status).toBe("completed");
     expect(session.metadata.workspaceDir).toBe("/tmp/test");
+  });
+
+  it("records delegation audit trail in run detail and history summaries", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "delegate", type: "action.run_agent", label: "Delegate", config: { prompt: "Handle task" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "delegate" }],
+      { id: "delegation-audit-workflow", name: "Delegation Audit Workflow" },
+    );
+
+    const delegated = makeSimpleWorkflow(
+      [
+        {
+          id: "task-trigger",
+          type: "trigger.task_assigned",
+          label: "Task Assigned",
+          config: { taskPattern: "api", filter: "task.tags?.includes('backend')" },
+        },
+        { id: "done", type: "notify.log", label: "Done", config: { message: "delegated workflow done" } },
+      ],
+      [{ id: "e1", source: "task-trigger", target: "done" }],
+      {
+        id: "delegated-audit-child",
+        name: "Delegated Audit Child",
+        metadata: { replaces: { module: "primary-agent.mjs" } },
+      },
+    );
+
+    engine.save(wf);
+    engine.save(delegated);
+
+    const ctx = await engine.execute(wf.id, {
+      taskId: "TASK-AUDIT-1",
+      taskTitle: "API delegation audit",
+      agentType: "backend",
+      task: { id: "TASK-AUDIT-1", title: "API delegation audit", tags: ["backend", "api"] },
+    });
+
+    expect(ctx.errors).toEqual([]);
+    const detail = engine.getRunDetail(ctx.id);
+    const persistedTrail =
+      detail?.detail?.data?._delegationAuditTrail ??
+      detail?.detail?.delegationAuditTrail ??
+      detail?.delegationAuditTrail;
+    expect(Array.isArray(persistedTrail)).toBe(true);
+    expect(persistedTrail).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "assign" }),
+        expect.objectContaining({ type: "handoff-complete", status: "completed" }),
+      ]),
+    );
+
+    const summary = engine.getRunHistory(wf.id, 1)[0];
+    expect(Array.isArray(summary?.delegationAuditTrail)).toBe(true);
+    expect(summary?.latestDelegationEvent).toEqual(
+      expect.objectContaining({ type: "handoff-complete", status: "completed" }),
+    );
+  });
+
+  it("keeps delegation transition side effects idempotent across duplicate transition keys", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const execute = vi.fn().mockResolvedValue({ id: "child-run-1", errors: [] });
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend-idempotent",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: { taskPattern: "api", filter: "task.tags?.includes('backend')" },
+            },
+          ],
+        },
+      ]),
+      execute,
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-idempotent-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task" },
+    };
+
+    const data = {
+      taskId: "TASK-IDEMPOTENT-1",
+      taskTitle: "API idempotency",
+      agentType: "backend",
+      task: { id: "TASK-IDEMPOTENT-1", title: "API idempotency", tags: ["backend", "api"] },
+      _delegationTransitionKey: "transition-key-1",
+    };
+
+    const first = await handler.execute(node, new WorkflowContext(data), mockEngine);
+    const second = await handler.execute(node, new WorkflowContext(data), mockEngine);
+
+    expect(first.delegated).toBe(true);
+    expect(second.delegated).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(second.runId).toBe(first.runId);
   });
 
   it("records autonomous agent recovery attempts in the execution ledger", async () => {
@@ -5341,62 +5876,6 @@ it("action.materialize_planner_tasks applies workspace defaults from workflow co
   }));
 });
 
-it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {
-  const handler = getNodeType("action.materialize_planner_tasks");
-  expect(handler).toBeDefined();
-
-  const ctx = new WorkflowContext({});
-  ctx.setNodeOutput("run-planner", {
-    output: "I could not generate tasks in JSON format this run.",
-  });
-
-  const mockEngine = {
-    services: {
-      kanban: {
-        createTask: vi.fn(),
-      },
-    },
-  };
-
-  const node = {
-    id: "materialize",
-    type: "action.materialize_planner_tasks",
-    config: {
-      plannerNodeId: "run-planner",
-      failOnZero: true,
-    },
-  };
-
-  await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
-    /did not include parseable tasks/i,
-  );
-});
-
-it("action.materialize_planner_tasks surfaces upstream planner errors when no output exists", async () => {
-  const handler = getNodeType("action.materialize_planner_tasks");
-  expect(handler).toBeDefined();
-
-  const ctx = new WorkflowContext({});
-  ctx.setNodeOutput("run-planner", {
-    success: false,
-    error: "Agent pool or planner prompt not available",
-    output: "",
-  });
-
-  const node = {
-    id: "materialize-upstream-error",
-    type: "action.materialize_planner_tasks",
-    config: {
-      plannerNodeId: "run-planner",
-      failOnZero: true,
-    },
-  };
-
-  await expect(handler.execute(node, ctx, { services: {} })).rejects.toThrow(
-    /did not include parseable tasks/i,
-  );
-});
-
 it("action.materialize_planner_tasks enforces planner quality gates and persists planner metadata", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
@@ -5743,6 +6222,241 @@ it("action.materialize_planner_tasks avoids over-penalizing patterns after trans
     "[m] chore(workflow): fallback task",
   ]);
   expect(result.rankedTasks?.[0]?._ranking?.penalty ?? 0).toBeLessThan(0.4);
+});
+
+it("agent.run_planner injects resume guidance once and preserves next-step context", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const launchEphemeralThread = vi.fn(async (prompt) => ({
+    success: true,
+    output: JSON.stringify({
+      tasks: Array.from({ length: 5 }, (_, index) => ({
+        title: `[m] task ${index + 1}`,
+        description: `Task ${index + 1}`,
+        acceptance_criteria: ["criterion"],
+        verification: ["verify"],
+        repo_areas: ["workflow"],
+        impact: 0.8,
+        confidence: 0.8,
+        risk: 0.2,
+      })),
+    }),
+    sdk: "mock",
+    threadId: "planner-thread-1",
+  }));
+
+  const plannerFeedback = {
+    issueAdvisorSummary: "Preserve completed DAG progress and resume the current run.",
+    recommendedAction: "Resume from the next pending implementation stage.",
+    nextStepGuidance: "Continue from Write Tests First and keep completed nodes untouched.",
+    dagStateSummary: {
+      completedNodes: [
+        { id: "trigger", label: "Trigger", status: "completed" },
+      ],
+      currentNode: { id: "plan-work", label: "Plan Work", status: "running" },
+      pendingNodes: [
+        { id: "write-tests", label: "Write Tests First", status: "pending" },
+        { id: "implement", label: "Implement", status: "pending" },
+      ],
+    },
+  };
+
+  const ctx = new WorkflowContext({
+    _plannerFeedback: plannerFeedback,
+    repoRoot: process.cwd(),
+  });
+
+  const result = await handler.execute(
+    {
+      id: "run-planner",
+      type: "agent.run_planner",
+      config: {
+        taskCount: 5,
+        prompt: "Plan exactly five remaining implementation tasks.",
+      },
+    },
+    ctx,
+    {
+      services: {
+        agentPool: { launchEphemeralThread },
+      },
+    },
+  );
+
+  expect(result.success).toBe(true);
+  expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+  const plannerPrompt = launchEphemeralThread.mock.calls[0][0];
+  expect(plannerPrompt).toContain("Planner feedback context:");
+  expect(plannerPrompt).toContain("Write Tests First");
+  expect(plannerPrompt.match(/Write Tests First/g) ?? []).toHaveLength(1);
+  expect(plannerPrompt).toContain("issueAdvisorSummary");
+  expect(plannerPrompt).toContain("recommendedAction");
+  expect(plannerPrompt).toContain("nextStepGuidance");
+  expect(plannerPrompt).toContain("Generate exactly 5 new tasks.");
+});
+
+it("action.materialize_planner_tasks preserves resumed DAG ordering and caps to five tasks", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    _plannerFeedback: {
+      issueAdvisor: {
+        nextStepLabel: "Write Tests First",
+      },
+      dagStateSummary: {
+        completedNodes: [
+          { id: "trigger", label: "Trigger", status: "completed" },
+        ],
+        currentNode: { id: "plan-work", label: "Plan Work", status: "running" },
+        pendingNodes: [
+          { id: "write-tests", label: "Write Tests First", status: "pending" },
+          { id: "implement", label: "Implement", status: "pending" },
+          { id: "validation-build", label: "Build", status: "pending" },
+          { id: "validation-tests", label: "Tests", status: "pending" },
+          { id: "validation-lint", label: "Lint", status: "pending" },
+          { id: "create-pr", label: "Create PR", status: "pending" },
+        ],
+      },
+    },
+  });
+
+  ctx.setNodeOutput("run-planner", {
+    output: JSON.stringify({
+      tasks: [
+        { title: "Write Tests First", description: "Resume from tests", acceptance_criteria: ["tests added"], verification: ["node --test tests/workflow-engine.test.mjs"], repo_areas: ["workflow"], impact: 0.95, confidence: 0.9, risk: 0.2 },
+        { title: "Implement planner resume handling", description: "Preserve DAG state", acceptance_criteria: ["completed nodes preserved"], verification: ["node --test tests/workflow-engine.test.mjs"], repo_areas: ["workflow"], impact: 0.9, confidence: 0.85, risk: 0.2 },
+        { title: "Validate build stage", description: "Keep build gate intact", acceptance_criteria: ["build task prepared"], verification: ["npm run build"], repo_areas: ["workflow"], impact: 0.7, confidence: 0.8, risk: 0.2 },
+        { title: "Validate tests stage", description: "Keep tests gate intact", acceptance_criteria: ["tests task prepared"], verification: ["npm test"], repo_areas: ["tests"], impact: 0.7, confidence: 0.8, risk: 0.2 },
+        { title: "Create PR handoff", description: "Prepare PR path", acceptance_criteria: ["PR task prepared"], verification: ["manual review"], repo_areas: ["workflow"], impact: 0.6, confidence: 0.75, risk: 0.2 },
+        { title: "Extra task that should be ignored", description: "ignored", acceptance_criteria: ["ignored"], verification: ["ignored"], repo_areas: ["workflow"], impact: 0.5, confidence: 0.7, risk: 0.2 }
+      ],
+    }),
+  });
+
+  const createTask = vi.fn(async (_projectId, payload) => ({ id: payload.title }));
+  const listTasks = vi.fn(async () => []);
+
+  const result = await handler.execute(
+    {
+      id: "materialize-resume",
+      type: "action.materialize_planner_tasks",
+      config: {
+        plannerNodeId: "run-planner",
+        projectId: "proj-123",
+        failOnZero: true,
+        dedup: false,
+        minCreated: 5,
+        maxTasks: 5,
+        minImpactScore: 0,
+      },
+    },
+    ctx,
+    {
+      services: {
+        kanban: { createTask, listTasks },
+      },
+    },
+  );
+
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(5);
+  expect(createTask).toHaveBeenCalledTimes(5);
+  const createdTitles = createTask.mock.calls.map((call) => call[1].title);
+  expect(createdTitles).toEqual([
+    "Write Tests First",
+    "Implement planner resume handling",
+    "Validate build stage",
+    "Validate tests stage",
+    "Create PR handoff",
+  ]);
+  expect(createdTitles).not.toContain("Extra task that should be ignored");
+  expect(result.parsedCount).toBe(6);
+  expect(result.rankedTasks).toHaveLength(5);
+  expect(result.rankedTasks.map((task) => task.title)).toEqual(createdTitles);
+});
+
+it("action.materialize_planner_tasks skips completed DAG nodes while keeping the next pending node first", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    _plannerFeedback: {
+      issueAdvisor: {
+        nextStepLabel: "Write Tests First",
+      },
+      dagStateSummary: {
+        completedNodes: [
+          { id: "trigger", label: "Trigger", status: "completed" },
+          { id: "plan-work", label: "Plan Work", status: "completed" },
+        ],
+        currentNode: { id: "materialize", label: "Materialize Tasks", status: "running" },
+        pendingNodes: [
+          { id: "write-tests", label: "Write Tests First", status: "pending" },
+          { id: "implement", label: "Implement", status: "pending" },
+          { id: "validation-build", label: "Build", status: "pending" },
+          { id: "validation-tests", label: "Tests", status: "pending" },
+          { id: "create-pr", label: "Create PR", status: "pending" },
+          { id: "follow-up", label: "Follow Up", status: "pending" },
+        ],
+      },
+    },
+  });
+
+  ctx.setNodeOutput("run-planner", {
+    output: JSON.stringify({
+      tasks: [
+        { title: "Plan Work", description: "already completed and must stay out", acceptance_criteria: ["ignored"], verification: ["ignored"], repo_areas: ["workflow"], impact: 0.99, confidence: 0.9, risk: 0.1 },
+        { title: "Implement planner resume handling", description: "Preserve DAG state", acceptance_criteria: ["completed nodes preserved"], verification: ["node --test tests/workflow-engine.test.mjs"], repo_areas: ["workflow"], impact: 0.92, confidence: 0.88, risk: 0.2 },
+        { title: "Write Tests First", description: "Resume from tests", acceptance_criteria: ["tests added"], verification: ["node --test tests/workflow-engine.test.mjs"], repo_areas: ["workflow"], impact: 0.95, confidence: 0.9, risk: 0.2 },
+        { title: "Build validation coverage", description: "Keep build gate intact", acceptance_criteria: ["build task prepared"], verification: ["npm run build"], repo_areas: ["workflow"], impact: 0.7, confidence: 0.8, risk: 0.2 },
+        { title: "Test validation coverage", description: "Keep tests gate intact", acceptance_criteria: ["tests task prepared"], verification: ["npm test"], repo_areas: ["tests"], impact: 0.7, confidence: 0.8, risk: 0.2 },
+        { title: "Create PR handoff", description: "Prepare PR path", acceptance_criteria: ["PR task prepared"], verification: ["manual review"], repo_areas: ["workflow"], impact: 0.6, confidence: 0.75, risk: 0.2 },
+        { title: "Follow Up task", description: "Final pending task", acceptance_criteria: ["follow-up prepared"], verification: ["manual review"], repo_areas: ["workflow"], impact: 0.5, confidence: 0.7, risk: 0.2 }
+      ],
+    }),
+  });
+
+  const createTask = vi.fn(async (_projectId, payload) => ({ id: payload.title }));
+  const listTasks = vi.fn(async () => []);
+
+  const result = await handler.execute(
+    {
+      id: "materialize-resume-completed-filter",
+      type: "action.materialize_planner_tasks",
+      config: {
+        plannerNodeId: "run-planner",
+        projectId: "proj-123",
+        failOnZero: true,
+        dedup: false,
+        minCreated: 5,
+        maxTasks: 5,
+        minImpactScore: 0,
+      },
+    },
+    ctx,
+    {
+      services: {
+        kanban: { createTask, listTasks },
+      },
+    },
+  );
+
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(5);
+  const createdTitles = createTask.mock.calls.map((call) => call[1].title);
+  expect(createdTitles[0]).toBe("Write Tests First");
+  expect(createdTitles).toEqual([
+    "Write Tests First",
+    "Implement planner resume handling",
+    "Build validation coverage",
+    "Test validation coverage",
+    "Create PR handoff",
+  ]);
+  expect(createdTitles).not.toContain("Plan Work");
+  expect(createdTitles).not.toContain("Follow Up task");
+  expect(result.rankedTasks.map((task) => task.title)).toEqual(createdTitles);
 });
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
@@ -6445,6 +7159,49 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
       ]),
     );
   });
+  it("hydrates delegation audit trail into run detail and history read models", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+      ],
+      [],
+      { id: "wf-delegation-audit", name: "Delegation Audit Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, { taskId: "TASK-DELEGATION-AUDIT" });
+    ctx.__workflowRuntimeState = ctx.__workflowRuntimeState || {};
+    ctx.__workflowRuntimeState.delegationAuditTrail = [
+      {
+        type: "assign",
+        key: "assign:TASK-DELEGATION-AUDIT:agent-1",
+        taskId: "TASK-DELEGATION-AUDIT",
+        agentId: "agent-1",
+        timestamp: 1710000000000,
+      },
+      {
+        type: "handoff-complete",
+        key: "handoff-complete:TASK-DELEGATION-AUDIT:agent-1",
+        taskId: "TASK-DELEGATION-AUDIT",
+        agentId: "agent-1",
+        timestamp: 1710000001000,
+      },
+    ];
+
+    engine._persistRun(ctx.id, wf.id, ctx);
+
+    const detail = engine.getRunDetail(ctx.id);
+    const historyEntry = engine.getRunHistory(wf.id).find((entry) => entry.runId === ctx.id);
+
+    expect(detail?.detail?.delegationAuditTrail).toEqual([
+      expect.objectContaining({ type: "assign", taskId: "TASK-DELEGATION-AUDIT" }),
+      expect.objectContaining({ type: "handoff-complete", taskId: "TASK-DELEGATION-AUDIT" }),
+    ]);
+    expect(historyEntry?.delegationAuditTrail).toEqual([
+      expect.objectContaining({ type: "assign", taskId: "TASK-DELEGATION-AUDIT" }),
+      expect.objectContaining({ type: "handoff-complete", taskId: "TASK-DELEGATION-AUDIT" }),
+    ]);
+  });
 
   it("distinguishes rerun, fix-step, and subgraph replan retry decisions", () => {
     const rerun = engine._chooseRetryModeFromDetail({
@@ -6453,6 +7210,7 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     });
     expect(rerun.mode).toBe("from_failed");
     expect(rerun.reason).toBe("issue_advisor.resume_remaining");
+    expect(rerun.suggestedRetryMode).toBe("from_failed");
 
     const rerunSameStep = engine._chooseRetryModeFromDetail({
       issueAdvisor: { recommendedAction: "rerun_same_step", summary: "Rerun the timed out test step." },
@@ -6481,3 +7239,97 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
 });
 
 
+
+
+
+describe("delegation audit trail hydration", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("hydrates persisted delegation trail into run detail and history", async () => {
+    const runId = "delegation-hydration-run";
+    const detailPath = join(tmpDir, "runs", `${runId}.json`);
+    mkdirSync(join(tmpDir, "runs"), { recursive: true });
+    writeFileSync(detailPath, JSON.stringify({
+      data: {
+        _workflowId: "wf-delegation-history",
+        _workflowName: "Delegation History Workflow",
+        _workflowDelegationTrail: [
+          {
+            type: "assign",
+            nodeId: "delegate",
+            workflowId: "child-wf",
+            workflowName: "Child Workflow",
+            transitionKey: "assign:delegate:child-wf:task-1",
+            timestamp: "2026-03-25T00:00:00.000Z",
+          },
+          {
+            type: "handoff-complete",
+            nodeId: "delegate",
+            workflowId: "child-wf",
+            workflowName: "Child Workflow",
+            childRunId: "child-run-1",
+            transitionKey: "handoff-complete:delegate:child-run-1",
+            timestamp: "2026-03-25T00:00:02.000Z",
+          },
+        ],
+        _delegationTransitionGuards: {
+          "assign:delegate:child-wf:task-1": {
+            transitionKey: "assign:delegate:child-wf:task-1",
+            type: "assign",
+            status: "completed",
+            claimToken: "claim-history",
+          },
+        },
+      },
+      nodeStatuses: {},
+      nodeOutputs: {},
+      errors: [],
+      status: "completed",
+      startedAt: 1742860800000,
+      endedAt: 1742860802000,
+    }, null, 2));
+
+    const detail = engine.getRunDetail(runId);
+    expect(detail?.delegationTrail).toEqual([
+      expect.objectContaining({ type: "assign", transitionKey: "assign:delegate:child-wf:task-1" }),
+      expect.objectContaining({ type: "handoff-complete", transitionKey: "handoff-complete:delegate:child-run-1" }),
+    ]);
+    expect(detail?.delegationAuditTrail).toEqual(detail?.delegationTrail);
+    expect(detail?.latestDelegationEvent).toEqual(expect.objectContaining({ type: "handoff-complete" }));
+    expect(detail?.detail?.data?._workflowDelegationTrail).toHaveLength(2);
+    expect(detail?.delegationTransitionGuards).toMatchObject({
+      "assign:delegate:child-wf:task-1": expect.objectContaining({
+        type: "assign",
+        claimToken: "claim-history",
+      }),
+    });
+    expect(detail?.detail?.data?._delegationTransitionGuards).toMatchObject({
+      "assign:delegate:child-wf:task-1": expect.objectContaining({
+        type: "assign",
+        claimToken: "claim-history",
+      }),
+    });
+
+    const history = engine.getRunHistory(null, 20);
+    expect(history).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        runId,
+        delegationTrail: expect.arrayContaining([
+          expect.objectContaining({ type: "assign" }),
+          expect.objectContaining({ type: "handoff-complete" }),
+        ]),
+        delegationAuditTrail: expect.arrayContaining([
+          expect.objectContaining({ type: "assign" }),
+          expect.objectContaining({ type: "handoff-complete" }),
+        ]),
+        latestDelegationEvent: expect.objectContaining({ type: "handoff-complete" }),
+        delegationTransitionGuards: expect.objectContaining({
+          "assign:delegate:child-wf:task-1": expect.objectContaining({ type: "assign" }),
+        }),
+      }),
+    ]));
+  });
+});

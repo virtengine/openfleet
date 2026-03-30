@@ -26,6 +26,7 @@ import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
+import { resolveRepoRoot as resolveConfiguredRepoRoot } from "../../config/repo-root.mjs";
 
 import {
   registerNodeType,
@@ -429,9 +430,25 @@ function looksLikeFilesystemPath(value) {
   const text = String(value || "").trim();
   return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith("/") || text.startsWith("\\");
 }
-function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
+function isUsableGitRepoRoot(candidate) {
+  const repoRoot = String(candidate || "").trim();
+  if (!repoRoot) return false;
+  try {
+    const topLevel = execGitArgsSync(["rev-parse", "--show-toplevel"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return Boolean(topLevel);
+  } catch {
+    return false;
+  }
+}
+function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot, workspaceHint = "") {
   const repository = String(taskRepository || "").trim();
   const repoRoot = String(currentRepoRoot || "").trim();
+  const workspaceId = String(workspaceHint || "").trim();
   if (!repository || !repoRoot) return "";
   const repoName = repository.split("/").pop();
   if (!repoName) return "";
@@ -440,25 +457,27 @@ function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
   if (normalizedRepoRoot.includes(mirrorToken)) {
     const prefix = normalizedRepoRoot.slice(0, normalizedRepoRoot.indexOf(mirrorToken));
     const prefixName = String(prefix.split("/").filter(Boolean).pop() || "").toLowerCase();
-    const inferredRepoRoot = prefixName === String(repoName).toLowerCase()
-      ? prefix
-      : resolve(prefix, repoName);
+      const inferredRepoRoot = prefixName === String(repoName).toLowerCase()
+        ? prefix
+        : resolve(prefix, repoName);
     try {
-      if (existsSync(resolve(inferredRepoRoot, ".git"))) return inferredRepoRoot;
+      if (existsSync(resolve(inferredRepoRoot, ".git")) || isUsableGitRepoRoot(inferredRepoRoot)) {
+        return inferredRepoRoot;
+      }
     } catch {
       // ignore invalid inferred path
     }
   }
   const candidates = [
     resolve(repoRoot, "..", repoName),
-    resolve(repoRoot, ".bosun", "workspaces", String(process.env.BOSUN_WORKSPACE || "").trim(), repoName),
+    resolve(repoRoot, ".bosun", "workspaces", workspaceId || String(process.env.BOSUN_WORKSPACE || "").trim(), repoName),
   ];
   for (const candidate of candidates) {
     if (!candidate || candidate.includes("workspaces/")) {
       // keep candidate even when BOSUN_WORKSPACE is empty; resolve() will normalize it.
     }
     try {
-      if (existsSync(resolve(candidate, ".git"))) return candidate;
+      if (existsSync(resolve(candidate, ".git")) || isUsableGitRepoRoot(candidate)) return candidate;
     } catch {
       // ignore invalid candidate
     }
@@ -470,7 +489,7 @@ async function ensureTaskClaimsInitialized(ctx, claims) {
   if (!_taskClaimsInitPromise) {
     const repoRoot = pickTaskString(
       ctx?.data?.repoRoot,
-      ctx?.data?.workspace,
+      resolveConfiguredRepoRoot({ cwd: process.cwd() }),
       process.cwd(),
     );
     _taskClaimsInitPromise = claims.initTaskClaims({ repoRoot }).catch((err) => {

@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /**
  * bosun — Setup Wizard
  *
@@ -26,6 +24,7 @@ import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import "./infra/windows-hidden-child-processes.mjs";
 import {
   readCodexConfig,
   getConfigPath,
@@ -59,7 +58,10 @@ import {
   resolveWorkflowTemplateIds,
   normalizeTemplateOverridesById,
 } from "./workflow/workflow-templates.mjs";
-import { discoverTelegramChats } from "./telegram/get-telegram-chat-id.mjs";
+import {
+  discoverTelegramPairingChat,
+  normalizeTelegramPairingCode,
+} from "./telegram/get-telegram-chat-id.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -89,12 +91,126 @@ function getVersion() {
   }
 }
 
-function formatTelegramChatChoice(chat) {
-  const parts = [String(chat.id)];
-  if (chat.type) parts.push(chat.type);
-  if (chat.username) parts.push(`@${chat.username}`);
-  if (chat.title) parts.push(chat.title);
-  return parts.join(" · ");
+const TELEGRAM_PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateTelegramPairingCode(randomFn = Math.random) {
+  let code = "";
+  for (let i = 0; i < 6; i += 1) {
+    const idx = Math.floor(randomFn() * TELEGRAM_PAIRING_CODE_ALPHABET.length);
+    code += TELEGRAM_PAIRING_CODE_ALPHABET[idx] || TELEGRAM_PAIRING_CODE_ALPHABET[0];
+  }
+  return code;
+}
+
+function buildTelegramAllowedChatIds(primaryChatId, ...rawValues) {
+  const seen = new Set();
+  const ordered = [];
+
+  for (const rawValue of [primaryChatId, ...rawValues]) {
+    for (const value of String(rawValue || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      ordered.push(value);
+    }
+  }
+
+  return ordered.join(",");
+}
+
+function applyTelegramChatPairing(env, chatId, sourceEnv = process.env) {
+  const normalizedChatId = String(chatId || "").trim();
+  if (!normalizedChatId) return "";
+
+  const existingAllowed = buildTelegramAllowedChatIds(
+    normalizedChatId,
+    env.TELEGRAM_ALLOWED_CHAT_IDS,
+    env.TELEGRAM_CHAT_ID,
+    sourceEnv.TELEGRAM_ALLOWED_CHAT_IDS,
+    sourceEnv.TELEGRAM_CHAT_IDS,
+    sourceEnv.TELEGRAM_CHAT_ID,
+  );
+
+  env.TELEGRAM_CHAT_ID = normalizedChatId;
+  env.TELEGRAM_ALLOWED_CHAT_IDS = existingAllowed;
+  return normalizedChatId;
+}
+
+async function promptForTelegramPairedChat({
+  prompt,
+  token,
+  env,
+  sourceEnv = process.env,
+}) {
+  const pairingCode = normalizeTelegramPairingCode(generateTelegramPairingCode());
+
+  console.log("\n" + chalk.bold("Step 3: Pair Your Telegram Chat"));
+  console.log(
+    "  Bosun will capture the right chat automatically and lock commands to it.\n",
+  );
+  console.log("  1. Open Telegram and DM your bot");
+  console.log("  2. Send this pairing code:");
+  console.log(`     ${chalk.cyan(pairingCode)}`);
+  console.log("  3. Come back here and press enter so Bosun can finish pairing");
+  console.log();
+
+  while (true) {
+    const ready = await prompt.confirm(
+      "I sent the pairing code to my bot. Pair now?",
+      true,
+    );
+    if (!ready) break;
+
+    info("Checking Telegram for the pairing code...");
+    try {
+      const pairing = await discoverTelegramPairingChat(token, pairingCode);
+      if (pairing.chat?.id) {
+        const pairedChatId = applyTelegramChatPairing(
+          env,
+          pairing.chat.id,
+          sourceEnv,
+        );
+        const pairedLabel =
+          pairing.chat.username
+            ? `@${pairing.chat.username}`
+            : pairing.chat.title || pairing.chat.type || pairedChatId;
+        info(`✓ Paired ${pairedLabel}`);
+        info("✓ Telegram commands are locked to the paired chat");
+        console.log();
+        return pairedChatId;
+      }
+      warn(pairing.message || "Pairing code not found yet.");
+    } catch (err) {
+      warn(`Failed to check Telegram pairing: ${err.message}`);
+    }
+
+    console.log(
+      chalk.dim(
+        "  If you already sent the code, wait a moment and try again. The fallback is manual entry.",
+      ),
+    );
+    const retry = await prompt.confirm("Try pairing again?", true);
+    if (!retry) break;
+    console.log();
+  }
+
+  console.log();
+  info("Falling back to manual chat ID entry.");
+  console.log(
+    chalk.dim(
+      "  Tip: you can still use bosun-chat-id --pair <code> or set TELEGRAM_CHAT_ID manually later.",
+    ),
+  );
+  const manualChatId = await prompt.ask(
+    "Chat ID (leave empty to set this up later)",
+    "",
+  );
+  if (manualChatId) {
+    applyTelegramChatPairing(env, manualChatId, sourceEnv);
+  }
+  return env.TELEGRAM_CHAT_ID || "";
 }
 
 function hasSetupMarkers(dir) {
@@ -3765,8 +3881,8 @@ async function main() {
       if (!hasBotReady) {
         warn("No problem! You can set up Telegram later by:");
         console.log("  1. Adding TELEGRAM_BOT_TOKEN to .env");
-        console.log("  2. Adding TELEGRAM_CHAT_ID to .env");
-        console.log("  3. Or re-running: bosun --setup");
+        console.log("  2. Re-running: bosun --setup to pair your chat");
+        console.log("  3. Or setting TELEGRAM_CHAT_ID / TELEGRAM_ALLOWED_CHAT_IDS manually");
         console.log();
       } else {
         // Step 2: Get bot token
@@ -3796,105 +3912,12 @@ async function main() {
             info("✓ Token format looks good");
           }
 
-          // Step 3: Get chat ID
-          console.log("\n" + chalk.bold("Step 3: Get Your Chat ID"));
-          console.log("  Your chat ID tells the bot where to send messages.");
-          console.log();
-
-          const knowsChatId = await prompt.confirm(
-            "Do you already know your chat ID?",
-            false,
-          );
-
-          if (knowsChatId) {
-            env.TELEGRAM_CHAT_ID = await prompt.ask(
-              "Chat ID (numeric, e.g., 123456789)",
-              process.env.TELEGRAM_CHAT_ID || "",
-            );
-          } else {
-            // Guide user to get chat ID
-            console.log("\n" + chalk.cyan("To get your chat ID:") + "\n");
-            console.log(
-              "  1. Open Telegram and search for your bot's username",
-            );
-            console.log(
-              "  2. Click " +
-                chalk.cyan("START") +
-                " or send any message (e.g., 'Hello')",
-            );
-            console.log("  3. Come back here and we'll detect your chat ID");
-            console.log();
-
-            const ready = await prompt.confirm(
-              "Ready? (I've messaged my bot)",
-              false,
-            );
-
-            if (ready) {
-              // Try to fetch chat ID from Telegram API
-              info("Fetching your chat ID from Telegram...");
-              try {
-                const discovery = await discoverTelegramChats(env.TELEGRAM_BOT_TOKEN);
-
-                if (discovery.chats.length === 1) {
-                  env.TELEGRAM_CHAT_ID = String(discovery.chats[0].id);
-                  info(`✓ Found your chat ID: ${env.TELEGRAM_CHAT_ID}`);
-                  console.log();
-                } else if (discovery.chats.length > 1) {
-                  const selectedIdx = await prompt.choose(
-                    "Select the chat Bosun should use:",
-                    discovery.chats.map(formatTelegramChatChoice),
-                    0,
-                  );
-                  const selectedChat = discovery.chats[selectedIdx];
-                  env.TELEGRAM_CHAT_ID = String(selectedChat.id);
-                  info(`✓ Selected chat ID: ${env.TELEGRAM_CHAT_ID}`);
-                  console.log();
-                } else {
-                  warn(
-                    discovery.message ||
-                    "Couldn't find a chat ID. Make sure you sent a message to your bot.",
-                  );
-                  console.log(
-                    chalk.dim(
-                      "  Or run: bosun-chat-id (after starting the bot)",
-                    ),
-                  );
-                  env.TELEGRAM_CHAT_ID = await prompt.ask(
-                    "Enter chat ID manually (or leave empty to set up later)",
-                    "",
-                  );
-                }
-              } catch (err) {
-                warn(`Failed to fetch chat ID: ${err.message}`);
-                console.log(
-                  chalk.dim(
-                    "  You can run: bosun-chat-id (after starting the bot)",
-                  ),
-                );
-                env.TELEGRAM_CHAT_ID = await prompt.ask(
-                  "Enter chat ID manually (or leave empty to set up later)",
-                  "",
-                );
-              }
-            } else {
-              console.log();
-              info("No problem! You can get your chat ID later by:");
-              console.log(
-                "  • Running: " +
-                  chalk.cyan("bosun-chat-id") +
-                  " (after starting bosun)",
-              );
-              console.log(
-                "  • Or manually: " +
-                  chalk.cyan(
-                    "curl 'https://api.telegram.org/bot<TOKEN>/getUpdates'",
-                  ),
-              );
-              console.log("  Then add TELEGRAM_CHAT_ID to .env");
-              console.log();
-            }
-          }
+          await promptForTelegramPairedChat({
+            prompt,
+            token: env.TELEGRAM_BOT_TOKEN,
+            env,
+            sourceEnv: process.env,
+          });
 
           // Step 4: Verify setup
           if (env.TELEGRAM_CHAT_ID) {
@@ -6019,6 +6042,8 @@ async function runNonInteractive({
   env.GITHUB_REPO = process.env.GITHUB_REPO || slug || "";
   env.TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
   env.TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+  env.TELEGRAM_ALLOWED_CHAT_IDS =
+    process.env.TELEGRAM_ALLOWED_CHAT_IDS || process.env.TELEGRAM_CHAT_IDS || "";
   applyTelegramMiniAppDefaults(env, process.env);
   env.KANBAN_BACKEND = process.env.KANBAN_BACKEND || "internal";
   env.KANBAN_SYNC_POLICY =
@@ -6543,7 +6568,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     if (commandExists("pnpm")) {
       execSync("pnpm install", { cwd: __dirname, stdio: "inherit" });
     } else {
-      execSync("npm install", { cwd: __dirname, stdio: "inherit" });
+      execSync(`${resolveNpmCommand()} install`, { cwd: __dirname, stdio: "inherit" });
     }
     success("Dependencies installed");
   } catch {
@@ -6623,7 +6648,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
           const portalChild = _spawn(
             launcher.executable,
             launcher.args || [],
-            { detached: true, stdio: "ignore", windowsHide: false },
+            { detached: true, stdio: "ignore", windowsHide: true },
           );
           portalChild.unref();
           success("Bosun portal is opening...");
@@ -6742,6 +6767,9 @@ export async function runSetup() {
 
 export {
   applyTelegramMiniAppDefaults,
+  applyTelegramChatPairing,
+  buildTelegramAllowedChatIds,
+  generateTelegramPairingCode,
   normalizeTelegramUiPort,
   extractProjectNumber,
   resolveOrCreateGitHubProjectNumber,
@@ -6765,4 +6793,6 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup)) {
     process.exit(1);
   });
 }
+
+
 

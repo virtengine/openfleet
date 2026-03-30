@@ -190,6 +190,42 @@ function checkToolVersion(label, command, args, hint) {
   return { label, ok: true, version };
 }
 
+function checkHookShell(repoRoot) {
+  if (!isWindows || !existsSync(resolve(repoRoot, ".githooks"))) {
+    return { ok: true, issue: null, resolvedPath: null, allPaths: [] };
+  }
+
+  const res = runCommand("where", ["bash"]);
+  if (res.error || res.status !== 0) {
+    return {
+      ok: false,
+      issue: "missing_bash",
+      resolvedPath: null,
+      allPaths: [],
+      message: "bash is not on PATH; Git hook execution may fail on Windows.",
+    };
+  }
+
+  const allPaths = readOutput(res)
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const resolvedPath = allPaths[0] || null;
+  const normalizedPath = String(resolvedPath || "").replace(/\\/g, "/").toLowerCase();
+  if (normalizedPath.includes("/windows/system32/bash.exe")) {
+    return {
+      ok: false,
+      issue: "wsl_bash_first",
+      resolvedPath,
+      allPaths,
+      message:
+        "PATH resolves bash to WSL first. Git hooks in Windows worktrees should use Git for Windows bash (for example C:/Program Files/Git/bin/bash.exe).",
+    };
+  }
+
+  return { ok: true, issue: null, resolvedPath, allPaths };
+}
+
 function parseEnvBool(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   const raw = String(value).trim().toLowerCase();
@@ -214,6 +250,8 @@ function checkToolchain() {
     "git",
     "gh",
     "node",
+    "npm",
+    "rg",
     shellMode ? "shell" : "pwsh",
   ]);
   const pwshRuntime = resolvePwshRuntime({ preferBundled: true });
@@ -238,10 +276,22 @@ function checkToolchain() {
       "Install Node.js 18+ and ensure it is on PATH.",
     ),
     checkToolVersion(
+      "npm",
+      "npm",
+      ["--version"],
+      "Install npm and ensure it is on PATH. On Windows, verify npm commands can be spawned from PowerShell.",
+    ),
+    checkToolVersion(
       "pnpm",
       "pnpm",
       ["--version"],
       "Install pnpm (npm install -g pnpm) and ensure it is on PATH.",
+    ),
+    checkToolVersion(
+      "rg",
+      "rg",
+      ["--version"],
+      "Install ripgrep (rg) and ensure it is on PATH.",
     ),
     checkToolVersion(
       "go",
@@ -359,6 +409,14 @@ export function runPreflightChecks(options = {}) {
     });
   }
 
+  const hookShell = checkHookShell(repoRoot);
+  if (!hookShell.ok) {
+    warnings.push({
+      title: "Windows hook shell may be misconfigured",
+      message: hookShell.message,
+    });
+  }
+
   if (toolchain.ok) {
     ghAuth = checkGhAuth();
     if (!ghAuth.ok) {
@@ -386,6 +444,7 @@ export function runPreflightChecks(options = {}) {
       toolchain,
       gitConfig,
       worktree,
+      hookShell,
       ghAuth,
       disk,
       minFreeBytes: MIN_FREE_BYTES,
@@ -432,6 +491,11 @@ export function formatPreflightReport(result, options = {}) {
     lines.push(
       `Worktree: ${worktree.ok ? "clean" : `${worktree.dirtyFiles.length} change(s)`}`,
     );
+  }
+
+  const hookShell = result.details?.hookShell;
+  if (hookShell?.resolvedPath) {
+    lines.push(`Hook shell: ${hookShell.resolvedPath}`);
   }
 
   if (result.errors.length) {
