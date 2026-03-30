@@ -25136,14 +25136,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-<<<<<<< HEAD
-
-
-
-
-||||||| bb6eaeec
-
-
-
-=======
->>>>>>> origin/main
