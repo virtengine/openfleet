@@ -235,7 +235,12 @@ describe("preflight interactive git editor warnings", () => {
     const result = runPreflightChecks({ repoRoot: "C:\\repo" });
 
     expect(result.ok).toBe(true);
-    expect(result.warnings.some((entry) => /hook shell/i.test(entry.title))).toBe(true);
     expect(result.details.hookShell.resolvedPath).toContain("System32");
+    expect(result.details.hookShell.issue).toBe(
+      process.platform === "win32" ? "wsl_bash_first" : null,
+    );
+    expect(result.warnings.some((entry) => /hook shell/i.test(entry.title))).toBe(
+      process.platform === "win32",
+    );
   });
 });

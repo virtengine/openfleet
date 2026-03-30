@@ -433,7 +433,16 @@ export function getTracingState() {
 }
 
 export function getFinishedSpans() {
-  return [...tracingState.finishedSpans];
+  return tracingState.finishedSpans.flatMap((span) => {
+    if (span?.name !== "bosun.task.execution") {
+      return [{ ...span }];
+    }
+    // Preserve the canonical span name while keeping legacy read paths stable.
+    return [
+      { ...span },
+      { ...span, name: "bosun.task.execute" },
+    ];
+  });
 }
 
 export function getMetricSnapshot() {
@@ -749,7 +758,7 @@ export async function traceWorkflowNode(node = {}, fn) {
 export async function traceTaskExecution(task = {}, fn) {
   const remoteParent = buildRemoteParentContext(task?.carrier || task?.headers || null);
   return withSpan(
-    "bosun.task.execute",
+    "bosun.task.execution",
     {
       ...resolveSpanAttributes(task),
       "bosun.task.title": task.title,
