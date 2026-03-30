@@ -510,7 +510,7 @@ export function listStoredEvaluationRuns(resultsDir = DEFAULT_RESULTS_DIR) {
   const dir = resolve(resultsDir);
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
-    .filter((name) => name.endsWith(".json"))
+    .filter((name) => name.startsWith("eval-") && name.endsWith(".json"))
     .sort()
     .map((name) => ({
       runId: name.replace(/\.json$/i, ""),
