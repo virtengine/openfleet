@@ -10,6 +10,11 @@ Open the closest module `AGENTS.md` before editing.
 3. Edit only that module plus directly impacted callers/tests.
 4. Run targeted tests, then `npm test`, then `npm run build`.
 
+## Pre-Push Pitfalls
+- Run `npm run syntax:check` after touching any browser-served module under `ui/` or `site/ui/`. It now validates both syntax and local import/export bindings for `.js` and `.mjs` browser modules.
+- If you mirror helpers between `ui/` and `site/ui/`, update both copies in the same change. The hosted demo does not inherit files from `ui/` automatically.
+- If you add a new shipped runtime file, run `node tools/prepublish-check.mjs` and update `package.json#files` when needed.
+
 ## Core Entry Points
 - CLI: `cli.mjs`
 - Setup: `setup.mjs`

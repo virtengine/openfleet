@@ -10,8 +10,35 @@ let mockCopilotStart;
 let mockCopilotCreateSession;
 let mockCopilotResumeSession;
 let mockClaudeQuery;
+let mockLoadConfig;
+let mockMcpResolve;
+let mockMcpWrap;
 let isolatedHomeDir;
 let setSdkFailureCooldownForTest;
+function ensureMock(name) {
+  const candidate = globalThis[name];
+  if (typeof candidate === "function") {
+    return candidate;
+  }
+  return (...args) => {
+    const current = globalThis[name];
+    if (typeof current !== "function") {
+      throw new Error(`Missing test mock: ${name}`);
+    }
+    return current(...args);
+  };
+}
+
+const callMockCodexCtor = ensureMock("__agentPoolMockCodexCtor");
+const callMockCodexStartThread = ensureMock("__agentPoolMockCodexStartThread");
+const callMockCodexResumeThread = ensureMock("__agentPoolMockCodexResumeThread");
+const callMockCopilotStart = ensureMock("__agentPoolMockCopilotStart");
+const callMockCopilotCreateSession = ensureMock("__agentPoolMockCopilotCreateSession");
+const callMockCopilotResumeSession = ensureMock("__agentPoolMockCopilotResumeSession");
+const callMockClaudeQuery = ensureMock("__agentPoolMockClaudeQuery");
+const callMockLoadConfig = ensureMock("__agentPoolMockLoadConfig");
+const callMockMcpResolve = ensureMock("__agentPoolMockMcpResolve");
+const callMockMcpWrap = ensureMock("__agentPoolMockMcpWrap");
 
 function makeCodexMockThread(
   threadId = "mock-codex-thread",
@@ -57,12 +84,25 @@ mockCopilotStart = vi.fn();
 mockCopilotCreateSession = vi.fn();
 mockCopilotResumeSession = vi.fn();
 mockClaudeQuery = vi.fn();
+mockLoadConfig = vi.fn();
+mockMcpResolve = vi.fn();
+mockMcpWrap = vi.fn();
+globalThis.__agentPoolMockCodexStartThread = mockCodexStartThread;
+globalThis.__agentPoolMockCodexResumeThread = mockCodexResumeThread;
+globalThis.__agentPoolMockCodexCtor = mockCodexCtor;
+globalThis.__agentPoolMockCopilotStart = mockCopilotStart;
+globalThis.__agentPoolMockCopilotCreateSession = mockCopilotCreateSession;
+globalThis.__agentPoolMockCopilotResumeSession = mockCopilotResumeSession;
+globalThis.__agentPoolMockClaudeQuery = mockClaudeQuery;
+globalThis.__agentPoolMockLoadConfig = mockLoadConfig;
+globalThis.__agentPoolMockMcpResolve = mockMcpResolve;
+globalThis.__agentPoolMockMcpWrap = mockMcpWrap;
 
 vi.mock("@openai/codex-sdk", () => {
   return {
     Codex: class MockCodex {
       constructor(...args) {
-        mockCodexCtor(...args);
+        callMockCodexCtor(...args);
       }
 
       startThread(...args) {
@@ -74,7 +114,7 @@ vi.mock("@openai/codex-sdk", () => {
             },
           };
         }
-        const injected = mockCodexStartThread(...args);
+        const injected = callMockCodexStartThread(...args);
         if (injected !== undefined) return injected;
         return makeCodexMockThread("mock-codex-thread-new", "codex-output");
       }
@@ -83,7 +123,7 @@ vi.mock("@openai/codex-sdk", () => {
         if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
           throw new Error("Codex SDK not available: mocked unavailable");
         }
-        const injected = mockCodexResumeThread(...args);
+        const injected = callMockCodexResumeThread(...args);
         if (injected !== undefined) return injected;
         const [threadId] = args;
         return makeCodexMockThread(
@@ -100,12 +140,12 @@ vi.mock("@github/copilot-sdk", () => {
     return {
       CopilotClient: class MockCopilotClient {
         async start() {
-          const injected = mockCopilotStart();
+          const injected = callMockCopilotStart();
           if (injected !== undefined) return injected;
         }
         async stop() {}
         async resumeSession(...args) {
-          const injected = mockCopilotResumeSession(...args);
+          const injected = callMockCopilotResumeSession(...args);
           if (injected !== undefined) return injected;
           const [sessionId] = args;
           return {
@@ -121,7 +161,7 @@ vi.mock("@github/copilot-sdk", () => {
           };
         }
         async createSession(...args) {
-          const injected = mockCopilotCreateSession(...args);
+          const injected = callMockCopilotCreateSession(...args);
           if (injected !== undefined) return injected;
           return {
             sessionId: "mock-copilot-session-new",
@@ -145,7 +185,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   if (process.env.__MOCK_CLAUDE_AVAILABLE === "1") {
     return {
       query: function mockQuery(payload = {}) {
-        const injected = mockClaudeQuery(payload);
+        const injected = callMockClaudeQuery(payload);
         if (injected !== undefined) return injected;
         return {
           async *[Symbol.asyncIterator]() {
@@ -185,11 +225,26 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
 // Mock agent-sdk.mjs so the config.toml resolution doesn't interfere
 vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: () => ({ primary: "", source: "test" }),
+  resolveCodexSdkInstall: () => ({
+    entryPath: join(process.cwd(), "node_modules", "@openai", "codex-sdk", "dist", "index.js"),
+    rootDir: process.cwd(),
+  }),
+  resolveAgentSdkModuleEntry: (specifier) => ({
+    entryPath: join(process.cwd(), "node_modules", ...String(specifier || "").split("/"), "index.js"),
+    rootDir: process.cwd(),
+  }),
 }));
 
 // Mock config.mjs so tests don't read the real bosun.config.json
 vi.mock("../config/config.mjs", () => ({
-  loadConfig: () => ({}),
+  loadConfig: (...args) => callMockLoadConfig(...args),
+}));
+
+vi.mock("../workflow/mcp-registry.mjs", () => ({
+  resolveMcpServersForAgent: (...args) => callMockMcpResolve(...args),
+  wrapServersWithDiscoveryProxy: (...args) => callMockMcpWrap(...args),
+  writeTempCopilotMcpConfig: () => join(process.cwd(), ".tmp-mcp-config.json"),
+  buildClaudeMcpEnv: () => ({ envVar: "", fileContent: { mcpServers: {} } }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -214,6 +269,8 @@ const ENV_KEYS = [
   "CODEX_MODEL",
   "AZURE_OPENAI_API_KEY",
   "AZURE_OPENAI_API_KEY_SWEDEN",
+  "AZURE_SWEDEN_ENDPOINT",
+  "AZURE_SWEDEN_BASE_URL",
   "__MOCK_CODEX_AVAILABLE",
   "__MOCK_COPILOT_AVAILABLE",
   "__MOCK_CLAUDE_AVAILABLE",
@@ -265,6 +322,8 @@ function clearSdkEnv() {
   delete process.env.CODEX_MODEL;
   delete process.env.AZURE_OPENAI_API_KEY;
   delete process.env.AZURE_OPENAI_API_KEY_SWEDEN;
+  delete process.env.AZURE_SWEDEN_ENDPOINT;
+  delete process.env.AZURE_SWEDEN_BASE_URL;
   delete process.env.__MOCK_CODEX_AVAILABLE;
   delete process.env.__MOCK_COPILOT_AVAILABLE;
   delete process.env.__MOCK_CLAUDE_AVAILABLE;
@@ -287,6 +346,10 @@ let getPoolSdkName,
   resetPoolSdkCache,
   setSdkFailureCooldownForTest,
   getAvailableSdks,
+  getAvailableSlots,
+  getAgentExecutionSlotStatus,
+  allocateSlot,
+  releaseSlot,
   launchEphemeralThread,
   execPooledPrompt,
   launchOrResumeThread,
@@ -312,6 +375,10 @@ beforeEach(async () => {
   resetPoolSdkCache = mod.resetPoolSdkCache;
   setSdkFailureCooldownForTest = mod.setSdkFailureCooldownForTest;
   getAvailableSdks = mod.getAvailableSdks;
+  getAvailableSlots = mod.getAvailableSlots;
+  getAgentExecutionSlotStatus = mod.getAgentExecutionSlotStatus;
+  allocateSlot = mod.allocateSlot;
+  releaseSlot = mod.releaseSlot;
   launchEphemeralThread = mod.launchEphemeralThread;
   execPooledPrompt = mod.execPooledPrompt;
   launchOrResumeThread = mod.launchOrResumeThread;
@@ -330,6 +397,12 @@ beforeEach(async () => {
   mockCopilotCreateSession.mockReset();
   mockCopilotResumeSession.mockReset();
   mockClaudeQuery.mockReset();
+  mockLoadConfig.mockReset();
+  mockLoadConfig.mockReturnValue({});
+  mockMcpResolve.mockReset();
+  mockMcpResolve.mockResolvedValue([]);
+  mockMcpWrap.mockReset();
+  mockMcpWrap.mockImplementation((_cwd, servers) => servers);
   await ensureThreadRegistryLoaded();
   clearThreadRegistry();
 });
@@ -346,6 +419,68 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. SDK Resolution
 // ═══════════════════════════════════════════════════════════════════════════
+
+describe("agent execution slot queue", () => {
+  it("keeps later requests pending until a shared slot is released", async () => {
+    process.env.AGENT_POOL_MAX_PARALLEL = "1";
+
+    const first = await allocateSlot("slot-owner-1", {
+      taskKey: "slot-owner-1",
+      workflowId: "wf-a",
+    });
+    expect(first.slotId).toMatch(/^agent-slot-/);
+    expect(getAvailableSlots()).toBe(0);
+
+    const queuedSnapshots = [];
+    const acquiredSnapshots = [];
+    let secondResolved = false;
+    const secondPromise = allocateSlot("slot-owner-2", {
+      taskKey: "slot-owner-2",
+      workflowId: "wf-b",
+      onQueued: (snapshot) => queuedSnapshots.push(snapshot),
+      onAcquired: (snapshot) => acquiredSnapshots.push(snapshot),
+    }).then((lease) => {
+      secondResolved = true;
+      return lease;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(secondResolved).toBe(false);
+    expect(getAgentExecutionSlotStatus()).toMatchObject({
+      activeSlots: 1,
+      queuedSlots: 1,
+      maxParallel: 1,
+    });
+    expect(queuedSnapshots).toHaveLength(1);
+    expect(queuedSnapshots[0]).toMatchObject({
+      ownerKey: "slot-owner-2",
+      activeSlots: 1,
+      queuedSlots: 1,
+      maxParallel: 1,
+    });
+
+    await releaseSlot(first);
+    const second = await secondPromise;
+
+    expect(secondResolved).toBe(true);
+    expect(second.ownerKey).toBe("slot-owner-2");
+    expect(acquiredSnapshots).toHaveLength(1);
+    expect(acquiredSnapshots[0]).toMatchObject({
+      ownerKey: "slot-owner-2",
+      slotId: second.slotId,
+      activeSlots: 1,
+      maxParallel: 1,
+    });
+
+    await releaseSlot(second);
+    expect(getAgentExecutionSlotStatus()).toMatchObject({
+      activeSlots: 0,
+      queuedSlots: 0,
+      maxParallel: 1,
+    });
+    expect(getAvailableSlots()).toBe(1);
+  });
+});
 
 describe("SDK resolution", () => {
   it("uses AGENT_POOL_SDK env var when set", () => {
@@ -488,6 +623,50 @@ describe("launchEphemeralThread", () => {
     expect(Array.isArray(result.items)).toBe(true);
   });
 
+  it("treats an explicit empty MCP selection as opt-out from default server fallback", async () => {
+    mockLoadConfig.mockReturnValue({
+      mcpServers: {
+        allowDefaultServers: true,
+        defaultServers: ["context7"],
+      },
+    });
+
+    await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      5000,
+      { mcpServers: [] },
+    );
+
+    expect(mockMcpResolve).not.toHaveBeenCalled();
+    expect(mockMcpWrap).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn a discovery proxy when no MCP servers resolved", async () => {
+    mockLoadConfig.mockReturnValue({
+      mcpServers: {
+        useDiscoveryProxy: true,
+      },
+    });
+    mockMcpResolve.mockResolvedValue([]);
+
+    await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      5000,
+      { mcpServers: ["context7"] },
+    );
+
+    expect(mockMcpResolve).toHaveBeenCalledWith(
+      process.cwd(),
+      ["context7"],
+      expect.objectContaining({
+        defaultServers: [],
+      }),
+    );
+    expect(mockMcpWrap).not.toHaveBeenCalled();
+  });
+
   it("uses extra.sdk override when provided", async () => {
     const result = await launchEphemeralThread(
       "test prompt",
@@ -561,6 +740,7 @@ describe("launchEphemeralThread", () => {
       expect(String(result.error || "")).toContain("400");
     }
   });
+
   it("tries fallback when primary SDK not available", async () => {
     // Set codex as primary, disable it, have copilot available in fallback
     // Since both will fail (SDKs not installed), verify it tries multiple
@@ -759,6 +939,46 @@ describe("launchEphemeralThread", () => {
     expect(result.sdk).toBe("codex");
     expect(result.error).toMatch(/codex/i);
     expect(result.error).not.toMatch(/no sdk available/i);
+  });
+
+  it("does not cool down SDKs for ignorable model listing 400 errors", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "600000";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementationOnce(() => ({
+      id: "model-list-400-thread",
+      runStreamed: async () => {
+        throw new Error("Failed to list models: 400 Bad Request");
+      },
+    }));
+
+    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(first.success).toBe(false);
+    expect(first.sdk).toBe("codex");
+    expect(first.error).toMatch(/failed to list models/i);
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("model-list-400-retry", "codex-after-ignorable-400"),
+    );
+
+    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(second.success).toBe(true);
+    expect(second.sdk).toBe("codex");
+    expect(second.output).toContain("codex-after-ignorable-400");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
   });
 
   it("retries primary SDK during cooldown when fallback SDKs are missing credentials", async () => {
@@ -1055,7 +1275,10 @@ describe("launchEphemeralThread", () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_BASE_URL = "https://example-resource.openai.azure.com/openai/v1";
     process.env.OPENAI_API_KEY = "azure-key";
+    process.env.AZURE_OPENAI_API_KEY = "azure-key";
     process.env.AZURE_OPENAI_API_KEY_SWEDEN = "sweden-key";
+    process.env.AZURE_SWEDEN_ENDPOINT = "https://example-sweden.openai.azure.com";
+    process.env.AZURE_SWEDEN_BASE_URL = "https://example-sweden.openai.azure.com/openai/v1";
     process.env.CODEX_MODEL = "gpt-5.4";
     setPoolSdk("codex");
 
@@ -1082,17 +1305,34 @@ describe("launchEphemeralThread", () => {
     });
 
     expect(result.success).toBe(true);
-    const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
+    const codexCtorOpts = mockCodexCtor.mock.calls
+      .map(([options]) => options)
+      .find((options) => {
+        const providers = Object.values(options?.config?.model_providers || {});
+        return providers.some((provider) =>
+          provider?.env_key === "AZURE_OPENAI_API_KEY"
+          && provider?.base_url === "https://example-resource.openai.azure.com/openai/v1",
+        );
+      }) || mockCodexCtor.mock.calls.at(-1)?.[0];
     expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
       model_provider: expect.stringMatching(/^azure/),
       model: "gpt-5.4",
       sandbox_mode: "workspace-write",
     }));
-    const providerConfig = Object.values(codexCtorOpts?.config?.model_providers || {})[0];
+    const providerConfig = Object.values(codexCtorOpts?.config?.model_providers || {})
+      .find((provider) =>
+        provider?.env_key === "AZURE_OPENAI_API_KEY"
+        && provider?.base_url === "https://example-resource.openai.azure.com/openai/v1",
+      );
     expect(providerConfig).toEqual(expect.objectContaining({
       env_key: "AZURE_OPENAI_API_KEY",
       base_url: "https://example-resource.openai.azure.com/openai/v1",
     }));
+    expect(codexCtorOpts?.unsetEnvKeys || []).toEqual(expect.arrayContaining([
+      "AZURE_OPENAI_API_KEY_SWEDEN",
+      "AZURE_SWEDEN_ENDPOINT",
+      "AZURE_SWEDEN_BASE_URL",
+    ]));
   });
 
   it("accepts copilot output when sendAndWait times out waiting for session.idle", async () => {
@@ -1400,6 +1640,38 @@ describe("launchOrResumeThread", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("no events received within 1000ms");
+  });
+
+  it("does not throw when using default codex stream safety constants", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    delete process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS;
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementationOnce(() => ({
+      id: "default-stream-safety-thread",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "stream ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await launchOrResumeThread("default stream safety test", process.cwd(), 5000, {
+      taskKey: "stream-default-safety",
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("stream ok");
   });
 
   it("caps and truncates stored codex stream items", async () => {
@@ -1712,6 +1984,37 @@ describe("launchOrResumeThread", () => {
 // 5. execWithRetry
 // ═══════════════════════════════════════════════════════════════════════════
 
+
+describe("sdk cooldown heuristics", () => {
+  it("treats 400 model-list failures as fallback-worthy but not cooldown-worthy errors", async () => {
+    const { __testables } = await import("../agent/agent-pool.mjs");
+    expect(__testables.shouldFallbackForSdkError("Error: Failed to list models: 400")).toBe(true);
+    expect(__testables.shouldApplySdkCooldown("Error: Failed to list models: 400")).toBe(false);
+  });
+
+  it("detects repeated reconnect fingerprints as retry circuit breakers", async () => {
+    const { __testables } = await import("../agent/agent-pool.mjs");
+    const failureFingerprints = new Map([
+      ["[agent-pool] copilot timeout after <ms> waiting for session.idle", 1],
+    ]);
+
+    const classified = __testables.classifyRetryCircuitBreak(
+      {
+        success: false,
+        error: "[agent-pool] copilot timeout after 120000ms waiting for session.idle",
+        output: "",
+        items: [],
+      },
+      {
+        failureFingerprints,
+        consecutiveNoOutputFailures: 0,
+      },
+    );
+
+    expect(classified.shouldBreak).toBe(true);
+    expect(classified.blockedReason).toBe("blocked_by_env");
+  });
+});
 describe("execWithRetry", () => {
   it("retries after timeout without treating the next attempt as externally aborted", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
@@ -1757,6 +2060,45 @@ describe("execWithRetry", () => {
     expect(result.attempts).toBe(2);
     expect(result.error).toBeNull();
     expect(result.output).toContain("recovered-output");
+  });
+
+  it("stops retrying after repeated no-output starts", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementation(() => ({
+      id: "timeout-thread-repeat",
+      runStreamed: async (_prompt, { signal } = {}) => {
+        await new Promise((_, reject) => {
+          const abortNow = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal?.aborted) {
+            abortNow();
+            return;
+          }
+          signal?.addEventListener("abort", abortNow, { once: true });
+        });
+      },
+    }));
+
+    const result = await execWithRetry("repeat no output", {
+      taskKey: "retry-no-output-task",
+      cwd: process.cwd(),
+      timeoutMs: 25,
+      maxRetries: 2,
+      sdk: "codex",
+      abortController: new AbortController(),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.retryCircuitBroken).toBe(true);
+    expect(result.blockedReason).toBe("no_output");
+    expect(result.attempts).toBe(2);
   });
 });
 
@@ -1881,5 +2223,7 @@ describe("resolution and launch integration", () => {
   });
 });
 }
+
+
 
 

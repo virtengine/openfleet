@@ -1,6 +1,11 @@
 import React from "react";
 import htm from "htm";
-import { Box, Text, useInput, useStdout } from "ink";
+import * as ink from "ink";
+
+const Box = ink.Box ?? ink.default?.Box;
+const Text = ink.Text ?? ink.default?.Text;
+const useInput = ink.useInput ?? ink.default?.useInput;
+const useStdout = ink.useStdout ?? ink.default?.useStdout;
 
 import {
   buildOsc52CopySequence,
@@ -450,7 +455,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     <//>
   `;
 }
-
 
 
 
