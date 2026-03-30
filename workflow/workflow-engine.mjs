@@ -230,7 +230,7 @@ function buildDelegationWatchdogDecision(detail = {}) {
 
   return {
     type: "retry",
-    mode: "from_failed",
+    mode: "from_scratch",
     reason: `${reasonBase}:retryable`,
     nodeId: watchdog.nodeId || null,
     elapsedMs,
@@ -2557,6 +2557,23 @@ export class WorkflowEngine extends EventEmitter {
     delete originalData._workflowId;
     delete originalData._workflowName;
     const retryData = this._applyResumeInputMigrations(def, originalData);
+    const shouldAdvanceDelegationWatchdog = decisionReason.startsWith("delegation_watchdog:");
+    if (
+      shouldAdvanceDelegationWatchdog &&
+      retryData?._delegationWatchdog &&
+      typeof retryData._delegationWatchdog === "object"
+    ) {
+      const priorAttempts = Number(retryData._delegationWatchdog.recoveryAttempts);
+      const recoveryAttempts = Number.isFinite(priorAttempts)
+        ? Math.max(0, Math.trunc(priorAttempts))
+        : (retryData._delegationWatchdog.recoveryAttempted === true ? 1 : 0);
+      retryData._delegationWatchdog = {
+        ...retryData._delegationWatchdog,
+        recoveryAttempts: recoveryAttempts + 1,
+        recoveryAttempted: true,
+        updatedAt: new Date().toISOString(),
+      };
+    }
 
     this.emit("run:retry", {
       originalRunId: runId,
@@ -5492,7 +5509,6 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
 
 
 

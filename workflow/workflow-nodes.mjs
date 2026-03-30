@@ -2970,6 +2970,8 @@ registerBuiltinNodeType("action.run_agent", {
         description:
           "Optional prompt suffix template for candidate mode. Supports {{candidateIndex}} and {{candidateCount}}",
       },
+      delegationWatchdogTimeoutMs: { type: "number", default: 300000, description: "Stall threshold for delegated non-task workflows in ms" },
+      delegationWatchdogMaxRecoveries: { type: "number", default: 1, description: "Maximum watchdog recovery retries for delegated workflows" },
     },
     required: ["prompt"],
   },
@@ -3189,14 +3191,80 @@ registerBuiltinNodeType("action.run_agent", {
 
           // Delegate to this agent workflow
           ctx.log(node.id, `Delegating to agent workflow "${wf.name}" (${wf.id})`);
-          const subCtx = await engine.execute(
-            wf.id,
-            applyChildWorkflowLineage(ctx, {
-              ...delegationData,
-              _agentWorkflowActive: true,
-            }, wf.id),
-            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wf.id, sourceNodeId: node.id }),
-          );
+          const resolveDelegatedWatchdogTimeoutMs = () => {
+            const candidates = [
+              ctx.resolve(node.config?.delegationWatchdogTimeoutMs),
+              ctx.data?.delegationWatchdogTimeoutMs,
+              ctx.data?.task?.delegationWatchdogTimeoutMs,
+            ];
+            for (const value of candidates) {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed > 0) return parsed;
+            }
+            return 300000;
+          };
+          const resolveDelegatedWatchdogMaxRecoveries = () => {
+            const candidates = [
+              ctx.resolve(node.config?.delegationWatchdogMaxRecoveries),
+              ctx.data?.delegationWatchdogMaxRecoveries,
+              ctx.data?.task?.delegationWatchdogMaxRecoveries,
+            ];
+            for (const value of candidates) {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed >= 0) return Math.min(5, Math.trunc(parsed));
+            }
+            return 1;
+          };
+          const existingWatchdog = ctx.data?._delegationWatchdog && typeof ctx.data._delegationWatchdog === "object"
+            ? { ...ctx.data._delegationWatchdog }
+            : null;
+          const priorAttemptsRaw = Number(existingWatchdog?.recoveryAttempts);
+          const priorRecoveryAttempts = Number.isFinite(priorAttemptsRaw)
+            ? Math.max(0, Math.trunc(priorAttemptsRaw))
+            : (existingWatchdog?.recoveryAttempted === true ? 1 : 0);
+          const delegatedWatchdog = {
+            nodeId: node.id,
+            state: "delegated",
+            delegationType: "workflow",
+            taskScoped: false,
+            startedAt: Date.now(),
+            updatedAt: new Date().toISOString(),
+            workflowId: wf.id,
+            workflowName: wf.name || wf.id,
+            timeoutMs: resolveDelegatedWatchdogTimeoutMs(),
+            delegationWatchdogTimeoutMs: resolveDelegatedWatchdogTimeoutMs(),
+            maxRecoveries: resolveDelegatedWatchdogMaxRecoveries(),
+            delegationWatchdogMaxRecoveries: resolveDelegatedWatchdogMaxRecoveries(),
+            recoveryAttempts: priorRecoveryAttempts,
+            recoveryAttempted: priorRecoveryAttempts > 0,
+          };
+          const checkpointDelegationWatchdog = (watchdogState) => {
+            if (!ctx.data || typeof ctx.data !== "object") return;
+            if (watchdogState && typeof watchdogState === "object") {
+              ctx.data._delegationWatchdog = watchdogState;
+            } else if (existingWatchdog) {
+              ctx.data._delegationWatchdog = existingWatchdog;
+            } else {
+              delete ctx.data._delegationWatchdog;
+            }
+            if (typeof engine?._checkpointRun === "function") {
+              engine._checkpointRun(ctx);
+            }
+          };
+          checkpointDelegationWatchdog(delegatedWatchdog);
+          let subCtx;
+          try {
+            subCtx = await engine.execute(
+              wf.id,
+              applyChildWorkflowLineage(ctx, {
+                ...delegationData,
+                _agentWorkflowActive: true,
+              }, wf.id),
+              makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wf.id, sourceNodeId: node.id }),
+            );
+          } finally {
+            checkpointDelegationWatchdog(null);
+          }
           const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
           const subStatus = subErrors.length === 0 ? "completed" : "failed";
           recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
@@ -3225,7 +3293,7 @@ registerBuiltinNodeType("action.run_agent", {
           return {
             success: subErrors.length === 0,
             delegated: true,
-            runId: subCtx?.id || null,
+            runId: subCtx?.id || subCtx?.runId || null,
             subWorkflowId: wf.id,
             subWorkflowName: wf.name,
             subStatus,
@@ -15567,7 +15635,6 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
-
 
 
 

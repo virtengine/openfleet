@@ -2158,6 +2158,8 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     cooldownMs: 1800000,
     maxAttempts: 4,
     baseBranch: "main",
+    delegationWatchdogTimeoutMs: 300000,
+    delegationWatchdogMaxRecoveries: 1,
   },
   nodes: [
     node("trigger", "trigger.event", "Merge Conflict Detected", {
@@ -2364,6 +2366,5 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
-
 
 

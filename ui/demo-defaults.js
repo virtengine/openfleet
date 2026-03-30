@@ -447,7 +447,9 @@
         "autoApplySuggestions": true,
         "trustedAuthors": "",
         "allowTrustedFixes": false,
-        "allowTrustedMerges": false
+        "allowTrustedMerges": false,
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1
       },
       "metadata": {
         "author": "bosun",
@@ -2813,7 +2815,9 @@
         "timeoutMs": 600000,
         "cooldownMs": 1800000,
         "maxAttempts": 4,
-        "baseBranch": "main"
+        "baseBranch": "main",
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1
       },
       "metadata": {
         "author": "bosun",
@@ -2973,6 +2977,8 @@
             "prompt": "# Merge Conflict Resolution\n\nYou are resolving merge conflicts in a git worktree.\n\n## Context\n- **Working directory**: `{{worktreePath}}`\n- **PR branch** (HEAD): `{{branch}}`\n- **Base branch** (incoming): `origin/{{baseBranch}}`\n- **PR**: #{{prNumber}}\n- **Task**: {{taskTitle}}\n\n## Conflicted files needing manual resolution:\n{{manualFiles}}\n\n## Instructions\n1. Read both sides of each conflict carefully\n2. Understand the INTENT of each change (feature vs upstream)\n3. Write a correct resolution that preserves both intents\n4. `git add` each resolved file\n5. Run `git commit --no-edit` to finalize the merge\n6. Do NOT use `--theirs` or `--ours` for code files\n7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
             "sdk": "auto",
             "timeoutMs": "{{timeoutMs}}",
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "failOnError": true,
             "continueOnError": true
           },
@@ -18687,6 +18693,8 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1,
         "prePrValidationEnabled": true,
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
@@ -18984,7 +18992,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -19009,7 +19019,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -19034,7 +19046,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -20998,7 +21012,9 @@
         "autoApplySuggestions": true,
         "trustedAuthors": "",
         "allowTrustedFixes": false,
-        "allowTrustedMerges": false
+        "allowTrustedMerges": false,
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1
       },
       "nodes": [
         {
@@ -23212,7 +23228,9 @@
         "timeoutMs": 600000,
         "cooldownMs": 1800000,
         "maxAttempts": 4,
-        "baseBranch": "main"
+        "baseBranch": "main",
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1
       },
       "nodes": [
         {
@@ -23341,6 +23359,8 @@
             "prompt": "# Merge Conflict Resolution\n\nYou are resolving merge conflicts in a git worktree.\n\n## Context\n- **Working directory**: `{{worktreePath}}`\n- **PR branch** (HEAD): `{{branch}}`\n- **Base branch** (incoming): `origin/{{baseBranch}}`\n- **PR**: #{{prNumber}}\n- **Task**: {{taskTitle}}\n\n## Conflicted files needing manual resolution:\n{{manualFiles}}\n\n## Instructions\n1. Read both sides of each conflict carefully\n2. Understand the INTENT of each change (feature vs upstream)\n3. Write a correct resolution that preserves both intents\n4. `git add` each resolved file\n5. Run `git commit --no-edit` to finalize the merge\n6. Do NOT use `--theirs` or `--ours` for code files\n7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
             "sdk": "auto",
             "timeoutMs": "{{timeoutMs}}",
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "failOnError": true,
             "continueOnError": true
           },
@@ -38229,6 +38249,8 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1,
         "prePrValidationEnabled": true,
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
@@ -38495,7 +38517,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -38520,7 +38544,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -38545,7 +38571,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,

@@ -522,6 +522,7 @@ registerNodeType("action.run_agent", {
               });
             } else {
               tracker.updateSessionStatus(taskIdForDelegate, "active");
+              if (taskTitleForDelegate) tracker.renameSession(taskIdForDelegate, taskTitleForDelegate);
             }
             tracker.recordEvent(taskIdForDelegate, {
               role: "system",
@@ -558,43 +559,76 @@ registerNodeType("action.run_agent", {
           };
           const delegatedWatchdogTimeoutMs = resolveDelegatedWatchdogTimeoutMs();
           const delegatedWatchdogMaxRecoveries = resolveDelegatedWatchdogMaxRecoveries();
-          let watchdogRetryCount = 0;
-          let subRun = null;
-          let watchdogRecovered = false;
-          let watchdogState = null;
-
-          while (true) {
-            subRun = await engine.execute(candidate.id, {
-              ...eventPayload,
-              _agentWorkflowActive: true,
+          const existingWatchdog = ctx.data?._delegationWatchdog && typeof ctx.data._delegationWatchdog === "object"
+            ? { ...ctx.data._delegationWatchdog }
+            : null;
+          const priorAttemptsRaw = Number(existingWatchdog?.recoveryAttempts);
+          const priorRecoveryAttempts = Number.isFinite(priorAttemptsRaw)
+            ? Math.max(0, Math.trunc(priorAttemptsRaw))
+            : (existingWatchdog?.recoveryAttempted === true ? 1 : 0);
+          const parentWorkflowId = String(ctx.data?._workflowId || "").trim();
+          const workflowStack = normalizeWorkflowStack(ctx.data?._workflowStack);
+          if (parentWorkflowId && workflowStack[workflowStack.length - 1] !== parentWorkflowId) {
+            workflowStack.push(parentWorkflowId);
+          }
+          const rootRunId = String(
+            ctx.data?._workflowRootRunId ||
+            ctx.data?._rootRunId ||
+            ctx.id ||
+            "",
+          ).trim() || ctx.id;
+          const checkpointDelegationWatchdog = (watchdogState) => {
+            if (!ctx.data || typeof ctx.data !== "object") return;
+            if (watchdogState && typeof watchdogState === "object") {
+              ctx.data._delegationWatchdog = watchdogState;
+            } else if (existingWatchdog) {
+              ctx.data._delegationWatchdog = existingWatchdog;
+            } else {
+              delete ctx.data._delegationWatchdog;
+            }
+            if (typeof engine?._checkpointRun === "function") {
+              engine._checkpointRun(ctx);
+            }
+          };
+          const delegatedWatchdog = {
+            nodeId: node.id,
+            state: "delegated",
+            delegationType: "workflow",
+            taskScoped: false,
+            startedAt: Date.now(),
+            updatedAt: new Date().toISOString(),
+            workflowId: candidate.id,
+            workflowName: candidate.name || candidate.id,
+            timeoutMs: delegatedWatchdogTimeoutMs,
+            delegationWatchdogTimeoutMs: delegatedWatchdogTimeoutMs,
+            maxRecoveries: delegatedWatchdogMaxRecoveries,
+            delegationWatchdogMaxRecoveries: delegatedWatchdogMaxRecoveries,
+            recoveryAttempts: priorRecoveryAttempts,
+            recoveryAttempted: priorRecoveryAttempts > 0,
+          };
+          const delegatedInput = {
+            ...eventPayload,
+            _agentWorkflowActive: true,
+            _parentWorkflowId: parentWorkflowId || "",
+            _workflowParentRunId: ctx.id,
+            _workflowRootRunId: rootRunId,
+            _workflowStack: [...workflowStack, candidate.id],
+          };
+          checkpointDelegationWatchdog(delegatedWatchdog);
+          let subRun;
+          try {
+            subRun = await engine.execute(candidate.id, delegatedInput, {
+              _parentRunId: ctx.id,
+              _rootRunId: rootRunId,
+              _parentExecutionId: `node:${ctx?.id || "run"}:${node.id}`,
             });
-
-            const delegatedRunId = String(subRun?.runId || subRun?.id || "").trim();
-            const delegatedHistory = delegatedRunId && typeof engine.getRunHistory === "function"
-              ? engine.getRunHistory(candidate.id, 10)
-              : [];
-            watchdogState = Array.isArray(delegatedHistory)
-              ? delegatedHistory.find((entry) => String(entry?.runId || "") === delegatedRunId) || null
-              : null;
-            const stalledDelegation = Boolean(
-              subRun?.status === "running" &&
-              watchdogState?.status === "running" &&
-              (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
-            );
-
-            if (!stalledDelegation) break;
-            if (watchdogRetryCount >= delegatedWatchdogMaxRecoveries) break;
-            watchdogRetryCount += 1;
-            watchdogRecovered = true;
+          } finally {
+            checkpointDelegationWatchdog(null);
           }
 
-          const stalledDelegation = Boolean(
-            subRun?.status === "running" &&
-            watchdogState?.status === "running" &&
-            (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
-          );
-          const subFailed = stalledDelegation || (Array.isArray(subRun?.errors) && subRun.errors.length > 0);
-          const subStatus = stalledDelegation ? "stalled" : (subFailed ? "failed" : "completed");
+          const subErrors = Array.isArray(subRun?.errors) ? subRun.errors : [];
+          const subFailed = subErrors.length > 0;
+          const subStatus = subFailed ? "failed" : "completed";
 
           if (tracker && taskIdForDelegate) {
             tracker.recordEvent(taskIdForDelegate, {
@@ -614,11 +648,7 @@ registerNodeType("action.run_agent", {
             subWorkflowName: candidate.name || candidate.id,
             subStatus,
             subRun,
-            watchdogRecovered,
-            recoveredFromStall: watchdogRecovered,
-            watchdogRetryCount,
-            failureKind: stalledDelegation ? "stalled_delegation" : undefined,
-            retryable: stalledDelegation ? true : undefined,
+            runId: subRun?.id || subRun?.runId || null,
           };
         }
       }
@@ -6478,7 +6508,6 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
-
 
 
 
