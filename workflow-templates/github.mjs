@@ -95,7 +95,8 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
 
     node("automation-eligible", "condition.expression", "Bosun-Created PR?", {
       expression:
-        "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()",    }, { x: 400, y: 230, outputs: ["yes", "no"] }),
+        "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()",
+    }, { x: 400, y: 230, outputs: ["yes", "no"] }),
 
     node("check-ci", "validation.build", "Check CI Status", {
       command: "gh pr checks {{prNumber}} --json name,state",
@@ -432,7 +433,8 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
         "  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);" +
         "  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';" +
         "  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];" +
-        "  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);" +
+        "  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };" +
+        "  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);" +
         "  /* Skip PRs already owned by the watchdog fix agent */" +
         "  const pr = prs.find((p) =>" +
         "    isBosunCreated(p) &&" +
@@ -3575,4 +3577,3 @@ export const GITHUB_CHECK_FAILURE_TEMPLATE = {
     tags: ["github", "ci", "check", "event-driven", "webhook", "reliability"],
   },
 };
-
