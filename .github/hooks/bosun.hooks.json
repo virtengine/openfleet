@@ -5,7 +5,7 @@
       "type": "command",
       "command": [
         "node",
-        "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.bosun\\worktrees\\task-f8180f1d37de-a60467be10\\agent\\agent-hook-bridge.mjs",
+        "agent/agent-hook-bridge.mjs",
         "--agent",
         "copilot",
         "--event",
@@ -19,7 +19,7 @@
       "type": "command",
       "command": [
         "node",
-        "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.bosun\\worktrees\\task-f8180f1d37de-a60467be10\\agent\\agent-hook-bridge.mjs",
+        "agent/agent-hook-bridge.mjs",
         "--agent",
         "copilot",
         "--event",
@@ -34,7 +34,7 @@
         "type": "command",
         "command": [
           "node",
-          "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.bosun\\worktrees\\task-f8180f1d37de-a60467be10\\agent\\agent-hook-bridge.mjs",
+          "agent/agent-hook-bridge.mjs",
           "--agent",
           "copilot",
           "--event",
@@ -50,7 +50,7 @@
         "type": "command",
         "command": [
           "node",
-          "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.bosun\\worktrees\\task-f8180f1d37de-a60467be10\\agent\\agent-hook-bridge.mjs",
+          "agent/agent-hook-bridge.mjs",
           "--agent",
           "copilot",
           "--event",
