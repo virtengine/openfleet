@@ -12265,7 +12265,12 @@ async function buildUiServerStatePayload(reqUrl, options = {}) {
   }
 
   if (flags.planningAccountingEnabled) {
-    const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false }).catch(() => null);
+    let wfCtx = null;
+    try {
+      wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false });
+    } catch {
+      wfCtx = null;
+    }
     const workflowRuns = wfCtx?.ok
       ? await Promise.resolve(wfCtx.engine?.list?.() || []).catch(() => [])
       : [];
@@ -15738,7 +15743,7 @@ async function handleApi(req, res, url) {
     let activeWorkflowRuns = 0;
     let workflowRunDetails = [];
     try {
-      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (wfCtx?.ok && wfCtx.engine) {
         const runs = await Promise.resolve(wfCtx.engine.list?.() || []).catch(() => []);
         const active = (Array.isArray(runs) ? runs : []).filter(

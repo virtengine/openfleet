@@ -6497,9 +6497,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 3,
+        "version": 4,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "3.0.0",
+        "templateVersion": "3.1.0",
         "tags": [
           "agent",
           "task-completion",
@@ -6693,7 +6693,7 @@
           "label": "Handoff PR Lifecycle",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
+            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology: tests written before implementation.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing (build, test, lint).\n\n---\nTask-ID: {{taskId}}",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -6937,7 +6937,7 @@
           "label": "Handoff PR Lifecycle (After Retry)",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
+            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with one automated remediation pass.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after auto-fix remediation.\n\n---\nTask-ID: {{taskId}}",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -7166,7 +7166,7 @@
           "label": "Handoff PR Lifecycle (After Retry 2)",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task after two auto-fix passes.\n\n**Plan:**\n{{plan}}\n\nValidation passed after 2nd remediation. Bosun lifecycle handoff ready.",
+            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with two automated remediation passes.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after 2nd remediation round.\n\n---\nTask-ID: {{taskId}}",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -15538,7 +15538,7 @@
           "label": "Handoff Lifecycle If Missing",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
+            "body": "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -16404,7 +16404,7 @@
           "label": "Handoff/Refresh Lifecycle",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
+            "body": "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -18580,7 +18580,7 @@
           "label": "Handoff Fix Lifecycle",
           "config": {
             "title": "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
-            "body": "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nBosun PR lifecycle handoff context included.",
+            "body": "## Summary\n\nAutomated dependency audit fix. Resolves vulnerabilities flagged by `npm audit` at severity level **{{auditLevel}}** or higher.\n\n## What Changed\n\n- Updated vulnerable dependencies to patched versions\n- Verified no breaking changes via build and test validation",
             "branch": "fix/dep-audit-{{_runId}}",
             "baseBranch": "main"
           },
@@ -20022,7 +20022,7 @@
           "label": "Open Quality PR",
           "config": {
             "title": "refactor: code quality pass",
-            "body": "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
+            "body": "## Summary\n\nAutomated code-quality session. Structural refactor only — zero functional changes.\n\nSee `.bosun-monitor/code-quality-striker.md` for session details.",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "labels": [
@@ -22250,6 +22250,7 @@
             "title": "research: {{query}}",
             "branch": "{{prBranch}}",
             "baseBranch": "{{prBaseBranch}}",
+            "body": "## Research\\n\\n{{query}}",
             "continueOnError": true
           },
           "position": {
@@ -23309,9 +23310,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 1,
+        "version": 2,
         "createdAt": "2026-03-15T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.1.0",
         "tags": [
           "task",
           "batch",
@@ -23454,7 +23455,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{task.taskTitle}}",
-            "body": "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
+            "body": "## Summary\n\n{{task.taskDescription}}\n\n---\nTask-ID: {{task.taskId}}",
             "base": "{{defaultBaseBranch}}",
             "branch": "{{task.branch}}",
             "draft": "{{draftPR}}"
@@ -23891,8 +23892,8 @@
         "core",
         "multi-remediation"
       ],
-      "nodeCount": 71,
-      "edgeCount": 82,
+      "nodeCount": 73,
+      "edgeCount": 84,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -23922,9 +23923,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 4,
+        "version": 5,
         "createdAt": "2026-03-01T00:00:00Z",
-        "templateVersion": "4.0.0",
+        "templateVersion": "4.1.0",
         "tags": [
           "task",
           "lifecycle",
@@ -24611,12 +24612,29 @@
           ]
         },
         {
+          "id": "build-pr-body",
+          "type": "action.set_variable",
+          "label": "Build PR Description",
+          "config": {
+            "key": "prBody",
+            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const dc = $ctx.getNodeOutput('detect-commits') || {}; const stats = dc.diffStats || {}; const msgs = Array.isArray(dc.commitMessages) ? dc.commitMessages : []; const files = Array.isArray(dc.changedFiles) ? dc.changedFiles : []; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } if (msgs.length) {   s.push('');   s.push('## Changes');   s.push('');   msgs.forEach(m => s.push('- ' + m)); } if (stats.filesChanged) {   s.push('');   s.push('**' + stats.filesChanged + ' file' + (stats.filesChanged === 1 ? '' : 's') + ' changed, ' + (stats.insertions || 0) + ' insertion' + ((stats.insertions || 0) === 1 ? '' : 's') + '(+), ' + (stats.deletions || 0) + ' deletion' + ((stats.deletions || 0) === 1 ? '' : 's') + '(-)**'); } if (files.length) {   s.push('');   s.push('<details><summary>Files touched (' + files.length + ')</summary>');   s.push('');   files.slice(0, 80).forEach(f => s.push('- `' + f + '`'));   if (files.length > 80) s.push('- ... and ' + (files.length - 80) + ' more');   s.push('');   s.push('</details>'); } s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 0,
+            "y": 2195
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "body": "{{prBody}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -24790,12 +24808,29 @@
           ]
         },
         {
+          "id": "build-pr-body-stolen",
+          "type": "action.set_variable",
+          "label": "Build PR Description (Recovered)",
+          "config": {
+            "key": "prBody",
+            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } s.push(''); s.push('> Claim was lost during agent execution — PR recovered.'); s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 400,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Recover PR Link",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "body": "{{prBody}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -25488,11 +25523,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->create-pr",
+          "id": "push-ok->build-pr-body",
           "source": "push-ok",
-          "target": "create-pr",
+          "target": "build-pr-body",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "build-pr-body->create-pr",
+          "source": "build-pr-body",
+          "target": "create-pr",
+          "sourcePort": "default"
         },
         {
           "id": "create-pr->pr-created",
@@ -25585,11 +25626,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->create-pr-retry",
+          "id": "claim-stolen->build-pr-body-stolen",
           "source": "claim-stolen",
-          "target": "create-pr-retry",
+          "target": "build-pr-body-stolen",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "build-pr-body-stolen->create-pr-retry",
+          "source": "build-pr-body-stolen",
+          "target": "create-pr-retry",
+          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->pr-created-stolen",
@@ -32439,7 +32486,7 @@
           "label": "Handoff PR Lifecycle",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
+            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology: tests written before implementation.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing (build, test, lint).\n\n---\nTask-ID: {{taskId}}",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -32683,7 +32730,7 @@
           "label": "Handoff PR Lifecycle (After Retry)",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
+            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with one automated remediation pass.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after auto-fix remediation.\n\n---\nTask-ID: {{taskId}}",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -32912,7 +32959,7 @@
           "label": "Handoff PR Lifecycle (After Retry 2)",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task after two auto-fix passes.\n\n**Plan:**\n{{plan}}\n\nValidation passed after 2nd remediation. Bosun lifecycle handoff ready.",
+            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with two automated remediation passes.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after 2nd remediation round.\n\n---\nTask-ID: {{taskId}}",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -33375,8 +33422,8 @@
         "templateState": {
           "templateId": "template-backend-agent",
           "templateName": "Task Completion Agent",
-          "templateVersion": "3.0.0",
-          "installedTemplateVersion": "3.0.0",
+          "templateVersion": "3.1.0",
+          "installedTemplateVersion": "3.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -40874,7 +40921,7 @@
           "label": "Handoff Lifecycle If Missing",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
+            "body": "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -41693,7 +41740,7 @@
           "label": "Handoff/Refresh Lifecycle",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
+            "body": "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -43777,7 +43824,7 @@
           "label": "Handoff Fix Lifecycle",
           "config": {
             "title": "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
-            "body": "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nBosun PR lifecycle handoff context included.",
+            "body": "## Summary\n\nAutomated dependency audit fix. Resolves vulnerabilities flagged by `npm audit` at severity level **{{auditLevel}}** or higher.\n\n## What Changed\n\n- Updated vulnerable dependencies to patched versions\n- Verified no breaking changes via build and test validation",
             "branch": "fix/dep-audit-{{_runId}}",
             "baseBranch": "main"
           },
@@ -45143,7 +45190,7 @@
           "label": "Open Quality PR",
           "config": {
             "title": "refactor: code quality pass",
-            "body": "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
+            "body": "## Summary\n\nAutomated code-quality session. Structural refactor only — zero functional changes.\n\nSee `.bosun-monitor/code-quality-striker.md` for session details.",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "labels": [
@@ -47271,6 +47318,7 @@
             "title": "research: {{query}}",
             "branch": "{{prBranch}}",
             "baseBranch": "{{prBaseBranch}}",
+            "body": "## Research\\n\\n{{query}}",
             "continueOnError": true
           },
           "position": {
@@ -48411,7 +48459,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{task.taskTitle}}",
-            "body": "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
+            "body": "## Summary\n\n{{task.taskDescription}}\n\n---\nTask-ID: {{task.taskId}}",
             "base": "{{defaultBaseBranch}}",
             "branch": "{{task.branch}}",
             "draft": "{{draftPR}}"
@@ -48585,8 +48633,8 @@
         "templateState": {
           "templateId": "template-task-batch-pr",
           "templateName": "Task Batch → PR",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.1.0",
+          "installedTemplateVersion": "1.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -48839,7 +48887,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 71,
+      "nodeCount": 73,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -49523,12 +49571,29 @@
           ]
         },
         {
+          "id": "build-pr-body",
+          "type": "action.set_variable",
+          "label": "Build PR Description",
+          "config": {
+            "key": "prBody",
+            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const dc = $ctx.getNodeOutput('detect-commits') || {}; const stats = dc.diffStats || {}; const msgs = Array.isArray(dc.commitMessages) ? dc.commitMessages : []; const files = Array.isArray(dc.changedFiles) ? dc.changedFiles : []; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } if (msgs.length) {   s.push('');   s.push('## Changes');   s.push('');   msgs.forEach(m => s.push('- ' + m)); } if (stats.filesChanged) {   s.push('');   s.push('**' + stats.filesChanged + ' file' + (stats.filesChanged === 1 ? '' : 's') + ' changed, ' + (stats.insertions || 0) + ' insertion' + ((stats.insertions || 0) === 1 ? '' : 's') + '(+), ' + (stats.deletions || 0) + ' deletion' + ((stats.deletions || 0) === 1 ? '' : 's') + '(-)**'); } if (files.length) {   s.push('');   s.push('<details><summary>Files touched (' + files.length + ')</summary>');   s.push('');   files.slice(0, 80).forEach(f => s.push('- `' + f + '`'));   if (files.length > 80) s.push('- ... and ' + (files.length - 80) + ' more');   s.push('');   s.push('</details>'); } s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 0,
+            "y": 2195
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "body": "{{prBody}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -49702,12 +49767,29 @@
           ]
         },
         {
+          "id": "build-pr-body-stolen",
+          "type": "action.set_variable",
+          "label": "Build PR Description (Recovered)",
+          "config": {
+            "key": "prBody",
+            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } s.push(''); s.push('> Claim was lost during agent execution — PR recovered.'); s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 400,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Recover PR Link",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "body": "{{prBody}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -50400,11 +50482,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->create-pr",
+          "id": "push-ok->build-pr-body",
           "source": "push-ok",
-          "target": "create-pr",
+          "target": "build-pr-body",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "build-pr-body->create-pr",
+          "source": "build-pr-body",
+          "target": "create-pr",
+          "sourcePort": "default"
         },
         {
           "id": "create-pr->pr-created",
@@ -50497,11 +50585,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->create-pr-retry",
+          "id": "claim-stolen->build-pr-body-stolen",
           "source": "claim-stolen",
-          "target": "create-pr-retry",
+          "target": "build-pr-body-stolen",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "build-pr-body-stolen->create-pr-retry",
+          "source": "build-pr-body-stolen",
+          "target": "create-pr-retry",
+          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->pr-created-stolen",
@@ -50695,8 +50789,8 @@
         "templateState": {
           "templateId": "template-task-lifecycle",
           "templateName": "Task Lifecycle",
-          "templateVersion": "4.0.0",
-          "installedTemplateVersion": "4.0.0",
+          "templateVersion": "4.1.0",
+          "installedTemplateVersion": "4.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }

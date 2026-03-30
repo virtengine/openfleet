@@ -31,6 +31,18 @@ export function findPackageRoot({ startDir = process.cwd() } = {}) {
   return null;
 }
 
+function resolveWindowsEsbuildBinary({ startDir = process.cwd() } = {}) {
+  if (process.platform !== "win32") return null;
+  const packageRoot = findPackageRoot({ startDir });
+  if (!packageRoot) return null;
+  const candidates = [
+    resolve(packageRoot, "node_modules", "@esbuild", "win32-x64", "esbuild.exe"),
+    resolve(packageRoot, "node_modules", "@esbuild", "win32-ia32", "esbuild.exe"),
+    resolve(packageRoot, "node_modules", "@esbuild", "win32-arm64", "esbuild.exe"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) || null;
+}
+
 function resolveCliPathArg(value, { startDir, packageRoot }) {
   if (!value || isAbsolute(value)) {
     return value;
@@ -138,9 +150,13 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
     }
   }
 
+  const esbuildBinaryPath = resolveWindowsEsbuildBinary({ startDir });
   const env = {
     ...process.env,
     BOSUN_TEST_CHILD_SPAWN_BLOCKED: detectChildSpawnBlocked() ? "1" : "0",
+    ...(esbuildBinaryPath && !process.env.ESBUILD_BINARY_PATH
+      ? { ESBUILD_BINARY_PATH: esbuildBinaryPath }
+      : {}),
   };
 
   const result = spawnSync(process.execPath, [...nodeArgs, vitestEntry, ...vitestArgs], {

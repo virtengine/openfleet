@@ -527,6 +527,7 @@ function buildSessionTelemetry(session, progress = null, turns = null) {
 }
 
 function buildSessionSummaryRecord(session, { progress = null, preview = null, runtimeUpdatedAt = null, runtimeIsLive = null } = {}) {
+  const s = session;
   const sessionId = session?.id || session?.taskId;
   const turns = Array.isArray(session?.turns)
     ? cloneTurns(session.turns)
@@ -574,8 +575,8 @@ function buildSessionSummaryRecord(session, { progress = null, preview = null, r
     runtimeState,
     runtimeUpdatedAt: lastActiveAt,
     runtimeIsLive: isLive,
-    workspaceId: String(session?.metadata?.workspaceId || "").trim() || null,
-    workspaceDir: String(session?.metadata?.workspaceDir || "").trim() || null,
+    workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
+    workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
     branch: String(session?.metadata?.branch || "").trim() || null,
     turnCount: Math.max(0, Number(session?.turnCount) || 0),
     turns,

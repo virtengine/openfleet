@@ -5609,6 +5609,151 @@
           Object.assign(STATE.settings, updates);
           return { ok: true, data: { ...STATE.settings } };
         }
+        if (route === '/api/server-state') {
+          return {
+            ok: true,
+            data: {
+              status: 'running',
+              workspace: 'demo-workspace',
+              activeSessions: STATE.sessions.filter(s => s.status === 'active').length,
+              activeTasks: TASKS.filter(t => t.status === 'running').length,
+              pendingTasks: TASKS.filter(t => t.status === 'queued').length,
+              logCount: LOGS.length,
+            },
+          };
+        }
+        if (route === '/api/audit/summary') {
+          return {
+            ok: true,
+            data: {
+              totalTasks: TASKS.length,
+              activeSessions: STATE.sessions.filter(s => s.status === 'active').length,
+              recentEvents: LOGS.slice(-10).length,
+            },
+            tasks: TASKS.slice(0, 10).map((task) => ({
+              taskId: task.id,
+              title: task.title,
+              status: task.status,
+              branch: task.branch || null,
+            })),
+          };
+        }
+        if (route === '/api/audit/events') {
+          return {
+            ok: true,
+            data: LOGS.slice(-25).map((entry, index) => ({
+              id: entry.id || `audit-${index + 1}`,
+              level: entry.level || 'info',
+              source: entry.source || 'demo',
+              message: entry.msg || entry.message || '',
+              timestamp: entry.ts || entry.timestamp || new Date().toISOString(),
+            })),
+          };
+        }
+        if (route === '/api/audit/tasks') {
+          return {
+            ok: true,
+            data: TASKS.map((task) => ({
+              taskId: task.id,
+              title: task.title,
+              status: task.status,
+              priority: task.priority || 'normal',
+              issueNumber: task.issueNumber || null,
+            })),
+          };
+        }
+        if (route === '/api/tasks/decompose' || route === '/api/tasks/decompose/propose') {
+          const taskId = String(body?.taskId || body?.id || TASKS[0]?.id || '').trim();
+          const task = TASKS.find((entry) => entry.id === taskId) || TASKS[0] || null;
+          return {
+            ok: true,
+            mode: 'propose',
+            taskId,
+            task,
+            proposal: {
+              summary: `Break ${task?.title || 'the selected task'} into three focused steps.`,
+              steps: [
+                { id: `${taskId || 'task'}-step-1`, title: 'Confirm inputs and acceptance criteria' },
+                { id: `${taskId || 'task'}-step-2`, title: 'Implement the primary code path' },
+                { id: `${taskId || 'task'}-step-3`, title: 'Add verification and cleanup' },
+              ],
+            },
+          };
+        }
+        if (route === '/api/tasks/decompose/apply') {
+          const taskId = String(body?.taskId || body?.id || TASKS[0]?.id || '').trim();
+          return {
+            ok: true,
+            applied: true,
+            taskId,
+            createdTaskIds: [`${taskId || 'task'}-step-1`, `${taskId || 'task'}-step-2`, `${taskId || 'task'}-step-3`],
+          };
+        }
+        if (route === '/api/tasks/replan/propose') {
+          const taskId = String(body?.taskId || body?.id || TASKS[0]?.id || '').trim();
+          const task = TASKS.find((entry) => entry.id === taskId) || TASKS[0] || null;
+          return {
+            ok: true,
+            taskId,
+            proposal: {
+              summary: `Replan ${task?.title || 'the selected task'} with a narrower first milestone.`,
+              updates: [
+                { field: 'priority', value: task?.priority || 'high' },
+                { field: 'nextStep', value: 'Implement the highest-signal slice first' },
+              ],
+            },
+          };
+        }
+        if (route === '/api/tasks/replan/apply') {
+          const taskId = String(body?.taskId || body?.id || TASKS[0]?.id || '').trim();
+          const task = TASKS.find((entry) => entry.id === taskId) || null;
+          return {
+            ok: true,
+            applied: true,
+            task: task ? { ...task, nextStep: 'Implement the highest-signal slice first' } : null,
+          };
+        }
+        if (route === '/api/tui/config') {
+          if (method === 'POST') {
+            return {
+              ok: true,
+              saved: true,
+              path: String(body?.path || '').trim() || 'display.refreshMs',
+              value: body?.value ?? 2000,
+            };
+          }
+          return {
+            ok: true,
+            sections: [
+              {
+                id: 'display',
+                label: 'Display',
+                entries: [
+                  { path: 'display.refreshMs', label: 'Refresh interval', value: 2000, type: 'number' },
+                  { path: 'display.compactMode', label: 'Compact mode', value: false, type: 'boolean' },
+                ],
+              },
+            ],
+            meta: {
+              configPath: 'bosun.config.json',
+              writable: true,
+            },
+          };
+        }
+        if (route === '/api/workflows/approvals') {
+          return {
+            ok: true,
+            approvals: [
+              {
+                id: 'approval-demo-1',
+                workflowId: 'wf-demo',
+                workflowName: 'Demo Workflow',
+                status: 'pending',
+                requestedAt: new Date(now - 5 * min).toISOString(),
+              },
+            ],
+          };
+        }
 
         // ── Command ──
         if (route === '/api/command') {
