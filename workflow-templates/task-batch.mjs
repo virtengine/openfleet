@@ -316,3 +316,70 @@ export const TASK_BATCH_PR_TEMPLATE = {
     requiredTemplates: ["template-bosun-pr-progressor"],
   },
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task Batch Payload Validators
+// ═══════════════════════════════════════════════════════════════════════════
+
+const FIELD_MAX_LEN = 128;
+
+/**
+ * Validate and normalise an array of task-batch payload items.
+ * Required fields: taskId (non-empty string), taskTitle (non-empty string),
+ *   status (non-empty string), repository (non-empty string),
+ *   workspace (non-empty string).
+ * Optional fields (branch, scope) are truncated to 128 chars.
+ *
+ * @param {unknown[]} items
+ * @returns {object[]} normalised items
+ * @throws {Error} if any item fails validation
+ */
+export function validateTaskBatchPayload(items) {
+  if (!Array.isArray(items)) {
+    throw new Error("Invalid task-batch payload: expected an array");
+  }
+  return items.map((item, index) => {
+    if (!item || typeof item !== "object") {
+      throw new Error(`Invalid task-batch payload: item[${index}] must be an object`);
+    }
+    for (const field of ["taskId", "taskTitle", "status", "repository", "workspace"]) {
+      if (typeof item[field] !== "string" || item[field].trim() === "") {
+        throw new Error(
+          `Invalid task-batch payload: item[${index}].${field} must be a non-empty string`,
+        );
+      }
+    }
+    return {
+      ...item,
+      taskId: item.taskId.trim(),
+      taskTitle: item.taskTitle.trim(),
+      status: item.status.trim(),
+      repository: item.repository.trim(),
+      workspace: item.workspace.trim(),
+      branch:
+        typeof item.branch === "string"
+          ? item.branch.slice(0, FIELD_MAX_LEN)
+          : item.branch ?? null,
+      scope:
+        typeof item.scope === "string"
+          ? item.scope.slice(0, FIELD_MAX_LEN)
+          : item.scope ?? null,
+    };
+  });
+}
+
+/**
+ * Build a concise log-friendly summary of a task-batch payload array.
+ * @param {unknown[]} items
+ * @returns {{ type: "array", count: number, taskIds: string[] }}
+ */
+export function summarizeTaskBatchPayloadForLog(items) {
+  const arr = Array.isArray(items) ? items : [];
+  return {
+    type: "array",
+    count: arr.length,
+    taskIds: arr
+      .map((item) => (typeof item?.taskId === "string" ? item.taskId.trim() : ""))
+      .filter(Boolean),
+  };
+}
