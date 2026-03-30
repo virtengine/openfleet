@@ -1792,13 +1792,13 @@ export function AgentsTab() {
         <${Card} className="fleet-active-card">
           <${Collapsible}
             title=${activeSlots > 0
-              ? `Active Slots · <span class="numeral">${activeSlots}</span> active`
+              ? html`Active Slots · <span class="numeral">${activeSlots}</span> active`
               : "Active Slots"}
             defaultOpen=${!isCompact}
           >
             <div class="meta-text mb-sm">
               ${activeSlots > 0
-                ? `<span class="numeral">${activeSlots}</span> active · <span class="numeral">${freeSlots}</span> free`
+                ? html`<span class="numeral">${activeSlots}</span> active · <span class="numeral">${freeSlots}</span> free`
                 : "No active slots"}
             </div>
             <${TextField}

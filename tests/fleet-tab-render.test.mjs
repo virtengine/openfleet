@@ -491,8 +491,9 @@ for (const relPath of ["ui/tabs/telemetry.js", "site/ui/tabs/telemetry.js"]) {
       expect(source).toContain('variant="caption" className="numeral">${formatBytes(ev.originalChars)}');
       expect(source).toContain('variant="caption" className="numeral">${formatBytes(ev.compressedChars)}');
       expect(source).toContain('variant="caption" className="numeral">${formatCount(ev.estimatedSavedTokens || 0)}');
-      expect(source).toContain('variant="caption" className="numeral">
-                      ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}');
+      expect(source).toContain(
+        'variant="caption" className="numeral">\n                      ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}'
+      );
       expect(source).not.toContain('font-variant-numeric');
     });
   });
