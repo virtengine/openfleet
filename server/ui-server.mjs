@@ -13111,6 +13111,12 @@ async function buildUsageAnalytics(days) {
   const dailySkills = {};
   /** dailyMcp[date][tool] = count */
   const dailyMcp = {};
+  /** dailyInputTokens[date] = total input tokens */
+  const dailyInputTokens = {};
+  /** dailyOutputTokens[date] = total output tokens */
+  const dailyOutputTokens = {};
+  /** dailyTotalTokens[date] = total tokens */
+  const dailyTotalTokens = {};
 
   const allDates = new Set();
 
@@ -13127,6 +13133,11 @@ async function buildUsageAnalytics(days) {
       if (ts > newestTs) newestTs = ts;
       const day = getEntryDayKey(session, ts);
       if (day) allDates.add(day);
+      if (day) {
+        dailyInputTokens[day] = (dailyInputTokens[day] || 0) + numberOrZero(session.inputTokens);
+        dailyOutputTokens[day] = (dailyOutputTokens[day] || 0) + numberOrZero(session.outputTokens);
+        dailyTotalTokens[day] = (dailyTotalTokens[day] || 0) + numberOrZero(session.tokenCount);
+      }
 
       agentRuns += 1;
       const exec = String(session.executor || session.model || "unknown").trim() || "unknown";
@@ -13201,7 +13212,15 @@ async function buildUsageAnalytics(days) {
   const topSkillNames = topSkills.slice(0, 6).map((s) => s.name);
   const topMcpNames = topMcpTools.slice(0, 6).map((t) => t.name);
 
-  const trend = { dates: sortedDates, agents: {}, skills: {}, mcpTools: {} };
+  const trend = {
+    dates: sortedDates,
+    agents: {},
+    skills: {},
+    mcpTools: {},
+    tokens: sortedDates.map((d) => dailyTotalTokens[d] || 0),
+    inputTokens: sortedDates.map((d) => dailyInputTokens[d] || 0),
+    outputTokens: sortedDates.map((d) => dailyOutputTokens[d] || 0),
+  };
   for (const name of topAgentNames) {
     trend.agents[name] = sortedDates.map((d) => dailyAgents[d]?.[name] || 0);
   }
@@ -13212,10 +13231,17 @@ async function buildUsageAnalytics(days) {
     trend.mcpTools[name] = sortedDates.map((d) => dailyMcp[d]?.[name] || 0);
   }
 
+  const totalTokens = sessionWindow.reduce((sum, session) => sum + numberOrZero(session.tokenCount), 0);
+  const totalInputTokens = sessionWindow.reduce((sum, session) => sum + numberOrZero(session.inputTokens), 0);
+  const totalOutputTokens = sessionWindow.reduce((sum, session) => sum + numberOrZero(session.outputTokens), 0);
+
   return {
     agentRuns,
     skillInvocations,
     mcpToolCalls,
+    totalTokens,
+    totalInputTokens,
+    totalOutputTokens,
     avgPerDay,
     lastActiveAt: newestTs < Infinity && newestTs > 0 ? new Date(newestTs).toISOString() : null,
     sinceAt: oldestTs < Infinity ? new Date(oldestTs).toISOString() : null,
