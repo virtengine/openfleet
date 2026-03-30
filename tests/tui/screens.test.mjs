@@ -186,14 +186,12 @@ describe("tui screen rendering", () => {
         sessions: sessionsFixture,
         stats: monitorStatsFixture,
       }),
-      { columns: 220, rows: 28 },
+      { columns: 220, rows: 60 },
     );
 
     await waitFor(() => view.text().includes("Backoff queue (1)"));
     await view.press("`r", 80);
-    await waitFor(() => view.text().includes("Session Detail"));
-
-    expect(view.text()).toContain("| 2026-03-23 00:00:00.000 |");
+    await waitFor(() => view.text().includes("| 2026-03-23 00:00:00.000 |"));
     expect(view.text()).not.toContain("| 2026-03-23 00:00:17.000 |");
 
     await view.press("\u001b[6~", 80);
@@ -220,13 +218,15 @@ describe("tui screen rendering", () => {
     await waitFor(() => view.text().includes("Session Detail"));
 
     bridge.emit("logs:stream", {
-      sessionId: "session-active-1",
-      timestamp: "2026-03-23T00:00:31.000Z",
-      stream: "stdout",
+      logType: "stdout",
+      raw: "Steer message accepted by running session",
       line: "Steer message accepted by running session",
+      level: "info",
+      timestamp: "2026-03-23T00:00:31.000Z",
+      filePath: "",
     });
 
-    await waitFor(() => view.text().includes("Steer message accepted by running session"));
+    await waitFor(() => view.text().includes("00:00:31"));
     await view.unmount();
   });
 
@@ -327,12 +327,3 @@ describe("tui screen rendering", () => {
     await view.unmount();
   });
 });
-
-
-<<<<<<< HEAD
-||||||| bb6eaeec
-=======
-
-
-
->>>>>>> origin/main

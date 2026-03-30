@@ -96,13 +96,7 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
 
     node("automation-eligible", "condition.expression", "Bosun-Created PR?", {
       expression:
-<<<<<<< HEAD
-        `${BOSUN_CREATED_HTML_MARKER} auto-created by bosun\n(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()`,
-||||||| bb6eaeec
-        "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()",
-=======
-        "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()",
->>>>>>> origin/main
+        `/* ${BOSUN_CREATED_HTML_MARKER} auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('${BOSUN_CREATED_HTML_MARKER}') || /auto-created by bosun/i.test(body); })()`,
     }, { x: 400, y: 230, outputs: ["yes", "no"] }),
 
     node("check-ci", "validation.build", "Check CI Status", {

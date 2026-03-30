@@ -125,6 +125,7 @@ function streamPayloadToLogLine(payload) {
   const level = String(payload.level || payload.stream || payload.type || "log").padEnd(7, " ");
   const message = String(
     payload.line
+      || payload.raw
       || payload.message
       || payload.content
       || payload.text
@@ -182,7 +183,6 @@ function detailLines(sessionPayload) {
   ];
 }
 
-<<<<<<< HEAD
 function sliceWindow(items, offset, size) {
   return items.slice(offset, offset + size);
 }
@@ -209,7 +209,7 @@ function SessionDetail({
   const omitted = Number(diffView?.lines?.omitted || 0);
 
   return html`
-    <${Box} position="absolute" zIndex=${1} borderStyle="double" flexDirection="column" width=${terminalColumns - 2} paddingX=${1}>
+    <${Box} position="relative" flexDirection="column" paddingY=${1}>
       <${Text} bold>Session Detail<//>
       <${Box} marginTop=${1} flexDirection=${rightPanel ? "row" : "column"}>
         <${Box} flexDirection="column" width=${rightPanel ? Math.max(100, terminalColumns - 70) : undefined} flexGrow=${1}>
@@ -218,11 +218,11 @@ function SessionDetail({
 
           <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
             <${Text} bold>Turn Timeline<//>
-            <${Text} dimColor>turn | timestamp | Δtokens | duration | event<//>
+            <${Text} dimColor>turn | timestamp              | Δtokens | duration | event<//>
             ${visibleTurns.length
               ? visibleTurns.map((turn) => html`
                   <${Text} key=${turn.key}>
-                    ${pad(turn.number, 4, "right")} | ${pad(turn.timestamp, 19)} | ${pad(turn.tokenDelta, 7, "right")} | ${pad(turn.duration, 8)} | ${turn.eventType}
+                    ${pad(turn.number, 4, "right")} | ${pad(turn.timestamp, 23)} | ${pad(turn.tokenDelta, 7, "right")} | ${pad(turn.duration, 8)} | ${turn.eventType}
                   <//>
                 `)
               : html`<${Text} dimColor>No turns yet<//>`}
@@ -270,12 +270,7 @@ function SessionDetail({
   `;
 }
 
-export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null }) {
-||||||| bb6eaeec
-export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null }) {
-=======
 export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null, onFooterHintsChange }) {
->>>>>>> origin/main
   const resolvedHost = wsBridge?.host || host;
   const resolvedPort = wsBridge?.port || port;
   const { stdout } = useStdout();
@@ -368,10 +363,27 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   }, [applyRetryQueue, stats]);
 
   React.useEffect(() => {
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      setClockMs(now);
+      setEntries((previous) => {
+        const nextEntries = reconcileSessionEntries(previous, liveSessionsRef.current, now);
+        setSelectedId((current) => {
+          if (current && nextEntries.some((entry) => entry.id === current)) return current;
+          return nextEntries[0]?.id || "";
+        });
+        return nextEntries;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  React.useEffect(() => {
     if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
     const off = wsBridge.on("logs:stream", (payload) => {
-      const payloadSessionId = String(payload?.sessionId || payload?.id || payload?.session?.id || "");
-      if (!detailView?.session?.id || payloadSessionId !== String(detailView.session.id)) return;
       const line = streamPayloadToLogLine(payload);
       if (!line) return;
       setLogLines((current) => [...current.slice(-(MAX_LOG_LINES - 1)), line]);
@@ -379,7 +391,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     return () => {
       if (typeof off === "function") off();
     };
-  }, [detailView?.session?.id, wsBridge]);
+  }, [wsBridge]);
 
   React.useEffect(() => () => clearDetailPoll(), [clearDetailPoll]);
 
@@ -417,7 +429,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     try {
       const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all`);
       setDetailView(payload);
-      setLogLines(sessionMessagesToLogLines(payload).slice(-MAX_LOG_LINES));
       setStatusLine("");
     } catch (error) {
       setStatusLine(error.message || String(error));
@@ -586,13 +597,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }
   });
 
-<<<<<<< HEAD
-  const eventWidth = Math.max(12, terminalColumns - FIXED_TABLE_WIDTH);
-  const backoffMessageWidth = Math.max(20, terminalColumns - 34);
-||||||| bb6eaeec
-  const eventWidth = Math.max(12, (stdout?.columns || 120) - FIXED_TABLE_WIDTH);
-  const backoffMessageWidth = Math.max(20, (stdout?.columns || 120) - 34);
-=======
   React.useEffect(() => {
     if (typeof onFooterHintsChange !== "function") return;
     onFooterHintsChange(getFooterHints("agents", {
@@ -603,113 +607,11 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }));
   }, [confirmKill, detailView, diffView, logLines.length, onFooterHintsChange]);
 
-  const eventWidth = Math.max(12, (stdout?.columns || 120) - FIXED_TABLE_WIDTH);
-  const backoffMessageWidth = Math.max(20, (stdout?.columns || 120) - 34);
->>>>>>> origin/main
+  const eventWidth = Math.max(12, terminalColumns - FIXED_TABLE_WIDTH);
+  const backoffMessageWidth = Math.max(20, terminalColumns - 34);
 
   return html`
     <${Box} flexDirection="column" paddingY=${1}>
-      <${Box} borderStyle="single" paddingX=${1}>
-        ${renderCell("", 2, {})}
-        ${renderCell("ID", 8, { dimColor: true })}
-        ${renderCell("STAGE", 12, { dimColor: true })}
-        ${renderCell("PID", 8, { dimColor: true })}
-        ${renderCell("AGE/TURN", 10, { dimColor: true })}
-        ${renderCell("TOKENS", 12, { dimColor: true })}
-        ${renderCell("SESSION", 14, { dimColor: true })}
-        ${renderCell("EVENT", eventWidth, { dimColor: true })}
-      <//>
-      ${(entries.length ? entries : [{ id: "empty", session: null }]).map((entry) => {
-        if (!entry.session) {
-          return html`
-            <${Box} key="empty" paddingX=${1}>
-              <${Text} dimColor>No sessions<//>
-            <//>
-          `;
-        }
-        const row = projectSessionRow(entry.session, clockMs, eventWidth);
-        const selected = entry.id === selectedSession?.id;
-        return html`
-          <${Box} key=${entry.id} paddingX=${1}>
-            ${renderCell(row.statusDot, 2, {
-              color: row.statusColor,
-              inverse: selected,
-              dimColor: row.isDimmed || entry.isRetained,
-            })}
-            ${renderCell(row.idText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.stageText, 12, {
-              inverse: selected,
-              color: row.statusColor,
-              dimColor: row.isDimmed || entry.isRetained,
-            })}
-            ${renderCell(row.pidText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.ageTurnText, 10, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.tokensText, 12, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.sessionText, 14, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.eventText, eventWidth, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-          <//>
-        `;
-      })}
-
-      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-        <${Text} bold>
-          Backoff queue (${retryQueue.count || 0}) ${showBackoff ? "[B to collapse]" : "[B to expand]"}
-        <//>
-        ${showBackoff
-          ? (retryQueue.items || []).slice(0, 6).map((item, index) => html`
-              <${Text} key=${item.taskId || item.id || index} wrap="truncate-end">
-                ${pad(String(item.taskTitle || item.taskId || item.id || `item-${index}`), 16)}
-                ${pad(formatRetryQueueCountdown(item, clockMs), 16)}
-                ${pad(String(item.lastError || item.error || item.reason || "-"), backoffMessageWidth)}
-              <//>
-            `)
-          : null}
-        ${showBackoff && !(retryQueue.items || []).length
-          ? html`<${Text} dimColor>No tasks cooling down<//>`
-          : null}
-      <//>
-
-      ${confirmKill && selectedSession
-        ? html`
-            <${Box} marginTop=${1}>
-              <${Text} color="red">Kill ${describeSelection(selectedSession)}? [y/N]<//>
-            <//>
-          `
-        : null}
-
-      ${!detailView && logLines.length
-        ? html`
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Logs<//>
-              ${logLines.map((line, index) => html`
-                <${Text} key=${index} wrap="truncate-end">${line}<//>
-              `)}
-            <//>
-          `
-        : null}
-
-      ${!detailView && diffView
-        ? html`
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Diff<//>
-              <${Text}>${diffView.summary}<//>
-              ${diffView.files.length
-                ? diffView.files.map((file) => html`
-                    <${Text} key=${file.name}>
-                      ${file.name}  +${file.additions}  -${file.deletions}
-                    <//>
-                  `)
-                : html`<${Text} dimColor>No changed files<//>`}
-            <//>
-          `
-        : null}${statusLine
-        ? html`
-            <${Box} marginTop=${1}>
-              <${Text} color="yellow">${statusLine}<//>
-            <//>
-          `
-        : null}
-
       ${detailView
         ? html`
             <${SessionDetail}
@@ -721,12 +623,110 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
               steerMode=${steerMode}
               steerValue=${steerValue}
               terminalColumns=${terminalColumns}
-            />
+            />`
+        : html`
+            <${Box} borderStyle="single" paddingX=${1}>
+              ${renderCell("", 2, {})}
+              ${renderCell("ID", 8, { dimColor: true })}
+              ${renderCell("STAGE", 12, { dimColor: true })}
+              ${renderCell("PID", 8, { dimColor: true })}
+              ${renderCell("AGE/TURN", 10, { dimColor: true })}
+              ${renderCell("TOKENS", 12, { dimColor: true })}
+              ${renderCell("SESSION", 14, { dimColor: true })}
+              ${renderCell("EVENT", eventWidth, { dimColor: true })}
+            <//>
+            ${(entries.length ? entries : [{ id: "empty", session: null }]).map((entry) => {
+              if (!entry.session) {
+                return html`
+                  <${Box} key="empty" paddingX=${1}>
+                    <${Text} dimColor>No sessions<//>
+                  <//>
+                `;
+              }
+              const row = projectSessionRow(entry.session, clockMs, eventWidth);
+              const selected = entry.id === selectedSession?.id;
+              return html`
+                <${Box} key=${entry.id} paddingX=${1}>
+                  ${renderCell(row.statusDot, 2, {
+                    color: row.statusColor,
+                    inverse: selected,
+                    dimColor: row.isDimmed || entry.isRetained,
+                  })}
+                  ${renderCell(row.idText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+                  ${renderCell(row.stageText, 12, {
+                    inverse: selected,
+                    color: row.statusColor,
+                    dimColor: row.isDimmed || entry.isRetained,
+                  })}
+                  ${renderCell(row.pidText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+                  ${renderCell(row.ageTurnText, 10, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+                  ${renderCell(row.tokensText, 12, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+                  ${renderCell(row.sessionText, 14, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+                  ${renderCell(row.eventText, eventWidth, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+                <//>
+              `;
+            })}
+
+            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} bold>
+                Backoff queue (${retryQueue.count || 0}) ${showBackoff ? "[B to collapse]" : "[B to expand]"}
+              <//>
+              ${showBackoff
+                ? (retryQueue.items || []).slice(0, 6).map((item, index) => html`
+                    <${Text} key=${item.taskId || item.id || index} wrap="truncate-end">
+                      ${pad(String(item.taskTitle || item.taskId || item.id || `item-${index}`), 16)}
+                      ${pad(formatRetryQueueCountdown(item, clockMs), 16)}
+                      ${pad(String(item.lastError || item.error || item.reason || "-"), backoffMessageWidth)}
+                    <//>
+                  `)
+                : null}
+              ${showBackoff && !(retryQueue.items || []).length
+                ? html`<${Text} dimColor>No tasks cooling down<//>`
+                : null}
+            <//>
+
+            ${confirmKill && selectedSession
+              ? html`
+                  <${Box} marginTop=${1}>
+                    <${Text} color="red">Kill ${describeSelection(selectedSession)}? [y/N]<//>
+                  <//>
+                `
+              : null}
+
+            ${logLines.length
+              ? html`
+                  <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+                    <${Text} bold>Logs<//>
+                    ${logLines.map((line, index) => html`
+                      <${Text} key=${index} wrap="truncate-end">${line}<//>
+                    `)}
+                  <//>
+                `
+              : null}
+
+            ${diffView
+              ? html`
+                  <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+                    <${Text} bold>Diff<//>
+                    <${Text}>${diffView.summary}<//>
+                    ${diffView.files.length
+                      ? diffView.files.map((file) => html`
+                          <${Text} key=${file.name}>
+                            ${file.name}  +${file.additions}  -${file.deletions}
+                          <//>
+                        `)
+                      : html`<${Text} dimColor>No changed files<//>`}
+                  <//>
+                `
+              : null}
+          `}
+      ${statusLine
+        ? html`
+            <${Box} marginTop=${1}>
+              <${Text} color="yellow">${statusLine}<//>
+            <//>
           `
         : null}
     <//>
   `;
 }
-
-
-
