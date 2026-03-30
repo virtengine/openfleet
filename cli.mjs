@@ -2182,6 +2182,8 @@ async function main() {
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
     const summary = getWorkspaceStateSummary(configDir);
+    const toolOverhead = getToolOverheadReport(configDir, "primary");
+    const overheadSources = Object.entries(toolOverhead.bySource || {});
     if (summary.length === 0) {
       console.log("\n  No workspaces configured.\n");
     } else {
@@ -2199,18 +2201,16 @@ async function main() {
           console.log(`      enabled workflows: ${ws.enabledWorkflows.join(", ")}`);
         }
       }
-      const toolOverhead = getToolOverheadReport(configDir, "primary");
-      const overheadSources = Object.entries(toolOverhead.bySource || {});
-      if (toolOverhead.total > 0 || overheadSources.length > 0) {
-        console.log("\n  Tool Overhead:");
-        console.log(`    Total tool chars: ${toolOverhead.total.toLocaleString("en-US")}`);
-        for (const [source, chars] of overheadSources) {
-          const warning = Number(chars) > 10000 ? "  WARNING: high overhead" : "";
-          console.log(`    ${source}: ${Number(chars).toLocaleString("en-US")} chars${warning}`);
-        }
-      }
-      console.log("");
     }
+    if (toolOverhead.total > 0 || overheadSources.length > 0) {
+      console.log("  Tool Overhead:");
+      console.log(`    Total tool chars: ${toolOverhead.total.toLocaleString("en-US")}`);
+      for (const [source, chars] of overheadSources) {
+        const warning = Number(chars) > 10000 ? "  WARNING: high overhead" : "";
+        console.log(`    ${source}: ${Number(chars).toLocaleString("en-US")} chars${warning}`);
+      }
+    }
+    console.log("");
     process.exit(0);
   }
 
@@ -2921,4 +2921,3 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
-
