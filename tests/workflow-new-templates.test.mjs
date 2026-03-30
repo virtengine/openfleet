@@ -33,6 +33,35 @@ function findNode(workflow, nodeId) {
   return workflow.nodes.find((node) => node.id === nodeId);
 }
 
+describe("template-health-check self-improvement loop", () => {
+  it("collects recent runs, evaluates the latest run, and applies ratchet decisions", () => {
+    const template = getTemplate("template-health-check");
+    expect(template).toBeDefined();
+    expect(template.variables.maxBenchmarkRuns).toBe(12);
+    expect(findNode(template, "collect-recent-runs")?.type).toBe("action.run_command");
+    expect(findNode(template, "evaluate-latest-run")?.type).toBe("action.evaluate_run");
+    expect(findNode(template, "apply-ratchet")?.type).toBe("action.apply_self_improvement_ratchet");
+    expect(findNode(template, "ratchet-applied")?.type).toBe("condition.expression");
+    expect(findNode(template, "ratchet-reverted")?.type).toBe("condition.expression");
+    expect(template.edges.find((edge) => edge.source === "collect-recent-runs" && edge.target === "has-recent-runs")).toBeDefined();
+    expect(template.edges.find((edge) => edge.source === "evaluate-latest-run" && edge.target === "apply-ratchet")).toBeDefined();
+    expect(template.edges.find((edge) => edge.source === "apply-ratchet" && edge.target === "ratchet-applied")).toBeDefined();
+    expect(template.edges.find((edge) => edge.source === "ratchet-reverted" && edge.target === "log-ratchet-revert")).toBeDefined();
+  });
+});
+
+describe("template-error-recovery skillbook reuse", () => {
+  it("loads reusable recovery strategies before analyze/retry agent steps", () => {
+    const template = getTemplate("template-error-recovery");
+    expect(template).toBeDefined();
+    expect(findNode(template, "load-recovery-strategies")?.type).toBe("action.load_skillbook_strategies");
+    expect(findNode(template, "analyze-error")?.config?.prompt).toContain("Reusable prior strategies:");
+    expect(findNode(template, "retry-task")?.config?.prompt).toContain("reusableStrategies:");
+    expect(template.edges.find((edge) => edge.source === "check-retries" && edge.target === "load-recovery-strategies")).toBeDefined();
+    expect(template.edges.find((edge) => edge.source === "load-recovery-strategies" && edge.target === "analyze-error")).toBeDefined();
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Task Archiver Template
 // ═══════════════════════════════════════════════════════════════════════════

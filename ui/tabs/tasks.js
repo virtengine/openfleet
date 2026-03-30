@@ -1127,6 +1127,11 @@ export function normalizeTaskWorkflowRunEntry(entry) {
           hasSessionLink: false,
           url: "",
           nodeId: "",
+          plannerTimeline: [],
+          proofBundle: null,
+          proofSummary: null,
+          issueAdvisor: null,
+          runGraph: null,
           meta: {},
         }
       : null;
@@ -1147,6 +1152,17 @@ export function normalizeTaskWorkflowRunEntry(entry) {
         ? Math.max(0, new Date(endedAt).getTime() - new Date(startedAt).getTime())
         : null);
   const sessionId = pickTaskWorkflowSessionId(entry);
+  const plannerTimeline = Array.isArray(entry.plannerTimeline)
+    ? entry.plannerTimeline
+    : (Array.isArray(entry.proofBundle?.plannerTimeline) ? entry.proofBundle.plannerTimeline : []);
+  const proofBundle =
+    entry.proofBundle && typeof entry.proofBundle === "object"
+      ? { ...entry.proofBundle }
+      : null;
+  const proofSummary =
+    entry.proofSummary && typeof entry.proofSummary === "object"
+      ? { ...entry.proofSummary }
+      : null;
   return {
     workflowId,
     workflowName,
@@ -1166,8 +1182,61 @@ export function normalizeTaskWorkflowRunEntry(entry) {
     hasSessionLink: Boolean(sessionId),
     url: String(entry.url || "").trim(),
     nodeId: String(entry.nodeId || "").trim(),
+    plannerTimeline,
+    proofBundle,
+    proofSummary,
+    issueAdvisor: entry.issueAdvisor && typeof entry.issueAdvisor === "object" ? { ...entry.issueAdvisor } : null,
+    runGraph: entry.runGraph && typeof entry.runGraph === "object" ? { ...entry.runGraph } : null,
     meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
   };
+}
+
+function summarizeTaskWorkflowPlannerEvent(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const parts = [];
+  const stepLabel = String(entry.stepLabel || entry.nodeLabel || entry.nodeId || "").trim();
+  const summary = String(entry.summary || entry.reason || entry.error || "").trim();
+  const attachmentKind = String(entry.attachmentKind || "").trim();
+  const createdCount = Number(entry.createdCount || 0);
+  const skippedCount = Number(entry.skippedCount || 0);
+  if (stepLabel) parts.push(stepLabel);
+  if (summary) parts.push(summary);
+  if (attachmentKind) parts.push(attachmentKind.replaceAll("_", " "));
+  if (createdCount > 0 || skippedCount > 0) {
+    parts.push(`created ${createdCount} / skipped ${skippedCount}`);
+  }
+  return parts.join(" · ");
+}
+
+function buildTaskWorkflowProofBadges(run) {
+  const summary = run?.proofSummary && typeof run.proofSummary === "object" ? run.proofSummary : {};
+  const badges = [];
+  const plannerEventCount = Number(summary.plannerEventCount || run?.plannerTimeline?.length || 0);
+  const decisionCount = Number(summary.decisionCount || 0);
+  const evidenceCount = Number(summary.evidenceCount || 0);
+  const artifactCount = Number(summary.artifactCount || 0);
+  if (plannerEventCount > 0) badges.push(`${plannerEventCount} planner events`);
+  if (decisionCount > 0) badges.push(`${decisionCount} decisions`);
+  if (evidenceCount > 0) badges.push(`${evidenceCount} evidence`);
+  if (artifactCount > 0) badges.push(`${artifactCount} artifacts`);
+  return badges;
+}
+
+export function buildTaskWorkflowRunLineageBadges(run) {
+  const runGraph = run?.runGraph && typeof run.runGraph === "object" ? run.runGraph : null;
+  if (!runGraph) return [];
+  const runCount = Array.isArray(runGraph.runs) ? runGraph.runs.length : 0;
+  const executionCount = Array.isArray(runGraph.executions) ? runGraph.executions.length : 0;
+  const timelineCount = Array.isArray(runGraph.timeline) ? runGraph.timeline.length : 0;
+  const retryCount = Array.isArray(runGraph.edges)
+    ? runGraph.edges.filter((entry) => entry?.type === "retry").length
+    : 0;
+  const badges = [];
+  if (runCount > 0) badges.push(`${runCount} runs`);
+  if (executionCount > 0) badges.push(`${executionCount} execution steps`);
+  if (timelineCount > 0) badges.push(`${timelineCount} lineage events`);
+  if (retryCount > 0) badges.push(`${retryCount} retries`);
+  return badges;
 }
 
 function buildTaskWorkflowRuns(task) {
@@ -1507,11 +1576,14 @@ async function applyTaskLifecycleTransition(task, requestedStatus) {
     },
   );
 
+  const resolvedStatus =
+    String(apiResult?.data?.status || "").trim() || optimisticStatus;
+
   return {
     ok: true,
     cancelled: false,
     action: decision.action,
-    status: optimisticStatus,
+    status: resolvedStatus,
     response: apiResult,
   };
 }
@@ -2698,8 +2770,35 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [epicId, setEpicId] = useState(
     toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
   );
+  const [goalId, setGoalId] = useState(
+    toText(pickTaskField(task, ["goalId", "primaryGoalId"])),
+  );
+  const [parentGoalId, setParentGoalId] = useState(
+    toText(pickTaskField(task, ["parentGoalId"])),
+  );
   const [storyPoints, setStoryPoints] = useState(
     toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+  );
+  const [budgetWindow, setBudgetWindow] = useState(
+    toText(pickTaskField(task, ["budgetWindow"])),
+  );
+  const [budgetCents, setBudgetCents] = useState(
+    toText(pickTaskField(task, ["budgetCents"])),
+  );
+  const [budgetCurrency, setBudgetCurrency] = useState(
+    toText(pickTaskField(task, ["budgetCurrency"])) || "USD",
+  );
+  const [coordinationTeamId, setCoordinationTeamId] = useState(
+    toText(pickTaskField(task, ["coordinationTeamId"])),
+  );
+  const [coordinationRole, setCoordinationRole] = useState(
+    toText(pickTaskField(task, ["coordinationRole"])),
+  );
+  const [coordinationReportsTo, setCoordinationReportsTo] = useState(
+    toText(pickTaskField(task, ["coordinationReportsTo"])),
+  );
+  const [coordinationLevel, setCoordinationLevel] = useState(
+    toText(pickTaskField(task, ["coordinationLevel"])),
   );
   const [dueDate, setDueDate] = useState(normalizeTaskDueDateInput(task));
   const [parentTaskId, setParentTaskId] = useState(
@@ -2709,6 +2808,14 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [subtasksLoading, setSubtasksLoading] = useState(false);
   const [subtaskTitle, setSubtaskTitle] = useState("");
   const [creatingSubtask, setCreatingSubtask] = useState(false);
+  const [replanProposal, setReplanProposal] = useState(
+    task?.meta?.replanProposal && typeof task.meta.replanProposal === "object"
+      ? task.meta.replanProposal
+      : null,
+  );
+  const [replanning, setReplanning] = useState(false);
+  const [applyingReplan, setApplyingReplan] = useState(false);
+  const [planningActionMode, setPlanningActionMode] = useState("replan");
   const attachmentInputRef = useRef(null);
   const initialSnapshotRef = useRef({
     title: sanitizeTaskText(task?.title || ""),
@@ -2721,7 +2828,16 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     assignee: toText(pickTaskField(task, ["assignee"])),
     assigneesInput: normalizeTaskAssigneesInput(task),
     epicId: toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
+    goalId: toText(pickTaskField(task, ["goalId", "primaryGoalId"])),
+    parentGoalId: toText(pickTaskField(task, ["parentGoalId"])),
     storyPoints: toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+    budgetWindow: toText(pickTaskField(task, ["budgetWindow"])),
+    budgetCents: toText(pickTaskField(task, ["budgetCents"])),
+    budgetCurrency: toText(pickTaskField(task, ["budgetCurrency"])) || "USD",
+    coordinationTeamId: toText(pickTaskField(task, ["coordinationTeamId"])),
+    coordinationRole: toText(pickTaskField(task, ["coordinationRole"])),
+    coordinationReportsTo: toText(pickTaskField(task, ["coordinationReportsTo"])),
+    coordinationLevel: toText(pickTaskField(task, ["coordinationLevel"])),
     dueDate: normalizeTaskDueDateInput(task),
     parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
   });
@@ -2766,6 +2882,31 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
+  const taskAuditActivity = useMemo(() => {
+    if (task?.auditActivity && typeof task.auditActivity === "object") return task.auditActivity;
+    if (task?.meta?.auditActivity && typeof task.meta.auditActivity === "object") return task.meta.auditActivity;
+    return null;
+  }, [task?.auditActivity, task?.meta]);
+  const taskAuditSummary = taskAuditActivity?.summary && typeof taskAuditActivity.summary === "object"
+    ? taskAuditActivity.summary
+    : {};
+  const taskAuditEvents = Array.isArray(taskAuditActivity?.auditEvents) ? taskAuditActivity.auditEvents : [];
+  const taskAuditArtifacts = Array.isArray(taskAuditActivity?.artifacts) ? taskAuditActivity.artifacts : [];
+  const taskAuditOperatorActions = Array.isArray(taskAuditActivity?.operatorActions) ? taskAuditActivity.operatorActions : [];
+  const taskAuditPromotedStrategies = Array.isArray(taskAuditActivity?.promotedStrategies) ? taskAuditActivity.promotedStrategies : [];
+  const taskAuditTraceEvents = Array.isArray(taskAuditActivity?.taskTraceEvents) ? taskAuditActivity.taskTraceEvents : [];
+  const plannerState = task?.meta?.plannerState?.latestReplan || null;
+  const planningMode = String(replanProposal?.mode || plannerState?.mode || "replan").trim().toLowerCase() === "decompose"
+    ? "decompose"
+    : "replan";
+  const planningLabel = planningMode === "decompose" ? "Decomposition" : "Replan";
+  const planningVerb = planningMode === "decompose" ? "decompose" : "replan";
+  const plannerOwnedTaskIds = Array.isArray(replanProposal?.createdTaskIds)
+    ? replanProposal.createdTaskIds.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  const plannerOwnedSubtasks = plannerOwnedTaskIds.length > 0
+    ? subtasks.filter((entry) => plannerOwnedTaskIds.includes(String(entry?.id || "").trim()))
+    : [];
   const historyTableRef = useRef(null);
   const [historyScrollTop, setHistoryScrollTop] = useState(0);
   const [historyViewportHeight, setHistoryViewportHeight] = useState(320);
@@ -2854,6 +2995,20 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const renderWorkflowActivityCard = useCallback((run, key) => {
     const metaLine = buildTaskWorkflowRunMetaLine(run);
     const statusLine = buildTaskWorkflowRunStatusLine(run);
+    const plannerPreview = Array.isArray(run?.plannerTimeline) ? run.plannerTimeline.slice(-3).reverse() : [];
+    const proofBadges = buildTaskWorkflowProofBadges(run);
+    const lineageBadges = buildTaskWorkflowRunLineageBadges(run);
+    const latestDecision = String(
+      run?.proofSummary?.latestDecision?.summary
+      || run?.issueAdvisor?.summary
+      || "",
+    ).trim();
+    const latestArtifact = String(
+      run?.proofSummary?.latestArtifact?.path
+      || run?.proofSummary?.latestArtifact?.summary
+      || run?.proofSummary?.latestEvidence?.summary
+      || "",
+    ).trim();
     return html`
       <div
         class="task-comment-item task-workflow-run-card"
@@ -2876,6 +3031,35 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             <div class="task-comment-meta">${metaLine || "workflow"}</div>
             <div class="task-comment-body">${statusLine}</div>
             ${run.nodeId ? html`<div class="task-comment-meta">Node: ${run.nodeId}</div>` : null}
+            ${proofBadges.length > 0 ? html`
+              <div class="task-comment-meta" style=${{ marginTop: "6px" }}>
+                ${proofBadges.join(" · ")}
+              </div>
+            ` : null}
+            ${lineageBadges.length > 0 ? html`
+              <div class="task-comment-meta" style=${{ marginTop: proofBadges.length > 0 ? "4px" : "6px" }}>
+                Lineage: ${lineageBadges.join(" · ")}
+              </div>
+            ` : null}
+            ${latestDecision ? html`
+              <div class="task-comment-body" style=${{ marginTop: "6px" }}>
+                Decision: ${latestDecision}
+              </div>
+            ` : null}
+            ${latestArtifact ? html`
+              <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                Proof: ${latestArtifact}
+              </div>
+            ` : null}
+            ${plannerPreview.length > 0 ? html`
+              <div style=${{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                ${plannerPreview.map((entry, index) => html`
+                  <div class="task-comment-meta" key=${`planner-preview-${index}`}>
+                    ${summarizeTaskWorkflowPlannerEvent(entry)}
+                  </div>
+                `)}
+              </div>
+            ` : null}
           </div>
           <div class="task-workflow-run-actions" onClick=${(event) => event.stopPropagation()}>
             ${run.hasRunLink ? html`
@@ -3018,18 +3202,36 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       assignee: assignee || "",
       assigneesInput: assigneesInput || "",
       epicId: epicId || "",
+      goalId: goalId || "",
+      parentGoalId: parentGoalId || "",
       storyPoints: storyPoints || "",
+      budgetWindow: budgetWindow || "",
+      budgetCents: budgetCents || "",
+      budgetCurrency: budgetCurrency || "",
+      coordinationTeamId: coordinationTeamId || "",
+      coordinationRole: coordinationRole || "",
+      coordinationReportsTo: coordinationReportsTo || "",
+      coordinationLevel: coordinationLevel || "",
       dueDate: dueDate || "",
       parentTaskId: parentTaskId || "",
     }),
     [
       assignee,
       assigneesInput,
+      budgetCents,
+      budgetCurrency,
+      budgetWindow,
       baseBranch,
+      coordinationLevel,
+      coordinationReportsTo,
+      coordinationRole,
+      coordinationTeamId,
       description,
       draft,
       dueDate,
       epicId,
+      goalId,
+      parentGoalId,
       parentTaskId,
       priority,
       status,
@@ -3043,15 +3245,22 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     [baselineVersion, editableSnapshot],
   );
   const hasUnsaved = changeCount > 0;
+  const activePlanningVerb = String(planningActionMode || planningMode || "replan").trim().toLowerCase() === "decompose"
+    ? "decompose"
+    : "replan";
   const activeOperationLabel = saving
     ? "Task save is in progress"
     : rewriting
       ? "Improve with AI is still running"
-      : uploadingAttachment
-        ? "Attachment upload is still running"
-        : manualBusy
-          ? "Manual takeover update is in progress"
-          : "";
+      : replanning
+        ? `AI ${activePlanningVerb} is still running`
+        : applyingReplan
+          ? `Applying ${activePlanningVerb} graph changes`
+          : uploadingAttachment
+          ? "Attachment upload is still running"
+          : manualBusy
+            ? "Manual takeover update is in progress"
+            : "";
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -3089,7 +3298,16 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     setAssignee(toText(pickTaskField(task, ["assignee"])));
     setAssigneesInput(normalizeTaskAssigneesInput(task));
     setEpicId(toText(pickTaskField(task, ["epicId", "epic", "epic_id"])));
+    setGoalId(toText(pickTaskField(task, ["goalId", "primaryGoalId"])));
+    setParentGoalId(toText(pickTaskField(task, ["parentGoalId"])));
     setStoryPoints(toText(pickTaskField(task, ["storyPoints", "points", "story_points"])));
+    setBudgetWindow(toText(pickTaskField(task, ["budgetWindow"])));
+    setBudgetCents(toText(pickTaskField(task, ["budgetCents"])));
+    setBudgetCurrency(toText(pickTaskField(task, ["budgetCurrency"])) || "USD");
+    setCoordinationTeamId(toText(pickTaskField(task, ["coordinationTeamId"])));
+    setCoordinationRole(toText(pickTaskField(task, ["coordinationRole"])));
+    setCoordinationReportsTo(toText(pickTaskField(task, ["coordinationReportsTo"])));
+    setCoordinationLevel(toText(pickTaskField(task, ["coordinationLevel"])));
     setDueDate(normalizeTaskDueDateInput(task));
     setParentTaskId(toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])));
     initialSnapshotRef.current = {
@@ -3103,12 +3321,32 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       assignee: toText(pickTaskField(task, ["assignee"])),
       assigneesInput: normalizeTaskAssigneesInput(task),
       epicId: toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
+      goalId: toText(pickTaskField(task, ["goalId", "primaryGoalId"])),
+      parentGoalId: toText(pickTaskField(task, ["parentGoalId"])),
       storyPoints: toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+      budgetWindow: toText(pickTaskField(task, ["budgetWindow"])),
+      budgetCents: toText(pickTaskField(task, ["budgetCents"])),
+      budgetCurrency: toText(pickTaskField(task, ["budgetCurrency"])) || "USD",
+      coordinationTeamId: toText(pickTaskField(task, ["coordinationTeamId"])),
+      coordinationRole: toText(pickTaskField(task, ["coordinationRole"])),
+      coordinationReportsTo: toText(pickTaskField(task, ["coordinationReportsTo"])),
+      coordinationLevel: toText(pickTaskField(task, ["coordinationLevel"])),
       dueDate: normalizeTaskDueDateInput(task),
       parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
     };
     setBaselineVersion((v) => v + 1);
   }, [task?.id]);
+
+  useEffect(() => {
+    setReplanProposal(
+      task?.meta?.replanProposal && typeof task.meta.replanProposal === "object"
+        ? task.meta.replanProposal
+        : null,
+    );
+  }, [task?.id, task?.meta?.replanProposal]);
+  useEffect(() => {
+    setPlanningActionMode(String(task?.meta?.replanProposal?.mode || plannerState?.mode || "replan"));
+  }, [task?.id, task?.meta?.replanProposal?.mode, plannerState?.mode]);
 
   useEffect(() => {
     if (!workspaceOptions.length) {
@@ -3149,7 +3387,16 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     setAssignee(base.assignee || "");
     setAssigneesInput(base.assigneesInput || "");
     setEpicId(base.epicId || "");
+    setGoalId(base.goalId || "");
+    setParentGoalId(base.parentGoalId || "");
     setStoryPoints(base.storyPoints || "");
+    setBudgetWindow(base.budgetWindow || "");
+    setBudgetCents(base.budgetCents || "");
+    setBudgetCurrency(base.budgetCurrency || "USD");
+    setCoordinationTeamId(base.coordinationTeamId || "");
+    setCoordinationRole(base.coordinationRole || "");
+    setCoordinationReportsTo(base.coordinationReportsTo || "");
+    setCoordinationLevel(base.coordinationLevel || "");
     setDueDate(base.dueDate || "");
     setParentTaskId(base.parentTaskId || "");
     showToast("Changes discarded", "info");
@@ -3168,7 +3415,16 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     const assigneeValue = toText(assignee);
     const assigneesValue = normalizeDependencyInput(assigneesInput);
     const epicValue = toText(epicId);
+    const goalValue = toText(goalId);
+    const parentGoalValue = toText(parentGoalId);
     const storyPointsValue = toText(storyPoints);
+    const budgetWindowValue = toText(budgetWindow);
+    const budgetCentsValue = toText(budgetCents);
+    const budgetCurrencyValue = toText(budgetCurrency) || "USD";
+    const coordinationTeamIdValue = toText(coordinationTeamId);
+    const coordinationRoleValue = toText(coordinationRole);
+    const coordinationReportsToValue = toText(coordinationReportsTo);
+    const coordinationLevelValue = toText(coordinationLevel);
     const dueDateValue = toText(dueDate);
     const parentTaskValue = toText(parentTaskId);
     try {
@@ -3190,7 +3446,17 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   assignee: assigneeValue || null,
                   assignees: assigneesValue,
                   epicId: epicValue || null,
+                  goalId: goalValue || null,
+                  primaryGoalId: goalValue || null,
+                  parentGoalId: parentGoalValue || null,
                   storyPoints: storyPointsValue || null,
+                  budgetWindow: budgetWindowValue || null,
+                  budgetCents: budgetCentsValue || null,
+                  budgetCurrency: budgetCurrencyValue || null,
+                  coordinationTeamId: coordinationTeamIdValue || null,
+                  coordinationRole: coordinationRoleValue || null,
+                  coordinationReportsTo: coordinationReportsToValue || null,
+                  coordinationLevel: coordinationLevelValue || null,
                   dueDate: dueDateValue || null,
                   parentTaskId: parentTaskValue || null,
                 }
@@ -3214,7 +3480,16 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               assignee: assigneeValue || undefined,
               assignees: assigneesValue.length ? assigneesValue : undefined,
               epicId: epicValue || undefined,
+              goalId: goalValue || undefined,
+              parentGoalId: parentGoalValue || undefined,
               storyPoints: storyPointsValue || undefined,
+              budgetWindow: budgetWindowValue || undefined,
+              budgetCents: budgetCentsValue || undefined,
+              budgetCurrency: budgetCurrencyValue || undefined,
+              coordinationTeamId: coordinationTeamIdValue || undefined,
+              coordinationRole: coordinationRoleValue || undefined,
+              coordinationReportsTo: coordinationReportsToValue || undefined,
+              coordinationLevel: coordinationLevelValue || undefined,
               dueDate: dueDateValue || undefined,
               parentTaskId: parentTaskValue || undefined,
             }),
@@ -3243,7 +3518,16 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         assignee: assigneeValue,
         assigneesInput: assigneesValue.join(", "),
         epicId: epicValue,
+        goalId: goalValue,
+        parentGoalId: parentGoalValue,
         storyPoints: storyPointsValue,
+        budgetWindow: budgetWindowValue,
+        budgetCents: budgetCentsValue,
+        budgetCurrency: budgetCurrencyValue,
+        coordinationTeamId: coordinationTeamIdValue,
+        coordinationRole: coordinationRoleValue,
+        coordinationReportsTo: coordinationReportsToValue,
+        coordinationLevel: coordinationLevelValue,
         dueDate: dueDateValue,
         parentTaskId: parentTaskValue,
       };
@@ -3558,6 +3842,76 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       showToast("Failed to create subtask", "error");
     } finally {
       setCreatingSubtask(false);
+    }
+  };
+  const handleGenerateReplan = async (mode = "replan") => {
+    if (!task?.id || replanning) return;
+    const normalizedMode = String(mode || "replan").trim().toLowerCase() === "decompose" ? "decompose" : "replan";
+    setPlanningActionMode(normalizedMode);
+    setReplanning(true);
+    haptic("medium");
+    try {
+      const res = await apiFetch(
+        normalizedMode === "decompose" ? "/api/tasks/decompose/propose" : "/api/tasks/replan/propose",
+        {
+        method: "POST",
+          body: JSON.stringify({ taskId: task.id, planningMode: normalizedMode }),
+        },
+      );
+      const nextProposal = res?.proposal || res?.data || res?.task?.meta?.replanProposal || null;
+      if (nextProposal) {
+        setReplanProposal(nextProposal);
+        showToast(normalizedMode === "decompose" ? "Decomposition proposal generated" : "Replan proposal generated", "success");
+        scheduleRefresh(120);
+      } else {
+        showToast(normalizedMode === "decompose" ? "Decomposition proposal was empty" : "Replan proposal was empty", "warning");
+      }
+    } catch {
+      /* toast via apiFetch */
+    } finally {
+      setReplanning(false);
+    }
+  };
+  const handleApplyReplan = async () => {
+    if (!task?.id || applyingReplan || !replanProposal) return;
+    const normalizedMode = String(replanProposal?.mode || "replan").trim().toLowerCase() === "decompose" ? "decompose" : "replan";
+    setPlanningActionMode(normalizedMode);
+    const subtaskCount = Array.isArray(replanProposal?.subtasks) ? replanProposal.subtasks.length : 0;
+    const ok = await showConfirm(
+      subtaskCount > 0
+        ? `Apply this ${normalizedMode === "decompose" ? "decomposition" : "replan"} and create ${subtaskCount} subtasks?`
+        : `Apply this ${normalizedMode === "decompose" ? "decomposition" : "replan"} to update task planning state?`,
+    );
+    if (!ok) return;
+    setApplyingReplan(true);
+    haptic("medium");
+    try {
+      const res = await apiFetch(normalizedMode === "decompose" ? "/api/tasks/decompose/apply" : "/api/tasks/replan/apply", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, planningMode: normalizedMode }),
+      });
+      const appliedProposal = res?.proposal || res?.data?.proposal || null;
+      const createdSubtasks = Array.isArray(res?.createdSubtasks)
+        ? res.createdSubtasks
+        : Array.isArray(res?.data?.createdSubtasks)
+          ? res.data.createdSubtasks
+          : [];
+      if (appliedProposal) setReplanProposal(appliedProposal);
+      if (createdSubtasks.length > 0) {
+        setSubtasks((prev) => normalizeSubtasksPayload({ subtasks: [...prev, ...createdSubtasks] }));
+      }
+      showToast(
+        createdSubtasks.length > 0
+          ? `${normalizedMode === "decompose" ? "Decomposition" : "Replan"} applied: ${createdSubtasks.length} subtasks created`
+          : `${normalizedMode === "decompose" ? "Decomposition" : "Replan"} applied`,
+        "success",
+      );
+      await loadSubtasks();
+      scheduleRefresh(120);
+    } catch {
+      /* toast via apiFetch */
+    } finally {
+      setApplyingReplan(false);
     }
   };
   const handleRetry = async () => {
@@ -4023,6 +4377,141 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         </div>
 
+        ${/* AI Replan */ ""}
+        <div class="task-section">
+          <div class="task-section-title">
+            AI Replan
+            ${replanProposal?.status && html`<span class="task-tab-count">${replanProposal.status}</span>`}
+            <span style="margin-left:auto;display:flex;gap:6px;">
+              <${Button}
+                variant="text"
+                size="small"
+                onClick=${() => { void handleGenerateReplan("replan"); }}
+                disabled=${replanning || applyingReplan}
+              >
+                ${replanning ? "Planning…" : "Generate"}
+              <//>
+              <${Button}
+                variant="text"
+                size="small"
+                onClick=${() => { void handleGenerateReplan("decompose"); }}
+                disabled=${replanning || applyingReplan}
+              >
+                Decompose
+              <//>
+              <${Button}
+                variant="contained"
+                size="small"
+                onClick=${handleApplyReplan}
+                disabled=${applyingReplan || replanning || !replanProposal}
+              >
+                ${applyingReplan ? "Applying…" : "Apply"}
+              <//>
+            </span>
+          </div>
+          <div class="task-section-body">
+            ${!replanProposal && html`
+              <div class="meta-text">
+                Generate a graph-aware replan to adjust the current task graph, or use Decompose to turn this task into a planner-owned child graph with explicit subtasks and dependencies.
+              </div>
+            `}
+            ${replanProposal && html`
+              <div class="task-comments-list" style=${{ marginBottom: "10px" }}>
+                <div class="task-comment-item">
+                  <div class="task-comment-meta">
+                    ${planningLabel}
+                    ${replanProposal.recommendedAction || "replan" ? ` · ${replanProposal.recommendedAction || "replan"}` : ""}
+                    ${plannerState?.generatedAt ? ` · ${formatRelative(plannerState.generatedAt)}` : ""}
+                    ${Array.isArray(replanProposal.createdTaskIds) && replanProposal.createdTaskIds.length > 0
+                      ? ` · ${replanProposal.createdTaskIds.length} created`
+                      : ""}
+                  </div>
+                  <div class="task-comment-body">${replanProposal.summary || "Replan proposal available."}</div>
+                  ${replanProposal.planReasoning && html`
+                    <div class="task-comment-meta" style=${{ marginTop: "6px", whiteSpace: "pre-wrap" }}>
+                      ${replanProposal.planReasoning}
+                    </div>
+                  `}
+                  ${(replanProposal.currentPlanStep || replanProposal.stopReason) && html`
+                    <div class="task-comment-meta" style=${{ marginTop: "6px" }}>
+                      ${replanProposal.currentPlanStep ? `Next: ${replanProposal.currentPlanStep}` : ""}
+                      ${replanProposal.currentPlanStep && replanProposal.stopReason ? " · " : ""}
+                      ${replanProposal.stopReason ? `Stop: ${replanProposal.stopReason}` : ""}
+                    </div>
+                  `}
+                  ${replanProposal.parentTaskPatch && Object.keys(replanProposal.parentTaskPatch).length > 0 && html`
+                    <div class="task-comment-meta" style=${{ marginTop: "8px" }}>
+                      Parent patch:
+                      ${replanProposal.parentTaskPatch.status ? ` status=${replanProposal.parentTaskPatch.status}` : ""}
+                      ${replanProposal.parentTaskPatch.blockedReason ? ` · ${replanProposal.parentTaskPatch.blockedReason}` : ""}
+                    </div>
+                  `}
+                </div>
+                ${(planningMode === "decompose" || plannerOwnedSubtasks.length > 0) && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Planner Child Graph</div>
+                    <div class="task-comment-body">
+                      ${plannerOwnedSubtasks.length > 0
+                        ? `${plannerOwnedSubtasks.length} planner-owned child tasks are now attached to this parent task.`
+                        : "This proposal will create a planner-owned child graph under the current task when applied."}
+                    </div>
+                  </div>
+                `}
+                ${Array.isArray(replanProposal.subtasks) && replanProposal.subtasks.map((entry, index) => html`
+                  <div class="task-comment-item" key=${`replan-subtask-${index}`}>
+                    <div class="task-comment-meta">
+                      ${index + 1}. ${entry.priority || "medium"}
+                      ${entry.storyPoints ? ` · ${entry.storyPoints} pts` : ""}
+                      ${Array.isArray(entry.dependsOnIndexes) && entry.dependsOnIndexes.length > 0
+                        ? ` · depends on ${entry.dependsOnIndexes.map((dep) => dep + 1).join(", ")}`
+                        : ""}
+                      ${Array.isArray(entry.dependsOnTaskIds) && entry.dependsOnTaskIds.length > 0
+                        ? ` · external deps ${entry.dependsOnTaskIds.join(", ")}`
+                        : ""}
+                    </div>
+                    <div class="task-comment-body">${entry.title}</div>
+                    <div class="task-comment-meta" style=${{ whiteSpace: "pre-wrap", marginTop: "4px" }}>
+                      ${entry.description}
+                    </div>
+                    ${Array.isArray(entry.acceptanceCriteria) && entry.acceptanceCriteria.length > 0 && html`
+                      <div class="task-comment-meta" style=${{ marginTop: "6px" }}>
+                        Acceptance: ${entry.acceptanceCriteria.join(" | ")}
+                      </div>
+                    `}
+                  </div>
+                `)}
+                ${plannerOwnedSubtasks.length > 0 && plannerOwnedSubtasks.map((entry) => {
+                  const dependencyIds = [
+                    ...(Array.isArray(entry?.dependencyTaskIds) ? entry.dependencyTaskIds : []),
+                    ...(Array.isArray(entry?.dependsOn) ? entry.dependsOn : []),
+                  ].map((value) => String(value || "").trim()).filter(Boolean);
+                  return html`
+                    <div class="task-comment-item" key=${`planner-owned-${entry.id || entry.title || Math.random()}`}>
+                      <div class="task-comment-meta">
+                        planner-owned
+                        ${entry.status ? ` · ${entry.status}` : ""}
+                        ${dependencyIds.length > 0 ? ` · deps ${dependencyIds.join(", ")}` : ""}
+                      </div>
+                      <div class="task-comment-body">${entry.title || entry.id || "Child task"}</div>
+                      ${entry.description && html`
+                        <div class="task-comment-meta" style=${{ whiteSpace: "pre-wrap", marginTop: "4px" }}>
+                          ${entry.description}
+                        </div>
+                      `}
+                    </div>
+                  `;
+                })}
+                ${Array.isArray(replanProposal.notes) && replanProposal.notes.length > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Operator notes</div>
+                    <div class="task-comment-body">${replanProposal.notes.join("\n")}</div>
+                  </div>
+                `}
+              </div>
+            `}
+          </div>
+        </div>
+
         ${/* Subtasks */ ""}
         <div class="task-section">
           <div class="task-section-title">
@@ -4134,8 +4623,38 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 </div>
               </div>
               <div class="task-comment-item">
+                <div class="task-comment-meta">Planner / Proof</div>
+                <div class="task-comment-body">${workflowRuns.length
+                  ? `${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.plannerEventCount || run?.plannerTimeline?.length || 0), 0)} planner events · ${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.evidenceCount || 0), 0)} evidence items`
+                  : "No planner or proof events linked yet."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Execution Lineage</div>
+                <div class="task-comment-body">${workflowRuns.length
+                  ? `${workflowRuns.filter((run) => Array.isArray(run?.runGraph?.runs) && run.runGraph.runs.length > 0).length} run graphs linked · ${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.executions?.length || 0), 0)} execution steps`
+                  : "No execution lineage linked yet."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${workflowRuns.length
+                    ? `${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.timeline?.length || 0), 0)} lineage events`
+                    : ""}
+                </div>
+              </div>
+              <div class="task-comment-item">
                 <div class="task-comment-meta">Timeline Events</div>
                 <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Audit Trail</div>
+                <div class="task-comment-body">${taskAuditEvents.length
+                  ? `${taskAuditEvents.length} ledger events · ${Number(taskAuditSummary.toolCallCount || 0)} tool calls · ${Number(taskAuditSummary.artifactCount || 0)} artifacts`
+                  : "No sqlite audit trail linked yet."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskAuditPromotedStrategies.length
+                    ? `${taskAuditPromotedStrategies.length} promoted strategies`
+                    : taskAuditOperatorActions.length
+                      ? `${taskAuditOperatorActions.length} operator actions`
+                      : ""}
+                </div>
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Branch / PR</div>
@@ -4325,6 +4844,96 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         </div>
 
+        ${/* Goal */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Goal</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Primary goal ID"
+              value=${goalId}
+              onInput=${(e) => setGoalId(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Parent Goal */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Parent Goal</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Parent goal ID"
+              value=${parentGoalId}
+              onInput=${(e) => setParentGoalId(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Coordination Team */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Coordination Team</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Team ID"
+              value=${coordinationTeamId}
+              onInput=${(e) => setCoordinationTeamId(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Coordination Role */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Coordination Role</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="planner, implementer, reviewer"
+              value=${coordinationRole}
+              onInput=${(e) => setCoordinationRole(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Reports To */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Reports To</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Supervisor or lead ID"
+              value=${coordinationReportsTo}
+              onInput=${(e) => setCoordinationReportsTo(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Coordination Level */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Coordination Level</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="squad, program, org"
+              value=${coordinationLevel}
+              onInput=${(e) => setCoordinationLevel(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
         ${/* Parent Task */ ""}
         <div class="task-sidebar-field">
           <div class="task-sidebar-label">Parent Task</div>
@@ -4337,6 +4946,48 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               onInput=${(e) => setParentTaskId(e.target.value)}
               fullWidth
             />
+          </div>
+        </div>
+
+        ${/* Budget Window */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Budget Window</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="2026-Q2"
+              value=${budgetWindow}
+              onInput=${(e) => setBudgetWindow(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Budget */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Budget</div>
+          <div class="task-sidebar-value">
+            <div style="display:flex;gap:6px;">
+              <${TextField}
+                size="small"
+                variant="outlined"
+                type="number"
+                placeholder="Budget cents"
+                value=${budgetCents}
+                onInput=${(e) => setBudgetCents(e.target.value)}
+                inputProps=${{ min: 0, step: 1 }}
+                style=${{ flex: 1 }}
+              />
+              <${TextField}
+                size="small"
+                variant="outlined"
+                placeholder="USD"
+                value=${budgetCurrency}
+                onInput=${(e) => setBudgetCurrency(e.target.value.toUpperCase())}
+                style=${{ width: "88px" }}
+              />
+            </div>
           </div>
         </div>
 
@@ -5040,6 +5691,36 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               <//>
             </${Table}>
           <//>
+        </div>
+      `}
+
+      ${taskAuditEvents.length > 0 && html`
+        <div class="task-comments-block modal-form-span jira-panel">
+          <div class="task-attachments-title">Audit Trail</div>
+          <div class="task-comments-list">
+            ${taskAuditEvents.slice(0, 12).map((entry, index) => html`
+              <div class="task-comment-item" key=${`audit-${index}`}>
+                <div class="task-comment-meta">
+                  ${(entry.auditType || "audit").replace(/_/g, " ")}
+                  ${entry.timestamp ? ` · ${formatRelative(entry.timestamp)}` : ""}
+                </div>
+                <div class="task-comment-body">${entry.summary || entry.eventType || entry.auditType || "Audit event"}</div>
+                <div class="task-comment-meta">
+                  ${[
+                    entry.runId ? `run ${entry.runId}` : "",
+                    entry.sessionId ? `session ${entry.sessionId}` : "",
+                    entry.agentId ? `agent ${entry.agentId}` : "",
+                  ].filter(Boolean).join(" · ")}
+                </div>
+              </div>
+            `)}
+          </div>
+          <div class="tag-row" style=${{ marginTop: "8px" }}>
+            ${taskAuditArtifacts.length > 0 ? html`<span class="tag-chip">${taskAuditArtifacts.length} artifacts</span>` : null}
+            ${taskAuditOperatorActions.length > 0 ? html`<span class="tag-chip">${taskAuditOperatorActions.length} operator actions</span>` : null}
+            ${taskAuditPromotedStrategies.length > 0 ? html`<span class="tag-chip">${taskAuditPromotedStrategies.length} promoted strategies</span>` : null}
+            ${taskAuditTraceEvents.length > 0 ? html`<span class="tag-chip">${taskAuditTraceEvents.length} task trace events</span>` : null}
+          </div>
         </div>
       `}
 
@@ -7668,7 +8349,16 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
   const [priority, setPriority] = useState(initialValues?.priority || "medium");
   const [taskType, setTaskType] = useState(initialTaskType);
   const [epicId, setEpicId] = useState(initialValues?.epicId || "");
+  const [goalId, setGoalId] = useState(initialValues?.goalId || "");
+  const [parentGoalId, setParentGoalId] = useState(initialValues?.parentGoalId || "");
   const [storyPoints, setStoryPoints] = useState(toText(initialValues?.storyPoints));
+  const [budgetWindow, setBudgetWindow] = useState(initialValues?.budgetWindow || "");
+  const [budgetCents, setBudgetCents] = useState(toText(initialValues?.budgetCents));
+  const [budgetCurrency, setBudgetCurrency] = useState(initialValues?.budgetCurrency || "USD");
+  const [coordinationTeamId, setCoordinationTeamId] = useState(initialValues?.coordinationTeamId || "");
+  const [coordinationRole, setCoordinationRole] = useState(initialValues?.coordinationRole || "");
+  const [coordinationReportsTo, setCoordinationReportsTo] = useState(initialValues?.coordinationReportsTo || "");
+  const [coordinationLevel, setCoordinationLevel] = useState(initialValues?.coordinationLevel || "");
   const [dependenciesInput, setDependenciesInput] = useState((initialValues?.dependencies || []).join(", "));
   const [selectedSprintId, setSelectedSprintId] = useState(initialValues?.sprintId || "");
   const [sprintOrderInput, setSprintOrderInput] = useState(toText(initialValues?.sprintOrder));
@@ -7679,7 +8369,19 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || initialValues?.workspaceId || "");
   const [repository, setRepository] = useState(initialValues?.repository || "");
   const [repositories, setRepositories] = useState([]);
-  const [showAdvanced, setShowAdvanced] = useState(Boolean(initialValues?.epicId || initialValues?.sprintId || initialValues?.dependencies?.length));
+  const [showAdvanced, setShowAdvanced] = useState(Boolean(
+    initialValues?.epicId
+    || initialValues?.goalId
+    || initialValues?.parentGoalId
+    || initialValues?.budgetWindow
+    || initialValues?.budgetCents
+    || initialValues?.coordinationTeamId
+    || initialValues?.coordinationRole
+    || initialValues?.coordinationReportsTo
+    || initialValues?.coordinationLevel
+    || initialValues?.sprintId
+    || initialValues?.dependencies?.length,
+  ));
   const initialSnapshotRef = useRef({
     title: initialValues?.title || "",
     description: initialValues?.description || "",
@@ -7687,7 +8389,16 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     priority: initialValues?.priority || "medium",
     taskType: initialTaskType,
     epicId: initialValues?.epicId || "",
+    goalId: initialValues?.goalId || "",
+    parentGoalId: initialValues?.parentGoalId || "",
     storyPoints: toText(initialValues?.storyPoints),
+    budgetWindow: initialValues?.budgetWindow || "",
+    budgetCents: toText(initialValues?.budgetCents),
+    budgetCurrency: initialValues?.budgetCurrency || "USD",
+    coordinationTeamId: initialValues?.coordinationTeamId || "",
+    coordinationRole: initialValues?.coordinationRole || "",
+    coordinationReportsTo: initialValues?.coordinationReportsTo || "",
+    coordinationLevel: initialValues?.coordinationLevel || "",
     sprintId: initialValues?.sprintId || "",
     sprintOrder: toText(initialValues?.sprintOrder),
     dependenciesInput: (initialValues?.dependencies || []).join(", "),
@@ -7760,14 +8471,23 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
       priority: priority || "medium",
       taskType,
       epicId: epicId || "",
+      goalId: goalId || "",
+      parentGoalId: parentGoalId || "",
       storyPoints: storyPoints || "",
+      budgetWindow: budgetWindow || "",
+      budgetCents: budgetCents || "",
+      budgetCurrency: budgetCurrency || "",
+      coordinationTeamId: coordinationTeamId || "",
+      coordinationRole: coordinationRole || "",
+      coordinationReportsTo: coordinationReportsTo || "",
+      coordinationLevel: coordinationLevel || "",
       sprintId: selectedSprintId || "",
       sprintOrder: sprintOrderInput || "",
       dependenciesInput: dependenciesInput || "",
       tagsInput: tagsInput || "",
       draft: Boolean(draft),
     }),
-    [baseBranch, dependenciesInput, description, draft, epicId, priority, selectedSprintId, sprintOrderInput, storyPoints, tagsInput, taskType, title],
+    [baseBranch, budgetCents, budgetCurrency, budgetWindow, coordinationLevel, coordinationReportsTo, coordinationRole, coordinationTeamId, dependenciesInput, description, draft, epicId, goalId, parentGoalId, priority, selectedSprintId, sprintOrderInput, storyPoints, tagsInput, taskType, title],
   );
   const changeCount = useMemo(
     () => countChangedFields(initialSnapshotRef.current, unsavedSnapshot),
@@ -7788,7 +8508,16 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     setPriority(base.priority || "medium");
     setTaskType(base.taskType || "task");
     setEpicId(base.epicId || "");
+    setGoalId(base.goalId || "");
+    setParentGoalId(base.parentGoalId || "");
     setStoryPoints(base.storyPoints || "");
+    setBudgetWindow(base.budgetWindow || "");
+    setBudgetCents(base.budgetCents || "");
+    setBudgetCurrency(base.budgetCurrency || "USD");
+    setCoordinationTeamId(base.coordinationTeamId || "");
+    setCoordinationRole(base.coordinationRole || "");
+    setCoordinationReportsTo(base.coordinationReportsTo || "");
+    setCoordinationLevel(base.coordinationLevel || "");
     setSelectedSprintId(base.sprintId || "");
     setSprintOrderInput(base.sprintOrder || "");
     setDependenciesInput(base.dependenciesInput || "");
@@ -7837,7 +8566,16 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
           priority,
           type: taskType,
           epicId: epicId || undefined,
+          goalId: goalId || undefined,
+          parentGoalId: parentGoalId || undefined,
           storyPoints: storyPoints === "" ? undefined : Number(storyPoints),
+          budgetWindow: budgetWindow || undefined,
+          budgetCents: budgetCents === "" ? undefined : Number(budgetCents),
+          budgetCurrency: (budgetCurrency || "USD").trim() || undefined,
+          coordinationTeamId: coordinationTeamId || undefined,
+          coordinationRole: coordinationRole || undefined,
+          coordinationReportsTo: coordinationReportsTo || undefined,
+          coordinationLevel: coordinationLevel || undefined,
           tags,
           draft,
           status: draft ? "draft" : "todo",
@@ -7890,7 +8628,16 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
         priority,
         taskType,
         epicId,
+        goalId,
+        parentGoalId,
         storyPoints,
+        budgetWindow,
+        budgetCents,
+        budgetCurrency,
+        coordinationTeamId,
+        coordinationRole,
+        coordinationReportsTo,
+        coordinationLevel,
         sprintId: selectedSprintId,
         sprintOrder: sprintOrderInput,
         dependenciesInput,
@@ -7929,7 +8676,16 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     priority,
     taskType,
     epicId,
+    goalId,
+    parentGoalId,
     storyPoints,
+    budgetWindow,
+    budgetCents,
+    budgetCurrency,
+    coordinationTeamId,
+    coordinationRole,
+    coordinationReportsTo,
+    coordinationLevel,
     selectedSprintId,
     sprintOrderInput,
     dependenciesInput,
@@ -7942,7 +8698,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
   ]);
 
   const parsedTags = normalizeTagInput(tagsInput);
-  const hasAdvanced = baseBranch || draft || showAdvanced || epicId || selectedSprintId || dependenciesInput || storyPoints || taskType !== "task";
+  const hasAdvanced = baseBranch || draft || showAdvanced || epicId || goalId || parentGoalId || budgetWindow || budgetCents || coordinationTeamId || coordinationRole || coordinationReportsTo || coordinationLevel || selectedSprintId || dependenciesInput || storyPoints || taskType !== "task";
 
   const footerContent = html`
     <${Button}
@@ -8129,6 +8885,23 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
         <!-- Advanced fields: base branch + draft -->
         ${(showAdvanced || hasAdvanced) && html`
           <${TextField} size="small" variant="outlined" placeholder="Base branch (optional, e.g. main)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
+          <div class="input-row">
+            <${TextField} size="small" variant="outlined" placeholder="Primary goal ID" value=${goalId} onInput=${(e) => setGoalId(e.target.value)} fullWidth />
+            <${TextField} size="small" variant="outlined" placeholder="Parent goal ID" value=${parentGoalId} onInput=${(e) => setParentGoalId(e.target.value)} fullWidth />
+          </div>
+          <div class="input-row">
+            <${TextField} size="small" variant="outlined" placeholder="Budget window (e.g. 2026-Q2)" value=${budgetWindow} onInput=${(e) => setBudgetWindow(e.target.value)} fullWidth />
+            <${TextField} size="small" variant="outlined" type="number" placeholder="Budget cents" value=${budgetCents} onInput=${(e) => setBudgetCents(e.target.value)} inputProps=${{ min: 0, step: 1 }} />
+            <${TextField} size="small" variant="outlined" placeholder="USD" value=${budgetCurrency} onInput=${(e) => setBudgetCurrency(e.target.value.toUpperCase())} />
+          </div>
+          <div class="input-row">
+            <${TextField} size="small" variant="outlined" placeholder="Coordination team ID" value=${coordinationTeamId} onInput=${(e) => setCoordinationTeamId(e.target.value)} fullWidth />
+            <${TextField} size="small" variant="outlined" placeholder="Coordination role" value=${coordinationRole} onInput=${(e) => setCoordinationRole(e.target.value)} fullWidth />
+          </div>
+          <div class="input-row">
+            <${TextField} size="small" variant="outlined" placeholder="Reports to" value=${coordinationReportsTo} onInput=${(e) => setCoordinationReportsTo(e.target.value)} fullWidth />
+            <${TextField} size="small" variant="outlined" placeholder="Coordination level" value=${coordinationLevel} onInput=${(e) => setCoordinationLevel(e.target.value)} fullWidth />
+          </div>
           <${Toggle}
             label="Draft (save to backlog, don't start)"
             checked=${draft}
@@ -8153,12 +8926,3 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
-
-
-
-
-

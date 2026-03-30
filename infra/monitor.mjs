@@ -265,6 +265,8 @@ import {
 	addCompletedSession,
 	getSessionTokens,
 } from "./runtime-accumulator.mjs";
+import { buildMonitorStatsPayload } from "./tui-bridge.mjs";
+import { addConfigReloadListener } from "./config-reload-bus.mjs";
 
 import {
   getKanbanBackendName,
@@ -979,7 +981,12 @@ async function ensureWorkflowAutomationEngine() {
         const def = engine.get?.(installed.id);
         if (!def) continue;
 
-        def.enabled = true;
+        // Respect pausedByWorkflow — don't force-enable workflows that were
+        // temporarily paused by another workflow (e.g. PR watchdog pausing
+        // Task Lifecycle while repair work is in progress).
+        if (!def.metadata?.pausedByWorkflow) {
+          def.enabled = true;
+        }
         def.variables = {
           ...(def.variables || {}),
           ...overrides,
@@ -3209,6 +3216,7 @@ let watchFileName = null;
 let envWatchers = [];
 let envWatcherDebounce = null;
 let envPathMtimes = new Map();
+let removeConfigReloadListener = null;
 
 // ── Self-restart: exit code 75 signals cli.mjs to re-fork with fresh ESM cache
 const SELF_RESTART_EXIT_CODE = 75;
@@ -13612,6 +13620,14 @@ async function reloadConfig(reason) {
   }
 }
 
+function ensureConfigReloadBusListener() {
+  if (removeConfigReloadListener) return;
+  removeConfigReloadListener = addConfigReloadListener((event) => {
+    const reason = String(event?.reason || "event-bus").trim() || "event-bus";
+    runDetached(`config-reload:${reason}`, () => reloadConfig(reason));
+  });
+}
+
 process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
@@ -13621,6 +13637,10 @@ process.on("SIGINT", async () => {
   stopAgentWorkAnalyzer();
   stopSelfWatcher();
   stopEnvWatchers();
+  if (removeConfigReloadListener) {
+    removeConfigReloadListener();
+    removeConfigReloadListener = null;
+  }
   if (watcher) {
     watcher.close();
   }
@@ -13666,6 +13686,10 @@ process.on("exit", () => {
   stopHeartbeatMonitor();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
+  if (removeConfigReloadListener) {
+    removeConfigReloadListener();
+    removeConfigReloadListener = null;
+  }
   runDetachedDuringShutdown("workspace-monitor-shutdown:exit", () =>
     workspaceMonitor.shutdown(),
   );
@@ -14318,6 +14342,7 @@ startAutoUpdateLoop({
 
 startWatcher();
 startEnvWatchers();
+ensureConfigReloadBusListener();
 if (selfRestartWatcherEnabled) {
   startSelfWatcher();
 } else {
@@ -15329,9 +15354,23 @@ injectMonitorFunctions({
   getErrorDetector: () => errorDetector,
   getTuiMonitorStats: () => {
     try {
-      return typeof internalTaskExecutor?.getTuiStats === "function"
+      const executorStats = typeof internalTaskExecutor?.getTuiStats === "function"
         ? (internalTaskExecutor.getTuiStats() || {})
         : {};
+      const runtimeStats = getRuntimeStats();
+      const activeSessions = getSessionTracker().listAllSessions({ includePersisted: false })
+        .filter((session) => session?.runtimeIsLive || session?.lifecycleStatus === "active");
+      return buildMonitorStatsPayload({
+        agentPool: {
+          ...executorStats,
+          activeSessions,
+        },
+        runtimeStats: {
+          ...runtimeStats,
+          activeSessions,
+        },
+        uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
+      });
     } catch {
       return {};
     }

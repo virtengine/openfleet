@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -747,9 +747,25 @@ describe("launchEphemeralThread", () => {
 
     const sdkPkgDir = join(process.cwd(), "node_modules", "@openai", "codex-sdk");
     const runtimePkgDir = join(process.cwd(), "node_modules", "@openai", "codex-win32-x64");
+    const sdkPkgJsonPath = join(sdkPkgDir, "package.json");
+    const runtimePkgJsonPath = join(runtimePkgDir, "package.json");
     mkdirSync(sdkPkgDir, { recursive: true });
-    writeFileSync(join(sdkPkgDir, "package.json"), JSON.stringify({ name: "@openai/codex-sdk" }));
-    rmSync(runtimePkgDir, { recursive: true, force: true });
+    const savedSdkPkgJson = (() => {
+      try {
+        return readFileSync(sdkPkgJsonPath, "utf8");
+      } catch {
+        return null;
+      }
+    })();
+    const savedRuntimePkgJson = (() => {
+      try {
+        return readFileSync(runtimePkgJsonPath, "utf8");
+      } catch {
+        return null;
+      }
+    })();
+    writeFileSync(sdkPkgJsonPath, JSON.stringify({ name: "@openai/codex-sdk" }));
+    rmSync(runtimePkgJsonPath, { force: true });
 
     setCopilotLauncherMock(() => ({
       send: async () => {},
@@ -776,10 +792,16 @@ describe("launchEphemeralThread", () => {
       expect(result.output).toContain("copilot fallback ok");
       expect(mockCodexStartThread).not.toHaveBeenCalled();
     } finally {
-      rmSync(join(process.cwd(), "node_modules", "@openai"), {
-        recursive: true,
-        force: true,
-      });
+      if (savedSdkPkgJson == null) {
+        rmSync(sdkPkgJsonPath, { force: true });
+      } else {
+        writeFileSync(sdkPkgJsonPath, savedSdkPkgJson, "utf8");
+      }
+      if (savedRuntimePkgJson == null) {
+        rmSync(runtimePkgJsonPath, { force: true });
+      } else {
+        writeFileSync(runtimePkgJsonPath, savedRuntimePkgJson, "utf8");
+      }
     }
   });
 
@@ -2293,7 +2315,5 @@ describe("resolution and launch integration", () => {
   });
 });
 }
-
-
 
 

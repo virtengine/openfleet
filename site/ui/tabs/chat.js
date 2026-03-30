@@ -808,39 +808,6 @@ export function ChatTab() {
     };
   }, [focusMode]);
 
-  /* ── Auto-select first session if none ── */
-  /* NOTE: We use an effect subscription on the signal instead of putting
-     signal.value in the deps array.  Putting .value in deps causes Preact
-     to re-run the effect on every signal update AND re-render the component
-     simultaneously, creating a cascade storm that can crash the mini-app.
-     Instead we subscribe with effect() and clean up on unmount. */
-  useEffect(() => {
-    if (isMobile) return undefined;
-    // Use a short debounce to batch signal cascades during initial load
-    let debounceTimer = null;
-    const tryAutoSelect = () => {
-      try {
-        const sessions = sessionsData.value || [];
-        if (selectedSessionId.value || sessions.length === 0) return;
-        const next =
-          sessions.find(
-            (s) => getSessionLifecycleState(s).isActive,
-          ) || sessions[0];
-        if (next?.id) selectedSessionId.value = next.id;
-      } catch (err) {
-        console.warn("[ChatTab] Auto-select error:", err);
-      }
-    };
-    // Run once immediately for SSR / pre-loaded data
-    tryAutoSelect();
-    // Then watch for changes via polling (avoids signal dep cascade)
-    const interval = setInterval(tryAutoSelect, 1000);
-    return () => {
-      clearInterval(interval);
-      if (debounceTimer) clearTimeout(debounceTimer);
-    };
-  }, [isMobile]);
-
   useEffect(() => {
     if (!isMobile) {
       setDrawerOpen(false);

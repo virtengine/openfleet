@@ -49,12 +49,24 @@ function resolveCliPathArg(value, { startDir, packageRoot }) {
   return value;
 }
 
+function detectChildSpawnBlocked() {
+  try {
+    const result = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: "ignore",
+    });
+    return result?.error?.code === "EPERM";
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
 export function resolveVitestArgs(
   args = process.argv.slice(2),
   { startDir = process.cwd(), packageRoot = findPackageRoot({ startDir }) } = {},
 ) {
   const normalizedArgs = [...args];
   const filteredArgs = [];
+  let hasConfigLoaderArg = false;
   let skipNextReporterValue = false;
   for (let index = 0; index < normalizedArgs.length; index += 1) {
     const arg = normalizedArgs[index];
@@ -83,7 +95,24 @@ export function resolveVitestArgs(
       filteredArgs.push(`--config=${resolveCliPathArg(value, { startDir, packageRoot })}`);
       continue;
     }
+    if (arg === "--configLoader" || arg === "--config-loader") {
+      hasConfigLoaderArg = true;
+      filteredArgs.push(arg);
+      if (typeof normalizedArgs[index + 1] === "string") {
+        filteredArgs.push(normalizedArgs[index + 1]);
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--configLoader=") || arg.startsWith("--config-loader=")) {
+      hasConfigLoaderArg = true;
+      filteredArgs.push(arg);
+      continue;
+    }
     filteredArgs.push(arg);
+  }
+  if (process.platform === "win32" && !hasConfigLoaderArg) {
+    filteredArgs.push("--configLoader", "runner");
   }
   return filteredArgs;
 }
@@ -98,11 +127,26 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
   }
 
   const vitestArgs = resolveVitestArgs(args, { startDir });
+  const nodeArgs = [];
+  if (process.platform === "win32") {
+    const packageRoot = findPackageRoot({ startDir });
+    const realpathShimPath = packageRoot
+      ? resolve(packageRoot, "tools", "vite-windows-realpath-shim.mjs")
+      : "";
+    if (realpathShimPath && existsSync(realpathShimPath)) {
+      nodeArgs.push("--import", pathToFileURL(realpathShimPath).href);
+    }
+  }
 
-  const result = spawnSync(process.execPath, [vitestEntry, ...vitestArgs], {
+  const env = {
+    ...process.env,
+    BOSUN_TEST_CHILD_SPAWN_BLOCKED: detectChildSpawnBlocked() ? "1" : "0",
+  };
+
+  const result = spawnSync(process.execPath, [...nodeArgs, vitestEntry, ...vitestArgs], {
     cwd: startDir,
     stdio: "inherit",
-    env: process.env,
+    env,
   });
 
   if (typeof result.status === "number") {

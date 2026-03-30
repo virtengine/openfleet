@@ -61,6 +61,11 @@
       "default": false,
       "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
     },
+    "workflowRiskyActionApprovalsEnabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Require operator approval before workflows execute irreversible actions such as push, PR creation, destructive git cleanup, and Bosun task deletion."
+    },
     "workflowWorktreeRecoveryCooldownMin": {
       "type": "number",
       "default": 15,
@@ -770,7 +775,7 @@
       "properties": {
         "backend": {
           "type": "string",
-          "enum": ["internal", "github", "jira"]
+          "enum": ["internal", "github", "jira", "gnap"]
         },
         "syncPolicy": {
           "type": "string",
@@ -984,6 +989,44 @@
                   "description": "Optional custom field ID for ignore reason"
                 }
               }
+            }
+          }
+        },
+        "gnap": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable the optional GNAP projection backend. Must be true before selecting KANBAN_BACKEND=gnap."
+            },
+            "repoPath": {
+              "type": "string",
+              "description": "Absolute path to the repo or clone that will host GNAP projection data."
+            },
+            "syncMode": {
+              "type": "string",
+              "enum": ["projection"],
+              "default": "projection",
+              "description": "Projection-only GNAP synchronization mode. Bosun keeps live runtime state in private storage."
+            },
+            "runStorage": {
+              "type": "string",
+              "enum": ["git", "local"],
+              "default": "git",
+              "description": "Where GNAP run metadata is stored when projection export is enabled."
+            },
+            "messageStorage": {
+              "type": "string",
+              "enum": ["off", "git", "local"],
+              "default": "off",
+              "description": "Where GNAP message projections are stored. 'off' keeps agent-to-agent traffic private by default."
+            },
+            "publicRoadmapEnabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Allow sanitized public GNAP roadmap projection when explicitly enabled."
             }
           }
         }

@@ -106,7 +106,46 @@ const STYLES = `
 .guardrails-hook-badge { font-size: 0.74rem; border: 1px solid rgba(56, 189, 248, 0.25); color: #7dd3fc; background: rgba(56, 189, 248, 0.1); border-radius: 999px; padding: 3px 8px; }
 .guardrails-hook-badge.core { border-color: rgba(244, 114, 182, 0.25); color: #f9a8d4; background: rgba(244, 114, 182, 0.1); }
 .guardrails-hook-badge.blocking { border-color: rgba(248, 113, 113, 0.28); color: #fca5a5; background: rgba(248, 113, 113, 0.12); }
+.guardrails-hook-badge.sdk-full { border-color: rgba(34, 197, 94, 0.3); color: #86efac; background: rgba(34, 197, 94, 0.1); }
+.guardrails-hook-badge.sdk-bridge { border-color: rgba(250, 204, 21, 0.3); color: #fde047; background: rgba(250, 204, 21, 0.08); }
+.guardrails-hook-badge.sdk-unsupported { border-color: rgba(100, 116, 139, 0.3); color: #94a3b8; background: rgba(100, 116, 139, 0.08); opacity: 0.6; }
+.guardrails-hook-badge.sdk-partial { border-color: rgba(251, 146, 60, 0.3); color: #fdba74; background: rgba(251, 146, 60, 0.08); }
+.guardrails-hook-badge.edited { border-color: rgba(168, 85, 247, 0.3); color: #c084fc; background: rgba(168, 85, 247, 0.1); }
+.guardrails-hook-actions { display: flex; gap: 6px; align-items: flex-start; flex-direction: column; }
+.guardrails-hook-edit-btn { border: 1px solid var(--border, #334155); background: transparent; color: var(--text-secondary, #94a3b8); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 0.78rem; }
+.guardrails-hook-edit-btn:hover { border-color: #38bdf8; color: #7dd3fc; }
+.guardrails-feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 10px; }
+.guardrails-feature-card { border: 1px solid var(--border, #334155); border-radius: 14px; padding: 12px; background: rgba(15, 23, 42, 0.5); transition: border-color 0.15s; }
+.guardrails-feature-card.active { border-color: rgba(34, 197, 94, 0.4); }
+.guardrails-feature-card-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.guardrails-feature-card-head h4 { margin: 0; font-size: 0.92rem; display: flex; align-items: center; gap: 6px; }
+.guardrails-feature-card p { margin: 4px 0 0; color: var(--text-secondary, #94a3b8); font-size: 0.82rem; }
+.guardrails-feature-card .guardrails-meta { margin-top: 6px; }
+.guardrails-hook-detail { border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 12px; padding: 12px; background: rgba(2, 6, 23, 0.6); margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.guardrails-hook-detail label { font-size: 0.82rem; color: var(--text-secondary, #94a3b8); display: flex; flex-direction: column; gap: 4px; }
+.guardrails-hook-detail textarea { width: 100%; min-height: 70px; border-radius: 8px; border: 1px solid var(--border, #334155); background: rgba(2, 6, 23, 0.7); color: var(--text-primary, #e5e7eb); padding: 8px; font-family: Consolas, Monaco, monospace; font-size: 0.8rem; resize: vertical; box-sizing: border-box; }
+.guardrails-hook-detail input[type="number"] { width: 120px; border-radius: 8px; border: 1px solid var(--border, #334155); background: rgba(2, 6, 23, 0.7); color: var(--text-primary, #e5e7eb); padding: 6px 8px; font: inherit; }
+.guardrails-hook-detail-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.guardrails-hook-detail-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.guardrails-sdk-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.guardrails-filter-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.guardrails-filter-select { border: 1px solid var(--border, #334155); background: var(--bg-card, #111827); color: var(--text-primary, #e5e7eb); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 0.85rem; cursor: pointer; }
 .guardrails-empty { border: 1px dashed var(--border, #334155); border-radius: 14px; padding: 16px; color: var(--text-secondary, #94a3b8); text-align: center; }
+.guardrails-repo-selector { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.guardrails-repo-tab { border: 1px solid var(--border, #334155); background: transparent; color: var(--text-secondary, #94a3b8); border-radius: 10px; padding: 8px 14px; cursor: pointer; font: inherit; font-size: 0.85rem; transition: 0.15s; }
+.guardrails-repo-tab:hover { border-color: #38bdf8; color: #e5e7eb; }
+.guardrails-repo-tab.active { border-color: rgba(56, 189, 248, 0.5); background: rgba(56, 189, 248, 0.08); color: #7dd3fc; }
+.guardrails-stack-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; }
+.guardrails-stack-card { border: 1px solid var(--border, #334155); border-radius: 14px; padding: 12px; background: rgba(15, 23, 42, 0.5); }
+.guardrails-stack-card.primary { border-color: rgba(56, 189, 248, 0.35); }
+.guardrails-stack-card h4 { margin: 0; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; }
+.guardrails-stack-card p { margin: 4px 0 0; color: var(--text-secondary, #94a3b8); font-size: 0.82rem; }
+.guardrails-stack-cmds { margin-top: 8px; display: grid; gap: 4px; }
+.guardrails-stack-cmd { font-size: 0.78rem; color: var(--text-secondary, #94a3b8); font-family: Consolas, Monaco, monospace; }
+.guardrails-stack-cmd strong { color: var(--text-primary, #e5e7eb); font-weight: 600; font-family: inherit; }
+.guardrails-lang-override { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.guardrails-lang-override select { border: 1px solid var(--border, #334155); background: var(--bg-card, #111827); color: var(--text-primary, #e5e7eb); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 0.85rem; }
+.guardrails-lang-pill { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 3px 10px; font-size: 0.78rem; background: rgba(56, 189, 248, 0.1); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.25); }
 @media (max-width: 720px) {
   .guardrails-root { padding: 8px; }
   .guardrails-hook-item { grid-template-columns: 1fr; }
@@ -238,20 +277,57 @@ export function GuardrailsTab() {
   });
   const [assessmentBusy, setAssessmentBusy] = useState(false);
   const [assessmentResult, setAssessmentResult] = useState(null);
+  const [expandedHookId, setExpandedHookId] = useState(null);
+  const [editDraft, setEditDraft] = useState({});
+  const [editSaving, setEditSaving] = useState(false);
+  const [categoryBusy, setCategoryBusy] = useState("");
+  const [sdkFilter, setSdkFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [hookOverrides, setHookOverrides] = useState({});
+  const [repoList, setRepoList] = useState([]);
+  const [selectedRepoPath, setSelectedRepoPath] = useState("");
 
   const loadHookControls = async () => {
     setHooksLoading(true);
     try {
-      const [catalogRes, stateRes] = await Promise.all([
+      const [catalogRes, stateRes, overridesRes] = await Promise.all([
         apiFetch("/api/hooks/catalog", { _silent: true }),
         apiFetch("/api/hooks/state", { _silent: true }),
+        apiFetch("/api/hooks/override", { _silent: true }),
       ]);
       setHookCatalog(Array.isArray(catalogRes?.data) ? catalogRes.data : []);
       setHookState(stateRes?.data && typeof stateRes.data === "object" ? stateRes.data : { enabledIds: [] });
+      setHookOverrides(overridesRes?.data && typeof overridesRes.data === "object" ? overridesRes.data : {});
     } catch (err) {
       showToast(err?.message || "Failed to load hook guardrails", "error");
     } finally {
       setHooksLoading(false);
+    }
+  };
+
+  const loadRepoList = async () => {
+    try {
+      const res = await apiFetch("/api/guardrails/repos", { _silent: true });
+      const repos = Array.isArray(res?.repos) ? res.repos : [];
+      setRepoList(repos);
+    } catch {
+      // Non-critical; single repo view still works via snapshot
+    }
+  };
+
+  const selectRepo = async (repoPath) => {
+    setSelectedRepoPath(repoPath);
+    if (!repoPath) {
+      await refreshTab("guardrails", { force: true });
+      return;
+    }
+    try {
+      const res = await apiFetch(`/api/guardrails?repo=${encodeURIComponent(repoPath)}`, { _silent: true });
+      if (res?.snapshot) {
+        guardrailsData.value = res.snapshot;
+      }
+    } catch (err) {
+      showToast(err?.message || "Failed to load repo guardrails", "error");
     }
   };
 
@@ -260,6 +336,7 @@ export function GuardrailsTab() {
       refreshTab("guardrails");
     }
     loadHookControls();
+    loadRepoList();
   }, []);
 
   useEffect(() => {
@@ -273,15 +350,28 @@ export function GuardrailsTab() {
 
   const enabledHookIds = useMemo(() => new Set(Array.isArray(hookState?.enabledIds) ? hookState.enabledIds : []), [hookState?.enabledIds]);
   const hookGroups = useMemo(() => {
-    const filtered = (Array.isArray(hookCatalog) ? hookCatalog : []).filter((hook) => {
-      const q = hookSearch.trim().toLowerCase();
-      if (!q) return true;
-      return [hook?.name, hook?.description, hook?.id, hook?.category, ...(Array.isArray(hook?.tags) ? hook.tags : [])]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(q));
-    });
+    let filtered = Array.isArray(hookCatalog) ? [...hookCatalog] : [];
+    const q = hookSearch.trim().toLowerCase();
+    if (q) {
+      filtered = filtered.filter((hook) =>
+        [hook?.name, hook?.description, hook?.id, hook?.category, ...(Array.isArray(hook?.tags) ? hook.tags : [])]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(q)),
+      );
+    }
+    if (sdkFilter) {
+      filtered = filtered.filter((hook) => {
+        const compat = hook?.compatibility?.[sdkFilter];
+        return compat && compat !== "unsupported";
+      });
+    }
+    if (statusFilter === "enabled") {
+      filtered = filtered.filter((hook) => enabledHookIds.has(hook?.id));
+    } else if (statusFilter === "available") {
+      filtered = filtered.filter((hook) => !enabledHookIds.has(hook?.id));
+    }
     return groupHooksByCategory(filtered);
-  }, [hookCatalog, hookSearch]);
+  }, [hookCatalog, hookSearch, enabledHookIds, sdkFilter, statusFilter]);
 
   const categoryMeta = useMemo(() => {
     const map = new Map();
@@ -389,6 +479,86 @@ export function GuardrailsTab() {
     }
   };
 
+  const toggleCategory = async (categoryId) => {
+    const catHooks = (Array.isArray(hookCatalog) ? hookCatalog : []).filter((h) => h.category === categoryId);
+    const enabledInCat = catHooks.filter((h) => enabledHookIds.has(h.id)).length;
+    const shouldEnable = enabledInCat < catHooks.length;
+    setCategoryBusy(categoryId);
+    try {
+      await apiFetch("/api/hooks/state", {
+        method: "POST",
+        body: JSON.stringify({
+          action: shouldEnable ? "bulk-enable" : "bulk-disable",
+          category: categoryId,
+          hookId: categoryId,
+        }),
+      });
+      await Promise.all([
+        loadHookControls(),
+        refreshTab("guardrails", { force: true }),
+      ]);
+      showToast(`${shouldEnable ? "Enabled" : "Disabled"} ${categoryId} hooks`, "success");
+    } catch (err) {
+      showToast(err?.message || `Failed to toggle ${categoryId}`, "error");
+    } finally {
+      setCategoryBusy("");
+    }
+  };
+
+  const openHookEditor = (hook) => {
+    const override = hookOverrides[hook.id] || {};
+    setExpandedHookId(hook.id);
+    setEditDraft({
+      command: override.command ?? hook.command ?? "",
+      timeout: override.timeout ?? hook.timeout ?? 60000,
+      blocking: override.blocking ?? hook.blocking ?? false,
+    });
+  };
+
+  const closeHookEditor = () => {
+    setExpandedHookId(null);
+    setEditDraft({});
+  };
+
+  const saveHookEdit = async (hookId) => {
+    setEditSaving(true);
+    try {
+      await apiFetch("/api/hooks/override", {
+        method: "POST",
+        body: JSON.stringify({
+          hookId,
+          command: editDraft.command,
+          timeout: Number(editDraft.timeout) || 60000,
+          blocking: editDraft.blocking === true,
+        }),
+      });
+      await loadHookControls();
+      showToast("Hook configuration saved", "success");
+      closeHookEditor();
+    } catch (err) {
+      showToast(err?.message || "Failed to save hook override", "error");
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const revertHookEdit = async (hookId) => {
+    setEditSaving(true);
+    try {
+      await apiFetch("/api/hooks/override", {
+        method: "DELETE",
+        body: JSON.stringify({ hookId }),
+      });
+      await loadHookControls();
+      showToast("Hook reverted to defaults", "success");
+      closeHookEditor();
+    } catch (err) {
+      showToast(err?.message || "Failed to revert hook", "error");
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   const warnings = Array.isArray(snapshot?.summary?.warnings) ? snapshot.summary.warnings : [];
   const repoCategories = snapshot?.repoGuardrails?.categories && typeof snapshot.repoGuardrails.categories === "object"
     ? snapshot.repoGuardrails.categories
@@ -409,6 +579,10 @@ export function GuardrailsTab() {
   const prepushScripts = Array.isArray(repoCategories?.prepush?.scripts) ? repoCategories.prepush.scripts : [];
   const prepublishScripts = Array.isArray(repoCategories?.prepublish?.scripts) ? repoCategories.prepublish.scripts : [];
   const ciScripts = Array.isArray(repoCategories?.ci?.scripts) ? repoCategories.ci.scripts : [];
+  const projectStack = snapshot?.projectStack || {};
+  const detectedStacks = Array.isArray(projectStack?.stacks) ? projectStack.stacks : [];
+  const detectedLanguages = Array.isArray(projectStack?.detectedLanguages) ? projectStack.detectedLanguages : [];
+  const primaryStackId = projectStack?.primary?.id || "";
   const policySummaryCards = [
     {
       title: "PR Requirements",
@@ -488,7 +662,7 @@ export function GuardrailsTab() {
           </div>
         </div>
         <div class="guardrails-actions">
-          <button class="guardrails-btn" onClick=${() => refreshTab("guardrails", { force: true }).then(loadHookControls)}>
+          <button class="guardrails-btn" onClick=${() => { refreshTab("guardrails", { force: true }).then(loadHookControls); loadRepoList(); }}>
             Refresh
           </button>
           <button class="guardrails-btn" onClick=${loadHookControls} disabled=${hooksLoading}>
@@ -511,7 +685,7 @@ export function GuardrailsTab() {
         <div class="guardrails-stat">
           <div class="guardrails-stat-label">Repo Checks</div>
           <div class="guardrails-stat-value">${snapshot?.summary?.counts?.repoGuardrailsDetected ?? 0}</div>
-          <div class="guardrails-stat-sub">package-script categories detected</div>
+          <div class="guardrails-stat-sub">${detectedLanguages.length > 0 ? detectedLanguages.join(", ") : "no language detected"}</div>
         </div>
         <div class="guardrails-stat">
           <div class="guardrails-stat-label">Runtime Gates</div>
@@ -534,6 +708,78 @@ export function GuardrailsTab() {
           <ul class="guardrails-warning-list">
             ${warnings.map((warning) => html`<li key=${warning}>${warning}</li>`)}
           </ul>
+        </section>
+      ` : null}
+
+      ${repoList.length > 1 ? html`
+        <section class="guardrails-section">
+          <div class="guardrails-section-head">
+            <div>
+              <h3>Workspace Repositories</h3>
+              <p class="guardrails-section-copy">Your workspace contains multiple repositories. Select one to view its guardrails and detected stack.</p>
+            </div>
+            <div class="guardrails-meta">${repoList.length} repos detected</div>
+          </div>
+          <div class="guardrails-repo-selector">
+            ${repoList.map((repo) => {
+              const isActive = selectedRepoPath ? selectedRepoPath === repo.path : repo.primary;
+              const repoStack = repo.snapshot?.projectStack;
+              const langs = Array.isArray(repoStack?.detectedLanguages) ? repoStack.detectedLanguages : [];
+              return html`
+                <button
+                  class="guardrails-repo-tab ${isActive ? "active" : ""}"
+                  key=${repo.path}
+                  onClick=${() => selectRepo(isActive && selectedRepoPath ? "" : repo.path)}
+                  title=${repo.path}
+                >
+                  ${repo.name || repo.path}
+                  ${repo.primary ? html` <span class="guardrails-hook-badge">primary</span>` : null}
+                  ${langs.length > 0 ? html` <span class="guardrails-lang-pill">${langs.join(", ")}</span>` : null}
+                </button>
+              `;
+            })}
+          </div>
+        </section>
+      ` : null}
+
+      ${detectedStacks.length > 0 ? html`
+        <section class="guardrails-section">
+          <div class="guardrails-section-head">
+            <div>
+              <h3>Detected Project Stacks</h3>
+              <p class="guardrails-section-copy">Languages and build systems detected in this repository. Guardrails adapt automatically to the detected stack.</p>
+            </div>
+            <div class="guardrails-pill-row">
+              ${detectedLanguages.map((lang) => html`<span class="guardrails-lang-pill" key=${lang}>${lang}</span>`)}
+              ${projectStack.isMonorepo ? html`<span class="guardrails-pill warn">monorepo</span>` : null}
+            </div>
+          </div>
+          <div class="guardrails-stack-grid">
+            ${detectedStacks.map((stack) => {
+              const cmds = stack.commands || {};
+              const cmdEntries = Object.entries(cmds).filter(([, v]) => v);
+              const isPrimary = stack.id === primaryStackId;
+              return html`
+                <div class="guardrails-stack-card ${isPrimary ? "primary" : ""}" key=${stack.id}>
+                  <h4>
+                    ${stack.label || stack.id}
+                    ${isPrimary ? html` <span class="guardrails-hook-badge">primary</span>` : null}
+                  </h4>
+                  <p>${stack.packageManager ? `Package manager: ${stack.packageManager}` : "No package manager detected"}</p>
+                  ${Array.isArray(stack.frameworks) && stack.frameworks.length > 0 ? html`
+                    <p>Frameworks: ${stack.frameworks.join(", ")}</p>
+                  ` : null}
+                  ${cmdEntries.length > 0 ? html`
+                    <div class="guardrails-stack-cmds">
+                      ${cmdEntries.map(([key, cmd]) => html`
+                        <div class="guardrails-stack-cmd" key=${key}><strong>${key}:</strong> ${cmd}</div>
+                      `)}
+                    </div>
+                  ` : html`<p>No commands auto-detected for this stack.</p>`}
+                </div>
+              `;
+            })}
+          </div>
         </section>
       ` : null}
 
@@ -591,9 +837,9 @@ export function GuardrailsTab() {
         <div class="guardrails-section-head">
           <div>
             <h3>Repo Guardrails</h3>
-            <p class="guardrails-section-copy">Signals detected from package scripts. These are the practical enforcement points around prepush, publish, and CI/CD.</p>
+            <p class="guardrails-section-copy">Enforcement points detected from project configuration. Categories are populated from ${detectedLanguages.length > 0 ? detectedLanguages.join(", ") : "package"} toolchains.</p>
           </div>
-          <div class="guardrails-meta">${snapshot?.repoGuardrails?.packageName || "No package.json metadata"}</div>
+          <div class="guardrails-meta">${snapshot?.repoGuardrails?.packageName || (detectedLanguages.length > 0 ? detectedLanguages[0] + " project" : "No project metadata")}</div>
         </div>
 
         <div class="guardrails-category-grid">
@@ -601,7 +847,7 @@ export function GuardrailsTab() {
             <div class="guardrails-category-card" key=${key}>
               <div class="guardrails-pill ${category?.detected ? "good" : "bad"}">${category?.detected ? "Detected" : "Missing"}</div>
               <h4>${key}</h4>
-              <p>${category?.detected ? `${Array.isArray(category?.scripts) ? category.scripts.length : 0} script hook(s) found.` : "No script-based enforcement found for this layer."}</p>
+              <p>${category?.detected ? `${Array.isArray(category?.scripts) ? category.scripts.length : 0} command(s) found.` : "No enforcement detected for this layer."}</p>
             </div>
           `)}
         </div>
@@ -612,7 +858,7 @@ export function GuardrailsTab() {
             if (scripts.length === 0) {
               return [html`<div class="guardrails-script" key=${`${key}-empty`}>
                 <div class="guardrails-script-name">${key}</div>
-                <div class="guardrails-script-cmd">No package script detected.</div>
+                <div class="guardrails-script-cmd">No commands detected for this category.</div>
               </div>`];
             }
             return scripts.map((script) => html`
@@ -752,13 +998,63 @@ export function GuardrailsTab() {
         <div class="guardrails-section-head">
           <div>
             <h3>Hook Guardrails</h3>
-            <p class="guardrails-section-copy">Per-hook enforcement across safety, quality, git, security, and session resilience. Core hooks require explicit force-disable.</p>
+            <p class="guardrails-section-copy">Toggle feature groups to bulk-enable hooks by category. Each hook shows which executors support it. Click Edit to customize commands.</p>
           </div>
           <div class="guardrails-meta">${snapshot?.hooks?.enabledCount ?? enabledHookIds.size} enabled · ${hookCatalog.length} total catalog hooks</div>
         </div>
 
+        <div class="guardrails-feature-grid">
+          ${Array.from(categoryMeta.entries()).map(([catId, meta]) => {
+            const catHooks = (Array.isArray(hookCatalog) ? hookCatalog : []).filter((h) => h.category === catId);
+            if (catHooks.length === 0) return null;
+            const enabledInCat = catHooks.filter((h) => enabledHookIds.has(h.id)).length;
+            const allEnabled = enabledInCat === catHooks.length;
+            const someEnabled = enabledInCat > 0;
+            const isBusy = categoryBusy === catId;
+            return html`
+              <div class="guardrails-feature-card ${someEnabled ? "active" : ""}" key=${catId}>
+                <div class="guardrails-feature-card-head">
+                  <h4>${meta.icon || "⚙️"} ${meta.name || catId}</h4>
+                  ${renderToggle(allEnabled, () => toggleCategory(catId), isBusy)}
+                </div>
+                <p>${meta.description || ""}</p>
+                <div class="guardrails-meta">${enabledInCat}/${catHooks.length} hooks enabled</div>
+              </div>
+            `;
+          })}
+        </div>
+      </section>
+
+      <section class="guardrails-section">
+        <div class="guardrails-section-head">
+          <div>
+            <h3>Installed Hooks</h3>
+            <p class="guardrails-section-copy">All hooks from the library. Filter by executor, status, or search. Edit commands and settings per hook.</p>
+          </div>
+          <div class="guardrails-pill-row">
+            <button class="guardrails-btn" onClick=${loadHookControls} disabled=${hooksLoading}>
+              ${hooksLoading ? "Loading..." : "Reload"}
+            </button>
+          </div>
+        </div>
+
         <div class="guardrails-hook-toolbar">
           <input class="guardrails-field guardrails-hook-search" value=${hookSearch} onInput=${(event) => setHookSearch(event.currentTarget.value)} placeholder="Search hooks by name, tag, id, or category" />
+          <div class="guardrails-filter-row">
+            <select class="guardrails-filter-select" value=${sdkFilter} onChange=${(e) => setSdkFilter(e.currentTarget.value)}>
+              <option value="">All executors</option>
+              <option value="codex">Codex</option>
+              <option value="copilot">Copilot</option>
+              <option value="claude">Claude</option>
+              <option value="gemini">Gemini</option>
+              <option value="opencode">OpenCode</option>
+            </select>
+            <select class="guardrails-filter-select" value=${statusFilter} onChange=${(e) => setStatusFilter(e.currentTarget.value)}>
+              <option value="all">All hooks</option>
+              <option value="enabled">Enabled only</option>
+              <option value="available">Available only</option>
+            </select>
+          </div>
           <div class="guardrails-meta">${hooksLoading ? "Loading hook library..." : updatedAt ? `State updated ${formatRelative(updatedAt)}` : "Hook state uses defaults until persisted."}</div>
         </div>
 
@@ -771,7 +1067,7 @@ export function GuardrailsTab() {
                 <div class="guardrails-hook-group" key=${categoryId}>
                   <div class="guardrails-hook-group-head">
                     <div>
-                      <h4>${meta.name || categoryId}</h4>
+                      <h4>${meta.icon || "⚙️"} ${meta.name || categoryId}</h4>
                       <div class="guardrails-meta">${meta.description || ""}</div>
                     </div>
                     <div class="guardrails-pill ${enabledInGroup > 0 ? "good" : "warn"}">${enabledInGroup}/${hooks.length} enabled</div>
@@ -779,23 +1075,57 @@ export function GuardrailsTab() {
                   <div class="guardrails-hook-items">
                     ${hooks.map((hook) => {
                       const isEnabled = enabledHookIds.has(hook.id);
+                      const hasOverrides = Boolean(hookOverrides[hook.id]);
+                      const isExpanded = expandedHookId === hook.id;
+                      const compat = hook.compatibility || {};
                       return html`
                         <div class="guardrails-hook-item" key=${hook.id}>
                           <div>
                             <h5>${hook.name}</h5>
                             <p>${hook.description || "No description provided."}</p>
                             <div class="guardrails-hook-badges">
-                              <span class="guardrails-hook-badge">${hook.id}</span>
                               ${hook.core ? html`<span class="guardrails-hook-badge core">core</span>` : null}
                               ${hook.defaultEnabled ? html`<span class="guardrails-hook-badge">default</span>` : null}
                               ${hook.blocking ? html`<span class="guardrails-hook-badge blocking">blocking</span>` : null}
+                              ${hasOverrides ? html`<span class="guardrails-hook-badge edited">edited</span>` : null}
                               ${(Array.isArray(hook.events) ? hook.events : [hook.events]).filter(Boolean).map((eventName) => html`<span class="guardrails-hook-badge" key=${`${hook.id}-${eventName}`}>${eventName}</span>`)}
                             </div>
+                            <div class="guardrails-sdk-row">
+                              ${Object.entries(compat).map(([sdkId, level]) => html`
+                                <span class="guardrails-hook-badge sdk-${level}" key=${`${hook.id}-sdk-${sdkId}`} title="${sdkId}: ${level}">${sdkId}</span>
+                              `)}
+                            </div>
                           </div>
-                          <div>
+                          <div class="guardrails-hook-actions">
                             ${renderToggle(isEnabled, () => toggleHook(hook), hookBusyId === hook.id)}
+                            <button class="guardrails-hook-edit-btn" onClick=${() => isExpanded ? closeHookEditor() : openHookEditor(hook)}>${isExpanded ? "Close" : "Edit"}</button>
                           </div>
                         </div>
+                        ${isExpanded ? html`
+                          <div class="guardrails-hook-detail" key=${`${hook.id}-detail`}>
+                            <label>
+                              Command
+                              <textarea value=${editDraft.command || ""} onInput=${(e) => setEditDraft((d) => ({ ...d, command: e.currentTarget.value }))}></textarea>
+                            </label>
+                            <div class="guardrails-hook-detail-row">
+                              <label>
+                                Timeout (ms)
+                                <input type="number" min="1000" step="1000" value=${editDraft.timeout || 60000} onInput=${(e) => setEditDraft((d) => ({ ...d, timeout: e.currentTarget.value }))} />
+                              </label>
+                              <label>
+                                Blocking
+                                ${renderToggle(editDraft.blocking === true, () => setEditDraft((d) => ({ ...d, blocking: !d.blocking })))}
+                              </label>
+                            </div>
+                            ${hook.requires ? html`<div class="guardrails-meta">Requires: ${hook.requires}</div>` : null}
+                            ${hook.disableWarning ? html`<div class="guardrails-meta" style="color: #fca5a5;">⚠ ${hook.disableWarning}</div>` : null}
+                            <div class="guardrails-hook-detail-actions">
+                              ${hasOverrides ? html`<button class="guardrails-btn" onClick=${() => revertHookEdit(hook.id)} disabled=${editSaving}>Revert to defaults</button>` : null}
+                              <button class="guardrails-btn" onClick=${closeHookEditor}>Cancel</button>
+                              <button class="guardrails-btn primary" onClick=${() => saveHookEdit(hook.id)} disabled=${editSaving}>${editSaving ? "Saving..." : "Save"}</button>
+                            </div>
+                          </div>
+                        ` : null}
                       `;
                     })}
                   </div>

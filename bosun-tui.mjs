@@ -98,7 +98,7 @@ export async function runBosunTui(argv = process.argv.slice(2), options = {}) {
 
   const React = await import("react");
   const ink = await import("ink");
-  const { default: App } = await import("./ui/tui/App.js");
+  const { default: App } = await import("./tui/app.mjs");
 
   let terminalSize = getTerminalSize(stdout);
   const props = {

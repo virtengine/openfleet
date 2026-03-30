@@ -13,6 +13,7 @@
  */
 
 import "../infra/windows-hidden-child-processes.mjs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -410,6 +411,36 @@ function resolveCodexTransport() {
 
 function shouldUseBareCodexSdkImport() {
   return Boolean(import.meta.vitest || process.env.VITEST);
+}
+
+/**
+ * Repair @openai/codex-sdk package.json if main/exports are missing.
+ * npm install can leave the package.json in a broken state when the
+ * SDK ships without proper entry points. The postinstall script normally
+ * patches this, but the fix can be lost if npm re-extracts from cache
+ * or if the install runs on a different lifecycle order.
+ */
+function repairCodexSdkPackageJson() {
+  try {
+    const codexPkgPath = resolve(__dirname, "..", "node_modules", "@openai", "codex-sdk", "package.json");
+    if (!existsSync(codexPkgPath)) return;
+    const codexPkg = JSON.parse(readFileSync(codexPkgPath, "utf8"));
+    if (codexPkg.main || codexPkg.exports) return; // already valid
+    const distIndex = resolve(__dirname, "..", "node_modules", "@openai", "codex-sdk", "dist", "index.js");
+    if (!existsSync(distIndex)) return;
+    codexPkg.main = "dist/index.js";
+    codexPkg.type = "module";
+    codexPkg.exports = { ".": { import: "./dist/index.js" } };
+    const distTypes = distIndex.replace(/\.js$/, ".d.ts");
+    if (existsSync(distTypes)) {
+      codexPkg.types = "dist/index.d.ts";
+      codexPkg.exports["."].types = "./dist/index.d.ts";
+    }
+    writeFileSync(codexPkgPath, JSON.stringify(codexPkg, null, 2), "utf8");
+    console.log("[codex-shell] repaired @openai/codex-sdk package.json (missing main/exports)");
+  } catch {
+    // best-effort — postinstall may have already fixed it
+  }
 }
 
 async function importCodexSdkModule(resolvedSdk) {
@@ -1363,4 +1394,3 @@ export async function initCodexShell() {
     );
   }
 }
-

@@ -1021,23 +1021,6 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
   const sessions = filterSessionsByType(allSessions, sessionType);
   const liveRuntimeCount = sessions.filter((s) => getSessionRuntimeState(s).isLive).length;
 
-  useEffect(() => {
-    // Session polling belongs to the active tab (Chat/Agents). The rail only
-    // performs a one-time fallback load to avoid filter thrash/flicker.
-    if (sessions.length > 0) return;
-    void loadSessions({ type: sessionType }).catch(() => {});
-  }, [sessionType, sessions.length]);
-
-  useEffect(() => {
-    if (sessions.length === 0) return;
-    if (sessions.some((session) => session?.id === selectedSessionId.value)) return;
-    const next =
-      sessions.find((s) => getSessionRuntimeState(s).isLive) ||
-      sessions.find((s) => getSessionLifecycleState(s).isActive) ||
-      sessions[0];
-    if (next?.id) selectedSessionId.value = next.id;
-  }, [sessionType, sessionsData.value, selectedSessionId.value]);
-
   if (collapsed) {
     // Icon-only strip: colored dots for sessions + expand button
     const dots = sessions.slice(0, 12);

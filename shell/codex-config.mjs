@@ -87,7 +87,6 @@ function buildDefaultAgentSdkBlock(primary = "codex") {
   ].join("\n");
 }
 
-
 // ── Feature Flags ────────────────────────────────────────────────────────────
 
 /**
@@ -1100,14 +1099,6 @@ const COMMON_MCP_SERVER_DEFS = [
   },
 ];
 
-const COMMON_MCP_SERVER_SECTION_NAMES = Object.freeze([
-  "context7",
-  "sequential-thinking",
-  "playwright",
-  "microsoft-docs",
-  "microsoft_docs",
-]);
-
 function shouldIncludeDefaultMcpServers(env = process.env) {
   const raw = String(env.BOSUN_MCP_ALLOW_DEFAULT_SERVERS || "")
     .trim()
@@ -1135,45 +1126,6 @@ function hasNamedMcpServer(toml, name) {
   return new RegExp(`^\\[mcp_servers\\.${escapeRegex(name)}\\]`, "m").test(
     toml,
   );
-}
-
-function stripNamedMcpSection(toml, name) {
-  const header = `[mcp_servers.${name}]`;
-  const headerIdx = toml.indexOf(header);
-  if (headerIdx === -1) {
-    return { toml, changed: false };
-  }
-
-  const lineStart = toml.lastIndexOf("\n", headerIdx);
-  let removeFrom = lineStart === -1 ? 0 : lineStart + 1;
-  const prefix = toml.slice(0, removeFrom);
-  const commentMatch = prefix.match(/(^|\n)# ── Common MCP servers \(added by bosun\) ──\s*\n$/);
-  if (commentMatch) {
-    removeFrom = prefix.length - commentMatch[0].length + (commentMatch[1] === "\n" ? 1 : 0);
-  }
-
-  const afterHeader = headerIdx + header.length;
-  const nextSection = toml.indexOf("\n[", afterHeader);
-  const sectionEnd = nextSection === -1 ? toml.length : nextSection + 1;
-  const nextToml = `${toml.slice(0, removeFrom)}${toml.slice(sectionEnd)}`.replace(/\n{3,}/g, "\n\n");
-  return { toml: nextToml, changed: nextToml !== toml };
-}
-
-export function stripCommonMcpServerBlocks(toml) {
-  let nextToml = String(toml || "");
-  let changed = false;
-  for (const name of COMMON_MCP_SERVER_SECTION_NAMES) {
-    while (true) {
-      const stripped = stripNamedMcpSection(nextToml, name);
-      if (!stripped.changed) break;
-      nextToml = stripped.toml;
-      changed = true;
-    }
-  }
-  return {
-    toml: nextToml,
-    changed,
-  };
 }
 
 function ensureMcpStartupTimeout(toml, name, timeoutSec = 120) {
@@ -1583,11 +1535,7 @@ function applyAgentSdkDefaults(toml, env, primarySdk, result) {
 
 function ensureCommonMcpDefaults(toml, result, env = process.env) {
   if (!shouldIncludeDefaultMcpServers(env)) {
-    const stripped = stripCommonMcpServerBlocks(toml);
-    if (stripped.changed) {
-      result.commonMcpRemoved = true;
-    }
-    return stripped.toml;
+    return toml;
   }
   let nextToml = toml;
   for (const definition of COMMON_MCP_SERVER_DEFS) {

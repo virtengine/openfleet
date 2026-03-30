@@ -127,6 +127,7 @@ export const MCP_RESEARCH_PROBE_TEMPLATE = {
     }),
     node("create-pr",  "action.create_pr",       "Create Research PR",           {
       title: "research: {{query}}", branch: "{{prBranch}}", baseBranch: "{{prBaseBranch}}",
+      body: "## Research\\n\\n{{query}}",
       continueOnError: true,
     }),
     node("done",       "flow.end",               "End",                          {}),

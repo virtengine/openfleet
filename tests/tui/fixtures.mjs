@@ -127,6 +127,62 @@ export const FIXTURE_TASKS = [
   { id: "task-5", title: "Ship smoke test", status: "done" },
 ];
 
+export const tuiConfigFixture = {
+  ok: true,
+  meta: {
+    configPath: "/tmp/bosun.config.json",
+  },
+  sections: [
+    {
+      id: "general",
+      label: "General",
+      items: [
+        {
+          kind: "field",
+          id: "projectName",
+          path: "projectName",
+          depth: 0,
+          label: "projectName",
+          valueText: "Bosun Demo",
+          sourceLabel: "from config",
+          description: "Display name",
+          editorKind: "string",
+          readOnly: false,
+          masked: false,
+          enumValues: [],
+        },
+      ],
+    },
+    {
+      id: "kanban",
+      label: "Kanban",
+      items: [
+        {
+          kind: "group",
+          id: "group:kanban",
+          path: "kanban",
+          depth: 0,
+          label: "kanban",
+        },
+        {
+          kind: "field",
+          id: "kanban.backend",
+          path: "kanban.backend",
+          depth: 1,
+          label: "backend",
+          valueText: "github",
+          sourceLabel: "from config",
+          description: "Backend",
+          editorKind: "enum",
+          readOnly: false,
+          masked: false,
+          enumValues: ["internal", "github", "jira", "gnap"],
+        },
+      ],
+    },
+  ],
+};
+
 export function createMockWsClient() {
   const listeners = new Map();
   return {
@@ -144,6 +200,18 @@ export function createMockWsClient() {
       if (!listeners.has(event)) listeners.set(event, new Set());
       listeners.get(event).add(callback);
       return () => listeners.get(event)?.delete(callback);
+    },
+    async getConfigTree() {
+      return tuiConfigFixture;
+    },
+    async saveConfigField(path, value) {
+      const target = tuiConfigFixture.sections
+        .flatMap((section) => section.items)
+        .find((item) => item.path === path);
+      if (target) {
+        target.valueText = String(value);
+      }
+      return { ok: true, path };
     },
     emit(event, payload) {
       for (const callback of listeners.get(event) || []) callback(payload);

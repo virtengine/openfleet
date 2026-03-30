@@ -47,6 +47,15 @@ export const ERROR_RECOVERY_TEMPLATE = {
       expression: "($data?.retryCount || 0) < ($data?.maxRetries || 3)",
     }, { x: 400, y: 180 }),
 
+    node("load-recovery-strategies", "action.load_skillbook_strategies", "Load Recovery Strategies", {
+      workflowId: "",
+      category: "strategy",
+      status: "promoted",
+      query: "{{taskTitle}} {{lastError}}",
+      limit: 4,
+      outputVariable: "recoverySkillbookGuidance",
+    }, { x: 600, y: 330 }),
+
     node("analyze-error", "action.run_agent", "Analyze Failure", {
       prompt:
         "Analyze the following task failure and suggest the most likely minimal fix.\n\n" +
@@ -55,7 +64,8 @@ export const ERROR_RECOVERY_TEMPLATE = {
         "Branch: {{branch}}\n" +
         "Base branch: {{baseBranch}}\n" +
         "Worktree: {{worktreePath}}\n\n" +
-        "Last error:\n{{lastError}}",
+        "Last error:\n{{lastError}}\n\n" +
+        "Reusable prior strategies:\n{{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}",
       timeoutMs: 300000,
     }, { x: 200, y: 330 }),
 
@@ -70,7 +80,8 @@ export const ERROR_RECOVERY_TEMPLATE = {
         "- worktreePath: {{worktreePath}}\n" +
         "- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n" +
         "- lastError: {{lastError}}\n" +
-        "- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\n" +
+        "- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n" +
+        "- reusableStrategies: {{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}\n\n" +
         "Use the analysis to choose a different approach if the previous attempt failed.",
       timeoutMs: 3600000,
       failOnError: true,
@@ -104,8 +115,9 @@ export const ERROR_RECOVERY_TEMPLATE = {
   ],
   edges: [
     edge("trigger", "check-retries"),
-    edge("check-retries", "analyze-error", { condition: "$output?.result === true" }),
+    edge("check-retries", "load-recovery-strategies", { condition: "$output?.result === true" }),
     edge("check-retries", "escalate", { condition: "$output?.result !== true" }),
+    edge("load-recovery-strategies", "analyze-error"),
     edge("analyze-error", "retry-task"),
     edge("retry-task", "retry-succeeded"),
     edge("retry-succeeded", "notify-recovered", { condition: "$output?.result === true", port: "yes" }),
@@ -343,6 +355,7 @@ export const HEALTH_CHECK_TEMPLATE = {
   trigger: "trigger.schedule",
   variables: {
     intervalMs: 3600000,
+    maxBenchmarkRuns: 12,
   },
   nodes: [
     node("trigger", "trigger.schedule", "Hourly Health Check", {
@@ -365,9 +378,97 @@ export const HEALTH_CHECK_TEMPLATE = {
       continueOnError: true,
     }, { x: 650, y: 200 }),
 
+    node("collect-recent-runs", "action.run_command", "Collect Recent Runs", {
+      command: "node",
+      args: ["-e", `
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const maxRuns = Math.max(1, parseInt(process.env.MAX_BENCHMARK_RUNS || "12", 10) || 12);
+        const runsDir = path.resolve(process.cwd(), ".bosun", "workflow-runs");
+        const indexPath = path.join(runsDir, "index.json");
+        let entries = [];
+        if (fs.existsSync(indexPath)) {
+          try {
+            const raw = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+            entries = Array.isArray(raw) ? raw : (Array.isArray(raw?.runs) ? raw.runs : []);
+          } catch {}
+        }
+        const candidates = entries
+          .filter((entry) => entry && entry.runId && ["completed", "failed"].includes(String(entry.status || "").toLowerCase()))
+          .sort((left, right) => Number(right?.startedAt || 0) - Number(left?.startedAt || 0))
+          .slice(0, maxRuns)
+          .map((entry) => ({
+            runId: entry.runId,
+            workflowId: entry.workflowId || null,
+            workflowName: entry.workflowName || null,
+            status: entry.status || null,
+            startedAt: entry.startedAt || null,
+            score: entry.score ?? null,
+            issueAdvisorRecommendation: entry.issueAdvisorRecommendation || null,
+          }));
+        const selected = candidates[0] || null;
+        console.log(JSON.stringify({
+          count: candidates.length,
+          candidates,
+          selectedRunId: selected?.runId || null,
+          selectedWorkflowId: selected?.workflowId || null,
+        }));
+      `],
+      env: { MAX_BENCHMARK_RUNS: "{{maxBenchmarkRuns}}" },
+      parseJson: true,
+      continueOnError: true,
+    }, { x: 900, y: 200 }),
+
     node("has-issues", "condition.expression", "Any Issues?", {
       expression: "($ctx.getNodeOutput('check-config')?.success === false) || (($ctx.getNodeOutput('check-config')?.output || '').includes('ERROR')) || (($ctx.getNodeOutput('check-config')?.output || '').includes('CRITICAL')) || ($ctx.getNodeOutput('check-git')?.success === false) || ($ctx.getNodeOutput('check-agents')?.success === false)",
     }, { x: 400, y: 380 }),
+
+    node("has-recent-runs", "condition.expression", "Recent Runs Available?", {
+      expression: "Boolean($ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId)",
+    }, { x: 900, y: 380, outputs: ["yes", "no"] }),
+
+    node("evaluate-latest-run", "action.evaluate_run", "Evaluate Latest Run", {
+      runId: "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId || ''}}",
+      workflowId: "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedWorkflowId || ''}}",
+      includeTrend: true,
+      outputVariable: "healthCheckRunEvaluation",
+    }, { x: 900, y: 540 }),
+
+    node("apply-ratchet", "action.apply_self_improvement_ratchet", "Apply Ratchet Decision", {
+      evaluationNodeId: "evaluate-latest-run",
+      scopeLevel: "workspace",
+      scope: "workflow-reliability",
+      category: "strategy",
+      outputVariable: "healthCheckRatchet",
+    }, { x: 900, y: 840 }),
+
+    node("ratchet-applied", "condition.expression", "Ratchet Applied?", {
+      expression: "['capture_baseline','apply_candidate'].includes($ctx.getNodeOutput('apply-ratchet')?.decision || '')",
+    }, { x: 720, y: 980, outputs: ["yes", "no"] }),
+
+    node("ratchet-reverted", "condition.expression", "Ratchet Reverted?", {
+      expression: "$ctx.getNodeOutput('apply-ratchet')?.decision === 'revert_to_baseline'",
+    }, { x: 1080, y: 980, outputs: ["yes", "no"] }),
+
+    node("log-ratchet-apply", "notify.log", "Log Ratchet Apply", {
+      message: "Self-improvement ratchet {{$ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}} for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}; active baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}}",
+      level: "info",
+    }, { x: 720, y: 1120 }),
+
+    node("log-ratchet-revert", "notify.log", "Log Ratchet Revert", {
+      message: "Self-improvement ratchet reverted workflow to baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}} after run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}",
+      level: "warn",
+    }, { x: 1080, y: 1120 }),
+
+    node("log-ratchet-keep", "notify.log", "Log Ratchet Keep", {
+      message: "Self-improvement ratchet kept baseline for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}: {{$ctx.getNodeOutput('apply-ratchet')?.summary || 'no baseline change'}}",
+      level: "warn",
+    }, { x: 1320, y: 1120 }),
+
+    node("log-no-runs", "notify.log", "Log No Benchmark Data", {
+      message: "Health check self-improvement skipped: no recent completed or failed workflow runs available.",
+      level: "debug",
+    }, { x: 1120, y: 540 }),
 
     node("alert", "notify.telegram", "Alert Issues Found", {
       message: ":heart: Health check found issues — run `bosun doctor` for details",
@@ -382,9 +483,19 @@ export const HEALTH_CHECK_TEMPLATE = {
     edge("trigger", "check-config"),
     edge("trigger", "check-git"),
     edge("trigger", "check-agents"),
+    edge("trigger", "collect-recent-runs"),
     edge("check-config", "has-issues"),
     edge("check-git", "has-issues"),
     edge("check-agents", "has-issues"),
+    edge("collect-recent-runs", "has-recent-runs"),
+    edge("has-recent-runs", "evaluate-latest-run", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-recent-runs", "log-no-runs", { condition: "$output?.result !== true", port: "no" }),
+    edge("evaluate-latest-run", "apply-ratchet"),
+    edge("apply-ratchet", "ratchet-applied"),
+    edge("ratchet-applied", "log-ratchet-apply", { condition: "$output?.result === true", port: "yes" }),
+    edge("ratchet-applied", "ratchet-reverted", { condition: "$output?.result !== true", port: "no" }),
+    edge("ratchet-reverted", "log-ratchet-revert", { condition: "$output?.result === true", port: "yes" }),
+    edge("ratchet-reverted", "log-ratchet-keep", { condition: "$output?.result !== true", port: "no" }),
     edge("has-issues", "alert", { condition: "$output?.result === true" }),
     edge("has-issues", "all-ok", { condition: "$output?.result !== true" }),
   ],
@@ -392,8 +503,8 @@ export const HEALTH_CHECK_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.1",
-    tags: ["health", "config", "doctor", "monitoring"],
+    templateVersion: "1.1.0",
+    tags: ["health", "config", "doctor", "monitoring", "self-improvement", "benchmark"],
     replaces: {
       module: "config-doctor.mjs",
       functions: ["runConfigDoctor"],
@@ -454,7 +565,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
 
     node("create-pr", "action.create_pr", "Handoff Lifecycle If Missing", {
       title: "{{taskTitle}}",
-      body: "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
+      body: "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       failOnError: true,
@@ -697,7 +808,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
 
     node("create-pr", "action.create_pr", "Handoff/Refresh Lifecycle", {
       title: "{{taskTitle}}",
-      body: "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
+      body: "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       failOnError: true,

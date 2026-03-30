@@ -27,7 +27,6 @@ import {
   getNodeType,
   registerNodeType,
 } from "../workflow/workflow-engine.mjs";
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Extract the full command code from a node config, supporting both old
@@ -540,6 +539,39 @@ describe("workflow-templates", () => {
     expect(triggerNode?.type).toBe("trigger.task_assigned");
     // No restrictive filter — triggers on any assigned task (language-agnostic)
     expect(triggerNode?.config?.filter).toBeUndefined();
+  });
+
+  it("research evidence agent template is registered with sidecar and reviewed knowledge stages", async () => {
+    const module = await import("../workflow-templates/research-evidence.mjs");
+    const template = module.RESEARCH_EVIDENCE_AGENT_TEMPLATE;
+    expect(template).toBeDefined();
+    expect(template.id).toBe("template-research-evidence-agent");
+    expect(template.category).toBe("research");
+    expect(template.variables?.evidenceMode).toBe("answer");
+    expect(template.variables?.promoteReviewedFindings).toBe(true);
+
+    const sidecarNode = template.nodes.find((node) => node.id === "run-evidence-sidecar");
+    const generatorNode = template.nodes.find((node) => node.id === "generate-solution");
+    const verifierNode = template.nodes.find((node) => node.id === "verify-solution");
+    const promoteNode = template.nodes.find((node) => node.id === "persist-reviewed-finding");
+    const verdictNode = template.nodes.find((node) => node.id === "parse-verdict");
+
+    expect(sidecarNode?.type).toBe("action.run_command");
+    expect(sidecarNode?.config?.command).toBe("node");
+    expect(sidecarNode?.config?.args).toContain("workflow/research-evidence-sidecar.mjs");
+    expect(sidecarNode?.config?.parseJson).toBe(true);
+    expect(String(generatorNode?.config?.prompt || "")).toContain("Evidence Summary");
+    expect(String(generatorNode?.config?.prompt || "")).toContain("Use citation keys");
+    expect(String(verifierNode?.config?.prompt || "")).toContain("VERDICT: CORRECT");
+    expect(verdictNode?.type).toBe("transform.llm_parse");
+    expect(verdictNode?.config?.outputPort).toBe("verdict");
+    expect(promoteNode?.type).toBe("action.persist_memory");
+    expect(promoteNode?.config?.targetFile).toBe(".bosun/shared-knowledge/REVIEWED_RESEARCH.md");
+
+    expect(template.edges.find((edge) => edge.source === "run-evidence-sidecar" && edge.target === "evidence-ready")).toBeDefined();
+    expect(template.edges.find((edge) => edge.source === "parse-verdict" && edge.target === "build-promotion-candidate" && edge.sourcePort === "correct")).toBeDefined();
+    expect(template.edges.find((edge) => edge.source === "parse-verdict" && edge.target === "revise-solution" && edge.sourcePort === "minor")).toBeDefined();
+    expect(template.edges.find((edge) => edge.source === "parse-verdict" && edge.target === "critical-log" && edge.sourcePort === "critical")).toBeDefined();
   });
 
   it("backend agent template requires descriptive commit guidance", () => {
@@ -1548,7 +1580,8 @@ describe("github template CLI compatibility", () => {
     expect(securityFixAgentNode?.config?.prompt).toContain("Fix ONLY the listed security/CodeQL findings");
     expect(securityFixAgentNode?.config?.prompt).toContain("code-scanning/alerts");
 
-    expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "security-fix-needed")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "pause-task-spawning")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "pause-task-spawning" && e.target === "security-fix-needed")).toBeDefined();
     expect(watchdogTemplate.edges.find((e) => e.source === "has-unclaimed-security-fixes" && e.target === "dispatch-security-fix-agents")).toBeDefined();
     expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agents" && e.target === "generic-fix-needed")).toBeDefined();
   });
@@ -1572,7 +1605,7 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(getNodeCommandCode(claimNode)).toContain("BOSUN_PROGRAMMATIC_FIX");
+    expect(getNodeCommandCode(claimNode)).toContain("programmatic-fix-output.json");
     expect(getNodeCommandCode(claimNode)).toContain("pr-fix-claims.json");
     expect(getNodeCommandCode(claimNode)).toContain("unclaimedCount");
     expect(dispatchNode?.type).toBe("loop.for_each");
@@ -1638,6 +1671,25 @@ describe("github template CLI compatibility", () => {
     expect(batchPrTemplate.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
   });
 
+  it("PR progressor inspects merge conflict files before auto-fix routing", () => {
+    const progressorTemplate = getTemplate("template-bosun-pr-progressor");
+    const detectNode = progressorTemplate.nodes.find((n) => n.id === "detect-pr-conflicts");
+    const buildFixPromptNode = progressorTemplate.nodes.find((n) => n.id === "build-fix-prompt");
+    const detectCode = getNodeCommandCode(detectNode);
+
+    expect(detectNode?.type).toBe("action.run_command");
+    expect(detectNode?.config?.env?.WORKTREE_PATH).toBe("{{setup-pr-worktree.output.worktreePath}}");
+    expect(detectNode?.config?.env?.PR_BASE).toBe("{{prParams.base}}");
+    expect(detectNode?.config?.env?.CLASSIFICATION).toBe("{{prParams.classification}}");
+    expect(detectNode?.config?.env?.MERGEABLE).toBe("{{prParams.mergeable}}");
+    expect(detectCode).toContain("git',['diff','--name-only','--diff-filter=U']");
+    expect(detectCode).toContain("git',['merge','--abort']");
+    expect(detectCode).toContain("conflictFiles:[...new Set(conflictFiles)]");
+    expect(String(buildFixPromptNode?.config?.value || "")).toContain("detect-pr-conflicts");
+    expect(progressorTemplate.edges.find((e) => e.source === "set-pr-worktree-path" && e.target === "detect-pr-conflicts")).toBeDefined();
+    expect(progressorTemplate.edges.find((e) => e.source === "detect-pr-conflicts" && e.target === "build-fix-prompt")).toBeDefined();
+  });
+
   it("task lifecycle dispatches repair workflow for blocked non-retryable worktree failures", () => {
     const lifecycleTemplate = getTemplate("template-task-lifecycle");
     const repairDispatch = lifecycleTemplate.nodes.find((n) => n.id === "dispatch-wt-repair");
@@ -1701,7 +1753,14 @@ describe("github template CLI compatibility", () => {
 });
 
 // ── Dry-Run Execution ───────────────────────────────────────────────────────
-describe("template dry-run execution", () => {
+const describeDryRunExecution = (
+  process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
+  || (process.platform === "win32" && /[\\/]\.codex[\\/]\.sandbox[\\/]/i.test(process.cwd()))
+)
+  ? describe.skip
+  : describe;
+
+describeDryRunExecution("template dry-run execution", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }

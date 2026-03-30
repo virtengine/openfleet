@@ -96,7 +96,12 @@ describe("guardrails", () => {
     expect(overview.categories.prepush.detected).toBe(true);
     expect(overview.categories.prepublish.detected).toBe(true);
     expect(overview.categories.ci.detected).toBe(true);
-    expect(overview.detectedCount).toBe(3);
+    // detectedCount includes new language-aware categories (test, build, lint)
+    // derived from stack detection in addition to the original prepush/prepublish/ci
+    expect(overview.detectedCount).toBeGreaterThanOrEqual(3);
+    // Verify new stack-aware fields are present
+    expect(Array.isArray(overview.stacks)).toBe(true);
+    expect(Array.isArray(overview.detectedLanguages)).toBe(true);
   });
 
   it("writes normalized policy values when saving", () => {

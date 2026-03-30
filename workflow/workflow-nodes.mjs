@@ -25,6 +25,13 @@ import {
   unregisterNodeType,
 } from "./workflow-engine.mjs";
 import {
+  expireApprovalRequest,
+  getApprovalRequest,
+  resolveApprovalRequest,
+  upsertWorkflowGateApprovalRequest,
+} from "./approval-queue.mjs";
+import { requireWorkflowActionApproval } from "./action-approval.mjs";
+import {
   _completedWithPR,
   _noCommitCounts,
   _skipUntil,
@@ -150,6 +157,17 @@ import {
   initSharedKnowledge,
   retrieveKnowledgeEntries,
 } from "../workspace/shared-knowledge.mjs";
+import {
+  findReusableSkillbookStrategies,
+  getSkillbookStrategy,
+  upsertSkillbookStrategy,
+} from "../workspace/skillbook-store.mjs";
+import {
+  appendArtifactRecordToStateLedger,
+  appendPromotedStrategyToStateLedger,
+  upsertStateLedgerKeyValue,
+} from "../lib/state-ledger-sqlite.mjs";
+import { RunEvaluator } from "./run-evaluator.mjs";
 import {
   buildWorkflowContractPromptBlock,
   loadWorkflowContract,
@@ -773,6 +791,27 @@ const NODE_PORT_OVERRIDES = Object.freeze({
     inputs: [makePort("default", "SessionRef", "", { accepts: ["TaskDef", "Any"] })],
     outputs: [makePort("default", "AgentResult")],
   },
+  "action.team_task_claim": {
+    outputs: [
+      makePort("default", "JSON", "Team task claim result"),
+      makePort("claimed", "JSON", "Successful claim result"),
+      makePort("unavailable", "JSON", "Claim conflict or missing task"),
+    ],
+  },
+  "action.team_task_complete": {
+    outputs: [
+      makePort("default", "JSON", "Team task completion result"),
+      makePort("completed", "JSON", "Completed task result"),
+      makePort("released", "JSON", "Released task result"),
+    ],
+  },
+  "action.team_message": {
+    outputs: [
+      makePort("default", "JSON", "Team message delivery result"),
+      makePort("direct", "JSON", "Direct teammate message"),
+      makePort("channel", "JSON", "Channel message"),
+    ],
+  },
 });
 
 const NODE_PRIMARY_FIELD_OVERRIDES = Object.freeze({
@@ -785,6 +824,13 @@ const NODE_PRIMARY_FIELD_OVERRIDES = Object.freeze({
   "action.create_pr": ["title", "baseBranch", "headBranch"],
   "action.run_command": ["command", "cwd"],
   "notify.telegram": ["chatId", "message"],
+  "action.team_init": ["teamId", "leadId", "defaultChannel"],
+  "action.team_task_publish": ["title", "createdBy", "channelId"],
+  "action.team_task_claim": ["taskId", "memberId", "actorId"],
+  "action.team_task_complete": ["taskId", "memberId", "release"],
+  "action.team_message": ["fromMemberId", "toMemberId", "channelId"],
+  "action.team_inbox": ["memberId", "channelId", "limit"],
+  "action.team_snapshot": ["includeTasks", "includeMessages", "includeRoster"],
 });
 
 function inferPrimaryFields(schemaProps = {}) {
@@ -871,6 +917,371 @@ function registerBuiltinNodeType(type, handler) {
   handler.ports = ports;
   handler.ui = ui;
   registerNodeType(type, handler);
+}
+
+function resolveSelfImprovementScope(ctx, node, overrides = {}) {
+  const normalize = (value) => {
+    const text = String(value ?? "").trim();
+    return text || null;
+  };
+  const fromTask = ctx?.data?.task && typeof ctx.data.task === "object" ? ctx.data.task : null;
+  const taskMeta = fromTask?.meta && typeof fromTask.meta === "object" ? fromTask.meta : null;
+  return {
+    repoRoot: normalize(overrides.repoRoot) || normalize(ctx?.data?.repoRoot) || process.cwd(),
+    teamId: normalize(overrides.teamId) || normalize(taskMeta?.teamId) || normalize(ctx?.data?.teamId),
+    workspaceId:
+      normalize(overrides.workspaceId) ||
+      normalize(taskMeta?.workspaceId) ||
+      normalize(ctx?.data?._workspaceId) ||
+      normalize(ctx?.data?.workspaceId),
+    sessionId:
+      normalize(overrides.sessionId) ||
+      normalize(taskMeta?.sessionId) ||
+      normalize(ctx?.data?.sessionId) ||
+      normalize(ctx?.data?.threadId),
+    runId: normalize(overrides.runId) || normalize(ctx?.data?.runId) || normalize(ctx?.id),
+    workflowId:
+      normalize(overrides.workflowId) ||
+      normalize(ctx?.data?._workflowId) ||
+      normalize(ctx?.data?.workflowId),
+    taskId:
+      normalize(overrides.taskId) ||
+      normalize(ctx?.data?.taskId) ||
+      normalize(fromTask?.id),
+    taskTitle:
+      normalize(overrides.taskTitle) ||
+      normalize(ctx?.data?.taskTitle) ||
+      normalize(fromTask?.title),
+    agentId: normalize(overrides.agentId) || normalize(node?.id) || "workflow",
+    agentType: normalize(overrides.agentType) || "workflow",
+  };
+}
+
+function makeSelfImprovementEvaluator(ctx, options = {}) {
+  const repoRoot = String(options.repoRoot || ctx?.data?.repoRoot || process.cwd()).trim() || process.cwd();
+  return new RunEvaluator({
+    configDir: repoRoot,
+    ...(options.evaluatorConfig && typeof options.evaluatorConfig === "object"
+      ? options.evaluatorConfig
+      : {}),
+  });
+}
+
+function normalizeSelfImprovementTagList(...values) {
+  const out = [];
+  const seen = new Set();
+  const append = (value) => {
+    const text = String(value ?? "").trim();
+    if (!text) return;
+    const key = text.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(text);
+  };
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const item of value) append(item);
+    } else if (typeof value === "string" && value.includes(",")) {
+      for (const item of value.split(",")) append(item);
+    } else {
+      append(value);
+    }
+  }
+  return out;
+}
+
+function resolveSelfImprovementStrategy(evaluation, requestedStrategyId = null, fallbackStrategy = null) {
+  if (requestedStrategyId && Array.isArray(evaluation?.strategies)) {
+    const matched = evaluation.strategies.find((strategy) => strategy?.strategyId === requestedStrategyId);
+    if (matched) return matched;
+  }
+  if (fallbackStrategy && typeof fallbackStrategy === "object") {
+    return fallbackStrategy;
+  }
+  if (evaluation?.ratchet?.targetStrategy && typeof evaluation.ratchet.targetStrategy === "object") {
+    return evaluation.ratchet.targetStrategy;
+  }
+  if (evaluation?.promotion?.selectedStrategy && typeof evaluation.promotion.selectedStrategy === "object") {
+    return evaluation.promotion.selectedStrategy;
+  }
+  return Array.isArray(evaluation?.strategies) ? evaluation.strategies[0] || null : null;
+}
+
+function normalizeSkillbookGuidancePayload(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const strategies = Array.isArray(value.strategies)
+    ? value.strategies.filter((entry) => entry && typeof entry === "object")
+    : [];
+  const guidanceSummary = String(value.guidanceSummary || value.summary || "").trim();
+  if (!guidanceSummary && strategies.length === 0) return null;
+  return {
+    ...value,
+    strategies,
+    guidanceSummary,
+  };
+}
+
+function buildSkillbookPromptContext(guidance) {
+  const normalized = normalizeSkillbookGuidancePayload(guidance);
+  if (!normalized) return "";
+  return String(normalized.guidanceSummary || "").trim();
+}
+
+async function resolveReusableSkillbookGuidance(ctx, options = {}) {
+  const hasExplicitWorkflowId = Object.prototype.hasOwnProperty.call(options, "workflowId");
+  const repoRoot = String(
+    options.repoRoot
+    || ctx?.data?.repoRoot
+    || process.cwd(),
+  ).trim() || process.cwd();
+  const workflowId = String(
+    hasExplicitWorkflowId
+      ? options.workflowId
+      : (
+          ctx?.data?._workflowId
+          || ctx?.data?.workflowId
+          || ""
+        )
+  ).trim();
+  const category = String(options.category || "strategy").trim() || "strategy";
+  const scopeLevel = String(options.scopeLevel || "").trim();
+  const scope = String(options.scope || "").trim();
+  const status = String(options.status || "").trim() || "promoted";
+  const query = String(options.query || "").trim();
+  const tags = Array.isArray(options.tags) ? options.tags : normalizeSelfImprovementTagList(options.tags);
+  const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.trunc(Number(options.limit))) : 5;
+  const result = await findReusableSkillbookStrategies({
+    repoRoot,
+    workflowId: workflowId || undefined,
+    category,
+    scopeLevel: scopeLevel || undefined,
+    scope: scope || undefined,
+    status: status || undefined,
+    query: query || undefined,
+    tags,
+    limit,
+  });
+  return {
+    success: true,
+    repoRoot,
+    workflowId: workflowId || null,
+    category,
+    scopeLevel: scopeLevel || null,
+    scope: scope || null,
+    status: status || null,
+    query: query || null,
+    tags,
+    total: result.total,
+    matched: result.matched,
+    strategies: result.strategies,
+    guidanceSummary: result.guidanceSummary,
+    skillbookPath: result.skillbookPath,
+    strategyIds: result.strategies.map((entry) => entry?.strategyId).filter(Boolean),
+  };
+}
+
+function summarizeRunGraphDiff(diff = null) {
+  if (!diff || typeof diff !== "object") return null;
+  const added = Array.isArray(diff?.executionDelta?.added) ? diff.executionDelta.added.length : 0;
+  const removed = Array.isArray(diff?.executionDelta?.removed) ? diff.executionDelta.removed.length : 0;
+  const changed = Array.isArray(diff?.executionDelta?.changed) ? diff.executionDelta.changed.length : 0;
+  return {
+    added,
+    removed,
+    changed,
+    sample: {
+      added: Array.isArray(diff?.executionDelta?.added) ? diff.executionDelta.added.slice(0, 3) : [],
+      removed: Array.isArray(diff?.executionDelta?.removed) ? diff.executionDelta.removed.slice(0, 3) : [],
+      changed: Array.isArray(diff?.executionDelta?.changed) ? diff.executionDelta.changed.slice(0, 3) : [],
+    },
+  };
+}
+
+async function persistSelfImprovementKnowledgeEntry(ctx, node, {
+  evaluation,
+  selectedStrategy,
+  decision,
+  repoRoot = "",
+  targetFile = "",
+  registryFile = "",
+  scopeLevel = "workspace",
+  scope = "",
+  category = "strategy",
+  status = "",
+  tags = [],
+  agentId = "",
+  agentType = "",
+  contentLines = [],
+}) {
+  if (!selectedStrategy || typeof selectedStrategy !== "object") {
+    return {
+      success: false,
+      persisted: false,
+      reason: "No strategy candidate available for promotion",
+    };
+  }
+
+  const resolvedScope = resolveSelfImprovementScope(ctx, node, { repoRoot, agentId, agentType });
+  const resolvedTargetFile = String(targetFile || "").trim();
+  const resolvedRegistryFile = String(registryFile || "").trim();
+  const resolvedScopeLevel = String(scopeLevel || "workspace").trim().toLowerCase() || "workspace";
+  const resolvedCategory = String(category || "strategy").trim() || "strategy";
+  const resolvedStatus = String(status || "").trim() || "promoted";
+  const tagValues = normalizeSelfImprovementTagList(tags, selectedStrategy.tags || []);
+
+  const initOpts = { repoRoot: resolvedScope.repoRoot };
+  if (resolvedTargetFile) initOpts.targetFile = resolvedTargetFile;
+  if (resolvedRegistryFile) initOpts.registryFile = resolvedRegistryFile;
+  initSharedKnowledge(initOpts);
+
+  const content = contentLines.filter(Boolean).join("\n");
+  const entry = buildKnowledgeEntry({
+    content,
+    scope: String(scope || selectedStrategy.category || "self-improvement").trim(),
+    category: resolvedCategory,
+    scopeLevel: resolvedScopeLevel,
+    teamId: resolvedScope.teamId,
+    workspaceId: resolvedScope.workspaceId,
+    sessionId: resolvedScope.sessionId,
+    runId: resolvedScope.runId,
+    workflowId: resolvedScope.workflowId || evaluation?.workflowId || null,
+    taskRef: resolvedScope.taskId || null,
+    strategyId: selectedStrategy.strategyId || null,
+    confidence: selectedStrategy.confidence,
+    verificationStatus: decision || evaluation?.promotion?.decision || "promote_strategy",
+    verifiedAt: new Date().toISOString(),
+    provenance: [
+      `run:${evaluation?.runId || resolvedScope.runId || "unknown"}`,
+      `workflow:${evaluation?.workflowId || resolvedScope.workflowId || "unknown"}`,
+      ...(Array.isArray(selectedStrategy.evidence) ? selectedStrategy.evidence : []),
+    ],
+    evidence: Array.isArray(selectedStrategy.evidence) ? selectedStrategy.evidence : [],
+    agentId: resolvedScope.agentId,
+    agentType: resolvedScope.agentType,
+    tags: tagValues,
+  });
+
+  const knowledgeResult = await appendKnowledgeEntry(entry, { skipRateLimit: true });
+  const knowledgeNonFatal = !knowledgeResult.success
+    && /duplicate entry|rate limited/i.test(String(knowledgeResult.reason || ""));
+  if (!knowledgeResult.success && !knowledgeNonFatal) {
+    return {
+      success: false,
+      persisted: false,
+      reason: knowledgeResult.reason,
+      strategyId: selectedStrategy.strategyId,
+      entry,
+    };
+  }
+
+  const skillbookResult = await upsertSkillbookStrategy({
+    strategyId: selectedStrategy.strategyId || null,
+    workflowId: resolvedScope.workflowId || evaluation?.workflowId || null,
+    runId: evaluation?.runId || resolvedScope.runId || null,
+    taskId: resolvedScope.taskId || null,
+    sessionId: resolvedScope.sessionId || null,
+    teamId: resolvedScope.teamId || null,
+    workspaceId: resolvedScope.workspaceId || null,
+    scope: entry.scope,
+    scopeLevel: resolvedScopeLevel,
+    category: resolvedCategory,
+    decision: decision || evaluation?.promotion?.decision || "promote_strategy",
+    status: resolvedStatus,
+    verificationStatus: entry.verificationStatus,
+    confidence: selectedStrategy.confidence,
+    recommendation: selectedStrategy.recommendation,
+    rationale: selectedStrategy.rationale,
+    evidence: selectedStrategy.evidence || [],
+    provenance: entry.provenance || [],
+    tags: tagValues,
+    benchmark: evaluation?.benchmark || null,
+    metrics: evaluation?.metrics || null,
+    evaluation: {
+      runId: evaluation?.runId || null,
+      workflowId: evaluation?.workflowId || null,
+      score: evaluation?.score ?? null,
+      grade: evaluation?.grade || null,
+      promotion: evaluation?.promotion || null,
+      ratchet: evaluation?.ratchet || null,
+    },
+    knowledge: {
+      hash: knowledgeResult.hash || entry.hash,
+      registryPath: knowledgeResult.registryPath || null,
+      targetFile: resolvedTargetFile || null,
+      entry,
+      persisted: knowledgeResult.success === true,
+      reason: knowledgeResult.reason || null,
+    },
+    summary: contentLines.find(Boolean) || selectedStrategy.recommendation || null,
+  }, { repoRoot: resolvedScope.repoRoot });
+
+  const ledgerResult = appendPromotedStrategyToStateLedger({
+    strategyId: selectedStrategy.strategyId || null,
+    workflowId: resolvedScope.workflowId || evaluation?.workflowId || null,
+    runId: evaluation?.runId || resolvedScope.runId || null,
+    taskId: resolvedScope.taskId || null,
+    sessionId: resolvedScope.sessionId || null,
+    teamId: resolvedScope.teamId || null,
+    workspaceId: resolvedScope.workspaceId || null,
+    scope: entry.scope,
+    scopeId:
+      resolvedScopeLevel === "team"
+        ? resolvedScope.teamId
+        : resolvedScopeLevel === "workspace"
+          ? resolvedScope.workspaceId
+          : resolvedScopeLevel === "session"
+            ? resolvedScope.sessionId
+            : resolvedScope.runId,
+    scopeLevel: resolvedScopeLevel,
+    category: resolvedCategory,
+    decision: decision || evaluation?.promotion?.decision || "promote_strategy",
+    status: resolvedStatus,
+    verificationStatus: entry.verificationStatus,
+    confidence: selectedStrategy.confidence,
+    recommendation: selectedStrategy.recommendation,
+    rationale: selectedStrategy.rationale,
+    evidence: selectedStrategy.evidence || [],
+    provenance: entry.provenance || [],
+    tags: tagValues,
+    benchmark: evaluation?.benchmark || null,
+    metrics: evaluation?.metrics || null,
+    evaluation: {
+      runId: evaluation?.runId || null,
+      workflowId: evaluation?.workflowId || null,
+      score: evaluation?.score ?? null,
+      grade: evaluation?.grade || null,
+      promotion: evaluation?.promotion || null,
+      ratchet: evaluation?.ratchet || null,
+    },
+    strategy: selectedStrategy,
+    knowledge: {
+      hash: knowledgeResult.hash || entry.hash,
+      registryPath: knowledgeResult.registryPath || null,
+      targetFile: resolvedTargetFile || null,
+      entry,
+      persisted: knowledgeResult.success === true,
+      reason: knowledgeResult.reason || null,
+    },
+    updatedAt: entry.verifiedAt,
+  }, { repoRoot: resolvedScope.repoRoot });
+
+  return {
+    success: true,
+    persisted: true,
+    strategyId: selectedStrategy.strategyId,
+    decision: decision || evaluation?.promotion?.decision || "promote_strategy",
+    status: resolvedStatus,
+    entry,
+    hash: knowledgeResult.hash || entry.hash,
+    registryPath: knowledgeResult.registryPath || null,
+    knowledgePersisted: knowledgeResult.success === true,
+    knowledgeSkipped: knowledgeNonFatal,
+    knowledgeReason: knowledgeResult.reason || null,
+    skillbookPath: skillbookResult.path || null,
+    skillbookEntry: skillbookResult.entry || null,
+    ledgerPath: ledgerResult.path || null,
+    ledgerEventId: ledgerResult.eventId || null,
+  };
 }
 
 function shouldBypassGhPrCreationForTests() {
@@ -2829,6 +3240,81 @@ function recordNodeLedgerEvent(engine, event = {}) {
   if (typeof engine?._recordLedgerEvent === "function") {
     engine._recordLedgerEvent(event);
   }
+}
+
+function buildPlannerExecutionLedgerRef(ctx, node, phase, label = null) {
+  return buildNodeExecutionLedgerRef(
+    ctx,
+    node,
+    "planner",
+    [phase],
+    label || node?.label || phase || "planner",
+  );
+}
+
+function recordPlannerLedgerEvent(engine, ctx, node, eventType, {
+  phase = "planner",
+  label = null,
+  status = null,
+  attempt = undefined,
+  error = null,
+  summary = null,
+  reason = null,
+  meta = undefined,
+} = {}) {
+  const nextMeta = meta && typeof meta === "object" ? { ...meta } : {};
+  if (!nextMeta.normalizedEventType) {
+    if (eventType === "planner.plan_reasoning") {
+      nextMeta.normalizedEventType = "plan_reasoning";
+    } else if (
+      eventType === "planner.plan_initialized"
+      || eventType === "planner.plan_completed"
+      || eventType === "planner.plan_failed"
+    ) {
+      nextMeta.normalizedEventType = "plan";
+      nextMeta.plan = {
+        phase,
+        stepLabel: label || null,
+        status: status || null,
+        summary: summary || null,
+        reason: reason || null,
+      };
+    } else if (eventType === "planner.step_started") {
+      nextMeta.normalizedEventType = "current_plan_step";
+      nextMeta.currentPlanStep = {
+        phase,
+        stepLabel: label || null,
+        status: status || null,
+      };
+    } else if (
+      eventType === "planner.step_completed"
+      || eventType === "planner.step_blocked"
+      || eventType === "planner.post_attachment"
+    ) {
+      nextMeta.normalizedEventType = "step_result";
+      nextMeta.stepResult = {
+        phase,
+        stepLabel: label || null,
+        status: status || null,
+        summary: summary || null,
+        reason: reason || null,
+        attachmentKind: nextMeta.attachmentKind || null,
+      };
+    }
+  }
+  recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+    eventType,
+    ...buildPlannerExecutionLedgerRef(ctx, node, phase, label),
+    nodeId: node?.id || null,
+    nodeType: node?.type || null,
+    nodeLabel: node?.label || null,
+    status,
+    attempt,
+    error,
+    summary,
+    reason,
+    meta: nextMeta,
+  }));
 }
 
 function isBosunStateComment(text) {
@@ -4958,6 +5444,11 @@ registerBuiltinNodeType("action.run_command", {
       captureOutput: { type: "boolean", default: true },
       parseJson: { type: "boolean", default: false, description: "Parse JSON output automatically" },
       failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this command even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["command"],
   },
@@ -5021,6 +5512,15 @@ registerBuiltinNodeType("action.run_command", {
     }
     const displayCommand = usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command;
     ctx.log(node.id, `Running: ${displayCommand}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.run_command",
+      repoRoot: cwd,
+      command,
+      args: commandArgs,
+    });
     const isolatedRun = await maybeRunWorkflowCommandInIsolation({
       node,
       ctx,
@@ -6256,6 +6756,11 @@ registerBuiltinNodeType("action.git_operations", {
       message: { type: "string", description: "Commit message (for commit operation)" },
       branch: { type: "string", description: "Branch name" },
       cwd: { type: "string" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this git operation even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: [],
   },
@@ -6327,6 +6832,13 @@ registerBuiltinNodeType("action.git_operations", {
     const operationList = Array.isArray(node.config?.operations)
       ? node.config.operations
       : [];
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.git_operations",
+      repoRoot: cwd,
+    });
     if (operationList.length > 0) {
       const steps = [];
       for (const spec of operationList) {
@@ -6398,6 +6910,11 @@ registerBuiltinNodeType("action.create_pr", {
       },
       cwd: { type: "string" },
       failOnError: { type: "boolean", default: false, description: "If true, throw on gh failure instead of falling back" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before creating a pull request even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["title"],
   },
@@ -6439,6 +6956,15 @@ registerBuiltinNodeType("action.create_pr", {
     ).trim();
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.create_pr",
+      repoRoot: ctx?.data?.repoRoot
+        || ctx?.data?.repoPath
+        || resolveNodeValue(node.config?.cwd ?? ctx.data?.worktreePath ?? process.cwd(), process.cwd()),
+    });
     const enableAutoMerge = parseBooleanSetting(
       resolveWorkflowNodeValue(node.config?.enableAutoMerge ?? node.config?.autoMerge ?? false, ctx),
       false,
@@ -6845,6 +7371,25 @@ registerBuiltinNodeType("action.set_variable", {
       value = ctx.resolve(value);
     }
     ctx.data[key] = value;
+    try {
+      upsertStateLedgerKeyValue({
+        scope: "run",
+        scopeId: ctx?.id || "run",
+        key,
+        value,
+        source: "workflow.action.set_variable",
+        runId: ctx?.id || null,
+        taskId: ctx?.data?.taskId || ctx?.data?.task?.id || null,
+        sessionId: ctx?.data?.sessionId || null,
+        metadata: {
+          nodeId: node?.id || null,
+          nodeType: node?.type || null,
+          expression: node.config?.isExpression === true,
+        },
+      }, { repoRoot: resolveBosunNativeRootDir(ctx, engine) });
+    } catch (err) {
+      ctx.log(node.id, `State ledger key-value mirror failed: ${err.message}`, "warn");
+    }
     ctx.log(node.id, `Set variable: ${key} = ${JSON.stringify(value)}`);
     return { key, value };
   },
@@ -8174,6 +8719,11 @@ function normalizePlannerTaskForCreation(task, index) {
     }
     return normalized;
   };
+  const normalizeOptionalStringList = (value) => {
+    if (Array.isArray(value)) return normalizeStringList(value);
+    const entry = String(value || "").trim();
+    return entry ? [entry] : [];
+  };
   const normalizeScore = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return null;
@@ -8191,6 +8741,14 @@ function normalizePlannerTaskForCreation(task, index) {
   };
   const normalizeArchetype = (value) => {
     const normalized = String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    return normalized || "";
+  };
+  const normalizeTaskGraphKey = (value, fallback = "") => {
+    const normalized = String(value || fallback || "")
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "_")
@@ -8234,6 +8792,41 @@ function normalizePlannerTaskForCreation(task, index) {
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
   const archetype = inferArchetype();
+  const taskKey = normalizeTaskGraphKey(
+    task.task_key || task.taskKey || task.key || task.id || "",
+    title,
+  );
+  const parentTaskKey = normalizeTaskGraphKey(
+    task.parent_task_key ||
+      task.parentTaskKey ||
+      task.parent_key ||
+      task.parentKey ||
+      task.parent_task_title ||
+      task.parentTaskTitle ||
+      task.parent_title ||
+      task.parentTitle ||
+      "",
+  );
+  const parentTaskId = String(task.parent_task_id || task.parentTaskId || "").trim() || null;
+  const dependencyTaskKeys = Array.from(new Set([
+    ...normalizeOptionalStringList(task.depends_on_task_keys),
+    ...normalizeOptionalStringList(task.dependsOnTaskKeys),
+    ...normalizeOptionalStringList(task.dependency_keys),
+    ...normalizeOptionalStringList(task.dependencyKeys),
+    ...normalizeOptionalStringList(task.depends_on_titles),
+    ...normalizeOptionalStringList(task.dependsOnTitles),
+    ...normalizeOptionalStringList(task.dependency_titles),
+    ...normalizeOptionalStringList(task.dependencyTitles),
+  ].map((entry) => normalizeTaskGraphKey(entry)).filter(Boolean)));
+  const dependencyTaskIds = Array.from(new Set([
+    ...normalizeOptionalStringList(task.depends_on_task_ids),
+    ...normalizeOptionalStringList(task.dependsOnTaskIds),
+    ...normalizeOptionalStringList(task.dependency_task_ids),
+    ...normalizeOptionalStringList(task.dependencyTaskIds),
+  ].map((entry) => String(entry || "").trim()).filter(Boolean)));
+  const decompositionKind = String(task.decomposition_kind || task.decompositionKind || "").trim().toLowerCase() || null;
+  const spawnWhen = String(task.spawn_when || task.spawnWhen || "").trim() || null;
+  const mergeBackPolicy = String(task.merge_back_policy || task.mergeBackPolicy || "").trim() || null;
 
   const appendList = (heading, values) => {
     if (!Array.isArray(values) || values.length === 0) return;
@@ -8289,6 +8882,14 @@ function normalizePlannerTaskForCreation(task, index) {
     estimatedEffort: estimatedEffort || null,
     whyNow: whyNow || null,
     killCriteria: killCriteria.length > 0 ? killCriteria : null,
+    taskKey: taskKey || null,
+    parentTaskKey: parentTaskKey || null,
+    parentTaskId,
+    dependencyTaskKeys,
+    dependencyTaskIds,
+    decompositionKind,
+    spawnWhen,
+    mergeBackPolicy,
   };
 }
 function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
@@ -8366,6 +8967,156 @@ function validateStrictPlannerTaskPayload(output, expectedTaskCount = 5, opts = 
   }
 
   return { ok: true, parsed };
+}
+async function applyPlannerTaskGraphLinks({
+  createdTaskRefs = [],
+  graphRootTaskId = null,
+  graphRootTaskKey = "",
+  kanban = null,
+}) {
+  if (!Array.isArray(createdTaskRefs) || createdTaskRefs.length === 0) {
+    return {
+      appliedParentLinks: [],
+      appliedDependencyLinks: [],
+      skippedGraphLinks: [],
+    };
+  }
+
+  let taskStoreMod = null;
+  try {
+    taskStoreMod = await ensureTaskStoreMod();
+  } catch {
+    taskStoreMod = null;
+  }
+
+  const appliedParentLinks = [];
+  const appliedDependencyLinks = [];
+  const skippedGraphLinks = [];
+  const createdTaskIdsByKey = new Map();
+  const fallbackDependencyLists = new Map();
+
+  for (const entry of createdTaskRefs) {
+    const taskKey = String(entry?.task?.taskKey || "").trim();
+    const createdTaskId = String(entry?.createdTaskId || "").trim();
+    if (taskKey && createdTaskId) createdTaskIdsByKey.set(taskKey, createdTaskId);
+  }
+
+  const resolveTaskIdReference = (taskKey = "", explicitTaskId = "") => {
+    const normalizedTaskId = String(explicitTaskId || "").trim();
+    if (normalizedTaskId) return normalizedTaskId;
+    const normalizedTaskKey = String(taskKey || "").trim();
+    if (!normalizedTaskKey) return null;
+    if (createdTaskIdsByKey.has(normalizedTaskKey)) return createdTaskIdsByKey.get(normalizedTaskKey);
+    if (graphRootTaskId && graphRootTaskKey && normalizedTaskKey === graphRootTaskKey) return graphRootTaskId;
+    return null;
+  };
+
+  for (const entry of createdTaskRefs) {
+    const plannerTask = entry?.task && typeof entry.task === "object" ? entry.task : null;
+    const createdTaskId = String(entry?.createdTaskId || "").trim();
+    if (!plannerTask || !createdTaskId) continue;
+
+    const parentTaskId = resolveTaskIdReference(plannerTask.parentTaskKey, plannerTask.parentTaskId)
+      || (!plannerTask.parentTaskKey && !plannerTask.parentTaskId && graphRootTaskId ? graphRootTaskId : null);
+    if (parentTaskId && parentTaskId !== createdTaskId) {
+      let applied = false;
+      if (typeof taskStoreMod?.setTaskParent === "function") {
+        const updated = taskStoreMod.setTaskParent(createdTaskId, parentTaskId, {
+          source: "workflow-planner",
+        });
+        applied = Boolean(updated);
+      }
+      if (!applied && typeof kanban?.updateTask === "function") {
+        await kanban.updateTask(createdTaskId, {
+          parentTaskId,
+          meta: { parentTaskId },
+        });
+        applied = true;
+      }
+      if (applied) {
+        appliedParentLinks.push({
+          childTaskId: createdTaskId,
+          parentTaskId,
+          taskKey: plannerTask.taskKey || null,
+        });
+      } else {
+        skippedGraphLinks.push({
+          type: "parent",
+          childTaskId: createdTaskId,
+          parentTaskId,
+          reason: "parent_task_unavailable",
+          taskKey: plannerTask.taskKey || null,
+        });
+      }
+    }
+
+    const dependencyRefs = [
+      ...(Array.isArray(plannerTask.dependencyTaskIds)
+        ? plannerTask.dependencyTaskIds.map((dependencyTaskId) => ({
+            dependencyTaskId,
+            dependencyTaskKey: "",
+          }))
+        : []),
+      ...(Array.isArray(plannerTask.dependencyTaskKeys)
+        ? plannerTask.dependencyTaskKeys.map((dependencyTaskKey) => ({
+            dependencyTaskId: "",
+            dependencyTaskKey,
+          }))
+        : []),
+    ];
+    for (const dependencyRef of dependencyRefs) {
+      const dependencyTaskId = resolveTaskIdReference(
+        dependencyRef.dependencyTaskKey,
+        dependencyRef.dependencyTaskId,
+      );
+      if (!dependencyTaskId || dependencyTaskId === createdTaskId) continue;
+      let applied = false;
+      if (typeof taskStoreMod?.addTaskDependency === "function") {
+        const updated = taskStoreMod.addTaskDependency(createdTaskId, dependencyTaskId, {
+          source: "workflow-planner",
+        });
+        applied = Boolean(updated);
+      }
+      if (!applied && typeof kanban?.updateTask === "function") {
+        const existing = fallbackDependencyLists.get(createdTaskId) || [];
+        const nextDependencies = Array.from(new Set([...existing, dependencyTaskId]));
+        fallbackDependencyLists.set(createdTaskId, nextDependencies);
+        await kanban.updateTask(createdTaskId, {
+          meta: {
+            dependencyTaskIds: nextDependencies,
+          },
+        });
+        applied = true;
+      }
+      if (applied) {
+        appliedDependencyLinks.push({
+          taskId: createdTaskId,
+          dependencyTaskId,
+          dependencyTaskKey: dependencyRef.dependencyTaskKey || null,
+          taskKey: plannerTask.taskKey || null,
+        });
+      } else {
+        skippedGraphLinks.push({
+          type: "dependency",
+          taskId: createdTaskId,
+          dependencyTaskId,
+          dependencyTaskKey: dependencyRef.dependencyTaskKey || null,
+          reason: "dependency_task_unavailable",
+          taskKey: plannerTask.taskKey || null,
+        });
+      }
+    }
+  }
+
+  if (typeof taskStoreMod?.waitForStoreWrites === "function") {
+    await taskStoreMod.waitForStoreWrites();
+  }
+
+  return {
+    appliedParentLinks,
+    appliedDependencyLinks,
+    skippedGraphLinks,
+  };
 }
 function resolvePlannerMaterializationDefaults(ctx) {
   const data =
@@ -9092,12 +9843,23 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       failurePriorStep: { type: "number", default: 1.5, description: "Penalty added per repeated failure beyond threshold" },
       maxFailurePriorPenalty: { type: "number", default: 8, description: "Cap for repeated-failure negative prior penalty" },
       feedbackSignalScale: { type: "number", default: 0.12, description: "Scale factor applied to weighted feedback signal penalties" },
+      applyTaskGraph: { type: "boolean", default: true, description: "Apply parent/dependency graph links from planner output when supported" },
+      parentTaskId: { type: "string", description: "Optional existing task ID to use as the parent for top-level planned tasks" },
     },
   },
   async execute(node, ctx, engine) {
+    recordPlannerLedgerEvent(engine, ctx, node, "planner.step_started", {
+      phase: "materialize",
+      label: "materialize-planner-tasks",
+      status: "running",
+      meta: {
+        plannerNodeId: String(ctx.resolve(node.config?.plannerNodeId || "run-planner")).trim() || "run-planner",
+      },
+    });
     const plannerNodeId = String(ctx.resolve(node.config?.plannerNodeId || "run-planner")).trim() || "run-planner";
     const plannerOutput = ctx.getNodeOutput(plannerNodeId) || {};
     const outputText = String(plannerOutput?.output || "").trim();
+    const plannerPayload = parsePlannerJsonFromText(outputText);
     const maxTasks = Number(ctx.resolve(node.config?.maxTasks || ctx.data?.taskCount || 5)) || 5;
     const failOnZero = node.config?.failOnZero !== false;
     const minCreated = Number(ctx.resolve(node.config?.minCreated || 1)) || 1;
@@ -9119,6 +9881,21 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       maxNegativePrior: Math.max(0, Number(ctx.resolve(node.config?.maxFailurePriorPenalty ?? 8)) || 8),
       signalPenaltyScale: Math.max(0, Number(ctx.resolve(node.config?.feedbackSignalScale ?? 0.12)) || 0.12),
     };
+    const applyTaskGraph = node.config?.applyTaskGraph !== false;
+    const graphRootTaskId =
+      String(
+        ctx.resolve(
+          node.config?.parentTaskId ||
+          plannerPayload?.root_task_id ||
+          plannerPayload?.rootTaskId ||
+          "",
+        ) || "",
+      ).trim() || null;
+    const graphRootTaskKey = String(
+      plannerPayload?.root_task_key ||
+      plannerPayload?.rootTaskKey ||
+      "",
+    ).trim().toLowerCase();
     const plannerFeedback = resolvePlannerFeedbackObject(ctx.data?._plannerFeedback);
     const feedbackWeights = {
       agentAttempts: Math.max(
@@ -9153,6 +9930,19 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
           : outputText || "(empty)";
         const message = `Planner output from "${plannerNodeId}" failed validation: ${strictPayload.message} ` +
           `Output length: ${outputText.length} chars. Preview: ${outputPreview}`;
+        recordPlannerLedgerEvent(engine, ctx, node, "planner.step_blocked", {
+          phase: "materialize",
+          label: "materialize-planner-tasks",
+          status: "failed",
+          error: message,
+          reason: strictPayload.reason,
+          summary: strictPayload.message,
+          meta: {
+            plannerNodeId,
+            outputLength: outputText.length,
+            outputPreview,
+          },
+        });
         ctx.log(node.id, message, failOnZero ? "error" : "warn");
         if (failOnZero) throw new Error(message);
         return {
@@ -9173,6 +9963,19 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
         : outputText || "(empty)";
       const message = `Planner output from "${plannerNodeId}" did not include parseable tasks. ` +
         `Output length: ${outputText.length} chars. Preview: ${outputPreview}`;
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.step_blocked", {
+        phase: "materialize",
+        label: "materialize-planner-tasks",
+        status: "failed",
+        error: message,
+        reason: "no_parseable_tasks",
+        summary: "Planner output did not include parseable tasks.",
+        meta: {
+          plannerNodeId,
+          outputLength: outputText.length,
+          outputPreview,
+        },
+      });
       ctx.log(node.id, message, failOnZero ? "error" : "warn");
       if (failOnZero) throw new Error(message);
       return {
@@ -9297,6 +10100,7 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
     );
 
     const created = [];
+    const createdTaskRefs = [];
     const skipped = [];
     const materializationOutcomes = [];
     const createdAreaCounts = new Map();
@@ -9417,6 +10221,14 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
         kill_criteria: task.killCriteria,
         acceptance_criteria: task.acceptanceCriteria,
         verification: task.verification,
+        task_key: task.taskKey || null,
+        parent_task_key: task.parentTaskKey || null,
+        parent_task_id: task.parentTaskId || null,
+        depends_on_task_keys: Array.isArray(task.dependencyTaskKeys) ? task.dependencyTaskKeys : [],
+        depends_on_task_ids: Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [],
+        decomposition_kind: task.decompositionKind || null,
+        spawn_when: task.spawnWhen || null,
+        merge_back_policy: task.mergeBackPolicy || null,
       };
       payload.meta = existingMeta;
       const createdTask = await createKanbanTaskWithProject(
@@ -9431,6 +10243,10 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
         id: createdTask?.id || null,
         title: task.title,
       });
+      createdTaskRefs.push({
+        task,
+        createdTaskId: createdTask?.id || null,
+      });
       materializationOutcomes.push({ ...baseOutcome, created: true, reason: null });
       for (const area of task.repoAreas) {
         const areaKey = normalizePlannerAreaKey(area);
@@ -9440,21 +10256,107 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       existingTitleSet.add(key);
     }
 
+    const graphMaterialization = applyTaskGraph
+      ? await applyPlannerTaskGraphLinks({
+          createdTaskRefs,
+          graphRootTaskId,
+          graphRootTaskKey,
+          kanban,
+        })
+      : {
+          appliedParentLinks: [],
+          appliedDependencyLinks: [],
+          skippedGraphLinks: [],
+        };
+
     const createdCount = created.length;
     const skippedCount = skipped.length;
+    const graphAppliedCount =
+      graphMaterialization.appliedParentLinks.length +
+      graphMaterialization.appliedDependencyLinks.length;
+    const graphSkippedCount = graphMaterialization.skippedGraphLinks.length;
     const skipReasonHistogram = buildPlannerSkipReasonHistogram(skipped);
     ctx.log(
       node.id,
-      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
+      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} graphApplied=${graphAppliedCount} graphSkipped=${graphSkippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
     );
 
     const requiredCreated = Math.min(Math.max(1, minCreated), Math.max(1, maxTasks));
 
     if (failOnZero && createdCount < requiredCreated) {
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.step_blocked", {
+        phase: "materialize",
+        label: "materialize-planner-tasks",
+        status: "failed",
+        error: `Planner materialization created ${createdCount} tasks (required: ${requiredCreated})`,
+        reason: "insufficient_created_tasks",
+        summary: `Created ${createdCount} tasks but required ${requiredCreated}.`,
+        meta: {
+          plannerNodeId,
+          parsedCount: parsedTasks.length,
+          createdCount,
+          skippedCount,
+          graphAppliedCount,
+          graphSkippedCount,
+          skipReasonHistogram,
+        },
+      });
       throw new Error(
         `Planner materialization created ${createdCount} tasks (required: ${requiredCreated})`,
       );
     }
+
+    recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_reasoning", {
+      phase: "ranking",
+      label: "planner-ranking",
+      status: "completed",
+      summary: `Planner candidates ranked: parsed=${parsedTasks.length}, created=${createdCount}, skipped=${skippedCount}`,
+      meta: {
+        plannerNodeId,
+        parsedCount: parsedTasks.length,
+        createdCount,
+        skippedCount,
+        graphAppliedCount,
+        graphSkippedCount,
+        skipReasonHistogram,
+        rankedTasks: rankedTasks.slice(0, maxTasks).map((task) => ({
+          title: task.title,
+          archetype: task.archetype || null,
+          score: task?._ranking?.score,
+          penalty: task?._ranking?.penalty,
+          patternKeys: task?._ranking?.patternKeys || [],
+        })),
+      },
+    });
+    recordPlannerLedgerEvent(engine, ctx, node, "planner.post_attachment", {
+      phase: "materialize-output",
+      label: "materialized-planner-tasks",
+      status: "completed",
+      summary: `Materialized ${createdCount} task(s) from planner output.`,
+      meta: {
+        plannerNodeId,
+        attachmentKind: "materialized_tasks",
+        created,
+        skipped,
+        graphMaterialization,
+        skipReasonHistogram,
+      },
+    });
+    recordPlannerLedgerEvent(engine, ctx, node, "planner.step_completed", {
+      phase: "materialize",
+      label: "materialize-planner-tasks",
+      status: createdCount >= requiredCreated ? "completed" : "failed",
+      summary: `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount}`,
+      meta: {
+        plannerNodeId,
+        parsedCount: parsedTasks.length,
+        createdCount,
+        skippedCount,
+        graphAppliedCount,
+        graphSkippedCount,
+        skipReasonHistogram,
+      },
+    });
 
     return {
       success: createdCount >= requiredCreated,
@@ -9465,6 +10367,7 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       materializationOutcomes,
       created,
       skipped,
+      graphMaterialization,
       tasks: parsedTasks,
       rankedTasks: rankedTasks.slice(0, maxTasks).map((task) => ({
         title: task.title,
@@ -9495,6 +10398,9 @@ registerBuiltinNodeType("agent.run_planner", {
       maxRetries: { type: "number", default: 0, description: "Retry attempts for planner node" },
       retryable: { type: "boolean", default: false, description: "Whether planner node should auto-retry on failure" },
       maxRetainedEvents: { type: "number", default: WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT, description: "Maximum planner events retained in run output" },
+      includeSkillbookGuidance: { type: "boolean", default: true, description: "Whether to inject reusable skillbook strategies into planner prompts." },
+      skillbookNodeId: { type: "string", description: "Optional node ID whose output should be used as planner skillbook guidance." },
+      skillbookLimit: { type: "number", default: 5, description: "Maximum reusable strategies to inject when auto-loading guidance." },
     },
   },
   async execute(node, ctx, engine) {
@@ -9504,6 +10410,14 @@ registerBuiltinNodeType("agent.run_planner", {
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
     const repoMapQuery = ctx.resolve(node.config?.repoMapQuery || "");
+    const includeSkillbookGuidance = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.includeSkillbookGuidance ?? true, ctx),
+      true,
+    );
+    const skillbookNodeId = String(ctx.resolve(node.config?.skillbookNodeId || "") || "").trim();
+    const skillbookLimit = Number.isFinite(Number(resolveWorkflowNodeValue(node.config?.skillbookLimit ?? 5, ctx)))
+      ? Math.max(1, Math.trunc(Number(resolveWorkflowNodeValue(node.config?.skillbookLimit ?? 5, ctx))))
+      : 5;
     const configuredNodeTimeout = Number(ctx.resolve(node.config?.timeoutMs || node.config?.timeout || 0));
     const configuredAgentTimeout = Number(ctx.resolve(node.config?.agentTimeoutMs || 0));
 
@@ -9520,7 +10434,30 @@ registerBuiltinNodeType("agent.run_planner", {
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
     const basePrompt = explicitPrompt || plannerPrompt || "";
-    const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback].filter(Boolean).join("\n\n");
+    let skillbookGuidance = normalizeSkillbookGuidancePayload(
+      skillbookNodeId
+        ? ctx.getNodeOutput?.(skillbookNodeId)
+        : null,
+    ) || normalizeSkillbookGuidancePayload(ctx.data?._skillbookGuidance);
+    if (!skillbookGuidance && includeSkillbookGuidance) {
+      skillbookGuidance = await resolveReusableSkillbookGuidance(ctx, {
+        workflowId: ctx.data?._workflowId || "",
+        category: "strategy",
+        status: "promoted",
+        query: [
+          context,
+          ctx.data?.taskTitle,
+          ctx.data?.taskDescription,
+          ctx.data?.prompt,
+        ].filter(Boolean).join(" "),
+        limit: skillbookLimit,
+      });
+      if (skillbookGuidance.matched > 0) {
+        ctx.data._skillbookGuidance = skillbookGuidance;
+      }
+    }
+    const skillbookPromptContext = buildSkillbookPromptContext(skillbookGuidance);
+    const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback, skillbookPromptContext].filter(Boolean).join("\n\n");
     const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
@@ -9551,14 +10488,16 @@ registerBuiltinNodeType("agent.run_planner", {
     // can parse the planner output. The planner prompt already defines the contract,
     // but we reinforce it here to prevent agents from wrapping output in prose.
     const effectiveContext = appendPlannerFeedbackContext(context, plannerFeedback, basePrompt);
+    const plannerExecutionContext = [
+      effectiveContext,
+      skillbookPromptContext,
+      repoTopologyContext,
+    ].filter(Boolean).join("\n\n");
     const outputEnforcement =
       `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
       `Generate exactly ${count} new tasks.\n` +
-      ((effectiveContext || repoTopologyContext)
-        ? `${[
-          effectiveContext,
-          repoTopologyContext,
-        ].filter(Boolean).join("\n\n")}\n\n`
+      (plannerExecutionContext
+        ? `${plannerExecutionContext}\n\n`
         : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
@@ -9587,11 +10526,45 @@ registerBuiltinNodeType("agent.run_planner", {
             }
             streamLines.push(line);
             ctx.log(node.id, line);
+            recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_reasoning", {
+              phase: "generation",
+              label: "planner-stream",
+              status: "running",
+              summary: line,
+              meta: {
+                taskCount: count,
+                streamEventCount,
+                rawEventType: String(event?.type || event?.eventType || event?.kind || "").trim() || null,
+              },
+            });
           } catch {
             // Stream callbacks must never crash workflow execution.
           }
         },
       };
+
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_initialized", {
+        phase: "plan",
+        label: "run-planner",
+        status: "running",
+        summary: `Planner initialized for ${count} tasks.`,
+        meta: {
+          taskCount: count,
+          outputVariable: outputVariable || null,
+          repoMapQuery: repoMapQuery || null,
+          plannerFeedbackPresent: Boolean(plannerFeedback),
+          skillbookGuidancePresent: Boolean(skillbookPromptContext),
+        },
+      });
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.step_started", {
+        phase: "generation",
+        label: "generate-planner-output",
+        status: "running",
+        meta: {
+          taskCount: count,
+          outputVariable: outputVariable || null,
+        },
+      });
 
       const heartbeat = setInterval(() => {
         const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
@@ -9611,6 +10584,29 @@ registerBuiltinNodeType("agent.run_planner", {
         );
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err || "planner execution failed");
+        recordPlannerLedgerEvent(engine, ctx, node, "planner.step_blocked", {
+          phase: "generation",
+          label: "generate-planner-output",
+          status: "failed",
+          error: errorMessage,
+          reason: "planner_execution_failed",
+          summary: "Planner execution failed before returning output.",
+          meta: {
+            taskCount: count,
+            streamEventCount,
+          },
+        });
+        recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_failed", {
+          phase: "plan",
+          label: "run-planner",
+          status: "failed",
+          error: errorMessage,
+          reason: "planner_execution_failed",
+          meta: {
+            taskCount: count,
+            streamEventCount,
+          },
+        });
         ctx.log(node.id, `Planner failed: ${errorMessage}`);
         return {
           success: false,
@@ -9640,6 +10636,72 @@ registerBuiltinNodeType("agent.run_planner", {
       }
       const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
       const plannerOutput = String(result.output || "").trim();
+      const plannerSucceeded = result.success === true;
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_reasoning", {
+        phase: "reasoning",
+        label: "planner-digest",
+        status: plannerSucceeded ? "completed" : "failed",
+        summary: digest.summary || `Planner returned ${digest.itemCount || 0} structured items.`,
+        meta: {
+          taskCount: count,
+          itemCount: digest.itemCount,
+          omittedItemCount: digest.omittedItemCount,
+          threadId,
+          sdk: result.sdk || null,
+          narrative: digest.narrative || null,
+          thoughts: Array.isArray(digest.thoughts) ? digest.thoughts.slice(0, 12) : [],
+          items: Array.isArray(digest.items) ? digest.items.slice(0, 8) : [],
+        },
+      });
+      if (plannerOutput) {
+        recordPlannerLedgerEvent(engine, ctx, node, "planner.post_attachment", {
+          phase: "planner-output",
+          label: "planner-output",
+          status: plannerSucceeded ? "completed" : "failed",
+          summary: "Planner output captured for downstream materialization.",
+          meta: {
+            taskCount: count,
+            attachmentKind: "planner_output",
+            outputVariable: outputVariable || null,
+            threadId,
+            outputPreview: plannerOutput.slice(0, 600),
+          },
+        });
+      }
+      recordPlannerLedgerEvent(engine, ctx, node, plannerSucceeded ? "planner.step_completed" : "planner.step_blocked", {
+        phase: "generation",
+        label: "generate-planner-output",
+        status: plannerSucceeded ? "completed" : "failed",
+        error: plannerSucceeded ? null : (result.error || "planner execution reported failure"),
+        reason: plannerSucceeded ? null : "planner_execution_unsuccessful",
+        summary: plannerSucceeded
+          ? `Planner generated output for ${count} tasks.`
+          : "Planner execution returned an unsuccessful result.",
+        meta: {
+          taskCount: count,
+          itemCount: digest.itemCount,
+          omittedItemCount: digest.omittedItemCount,
+          threadId,
+          streamEventCount,
+        },
+      });
+      recordPlannerLedgerEvent(engine, ctx, node, plannerSucceeded ? "planner.plan_completed" : "planner.plan_failed", {
+        phase: "plan",
+        label: "run-planner",
+        status: plannerSucceeded ? "completed" : "failed",
+        error: plannerSucceeded ? null : (result.error || "planner execution reported failure"),
+        reason: plannerSucceeded ? null : "planner_execution_unsuccessful",
+        summary: plannerSucceeded
+          ? `Planner completed with ${digest.itemCount || 0} items.`
+          : "Planner completed without a successful result.",
+        meta: {
+          taskCount: count,
+          itemCount: digest.itemCount,
+          threadId,
+          sdk: result.sdk || null,
+          streamEventCount,
+        },
+      });
       return {
         success: result.success,
         output: plannerOutput,
@@ -9759,19 +10821,138 @@ registerBuiltinNodeType("flow.gate", {
       return { gateOpened: true, mode, timedOut: true, waited: timeoutMs, reason };
     }
 
-    // Manual mode or fallback: wait for external approval via context variable
+    // Manual mode or fallback: create a durable approval request and keep the
+    // legacy context-variable path working for existing callers.
     const approvalKey = `_gate_${node.id}_approved`;
+    const repoRoot =
+      String(
+        ctx?.data?.repoRoot
+        || ctx?.data?.repoPath
+        || process.env.REPO_ROOT
+        || process.cwd(),
+      ).trim() || process.cwd();
+    const runId = String(ctx?.data?._dagState?.runId || ctx?.id || "").trim() || null;
+    const gateRequest = runId
+      ? upsertWorkflowGateApprovalRequest({
+        runId,
+        rootRunId: ctx?.data?._workflowRootRunId || runId,
+        parentRunId: ctx?.data?._workflowParentRunId || null,
+        workflowId: ctx?.data?._workflowId || ctx?.data?._dagState?.workflowId || null,
+        workflowName: ctx?.data?._workflowName || ctx?.data?._dagState?.workflowName || null,
+        taskId: ctx?.data?.taskId || null,
+        taskTitle: ctx?.data?.taskTitle || null,
+        nodeId: node.id,
+        nodeLabel: node.label || null,
+        reason,
+        timeoutMs,
+        onTimeout,
+        pollIntervalMs: pollInterval,
+        requestedBy: "flow.gate",
+        mode: "manual",
+      }, { repoRoot }).request
+      : null;
+    if (gateRequest) {
+      if (!ctx.data._pendingApprovalRequests || typeof ctx.data._pendingApprovalRequests !== "object") {
+        ctx.data._pendingApprovalRequests = {};
+      }
+      ctx.data._pendingApprovalRequests[gateRequest.requestId] = {
+        requestId: gateRequest.requestId,
+        scopeType: gateRequest.scopeType,
+        scopeId: gateRequest.scopeId,
+        nodeId: gateRequest.nodeId,
+        nodeLabel: gateRequest.nodeLabel,
+        reason: gateRequest.reason,
+        status: gateRequest.status,
+        requestedAt: gateRequest.requestedAt,
+        expiresAt: gateRequest.expiresAt || null,
+      };
+      engine?._checkpointRun?.(ctx);
+    }
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      if (ctx.data[approvalKey] || ctx.variables[approvalKey]) {
-        return { gateOpened: true, mode: "manual", waited: Date.now() - start, reason };
+      const legacyApproved = ctx.data[approvalKey] || ctx.variables[approvalKey];
+      if (legacyApproved) {
+        if (gateRequest && String(gateRequest.requestId || "").trim()) {
+          try {
+            const pending = getApprovalRequest(gateRequest.scopeType, gateRequest.scopeId, { repoRoot });
+            if (pending && pending.status === "pending") {
+              resolveApprovalRequest(gateRequest.requestId, {
+                repoRoot,
+                decision: "approved",
+                actorId: "legacy-context",
+                note: "Approved through legacy workflow context variable.",
+              });
+            }
+          } catch {}
+        }
+        if (gateRequest && ctx.data?._pendingApprovalRequests?.[gateRequest.requestId]) {
+          delete ctx.data._pendingApprovalRequests[gateRequest.requestId];
+          engine?._checkpointRun?.(ctx);
+        }
+        return {
+          gateOpened: true,
+          mode: "manual",
+          waited: Date.now() - start,
+          reason,
+          approvalRequestId: gateRequest?.requestId || null,
+          approvalState: "approved",
+        };
+      }
+      if (gateRequest) {
+        const currentRequest = getApprovalRequest(gateRequest.scopeType, gateRequest.scopeId, { repoRoot });
+        const approvalState = String(currentRequest?.status || "").trim().toLowerCase();
+        if (approvalState === "approved") {
+          if (ctx.data?._pendingApprovalRequests?.[gateRequest.requestId]) {
+            delete ctx.data._pendingApprovalRequests[gateRequest.requestId];
+            engine?._checkpointRun?.(ctx);
+          }
+          return {
+            gateOpened: true,
+            mode: "manual",
+            waited: Date.now() - start,
+            reason,
+            approvalRequestId: gateRequest.requestId,
+            approvalState,
+          };
+        }
+        if (approvalState === "denied") {
+          if (ctx.data?._pendingApprovalRequests?.[gateRequest.requestId]) {
+            delete ctx.data._pendingApprovalRequests[gateRequest.requestId];
+            engine?._checkpointRun?.(ctx);
+          }
+          throw new Error(`Manual gate denied by operator: ${reason}`);
+        }
       }
       await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    if (gateRequest) {
+      try {
+        const pending = getApprovalRequest(gateRequest.scopeType, gateRequest.scopeId, { repoRoot });
+        if (pending && pending.status === "pending") {
+          expireApprovalRequest(gateRequest.requestId, {
+            repoRoot,
+            actorId: "system:timeout",
+            note: `Manual gate timed out after ${timeoutMs}ms.`,
+          });
+        }
+      } catch {}
+      if (ctx.data?._pendingApprovalRequests?.[gateRequest.requestId]) {
+        delete ctx.data._pendingApprovalRequests[gateRequest.requestId];
+        engine?._checkpointRun?.(ctx);
+      }
     }
     if (onTimeout === "fail") {
       throw new Error(`Manual gate timed out after ${timeoutMs}ms: ${reason}`);
     }
-    return { gateOpened: true, mode: "manual", timedOut: true, waited: timeoutMs, reason };
+    return {
+      gateOpened: true,
+      mode: "manual",
+      timedOut: true,
+      waited: timeoutMs,
+      reason,
+      approvalRequestId: gateRequest?.requestId || null,
+      approvalState: "expired",
+    };
   },
 });
 
@@ -10548,6 +11729,11 @@ registerBuiltinNodeType("action.bosun_cli", {
       ], description: "Bosun CLI subcommand" },
       args: { type: "string", description: "Additional arguments (e.g., --status todo --json)" },
       parseJson: { type: "boolean", default: true, description: "Parse JSON output automatically" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this Bosun CLI command even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["subcommand"],
   },
@@ -10557,6 +11743,15 @@ registerBuiltinNodeType("action.bosun_cli", {
     const cmd = `bosun ${sub} ${args}`.trim();
 
     ctx.log(node.id, `Running: ${cmd}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.bosun_cli",
+      repoRoot: ctx?.data?.repoRoot || process.cwd(),
+      command: "bosun",
+      args: [sub, args].filter(Boolean),
+    });
     try {
       const output = execSync(cmd, { encoding: "utf8", timeout: 60000, stdio: "pipe" });
       let parsed = output?.trim();
@@ -11610,6 +12805,11 @@ registerBuiltinNodeType("action.refresh_worktree", {
       operation: { type: "string", enum: ["fetch", "pull", "reset_hard", "clean", "checkout_main"], default: "fetch" },
       cwd: { type: "string", description: "Working directory" },
       branch: { type: "string", description: "Branch to operate on" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before destructive refresh operations even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["operation"],
   },
@@ -11630,6 +12830,13 @@ registerBuiltinNodeType("action.refresh_worktree", {
     if (!cmd) throw new Error(`Unknown worktree operation: ${op}`);
 
     ctx.log(node.id, `Refreshing worktree (${op}): ${cmd}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.refresh_worktree",
+      repoRoot: cwd,
+    });
     try {
       const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000, shell: true });
       return { success: true, output: output?.trim(), operation: op };
@@ -12907,6 +14114,232 @@ function recordDelegationAuditEvent(ctx, event = {}) {
     });
   }
   return result;
+}
+
+function cloneWorkflowTeamValue(value) {
+  if (value == null) return value;
+  if (typeof globalThis.structuredClone === "function") {
+    return globalThis.structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getWorkflowTeamState(ctx) {
+  if (typeof ctx?.getWorkflowTeamState === "function") {
+    return ctx.getWorkflowTeamState();
+  }
+  return cloneWorkflowTeamValue(ctx?.data?._workflowTeamState || ctx?.data?.workflowTeamState || {
+    version: 1,
+    teamId: null,
+    name: null,
+    leadId: null,
+    defaultChannel: "team",
+    initializedAt: null,
+    updatedAt: null,
+    roster: [],
+    channels: [],
+    tasks: [],
+    messages: [],
+    events: [],
+  });
+}
+
+function setWorkflowTeamState(ctx, state) {
+  if (typeof ctx?.setWorkflowTeamState === "function") {
+    return ctx.setWorkflowTeamState(state);
+  }
+  if (!ctx?.data || typeof ctx.data !== "object") ctx.data = {};
+  ctx.data._workflowTeamState = cloneWorkflowTeamValue(state);
+  ctx.data.workflowTeamState = cloneWorkflowTeamValue(state);
+  return cloneWorkflowTeamValue(state);
+}
+
+function updateWorkflowTeamState(ctx, updater) {
+  const current = getWorkflowTeamState(ctx);
+  const next = typeof updater === "function"
+    ? updater(cloneWorkflowTeamValue(current))
+    : { ...current, ...(updater || {}) };
+  return setWorkflowTeamState(ctx, next || current);
+}
+
+function normalizeTeamId(value) {
+  const text = String(value || "").trim();
+  return text || null;
+}
+
+function normalizeTeamList(value) {
+  const items = Array.isArray(value) ? value : [value];
+  return Array.from(new Set(
+    items
+      .map((entry) => normalizeTeamId(entry))
+      .filter(Boolean),
+  ));
+}
+
+function ensureTeamMember(state, memberLike = {}) {
+  const memberId = normalizeTeamId(
+    memberLike.memberId ||
+    memberLike.id ||
+    memberLike.agentId ||
+    memberLike.name,
+  );
+  if (!memberId) return null;
+  state.roster = Array.isArray(state.roster) ? state.roster : [];
+  let member = state.roster.find((entry) => entry.memberId === memberId);
+  if (!member) {
+    member = {
+      memberId,
+      name: normalizeTeamId(memberLike.name) || memberId,
+      role: normalizeTeamId(memberLike.role) || null,
+      reportsTo: normalizeTeamId(memberLike.reportsTo) || null,
+      level: Number.isFinite(Number(memberLike.level)) ? Number(memberLike.level) : null,
+      channels: normalizeTeamList(memberLike.channels),
+      tags: normalizeTeamList(memberLike.tags),
+      skills: normalizeTeamList(memberLike.skills),
+      metadata:
+        memberLike.metadata && typeof memberLike.metadata === "object" && !Array.isArray(memberLike.metadata)
+          ? cloneWorkflowTeamValue(memberLike.metadata)
+          : {},
+      joinedAt: memberLike.joinedAt || new Date().toISOString(),
+      active: memberLike.active !== false,
+    };
+    state.roster.push(member);
+    return member;
+  }
+  member.name = normalizeTeamId(memberLike.name) || member.name || memberId;
+  member.role = normalizeTeamId(memberLike.role) || member.role || null;
+  member.reportsTo = normalizeTeamId(memberLike.reportsTo) || member.reportsTo || null;
+  if (Number.isFinite(Number(memberLike.level))) member.level = Number(memberLike.level);
+  member.channels = Array.from(new Set([
+    ...normalizeTeamList(member.channels),
+    ...normalizeTeamList(memberLike.channels),
+  ]));
+  member.tags = Array.from(new Set([
+    ...normalizeTeamList(member.tags),
+    ...normalizeTeamList(memberLike.tags),
+  ]));
+  member.skills = Array.from(new Set([
+    ...normalizeTeamList(member.skills),
+    ...normalizeTeamList(memberLike.skills),
+  ]));
+  if (memberLike.metadata && typeof memberLike.metadata === "object" && !Array.isArray(memberLike.metadata)) {
+    member.metadata = { ...(member.metadata || {}), ...cloneWorkflowTeamValue(memberLike.metadata) };
+  }
+  if (memberLike.active != null) member.active = memberLike.active !== false;
+  return member;
+}
+
+function ensureTeamChannel(state, channelLike = {}) {
+  const channelId = normalizeTeamId(channelLike.channelId || channelLike.id || channelLike.name);
+  if (!channelId) return null;
+  state.channels = Array.isArray(state.channels) ? state.channels : [];
+  let channel = state.channels.find((entry) => entry.channelId === channelId);
+  if (!channel) {
+    channel = {
+      channelId,
+      name: normalizeTeamId(channelLike.name) || channelId,
+      kind: normalizeTeamId(channelLike.kind) || "channel",
+      members: normalizeTeamList(channelLike.members),
+      topic: typeof channelLike.topic === "string" && channelLike.topic.trim() ? channelLike.topic.trim() : null,
+      metadata:
+        channelLike.metadata && typeof channelLike.metadata === "object" && !Array.isArray(channelLike.metadata)
+          ? cloneWorkflowTeamValue(channelLike.metadata)
+          : {},
+      createdAt: channelLike.createdAt || new Date().toISOString(),
+    };
+    state.channels.push(channel);
+    return channel;
+  }
+  channel.name = normalizeTeamId(channelLike.name) || channel.name || channelId;
+  channel.kind = normalizeTeamId(channelLike.kind) || channel.kind || "channel";
+  channel.members = Array.from(new Set([
+    ...normalizeTeamList(channel.members),
+    ...normalizeTeamList(channelLike.members),
+  ]));
+  if (typeof channelLike.topic === "string" && channelLike.topic.trim()) {
+    channel.topic = channelLike.topic.trim();
+  }
+  if (channelLike.metadata && typeof channelLike.metadata === "object" && !Array.isArray(channelLike.metadata)) {
+    channel.metadata = { ...(channel.metadata || {}), ...cloneWorkflowTeamValue(channelLike.metadata) };
+  }
+  return channel;
+}
+
+function appendWorkflowTeamEvent(state, type, payload = {}) {
+  state.events = Array.isArray(state.events) ? state.events : [];
+  const event = {
+    eventId: randomUUID(),
+    type,
+    at: new Date().toISOString(),
+    ...cloneWorkflowTeamValue(payload),
+  };
+  state.events.push(event);
+  return event;
+}
+
+function resolveTeamActorId(node, ctx, preferredKey = "memberId") {
+  return normalizeTeamId(
+    cfgOrCtx(node, ctx, preferredKey) ||
+    cfgOrCtx(node, ctx, "actorId") ||
+    ctx?.data?.agentId ||
+    ctx?.data?.agentProfile ||
+    ctx?.data?.task?.assignee ||
+    ctx?.data?.coordinationRole ||
+    ctx?.data?.leadId,
+  );
+}
+
+function memberCanSeeChannel(state, memberId, channelId) {
+  if (!memberId || !channelId) return false;
+  const channel = Array.isArray(state.channels)
+    ? state.channels.find((entry) => entry.channelId === channelId)
+    : null;
+  if (!channel) return true;
+  const members = normalizeTeamList(channel.members);
+  if (members.length === 0) return true;
+  return members.includes(memberId);
+}
+
+function matchesTeamTask(task, match = {}) {
+  if (!task || typeof task !== "object") return false;
+  const normalizedMatch =
+    match && typeof match === "object" && !Array.isArray(match)
+      ? match
+      : {};
+  const titleContains = String(normalizedMatch.titleContains || "").trim().toLowerCase();
+  if (titleContains && !String(task.title || "").toLowerCase().includes(titleContains)) return false;
+  const requiredStatus = normalizeTeamId(normalizedMatch.status);
+  if (requiredStatus && String(task.status || "").trim().toLowerCase() !== requiredStatus.toLowerCase()) return false;
+  const requiredTag = normalizeTeamId(normalizedMatch.tag);
+  if (requiredTag && !normalizeTeamList(task.tags).includes(requiredTag)) return false;
+  const requiredLabel = normalizeTeamId(normalizedMatch.label);
+  if (requiredLabel && !normalizeTeamList(task.labels).includes(requiredLabel)) return false;
+  const requiredChannel = normalizeTeamId(normalizedMatch.channelId);
+  if (requiredChannel && normalizeTeamId(task.channelId) !== requiredChannel) return false;
+  return true;
+}
+
+function summarizeWorkflowTeamState(state) {
+  const roster = Array.isArray(state?.roster) ? state.roster : [];
+  const channels = Array.isArray(state?.channels) ? state.channels : [];
+  const tasks = Array.isArray(state?.tasks) ? state.tasks : [];
+  const messages = Array.isArray(state?.messages) ? state.messages : [];
+  const events = Array.isArray(state?.events) ? state.events : [];
+  return {
+    teamId: normalizeTeamId(state?.teamId),
+    name: normalizeTeamId(state?.name),
+    leadId: normalizeTeamId(state?.leadId),
+    defaultChannel: normalizeTeamId(state?.defaultChannel) || "team",
+    rosterCount: roster.length,
+    channelCount: channels.length,
+    taskCount: tasks.length,
+    openTaskCount: tasks.filter((task) => task.status === "open" || task.status === "released").length,
+    claimedTaskCount: tasks.filter((task) => task.status === "claimed").length,
+    completedTaskCount: tasks.filter((task) => task.status === "completed").length,
+    messageCount: messages.length,
+    eventCount: events.length,
+    lastUpdatedAt: state?.updatedAt || state?.initializedAt || null,
+  };
 }
 
 function getDelegationTransitionStore(ctx) {
@@ -16790,6 +18223,28 @@ registerBuiltinNodeType("action.persist_memory", {
 
       ctx.data._lastPersistedMemory = entry;
       ctx.data._lastPersistedMemoryResult = result;
+      try {
+        appendArtifactRecordToStateLedger({
+          artifactId: `memory:${entry.hash || result.hash || randomUUID()}`,
+          runId: entry.runId || ctx.id || null,
+          rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
+          taskId: entry.taskRef || taskId || null,
+          sessionId: entry.sessionId || null,
+          nodeId: node?.id || null,
+          kind: "shared_knowledge_entry",
+          path: result.registryPath || initOpts.targetFile || null,
+          summary: entry.content?.slice(0, 240) || "Persisted shared knowledge entry",
+          metadata: {
+            scope: entry.scope,
+            scopeLevel: entry.scopeLevel,
+            category: entry.category,
+            tags: entry.tags || [],
+            hash: result.hash || entry.hash || null,
+          },
+        }, { repoRoot });
+      } catch (ledgerErr) {
+        ctx.log(node.id, `State ledger artifact mirror failed: ${ledgerErr.message}`, "warn");
+      }
       ctx.log(node.id, `Persistent memory stored at ${entry.scopeLevel} scope`);
       return {
         success: true,
@@ -16809,6 +18264,504 @@ registerBuiltinNodeType("action.persist_memory", {
         scopeLevel: entry.scopeLevel,
       };
     }
+  },
+});
+
+registerBuiltinNodeType("action.load_skillbook_strategies", {
+  describe: () =>
+    "Load ranked reusable strategies from the Bosun skillbook for planning, recovery, and self-improvement flows.",
+  schema: {
+    type: "object",
+    properties: {
+      strategyId: { type: "string", description: "Optional specific strategy ID to load directly." },
+      workflowId: { type: "string", description: "Workflow ID filter. Defaults to current workflow." },
+      repoRoot: { type: "string", description: "Repo/config root used to resolve the skillbook path." },
+      category: { type: "string", default: "strategy" },
+      scopeLevel: { type: "string", enum: ["team", "workspace", "session", "run"] },
+      scope: { type: "string", description: "Optional scope value used to narrow strategy selection." },
+      status: { type: "string", default: "promoted" },
+      query: { type: "string", description: "Free-text relevance query used to rank strategies." },
+      tags: {
+        oneOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+        description: "Optional tags used to require or boost matching strategies.",
+      },
+      limit: { type: "number", default: 5 },
+      outputVariable: { type: "string", description: "Optional context key to store the guidance payload." },
+    },
+  },
+  async execute(node, ctx) {
+    const strategyId = String(ctx.resolve(node.config?.strategyId || "") || "").trim();
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    let output;
+    if (strategyId) {
+      const strategy = await getSkillbookStrategy(strategyId, {
+        repoRoot: String(ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd()).trim() || process.cwd(),
+      });
+      output = {
+        success: true,
+        repoRoot: String(ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd()).trim() || process.cwd(),
+        strategyId,
+        total: strategy ? 1 : 0,
+        matched: strategy ? 1 : 0,
+        strategies: strategy ? [strategy] : [],
+        guidanceSummary: strategy
+          ? `Reusable strategy guidance:\n- ${strategy.recommendation || strategy.strategyId}${strategy.rationale ? `\n  rationale: ${strategy.rationale}` : ""}`
+          : "",
+        skillbookPath: null,
+        strategyIds: strategy ? [strategy.strategyId] : [],
+      };
+    } else {
+      output = await resolveReusableSkillbookGuidance(ctx, {
+        repoRoot: ctx.resolve(node.config?.repoRoot || ""),
+        workflowId: ctx.resolve(node.config?.workflowId || ""),
+        category: ctx.resolve(node.config?.category || "strategy"),
+        scopeLevel: ctx.resolve(node.config?.scopeLevel || ""),
+        scope: ctx.resolve(node.config?.scope || ""),
+        status: ctx.resolve(node.config?.status || "promoted"),
+        query:
+          ctx.resolve(node.config?.query || "")
+          || [
+            ctx.data?.taskTitle,
+            ctx.data?.taskDescription,
+            ctx.data?.lastError,
+            ctx.data?.prompt,
+            ctx.data?.context,
+          ].filter(Boolean).join(" "),
+        tags: resolveWorkflowNodeValue(node.config?.tags ?? [], ctx),
+        limit: resolveWorkflowNodeValue(node.config?.limit ?? 5, ctx),
+      });
+    }
+    ctx.data._skillbookGuidance = output;
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+    ctx.log(
+      node.id,
+      output.matched > 0
+        ? `Loaded ${output.matched} reusable skillbook strategie(s)`
+        : "No reusable skillbook strategies matched current context",
+    );
+    return output;
+  },
+});
+
+registerBuiltinNodeType("action.evaluate_run", {
+  describe: () =>
+    "Evaluate a workflow run and emit self-improvement insights, benchmarks, and promotion recommendations.",
+  schema: {
+    type: "object",
+    properties: {
+      runId: { type: "string", description: "Run ID to evaluate. Defaults to the current run." },
+      workflowId: { type: "string", description: "Workflow ID override for trend lookup." },
+      repoRoot: { type: "string", description: "Repo/config root used for evaluation history." },
+      outputVariable: { type: "string", description: "Variable name to store the evaluation result in ctx.data." },
+      includeTrend: { type: "boolean", default: true },
+      recordHistory: {
+        type: "boolean",
+        default: true,
+        description: "Persist the evaluation into durable history for trend-aware self-improvement.",
+      },
+      evaluatorConfig: {
+        type: "object",
+        description: "Optional penalty/threshold overrides for RunEvaluator.",
+        additionalProperties: true,
+      },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const resolvedRunId = String(ctx.resolve(node.config?.runId || "") || ctx.data?.runId || ctx.id || "").trim();
+    if (!resolvedRunId) {
+      throw new Error("action.evaluate_run: runId is required");
+    }
+
+    const repoRoot = String(ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd()).trim() || process.cwd();
+    const includeTrend = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeTrend ?? true, ctx), true);
+    const recordHistory = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.recordHistory ?? true, ctx), true);
+    const evaluator = makeSelfImprovementEvaluator(ctx, {
+      repoRoot,
+      evaluatorConfig: resolveWorkflowNodeValue(node.config?.evaluatorConfig ?? {}, ctx),
+    });
+
+    let runDetail = null;
+    if (engine?.getRunDetail) {
+      runDetail = engine.getRunDetail(resolvedRunId);
+    }
+    if (!runDetail && resolvedRunId === ctx.id) {
+      runDetail = {
+        runId: ctx.id,
+        workflowId: ctx.data?._workflowId || null,
+        detail: engine?._serializeRunContext ? engine._serializeRunContext(ctx, true) : ctx.toJSON(Date.now()),
+      };
+    }
+    if (!runDetail) {
+      throw new Error(`action.evaluate_run: run "${resolvedRunId}" not found`);
+    }
+
+    const workflowId = String(
+      ctx.resolve(node.config?.workflowId || "") ||
+      runDetail.workflowId ||
+      runDetail?.detail?.data?._workflowId ||
+      ctx.data?._workflowId ||
+      "unknown",
+    ).trim() || "unknown";
+    const result = evaluator.evaluate(runDetail, { workflowId, includeTrend, recordHistory });
+    const reusableGuidance = await resolveReusableSkillbookGuidance(ctx, {
+      repoRoot,
+      workflowId,
+      category: "strategy",
+      status: "promoted",
+      query: [
+        runDetail?.detail?.data?.taskTitle,
+        runDetail?.detail?.data?.taskDescription,
+        result?.promotion?.summary,
+        result?.promotion?.rationale,
+      ].filter(Boolean).join(" "),
+      tags: Array.isArray(result?.promotion?.selectedStrategy?.tags)
+        ? result.promotion.selectedStrategy.tags
+        : [],
+      limit: 5,
+    });
+    if (reusableGuidance.matched > 0) {
+      result.skillbookGuidance = reusableGuidance;
+      result.reusableStrategies = reusableGuidance.strategies;
+      result.reusableStrategySummary = reusableGuidance.guidanceSummary;
+      ctx.data._skillbookGuidance = reusableGuidance;
+    }
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    if (outputVariable) {
+      ctx.data[outputVariable] = result;
+    }
+    ctx.data._lastRunEvaluation = result;
+    ctx.data._lastRunEvaluationRunId = resolvedRunId;
+    ctx.data._selfImprovementInsights = result.insights;
+    ctx.log(node.id, `Evaluated run ${resolvedRunId} (score=${result.score}, decision=${result.promotion?.decision || "hold"})`);
+    return {
+      success: true,
+      runId: resolvedRunId,
+      workflowId,
+      ...result,
+    };
+  },
+});
+
+registerBuiltinNodeType("action.promote_strategy", {
+  describe: () =>
+    "Persist a verified self-improvement strategy or benchmark baseline into shared knowledge.",
+  schema: {
+    type: "object",
+    properties: {
+      evaluationNodeId: { type: "string", description: "Node ID that produced action.evaluate_run output." },
+      strategyId: { type: "string", description: "Specific strategy ID to promote. Defaults to the evaluator-selected strategy." },
+      force: { type: "boolean", default: false, description: "Persist even when the evaluator recommends hold." },
+      scopeLevel: {
+        type: "string",
+        enum: ["team", "workspace", "session", "run"],
+        default: "workspace",
+      },
+      scope: { type: "string", description: "Optional topical scope for retrieval." },
+      category: { type: "string", default: "strategy" },
+      repoRoot: { type: "string" },
+      targetFile: { type: "string" },
+      registryFile: { type: "string" },
+      outputVariable: { type: "string" },
+      tags: {
+        anyOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+      },
+      agentId: { type: "string" },
+      agentType: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const evaluationNodeId = String(ctx.resolve(node.config?.evaluationNodeId || "") || "").trim();
+    const evaluation =
+      (evaluationNodeId ? ctx.getNodeOutput?.(evaluationNodeId) : null) ||
+      ctx.data?._lastRunEvaluation ||
+      null;
+    if (!evaluation || typeof evaluation !== "object") {
+      throw new Error("action.promote_strategy: evaluation result not found");
+    }
+
+    const requestedStrategyId = String(ctx.resolve(node.config?.strategyId || "") || "").trim() || null;
+    const selectedStrategy = resolveSelfImprovementStrategy(evaluation, requestedStrategyId);
+    if (!selectedStrategy) {
+      return {
+        success: false,
+        persisted: false,
+        reason: "No strategy candidate available for promotion",
+      };
+    }
+
+    const force = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.force ?? false, ctx), false);
+    if (!force && evaluation?.promotion?.shouldPromote !== true) {
+      return {
+        success: true,
+        persisted: false,
+        skipped: true,
+        reason: evaluation?.promotion?.summary || "Evaluator did not recommend promotion",
+        strategyId: selectedStrategy.strategyId,
+      };
+    }
+
+    const result = await persistSelfImprovementKnowledgeEntry(ctx, node, {
+      evaluation,
+      selectedStrategy,
+      decision: evaluation?.promotion?.decision || "promote_strategy",
+      repoRoot: ctx.resolve(node.config?.repoRoot || ""),
+      targetFile: ctx.resolve(node.config?.targetFile || ""),
+      registryFile: ctx.resolve(node.config?.registryFile || ""),
+      scopeLevel: ctx.resolve(node.config?.scopeLevel || "workspace"),
+      scope: ctx.resolve(node.config?.scope || ""),
+      category: ctx.resolve(node.config?.category || "strategy"),
+      status: "promoted",
+      tags: ctx.resolve(node.config?.tags || ""),
+      agentId: ctx.resolve(node.config?.agentId || ""),
+      agentType: ctx.resolve(node.config?.agentType || ""),
+      contentLines: [
+        `Promoted strategy for workflow ${evaluation?.workflowId || ctx.data?._workflowId || "unknown"}: ${selectedStrategy.recommendation}`,
+        selectedStrategy.rationale ? `Rationale: ${selectedStrategy.rationale}` : "",
+        evaluation?.benchmark
+          ? `Benchmark: score=${evaluation.score}, grade=${evaluation.grade}, throughputPerMinute=${evaluation.benchmark.throughputPerMinute}, retryDensity=${evaluation.benchmark.retryDensity}, traceCoverage=${evaluation.benchmark.traceCoverage}`
+          : "",
+        evaluation?.promotion?.rationale ? `Promotion rationale: ${evaluation.promotion.rationale}` : "",
+      ],
+    });
+    if (!result.success) return result;
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    const output = { ...result };
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+    ctx.data._lastPromotedStrategy = output;
+    ctx.log(node.id, `Promoted strategy ${selectedStrategy.strategyId} into shared knowledge`);
+    return output;
+  },
+});
+
+registerBuiltinNodeType("action.apply_self_improvement_ratchet", {
+  describe: () =>
+    "Persist compare/keep/revert ratchet decisions for self-improvement runs and emit proof metadata into the execution ledger.",
+  schema: {
+    type: "object",
+    properties: {
+      evaluationNodeId: { type: "string", description: "Node ID that produced action.evaluate_run output." },
+      strategyId: { type: "string", description: "Optional strategy override for apply/revert decisions." },
+      repoRoot: { type: "string" },
+      targetFile: { type: "string" },
+      registryFile: { type: "string" },
+      scopeLevel: {
+        type: "string",
+        enum: ["team", "workspace", "session", "run"],
+        default: "workspace",
+      },
+      scope: { type: "string", description: "Optional topical scope for knowledge persistence." },
+      category: { type: "string", default: "strategy" },
+      outputVariable: { type: "string" },
+      tags: {
+        anyOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+      },
+      agentId: { type: "string" },
+      agentType: { type: "string" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const evaluationNodeId = String(ctx.resolve(node.config?.evaluationNodeId || "") || "").trim();
+    const evaluation =
+      (evaluationNodeId ? ctx.getNodeOutput?.(evaluationNodeId) : null) ||
+      ctx.data?._lastRunEvaluation ||
+      null;
+    if (!evaluation || typeof evaluation !== "object") {
+      throw new Error("action.apply_self_improvement_ratchet: evaluation result not found");
+    }
+
+    const workflowId = String(evaluation?.workflowId || ctx.data?._workflowId || "").trim() || "unknown";
+    const repoRoot = String(ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd()).trim() || process.cwd();
+    const evaluator = makeSelfImprovementEvaluator(ctx, { repoRoot });
+    const requestedStrategyId = String(ctx.resolve(node.config?.strategyId || "") || "").trim() || null;
+    const fallbackDecision = evaluation?.promotion?.decision === "capture_baseline"
+      ? "capture_baseline"
+      : (evaluation?.promotion?.decision === "promote_strategy"
+          ? "apply_candidate"
+          : (evaluation?.promotion?.decision === "investigate_regression" ? "keep_baseline" : "hold"));
+    const ratchet = evaluation?.ratchet && typeof evaluation.ratchet === "object"
+      ? JSON.parse(JSON.stringify(evaluation.ratchet))
+      : { decision: fallbackDecision };
+    const decision = String(ratchet?.decision || "hold").trim() || "hold";
+    const selectedStrategy = resolveSelfImprovementStrategy(
+      evaluation,
+      requestedStrategyId,
+      ratchet?.targetStrategy || null,
+    );
+    const candidateSnapshot = ratchet?.candidate && typeof ratchet.candidate === "object"
+      ? JSON.parse(JSON.stringify(ratchet.candidate))
+      : {
+          runId: evaluation?.runId || ctx.data?._lastRunEvaluationRunId || ctx.id,
+          workflowId,
+          score: evaluation?.score ?? 0,
+          grade: evaluation?.grade || "F",
+          timestamp: new Date().toISOString(),
+          strategyId: selectedStrategy?.strategyId || null,
+          strategy: selectedStrategy || null,
+          benchmark: evaluation?.benchmark || null,
+          metrics: evaluation?.metrics || null,
+          promotionDecision: evaluation?.promotion?.decision || null,
+        };
+    const comparison = ratchet?.comparison && typeof ratchet.comparison === "object"
+      ? JSON.parse(JSON.stringify(ratchet.comparison))
+      : null;
+
+    let executionDiff = null;
+    const baselineRunId = String(
+      comparison?.baselineRunId ||
+      ratchet?.baseline?.runId ||
+      ratchet?.stateBefore?.activeBaseline?.runId ||
+      "",
+    ).trim();
+    const candidateRunId = String(candidateSnapshot?.runId || evaluation?.runId || ctx.id || "").trim();
+    if (
+      baselineRunId &&
+      candidateRunId &&
+      baselineRunId !== candidateRunId &&
+      typeof engine?.diffRunGraphs === "function"
+    ) {
+      executionDiff = summarizeRunGraphDiff(engine.diffRunGraphs(baselineRunId, candidateRunId));
+      if (comparison && executionDiff) {
+        comparison.executionDiff = executionDiff;
+      }
+    }
+
+    let knowledge = null;
+    if (["capture_baseline", "apply_candidate", "revert_to_baseline"].includes(decision)) {
+      if (!selectedStrategy) {
+        return {
+          success: false,
+          persisted: false,
+          decision,
+          reason: "Ratchet decision requires a strategy snapshot, but none was available",
+        };
+      }
+      const actionVerb = decision === "revert_to_baseline" ? "Reverted" : "Persisted";
+      const targetRunId = decision === "revert_to_baseline"
+        ? String(ratchet?.previousBaseline?.runId || "").trim() || null
+        : candidateRunId;
+      knowledge = await persistSelfImprovementKnowledgeEntry(ctx, node, {
+        evaluation,
+        selectedStrategy,
+        decision,
+        repoRoot,
+        targetFile: ctx.resolve(node.config?.targetFile || ""),
+        registryFile: ctx.resolve(node.config?.registryFile || ""),
+        scopeLevel: ctx.resolve(node.config?.scopeLevel || "workspace"),
+        scope: ctx.resolve(node.config?.scope || ""),
+        category: ctx.resolve(node.config?.category || "strategy"),
+        status: decision === "revert_to_baseline" ? "reverted" : "promoted",
+        tags: normalizeSelfImprovementTagList(
+          ctx.resolve(node.config?.tags || ""),
+          "ratchet",
+          decision,
+        ),
+        agentId: ctx.resolve(node.config?.agentId || ""),
+        agentType: ctx.resolve(node.config?.agentType || ""),
+        contentLines: [
+          `${actionVerb} ratchet strategy for workflow ${workflowId}: ${selectedStrategy.recommendation}`,
+          decision === "revert_to_baseline"
+            ? `Reverted to baseline run ${targetRunId || "unknown"} after candidate run ${candidateRunId || "unknown"} regressed.`
+            : `Candidate run ${targetRunId || "unknown"} ${decision === "capture_baseline" ? "captured as the initial baseline" : "applied as the new baseline"}.`,
+          selectedStrategy.rationale ? `Rationale: ${selectedStrategy.rationale}` : "",
+          ratchet?.summary ? `Ratchet summary: ${ratchet.summary}` : "",
+          ratchet?.rationale ? `Ratchet rationale: ${ratchet.rationale}` : "",
+          evaluation?.benchmark
+            ? `Benchmark: score=${evaluation.score}, grade=${evaluation.grade}, throughputPerMinute=${evaluation.benchmark.throughputPerMinute}, retryDensity=${evaluation.benchmark.retryDensity}, traceCoverage=${evaluation.benchmark.traceCoverage}`
+            : "",
+        ],
+      });
+      if (!knowledge.success) {
+        return {
+          success: false,
+          persisted: false,
+          decision,
+          reason: knowledge.reason || "Failed to persist ratchet strategy evidence",
+          knowledge,
+        };
+      }
+    }
+
+    const persistence = evaluator.recordRatchetDecision(workflowId, {
+      decisionId: `${workflowId}:${decision}:${candidateRunId || Date.now()}`,
+      timestamp: new Date().toISOString(),
+      runId: candidateRunId || null,
+      decision,
+      summary: ratchet?.summary || evaluation?.promotion?.summary || `Ratchet decision ${decision}`,
+      rationale: ratchet?.rationale || evaluation?.promotion?.rationale || null,
+      candidate: candidateSnapshot,
+      baseline: ratchet?.baseline || ratchet?.stateBefore?.activeBaseline || null,
+      previousBaseline: ratchet?.previousBaseline || ratchet?.stateBefore?.previousBaseline || null,
+      comparison,
+      selectedStrategyId: evaluation?.promotion?.selectedStrategyId || selectedStrategy?.strategyId || null,
+      targetStrategyId: selectedStrategy?.strategyId || null,
+      targetStrategy: selectedStrategy || null,
+      knowledge,
+    });
+
+    const stateAfter = persistence?.stateAfter || evaluator.getRatchetState(workflowId);
+    const output = {
+      success: true,
+      persisted: true,
+      workflowId,
+      runId: candidateRunId || null,
+      decision,
+      summary: ratchet?.summary || persistence?.decision?.summary || null,
+      rationale: ratchet?.rationale || persistence?.decision?.rationale || null,
+      comparison,
+      executionDiff,
+      knowledge,
+      stateBefore: persistence?.stateBefore || ratchet?.stateBefore || null,
+      stateAfter,
+      activeBaselineRunId: stateAfter?.activeBaseline?.runId || null,
+      previousBaselineRunId: stateAfter?.previousBaseline?.runId || null,
+    };
+
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+    ctx.data._selfImprovementRatchet = output;
+
+    recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+      eventType: "proof.emitted",
+      ...buildNodeExecutionLedgerRef(ctx, node, "proof", ["ratchet", decision], node.label || node.id),
+      nodeId: node?.id || null,
+      nodeType: node?.type || null,
+      nodeLabel: node?.label || null,
+      status: "completed",
+      summary: output.summary || `Ratchet decision ${decision}`,
+      meta: {
+        kind: "self_improvement_ratchet",
+        attachmentKind: "self_improvement_ratchet",
+        decision,
+        workflowId,
+        candidateRunId: candidateRunId || null,
+        baselineRunId: baselineRunId || null,
+        activeBaselineRunId: stateAfter?.activeBaseline?.runId || null,
+        previousBaselineRunId: stateAfter?.previousBaseline?.runId || null,
+        strategyId: selectedStrategy?.strategyId || null,
+        comparison,
+        executionDiff,
+        knowledgeHash: knowledge?.hash || null,
+        registryPath: knowledge?.registryPath || null,
+      },
+    }));
+
+    ctx.log(node.id, `Ratchet decision ${decision} recorded for workflow ${workflowId}`);
+    return output;
   },
 });
 
@@ -16938,15 +18891,31 @@ registerBuiltinNodeType("action.detect_new_commits", {
     // Also check for unpushed commits vs base (three-tier validation)
     let hasUnpushed = false;
     let commitCount = 0;
+    let commitMessages = [];
     try {
       const log = execGitArgsSync(["log", "--oneline", `${baseBranch}..HEAD`], {
         cwd: worktreePath, encoding: "utf8", timeout: 10000,
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
-      commitCount = log ? log.split("\n").filter(Boolean).length : 0;
+      const lines = log ? log.split("\n").filter(Boolean) : [];
+      commitCount = lines.length;
       hasUnpushed = commitCount > 0;
+      // Capture commit subjects (strip leading short-hash) for PR descriptions
+      commitMessages = lines.map(l => l.replace(/^[0-9a-f]+\s+/, "")).slice(0, 50);
     } catch {
       /* best-effort */
+    }
+
+    // Changed files list (for PR descriptions)
+    let changedFiles = [];
+    if (hasNewCommits || hasUnpushed) {
+      try {
+        const nameOnly = execGitArgsSync(["diff", "--name-only", `${baseBranch}..HEAD`], {
+          cwd: worktreePath, encoding: "utf8", timeout: 10000,
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+        changedFiles = nameOnly ? nameOnly.split("\n").filter(Boolean).slice(0, 100) : [];
+      } catch { /* best-effort */ }
     }
 
     // Diff stats
@@ -16993,6 +18962,8 @@ registerBuiltinNodeType("action.detect_new_commits", {
     ctx.data._postExecHead = postExecHead;
     ctx.data._commitCount = commitCount;
     ctx.data._diffStats = diffStats;
+    ctx.data._commitMessages = commitMessages;
+    ctx.data._changedFiles = changedFiles;
 
     ctx.log(
       node.id,
@@ -17005,6 +18976,8 @@ registerBuiltinNodeType("action.detect_new_commits", {
       hasNewCommits,
       hasUnpushed,
       commitCount,
+      commitMessages,
+      changedFiles,
       preExecHead,
       postExecHead,
       diffStats,
@@ -17040,6 +19013,11 @@ registerBuiltinNodeType("action.push_branch", {
         default: ["main", "master", "develop", "production"],
         description: "Branches that cannot be force-pushed",
       },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before pushing even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["worktreePath"],
   },
@@ -17123,6 +19101,14 @@ registerBuiltinNodeType("action.push_branch", {
         implementationState: "implementation_done_commit_blocked",
       };
     }
+
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.push_branch",
+      repoRoot,
+    });
 
     // ==== Fetch (always, independent of rebase) ====
     // Must succeed before push so --force-with-lease has fresh remote tracking refs.

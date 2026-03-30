@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { get as httpsGet } from "node:https";
 import os from "node:os";
+import { safeBanner, SAFE_ARROW } from "../lib/safe-box.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_NAME = "bosun";
@@ -870,14 +871,12 @@ function registerCleanupHandlers() {
 
 function printUpdateNotice(current, latest) {
   console.log("");
-  console.log("  ╭──────────────────────────────────────────────────────────╮");
-  console.log(
-    `  │  Update available: v${current} → v${latest}${" ".repeat(Math.max(0, 38 - current.length - latest.length))}│`,
-  );
-  console.log("  │                                                          │");
-  console.log(`  │  Run: npm install -g ${PKG_NAME}@latest      │`);
-  console.log("  │  Or:  bosun --update                             │");
-  console.log("  ╰──────────────────────────────────────────────────────────╯");
+  console.log(safeBanner([
+    `Update available: v${current} ${SAFE_ARROW} v${latest}`,
+    "",
+    `Run: npm install -g ${PKG_NAME}@latest`,
+    "Or:  bosun --update",
+  ]));
   console.log("");
 }
 

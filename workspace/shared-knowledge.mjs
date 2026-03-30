@@ -66,6 +66,33 @@ function normalizeNullable(value) {
   return text || null;
 }
 
+function normalizeStringList(value, { maxItems = 12, maxLength = 240 } = {}) {
+  const rawValues = Array.isArray(value)
+    ? value
+    : (typeof value === "string" && value.includes(",")
+        ? value.split(",")
+        : [value]);
+  const out = [];
+  const seen = new Set();
+  for (const entry of rawValues) {
+    const text = normalizeText(entry);
+    if (!text) continue;
+    const clipped = text.length > maxLength ? `${text.slice(0, maxLength - 1).trimEnd()}…` : text;
+    const key = clipped.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clipped);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function normalizeConfidence(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.min(1, parsed));
+}
+
 function normalizeScopeLevel(value) {
   const raw = normalizeText(value).toLowerCase();
   if (!raw) return "workspace";
@@ -130,6 +157,13 @@ function serializeEntry(entry) {
     workspaceId: normalizeNullable(entry?.workspaceId),
     sessionId: normalizeNullable(entry?.sessionId),
     runId: normalizeNullable(entry?.runId),
+    workflowId: normalizeNullable(entry?.workflowId),
+    strategyId: normalizeNullable(entry?.strategyId),
+    confidence: normalizeConfidence(entry?.confidence),
+    verificationStatus: normalizeNullable(entry?.verificationStatus),
+    verifiedAt: normalizeNullable(entry?.verifiedAt),
+    provenance: normalizeStringList(entry?.provenance),
+    evidence: normalizeStringList(entry?.evidence),
     tags: Array.isArray(entry?.tags)
       ? entry.tags.map((tag) => normalizeText(tag)).filter(Boolean)
       : [],
@@ -234,6 +268,11 @@ function buildSearchText(entry) {
     entry.workspaceId,
     entry.sessionId,
     entry.runId,
+    entry.workflowId,
+    entry.strategyId,
+    entry.verificationStatus,
+    ...(Array.isArray(entry.provenance) ? entry.provenance : []),
+    ...(Array.isArray(entry.evidence) ? entry.evidence : []),
     ...(Array.isArray(entry.tags) ? entry.tags : []),
   ]
     .filter(Boolean)
@@ -306,6 +345,13 @@ export function buildKnowledgeEntry(opts = {}) {
     workspaceId: normalizeNullable(opts.workspaceId),
     sessionId: normalizeNullable(opts.sessionId),
     runId: normalizeNullable(opts.runId),
+    workflowId: normalizeNullable(opts.workflowId),
+    strategyId: normalizeNullable(opts.strategyId),
+    confidence: normalizeConfidence(opts.confidence),
+    verificationStatus: normalizeNullable(opts.verificationStatus),
+    verifiedAt: normalizeNullable(opts.verifiedAt),
+    provenance: normalizeStringList(opts.provenance),
+    evidence: normalizeStringList(opts.evidence),
     tags: Array.isArray(opts.tags)
       ? opts.tags.map((tag) => normalizeText(tag)).filter(Boolean)
       : [],
@@ -331,6 +377,25 @@ export function formatEntryAsMarkdown(entry) {
   lines.push("");
   lines.push(`> **Agent:** ${entry.agentId} (${entry.agentType})`);
   lines.push(`> **Memory Scope:** ${scopeLevel}:${scopeId}`);
+  if (entry.workflowId) {
+    lines.push(`> **Workflow:** ${entry.workflowId}`);
+  }
+  if (entry.strategyId) {
+    lines.push(`> **Strategy ID:** ${entry.strategyId}`);
+  }
+  if (entry.confidence != null) {
+    lines.push(`> **Confidence:** ${entry.confidence.toFixed(2)}`);
+  }
+  if (entry.verificationStatus || entry.verifiedAt) {
+    const verifiedParts = [entry.verificationStatus, entry.verifiedAt].filter(Boolean);
+    lines.push(`> **Verification:** ${verifiedParts.join(" @ ")}`);
+  }
+  if (Array.isArray(entry.provenance) && entry.provenance.length > 0) {
+    lines.push(`> **Provenance:** ${entry.provenance.join(" | ")}`);
+  }
+  if (Array.isArray(entry.evidence) && entry.evidence.length > 0) {
+    lines.push(`> **Evidence:** ${entry.evidence.join(" | ")}`);
+  }
   if (Array.isArray(entry.tags) && entry.tags.length > 0) {
     lines.push(`> **Tags:** ${entry.tags.join(", ")}`);
   }
@@ -381,6 +446,9 @@ export function validateEntry(entry) {
     "convention",
     "tip",
     "bug",
+    "strategy",
+    "benchmark",
+    "evaluation",
   ];
   if (entry.category && !validCategories.includes(entry.category)) {
     return {
@@ -426,7 +494,7 @@ export function isDuplicate(entry) {
 
 // ── Write ────────────────────────────────────────────────────────────────────
 
-export async function appendKnowledgeEntry(entry) {
+export async function appendKnowledgeEntry(entry, options = {}) {
   const normalizedEntry = serializeEntry(entry);
   const validation = validateEntry(normalizedEntry);
   if (!validation.valid) {
@@ -435,7 +503,8 @@ export async function appendKnowledgeEntry(entry) {
 
   const agentId = normalizeText(normalizedEntry.agentId || "unknown");
   const lastWriteForAgent = knowledgeState.lastWriteByAgent.get(agentId) || 0;
-  if (lastWriteForAgent) {
+  const skipRateLimit = options?.skipRateLimit === true;
+  if (!skipRateLimit && lastWriteForAgent) {
     const elapsed = Date.now() - lastWriteForAgent;
     if (elapsed < RATE_LIMIT_MS) {
       return {

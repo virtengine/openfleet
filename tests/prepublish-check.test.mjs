@@ -120,4 +120,16 @@ describe("prepublish-check", () => {
     const pkg = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
     expect(pkg.files).toContain("agent/skills/");
   });
+
+  it("publishes newly added harness and workspace runtime dependencies", () => {
+    const pkg = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
+    expect(pkg.files).toEqual(
+      expect.arrayContaining([
+        "agent/internal-harness-profile.mjs",
+        "agent/internal-harness-runtime.mjs",
+        "workspace/execution-journal.mjs",
+        "workspace/scope-locks.mjs",
+      ]),
+    );
+  });
 });

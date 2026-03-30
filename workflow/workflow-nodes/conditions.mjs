@@ -93,9 +93,6 @@ registerNodeType("condition.expression", {
     const blockedPatterns = [
       /(?:^|[^\\w$.])(globalThis|global|window|document|process|require|module|exports)(?:[^\\w$]|$)/,
       /(?:^|[^\\w$.])(Function|eval)(?:[^\\w$]|$)/,
-      /=>/,
-      /\\b(?:new|class|this|import|await|yield)\\b/,
-      /[;{}]/,
     ];
     if (blockedPatterns.some((pattern) => pattern.test(normalizedExpr))) {
       throw new Error("Expression contains unsupported syntax");

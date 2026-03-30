@@ -15,6 +15,10 @@ import {
   registerNodeType,
   getNodeType,
 } from "../workflow/workflow-nodes.mjs";
+import {
+  getApprovalRequest,
+  resolveApprovalRequest,
+} from "../workflow/approval-queue.mjs";
 import { _resetSingleton as resetSessionTracker, getSessionTracker } from "../infra/session-tracker.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -957,6 +961,115 @@ describe("WorkflowEngine - run history details", () => {
     expect(run.ledger?.events?.some((event) => event.eventType === "run.end")).toBe(true);
   });
 
+  it("persists governance metadata into run summary, detail, and execution ledger", async () => {
+    const completions = [];
+    engine.on("run:complete", (event) => completions.push(event));
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "log", type: "notify.log", label: "Log", config: { message: "governance coverage" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "log" }],
+      { name: "Governance History Workflow" }
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, {
+      taskId: "task-governance-1",
+      taskTitle: "Governance Task",
+      goalAncestry: [
+        { goalId: "goal-root", title: "Root Goal", depth: 0 },
+        { goalId: "goal-child", title: "Refine Operator Workflow", depth: 1 },
+      ],
+      heartbeatRun: {
+        runId: "hb-1",
+        status: "waiting",
+        sourceRunId: "run-parent",
+        wakeAt: "2026-03-31T10:00:00.000Z",
+      },
+      wakeupRequest: {
+        requestId: "wake-1",
+        source: "scheduler",
+        requestedAt: "2026-03-31T09:55:00.000Z",
+      },
+      budgetPolicy: {
+        budgetWindow: "2026-Q2",
+        budgetCents: 1000,
+        spentCents: 920,
+        reservedCents: 20,
+        nearLimitThresholdCents: 100,
+        currency: "USD",
+      },
+      executionPolicy: {
+        mode: "strict",
+        violations: [
+          {
+            ruleId: "review-proof",
+            message: "Independent review proof still pending.",
+            blocking: false,
+            nodeId: "log",
+          },
+        ],
+      },
+    });
+
+    const summary = engine.getRunHistory(wf.id, 1)[0];
+    expect(summary.goalAncestry).toHaveLength(2);
+    expect(summary.primaryGoalId).toBe("goal-child");
+    expect(summary.primaryGoalTitle).toBe("Refine Operator Workflow");
+    expect(summary.goalDepth).toBe(1);
+    expect(summary.heartbeatRun).toEqual(expect.objectContaining({ runId: "hb-1" }));
+    expect(summary.wakeupRequest).toEqual(expect.objectContaining({ requestId: "wake-1" }));
+    expect(summary.budgetPolicy).toEqual(expect.objectContaining({
+      budgetWindow: "2026-Q2",
+      budgetCents: 1000,
+      currency: "USD",
+    }));
+    expect(summary.budgetOutcome).toEqual(expect.objectContaining({ status: "near_limit", nearLimit: true }));
+    expect(summary.policyOutcome).toEqual(expect.objectContaining({ status: "warning", violationCount: 1 }));
+
+    const run = engine.getRunDetail(summary.runId);
+    expect(run?.detail?.primaryGoalId).toBe("goal-child");
+    expect(run?.detail?.budgetPolicy).toEqual(expect.objectContaining({
+      budgetWindow: "2026-Q2",
+      budgetCents: 1000,
+      currency: "USD",
+    }));
+    expect(run?.detail?.budgetOutcome).toEqual(expect.objectContaining({ status: "near_limit" }));
+    expect(run?.detail?.policyOutcome).toEqual(expect.objectContaining({ status: "warning" }));
+    expect(run?.detail?.data?._primaryGoalId).toBe("goal-child");
+    expect(run?.detail?.data?._budgetPolicy).toEqual(expect.objectContaining({
+      budgetWindow: "2026-Q2",
+      budgetCents: 1000,
+      currency: "USD",
+    }));
+    expect(run?.detail?.data?._budgetOutcome).toEqual(expect.objectContaining({ status: "near_limit" }));
+    expect(run?.detail?.data?._policyOutcome).toEqual(expect.objectContaining({ status: "warning" }));
+    expect(run?.ledger).toEqual(expect.objectContaining({
+      primaryGoalId: "goal-child",
+      primaryGoalTitle: "Refine Operator Workflow",
+      budgetPolicy: expect.objectContaining({
+        budgetWindow: "2026-Q2",
+        budgetCents: 1000,
+        currency: "USD",
+      }),
+      budgetOutcome: expect.objectContaining({ status: "near_limit" }),
+      policyOutcome: expect.objectContaining({ status: "warning" }),
+      heartbeatRun: expect.objectContaining({ runId: "hb-1" }),
+      wakeupRequest: expect.objectContaining({ requestId: "wake-1" }),
+    }));
+    expect(run?.ledger?.events?.some((event) => event.budgetStatus === "near_limit")).toBe(true);
+    expect(run?.ledger?.events?.some((event) => event.policyStatus === "warning")).toBe(true);
+
+    expect(completions).toHaveLength(1);
+    expect(completions[0]?.summary).toEqual(expect.objectContaining({
+      primaryGoalId: "goal-child",
+      budgetOutcome: expect.objectContaining({ status: "near_limit" }),
+      policyOutcome: expect.objectContaining({ status: "warning" }),
+    }));
+  });
+
   it("stores issue-advisor and DAGState failure context for continuation", async () => {
     registerNodeType("test.always_fail_for_dag", {
       describe: () => "Fails for DAGState coverage",
@@ -1160,13 +1273,13 @@ describe("WorkflowEngine - run history details", () => {
     const failedCtx = await engine.execute(wf.id, {});
     const retryOptions = engine.getRetryOptions(failedCtx.id);
 
-    expect(retryOptions?.recommendedMode).toBe("from_scratch");
+    expect(retryOptions?.recommendedMode).toBe("replan_from_failed");
     expect(retryOptions?.recommendedReason).toBe("issue_advisor.replan_from_failed");
     expect(retryOptions?.failedNodes).toContain("fail");
-    expect(retryOptions?.options?.find((entry) => entry.mode === "from_scratch")?.recommended).toBe(true);
+    expect(retryOptions?.options?.find((entry) => entry.mode === "replan_from_failed")?.recommended).toBe(true);
   });
 
-  it("uses issue-advisor guidance to escalate first auto-retry attempt to from_scratch", async () => {
+  it("uses issue-advisor guidance to escalate first auto-retry attempt to replan_from_failed", async () => {
     registerNodeType("test.auto_retry_replan_step", {
       describe: () => "Succeeds once then fails",
       schema: { type: "object", properties: {} },
@@ -1205,7 +1318,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(retrySpy).toHaveBeenCalledWith(
       failedCtx.id,
       expect.objectContaining({
-        mode: "from_scratch",
+        mode: "replan_from_failed",
         _decisionReason: "issue_advisor.replan_from_failed",
       }),
     );
@@ -1945,7 +2058,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(interrupted?.resumeResult).toContain("delegation_watchdog_exhausted");
   });
 
-  it("resumes interrupted runs from_scratch when issue-advisor requests replanning", async () => {
+  it("resumes interrupted runs with replan_from_failed when issue-advisor requests replanning", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
       [],
@@ -2009,7 +2122,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(retrySpy).toHaveBeenCalledWith(
       interruptedRunId,
       expect.objectContaining({
-        mode: "from_scratch",
+        mode: "replan_from_failed",
         _decisionReason: "issue_advisor.replan_from_failed",
       }),
     );
@@ -2407,6 +2520,61 @@ describe("New node types", () => {
     expect(result.waited).toBe(50);
   });
 
+  it("flow.gate manual mode persists and consumes durable approval queue decisions", async () => {
+    const handler = getNodeType("flow.gate");
+    expect(handler).toBeDefined();
+
+    const repoRoot = mkdtempSync(join(tmpdir(), "bosun-manual-gate-"));
+    const ctx = new WorkflowContext({
+      repoRoot,
+      _workflowId: "wf-manual-gate",
+      _workflowName: "Manual Gate Workflow",
+      taskId: "task-manual-gate",
+      taskTitle: "Approve release",
+    });
+    ctx.data._dagState = { runId: ctx.id, workflowId: "wf-manual-gate", workflowName: "Manual Gate Workflow" };
+    const engine = { emit: vi.fn(), _checkpointRun: vi.fn() };
+    const node = {
+      id: "gate-manual-1",
+      type: "flow.gate",
+      config: { mode: "manual", timeoutMs: 250, pollIntervalMs: 10, reason: "Approve deployment gate" },
+    };
+
+    const approvalScopeId = `${ctx.id}:${node.id}`;
+    const approvalTask = (async () => {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const request = getApprovalRequest("workflow-gate", approvalScopeId, { repoRoot });
+        if (request) {
+          resolveApprovalRequest(request.requestId, {
+            repoRoot,
+            decision: "approved",
+            actorId: "test-operator",
+            note: "approved in unit test",
+          });
+          return;
+        }
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      }
+      throw new Error("Approval request was not created");
+    })();
+
+    const result = await handler.execute(node, ctx, engine);
+    await approvalTask;
+
+    expect(result.gateOpened).toBe(true);
+    expect(result.mode).toBe("manual");
+    expect(result.approvalState).toBe("approved");
+    expect(result.approvalRequestId).toBe(`workflow-gate:${approvalScopeId}`);
+    const resolvedRequest = getApprovalRequest("workflow-gate", approvalScopeId, { repoRoot });
+    expect(resolvedRequest).toMatchObject({
+      requestId: `workflow-gate:${approvalScopeId}`,
+      status: "approved",
+      nodeId: "gate-manual-1",
+      workflowId: "wf-manual-gate",
+    });
+    expect(engine._checkpointRun).toHaveBeenCalled();
+  });
+
   it("flow.join reports joined=true when all listed sources are completed/skipped", async () => {
     const handler = getNodeType("flow.join");
     expect(handler).toBeDefined();
@@ -2691,6 +2859,182 @@ describe("action.execute_workflow", () => {
     expect(childDetail).toBeTruthy();
     expect(childDetail.workflowId).toBe("template-installed-child");
     expect(engine.get(childDetail.workflowId)?.id).toBe(childWorkflow.id);
+  });
+
+  it("decorates run detail with planner timeline and proof bundle surfaces", () => {
+    const runId = "run-proof-bundle-1";
+    const workflowId = "wf-proof-bundle";
+    const startedAt = Date.parse("2026-03-31T10:00:00.000Z");
+    const endedAt = Date.parse("2026-03-31T10:02:00.000Z");
+    mkdirSync(join(tmpDir, "runs"), { recursive: true });
+    const detail = {
+      startedAt,
+      endedAt,
+      duration: endedAt - startedAt,
+      data: {
+        _workflowId: workflowId,
+        _workflowName: "Proof Bundle Workflow",
+        taskId: "task-proof-1",
+        taskTitle: "Proof surfaced task",
+      },
+      nodeStatuses: {
+        planner: NodeStatus.COMPLETED,
+      },
+      nodeOutputs: {
+        planner: {
+          summary: "Planner produced materialization output.",
+          artifactPointers: [
+            {
+              label: "planner-json",
+              path: "/tmp/planner-output.json",
+              retrieveCommand: "type /tmp/planner-output.json",
+            },
+          ],
+        },
+      },
+      logs: [],
+      errors: [],
+      dagState: {
+        rootRunId: runId,
+        counts: {
+          total: 1,
+          completed: 1,
+          failed: 0,
+          skipped: 0,
+          active: 0,
+        },
+        revisions: [],
+        nodes: {
+          planner: {
+            nodeId: "planner",
+            label: "Planner",
+            status: NodeStatus.COMPLETED,
+            completionEvidence: [
+              {
+                kind: "artifact",
+                path: "/tmp/review-proof.json",
+                summary: "Independent review proof",
+              },
+            ],
+            issueFindings: [],
+          },
+        },
+      },
+      issueAdvisor: {
+        recommendedAction: "continue",
+        retryDecisionClass: "inspect_failure",
+        summary: "Planner evidence is available for review.",
+        nextStepGuidance: "Inspect proof artifacts before dispatch.",
+      },
+    };
+
+    writeFileSync(join(tmpDir, "runs", `${runId}.json`), JSON.stringify(detail, null, 2), "utf8");
+    engine._writeRunIndex([
+      engine._buildSummaryFromDetail({
+        runId,
+        workflowId,
+        workflowName: "Proof Bundle Workflow",
+        status: WorkflowStatus.COMPLETED,
+        detail,
+      }),
+    ]);
+    engine._executionLedger.ensureRun({
+      runId,
+      workflowId,
+      workflowName: "Proof Bundle Workflow",
+      rootRunId: runId,
+      status: WorkflowStatus.COMPLETED,
+    });
+    engine._executionLedger.appendEvent({
+      runId,
+      workflowId,
+      workflowName: "Proof Bundle Workflow",
+      eventType: "planner.plan_initialized",
+      nodeId: "planner",
+      nodeType: "agent.run_planner",
+      nodeLabel: "Planner",
+      status: "running",
+      summary: "Planner initialized.",
+      meta: { stepLabel: "run-planner", taskCount: 5 },
+    });
+    engine._executionLedger.appendEvent({
+      runId,
+      workflowId,
+      workflowName: "Proof Bundle Workflow",
+      eventType: "planner.post_attachment",
+      nodeId: "planner",
+      nodeType: "agent.run_planner",
+      nodeLabel: "Planner",
+      status: "completed",
+      summary: "Planner output captured.",
+      meta: {
+        stepLabel: "planner-output",
+        attachmentKind: "planner_output",
+        path: "/tmp/planner-output.json",
+        retrieveCommand: "type /tmp/planner-output.json",
+      },
+    });
+    engine._executionLedger.appendEvent({
+      runId,
+      workflowId,
+      workflowName: "Proof Bundle Workflow",
+      eventType: "planner.plan_completed",
+      nodeId: "planner",
+      nodeType: "agent.run_planner",
+      nodeLabel: "Planner",
+      status: "completed",
+      summary: "Planner completed with proof.",
+      meta: { stepLabel: "run-planner", itemCount: 2 },
+    });
+
+    const run = engine.getRunDetail(runId);
+    expect(run?.plannerTimeline?.map((entry) => entry.eventType)).toEqual([
+      "planner.plan_initialized",
+      "planner.post_attachment",
+      "planner.plan_completed",
+    ]);
+    expect(run?.plannerTimeline?.map((entry) => entry.normalizedEventType)).toEqual([
+      "plan",
+      "step_result",
+      "plan",
+    ]);
+    expect(run?.plannerTimeline?.[0]?.plan).toMatchObject({
+      stepLabel: "run-planner",
+      status: "running",
+    });
+    expect(run?.plannerTimeline?.[1]?.stepResult).toMatchObject({
+      attachmentKind: "planner_output",
+      status: "completed",
+    });
+    expect(run?.proofBundle?.summary).toMatchObject({
+      plannerEventCount: 3,
+      decisionCount: 4,
+    });
+    expect(run?.proofBundle?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "/tmp/review-proof.json",
+          source: "completion-evidence",
+        }),
+      ]),
+    );
+    expect(run?.proofBundle?.artifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "/tmp/planner-output.json",
+        }),
+      ]),
+    );
+
+    const nodeForensics = engine.getNodeForensics(runId, "planner");
+    expect(nodeForensics?.plannerTimeline).toHaveLength(3);
+    expect(nodeForensics?.proofArtifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "/tmp/planner-output.json",
+        }),
+      ]),
+    );
   });
 
   it("dispatch mode queues child workflow without waiting for completion", async () => {
@@ -6324,6 +6668,128 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
   }));
 });
 
+it("action.materialize_planner_tasks applies planner task graph links after creation", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: JSON.stringify({
+      root_task_id: "root-parent",
+      tasks: [
+        {
+          title: "Foundation task",
+          task_key: "foundation",
+          description: "Create the base graph node",
+          acceptance_criteria: ["foundation exists"],
+          verification: ["node --test tests/workflow-engine.test.mjs"],
+          repo_areas: ["workflow"],
+          impact: 0.9,
+          confidence: 0.8,
+          risk: 0.2,
+        },
+        {
+          title: "Validation task",
+          task_key: "validation",
+          description: "Validate after foundation",
+          depends_on_task_keys: ["foundation"],
+          acceptance_criteria: ["validation depends on foundation"],
+          verification: ["node --test tests/workflow-engine.test.mjs"],
+          repo_areas: ["tests"],
+          impact: 0.8,
+          confidence: 0.8,
+          risk: 0.2,
+        },
+        {
+          title: "Docs child",
+          task_key: "docs_child",
+          parent_task_key: "foundation",
+          description: "Nested under foundation",
+          acceptance_criteria: ["child parent assigned"],
+          verification: ["node --test tests/workflow-engine.test.mjs"],
+          repo_areas: ["docs"],
+          impact: 0.7,
+          confidence: 0.7,
+          risk: 0.2,
+        },
+      ],
+    }),
+  });
+
+  const storeDir = mkdtempSync(join(tmpdir(), "wf-engine-graph-store-"));
+  process.env.BOSUN_STORE_PATH = join(storeDir, "kanban-state.json");
+  try {
+    const taskStore = await import("../task/task-store.mjs");
+    taskStore.configureTaskStore({ storePath: process.env.BOSUN_STORE_PATH });
+    taskStore.loadStore();
+    taskStore.addTask({ id: "root-parent", title: "Parent Task", status: "todo" });
+    await taskStore.waitForStoreWrites();
+
+    let nextId = 1;
+    const createTask = vi.fn(async (_projectId, payload) => {
+      const id = `graph-task-${nextId++}`;
+      taskStore.addTask({
+        id,
+        title: payload.title,
+        description: payload.description,
+        status: payload.status,
+        workspace: payload.workspace || null,
+        repository: payload.repository || null,
+        meta: payload.meta || {},
+      });
+      await taskStore.waitForStoreWrites();
+      return { id };
+    });
+
+    const result = await handler.execute(
+      {
+        id: "materialize-graph",
+        type: "action.materialize_planner_tasks",
+        config: {
+          plannerNodeId: "run-planner",
+          failOnZero: true,
+          dedup: false,
+          minCreated: 3,
+          maxTasks: 3,
+          minImpactScore: 0,
+        },
+      },
+      ctx,
+      {
+        services: {
+          kanban: {
+            createTask,
+            listTasks: vi.fn(async () => []),
+          },
+        },
+      },
+    );
+
+    await taskStore.waitForStoreWrites();
+    const foundation = taskStore.getTask("graph-task-1");
+    const validation = taskStore.getTask("graph-task-2");
+    const docsChild = taskStore.getTask("graph-task-3");
+
+    expect(result.success).toBe(true);
+    expect(result.graphMaterialization.appliedParentLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ childTaskId: "graph-task-1", parentTaskId: "root-parent" }),
+      expect.objectContaining({ childTaskId: "graph-task-2", parentTaskId: "root-parent" }),
+      expect.objectContaining({ childTaskId: "graph-task-3", parentTaskId: "graph-task-1" }),
+    ]));
+    expect(result.graphMaterialization.appliedDependencyLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: "graph-task-2", dependencyTaskId: "graph-task-1" }),
+    ]));
+    expect(foundation?.parentTaskId).toBe("root-parent");
+    expect(validation?.parentTaskId).toBe("root-parent");
+    expect(validation?.dependencyTaskIds).toContain("graph-task-1");
+    expect(docsChild?.parentTaskId).toBe("graph-task-1");
+    expect(docsChild?.type).toBe("subtask");
+  } finally {
+    delete process.env.BOSUN_STORE_PATH;
+    try { rmSync(storeDir, { recursive: true, force: true }); } catch { /* ok */ }
+  }
+});
+
 it("action.materialize_planner_tasks reorders candidates using replayed executor feedback priors", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
@@ -7248,6 +7714,9 @@ describe("WorkflowEngine task traceability hooks", () => {
     const ctx = await engine.execute(wf.id, {
       taskId: "TASK-TRACE-1",
       taskTitle: "Trace this task",
+      workspaceId: "workspace-trace-1",
+      sessionId: "session-trace-1",
+      agentId: "agent-trace-1",
     });
 
     expect(ctx.errors).toEqual([]);
@@ -7257,6 +7726,9 @@ describe("WorkflowEngine task traceability hooks", () => {
     expect(collected.some((event) => event.eventType === "workflow.node.start")).toBe(true);
     expect(collected.some((event) => event.eventType === "workflow.node.complete")).toBe(true);
     expect(collected.some((event) => event.eventType === "workflow.run.end")).toBe(true);
+    expect(collected.every((event) => event.workspaceId === "workspace-trace-1")).toBe(true);
+    expect(collected.every((event) => event.sessionId === "session-trace-1")).toBe(true);
+    expect(collected.every((event) => event.agentId === "agent-trace-1")).toBe(true);
 
     expect(Array.isArray(ctx.data._taskWorkflowEvents)).toBe(true);
     expect(ctx.data._taskWorkflowEvents.length).toBe(collected.length);
@@ -7360,6 +7832,42 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     events[0].taskId = "mutated";
     const reread = engine.getTaskTraceEvents(ctx.id);
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
+  });
+
+  it("includes benchmark hints on workflow end events after in-run evaluation", async () => {
+    registerNodeType("test.trace.evaluate_current_run", {
+      describe: () => "Evaluate current run",
+      schema: { type: "object", properties: {} },
+      async execute(node, ctx, engineRef) {
+        const handler = getNodeType("action.evaluate_run");
+        return handler.execute({
+          id: node.id,
+          type: "action.evaluate_run",
+          config: { outputVariable: "inRunEvaluation" },
+        }, ctx, engineRef);
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "eval", type: "test.trace.evaluate_current_run", label: "Evaluate", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "eval" }],
+      { id: "wf-task-trace-benchmark" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {
+      taskId: "TASK-TRACE-BENCHMARK",
+      taskTitle: "Benchmark current run",
+    });
+    const runEndEvent = engine.getTaskTraceEvents(ctx.id).find((event) => event.eventType === "workflow.run.end");
+    expect(runEndEvent).toBeDefined();
+    expect(runEndEvent.benchmarkHint).toEqual(expect.objectContaining({
+      traceEventCount: expect.any(Number),
+      traceCoverage: expect.any(Number),
+    }));
   });
 
   it("emits nested task and agent spans for task-backed agent nodes", async () => {
@@ -7603,7 +8111,7 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
       issueAdvisor: { recommendedAction: "replan_subgraph", summary: "Replan downstream nodes." },
       dagState: { counts: { completed: 1, failed: 1, pending: 2 } },
     });
-    expect(replan.mode).toBe("from_scratch");
+    expect(replan.mode).toBe("replan_subgraph");
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });

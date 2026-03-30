@@ -16,5 +16,5 @@ describe("opencode-providers", () => {
     const snapshot = await discoverProviders({ force: true });
     expect(Array.isArray(snapshot.providers)).toBe(true);
     expect(Array.isArray(snapshot.connectedIds)).toBe(true);
-  });
+  }, 15000);
 });

@@ -967,6 +967,29 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "}catch{return false;}})()",
     }, { x: 220, y: 820 }),
 
+    // ── Pre-resolve PR parameters before worktree setup ──────────────────────
+    // ctx.resolve() only handles {{template}} syntax — not JavaScript IIFEs.
+    // Extract values from inspect-pr output via isExpression so downstream
+    // run_command env blocks can reference them as {{prParams.X}}.
+    node("resolve-pr-params", "action.set_variable", "Resolve PR Parameters", {
+      key: "prParams",
+      value:
+        "(()=>{" +
+        "const raw=$ctx?.getNodeOutput?.('inspect-pr')?.output||'{}';" +
+        "const d=typeof raw==='object'?raw:(()=>{try{return JSON.parse(raw)}catch{return {}}})();" +
+        "const ctx=$data?.prProgressContext||{};" +
+        "return {" +
+        "repo:String(d.repo||d.prDigest?.core?.repo||ctx.repo||'')," +
+        "branch:String(d.branch||d.prDigest?.core?.branch||ctx.branch||'')," +
+        "base:String(d.baseBranch||d.prDigest?.core?.baseBranch||ctx.baseBranch||'main')," +
+        "number:String(d.prNumber||d.prDigest?.core?.number||ctx.prNumber||'0')," +
+        "classification:String(d.classification||'')," +
+        "mergeable:String(d.mergeable||d.prDigest?.core?.mergeable||'')" +
+        "};" +
+        "})()",
+      isExpression: true,
+    }, { x: 220, y: 850 }),
+
     // ── Programmatic worktree setup for fix agent ────────────────────────────
     // Clones (or reuses) a temp checkout on the PR's actual HEAD branch so the
     // agent works in-place on the correct branch — no synthetic branches.
@@ -1011,10 +1034,10 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
       failOnError: true,
       timeoutMs: 600_000,
       env: {
-        PR_REPO:   "(()=>{ const d=JSON.parse($ctx.getNodeOutput('inspect-pr')?.output||'{}'); return String(d.repo||$data?.prProgressContext?.repo||''); })()",
-        PR_BRANCH: "(()=>{ const d=JSON.parse($ctx.getNodeOutput('inspect-pr')?.output||'{}'); return String(d.branch||d.prDigest?.core?.branch||$data?.prProgressContext?.branch||''); })()",
-        PR_BASE:   "(()=>{ const d=JSON.parse($ctx.getNodeOutput('inspect-pr')?.output||'{}'); return String(d.baseBranch||d.prDigest?.core?.baseBranch||$data?.prProgressContext?.baseBranch||'main'); })()",
-        PR_NUMBER: "(()=>{ const d=JSON.parse($ctx.getNodeOutput('inspect-pr')?.output||'{}'); return String(d.prNumber||$data?.prProgressContext?.prNumber||'0'); })()",
+        PR_REPO:   "{{prParams.repo}}",
+        PR_BRANCH: "{{prParams.branch}}",
+        PR_BASE:   "{{prParams.base}}",
+        PR_NUMBER: "{{prParams.number}}",
       },
     }, { x: 220, y: 880 }),
 
@@ -1023,27 +1046,229 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
       value: "{{setup-pr-worktree.output.worktreePath}}",
     }, { x: 220, y: 920 }),
 
+    // ── Detect specific merge conflict files in worktree ─────────────────────
+    node("detect-pr-conflicts", "action.run_command", "Detect Merge Conflict Files", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const wt=String(process.env.WORKTREE_PATH||'').trim();",
+        "const base=String(process.env.PR_BASE||'main').trim();",
+        "const classification=String(process.env.CLASSIFICATION||'').trim();",
+        "const mergeable=String(process.env.MERGEABLE||'').trim().toUpperCase();",
+        "if(!wt){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);}",
+        "const isConflict=classification==='conflict'||['CONFLICTING','DIRTY'].includes(mergeable);",
+        "if(!isConflict){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);}",
+        "let mergeOutput='';",
+        "let conflictFiles=[];",
+        "try{",
+        "  try{mergeOutput=execFileSync('git',['merge','--no-commit','--no-ff','origin/'+base],{cwd:wt,encoding:'utf8',timeout:60000}).toString();}",
+        "  catch(e){mergeOutput=String(e?.stderr||'')+' '+String(e?.stdout||'');}",
+        "  try{",
+        "    const diffFiles=execFileSync('git',['diff','--name-only','--diff-filter=U'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();",
+        "    if(diffFiles){conflictFiles=diffFiles.split(/\\r?\\n/).map(f=>f.trim()).filter(Boolean);}",
+        "  }catch{}",
+        "  if(conflictFiles.length===0){",
+        "    const matches=mergeOutput.match(/CONFLICT[^:]*:\\s*Merge conflict in (.+)/gi)||[];",
+        "    conflictFiles=matches.map(m=>{const f=m.match(/in\\s+(.+)/i);return f?f[1].trim():'';}).filter(Boolean);",
+        "  }",
+        "  try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{}",
+        "}catch(e){",
+        "  try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{}",
+        "  console.log(JSON.stringify({hasConflicts:false,conflictFiles:[],error:String(e?.message||e).slice(0,500)}));",
+        "  process.exit(0);",
+        "}",
+        "console.log(JSON.stringify({hasConflicts:conflictFiles.length>0,conflictFiles:[...new Set(conflictFiles)],mergeOutput:String(mergeOutput||'').slice(0,2000)}));",
+      ].join(" ")],
+      continueOnError: true,
+      failOnError: false,
+      timeoutMs: 120_000,
+      env: {
+        WORKTREE_PATH:  "{{setup-pr-worktree.output.worktreePath}}",
+        PR_BASE:        "{{prParams.base}}",
+        CLASSIFICATION: "{{prParams.classification}}",
+        MERGEABLE:      "{{prParams.mergeable}}",
+      },
+    }, { x: 220, y: 940 }),
+
+    // ── Build structured agent prompt (like a human reviewer comment) ────────
+    node("build-fix-prompt", "action.set_variable", "Build Structured Fix Prompt", {
+      key: "agentPrompt",
+      value: "(()=>{\n" +
+        "  const inspectRaw = $ctx?.getNodeOutput?.('inspect-pr')?.output || '{}';\n" +
+        "  const fixRaw = $ctx?.getNodeOutput?.('programmatic-fix')?.output || '{}';\n" +
+        "  const conflictRaw = $ctx?.getNodeOutput?.('detect-pr-conflicts')?.output || '{}';\n" +
+        "  const inspect = (()=>{ try { return typeof inspectRaw === 'object' ? inspectRaw : JSON.parse(inspectRaw); } catch { return {}; } })();\n" +
+        "  const fix = (()=>{ try { return typeof fixRaw === 'object' ? fixRaw : JSON.parse(fixRaw); } catch { return {}; } })();\n" +
+        "  const conflictDetection = (()=>{ try { return typeof conflictRaw === 'object' ? conflictRaw : JSON.parse(conflictRaw); } catch { return {}; } })();\n" +
+        "  const prDigest = inspect.prDigest || {};\n" +
+        "  const core = prDigest.core || {};\n" +
+        "  const repo = String(inspect.repo || core.repo || $data?.prProgressContext?.repo || '');\n" +
+        "  const branch = String(inspect.branch || core.branch || $data?.prProgressContext?.branch || '');\n" +
+        "  const base = String(inspect.baseBranch || core.baseBranch || $data?.prProgressContext?.baseBranch || 'main');\n" +
+        "  const number = String(inspect.prNumber || core.number || $data?.prProgressContext?.prNumber || '');\n" +
+        "  const title = String(inspect.title || core.title || $data?.prProgressContext?.taskTitle || '');\n" +
+        "  const url = String(inspect.url || core.url || $data?.prProgressContext?.prUrl || '');\n" +
+        "  const classification = String(inspect.classification || '');\n" +
+        "  const reason = String(fix.reason || classification || '');\n" +
+        "  const mergeable = String(inspect.mergeable || core.mergeable || '');\n" +
+        "  const failedChecks = Array.isArray(inspect.failedCheckNames) ? inspect.failedCheckNames : [];\n" +
+        "  const failedJobs = Array.isArray(fix.failedJobs) ? fix.failedJobs : [];\n" +
+        "  const annotations = Array.isArray(fix.failedAnnotations) ? fix.failedAnnotations : [];\n" +
+        "  const logExcerpt = String(fix.failedLogExcerpt || '').trim();\n" +
+        "  const recentRuns = Array.isArray(fix.recentRuns) ? fix.recentRuns : [];\n" +
+        "  const ciSummary = prDigest.ciSummary || inspect.ciSummary || {};\n" +
+        "  const prBody = String(core.body || '').trim();\n" +
+        "  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n" +
+        "  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n" +
+        "  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n" +
+        "  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n" +
+        "  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n" +
+        "  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n" +
+        "  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n" +
+        "  p += '## PR Identity\\n\\n';\n" +
+        "  p += '- **Repo**: ' + repo + '\\n';\n" +
+        "  p += '- **PR Number**: #' + number + '\\n';\n" +
+        "  p += '- **Title**: ' + title + '\\n';\n" +
+        "  p += '- **URL**: ' + url + '\\n';\n" +
+        "  p += '- **Head Branch**: `' + branch + '`\\n';\n" +
+        "  p += '- **Base Branch**: `' + base + '`\\n';\n" +
+        "  p += '- **Fix Reason**: `' + reason + '`\\n';\n" +
+        "  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n" +
+        "  if (fix.error) p += '- **Error**: ' + fix.error + '\\n';\n" +
+        "  p += '\\n';\n" +
+        "  /* --- Fix Summary --- */\n" +
+        "  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n" +
+        "  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n" +
+        "  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n" +
+        "  const fixItems = [];\n" +
+        "  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base `' + base + '`'));\n" +
+        "  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n" +
+        "  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n" +
+        "  if (fixItems.length > 0) {\n" +
+        "    p += '## Fix Summary\\n\\nThis PR needs the following fixes:\\n';\n" +
+        "    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n" +
+        "    p += '\\n';\n" +
+        "  }\n" +
+        "  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) {\n" +
+        "    p += '## Merge Conflict\\n\\n';\n" +
+        "    p += 'This branch has conflicts that must be resolved.\\n';\n" +
+        "    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n" +
+        "    if (detectedConflictFiles.length > 0) {\n" +
+        "      p += '**Conflicting files:**\\n';\n" +
+        "      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n" +
+        "      p += '\\n';\n" +
+        "    }\n" +
+        "  }\n" +
+        "  if (failedChecks.length > 0) {\n" +
+        "    p += '## Failed CI Checks\\n\\n';\n" +
+        "    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n" +
+        "    p += '\\n';\n" +
+        "  }\n" +
+        "  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n" +
+        "    p += '## CI Check Summary\\n\\n';\n" +
+        "    p += 'Total: ' + (ciSummary.total||0) + ' | Failing: ' + (ciSummary.failing||0) + ' | Pending: ' + (ciSummary.pending||0) + ' | Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n" +
+        "  }\n" +
+        "  if (fix.failedRun) {\n" +
+        "    const run = fix.failedRun;\n" +
+        "    p += '## Failed Workflow Run\\n\\n';\n" +
+        "    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n" +
+        "    p += '- **Run ID**: ' + run.databaseId + '\\n';\n" +
+        "    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n" +
+        "    if (run.url) p += '- **URL**: ' + run.url + '\\n';\n" +
+        "    p += '\\n';\n" +
+        "  }\n" +
+        "  if (failedJobs.length > 0) {\n" +
+        "    p += '## Failed Jobs\\n\\n';\n" +
+        "    failedJobs.slice(0,8).forEach(job => {\n" +
+        "      p += '### ' + (job.name||'unknown') + '\\n';\n" +
+        "      p += '- Conclusion: ' + job.conclusion + '\\n';\n" +
+        "      if (job.url) p += '- URL: ' + job.url + '\\n';\n" +
+        "      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n" +
+        "        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n" +
+        "      }\n" +
+        "      p += '\\n';\n" +
+        "    });\n" +
+        "  }\n" +
+        "  if (annotations.length > 0) {\n" +
+        "    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n" +
+        "    annotations.slice(0,6).forEach(annot => {\n" +
+        "      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n" +
+        "        p += '**Job: ' + (annot.name||'') + '**\\n';\n" +
+        "        annot.annotations.slice(0,15).forEach(a => {\n" +
+        "          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n" +
+        "        });\n" +
+        "        p += '\\n';\n" +
+        "      }\n" +
+        "    });\n" +
+        "  }\n" +
+        "  if (logExcerpt) {\n" +
+        "    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n" +
+        "  }\n" +
+        "  if (prBody) {\n" +
+        "    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n" +
+        "  }\n" +
+        "  if (files.length > 0) {\n" +
+        "    p += '## Changed Files (' + files.length + ')\\n\\n';\n" +
+        "    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n" +
+        "    p += '\\n';\n" +
+        "  }\n" +
+        "  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n" +
+        "  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n" +
+        "    p += '## Reviews & Inline Comments\\n\\n';\n" +
+        "    reviewsWithBody.slice(0,5).forEach(r => {\n" +
+        "      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n" +
+        "    });\n" +
+        "    if (reviewComments.length > 0) {\n" +
+        "      p += 'Inline comments:\\n';\n" +
+        "      reviewComments.slice(0,12).forEach(c => {\n" +
+        "        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n" +
+        "      });\n" +
+        "      p += '\\n';\n" +
+        "    }\n" +
+        "  }\n" +
+        "  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n" +
+        "  if (issueCommentsWithBody.length > 0) {\n" +
+        "    p += '## Issue Comments\\n\\n';\n" +
+        "    issueCommentsWithBody.slice(0,5).forEach(c => {\n" +
+        "      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n" +
+        "    });\n" +
+        "  }\n" +
+        "  return p;\n" +
+        "})()",
+      isExpression: true,
+    }, { x: 220, y: 950 }),
+
+    node("mark-active", "action.set_variable", "Mark Agent Workflow Active", {
+      key: "_agentWorkflowActive",
+      value: "true",
+      isExpression: true,
+    }, { x: 220, y: 980 }),
+
     node("dispatch-fix-agent", "action.run_agent", "Dispatch Focused Fix Agent", {
       prompt:
-        "You are a Bosun PR repair fallback agent working one PR only.\n\n" +
-        "## CRITICAL RULES — Read Before Doing Anything\n\n" +
+        "{{agentPrompt}}\n\n" +
+        "## Workspace\n\n" +
         "Your working directory is already a git clone of the target repo, " +
         "checked out on the PR's HEAD branch (`{{setup-pr-worktree.output.branch}}`). " +
-        "The base branch (`{{setup-pr-worktree.output.base}}`) has been fetched.\n\n" +
-        "- Do NOT clone the repo. Do NOT create branches. Do NOT push.\n" +
-        "- Work ONLY in the current directory on the current branch.\n" +
-        "- The workflow will commit and push your changes automatically after you finish.\n\n" +
-        "## PR Context\n\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\n" +
-        "## Repair Attempt Output\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\n" +
+        "The base branch (`origin/{{setup-pr-worktree.output.base}}`) has been fetched.\n\n" +
+        "## CRITICAL RULES — READ BEFORE DOING ANYTHING\n\n" +
+        "1. **Do NOT clone or re-clone the repo** — you are already in it.\n" +
+        "2. **Do NOT create new branches.** Stay on the current branch.\n" +
+        "3. **Do NOT push.** The workflow pushes for you automatically after you finish.\n" +
+        "4. **Do NOT switch branches** with `git checkout` or `git switch`.\n" +
+        "5. **Do NOT run `cd` to change to a different directory.** Stay in the cwd.\n" +
+        "6. Fix ONLY the specific issues listed in the Fix Summary above.\n" +
+        "7. Do NOT merge, approve, or close the PR.\n" +
+        "8. Do NOT touch any other PRs or repos.\n\n" +
+        "## Fix Instructions\n\n" +
         "Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, " +
         "prDigest.reviewComments, prDigest.checks, failedAnnotations, and any " +
-        "failedLogExcerpt before making changes.\n\n" +
-        "## Fix Instructions\n\n" +
-        "- Only fix this PR's CI or merge-conflict issue.\n" +
+        "failedLogExcerpt before making changes.\n" +
+        "Use the PR digest (CI diagnostics, log excerpts, annotations, reviews) " +
+        "above to identify the root cause and apply the MINIMAL fix.\n\n" +
         "- For merge conflicts: `git merge origin/{{setup-pr-worktree.output.base}}` and resolve.\n" +
         "- For CI failures: study the error output and apply the MINIMAL code fix.\n" +
-        "- Do not merge, approve, or close the PR.\n" +
-        "- Keep the patch minimal and scoped to the reported failure.\n" +
+        "- For review feedback: address each comment precisely.\n" +
         "- After fixing, remove the label:\n" +
         "  `gh pr edit {{setup-pr-worktree.output.number}} --repo {{setup-pr-worktree.output.repo}} --remove-label bosun-needs-fix`\n",
       sdk: "auto",
@@ -1098,6 +1323,42 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         WORKTREE_PATH: "{{setup-pr-worktree.output.worktreePath}}",
       },
     }, { x: 220, y: 1060 }),
+
+    // ── Update sibling PR branches after push (so other PRs stay up-to-date) ─
+    node("update-sibling-branches", "action.run_command", "Update Sibling PR Branches", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const repo=String(process.env.REPO||'').trim();",
+        "const thisPrNumber=String(process.env.THIS_PR||'').trim();",
+        "const base=String(process.env.BASE_BRANCH||'main').trim();",
+        "if(!repo){console.log(JSON.stringify({updated:0,reason:'no repo'}));process.exit(0);}",
+        "let prs=[];",
+        "try{prs=JSON.parse(execFileSync('gh',['pr','list','--repo',repo,'--base',base,'--state','open','--json','number,headRefOid','--limit','50'],{encoding:'utf8',timeout:30000}));}",
+        "catch(e){console.log(JSON.stringify({updated:0,error:String(e?.message||e).slice(0,200)}));process.exit(0);}",
+        "let updated=0,failed=0;",
+        "for(const pr of prs){",
+        "  if(String(pr.number)===thisPrNumber)continue;",
+        "  try{",
+        "    execFileSync('gh',['api','-X','PUT','repos/'+repo+'/pulls/'+pr.number+'/update-branch','--field','expected_head_sha='+pr.headRefOid],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000});",
+        "    updated++;console.log('Updated PR #'+pr.number);",
+        "  }catch(e){",
+        "    const msg=String(e?.stderr||e?.message||e);",
+        "    if(/already up/i.test(msg)||/merge conflict/i.test(msg)){continue;}",
+        "    failed++;console.log('Skip PR #'+pr.number+': '+msg.slice(0,150));",
+        "  }",
+        "}",
+        "console.log(JSON.stringify({updated,failed,total:prs.length}));",
+      ].join(" ")],
+      continueOnError: true,
+      failOnError: false,
+      timeoutMs: 180_000,
+      env: {
+        REPO: "{{prParams.repo}}",
+        THIS_PR: "{{prParams.number}}",
+        BASE_BRANCH: "{{prParams.base}}",
+      },
+    }, { x: 220, y: 1080 }),
 
     node("review-needed", "condition.expression", "Ready For Review?", {
       expression:
@@ -1185,13 +1446,18 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
     edge("fix-needed", "programmatic-fix", { condition: "$output?.result === true" }),
     edge("fix-needed", "review-needed", { condition: "$output?.result !== true" }),
     edge("programmatic-fix", "fix-agent-needed"),
-    edge("fix-agent-needed", "setup-pr-worktree", { condition: "$output?.result === true" }),
+    edge("fix-agent-needed", "resolve-pr-params", { condition: "$output?.result === true" }),
     edge("fix-agent-needed", "notify-complete", { condition: "$output?.result !== true" }),
+    edge("resolve-pr-params", "setup-pr-worktree"),
     edge("setup-pr-worktree", "set-pr-worktree-path"),
-    edge("set-pr-worktree-path", "dispatch-fix-agent"),
+    edge("set-pr-worktree-path", "detect-pr-conflicts"),
+    edge("detect-pr-conflicts", "build-fix-prompt"),
+    edge("build-fix-prompt", "mark-active"),
+    edge("mark-active", "dispatch-fix-agent"),
     edge("dispatch-fix-agent", "push-pr-fixes"),
     edge("push-pr-fixes", "cleanup-pr-worktree"),
-    edge("cleanup-pr-worktree", "notify-complete"),
+    edge("cleanup-pr-worktree", "update-sibling-branches"),
+    edge("update-sibling-branches", "notify-complete"),
     edge("review-needed", "programmatic-review", { condition: "$output?.result === true" }),
     edge("review-needed", "log-deferred", { condition: "$output?.result !== true" }),
     edge("programmatic-review", "notify-complete"),
@@ -1200,11 +1466,15 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
   ],
   metadata: {
     author: "bosun",
-    version: 2,
-    createdAt: "2026-03-13T00:00:00Z",
-    templateVersion: "2.0.0",
+    version: 6,
+    createdAt: "2026-03-30T00:00:00Z",
+    templateVersion: "6.0.0",
     tags: ["github", "pr", "handoff", "progression", "event-driven", "worktree-managed"],
     changelog: [
+      "v6.0: Set _agentWorkflowActive to prevent delegation to Backend Agent.",
+      "v5.0: Set _agentWorkflowActive to prevent delegation to Backend Agent.",
+      "v3.0: Structured agent prompt with Fix Summary, specific conflict files, " +
+      "CI diagnostics, and actionable review signals — matching human-quality context.",
       "v2.0: Programmatic worktree setup + push. Agent no longer manages " +
       "git state directly — fixes the live-pr-XXX synthetic branch problem.",
     ],
@@ -1737,7 +2007,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const o=$ctx.getNodeOutput('claim-unclaimed-security-prs');" +
         "const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');" +
         "return Array.isArray(d.unclaimed)?d.unclaimed:[];" +
-        "}catch{return []}})();",
+        "}catch{return []}})()",
       variable: "item",
       maxConcurrent: "{{maxConcurrentFixes}}",
       workflowId: "template-pr-security-fix-single",
@@ -1820,7 +2090,14 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  }",
         "  needsAgent.push({repo,number:n,branch,base,mergeable,reason:'merge_conflict_requires_code_resolution',prDigest,digestSummary:String(prDigest?.digestSummary||'')});",
         "}",
-        "console.log(JSON.stringify({rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent}));",
+        "const fullPayload={rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent};",
+        "const fs=require('fs');const path=require('path');",
+        "const bosunHome=String(process.env.BOSUN_HOME||'').trim();",
+        "const tmpDir=bosunHome?path.join(bosunHome,'tmp'):path.join(process.cwd(),'.cache','bosun');",
+        "try{fs.mkdirSync(tmpDir,{recursive:true})}catch{}",
+        "const tmpFile=path.join(tmpDir,'programmatic-fix-output.json');",
+        "try{fs.writeFileSync(tmpFile,JSON.stringify(fullPayload),'utf8');process.stderr.write('[programmatic-fix] wrote '+tmpFile+' ('+JSON.stringify(fullPayload).length+' bytes)\\n')}catch(e){process.stderr.write('[programmatic-fix] failed to write temp file '+tmpFile+': '+String(e?.message||e)+'\\n')}",
+        "console.log(JSON.stringify({rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,tmpFile}));",
       ].join(" ")],
       continueOnError: true,
       failOnError: false,
@@ -1848,12 +2125,16 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       args: ["-e", [
         "const fs=require('fs');",
         "const path=require('path');",
-        "const raw=String(process.env.BOSUN_PROGRAMMATIC_FIX||'');",
+        "const bosunHome=String(process.env.BOSUN_HOME||'').trim();",
+        "const tmpDir=bosunHome?path.join(bosunHome,'tmp'):path.join(process.cwd(),'.cache','bosun');",
+        "const tmpFile=path.join(tmpDir,'programmatic-fix-output.json');",
+        "let raw='';",
+        "try{raw=fs.readFileSync(tmpFile,'utf8');}catch(e){process.stderr.write('[claim] cannot read temp file '+tmpFile+': '+String(e?.message||e)+'\\n');}",
         "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
         "const needsAgent=Array.isArray(payload.needsAgent)?payload.needsAgent:[];",
         "const TTL_MS=Math.max(60000,Number(process.env.PR_FIX_TTL_MINUTES||'120')*60*1000);",
         "const STALE_CLAIM_MS=Math.max(10*60*1000,Math.min(TTL_MS,20*60*1000));",
-        "const CLAIM_DIR=path.join(process.cwd(),'.cache','bosun');",
+        "const CLAIM_DIR=tmpDir;",
         "const CLAIM_FILE=path.join(CLAIM_DIR,'pr-fix-claims.json');",
         "function loadClaims(){try{const d=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));return(d&&typeof d==='object'&&d.claims&&typeof d.claims==='object')?d.claims:{};}catch{return {};}}",
         "function saveClaims(claims){try{if(!fs.existsSync(CLAIM_DIR))fs.mkdirSync(CLAIM_DIR,{recursive:true});const data={version:1,claims,updatedAt:new Date().toISOString()};const tmp=CLAIM_FILE+'.tmp'+Date.now();fs.writeFileSync(tmp,JSON.stringify(data,null,2),'utf8');fs.renameSync(tmp,CLAIM_FILE);}catch(e){process.stderr.write('[claim] save error: '+String(e?.message||e)+'\\n');}}",
@@ -1887,7 +2168,6 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       continueOnError: true,
       failOnError: false,
       env: {
-        BOSUN_PROGRAMMATIC_FIX: "{{programmatic-fix.output}}",
         PR_FIX_TTL_MINUTES: "{{prFixTtlMinutes}}",
       },
     }, { x: 280, y: 970 }),
@@ -1913,7 +2193,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const o=$ctx.getNodeOutput('claim-unclaimed-prs');" +
         "const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');" +
         "return Array.isArray(d.unclaimed)?d.unclaimed:[];" +
-        "}catch{return []}})();",
+        "}catch{return []}})()",
       variable: "item",
       maxConcurrent: "{{maxConcurrentFixes}}",
       workflowId: "template-pr-fix-single",
@@ -2031,6 +2311,52 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       level: "info",
     }, { x: 400, y: 900 }),
 
+    // ── Pause / resume task-spawning workflows while PR repairs are active ──
+    // Prevents Task Lifecycle from spawning new tasks while fix-agents are
+    // repairing open PRs, avoiding resource contention and wasted worktrees.
+    node("pause-task-spawning", "action.run_command", "Pause Task Spawning", {
+      command: "node",
+      args: ["-e", [
+        "const fs=require('fs'),path=require('path');",
+        "const wfDir=path.resolve(process.env.BOSUN_CONFIG_DIR||'.bosun','workflows');",
+        "const PAUSE_TARGETS=['template-task-lifecycle','template-task-batch-processor'];",
+        "if(!fs.existsSync(wfDir)){process.exit(0);}",
+        "let paused=0;",
+        "for(const f of fs.readdirSync(wfDir).filter(f=>f.endsWith('.json'))){",
+        "  try{const fp=path.join(wfDir,f);const def=JSON.parse(fs.readFileSync(fp,'utf8'));",
+        "  const tmpl=String(def?.metadata?.installedFrom||'').trim();",
+        "  if(!PAUSE_TARGETS.includes(tmpl))continue;",
+        "  if(def.enabled===false&&def.metadata?.pausedByWorkflow)continue;",
+        "  def.enabled=false;def.metadata=def.metadata||{};",
+        "  def.metadata.pausedByWorkflow='template-bosun-pr-watchdog';",
+        "  def.metadata.pausedAt=new Date().toISOString();",
+        "  fs.writeFileSync(fp,JSON.stringify(def,null,2),'utf8');paused++;}catch{}",
+        "}",
+        "console.log(JSON.stringify({paused}));",
+      ].join("")],
+      continueOnError: true,
+      failOnError: false,
+    }, { x: 50, y: 560 }),
+
+    node("resume-task-spawning", "action.run_command", "Resume Task Spawning", {
+      command: "node",
+      args: ["-e", [
+        "const fs=require('fs'),path=require('path');",
+        "const wfDir=path.resolve(process.env.BOSUN_CONFIG_DIR||'.bosun','workflows');",
+        "if(!fs.existsSync(wfDir)){process.exit(0);}",
+        "let resumed=0;",
+        "for(const f of fs.readdirSync(wfDir).filter(f=>f.endsWith('.json'))){",
+        "  try{const fp=path.join(wfDir,f);const def=JSON.parse(fs.readFileSync(fp,'utf8'));",
+        "  if(def.metadata?.pausedByWorkflow!=='template-bosun-pr-watchdog')continue;",
+        "  def.enabled=true;delete def.metadata.pausedByWorkflow;delete def.metadata.pausedAt;",
+        "  fs.writeFileSync(fp,JSON.stringify(def,null,2),'utf8');resumed++;}catch{}",
+        "}",
+        "console.log(JSON.stringify({resumed}));",
+      ].join("")],
+      continueOnError: true,
+      failOnError: false,
+    }, { x: 700, y: 560 }),
+
     node("no-prs", "notify.log", "No Bosun PRs Open", {
       message: "Bosun PR Watchdog: no open automation-eligible PRs found — idle",
       level: "info",
@@ -2081,8 +2407,9 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     edge("has-behind",       "fix-needed",      { condition: "$output?.result !== true", port: "no" }),
     edge("update-behind-branches", "fix-needed"),
     // Fix path (security failures, then conflicts + non-security CI failures)
-    edge("fix-needed",       "security-fix-needed", { condition: "$output?.result === true" }),
-    edge("fix-needed",       "review-needed",       { condition: "$output?.result !== true" }),
+    edge("fix-needed",       "pause-task-spawning",     { condition: "$output?.result === true" }),
+    edge("fix-needed",       "review-needed",           { condition: "$output?.result !== true" }),
+    edge("pause-task-spawning", "security-fix-needed"),
     edge("security-fix-needed","programmatic-security-fix", { condition: "$output?.result === true" }),
     edge("security-fix-needed","generic-fix-needed",       { condition: "$output?.result !== true" }),
     edge("programmatic-security-fix", "security-agent-needed"),
@@ -2105,20 +2432,24 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     edge("review-needed",    "programmatic-review", { condition: "$output?.result === true" }),
     edge("review-needed",    "notify",          { condition: "$output?.result !== true" }),
     edge("programmatic-review","notify"),
-    // Post-merge cleanup
-    edge("notify",           "cleanup-merged-branches"),
+    // Post-merge cleanup — resume task spawning (idempotent) then prune branches
+    edge("notify",           "resume-task-spawning"),
+    edge("no-prs",           "resume-task-spawning"),
+    edge("resume-task-spawning", "cleanup-merged-branches"),
   ],
   metadata: {
     author: "bosun",
-    version: 5,
+    version: 6,
     createdAt: "2025-07-01T00:00:00Z",
-    templateVersion: "3.0.0",
+    templateVersion: "3.1.0",
     tags: ["github", "pr", "ci", "merge", "watchdog", "bosun-attached", "safety"],
     replaces: {
       module: "agent-hooks.mjs",
       functions: ["registerBuiltinHooks (PostPR block)"],
       calledFrom: [],
       description:
+        "v3.1: Adds pause/resume of Task Lifecycle and Task Batch Processor while PR " +
+        "fix-agents are in-flight, preventing resource contention from new task spawning. " +
         "v3.0: Replaces single mega-agent dispatch with per-PR claim system and parallel fan-out. " +
         "Each PR gets its own dedicated agent (template-pr-fix-single) with 2-hour budget. " +
         "PR claims prevent duplicate work across watchdog cycles (TTL=prFixTtlMinutes). " +
@@ -2161,6 +2492,7 @@ export const PR_FIX_SINGLE_TEMPLATE = {
     "--force-with-lease and cleans up. The agent NEVER manages git setup or push.",
   category: "github",
   enabled: true,
+  recommended: true,
   core: true,
   trigger: "trigger.manual",
   variables: {},
@@ -2190,6 +2522,23 @@ export const PR_FIX_SINGLE_TEMPLATE = {
     node("setup-claim-key", "action.set_variable", "Setup Claim Key", {
       key: "claimKey",
       value: "String($data?.item?.claimKey || '')",
+      isExpression: true,
+    }),
+
+    // ── 1b. Pre-resolve PR parameters with full fallback chains ──────────────
+    // ctx.resolve() only handles {{template}} syntax — it cannot evaluate IIFEs.
+    // Use set_variable + isExpression to compute values before passing to env.
+    node("resolve-pr-params", "action.set_variable", "Resolve PR Parameters", {
+      key: "prParams",
+      value:
+        "({" +
+        "repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), " +
+        "branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), " +
+        "base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), " +
+        "number: String($data?.item?.number || $data?.item?.n || '0'), " +
+        "reason: String($data?.item?.reason || ''), " +
+        "mergeable: String($data?.item?.mergeable || $data?.item?.prDigest?.core?.mergeable || '')" +
+        "})",
       isExpression: true,
     }),
 
@@ -2240,10 +2589,10 @@ export const PR_FIX_SINGLE_TEMPLATE = {
       failOnError: true,
       timeoutMs: 600_000,   // 10 min for clone
       env: {
-        PR_REPO:   "(()=>{ const i=$data?.item||{}; return String(i.repo||i.prDigest?.core?.repo||''); })()",
-        PR_BRANCH: "(()=>{ const i=$data?.item||{}; return String(i.branch||i.prDigest?.core?.branch||''); })()",
-        PR_BASE:   "(()=>{ const i=$data?.item||{}; return String(i.base||i.baseBranch||i.prDigest?.core?.baseBranch||'main'); })()",
-        PR_NUMBER: "(()=>{ const i=$data?.item||{}; return String(i.number||i.n||'0'); })()",
+        PR_REPO:   "{{prParams.repo}}",
+        PR_BRANCH: "{{prParams.branch}}",
+        PR_BASE:   "{{prParams.base}}",
+        PR_NUMBER: "{{prParams.number}}",
       },
     }),
 
@@ -2251,6 +2600,53 @@ export const PR_FIX_SINGLE_TEMPLATE = {
     node("set-worktree-path", "action.set_variable", "Set Agent Working Directory", {
       key: "worktreePath",
       value: "{{setup-worktree.output.worktreePath}}",
+    }),
+
+    // ── 2c. Detect specific merge conflict files ─────────────────────────────
+    // Attempts `git merge --no-commit` in the worktree to discover which files
+    // conflict, then aborts the merge. Gives the agent exact file-level context
+    // (like a human reviewer listing conflicting files in a PR comment).
+    node("detect-conflicts", "action.run_command", "Detect Merge Conflict Files", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const wt=String(process.env.WORKTREE_PATH||'').trim();",
+        "const base=String(process.env.PR_BASE||'main').trim();",
+        "const reason=String(process.env.ITEM_REASON||'').trim();",
+        "const mergeable=String(process.env.ITEM_MERGEABLE||'').trim().toUpperCase();",
+        "if(!wt){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);}",
+        "const isConflict=reason.includes('merge_conflict')||['CONFLICTING','DIRTY'].includes(mergeable);",
+        "if(!isConflict){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);}",
+        "let mergeOutput='';",
+        "let conflictFiles=[];",
+        "try{",
+        "  try{mergeOutput=execFileSync('git',['merge','--no-commit','--no-ff','origin/'+base],{cwd:wt,encoding:'utf8',timeout:60000}).toString();}",
+        "  catch(e){mergeOutput=String(e?.stderr||'')+' '+String(e?.stdout||'');}",
+        "  try{",
+        "    const diffFiles=execFileSync('git',['diff','--name-only','--diff-filter=U'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();",
+        "    if(diffFiles){conflictFiles=diffFiles.split(/\\r?\\n/).map(f=>f.trim()).filter(Boolean);}",
+        "  }catch{}",
+        "  if(conflictFiles.length===0){",
+        "    const matches=mergeOutput.match(/CONFLICT[^:]*:\\s*Merge conflict in (.+)/gi)||[];",
+        "    conflictFiles=matches.map(m=>{const f=m.match(/in\\s+(.+)/i);return f?f[1].trim():'';}).filter(Boolean);",
+        "  }",
+        "  try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{}",
+        "}catch(e){",
+        "  try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{}",
+        "  console.log(JSON.stringify({hasConflicts:false,conflictFiles:[],error:String(e?.message||e).slice(0,500)}));",
+        "  process.exit(0);",
+        "}",
+        "console.log(JSON.stringify({hasConflicts:conflictFiles.length>0,conflictFiles:[...new Set(conflictFiles)],mergeOutput:String(mergeOutput||'').slice(0,2000)}));",
+      ].join(" ")],
+      continueOnError: true,
+      failOnError: false,
+      timeoutMs: 120_000,
+      env: {
+        WORKTREE_PATH:   "{{setup-worktree.output.worktreePath}}",
+        PR_BASE:         "{{prParams.base}}",
+        ITEM_REASON:     "{{prParams.reason}}",
+        ITEM_MERGEABLE:  "{{prParams.mergeable}}",
+      },
     }),
 
     // ── 3. Build rich structured agent prompt from $data.item ────────────────
@@ -2293,6 +2689,23 @@ export const PR_FIX_SINGLE_TEMPLATE = {
         "  if (item.error) p += '- **Error**: ' + item.error + '\\n';\n" +
         "  if (item.rerunAttempts) p += '- **Rerun Attempts**: ' + item.rerunAttempts + '\\n';\n" +
         "  p += '\\n';\n" +
+        "  /* --- Read detected conflict files from detect-conflicts node --- */\n" +
+        "  const conflictDetection = (()=>{ try { const o = $ctx?.getNodeOutput?.('detect-conflicts'); if (!o) return {}; const raw = o.output; return typeof raw === 'object' ? raw : JSON.parse(String(raw||'{}')); } catch { return {}; } })();\n" +
+        "  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n" +
+        "  /* --- Build fix summary (top-line overview like a human reviewer comment) --- */\n" +
+        "  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n" +
+        "  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n" +
+        "  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n" +
+        "  const fixItems = [];\n" +
+        "  if (mergeable === 'CONFLICTING' || mergeable === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base branch `' + base + '`'));\n" +
+        "  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n" +
+        "  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n" +
+        "  if (fixItems.length > 0) {\n" +
+        "    p += '## Fix Summary\\n\\n';\n" +
+        "    p += 'This PR needs the following fixes:\\n';\n" +
+        "    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n" +
+        "    p += '\\n';\n" +
+        "  }\n" +
         "  if (failedChecks.length > 0) {\n" +
         "    p += '## Failed CI Checks\\n\\n';\n" +
         "    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n" +
@@ -2350,9 +2763,15 @@ export const PR_FIX_SINGLE_TEMPLATE = {
         "    recentRuns.forEach(r => { p += '- ' + (r.workflowName||r.displayTitle||'') + ' (' + r.conclusion + ') ' + (r.url||'') + '\\n'; });\n" +
         "    p += '\\n';\n" +
         "  }\n" +
-        "  if (mergeable === 'CONFLICTING' || mergeable === 'DIRTY') {\n" +
-        "    p += '## Merge Conflict\\n\\nThis PR has merge conflicts with base branch `' + base + '`. ';\n" +
-        "    p += 'You must rebase or merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n" +
+        "  if (mergeable === 'CONFLICTING' || mergeable === 'DIRTY' || detectedConflictFiles.length > 0) {\n" +
+        "    p += '## Merge Conflict\\n\\n';\n" +
+        "    p += 'This branch has conflicts that must be resolved.\\n';\n" +
+        "    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n" +
+        "    if (detectedConflictFiles.length > 0) {\n" +
+        "      p += '**Conflicting files:**\\n';\n" +
+        "      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n" +
+        "      p += '\\n';\n" +
+        "    }\n" +
         "  }\n" +
         "  if (prBody) {\n" +
         "    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n" +
@@ -2388,6 +2807,14 @@ export const PR_FIX_SINGLE_TEMPLATE = {
       isExpression: true,
     }),
 
+    // ── 3b. Mark context as agent-workflow-active to prevent delegation ─────
+    // Without this flag, action.run_agent delegates to Backend Agent workflow.
+    node("mark-active", "action.set_variable", "Mark Agent Workflow Active", {
+      key: "_agentWorkflowActive",
+      value: "true",
+      isExpression: true,
+    }),
+
     // ── 4. Run focused repair agent ──────────────────────────────────────────
     // Agent runs in the pre-cloned worktree on the correct PR branch. It only
     // needs to diagnose, edit code, and commit. No cloning, no branch mgmt.
@@ -2409,6 +2836,9 @@ export const PR_FIX_SINGLE_TEMPLATE = {
         "7. Do NOT merge, approve, or close the PR.\n" +
         "8. Do NOT touch any other PRs or repos.\n\n" +
         "## Fix Instructions\n\n" +
+        "Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, " +
+        "prDigest.reviewComments, prDigest.checks, failedAnnotations, and any " +
+        "failedLogExcerpt before making changes.\n" +
         "Use the PR digest (CI diagnostics, log excerpts, annotations, reviews) " +
         "above to identify the root cause and apply the MINIMAL fix.\n\n" +
         "**By `reason` field:**\n" +
@@ -2493,6 +2923,42 @@ export const PR_FIX_SINGLE_TEMPLATE = {
       },
     }),
 
+    // ── 6b. Update sibling PR branches (keep other PRs up-to-date after fix push) ─
+    node("update-sibling-branches", "action.run_command", "Update Sibling PR Branches", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const repo=String(process.env.REPO||'').trim();",
+        "const thisPrNumber=String(process.env.THIS_PR||'').trim();",
+        "const base=String(process.env.BASE_BRANCH||'main').trim();",
+        "if(!repo){console.log(JSON.stringify({updated:0,reason:'no repo'}));process.exit(0);}",
+        "let prs=[];",
+        "try{prs=JSON.parse(execFileSync('gh',['pr','list','--repo',repo,'--base',base,'--state','open','--json','number,headRefOid','--limit','50'],{encoding:'utf8',timeout:30000}));}",
+        "catch(e){console.log(JSON.stringify({updated:0,error:String(e?.message||e).slice(0,200)}));process.exit(0);}",
+        "let updated=0,failed=0;",
+        "for(const pr of prs){",
+        "  if(String(pr.number)===thisPrNumber)continue;",
+        "  try{",
+        "    execFileSync('gh',['api','-X','PUT','repos/'+repo+'/pulls/'+pr.number+'/update-branch','--field','expected_head_sha='+pr.headRefOid],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000});",
+        "    updated++;console.log('Updated PR #'+pr.number);",
+        "  }catch(e){",
+        "    const msg=String(e?.stderr||e?.message||e);",
+        "    if(/already up/i.test(msg)||/merge conflict/i.test(msg)){continue;}",
+        "    failed++;console.log('Skip PR #'+pr.number+': '+msg.slice(0,150));",
+        "  }",
+        "}",
+        "console.log(JSON.stringify({updated,failed,total:prs.length}));",
+      ].join(" ")],
+      continueOnError: true,
+      failOnError: false,
+      timeoutMs: 180_000,
+      env: {
+        REPO: "{{prParams.repo}}",
+        THIS_PR: "{{prParams.number}}",
+        BASE_BRANCH: "{{prParams.base}}",
+      },
+    }),
+
     // ── 7. Release the PR claim ──────────────────────────────────────────────
     node("release-claim", "action.run_command", "Release PR Claim", {
       command: "node",
@@ -2528,23 +2994,29 @@ export const PR_FIX_SINGLE_TEMPLATE = {
     edge("trigger",            "setup-task"),
     edge("setup-task",         "setup-title"),
     edge("setup-title",        "setup-claim-key"),
-    edge("setup-claim-key",    "setup-worktree"),
+    edge("setup-claim-key",    "resolve-pr-params"),
+    edge("resolve-pr-params",  "setup-worktree"),
     edge("setup-worktree",     "set-worktree-path"),
-    edge("set-worktree-path",  "setup-prompt"),
-    edge("setup-prompt",       "fix-agent"),
+    edge("set-worktree-path",  "detect-conflicts"),
+    edge("detect-conflicts",   "setup-prompt"),
+    edge("setup-prompt",       "mark-active"),
+    edge("mark-active",        "fix-agent"),
     edge("fix-agent",          "push-fixes"),
     edge("push-fixes",         "cleanup-worktree"),
-    edge("cleanup-worktree",   "release-claim"),
+    edge("cleanup-worktree",   "update-sibling-branches"),
+    edge("update-sibling-branches", "release-claim"),
   ],
   metadata: {
     author: "bosun",
-    version: 3,
-    createdAt: "2026-03-29T00:00:00Z",
-    templateVersion: "2.0.0",
+    version: 8,
+    createdAt: "2026-03-30T00:00:00Z",
+    templateVersion: "7.0.0",
     tags: ["github", "pr", "ci", "fix", "single-pr", "session-tracked", "worktree-managed"],
     notes:
       "Invoked by template-bosun-pr-watchdog via loop.for_each. " +
       "Do not enable this template as a standalone scheduled workflow. " +
+      "v3.0: Adds detect-conflicts node for specific conflict file discovery, " +
+      "fix summary section with actionable items, and enhanced review signal extraction. " +
       "v2.0: Programmatic worktree setup + push. Agent no longer manages " +
       "git clone/push — prevents wrong-branch pushes and new-branch creation.",
   },
@@ -2568,6 +3040,7 @@ export const PR_SECURITY_FIX_SINGLE_TEMPLATE = {
     "--force-with-lease. The agent NEVER manages git setup or push.",
   category: "github",
   enabled: true,
+  recommended: true,
   core: true,
   trigger: "trigger.manual",
   variables: {},
@@ -2595,6 +3068,19 @@ export const PR_SECURITY_FIX_SINGLE_TEMPLATE = {
     node("setup-claim-key", "action.set_variable", "Setup Claim Key", {
       key: "claimKey",
       value: "String($data?.item?.claimKey || '')",
+      isExpression: true,
+    }),
+
+    // ── Pre-resolve PR parameters with full fallback chains ──────────────────
+    node("resolve-pr-params", "action.set_variable", "Resolve PR Parameters", {
+      key: "prParams",
+      value:
+        "({" +
+        "repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), " +
+        "branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), " +
+        "base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), " +
+        "number: String($data?.item?.number || $data?.item?.n || '0')" +
+        "})",
       isExpression: true,
     }),
 
@@ -2640,10 +3126,10 @@ export const PR_SECURITY_FIX_SINGLE_TEMPLATE = {
       failOnError: true,
       timeoutMs: 600_000,
       env: {
-        PR_REPO:   "(()=>{ const i=$data?.item||{}; return String(i.repo||i.prDigest?.core?.repo||''); })()",
-        PR_BRANCH: "(()=>{ const i=$data?.item||{}; return String(i.branch||i.prDigest?.core?.branch||''); })()",
-        PR_BASE:   "(()=>{ const i=$data?.item||{}; return String(i.base||i.baseBranch||i.prDigest?.core?.baseBranch||'main'); })()",
-        PR_NUMBER: "(()=>{ const i=$data?.item||{}; return String(i.number||i.n||'0'); })()",
+        PR_REPO:   "{{prParams.repo}}",
+        PR_BRANCH: "{{prParams.branch}}",
+        PR_BASE:   "{{prParams.base}}",
+        PR_NUMBER: "{{prParams.number}}",
       },
     }),
 
@@ -2711,6 +3197,12 @@ export const PR_SECURITY_FIX_SINGLE_TEMPLATE = {
         "  }\n" +
         "  return p;\n" +
         "})()",
+      isExpression: true,
+    }),
+
+    node("mark-active", "action.set_variable", "Mark Agent Workflow Active", {
+      key: "_agentWorkflowActive",
+      value: "true",
       isExpression: true,
     }),
 
@@ -2840,19 +3332,21 @@ export const PR_SECURITY_FIX_SINGLE_TEMPLATE = {
     edge("trigger",            "setup-task"),
     edge("setup-task",         "setup-title"),
     edge("setup-title",        "setup-claim-key"),
-    edge("setup-claim-key",    "setup-worktree"),
+    edge("setup-claim-key",    "resolve-pr-params"),
+    edge("resolve-pr-params",  "setup-worktree"),
     edge("setup-worktree",     "set-worktree-path"),
     edge("set-worktree-path",  "setup-prompt"),
-    edge("setup-prompt",       "fix-agent"),
+    edge("setup-prompt",       "mark-active"),
+    edge("mark-active",        "fix-agent"),
     edge("fix-agent",          "push-fixes"),
     edge("push-fixes",         "cleanup-worktree"),
     edge("cleanup-worktree",   "release-claim"),
   ],
   metadata: {
     author: "bosun",
-    version: 2,
+    version: 5,
     createdAt: "2026-03-30T00:00:00Z",
-    templateVersion: "2.0.0",
+    templateVersion: "5.0.0",
     tags: ["github", "pr", "security", "codeql", "fix", "single-pr", "session-tracked", "worktree-managed"],
     notes:
       "Invoked by template-bosun-pr-watchdog via loop.for_each for security failures. " +

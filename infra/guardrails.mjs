@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { detectProjectStack } from "../workflow/project-detection.mjs";
 
 export const DEFAULT_INPUT_POLICY = Object.freeze({
   enabled: true,
@@ -156,6 +157,7 @@ export function shouldRequireManagedPrePush(rootDir) {
 }
 
 export function detectRepoGuardrails(rootDir) {
+  // ── npm/package.json detection (legacy, always attempted) ───────────────
   const packageJsonPath = resolve(rootDir, "package.json");
   let packageJson = null;
   try {
@@ -174,11 +176,52 @@ export function detectRepoGuardrails(rootDir) {
     /^(?:ci(?::|$)|test(?::|$)|build(?::|$)|lint(?::|$)|check(?::|$)|verify(?::|$)|release(?::|$))/i,
   ).filter((entry) => !prepushScripts.some((candidate) => candidate.name === entry.name));
 
+  // ── Language-aware stack detection ──────────────────────────────────────
+  let stack = null;
+  try {
+    stack = detectProjectStack(rootDir);
+  } catch { /* project-detection may not be available in all environments */ }
+
+  const stacks = Array.isArray(stack?.stacks) ? stack.stacks : [];
+  const primary = stack?.primary || null;
+  const stackCommands = primary?.commands || {};
+
+  // Build language-aware guardrail categories from detected stack commands.
+  // For npm projects the prepush/prepublish scripts are the authoritative source;
+  // for every other language we synthesize equivalent categories from the
+  // detected test / build / lint / qualityGate commands.
+  const stackTestScripts = [];
+  const stackBuildScripts = [];
+  const stackLintScripts = [];
+  const stackQualityGateScripts = [];
+
+  for (const s of stacks) {
+    const cmds = s.commands || {};
+    if (cmds.test) stackTestScripts.push({ name: `${s.id}:test`, command: cmds.test });
+    if (cmds.build) stackBuildScripts.push({ name: `${s.id}:build`, command: cmds.build });
+    if (cmds.lint) stackLintScripts.push({ name: `${s.id}:lint`, command: cmds.lint });
+    if (cmds.qualityGate) stackQualityGateScripts.push({ name: `${s.id}:qualityGate`, command: cmds.qualityGate });
+    if (cmds.syntaxCheck && cmds.syntaxCheck !== cmds.lint) {
+      stackLintScripts.push({ name: `${s.id}:syntaxCheck`, command: cmds.syntaxCheck });
+    }
+    if (cmds.typeCheck && cmds.typeCheck !== cmds.lint && cmds.typeCheck !== cmds.syntaxCheck) {
+      stackLintScripts.push({ name: `${s.id}:typeCheck`, command: cmds.typeCheck });
+    }
+  }
+
+  // Merge: npm scripts win when present; stack-detected scripts fill gaps.
+  const mergedPrepush = prepushScripts.length > 0
+    ? prepushScripts
+    : stackQualityGateScripts;
+  const mergedCi = ciScripts.length > 0
+    ? ciScripts
+    : [...stackTestScripts, ...stackBuildScripts, ...stackLintScripts];
+
   const categories = {
     prepush: {
-      detected: prepushScripts.length > 0,
-      enforced: prepushScripts.length > 0,
-      scripts: prepushScripts,
+      detected: mergedPrepush.length > 0,
+      enforced: mergedPrepush.length > 0,
+      scripts: mergedPrepush,
     },
     prepublish: {
       detected: prepublishScripts.length > 0,
@@ -186,9 +229,24 @@ export function detectRepoGuardrails(rootDir) {
       scripts: prepublishScripts,
     },
     ci: {
-      detected: ciScripts.length > 0,
-      enforced: ciScripts.length > 0,
-      scripts: ciScripts,
+      detected: mergedCi.length > 0,
+      enforced: mergedCi.length > 0,
+      scripts: mergedCi,
+    },
+    test: {
+      detected: stackTestScripts.length > 0 || ciScripts.some((s) => /\btest\b/i.test(s.name)),
+      enforced: false,
+      scripts: stackTestScripts.length > 0 ? stackTestScripts : ciScripts.filter((s) => /\btest\b/i.test(s.name)),
+    },
+    build: {
+      detected: stackBuildScripts.length > 0 || ciScripts.some((s) => /\bbuild\b/i.test(s.name)),
+      enforced: false,
+      scripts: stackBuildScripts.length > 0 ? stackBuildScripts : ciScripts.filter((s) => /\bbuild\b/i.test(s.name)),
+    },
+    lint: {
+      detected: stackLintScripts.length > 0 || ciScripts.some((s) => /\blint\b/i.test(s.name)),
+      enforced: false,
+      scripts: stackLintScripts.length > 0 ? stackLintScripts : ciScripts.filter((s) => /\blint\b/i.test(s.name)),
     },
   };
 
@@ -199,6 +257,17 @@ export function detectRepoGuardrails(rootDir) {
     packageName: typeof packageJson?.name === "string" ? packageJson.name : "",
     categories,
     detectedCount: Object.values(categories).filter((entry) => entry.detected).length,
+    // New stack-aware fields
+    stacks,
+    primaryStack: primary ? {
+      id: primary.id,
+      label: primary.label,
+      packageManager: primary.packageManager,
+      frameworks: primary.frameworks || [],
+    } : null,
+    stackCommands,
+    isMonorepo: stacks.length > 1,
+    detectedLanguages: stacks.map((s) => s.label),
   };
 }
 

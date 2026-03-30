@@ -65,6 +65,8 @@ import {
 } from "../infra/stream-resilience.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
+import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
+import { createInternalHarnessSession as createHarnessRuntimeSession } from "./internal-harness-runtime.mjs";
 
 // Lazy-load MCP registry to avoid circular dependencies.
 // Cached at module scope per AGENTS.md hard rules.
@@ -476,7 +478,12 @@ function hasOptionalModule(specifier) {
       );
     }
   }
-  MODULE_PRESENCE_CACHE.set(specifier, ok);
+  // Only cache positive results — negative lookups should be re-checked on
+  // each attempt so that a late `npm install` or delayed filesystem flush
+  // can resolve the SDK without requiring a full daemon restart.
+  if (ok) {
+    MODULE_PRESENCE_CACHE.set(specifier, true);
+  }
   return ok;
 }
 
@@ -4587,6 +4594,133 @@ export async function execWithRetry(prompt, options = {}) {
   return { ...lastResult, attempts: attempt, continues: continuesUsed };
 }
 
+function formatHarnessValidationError(validationReport) {
+  if (!validationReport?.issues?.length) {
+    return "Internal harness profile is invalid.";
+  }
+  return validationReport.issues
+    .filter((issue) => issue?.level === "error")
+    .map((issue) =>
+      issue?.path
+        ? `${issue.code} (${issue.path}): ${issue.message}`
+        : `${issue.code}: ${issue.message}`)
+    .join("\n");
+}
+
+function buildHarnessCompileOptions(options = {}) {
+  return {
+    defaultAgentId: options.defaultAgentId,
+    defaultTaskKey: options.defaultTaskKey,
+    defaultSessionType: options.defaultSessionType || options.sessionType || "task",
+    defaultSdk: options.sdk,
+    defaultModel: options.model,
+    defaultCwd: options.cwd || REPO_ROOT,
+  };
+}
+
+function buildHarnessTurnExecutor(options = {}) {
+  if (typeof options.turnExecutor === "function") {
+    return options.turnExecutor;
+  }
+
+  return async function executeHarnessTurn({
+    profile,
+    stage,
+    taskKey,
+    prompt,
+    mode,
+  }) {
+    const cwd = stage.cwd || options.cwd || profile.cwd || REPO_ROOT;
+    const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
+    const sessionType = stage.sessionType || profile.sessionType || options.sessionType || "task";
+    const sdk = stage.sdk || options.sdk || profile.sdk || undefined;
+    const model = stage.model || options.model || profile.model || undefined;
+    const sharedOptions = {
+      cwd,
+      timeoutMs,
+      sdk,
+      model,
+      mcpServers: options.mcpServers,
+      onEvent: options.onEvent,
+      sessionType,
+      forceContextShredding: options.forceContextShredding === true,
+      skipContextShredding: options.skipContextShredding === true,
+      compressEphemeralItems: options.compressEphemeralItems,
+      abortController: options.abortController || null,
+      slotOwnerKey: options.slotOwnerKey,
+      slotMeta: options.slotMeta,
+      slotMaxParallel: options.slotMaxParallel,
+      onSlotQueued: options.onSlotQueued,
+      onSlotAcquired: options.onSlotAcquired,
+      onSlotReleased: options.onSlotReleased,
+    };
+
+    if (mode === "initial") {
+      return execWithRetry(prompt, {
+        ...sharedOptions,
+        taskKey,
+        maxRetries: stage.maxRetries,
+        maxContinues: stage.maxContinues,
+      });
+    }
+
+    return launchOrResumeThread(prompt, cwd, timeoutMs, {
+      taskKey,
+      sdk: sharedOptions.sdk,
+      model: sharedOptions.model,
+      mcpServers: sharedOptions.mcpServers,
+      sessionType: sharedOptions.sessionType,
+      forceContextShredding: sharedOptions.forceContextShredding,
+      skipContextShredding: sharedOptions.skipContextShredding,
+      onEvent: sharedOptions.onEvent,
+      abortController: sharedOptions.abortController,
+      slotOwnerKey: sharedOptions.slotOwnerKey,
+      slotMeta: sharedOptions.slotMeta,
+      slotMaxParallel: sharedOptions.slotMaxParallel,
+      onSlotQueued: sharedOptions.onSlotQueued,
+      onSlotAcquired: sharedOptions.onSlotAcquired,
+      onSlotReleased: sharedOptions.onSlotReleased,
+      ignoreSdkCooldown: true,
+    });
+  };
+}
+
+export function compileInternalHarnessSource(source, options = {}) {
+  return compileInternalHarnessProfile(source, buildHarnessCompileOptions(options));
+}
+
+export function createInternalHarnessSession(profileSource, options = {}) {
+  const compiled = compileInternalHarnessSource(profileSource, options);
+  if (!compiled.isValid || !compiled.compiledProfile) {
+    const error = new Error(formatHarnessValidationError(compiled.validationReport));
+    error.validationReport = compiled.validationReport;
+    throw error;
+  }
+
+  const controller = createHarnessRuntimeSession(compiled.compiledProfile, {
+    onEvent: options.onHarnessEvent,
+    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
+    executeTurn: buildHarnessTurnExecutor(options),
+    extensions: options.extensions,
+    extensionRegistry: options.extensionRegistry,
+  });
+
+  return {
+    ...compiled,
+    controller,
+    run: () => controller.run(),
+  };
+}
+
+export async function runInternalHarnessProfile(profileSource, options = {}) {
+  const session = createInternalHarnessSession(profileSource, options);
+  const result = await session.run();
+  return {
+    ...session,
+    result,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Thread Management Exports
 // ---------------------------------------------------------------------------
@@ -4731,8 +4865,5 @@ export const __testables = {
   normalizeRetryFailureFingerprint,
   classifyRetryCircuitBreak,
 };
-
-
-
 
 

@@ -46,6 +46,26 @@ describe("tui app integration", () => {
     await waitFor(() => view.text().includes("Backoff queue"));
     expect(view.text()).toContain("Synthesized failing smoke test");
 
+    wsClient.emit("workflow:status", {
+      workflowId: "wf-1",
+      workflowName: "Task Lifecycle",
+      eventType: "run:start",
+      status: "running",
+      timestamp: "2026-03-23T00:00:45.000Z",
+      message: "started from integration test",
+    });
+    await view.press("5");
+    await waitFor(() => view.text().includes("Workflow Event Timeline"));
+    expect(view.text()).toContain("Task Lifecycle");
+
+    await view.press("6");
+    await waitFor(() => view.text().includes("Rate Limits"));
+    expect(view.text()).toContain("Retry Queue");
+
+    await view.press("7");
+    await waitFor(() => view.text().includes("bosun.config.json"));
+    expect(view.text()).toContain("Schema-backed inline editor.");
+
     await view.unmount();
     expect(wsClient.connectCalled).toBe(1);
     expect(wsClient.disconnectCalled).toBe(1);

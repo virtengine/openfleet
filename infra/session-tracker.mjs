@@ -324,6 +324,281 @@ function extractUsageFromMeta(meta) {
   return { inputTokens, outputTokens, totalTokens };
 }
 
+function cloneTurns(turns) {
+  return Array.isArray(turns) ? turns.map((turn) => ({ ...turn })) : [];
+}
+
+function sumTurnTokenUsage(turns = []) {
+  return (Array.isArray(turns) ? turns : []).reduce((acc, turn) => ({
+    inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
+    outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
+    totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
+  }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+}
+
+function resolveSessionTokenUsage(session, turns = null) {
+  const safeTurns = Array.isArray(turns) ? turns : cloneTurns(session?.turns);
+  const turnTokenUsage = sumTurnTokenUsage(safeTurns);
+  return extractUsageFromMeta(session?.insights?.tokenUsage)
+    || extractUsageFromMeta(session?.tokenUsage)
+    || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
+      ? turnTokenUsage
+      : {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        });
+}
+
+function scanSessionActivity(messages = []) {
+  let hasEdits = false;
+  let hasCommits = false;
+  let lastToolName = null;
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (String(message?.type || "").toLowerCase() !== "tool_call") continue;
+    const content = String(message?.content || "").toLowerCase();
+    if (
+      content.includes("write") ||
+      content.includes("edit") ||
+      content.includes("create") ||
+      content.includes("replace") ||
+      content.includes("patch") ||
+      content.includes("append")
+    ) {
+      hasEdits = true;
+    }
+    if (content.includes("git commit") || content.includes("git push")) {
+      hasCommits = true;
+    }
+    const toolName = String(message?.meta?.toolName || "").trim();
+    if (toolName) lastToolName = toolName;
+  }
+  return { hasEdits, hasCommits, lastToolName };
+}
+
+function normalizeSessionFileCounts(fileCounts) {
+  const counts = fileCounts && typeof fileCounts === "object" ? fileCounts : {};
+  return {
+    openedFiles: Math.max(0, Number(counts.openedFiles) || 0),
+    editedFiles: Math.max(0, Number(counts.editedFiles) || 0),
+    referencedFiles: Math.max(0, Number(counts.referencedFiles) || 0),
+    openOps: Math.max(0, Number(counts.openOps) || 0),
+    editOps: Math.max(0, Number(counts.editOps) || 0),
+  };
+}
+
+function normalizeTopTools(topTools, limit = 5) {
+  return (Array.isArray(topTools) ? topTools : [])
+    .map((entry) => ({
+      name: String(entry?.name || "").trim(),
+      count: Math.max(0, Number(entry?.count) || 0),
+    }))
+    .filter((entry) => entry.name && entry.count > 0)
+    .slice(0, limit);
+}
+
+function normalizeRecentActions(recentActions, limit = 6) {
+  return (Array.isArray(recentActions) ? recentActions : [])
+    .map((entry) => ({
+      type: String(entry?.type || "").trim() || "event",
+      label: String(entry?.label || "").trim(),
+      level: String(entry?.level || "info").trim() || "info",
+      timestamp: String(entry?.timestamp || "").trim() || null,
+    }))
+    .filter((entry) => entry.label)
+    .slice(0, limit);
+}
+
+function normalizeContextWindow(contextWindow, tokenUsage = null) {
+  const snapshot = contextWindow && typeof contextWindow === "object" ? contextWindow : {};
+  const usedTokens = normalizeTokenNumber(snapshot.usedTokens ?? tokenUsage?.totalTokens ?? 0);
+  const totalTokensRaw = Number(snapshot.totalTokens);
+  const totalTokens = Number.isFinite(totalTokensRaw) && totalTokensRaw > 0
+    ? Math.round(totalTokensRaw)
+    : null;
+  const percentRaw = Number(snapshot.percent);
+  const percent = Number.isFinite(percentRaw)
+    ? Math.max(0, Math.min(100, Number(percentRaw.toFixed(1))))
+    : (usedTokens > 0 && totalTokens
+      ? Math.max(0, Math.min(100, Number(((usedTokens / totalTokens) * 100).toFixed(1))))
+      : null);
+  return {
+    usedTokens,
+    totalTokens,
+    percent,
+  };
+}
+
+function getContextPressureLevel(percent) {
+  if (!Number.isFinite(Number(percent))) return "unknown";
+  const safePercent = Number(percent);
+  if (safePercent >= 95) return "critical";
+  if (safePercent >= 85) return "high";
+  if (safePercent >= 70) return "medium";
+  return "low";
+}
+
+function normalizeTerminalRuntimeState(lifecycleStatus, { live = false } = {}) {
+  const normalizedStatus = String(lifecycleStatus || "").trim() || "unknown";
+  if (live) return normalizedStatus;
+  if (normalizedStatus === "implementation_done_commit_blocked") return "completed";
+  return normalizedStatus;
+}
+
+function buildRuntimeHealth(session, progress, telemetry) {
+  const live = Boolean(progress && progress.status !== "ended" && progress.status !== "not_found");
+  const progressStatus = String(progress?.status || "").trim();
+  const lifecycleStatus = String(session?.status || "active").trim() || "active";
+  let state = lifecycleStatus;
+  if (progressStatus === "stalled") state = "stalled";
+  else if (progressStatus === "idle") state = "idle";
+  else if (lifecycleStatus === "active" && telemetry.hasCommits) state = "committing";
+  else if (lifecycleStatus === "active" && telemetry.hasEdits) state = "editing";
+  else if (lifecycleStatus === "active" && (telemetry.toolCalls > 0 || telemetry.toolResults > 0)) state = "working";
+  else if (lifecycleStatus === "active") state = "active";
+  state = normalizeTerminalRuntimeState(state, { live });
+
+  const reasons = [];
+  if (progressStatus === "stalled") reasons.push("stalled");
+  else if (progressStatus === "idle") reasons.push("idle");
+  if (telemetry.contextPressure === "critical") reasons.push("critical_context");
+  else if (telemetry.contextPressure === "high") reasons.push("high_context");
+  if (telemetry.errors > 0) reasons.push("errors");
+  if (telemetry.hasCommits) reasons.push("commits");
+  else if (telemetry.hasEdits) reasons.push("edits");
+
+  let severity = "info";
+  if (state === "stalled" || telemetry.contextPressure === "critical") severity = "critical";
+  else if (
+    state === "idle" ||
+    telemetry.contextPressure === "high" ||
+    telemetry.errors > 0 ||
+    lifecycleStatus.startsWith("blocked_") ||
+    lifecycleStatus === "implementation_done_commit_blocked"
+  ) {
+    severity = "warning";
+  }
+
+  return {
+    state,
+    severity,
+    live,
+    idleMs: Math.max(0, Number(progress?.idleMs) || 0),
+    contextPressure: telemetry.contextPressure,
+    contextUsagePercent: telemetry.contextUsagePercent,
+    toolCalls: telemetry.toolCalls,
+    toolResults: telemetry.toolResults,
+    errors: telemetry.errors,
+    hasEdits: telemetry.hasEdits,
+    hasCommits: telemetry.hasCommits,
+    reasons,
+  };
+}
+
+function buildSessionTelemetry(session, progress = null, turns = null) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const insights = session?.insights && typeof session.insights === "object" ? session.insights : {};
+  const totals = insights.totals && typeof insights.totals === "object" ? insights.totals : {};
+  const safeTurns = Array.isArray(turns) ? turns : cloneTurns(session?.turns);
+  const tokenUsage = resolveSessionTokenUsage(session, safeTurns);
+  const contextWindow = normalizeContextWindow(insights.contextWindow, tokenUsage);
+  const activity = scanSessionActivity(messages);
+  const recentActions = normalizeRecentActions(insights.recentActions, 6);
+  const telemetry = {
+    totalEvents: Math.max(0, Number(session?.totalEvents) || 0),
+    lastEventType: messages.at(-1)?.type || messages.at(-1)?.role || null,
+    hasEdits: activity.hasEdits,
+    hasCommits: activity.hasCommits,
+    toolCalls: Math.max(0, Number(totals.toolCalls) || 0),
+    toolResults: Math.max(0, Number(totals.toolResults) || 0),
+    errors: Math.max(0, Number(totals.errors) || 0),
+    commandExecutions: Math.max(0, Number(totals.commandExecutions) || 0),
+    fileCounts: normalizeSessionFileCounts(insights.fileCounts),
+    topTools: normalizeTopTools(insights.topTools, 5),
+    recentActions,
+    contextWindow,
+    contextUsagePercent: contextWindow.percent,
+    contextPressure: getContextPressureLevel(contextWindow.percent),
+    lastToolName: activity.lastToolName,
+    lastActionAt: recentActions[0]?.timestamp || session?.lastActiveAt || null,
+  };
+  telemetry.runtimeHealth = buildRuntimeHealth(session, progress, telemetry);
+  return telemetry;
+}
+
+function buildSessionSummaryRecord(session, { progress = null, preview = null, runtimeUpdatedAt = null, runtimeIsLive = null } = {}) {
+  const sessionId = session?.id || session?.taskId;
+  const turns = Array.isArray(session?.turns)
+    ? cloneTurns(session.turns)
+    : (Array.isArray(session?.insights?.turnTimeline)
+      ? cloneTurns(session.insights.turnTimeline)
+      : []);
+  const effectiveTokenUsage = resolveSessionTokenUsage(session, turns);
+  const telemetry = buildSessionTelemetry(session, progress, turns);
+  const lastActiveAt = String(
+    session?.lastActiveAt
+      || runtimeUpdatedAt
+      || (session?.lastActivityAt ? new Date(session.lastActivityAt).toISOString() : "")
+      || new Date(session?.startedAt || Date.now()).toISOString(),
+  ).trim();
+  const lifecycleStatus = String(session?.status || "active").trim() || "active";
+  const derivedRuntimeState = String(
+    telemetry?.runtimeHealth?.state || "",
+  ).trim() || null;
+  const progressStatus = String(progress?.status || "").trim() || null;
+  const runtimeState = (() => {
+    if (!progressStatus) return derivedRuntimeState;
+    if (progressStatus === "ended" || progressStatus === "not_found") {
+      return derivedRuntimeState || progressStatus;
+    }
+    if (progressStatus === "idle" || progressStatus === "stalled") {
+      return progressStatus;
+    }
+    return derivedRuntimeState || progressStatus;
+  })();
+  const isLive = runtimeIsLive == null
+    ? Boolean(progress && progress.status !== "ended" && progress.status !== "not_found")
+    : Boolean(runtimeIsLive);
+  const status = progressStatus === "ended"
+    ? lifecycleStatus
+    : (runtimeState || lifecycleStatus);
+  const normalizedPreview = preview == null ? null : String(preview || "").trim() || null;
+
+  return {
+    id: sessionId,
+    taskId: session?.taskId || sessionId,
+    title: session?.taskTitle || session?.title || null,
+    type: session?.type || "task",
+    status,
+    lifecycleStatus,
+    runtimeState,
+    runtimeUpdatedAt: lastActiveAt,
+    runtimeIsLive: isLive,
+    workspaceId: String(session?.metadata?.workspaceId || "").trim() || null,
+    workspaceDir: String(session?.metadata?.workspaceDir || "").trim() || null,
+    branch: String(session?.metadata?.branch || "").trim() || null,
+    turnCount: Math.max(0, Number(session?.turnCount) || 0),
+    turns,
+    tokenCount: effectiveTokenUsage.totalTokens || 0,
+    inputTokens: effectiveTokenUsage.inputTokens || 0,
+    outputTokens: effectiveTokenUsage.outputTokens || 0,
+    tokenUsage: effectiveTokenUsage,
+    createdAt: session?.createdAt || new Date(session?.startedAt || Date.now()).toISOString(),
+    lastActiveAt,
+    idleMs: progress?.idleMs ?? 0,
+    elapsedMs: progress?.elapsedMs ?? Math.max(
+      0,
+      Number(session?.endedAt || Date.now()) - Number(session?.startedAt || Date.now()),
+    ),
+    recommendation: progress?.recommendation || "none",
+    preview: normalizedPreview,
+    lastMessage: normalizedPreview,
+    totalTokens: effectiveTokenUsage.totalTokens || 0,
+    insights: session?.insights || null,
+    ...telemetry,
+  };
+}
+
 function ensureSessionTurns(session) {
   if (!Array.isArray(session.turns)) session.turns = [];
   return session.turns;
@@ -430,21 +705,16 @@ export function addSessionStateListener(listener) {
 
 function emitSessionEvent(session, message) {
   if (!session || !message || SESSION_EVENT_LISTENERS.size === 0) return;
+  const summary = buildSessionSummaryRecord(session, {
+    preview: getSessionMessageText(message) || null,
+    runtimeUpdatedAt: session.lastActiveAt || new Date().toISOString(),
+    runtimeIsLive: session.status === "active",
+  });
   const payload = {
     sessionId: session.id || session.taskId,
     taskId: session.taskId || session.id,
     message,
-    session: {
-      id: session.id || session.taskId,
-      taskId: session.taskId || session.id,
-      type: session.type || "task",
-      status: session.status || "active",
-      lastActiveAt: session.lastActiveAt || new Date().toISOString(),
-      turnCount: session.turnCount || 0,
-      turns: Array.isArray(session.turns)
-        ? session.turns.map((turn) => ({ ...turn }))
-        : [],
-    },
+    session: summary,
   };
   for (const listener of SESSION_EVENT_LISTENERS) {
     try {
@@ -458,22 +728,16 @@ function emitSessionEvent(session, message) {
 function emitSessionStateEvent(session, reason, extra = {}) {
   if (!session || SESSION_STATE_LISTENERS.size === 0) return;
   const normalizedReason = String(reason || "updated").trim() || "updated";
+  const summary = buildSessionSummaryRecord(session, {
+    preview: getSessionMessageText(session.messages?.at(-1)) || null,
+    runtimeUpdatedAt: session.lastActiveAt || new Date().toISOString(),
+    runtimeIsLive: session.status === "active",
+  });
   const payload = {
     sessionId: session.id || session.taskId,
     taskId: session.taskId || session.id,
     reason: normalizedReason,
-    session: {
-      id: session.id || session.taskId,
-      taskId: session.taskId || session.id,
-      type: session.type || "task",
-      status: session.status || "active",
-      lastActiveAt: session.lastActiveAt || new Date().toISOString(),
-      turnCount: session.turnCount || 0,
-      turns: Array.isArray(session.turns)
-        ? session.turns.map((turn) => ({ ...turn }))
-        : [],
-      title: session.taskTitle || session.title || null,
-    },
+    session: summary,
     event: {
       kind: "state",
       reason: normalizedReason,
@@ -812,20 +1076,7 @@ export class SessionTracker {
     const now = Date.now();
     const idleMs = now - session.lastActivityAt;
     const elapsedMs = now - session.startedAt;
-
-    // Check if agent has done any meaningful edits or commits
-    const hasEdits = session.messages.some((m) => {
-      if (m.type !== "tool_call") return false;
-      const c = (m.content || "").toLowerCase();
-      return c.includes("write") || c.includes("edit") || c.includes("create") ||
-        c.includes("replace") || c.includes("patch") || c.includes("append");
-    });
-
-    const hasCommits = session.messages.some((m) => {
-      if (m.type !== "tool_call") return false;
-      const c = (m.content || "").toLowerCase();
-      return c.includes("git commit") || c.includes("git push");
-    });
+    const activity = scanSessionActivity(session.messages);
 
     // Determine status — check stalled FIRST (it's the stricter condition)
     let status = "active";
@@ -850,7 +1101,7 @@ export class SessionTracker {
     return {
       status, idleMs, totalEvents: session.totalEvents,
       lastEventType: session.messages.at(-1)?.type ?? null,
-      hasEdits, hasCommits, elapsedMs, recommendation,
+      hasEdits: activity.hasEdits, hasCommits: activity.hasCommits, elapsedMs, recommendation,
     };
   }
 
@@ -983,60 +1234,10 @@ export class SessionTracker {
       const progress = includeRuntimeProgress && s.status === "active"
         ? this.getProgressStatus(sessionId)
         : null;
-      const derivedStatus = progress?.status === "ended"
-        ? "completed"
-        : (progress?.status || s.status);
-      const lastActiveAt = s.lastActiveAt || new Date(s.lastActivityAt).toISOString();
-      const turns = Array.isArray(s.turns)
-        ? s.turns.map((turn) => ({ ...turn }))
-        : (Array.isArray(s.insights?.turnTimeline)
-          ? s.insights.turnTimeline.map((turn) => ({ ...turn }))
-          : []);
-      const turnTokenUsage = turns.reduce((acc, turn) => ({
-        inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
-        outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
-        totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
-      }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
-      const tokenUsage = s.insights?.tokenUsage
-        || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
-          ? turnTokenUsage
-          : null);
-      const effectiveTokenUsage = extractUsageFromMeta(tokenUsage) || {
-        inputTokens: 0,
-        outputTokens: 0,
-        totalTokens: 0,
-      };
-      byId.set(sessionId, {
-        id: sessionId,
-        taskId: s.taskId,
-        title: s.taskTitle || s.title || null,
-        type: s.type || "task",
-        status: derivedStatus,
-        lifecycleStatus: s.status || "active",
-        runtimeState: progress?.status || null,
-        runtimeUpdatedAt: lastActiveAt,
-        runtimeIsLive: Boolean(progress && progress.status !== "ended" && progress.status !== "not_found"),
-        workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
-        workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
-        branch: String(s?.metadata?.branch || "").trim() || null,
-        turnCount: s.turnCount || 0,
-        turns,
-        tokenCount: effectiveTokenUsage?.totalTokens || 0,
-        inputTokens: effectiveTokenUsage?.inputTokens || 0,
-        outputTokens: effectiveTokenUsage?.outputTokens || 0,
-        tokenUsage: effectiveTokenUsage,
-        createdAt: s.createdAt || new Date(s.startedAt).toISOString(),
-        lastActiveAt,
-        idleMs: progress?.idleMs ?? 0,
-        elapsedMs: progress?.elapsedMs ?? Math.max(0, Date.now() - Number(s.startedAt || Date.now())),
-        recommendation: progress?.recommendation || "none",
+      byId.set(sessionId, buildSessionSummaryRecord(s, {
+        progress,
         preview: this.#lastMessagePreview(s),
-        lastMessage: this.#lastMessagePreview(s),
-        totalTokens: Number(tokenUsage?.totalTokens || 0),
-        inputTokens: Number(tokenUsage?.inputTokens || 0),
-        outputTokens: Number(tokenUsage?.outputTokens || 0),
-        insights: s.insights || null,
-      });
+      }));
     };
 
     for (const s of this.#sessions.values()) {
@@ -1381,15 +1582,8 @@ export class SessionTracker {
       ? Number(session.startedAt)
       : endedAt;
     const turns = Array.isArray(session.turns) ? session.turns : [];
-    const turnTokenUsage = turns.reduce((acc, turn) => ({
-      inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
-      outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
-      totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
-    }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
-    const tokenUsage = session.insights?.tokenUsage
-      || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
-        ? turnTokenUsage
-        : null);
+    const tokenUsage = resolveSessionTokenUsage(session, turns);
+    const telemetry = buildSessionTelemetry(session, null, turns);
 
     addCompletedSession({
       id: session.id || taskId,
@@ -1410,6 +1604,22 @@ export class SessionTracker {
       tokenUsage,
       insights: session.insights || null,
       status: String(session.status || "completed"),
+      totalEvents: telemetry.totalEvents,
+      lastEventType: telemetry.lastEventType,
+      hasEdits: telemetry.hasEdits,
+      hasCommits: telemetry.hasCommits,
+      toolCalls: telemetry.toolCalls,
+      toolResults: telemetry.toolResults,
+      errors: telemetry.errors,
+      commandExecutions: telemetry.commandExecutions,
+      fileCounts: telemetry.fileCounts,
+      topTools: telemetry.topTools,
+      recentActions: telemetry.recentActions,
+      contextWindow: telemetry.contextWindow,
+      contextUsagePercent: telemetry.contextUsagePercent,
+      contextPressure: telemetry.contextPressure,
+      lastToolName: telemetry.lastToolName,
+      runtimeHealth: telemetry.runtimeHealth,
     });
     session.accumulatedAt = new Date().toISOString();
     return true;
@@ -1720,54 +1930,11 @@ export class SessionTracker {
           const sessionId = restored.id || restored.taskId;
           const lastActiveAt =
             restored.lastActiveAt || new Date(restored.lastActivityAt).toISOString();
-          const turns = Array.isArray(restored.turns)
-            ? restored.turns.map((turn) => ({ ...turn }))
-            : [];
-          const turnTokenUsage = turns.reduce((acc, turn) => ({
-            inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
-            outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
-            totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
-          }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
-          const tokenUsage = restored.insights?.tokenUsage
-            || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
-              ? turnTokenUsage
-              : null);
-          const effectiveTokenUsage = extractUsageFromMeta(tokenUsage) || {
-            inputTokens: 0,
-            outputTokens: 0,
-            totalTokens: 0,
-          };
-          sessions.push({
-            id: sessionId,
-            taskId: restored.taskId,
-            title: restored.taskTitle || restored.title || null,
-            type: restored.type || "task",
-            status: restored.status || "completed",
-            lifecycleStatus: restored.status || "completed",
-            runtimeState: null,
+          sessions.push(buildSessionSummaryRecord(restored, {
+            preview: this.#lastMessagePreview(restored),
             runtimeUpdatedAt: lastActiveAt,
             runtimeIsLive: false,
-            workspaceId: String(restored?.metadata?.workspaceId || "").trim() || null,
-            workspaceDir: String(restored?.metadata?.workspaceDir || "").trim() || null,
-            branch: String(restored?.metadata?.branch || "").trim() || null,
-            turnCount: restored.turnCount || 0,
-            turns,
-            tokenCount: effectiveTokenUsage.totalTokens || 0,
-            inputTokens: effectiveTokenUsage.inputTokens || 0,
-            outputTokens: effectiveTokenUsage.outputTokens || 0,
-            tokenUsage: effectiveTokenUsage,
-            createdAt: restored.createdAt || new Date(restored.startedAt).toISOString(),
-            lastActiveAt,
-            idleMs: 0,
-            elapsedMs: Math.max(
-              0,
-              Number(restored.endedAt || Date.now()) - Number(restored.startedAt || Date.now()),
-            ),
-            recommendation: "none",
-            preview: this.#lastMessagePreview(restored),
-            lastMessage: this.#lastMessagePreview(restored),
-            insights: restored.insights || null,
-          });
+          }));
         } catch {
           // Ignore corrupt session files in summary listing
         }

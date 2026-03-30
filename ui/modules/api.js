@@ -85,7 +85,7 @@ async function readApiErrorBody(response) {
 function resolveApiErrorMessage(status, text, payload) {
   if (payload && typeof payload === "object") {
     const message = String(
-      payload.error || payload.message || payload.detail || payload.reason || "",
+      payload.message || payload.detail || payload.reason || payload.error || "",
     ).trim();
     if (message) return message;
   }

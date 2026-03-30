@@ -20,8 +20,12 @@ import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
 import LogsScreen from "./screens/logs.mjs";
 import StatusScreen from "./screens/status.mjs";
+import WorkflowsScreen from "./screens/workflows.mjs";
+import TelemetryScreen from "./screens/telemetry.mjs";
+import SettingsScreen from "./screens/settings.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
+import { useWorkflows } from "../ui/tui/useWorkflows.js";
 import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "../ui/tui/HelpScreen.js";
 import {
   appendLogEntry,
@@ -39,6 +43,9 @@ const SCREENS = {
   tasks: TasksScreen,
   agents: AgentsScreen,
   logs: LogsScreen,
+  workflows: WorkflowsScreen,
+  telemetry: TelemetryScreen,
+  settings: SettingsScreen,
 };
 
 function ScreenTabs({ screen }) {
@@ -47,6 +54,9 @@ function ScreenTabs({ screen }) {
     { key: "tasks", num: "2", label: "Tasks" },
     { key: "agents", num: "3", label: "Agents" },
     { key: "logs", num: "4", label: "Logs" },
+    { key: "workflows", num: "5", label: "Workflows" },
+    { key: "telemetry", num: "6", label: "Telemetry" },
+    { key: "settings", num: "7", label: "Settings" },
   ];
 
   return html`
@@ -83,6 +93,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [workflowEvents, setWorkflowEvents] = useState([]);
   const [logsFilterState, setLogsFilterState] = useState(createDefaultLogsFilterState());
   const [error, setError] = useState(null);
   const [screenInputLocked, setScreenInputLocked] = useState(false);
@@ -97,10 +108,12 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     () => wsClient || wsBridgeFactory({ host, port }),
     [host, port, wsClient],
   );
+  const workflowsConfig = useMemo(() => ({}), []);
   const headerConfig = useMemo(
     () => readTuiHeaderConfig(bridge?.configDir),
     [bridge?.configDir],
   );
+  const workflowsState = useWorkflows(workflowsConfig);
 
   useEffect(() => {
     let active = true;
@@ -176,6 +189,9 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     });
     on("tasks:update", () => {
       void refreshTasks();
+    });
+    on("workflow:status", (event) => {
+      setWorkflowEvents((previous) => [event, ...previous].slice(0, 25));
     });
     on("task:update", (task) => {
       setTasks((previous) => upsertById(previous, task));
@@ -295,6 +311,16 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
   const screenStats = screen === "status" ? stats : undefined;
+  const settingsState = {
+    configDir: bridge?.configDir,
+    host,
+    port,
+    protocol: bridge?.protocol,
+    refreshMs,
+    projectLabel: headerConfig.projectLabel,
+    configuredProviders: headerConfig.configuredProviders,
+    connectionState,
+  };
   const footerText = (footerHints || []).map(([keysLabel, description]) => `${keysLabel} ${description}`).join("  |  ");
 
   return html`
@@ -321,6 +347,9 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           sessions=${sessions}
           tasks=${tasks}
           logs=${logs}
+          workflowEvents=${workflowEvents}
+          workflowsState=${workflowsState}
+          settingsState=${settingsState}
           logsFilterState=${logsFilterState}
           wsBridge=${bridge}
           host=${host}

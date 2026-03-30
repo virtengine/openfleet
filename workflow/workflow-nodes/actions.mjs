@@ -1,5 +1,3 @@
-import { bootstrapWorktreeForPath, fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
-import { shouldRequireManagedPrePush } from "../../infra/guardrails.mjs";
 /**
  * workflow-nodes.mjs — Built-in Workflow Node Types for Bosun
  *
@@ -26,6 +24,7 @@ import {
   CALIBRATED_MIN_IMPACT_SCORE,
   extractPlannerTasksFromWorkflowOutput,
   loadPlannerPriorState,
+  parsePlannerJsonFromText,
   normalizePlannerAreaKey,
   normalizePlannerRiskLevel,
   normalizePlannerScore,
@@ -47,6 +46,7 @@ import {
   ensureTaskClaimsInitialized,
   ensureTaskClaimsMod,
   ensureTaskComplexityMod,
+  ensureTaskStoreMod,
   formatExecSyncError,
   getWorkflowRuntimeState,
   isExistingBranchWorktreeError,
@@ -55,6 +55,7 @@ import {
   pickGitRef,
   resolveTaskRepositoryRoot,
 } from "./transforms.mjs";
+import { requireWorkflowActionApproval } from "../action-approval.mjs";
 import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
 
@@ -225,18 +226,28 @@ const BOSUN_CREATED_PR_MARKER = "<!-- bosun-created -->";
 const markdownSafetyPolicyCache = new Map();
 
 function isUsableGitRepoRoot(candidate) {
+  return Boolean(resolveGitTopLevelRoot(candidate));
+}
+
+function resolveGitTopLevelRoot(candidate) {
   const repoRoot = String(candidate || "").trim();
-  if (!repoRoot) return false;
+  if (!repoRoot) return "";
+  if (isUnresolvedTemplateToken(repoRoot)) return "";
   try {
-    const topLevel = execGitArgsSync(["rev-parse", "--show-toplevel"], {
+    const stats = statSync(repoRoot);
+    if (!stats.isDirectory()) return "";
+  } catch {
+    return "";
+  }
+  try {
+    return execGitArgsSync(["rev-parse", "--show-toplevel"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
-    return Boolean(topLevel);
   } catch {
-    return false;
+    return "";
   }
 }
 
@@ -258,15 +269,25 @@ function findContainingGitRepoRoot(candidate) {
   } catch {
     return "";
   }
+  const original = current;
   while (current) {
-    if (hasGitMetadata(current) || isUsableGitRepoRoot(current)) {
-      return current;
+    const topLevel = resolveGitTopLevelRoot(current);
+    if (hasGitMetadata(current) || topLevel) {
+      return resolve(topLevel || current);
     }
     const parent = resolve(current, "..");
+    if (
+      basename(current).toLowerCase() === ".bosun"
+      && parent
+      && parent !== current
+      && hasGitMetadata(parent)
+    ) {
+      return parent;
+    }
     if (!parent || parent === current) break;
     current = parent;
   }
-  return "";
+  return resolveGitTopLevelRoot(original) || "";
 }
 
 function extractGitHubRepoSlug(remoteUrl) {
@@ -384,7 +405,9 @@ function resolveWorkflowRepoRoot(node, ctx) {
       const inferred = resolveTaskRepositoryRoot(repositoryHint, candidate, workspaceHint);
       if (inferred && hasGitMetadata(inferred)) return resolve(inferred);
     }
-    if (hasGitMetadata(candidate)) return resolve(candidate);
+    if (hasGitMetadata(candidate) || isUsableGitRepoRoot(candidate)) {
+      return resolveGitTopLevelRoot(candidate) || resolve(candidate);
+    }
   }
   if (!repositoryHint && explicitCandidates.length > 0) {
     return explicitCandidates[0];
@@ -411,7 +434,9 @@ function resolveWorkflowRepoRoot(node, ctx) {
       const inferred = resolveTaskRepositoryRoot(repositoryHint, candidate, workspaceHint);
       if (inferred && isUsableGitRepoRoot(inferred)) return resolve(inferred);
     }
-    if (isUsableGitRepoRoot(candidate)) return resolve(candidate);
+    if (isUsableGitRepoRoot(candidate)) {
+      return resolveGitTopLevelRoot(candidate) || resolve(candidate);
+    }
   }
   if (repositoryHint) {
     for (const candidate of candidates) {
@@ -2139,10 +2164,15 @@ registerNodeType("action.run_command", {
       captureOutput: { type: "boolean", default: true },
       parseJson: { type: "boolean", default: false, description: "Parse JSON output automatically" },
       failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this command even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["command"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const resolvedCommand = ctx.resolve(node.config?.command || "");
     const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = resolveWorkflowCwdValue(
@@ -2183,6 +2213,15 @@ registerNodeType("action.run_command", {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.run_command",
+      repoRoot: cwd,
+      command,
+      args: commandArgs,
+    });
     try {
       const output = await spawnAsync(command, usedArgv ? commandArgs : [], {
         cwd,
@@ -2620,10 +2659,15 @@ registerNodeType("action.git_operations", {
       message: { type: "string", description: "Commit message (for commit operation)" },
       branch: { type: "string", description: "Branch name" },
       cwd: { type: "string" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this git operation even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: [],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const resolveOpCommand = (opConfig = {}) => {
       const op = String(opConfig.op || opConfig.operation || "").trim();
@@ -2668,6 +2712,13 @@ registerNodeType("action.git_operations", {
     const operationList = Array.isArray(node.config?.operations)
       ? node.config.operations
       : [];
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.git_operations",
+      repoRoot: cwd,
+    });
     if (operationList.length > 0) {
       const steps = [];
       for (const spec of operationList) {
@@ -2719,10 +2770,15 @@ registerNodeType("action.create_pr", {
       },
       cwd: { type: "string" },
       failOnError: { type: "boolean", default: false, description: "If true, throw on gh failure instead of falling back" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before creating a pull request even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["title"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const PR_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
     const PR_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
     const normalizePrText = (value) => {
@@ -2750,6 +2806,13 @@ registerNodeType("action.create_pr", {
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.create_pr",
+      repoRoot: ctx?.data?.repoRoot || ctx?.data?.repoPath || cwd,
+    });
 
     // Normalize labels/reviewers to arrays
     const toList = (v) => {
@@ -3026,6 +3089,157 @@ registerNodeType("action.delay", {
 //  VALIDATION — Verification gates
 // ═══════════════════════════════════════════════════════════════════════════
 
+async function applyPlannerTaskGraphLinks({
+  createdTaskRefs = [],
+  graphRootTaskId = null,
+  graphRootTaskKey = "",
+  kanban = null,
+}) {
+  if (!Array.isArray(createdTaskRefs) || createdTaskRefs.length === 0) {
+    return {
+      appliedParentLinks: [],
+      appliedDependencyLinks: [],
+      skippedGraphLinks: [],
+    };
+  }
+
+  let taskStoreMod = null;
+  try {
+    taskStoreMod = await ensureTaskStoreMod();
+  } catch {
+    taskStoreMod = null;
+  }
+
+  const appliedParentLinks = [];
+  const appliedDependencyLinks = [];
+  const skippedGraphLinks = [];
+  const createdTaskIdsByKey = new Map();
+  const fallbackDependencyLists = new Map();
+
+  for (const entry of createdTaskRefs) {
+    const taskKey = String(entry?.task?.taskKey || "").trim();
+    const createdTaskId = String(entry?.createdTaskId || "").trim();
+    if (taskKey && createdTaskId) createdTaskIdsByKey.set(taskKey, createdTaskId);
+  }
+
+  const resolveTaskIdReference = (taskKey = "", explicitTaskId = "") => {
+    const normalizedTaskId = String(explicitTaskId || "").trim();
+    if (normalizedTaskId) return normalizedTaskId;
+    const normalizedTaskKey = String(taskKey || "").trim();
+    if (!normalizedTaskKey) return null;
+    if (createdTaskIdsByKey.has(normalizedTaskKey)) return createdTaskIdsByKey.get(normalizedTaskKey);
+    if (graphRootTaskId && graphRootTaskKey && normalizedTaskKey === graphRootTaskKey) return graphRootTaskId;
+    return null;
+  };
+
+  for (const entry of createdTaskRefs) {
+    const plannerTask = entry?.task && typeof entry.task === "object" ? entry.task : null;
+    const createdTaskId = String(entry?.createdTaskId || "").trim();
+    if (!plannerTask || !createdTaskId) continue;
+
+    const parentTaskId = resolveTaskIdReference(plannerTask.parentTaskKey, plannerTask.parentTaskId)
+      || (!plannerTask.parentTaskKey && !plannerTask.parentTaskId && graphRootTaskId ? graphRootTaskId : null);
+    if (parentTaskId && parentTaskId !== createdTaskId) {
+      let applied = false;
+      if (typeof taskStoreMod?.setTaskParent === "function") {
+        const updated = taskStoreMod.setTaskParent(createdTaskId, parentTaskId, {
+          source: "workflow-planner",
+        });
+        applied = Boolean(updated);
+      }
+      if (!applied && typeof kanban?.updateTask === "function") {
+        await kanban.updateTask(createdTaskId, {
+          parentTaskId,
+          meta: { parentTaskId },
+        });
+        applied = true;
+      }
+      if (applied) {
+        appliedParentLinks.push({
+          childTaskId: createdTaskId,
+          parentTaskId,
+          taskKey: plannerTask.taskKey || null,
+        });
+      } else {
+        skippedGraphLinks.push({
+          type: "parent",
+          childTaskId: createdTaskId,
+          parentTaskId,
+          reason: "parent_task_unavailable",
+          taskKey: plannerTask.taskKey || null,
+        });
+      }
+    }
+
+    const dependencyRefs = [
+      ...(Array.isArray(plannerTask.dependencyTaskIds)
+        ? plannerTask.dependencyTaskIds.map((dependencyTaskId) => ({
+            dependencyTaskId,
+            dependencyTaskKey: "",
+          }))
+        : []),
+      ...(Array.isArray(plannerTask.dependencyTaskKeys)
+        ? plannerTask.dependencyTaskKeys.map((dependencyTaskKey) => ({
+            dependencyTaskId: "",
+            dependencyTaskKey,
+          }))
+        : []),
+    ];
+    for (const dependencyRef of dependencyRefs) {
+      const dependencyTaskId = resolveTaskIdReference(
+        dependencyRef.dependencyTaskKey,
+        dependencyRef.dependencyTaskId,
+      );
+      if (!dependencyTaskId || dependencyTaskId === createdTaskId) continue;
+      let applied = false;
+      if (typeof taskStoreMod?.addTaskDependency === "function") {
+        const updated = taskStoreMod.addTaskDependency(createdTaskId, dependencyTaskId, {
+          source: "workflow-planner",
+        });
+        applied = Boolean(updated);
+      }
+      if (!applied && typeof kanban?.updateTask === "function") {
+        const existing = fallbackDependencyLists.get(createdTaskId) || [];
+        const nextDependencies = Array.from(new Set([...existing, dependencyTaskId]));
+        fallbackDependencyLists.set(createdTaskId, nextDependencies);
+        await kanban.updateTask(createdTaskId, {
+          meta: {
+            dependencyTaskIds: nextDependencies,
+          },
+        });
+        applied = true;
+      }
+      if (applied) {
+        appliedDependencyLinks.push({
+          taskId: createdTaskId,
+          dependencyTaskId,
+          dependencyTaskKey: dependencyRef.dependencyTaskKey || null,
+          taskKey: plannerTask.taskKey || null,
+        });
+      } else {
+        skippedGraphLinks.push({
+          type: "dependency",
+          taskId: createdTaskId,
+          dependencyTaskId,
+          dependencyTaskKey: dependencyRef.dependencyTaskKey || null,
+          reason: "dependency_task_unavailable",
+          taskKey: plannerTask.taskKey || null,
+        });
+      }
+    }
+  }
+
+  if (typeof taskStoreMod?.waitForStoreWrites === "function") {
+    await taskStoreMod.waitForStoreWrites();
+  }
+
+  return {
+    appliedParentLinks,
+    appliedDependencyLinks,
+    skippedGraphLinks,
+  };
+}
+
 registerNodeType("action.materialize_planner_tasks", {
   describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
   schema: {
@@ -3041,12 +3255,15 @@ registerNodeType("action.materialize_planner_tasks", {
       minImpactScore: { type: "number", default: CALIBRATED_MIN_IMPACT_SCORE, description: "Minimum planner impact score required for creation; accepts 0-1 or 0-10 scales" },
       maxRiskWithoutHuman: { type: "string", default: CALIBRATED_MAX_RISK_WITHOUT_HUMAN, description: "Maximum planner risk level allowed for auto-creation (low|medium|high|critical)" },
       maxConcurrentRepoAreaTasks: { type: "number", default: 0, description: "Maximum concurrent backlog tasks per repo area (0 disables limit)" },
+      applyTaskGraph: { type: "boolean", default: true, description: "Apply parent/dependency graph links from planner output when supported" },
+      parentTaskId: { type: "string", description: "Optional existing task ID to use as the parent for top-level planned tasks" },
     },
   },
   async execute(node, ctx, engine) {
     const plannerNodeId = String(ctx.resolve(node.config?.plannerNodeId || "run-planner")).trim() || "run-planner";
     const plannerOutput = ctx.getNodeOutput(plannerNodeId) || {};
     const outputText = String(plannerOutput?.output || "").trim();
+    const plannerPayload = parsePlannerJsonFromText(outputText);
     const maxTasks = Number(ctx.resolve(node.config?.maxTasks || ctx.data?.taskCount || 5)) || 5;
     const failOnZero = node.config?.failOnZero !== false;
     const minCreated = Number(ctx.resolve(node.config?.minCreated || 1)) || 1;
@@ -3062,6 +3279,21 @@ registerNodeType("action.materialize_planner_tasks", {
       { preferTenScaleIntegers: true },
     ) || CALIBRATED_MAX_RISK_WITHOUT_HUMAN;
     const maxConcurrentRepoAreaTasks = Number(ctx.resolve(node.config?.maxConcurrentRepoAreaTasks ?? 0));
+    const applyTaskGraph = node.config?.applyTaskGraph !== false;
+    const graphRootTaskId =
+      String(
+        ctx.resolve(
+          node.config?.parentTaskId ||
+          plannerPayload?.root_task_id ||
+          plannerPayload?.rootTaskId ||
+          "",
+        ) || "",
+      ).trim() || null;
+    const graphRootTaskKey = String(
+      plannerPayload?.root_task_key ||
+      plannerPayload?.rootTaskKey ||
+      "",
+    ).trim().toLowerCase();
     const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
     const plannerFeedback =
       ctx.data?._plannerFeedback && typeof ctx.data._plannerFeedback === "object" && !Array.isArray(ctx.data._plannerFeedback)
@@ -3146,6 +3378,7 @@ registerNodeType("action.materialize_planner_tasks", {
     );
 
     const created = [];
+    const createdTaskRefs = [];
     const skipped = [];
     const materializationOutcomes = [];
     const createdAreaCounts = new Map();
@@ -3264,12 +3497,24 @@ registerNodeType("action.materialize_planner_tasks", {
         kill_criteria: task.killCriteria,
         acceptance_criteria: task.acceptanceCriteria,
         verification: task.verification,
+        task_key: task.taskKey || null,
+        parent_task_key: task.parentTaskKey || null,
+        parent_task_id: task.parentTaskId || null,
+        depends_on_task_keys: Array.isArray(task.dependencyTaskKeys) ? task.dependencyTaskKeys : [],
+        depends_on_task_ids: Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [],
+        decomposition_kind: task.decompositionKind || null,
+        spawn_when: task.spawnWhen || null,
+        merge_back_policy: task.mergeBackPolicy || null,
       };
       payload.meta = existingMeta;
       const createdTask = await createKanbanTaskWithProject(kanban, payload, projectId);
       created.push({
         id: createdTask?.id || null,
         title: task.title,
+      });
+      createdTaskRefs.push({
+        task,
+        createdTaskId: createdTask?.id || null,
       });
       materializationOutcomes.push({ ...baseOutcome, created: true, reason: null });
       for (const area of task.repoAreas) {
@@ -3280,12 +3525,29 @@ registerNodeType("action.materialize_planner_tasks", {
       existingTitleSet.add(key);
     }
 
+    const graphMaterialization = applyTaskGraph
+      ? await applyPlannerTaskGraphLinks({
+          createdTaskRefs,
+          graphRootTaskId,
+          graphRootTaskKey,
+          kanban,
+        })
+      : {
+          appliedParentLinks: [],
+          appliedDependencyLinks: [],
+          skippedGraphLinks: [],
+        };
+
     const createdCount = created.length;
     const skippedCount = skipped.length;
+    const graphAppliedCount =
+      graphMaterialization.appliedParentLinks.length +
+      graphMaterialization.appliedDependencyLinks.length;
+    const graphSkippedCount = graphMaterialization.skippedGraphLinks.length;
     const skipReasonHistogram = buildPlannerSkipReasonHistogram(skipped);
     ctx.log(
       node.id,
-      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
+      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} graphApplied=${graphAppliedCount} graphSkipped=${graphSkippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
     );
 
     if (failOnZero && createdCount < Math.max(1, minCreated)) {
@@ -3303,6 +3565,7 @@ registerNodeType("action.materialize_planner_tasks", {
       materializationOutcomes,
       created,
       skipped,
+      graphMaterialization,
       rankedTasks,
       tasks: parsedTasks,
     };
@@ -3455,15 +3718,29 @@ registerNodeType("action.bosun_cli", {
       ], description: "Bosun CLI subcommand" },
       args: { type: "string", description: "Additional arguments (e.g., --status todo --json)" },
       parseJson: { type: "boolean", default: true, description: "Parse JSON output automatically" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this Bosun CLI command even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["subcommand"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const sub = node.config?.subcommand || "";
     const args = ctx.resolve(node.config?.args || "");
     const cmd = `bosun ${sub} ${args}`.trim();
 
     ctx.log(node.id, `Running: ${cmd}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.bosun_cli",
+      repoRoot: ctx?.data?.repoRoot || process.cwd(),
+      command: "bosun",
+      args: [sub, args].filter(Boolean),
+    });
     try {
       const output = execSync(cmd, { encoding: "utf8", timeout: 60000, stdio: "pipe" });
       let parsed = output?.trim();
@@ -4464,10 +4741,15 @@ registerNodeType("action.refresh_worktree", {
       operation: { type: "string", enum: ["fetch", "pull", "reset_hard", "clean", "checkout_main"], default: "fetch" },
       cwd: { type: "string", description: "Working directory" },
       branch: { type: "string", description: "Branch to operate on" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before destructive refresh operations even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["operation"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const op = node.config?.operation || "fetch";
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const branch = ctx.resolve(node.config?.branch || "main");
@@ -4537,6 +4819,13 @@ registerNodeType("action.refresh_worktree", {
     }
 
     ctx.log(node.id, `Refreshing worktree (${op}) in ${cwd}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.refresh_worktree",
+      repoRoot,
+    });
     try {
       const output = steps
         .map((args) => execGitArgsSync(args, {
@@ -6227,6 +6516,7 @@ registerNodeType("action.acquire_worktree", {
         isGit = existsSync(resolve(repoRoot, ".git"));
       }
     }
+    ctx.data.repoRoot = repoRoot;
     if (!isGit) {
       ctx.data.worktreePath = repoRoot;
       ctx.data._worktreeCreated = false;
@@ -7691,6 +7981,11 @@ registerNodeType("action.push_branch", {
         default: ["main", "master", "develop", "production"],
         description: "Branches that cannot be force-pushed",
       },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before pushing even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["worktreePath"],
   },
@@ -7764,6 +8059,14 @@ registerNodeType("action.push_branch", {
         implementationState: "implementation_done_commit_blocked",
       };
     }
+
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.push_branch",
+      repoRoot,
+    });
 
     try {
       execGitArgsSync(["fetch", remote, "--no-tags"], {

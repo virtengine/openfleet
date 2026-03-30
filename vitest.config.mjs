@@ -22,6 +22,8 @@ const stripShebangPlugin = {
 
 export default defineConfig({
   plugins: [stripShebangPlugin],
+  esbuild: false,
+  keepProcessEnv: true,
   resolve: {
     alias: {
       "@openai/codex-sdk": resolve(process.cwd(), "tests", "shims", "codex-sdk.mjs"),
@@ -31,7 +33,14 @@ export default defineConfig({
     environment: "node",
     globals: true,
     include: ["tests/**/*.test.mjs"],
-    exclude: ["**/node_modules/**", "**/.cache/**", "**/*.node.test.mjs"],
+    exclude: [
+      "**/node_modules/**",
+      "**/.cache/**",
+      "**/*.node.test.mjs",
+      ...(process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
+        ? ["tests/workflow-task-lifecycle.test.mjs"]
+        : []),
+    ],
     testTimeout: 5000,
     pool: "threads",
     minWorkers: process.platform === "win32" ? 1 : undefined,

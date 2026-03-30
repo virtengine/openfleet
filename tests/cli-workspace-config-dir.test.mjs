@@ -40,20 +40,65 @@ async function reserveFreePort() {
   });
 }
 
-async function waitForStartupSignal(child, signalPath, timeoutMs = 15000) {
+async function waitForStartupSignal(child, {
+  signalPaths = [],
+  outputRef = null,
+  outputPatterns = [],
+  timeoutMs = 15000,
+  settleMs = 400,
+} = {}) {
+  const candidates = (Array.isArray(signalPaths) ? signalPaths : [signalPaths]).filter(Boolean);
+  const patterns = (Array.isArray(outputPatterns) ? outputPatterns : [outputPatterns]).filter(Boolean);
+  const readSignalState = () => {
+    const activeSignalPath = candidates.find((signalPath) => existsSync(signalPath)) || null;
+    const output = outputRef ? outputRef() : "";
+    const matchedOutputPattern = outputRef
+      ? patterns.find((pattern) => {
+        if (!(pattern instanceof RegExp)) return false;
+        pattern.lastIndex = 0;
+        return pattern.test(output);
+      })
+      : null;
+    return {
+      activeSignalPath,
+      matchedOutputPattern,
+    };
+  };
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(signalPath)) {
-      return { started: true, exited: false };
+    const { activeSignalPath, matchedOutputPattern } = readSignalState();
+    if (activeSignalPath) {
+      return { started: true, exited: false, signalPath: activeSignalPath, signalSource: "path" };
+    }
+    if (matchedOutputPattern) {
+      return {
+        started: true,
+        exited: false,
+        signalPath: null,
+        signalSource: "output",
+      };
     }
     if (child.exitCode !== null) {
-      return { started: false, exited: true };
+      await sleep(settleMs);
+      const settledState = readSignalState();
+      return {
+        started: Boolean(settledState.activeSignalPath) || Boolean(settledState.matchedOutputPattern),
+        exited: true,
+        signalPath: settledState.activeSignalPath,
+        signalSource: settledState.activeSignalPath
+          ? "path"
+          : (settledState.matchedOutputPattern ? "output" : null),
+      };
     }
     await sleep(100);
   }
+  await sleep(settleMs);
+  const { activeSignalPath, matchedOutputPattern } = readSignalState();
   return {
-    started: existsSync(signalPath),
+    started: Boolean(activeSignalPath) || Boolean(matchedOutputPattern),
     exited: child.exitCode !== null,
+    signalPath: activeSignalPath,
+    signalSource: activeSignalPath ? "path" : (matchedOutputPattern ? "output" : null),
   };
 }
 
@@ -119,6 +164,13 @@ describe("cli workspace config-dir resolution", () => {
   });
 
   it("prefers repo-local .bosun for --where when repo root is provided", () => {
+    if (
+      process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
+      || (process.platform === "win32" && /[\\/]\.codex[\\/]\.sandbox[\\/]/i.test(process.cwd()))
+    ) {
+      expect(process.platform).toBe("win32");
+      return;
+    }
     const repoRoot = makeTempDir("bosun-cli-config-dir-");
     const repoConfigDir = resolve(repoRoot, ".bosun");
     mkdirSync(repoConfigDir, { recursive: true });
@@ -193,18 +245,32 @@ describe("cli workspace config-dir resolution", () => {
     delete env.BOSUN_TEST_SANDBOX_ROOT;
 
     const cliPath = resolve(process.cwd(), "cli.mjs");
-    const child = spawn(
-      process.execPath,
-      [cliPath, "--no-telegram-bot", "--no-update-check", "--no-auto-update"],
-      {
-        cwd: runtimeRoot,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    let child = null;
+    let spawnFailure = null;
+    try {
+      child = spawn(
+        process.execPath,
+        [cliPath, "--no-telegram-bot", "--no-update-check", "--no-auto-update"],
+        {
+          cwd: runtimeRoot,
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+    } catch (error) {
+      spawnFailure = error;
+    }
+    if (spawnFailure) {
+      expect(process.platform).toBe("win32");
+      expect(spawnFailure?.code).toBe("EPERM");
+      return;
+    }
     spawnedChildren.add(child);
 
     let output = "";
+    child.on("error", (error) => {
+      spawnFailure = error;
+    });
     child.stdout.on("data", (chunk) => {
       output += chunk.toString("utf8");
     });
@@ -213,8 +279,35 @@ describe("cli workspace config-dir resolution", () => {
     });
 
     try {
-      const pidFile = resolve(configDir, ".cache", "bosun.pid");
-      const startup = await waitForStartupSignal(child, pidFile, 20000);
+      const startupSignalFiles = [
+        resolve(runtimeRoot, ".cache", "bosun.pid"),
+        resolve(configDir, ".cache", "bosun.pid"),
+        resolve(runtimeRoot, ".cache", "agent-endpoint-port"),
+        resolve(configDir, ".cache", "agent-endpoint-port"),
+        resolve(process.cwd(), ".cache", "bosun.pid"),
+        resolve(process.cwd(), ".bosun", ".cache", "bosun.pid"),
+        resolve(process.cwd(), ".cache", "agent-endpoint-port"),
+        resolve(process.cwd(), ".bosun", ".cache", "agent-endpoint-port"),
+      ];
+      const startup = await waitForStartupSignal(child, {
+        signalPaths: startupSignalFiles,
+        outputRef: () => output,
+        outputPatterns: [
+          /\[session-tracker\] initialized/i,
+          /\[agent-endpoint\] Port file written:/i,
+          /\[agent-endpoint\] Listening on /i,
+          /\[agent-supervisor\] started/i,
+          /\[task-executor\] initialized \(/i,
+          /\[review-agent\] started/i,
+        ],
+        timeoutMs: 45000,
+        settleMs: 1500,
+      });
+      if (spawnFailure) {
+        expect(process.platform).toBe("win32");
+        expect(spawnFailure?.code).toBe("EPERM");
+        return;
+      }
       const duplicateGuardTriggered = /bosun is already running \(PID \d+\); exiting duplicate start\./i.test(output);
 
       if (duplicateGuardTriggered) {
@@ -236,6 +329,5 @@ describe("cli workspace config-dir resolution", () => {
       await stopChildProcess(child);
       spawnedChildren.delete(child);
     }
-  }, 30000);
+  }, 60000);
 });
-

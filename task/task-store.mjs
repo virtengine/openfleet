@@ -17,6 +17,11 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
+import { syncTaskStoreToStateLedger } from "../lib/state-ledger-sqlite.mjs";
+import {
+  normalizeTaskRunJournalRef,
+  persistTaskRunJournal,
+} from "../workspace/execution-journal.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -691,11 +696,47 @@ function normalizeTaskRuns(rawRuns) {
       outcome: entry.outcome != null ? String(entry.outcome) : null,
       summary: summarizeTrajectoryStepText(entry.summary || entry.title || "") || null,
       steps: normalizeTaskRunSteps(entry.steps),
+      journal: normalizeTaskRunJournalRef(entry.journal || entry.meta?.journal),
       meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
     });
   }
   if (normalized.length <= MAX_TASK_RUNS) return normalized;
   return normalized.slice(-MAX_TASK_RUNS);
+}
+
+function persistTaskRunJournalRef(taskId, run) {
+  if (!run || typeof run !== "object") return run;
+  try {
+    const journal = persistTaskRunJournal(taskId, run, { taskStorePath: storePath });
+    const nextMeta = run.meta && typeof run.meta === "object" ? { ...run.meta } : {};
+    nextMeta.journal = journal;
+    delete nextMeta.journalError;
+    return {
+      ...run,
+      journal,
+      meta: nextMeta,
+    };
+  } catch (error) {
+    const nextMeta = run.meta && typeof run.meta === "object" ? { ...run.meta } : {};
+    nextMeta.journalError = String(error?.message || error);
+    return {
+      ...run,
+      journal: normalizeTaskRunJournalRef(run.journal || run.meta?.journal),
+      meta: nextMeta,
+    };
+  }
+}
+
+function backfillTaskRunJournalsForTask(task) {
+  if (!task || !Array.isArray(task.runs) || task.runs.length === 0) {
+    return false;
+  }
+  const nextRuns = normalizeTaskRuns(task.runs).map((run) => persistTaskRunJournalRef(task.id, run));
+  const changed = JSON.stringify(nextRuns) !== JSON.stringify(task.runs);
+  if (changed) {
+    task.runs = normalizeTaskRuns(nextRuns);
+  }
+  return changed;
 }
 
 function validateTaskTransition(currentStatus, nextStatus, options = {}) {
@@ -732,6 +773,111 @@ function taskHasReviewReference(task) {
     return true;
   }
   return false;
+}
+
+function buildTaskCompletionGuardContext(task, overrides = {}) {
+  const nextLinks = overrides.links && typeof overrides.links === "object"
+    ? {
+        ...(task?.links && typeof task.links === "object" ? task.links : {}),
+        ...overrides.links,
+      }
+    : task?.links;
+  const reviewIssues = Array.isArray(overrides.reviewIssues)
+    ? overrides.reviewIssues
+    : (Array.isArray(task?.reviewIssues) ? task.reviewIssues : []);
+  const mergedTask = {
+    ...(task && typeof task === "object" ? task : {}),
+    ...(overrides && typeof overrides === "object" ? overrides : {}),
+    links: nextLinks,
+  };
+  return {
+    hasReviewReference: taskHasReviewReference(mergedTask),
+    reviewStatus: String(
+      overrides.reviewStatus ?? task?.reviewStatus ?? "",
+    ).trim().toLowerCase() || null,
+    reviewedAt: overrides.reviewedAt ?? task?.reviewedAt ?? null,
+    reviewIssueCount: reviewIssues.length,
+  };
+}
+
+function recordLifecycleGuardBlock(task, action, guard, options = {}) {
+  if (!task || typeof task !== "object") return;
+  pushTaskTimeline(task, {
+    type: "lifecycle.blocked",
+    source: options.source || "task-store",
+    actor: options.actor != null ? String(options.actor) : null,
+    action: action || "complete",
+    fromStatus: task.status,
+    toStatus: options.targetStatus || options.status || null,
+    status: task.status,
+    message: String(
+      guard?.message || "Lifecycle action blocked by completion guard.",
+    ),
+    payload: {
+      error: guard?.error || "completion_guard_blocked",
+      reason: guard?.reason || null,
+      reviewStatus: guard?.reviewStatus || null,
+      hasReviewReference: guard?.hasReviewReference === true,
+      requiredStatus: guard?.requiredStatus || null,
+    },
+  });
+  markTaskTouched(task, options.source || "task-store");
+  saveStore();
+}
+
+export function evaluateTaskCompletionGuard(taskOrId, options = {}) {
+  ensureLoaded();
+  const task = typeof taskOrId === "string" ? _store.tasks[taskOrId] : taskOrId;
+  if (!task || typeof task !== "object") return null;
+  if (
+    options.force === true ||
+    options.manualOverride === true ||
+    options.allowCompletionOverride === true
+  ) {
+    return null;
+  }
+
+  const normalizedAction = String(options.action || "").trim().toLowerCase();
+  const requestedStatus = normalizeTaskStatus(
+    options.targetStatus ||
+      options.status ||
+      LIFECYCLE_ACTION_TARGET[normalizedAction] ||
+      "",
+  );
+  if (requestedStatus !== "done") return null;
+
+  const guardContext = buildTaskCompletionGuardContext(
+    task,
+    options.patch && typeof options.patch === "object" ? options.patch : {},
+  );
+  const hasReviewContext =
+    normalizeTaskStatus(task.status) === "inreview" ||
+    guardContext.hasReviewReference ||
+    Boolean(guardContext.reviewStatus) ||
+    Boolean(guardContext.reviewedAt) ||
+    guardContext.reviewIssueCount > 0;
+  if (!hasReviewContext) return null;
+  if (guardContext.reviewStatus === "approved") return null;
+
+  const reason =
+    guardContext.reviewStatus === "changes_requested"
+      ? "review_changes_requested"
+      : "review_not_approved";
+  const message =
+    reason === "review_changes_requested"
+      ? "Task review requested changes. Approve the review or force the completion override before marking this task done."
+      : "Task completion requires an approved review before it can be marked done.";
+
+  return {
+    error: "completion_guard_blocked",
+    reason,
+    message,
+    reviewStatus: guardContext.reviewStatus,
+    reviewedAt: guardContext.reviewedAt,
+    reviewIssueCount: guardContext.reviewIssueCount,
+    hasReviewReference: guardContext.hasReviewReference,
+    requiredStatus: "approved",
+  };
 }
 
 function shouldKeepTaskInReview(task, requestedStatus, options = {}) {
@@ -1233,6 +1379,7 @@ function backupCorruptStorePayload(raw, parseErr) {
  * Load store from disk. Called automatically on first access.
  */
 export function loadStore() {
+  let didBackfillTaskRunJournals = false;
   try {
     if (existsSync(storePath)) {
       const raw = readFileSync(storePath, "utf-8");
@@ -1261,6 +1408,9 @@ export function loadStore() {
         const resolvedId = String(taskValue?.id || taskId || "").trim();
         if (!resolvedId) continue;
         normalizedTasks[resolvedId] = normalizeTaskStructure({ ...taskValue, id: resolvedId });
+        if (backfillTaskRunJournalsForTask(normalizedTasks[resolvedId])) {
+          didBackfillTaskRunJournals = true;
+        }
       }
       _store = {
         _meta: { ...defaultMeta(), ...(data._meta || {}), sprintOrderMode: resolveSprintOrderMode(data && data._meta ? data._meta.sprintOrderMode : null) },
@@ -1296,6 +1446,9 @@ export function loadStore() {
     _lastLoadedSizeBytes = 0;
   }
   _loaded = true;
+  if (didBackfillTaskRunJournals) {
+    saveStore();
+  }
 }
 
 /**
@@ -1339,6 +1492,11 @@ export function saveStore() {
           const loadedFingerprint = getStoreFingerprint();
           _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
           _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
+          try {
+            syncTaskStoreToStateLedger(_store, { anchorPath: storePath });
+          } catch (ledgerErr) {
+            console.warn(TAG, "State ledger sync failed:", ledgerErr?.message || ledgerErr);
+          }
         } catch (err) {
           console.error(TAG, "Failed to save store:", err.message);
         }
@@ -1633,7 +1791,7 @@ export function updateTask(taskId, updates) {
       continue;
     }
     if (key === "runs") {
-      task.runs = normalizeTaskRuns(value);
+      task.runs = normalizeTaskRuns(value).map((run) => persistTaskRunJournalRef(taskId, run));
       continue;
     }
     if (key === "assignees") { task.assignees = uniqueStringList(value); continue; }
@@ -1712,6 +1870,9 @@ export function addTask(taskData) {
   }
 
   task.tags = normalizeTags(task.tags);
+  if (Array.isArray(task.runs) && task.runs.length > 0) {
+    task.runs = normalizeTaskRuns(task.runs).map((run) => persistTaskRunJournalRef(task.id, run));
+  }
   task.draft = Boolean(task.draft || task.status === "draft");
   if (task.draft) task.status = "draft";
   task.lastAgentOutput = truncate(task.lastAgentOutput, MAX_AGENT_OUTPUT);
@@ -1925,6 +2086,31 @@ export function transitionTaskLifecycle(taskId, action, options = {}) {
     return { ok: false, error: "unknown_action", action: normalizedAction, task: { ...task } };
   }
 
+  const completionGuard = evaluateTaskCompletionGuard(task, {
+    action: normalizedAction,
+    targetStatus,
+    force: options.force === true,
+    manualOverride: options.manualOverride === true,
+    patch: options.patch && typeof options.patch === "object" ? options.patch : null,
+  });
+  if (completionGuard) {
+    recordLifecycleGuardBlock(task, normalizedAction, completionGuard, {
+      ...options,
+      targetStatus,
+    });
+    return {
+      ok: false,
+      error: completionGuard.error,
+      reason: completionGuard.reason,
+      message: completionGuard.message,
+      guard: completionGuard,
+      action: normalizedAction,
+      fromStatus: task.status,
+      toStatus: targetStatus,
+      task: { ...task },
+    };
+  }
+
   const validation = validateTaskTransition(task.status, targetStatus, options);
   if (!validation.valid) {
     return {
@@ -2028,7 +2214,7 @@ export function appendTaskRun(taskId, run = {}) {
   ensureLoaded();
   const task = _store.tasks[taskId];
   if (!task) return null;
-  const nextRun = normalizeTaskRuns([run])[0] || null;
+  const nextRun = persistTaskRunJournalRef(taskId, normalizeTaskRuns([run])[0] || null);
   if (!nextRun) return null;
   task.runs = normalizeTaskRuns([...(Array.isArray(task.runs) ? task.runs : []), nextRun]);
   markTaskTouched(task, run?.source || "task-run");

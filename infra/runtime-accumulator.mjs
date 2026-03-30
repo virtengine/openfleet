@@ -89,6 +89,204 @@ function toFiniteNumber(value, fallback = 0) {
 	return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizeFileCounts(fileCounts = {}) {
+	const counts = fileCounts && typeof fileCounts === "object" ? fileCounts : {};
+	return {
+		openedFiles: Math.max(0, toFiniteNumber(counts.openedFiles, 0)),
+		editedFiles: Math.max(0, toFiniteNumber(counts.editedFiles, 0)),
+		referencedFiles: Math.max(0, toFiniteNumber(counts.referencedFiles, 0)),
+		openOps: Math.max(0, toFiniteNumber(counts.openOps, 0)),
+		editOps: Math.max(0, toFiniteNumber(counts.editOps, 0)),
+	};
+}
+
+function normalizeTopTools(topTools = [], limit = 6) {
+	return (Array.isArray(topTools) ? topTools : [])
+		.map((entry) => ({
+			name: String(entry?.name || "").trim(),
+			count: Math.max(0, toFiniteNumber(entry?.count, 0)),
+		}))
+		.filter((entry) => entry.name && entry.count > 0)
+		.slice(0, limit);
+}
+
+function normalizeRecentActions(recentActions = [], limit = 8) {
+	return (Array.isArray(recentActions) ? recentActions : [])
+		.map((entry) => ({
+			type: String(entry?.type || "").trim() || "event",
+			label: String(entry?.label || "").trim(),
+			level: String(entry?.level || "info").trim() || "info",
+			timestamp: String(entry?.timestamp || "").trim() || null,
+		}))
+		.filter((entry) => entry.label)
+		.slice(0, limit);
+}
+
+function normalizeContextWindow(contextWindow = {}, fallbackUsedTokens = 0) {
+	const snapshot = contextWindow && typeof contextWindow === "object" ? contextWindow : {};
+	const usedTokens = Math.max(
+		0,
+		toFiniteNumber(snapshot.usedTokens ?? fallbackUsedTokens, 0),
+	);
+	const totalTokens = (() => {
+		const numeric = Number(snapshot.totalTokens);
+		return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : null;
+	})();
+	const percent = (() => {
+		const numeric = Number(snapshot.percent);
+		if (Number.isFinite(numeric)) return Math.max(0, Math.min(100, Number(numeric.toFixed(1))));
+		if (usedTokens > 0 && totalTokens) {
+			return Math.max(0, Math.min(100, Number(((usedTokens / totalTokens) * 100).toFixed(1))));
+		}
+		return null;
+	})();
+	return {
+		usedTokens,
+		totalTokens,
+		percent,
+	};
+}
+
+function getContextPressureLevel(percent) {
+	if (!Number.isFinite(Number(percent))) return "unknown";
+	const safePercent = Number(percent);
+	if (safePercent >= 95) return "critical";
+	if (safePercent >= 85) return "high";
+	if (safePercent >= 70) return "medium";
+	return "low";
+}
+
+function normalizeTerminalRuntimeState(state, { live = false } = {}) {
+	const normalizedState = String(state || "").trim() || "unknown";
+	if (live) return normalizedState;
+	if (normalizedState === "implementation_done_commit_blocked") return "completed";
+	return normalizedState;
+}
+
+function normalizeRuntimeHealth(runtimeHealth = {}, fallback = {}) {
+	const source = runtimeHealth && typeof runtimeHealth === "object" ? runtimeHealth : {};
+	const reasons = Array.isArray(source.reasons)
+		? source.reasons.map((reason) => String(reason || "").trim()).filter(Boolean)
+		: [];
+	const live = Boolean(source.live ?? fallback.live ?? false);
+	return {
+		state: normalizeTerminalRuntimeState(source.state || fallback.state || "completed", { live }),
+		severity: String(source.severity || fallback.severity || "info").trim() || "info",
+		live,
+		idleMs: Math.max(0, toFiniteNumber(source.idleMs ?? fallback.idleMs, 0)),
+		contextPressure: String(source.contextPressure || fallback.contextPressure || "unknown").trim() || "unknown",
+		contextUsagePercent: (() => {
+			const numeric = Number(source.contextUsagePercent ?? fallback.contextUsagePercent);
+			return Number.isFinite(numeric) ? Math.max(0, Math.min(100, Number(numeric.toFixed(1)))) : null;
+		})(),
+		toolCalls: Math.max(0, toFiniteNumber(source.toolCalls ?? fallback.toolCalls, 0)),
+		toolResults: Math.max(0, toFiniteNumber(source.toolResults ?? fallback.toolResults, 0)),
+		errors: Math.max(0, toFiniteNumber(source.errors ?? fallback.errors, 0)),
+		hasEdits: Boolean(source.hasEdits ?? fallback.hasEdits ?? false),
+		hasCommits: Boolean(source.hasCommits ?? fallback.hasCommits ?? false),
+		reasons,
+	};
+}
+
+function buildRuntimeAggregates(sessions = []) {
+	const toolCounts = new Map();
+	const statusBuckets = {};
+	const severityBuckets = {};
+	let totalInputTokens = 0;
+	let totalOutputTokens = 0;
+	let totalTokens = 0;
+	let totalTurns = 0;
+	let toolCalls = 0;
+	let toolResults = 0;
+	let totalErrors = 0;
+	let totalEdits = 0;
+	let totalCommits = 0;
+	let sessionsWithEdits = 0;
+	let sessionsWithCommits = 0;
+	let sessionsNearContextLimit = 0;
+	let sessionsHighContextPressure = 0;
+	let contextPercentTotal = 0;
+	let contextPercentCount = 0;
+	let maxContextUsagePercent = null;
+
+	for (const session of Array.isArray(sessions) ? sessions : []) {
+		const inputTokens = Math.max(0, toFiniteNumber(session?.inputTokens, 0));
+		const outputTokens = Math.max(0, toFiniteNumber(session?.outputTokens, 0));
+		const tokenCount = Math.max(
+			0,
+			toFiniteNumber(session?.tokenCount ?? session?.totalTokens, inputTokens + outputTokens),
+		);
+		const turnCount = Math.max(0, toFiniteNumber(session?.turnCount, 0));
+		const healthState = String(session?.runtimeHealth?.state || session?.status || "completed").trim() || "completed";
+		const severity = String(session?.runtimeHealth?.severity || "info").trim() || "info";
+		const contextPercent = Number(session?.contextUsagePercent ?? session?.contextWindow?.percent);
+		const hasEdits = Boolean(session?.hasEdits);
+		const hasCommits = Boolean(session?.hasCommits);
+
+		totalInputTokens += inputTokens;
+		totalOutputTokens += outputTokens;
+		totalTokens += tokenCount;
+		totalTurns += turnCount;
+		toolCalls += Math.max(0, toFiniteNumber(session?.toolCalls, 0));
+		toolResults += Math.max(0, toFiniteNumber(session?.toolResults, 0));
+		totalErrors += Math.max(0, toFiniteNumber(session?.errors, 0));
+		totalEdits += Math.max(0, toFiniteNumber(session?.fileCounts?.editOps, 0));
+		totalCommits += hasCommits ? 1 : 0;
+		if (hasEdits) sessionsWithEdits += 1;
+		if (hasCommits) sessionsWithCommits += 1;
+		statusBuckets[healthState] = Math.max(0, toFiniteNumber(statusBuckets[healthState], 0)) + 1;
+		severityBuckets[severity] = Math.max(0, toFiniteNumber(severityBuckets[severity], 0)) + 1;
+
+		if (Number.isFinite(contextPercent)) {
+			const safePercent = Math.max(0, Math.min(100, Number(contextPercent)));
+			contextPercentTotal += safePercent;
+			contextPercentCount += 1;
+			maxContextUsagePercent = maxContextUsagePercent == null
+				? safePercent
+				: Math.max(maxContextUsagePercent, safePercent);
+			if (safePercent >= 85) sessionsNearContextLimit += 1;
+			if (safePercent >= 70) sessionsHighContextPressure += 1;
+		}
+
+		for (const tool of normalizeTopTools(session?.topTools, 8)) {
+			toolCounts.set(tool.name, (toolCounts.get(tool.name) || 0) + tool.count);
+		}
+	}
+
+	const sessionsHighPressure = sessionsHighContextPressure;
+
+	return {
+		totalInputTokens,
+		totalOutputTokens,
+		totalTokens,
+		totalTurns,
+		toolSummary: {
+			toolCalls,
+			toolResults,
+			errors: totalErrors,
+			editOps: totalEdits,
+			commitOps: totalCommits,
+			sessionsWithEdits,
+			sessionsWithCommits,
+			topTools: Array.from(toolCounts.entries())
+				.map(([name, count]) => ({ name, count }))
+				.sort((a, b) => b.count - a.count)
+				.slice(0, 8),
+		},
+		healthBuckets: statusBuckets,
+		severityBuckets,
+		contextSummary: {
+			sessionCount: Array.isArray(sessions) ? sessions.length : 0,
+			maxUsagePercent: maxContextUsagePercent,
+			avgUsagePercent: contextPercentCount > 0
+				? Number((contextPercentTotal / contextPercentCount).toFixed(1))
+				: null,
+			sessionsNearLimit: sessionsNearContextLimit,
+			sessionsHighPressure,
+		},
+	};
+}
+
 function syncGlobals() {
 	globalThis.__bosun_runtimeMs = _state.runtimeMs;
 	globalThis.__bosun_totalCostUsd = _state.totalCostUsd;
@@ -99,6 +297,7 @@ function normalizeCompletedSession(session = {}) {
 	const taskId = String(session.taskId || session.id || session.sessionId || "").trim();
 	const endedAt = toFiniteNumber(session.endedAt, Date.now());
 	const startedAt = toFiniteNumber(session.startedAt, endedAt);
+	const terminalStatus = String(session.status || "completed").trim() || "completed";
 	const inputTokens = toFiniteNumber(
 		session.inputTokens ?? session.prompt_tokens ?? session.promptTokens ?? session.input_tokens,
 		0,
@@ -127,6 +326,27 @@ function normalizeCompletedSession(session = {}) {
 	const turns = Array.isArray(session.turns)
 		? session.turns.map((turn) => ({ ...turn }))
 		: [];
+	const contextWindow = normalizeContextWindow(session.contextWindow, tokenCount);
+	const contextUsagePercent = Number.isFinite(Number(session.contextUsagePercent))
+		? Math.max(0, Math.min(100, Number(Number(session.contextUsagePercent).toFixed(1))))
+		: contextWindow.percent;
+	const contextPressure = String(
+		session.contextPressure || getContextPressureLevel(contextUsagePercent),
+	).trim() || getContextPressureLevel(contextUsagePercent);
+	const runtimeHealth = normalizeRuntimeHealth(session.runtimeHealth, {
+		state: terminalStatus,
+		contextPressure,
+		contextUsagePercent,
+		toolCalls: session.toolCalls,
+		toolResults: session.toolResults,
+		errors: session.errors,
+		hasEdits: session.hasEdits,
+		hasCommits: session.hasCommits,
+	});
+	const canonicalTerminalState = normalizeTerminalRuntimeState(terminalStatus, { live: runtimeHealth.live });
+	if (runtimeHealth.state !== canonicalTerminalState && runtimeHealth.live !== true) {
+		runtimeHealth.state = canonicalTerminalState;
+	}
 
 	return {
 		type: "completed_session",
@@ -139,13 +359,29 @@ function normalizeCompletedSession(session = {}) {
 		startedAt,
 		endedAt,
 		durationMs,
-		status: String(session.status || "completed").trim() || "completed",
+		status: terminalStatus,
 		tokenCount,
 		inputTokens,
 		outputTokens,
 		turnCount,
 		turns,
 		costUsd,
+		totalEvents: Math.max(0, toFiniteNumber(session.totalEvents, 0)),
+		lastEventType: String(session.lastEventType || "").trim() || null,
+		hasEdits: Boolean(session.hasEdits),
+		hasCommits: Boolean(session.hasCommits),
+		toolCalls: Math.max(0, toFiniteNumber(session.toolCalls, 0)),
+		toolResults: Math.max(0, toFiniteNumber(session.toolResults, 0)),
+		errors: Math.max(0, toFiniteNumber(session.errors, 0)),
+		commandExecutions: Math.max(0, toFiniteNumber(session.commandExecutions, 0)),
+		fileCounts: normalizeFileCounts(session.fileCounts),
+		topTools: normalizeTopTools(session.topTools, 6),
+		recentActions: normalizeRecentActions(session.recentActions, 8),
+		contextWindow,
+		contextUsagePercent,
+		contextPressure,
+		lastToolName: String(session.lastToolName || "").trim() || null,
+		runtimeHealth,
 		recordedAt: String(session.recordedAt || new Date().toISOString()),
 	};
 }
@@ -359,13 +595,24 @@ export function initRuntimeAccumulator() {
 
 export function getRuntimeStats() {
 	loadState();
+	const completedSessions = _state.completedSessions.map((entry) => ({ ...entry }));
+	const aggregates = buildRuntimeAggregates(completedSessions);
 	return {
 		runtimeMs: _state.runtimeMs,
 		totalCostUsd: _state.totalCostUsd,
-		sessionCount: _state.completedSessions.length,
-		completedSessions: _state.completedSessions.map((entry) => ({ ...entry })),
+		sessionCount: completedSessions.length,
+		completedSessions,
+		sessions: completedSessions,
 		startedAt: _state.startedAt,
 		lastUpdated: _state.lastUpdated,
+		totalInputTokens: aggregates.totalInputTokens,
+		totalOutputTokens: aggregates.totalOutputTokens,
+		totalTokens: aggregates.totalTokens,
+		totalTurns: aggregates.totalTurns,
+		toolSummary: aggregates.toolSummary,
+		healthBuckets: aggregates.healthBuckets,
+		severityBuckets: aggregates.severityBuckets,
+		contextSummary: aggregates.contextSummary,
 	};
 }
 
@@ -469,14 +716,24 @@ export function clearCompletedSessions() {
 
 export function exportRuntimeData() {
 	loadState();
+	const sessions = _state.completedSessions.map((entry) => ({ ...entry }));
+	const aggregates = buildRuntimeAggregates(sessions);
 	return {
 		runtimeMs: _state.runtimeMs,
 		totalCostUsd: _state.totalCostUsd,
-		sessionCount: _state.completedSessions.length,
+		sessionCount: sessions.length,
 		startedAt: _state.startedAt,
 		lastUpdated: _state.lastUpdated,
 		taskLifetimeTotals: { ..._state.taskLifetimeTotals },
-		sessions: _state.completedSessions.map((entry) => ({ ...entry })),
+		sessions,
+		totalInputTokens: aggregates.totalInputTokens,
+		totalOutputTokens: aggregates.totalOutputTokens,
+		totalTokens: aggregates.totalTokens,
+		totalTurns: aggregates.totalTurns,
+		toolSummary: aggregates.toolSummary,
+		healthBuckets: aggregates.healthBuckets,
+		severityBuckets: aggregates.severityBuckets,
+		contextSummary: aggregates.contextSummary,
 	};
 }
 

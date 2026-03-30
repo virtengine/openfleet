@@ -198,6 +198,12 @@ import {
   initializeHookState,
   getEnabledHookIds,
   getHooksAsLibraryEntries,
+  bulkEnableByCategory,
+  bulkDisableByCategory,
+  saveHookOverride,
+  deleteHookOverride,
+  loadHookOverrides,
+  getHookWithOverrides,
 } from "../agent/hook-library.mjs";
 import {
   assessInputQuality,
@@ -236,7 +242,13 @@ import {
   getAllSharedStates,
   clearIgnoreFlag,
   setIgnoreFlag,
+  getStateStatistics,
 } from "../workspace/shared-state-manager.mjs";
+import { listScopeLocks } from "../workspace/scope-locks.mjs";
+import {
+  normalizeTaskRunJournalRef,
+  readTaskRunJournal,
+} from "../workspace/execution-journal.mjs";
 import {
   initPresence,
   listActiveInstances,
@@ -272,6 +284,20 @@ import {
   addSessionStateListener,
 } from "../infra/session-tracker.mjs";
 import { withIncomingTraceContext } from "../infra/tracing.mjs";
+import {
+  appendTaskTraceEventToStateLedger,
+  appendOperatorActionToStateLedger,
+  getAgentActivityFromStateLedger,
+  getRunAuditBundleFromStateLedger,
+  getTaskAuditBundleFromStateLedger,
+  getSessionActivityFromStateLedger,
+  listAuditEventsFromStateLedger,
+  listPromotedStrategiesFromStateLedger,
+  listPromotedStrategyEventsFromStateLedger,
+  listTaskAuditSummariesFromStateLedger,
+  listTaskTraceEventsFromStateLedger,
+  upsertStateLedgerKeyValue,
+} from "../lib/state-ledger-sqlite.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   addSessionAccumulationListener,
@@ -291,6 +317,17 @@ import {
   validateSetting,
 } from "../ui/modules/settings-schema.js";
 import { loadConfig, resolveTrustedAuthorList } from "../config/config.mjs";
+import { CONFIG_FILES } from "../config/config-file-names.mjs";
+import {
+  buildConfigEditorModel,
+  cloneConfigDocument,
+  findConfigValidationMessage,
+  getConfigSchemaProperty,
+  parseConfigEditorInput,
+  setConfigValueAtPath,
+  validateConfigDocument,
+  writeJsonFileAtomic,
+} from "../config/config-editor.mjs";
 import {
   getAvailableAgents,
   getAgentMode,
@@ -322,6 +359,13 @@ import {
   listTaskAttachments,
   mergeTaskAttachments,
 } from "../task/task-attachments.mjs";
+import {
+  buildTaskReplanContext,
+  buildTaskReplanPrompt,
+  extractTaskReplanProposal,
+  normalizeTaskPlanningMode,
+  normalizeTaskReplanProposal,
+} from "../task/task-replanner.mjs";
 import { getVisionSessionState } from "../voice/vision-session-state.mjs";
 import {
   buildLogStreamPayload,
@@ -334,6 +378,7 @@ import {
   persistCompatibleTuiAuthToken,
   resolveTuiAuthToken,
 } from "../infra/tui-bridge.mjs";
+import { emitConfigReload } from "../infra/config-reload-bus.mjs";
 import { setComponentStatus } from "../infra/health-status.mjs";
 import { VaultStore } from "../lib/vault.mjs";
 import { keychainGetOrCreate } from "../lib/vault-keychain.mjs";
@@ -2009,6 +2054,26 @@ function mapWorkflowRunOutcome(eventType, status) {
   return "completed";
 }
 
+function resolveTaskWorkflowTraceLedgerOptions(event = {}) {
+  const workspaceId = String(event?.workspaceId || "").trim().toLowerCase();
+  if (workspaceId) {
+    try {
+      const configDir = resolveUiConfigDir();
+      const workspaces = listManagedWorkspaces(configDir, { repoRoot });
+      const workspace = workspaces.find(
+        (entry) => String(entry?.id || "").trim().toLowerCase() === workspaceId,
+      );
+      const workspaceDir = normalizeCandidatePath(pickWorkspaceRepoDir(workspace) || workspace?.path);
+      if (workspaceDir) {
+        return { repoRoot: workspaceDir };
+      }
+    } catch {
+      // best effort
+    }
+  }
+  return { repoRoot };
+}
+
 function handleTaskWorkflowTraceEvent(event = {}) {
   const taskId = String(event?.taskId || "").trim();
   if (!taskId) return;
@@ -2017,6 +2082,8 @@ function handleTaskWorkflowTraceEvent(event = {}) {
   const summary = String(event?.summary || eventType).trim();
 
   try {
+    appendTaskTraceEventToStateLedger(event, resolveTaskWorkflowTraceLedgerOptions(event));
+
     appendInternalTaskTimelineEvent(taskId, {
       type: eventType,
       source: "workflow",
@@ -2102,6 +2169,13 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
       url: incoming.url || current.url || null,
       nodeId: incoming.nodeId || current.nodeId || null,
       source: incoming.source || current.source || "workflow",
+      plannerTimeline: Array.isArray(incoming.plannerTimeline)
+        ? incoming.plannerTimeline
+        : (Array.isArray(current.plannerTimeline) ? current.plannerTimeline : []),
+      proofBundle: incoming.proofBundle || current.proofBundle || null,
+      proofSummary: incoming.proofSummary || current.proofSummary || null,
+      runGraph: incoming.runGraph || current.runGraph || null,
+      issueAdvisor: incoming.issueAdvisor || current.issueAdvisor || null,
       sessionId: resolveLinkedSessionId(incoming) || resolveLinkedSessionId(current) || null,
       primarySessionId:
         String(incoming.primarySessionId || "").trim()
@@ -2129,6 +2203,11 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
       url: entry.url != null ? String(entry.url) : null,
       nodeId: entry.nodeId != null ? String(entry.nodeId) : null,
       source: entry.source ? String(entry.source) : "workflow",
+      plannerTimeline: Array.isArray(entry.plannerTimeline) ? entry.plannerTimeline : [],
+      proofBundle: entry.proofBundle && typeof entry.proofBundle === "object" ? entry.proofBundle : null,
+      proofSummary: entry.proofSummary && typeof entry.proofSummary === "object" ? entry.proofSummary : null,
+      runGraph: entry.runGraph && typeof entry.runGraph === "object" ? entry.runGraph : null,
+      issueAdvisor: entry.issueAdvisor && typeof entry.issueAdvisor === "object" ? entry.issueAdvisor : null,
       sessionId: resolveLinkedSessionId(entry),
       primarySessionId:
         String(entry.primarySessionId || "").trim() || resolveSessionId(entry),
@@ -2158,14 +2237,22 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
   return merged;
 }
 
-async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
+async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return [];
   try {
-    const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false });
-    if (!wfCtx?.ok || !wfCtx.engine) return [];
-    const engine = wfCtx.engine;
-    const summaries = engine.getRunHistory ? engine.getRunHistory(null, 240) : [];
+    let engine = _testDefaultEngine;
+    if (!engine) {
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
+      engine = wfCtx?.ok && wfCtx.engine
+        ? wfCtx.engine
+        : null;
+    }
+    if (!engine) return [];
+    let summaries = [];
+    if (typeof engine.getRunHistory === "function") {
+      summaries = await engine.getRunHistory(null, 240);
+    }
     const out = [];
     for (const summary of summaries) {
       if (!summary?.runId) continue;
@@ -2176,18 +2263,27 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
       let matches = primaryTaskId === normalizedTaskId || summaryTaskIds.includes(normalizedTaskId);
       let data = {};
       let traceEvents = [];
+      let detailRun = null;
       if (!matches && engine.getRunDetail) {
-        const detail = engine.getRunDetail(summary.runId);
-        if (!detail?.detail) continue;
-        data = detail.detail?.data || {};
+        detailRun = await engine.getRunDetail(summary.runId);
+        if (!detailRun?.detail) continue;
+        data = detailRun.detail?.data || {};
         const detailTaskId = String(data.taskId || data.activeTaskId || data?.task?.id || "").trim();
         matches = detailTaskId === normalizedTaskId;
       }
       if (!matches && typeof engine.getTaskTraceEvents === "function") {
-        traceEvents = engine.getTaskTraceEvents(summary.runId) || [];
+        traceEvents = (await engine.getTaskTraceEvents(summary.runId)) || [];
         matches = traceEvents.some((event) => String(event?.taskId || "").trim() === normalizedTaskId);
       }
       if (!matches) continue;
+      const needsObservedRun = (!summary?.proofBundle || !Array.isArray(summary?.plannerTimeline))
+        && typeof engine.getRunDetail === "function";
+      const observedRun = needsObservedRun && typeof engine.getRunDetail === "function"
+        ? (detailRun && detailRun.runId === summary.runId ? detailRun : await engine.getRunDetail(summary.runId))
+        : summary;
+      if ((!data || Object.keys(data).length === 0) && observedRun?.detail?.data) {
+        data = observedRun.detail.data;
+      }
       const primarySessionId = (() => {
         for (const value of [
           summary?.primarySessionId,
@@ -2220,6 +2316,8 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
         }
         return null;
       })();
+      const proofBundle = normalizeWorkflowRunProofBundle(observedRun?.proofBundle || summary?.proofBundle || null);
+      const proofSummary = buildWorkflowRunProofSummary(observedRun || summary);
       out.push({
         runId: summary.runId,
         workflowId: summary.workflowId,
@@ -2235,6 +2333,11 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
         sessionId: null,
         primarySessionId,
         source: "workflow",
+        plannerTimeline: proofBundle.plannerTimeline,
+        proofBundle,
+        proofSummary,
+        runGraph: observedRun?.runGraph || summary?.runGraph || null,
+        issueAdvisor: observedRun?.detail?.issueAdvisor || summary?.detail?.issueAdvisor || null,
       });
       if (out.length >= limit) break;
     }
@@ -2536,6 +2639,445 @@ function buildTaskMetaPatch(previousMeta, metadataPatchMeta, options = {}) {
   return nextMeta;
 }
 
+function uniqueTaskIds(values = []) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [values])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  )];
+}
+
+function mergeTaskTagLists(...sources) {
+  return [...new Set(
+    sources
+      .flatMap((value) => normalizeTagsInput(value))
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  )];
+}
+
+function selectTaskReplanRelatedTasks(task, allTasks = []) {
+  const taskId = String(task?.id || "").trim();
+  const sprintId = resolveTaskSprintId(task);
+  const epicId = String(task?.epicId || task?.meta?.epicId || "").trim();
+  const childTasks = allTasks.filter((entry) => String(entry?.parentTaskId || entry?.meta?.parentTaskId || "").trim() === taskId);
+  const relatedTasks = allTasks.filter((entry) => {
+    const entryId = String(entry?.id || "").trim();
+    if (!entryId || entryId === taskId) return false;
+    const entryParentId = String(entry?.parentTaskId || entry?.meta?.parentTaskId || "").trim();
+    if (entryParentId === taskId) return false;
+    if (sprintId && resolveTaskSprintId(entry) === sprintId) return true;
+    if (epicId && String(entry?.epicId || entry?.meta?.epicId || "").trim() === epicId) return true;
+    return false;
+  });
+  return { childTasks, relatedTasks };
+}
+
+async function updateTaskReplanState(adapter, task, proposal, options = {}) {
+  if (!adapter || typeof adapter.updateTask !== "function" || !task?.id) return task;
+  const planningMode = normalizeTaskPlanningMode(options.mode || proposal?.mode || "replan");
+  const plannerState = {
+    mode: planningMode,
+    proposalId: proposal?.proposalId || null,
+    generatedAt: proposal?.generatedAt || new Date().toISOString(),
+    recommendedAction: proposal?.recommendedAction || null,
+    currentPlanStep: proposal?.currentPlanStep || "",
+    stopReason: proposal?.stopReason || "",
+    summary: proposal?.summary || "",
+    subtaskCount: Array.isArray(proposal?.subtasks) ? proposal.subtasks.length : 0,
+    dependencyPatchCount: Array.isArray(proposal?.dependencyPatches) ? proposal.dependencyPatches.length : 0,
+    status: options.status || proposal?.status || "proposed",
+    ...(options.appliedAt ? { appliedAt: options.appliedAt } : {}),
+    ...(options.createdTaskIds ? { createdTaskIds: uniqueTaskIds(options.createdTaskIds) } : {}),
+  };
+  const nextProposal = {
+    ...(proposal && typeof proposal === "object" ? proposal : {}),
+    mode: planningMode,
+    status: options.status || proposal?.status || "proposed",
+    ...(options.appliedAt ? { appliedAt: options.appliedAt } : {}),
+    ...(options.createdTaskIds ? { createdTaskIds: uniqueTaskIds(options.createdTaskIds) } : {}),
+  };
+  const nextMeta = buildTaskMetaPatch(task?.meta, {
+    replanProposal: nextProposal,
+    ...(planningMode === "decompose" ? { decomposeProposal: nextProposal } : {}),
+    plannerState: {
+      ...(task?.meta?.plannerState && typeof task.meta.plannerState === "object"
+        ? task.meta.plannerState
+        : {}),
+      latestReplan: plannerState,
+      ...(planningMode === "decompose" ? { latestDecomposition: plannerState } : {}),
+    },
+  });
+  const patch = {
+    ...(options.parentTaskPatch && typeof options.parentTaskPatch === "object"
+      ? options.parentTaskPatch
+      : {}),
+    meta: nextMeta,
+  };
+  const updatedRaw = await adapter.updateTask(task.id, patch);
+  return withTaskMetadataTopLevel(updatedRaw);
+}
+
+async function persistTaskReplanTimeline(taskId, type, message, payload = {}) {
+  appendInternalTaskTimelineEvent(taskId, {
+    type,
+    source: "api.tasks.replan",
+    message,
+    payload,
+  });
+}
+
+function getTaskPlanningModeMetadata(modeInput = "replan") {
+  const mode = normalizeTaskPlanningMode(modeInput || "replan");
+  const isDecompose = mode === "decompose";
+  return {
+    mode,
+    modeLabel: isDecompose ? "decomposition" : "replan",
+    plannerLabel: isDecompose ? "Decomposition planner" : "Replanner",
+    timelineSource: `api.tasks.${mode}`,
+    proposedTimelineType: `task.${mode}.proposed`,
+    appliedTimelineType: `task.${mode}.applied`,
+    proposedLedgerActionType: `task_${mode}_propose`,
+    appliedLedgerActionType: `task_${mode}_apply`,
+    proposedLedgerActionIdPrefix: `task-${mode}-propose`,
+    appliedLedgerActionIdPrefix: `task-${mode}-apply`,
+    proposedBroadcastReason: `task-${mode}-proposed`,
+    appliedBroadcastReason: `task-${mode}-applied`,
+    proposalStorageKey: isDecompose ? "decomposeProposal" : "replanProposal",
+    subtaskTag: isDecompose ? "decompose" : "replan",
+  };
+}
+
+async function persistTaskPlanningTimeline(taskId, mode, phase, message, payload = {}) {
+  const planning = getTaskPlanningModeMetadata(mode);
+  appendInternalTaskTimelineEvent(taskId, {
+    type: phase === "applied" ? planning.appliedTimelineType : planning.proposedTimelineType,
+    source: planning.timelineSource,
+    message,
+    payload: {
+      mode: planning.mode,
+      ...payload,
+    },
+  });
+}
+
+function resolveStoredTaskPlanningProposal(task, mode = "replan") {
+  const planning = getTaskPlanningModeMetadata(mode);
+  const preferred = task?.meta?.[planning.proposalStorageKey];
+  if (preferred && typeof preferred === "object") return preferred;
+  if (task?.meta?.replanProposal && typeof task.meta.replanProposal === "object") return task.meta.replanProposal;
+  return null;
+}
+
+async function generateTaskPlanningProposal({ taskId, url, mode }) {
+  const planning = getTaskPlanningModeMetadata(mode);
+  const adapter = resolveInjectedTaskStoreApi() || getKanbanAdapter();
+  const task = await getTaskByIdForApi(taskId, adapter).catch(() => null);
+  if (!task) {
+    return { status: 404, body: { ok: false, error: "task not found" } };
+  }
+  const exec = await resolveExecPrimaryPrompt();
+  if (typeof exec !== "function") {
+    return { status: 503, body: { ok: false, error: "Primary agent not available. Start bosun first." } };
+  }
+  const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+  const allTasks = await listAllTasksForApi(adapter);
+  const taskIdLower = String(task?.id || "").trim();
+  const sprintId = resolveTaskSprintId(task);
+  const epicId = String(task?.epicId || task?.meta?.epicId || "").trim();
+  const childTasks = allTasks.filter((entry) => String(entry?.parentTaskId || entry?.meta?.parentTaskId || "").trim() === taskIdLower);
+  const relatedTasks = allTasks.filter((entry) => {
+    const entryId = String(entry?.id || "").trim();
+    if (!entryId || entryId === taskIdLower) return false;
+    const entryParentId = String(entry?.parentTaskId || entry?.meta?.parentTaskId || "").trim();
+    if (entryParentId === taskIdLower) return false;
+    if (sprintId && resolveTaskSprintId(entry) === sprintId) return true;
+    if (epicId && String(entry?.epicId || entry?.meta?.epicId || "").trim() === epicId) return true;
+    return false;
+  });
+  let auditActivity = null;
+  try {
+    auditActivity = buildTaskAuditActivity(taskId, {
+      repoRoot: workspaceContext?.workspaceDir || repoRoot,
+    });
+  } catch (auditErr) {
+    console.warn(`[ui] task ${planning.modeLabel} audit lookup failed: ${auditErr?.message || auditErr}`);
+  }
+  const context = buildTaskReplanContext(task, {
+    mode: planning.mode,
+    childTasks,
+    relatedTasks,
+    auditSummary: auditActivity?.summary || {},
+  });
+  const prompt = buildTaskReplanPrompt(context);
+  const rawResult = await exec(prompt, { sessionType: "ephemeral", mode: "ask" });
+  const extracted = extractTaskReplanProposal(rawResult);
+  if (!extracted) {
+    return {
+      status: 502,
+      body: { ok: false, error: `${planning.plannerLabel} returned no parseable JSON proposal.` },
+    };
+  }
+  const generatedAt = new Date().toISOString();
+  const proposal = {
+    proposalId: _genCallId(),
+    taskId,
+    generatedAt,
+    ...normalizeTaskReplanProposal(extracted, { parentTask: task, mode: planning.mode }),
+  };
+  const updatedTask = await updateTaskReplanState(adapter, task, proposal, {
+    mode: planning.mode,
+    status: "proposed",
+  });
+  await persistTaskPlanningTimeline(
+    taskId,
+    planning.mode,
+    "proposed",
+    proposal.summary || `Generated task ${planning.modeLabel} proposal`,
+    {
+      proposalId: proposal.proposalId,
+      recommendedAction: proposal.recommendedAction,
+      subtaskCount: proposal.subtasks.length,
+      dependencyPatchCount: proposal.dependencyPatches.length,
+    },
+  );
+  try {
+    appendOperatorActionToStateLedger({
+      actionId: `${planning.proposedLedgerActionIdPrefix}:${taskId}:${proposal.proposalId}`,
+      actionType: planning.proposedLedgerActionType,
+      actorId: "ui",
+      actorType: "operator",
+      scope: "task",
+      scopeId: taskId,
+      targetId: taskId,
+      taskId,
+      status: "completed",
+      request: {
+        mode: planning.mode,
+        phase: "propose",
+        childTaskCount: childTasks.length,
+        relatedTaskCount: relatedTasks.length,
+      },
+      result: {
+        proposalId: proposal.proposalId,
+        recommendedAction: proposal.recommendedAction,
+        subtaskCount: proposal.subtasks.length,
+        dependencyPatchCount: proposal.dependencyPatches.length,
+      },
+      metadata: {
+        mode: planning.mode,
+        summary: proposal.summary,
+        currentPlanStep: proposal.currentPlanStep,
+      },
+    }, {
+      repoRoot: workspaceContext?.workspaceDir || repoRoot,
+    });
+  } catch (ledgerErr) {
+    console.warn(`[ui] task ${planning.modeLabel} propose ledger write failed: ${ledgerErr?.message || ledgerErr}`);
+  }
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      planningMode: planning.mode,
+      data: proposal,
+      proposal,
+      task: updatedTask,
+    },
+    broadcastReason: planning.proposedBroadcastReason,
+    taskId,
+  };
+}
+
+async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
+  const planning = getTaskPlanningModeMetadata(mode);
+  const adapter = resolveInjectedTaskStoreApi() || getKanbanAdapter();
+  const task = await getTaskByIdForApi(taskId, adapter).catch(() => null);
+  if (!task) {
+    return { status: 404, body: { ok: false, error: "task not found" } };
+  }
+  const proposalSource =
+    (body?.proposal && typeof body.proposal === "object" ? body.proposal : null)
+    || resolveStoredTaskPlanningProposal(task, planning.mode);
+  if (!proposalSource) {
+    return { status: 400, body: { ok: false, error: `No ${planning.modeLabel} proposal available to apply.` } };
+  }
+  const proposal = {
+    proposalId: String(proposalSource.proposalId || _genCallId()).trim(),
+    taskId,
+    generatedAt: String(proposalSource.generatedAt || new Date().toISOString()).trim(),
+    ...normalizeTaskReplanProposal(proposalSource, { parentTask: task, mode: planning.mode }),
+  };
+  const needsDependencyWrites = proposal.subtasks.some((entry) => entry.dependsOnIndexes.length > 0 || entry.dependsOnTaskIds.length > 0)
+    || proposal.dependencyPatches.length > 0;
+  if (needsDependencyWrites) {
+    const probe = await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.add, [taskId, taskId]);
+    if (!probe?.found) {
+      return { status: 501, body: { ok: false, error: "Task dependency graph writes are unavailable." } };
+    }
+  }
+
+  const createdSubtasks = [];
+  const projectId = task?.projectId || task?.project_id || "";
+  for (let index = 0; index < proposal.subtasks.length; index += 1) {
+    const entry = proposal.subtasks[index];
+    const payload = {
+      title: entry.title,
+      description: entry.description,
+      status: "todo",
+      type: "subtask",
+      priority: entry.priority || task?.priority || undefined,
+      parentTaskId: taskId,
+      workspace: task?.workspace || task?.meta?.workspace || undefined,
+      repository: task?.repository || task?.meta?.repository || undefined,
+      repositories: Array.isArray(task?.repositories) ? task.repositories : task?.meta?.repositories,
+      epicId: task?.epicId || task?.meta?.epicId || undefined,
+      tags: mergeTaskTagLists(task?.tags || task?.meta?.tags || [], entry.tags || [], [planning.subtaskTag]),
+      storyPoints: Number.isFinite(Number(entry.storyPoints)) ? Number(entry.storyPoints) : undefined,
+      ...(entry.sprintId ? { sprintId: entry.sprintId } : {}),
+      meta: {
+        parentTaskId: taskId,
+        acceptanceCriteria: Array.isArray(entry.acceptanceCriteria) ? entry.acceptanceCriteria : [],
+        replan: {
+          proposalId: proposal.proposalId,
+          parentTaskId: taskId,
+          index,
+          mode: planning.mode,
+          currentPlanStep: entry.currentPlanStep || proposal.currentPlanStep || "",
+        },
+        ...(planning.mode === "decompose"
+          ? {
+              decomposition: {
+                proposalId: proposal.proposalId,
+                parentTaskId: taskId,
+                index,
+                currentPlanStep: entry.currentPlanStep || proposal.currentPlanStep || "",
+              },
+            }
+          : {}),
+      },
+    };
+    const createdRaw = await adapter.createTask(projectId, payload);
+    createdSubtasks.push(withTaskMetadataTopLevel(createdRaw));
+  }
+
+  const createdTaskIds = createdSubtasks.map((entry) => String(entry?.id || "").trim()).filter(Boolean);
+  const addDependency = async (dependentTaskId, dependencyTaskId) => {
+    if (!dependentTaskId || !dependencyTaskId || dependentTaskId === dependencyTaskId) return;
+    await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.add, [dependentTaskId, dependencyTaskId]);
+    if (typeof adapter?.addTaskDependency === "function") {
+      await Promise.resolve(adapter.addTaskDependency(dependentTaskId, dependencyTaskId)).catch(() => null);
+    } else if (typeof adapter?.updateTask === "function") {
+      const current = await getTaskByIdForApi(dependentTaskId, adapter).catch(() => null);
+      const dependencyTaskIds = uniqueTaskIds([
+        ...(Array.isArray(current?.dependencyTaskIds) ? current.dependencyTaskIds : []),
+        ...(Array.isArray(current?.dependsOn) ? current.dependsOn : []),
+        dependencyTaskId,
+      ]);
+      await Promise.resolve(adapter.updateTask(dependentTaskId, {
+        dependencyTaskIds,
+        dependsOn: dependencyTaskIds,
+        dependencies: dependencyTaskIds,
+      })).catch(() => null);
+    }
+  };
+  for (let index = 0; index < proposal.subtasks.length; index += 1) {
+    const subtask = proposal.subtasks[index];
+    const dependentTaskId = createdTaskIds[index];
+    for (const depIndex of subtask.dependsOnIndexes) {
+      if (createdTaskIds[depIndex]) await addDependency(dependentTaskId, createdTaskIds[depIndex]);
+    }
+    for (const depTaskId of subtask.dependsOnTaskIds) {
+      await addDependency(dependentTaskId, depTaskId);
+    }
+  }
+  for (const patch of proposal.dependencyPatches) {
+    for (const dependencyTaskId of patch.dependsOnTaskIds) {
+      await addDependency(patch.taskId, dependencyTaskId);
+    }
+  }
+  const persistedSubtasks = await Promise.all(
+    createdTaskIds.map((createdTaskId) => getTaskByIdForApi(createdTaskId, adapter).catch(() => null)),
+  );
+
+  const appliedAt = new Date().toISOString();
+  const updatedTask = await updateTaskReplanState(adapter, task, proposal, {
+    mode: planning.mode,
+    status: "applied",
+    appliedAt,
+    createdTaskIds,
+    parentTaskPatch: proposal.parentTaskPatch,
+  });
+  await persistTaskPlanningTimeline(
+    taskId,
+    planning.mode,
+    "applied",
+    proposal.summary || `Applied task ${planning.modeLabel} proposal`,
+    {
+      proposalId: proposal.proposalId,
+      createdTaskIds,
+      recommendedAction: proposal.recommendedAction,
+    },
+  );
+  const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+  try {
+    appendOperatorActionToStateLedger({
+      actionId: `${planning.appliedLedgerActionIdPrefix}:${taskId}:${proposal.proposalId}`,
+      actionType: planning.appliedLedgerActionType,
+      actorId: "ui",
+      actorType: "operator",
+      scope: "task",
+      scopeId: taskId,
+      targetId: taskId,
+      taskId,
+      status: "completed",
+      request: {
+        mode: planning.mode,
+        proposalId: proposal.proposalId,
+        recommendedAction: proposal.recommendedAction,
+      },
+      result: {
+        createdTaskIds,
+        createdTaskCount: createdTaskIds.length,
+        dependencyPatchCount: proposal.dependencyPatches.length,
+      },
+      metadata: {
+        mode: planning.mode,
+        summary: proposal.summary,
+        appliedAt,
+      },
+    }, {
+      repoRoot: workspaceContext?.workspaceDir || repoRoot,
+    });
+  } catch (ledgerErr) {
+    console.warn(`[ui] task ${planning.modeLabel} apply ledger write failed: ${ledgerErr?.message || ledgerErr}`);
+  }
+  const appliedProposal = {
+    ...proposal,
+    mode: planning.mode,
+    status: "applied",
+    appliedAt,
+    createdTaskIds,
+  };
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      planningMode: planning.mode,
+      data: {
+        proposal: appliedProposal,
+        createdSubtasks: persistedSubtasks.filter(Boolean),
+        task: updatedTask,
+      },
+      proposal: appliedProposal,
+      createdSubtasks: persistedSubtasks.filter(Boolean),
+      task: updatedTask,
+    },
+    broadcastReason: planning.appliedBroadcastReason,
+    taskId,
+  };
+}
+
 function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspaceLabel) {
   if (!engine || !_wfTemplates) return;
   if (_wfRecommendedInstalledByWorkspace.has(workspaceKey)) return;
@@ -2623,7 +3165,7 @@ async function getWorkflowRequestContext(reqUrl, options = {}) {
             handleTaskWorkflowTraceEvent(event);
           });
         }
-        engine.load();
+        await engine.load();
       }
       attachWorkflowEngineLiveBridge(engine);
     }
@@ -3061,12 +3603,12 @@ function sortTasksByRecency(tasks = []) {
   });
 }
 
-async function collectBenchmarkWorkflowRuns(reqUrl, taskIds = new Set(), limit = 12) {
+async function collectBenchmarkWorkflowRuns(url, taskIds = new Set(), limit = 12) {
   if (!(taskIds instanceof Set) || taskIds.size === 0) return [];
   try {
-    const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false });
+    const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
     if (!wfCtx?.ok || !wfCtx.engine) return [];
-    const summaries = wfCtx.engine.getRunHistory ? wfCtx.engine.getRunHistory(null, 240) : [];
+    const summaries = wfCtx.engine.getRunHistory ? await wfCtx.engine.getRunHistory(null, 240) : [];
     const runs = [];
     for (const summary of summaries) {
       if (!summary?.runId) continue;
@@ -3079,7 +3621,7 @@ async function collectBenchmarkWorkflowRuns(reqUrl, taskIds = new Set(), limit =
         matches = summaryTaskIds.some((taskId) => taskIds.has(taskId));
       }
       if (!matches && typeof wfCtx.engine.getRunDetail === "function") {
-        const detail = wfCtx.engine.getRunDetail(summary.runId);
+        const detail = await wfCtx.engine.getRunDetail(summary.runId);
         if (detail?.detail) {
           const data = detail.detail?.data || {};
           const detailTaskId = String(
@@ -3089,7 +3631,7 @@ async function collectBenchmarkWorkflowRuns(reqUrl, taskIds = new Set(), limit =
         }
       }
       if (!matches && typeof wfCtx.engine.getTaskTraceEvents === "function") {
-        const traceEvents = wfCtx.engine.getTaskTraceEvents(summary.runId) || [];
+        const traceEvents = (await wfCtx.engine.getTaskTraceEvents(summary.runId)) || [];
         matches = traceEvents.some((event) => taskIds.has(String(event?.taskId || "").trim()));
       }
       if (!matches) continue;
@@ -4692,6 +5234,8 @@ const HIDDEN_GENERATED_WORKFLOW_NAME_SET = new Set([
   "Start alias dispatch workflow",
   "Encoded id dispatch workflow",
   "Dispatch start regression",
+  "Delegation Detail Workflow",
+  "Delegation History Workflow",
 ]);
 
 function shouldHideGeneratedWorkflowFromList(workflow = {}) {
@@ -4706,7 +5250,9 @@ function shouldHideGeneratedWorkflowFromList(workflow = {}) {
     id.startsWith("wf dispatch ") ||
     id.startsWith("wf start alias ") ||
     id.startsWith("wf start dispatch ") ||
-    id.startsWith("workflow dispatch ")
+    id.startsWith("workflow dispatch ") ||
+    id.startsWith("test-wf-") ||
+    id.startsWith("wf-delegation-")
   ) {
     return true;
   }
@@ -4739,6 +5285,604 @@ function formatWorkflowCopilotTimestamp(value) {
       ? new Date(numeric)
       : new Date(String(value || ""));
   return Number.isFinite(date.getTime()) ? date.toISOString() : "—";
+}
+
+function normalizeWorkflowRunProofBundle(proofBundle = null) {
+  const bundle = proofBundle && typeof proofBundle === "object" ? proofBundle : {};
+  const summary = bundle.summary && typeof bundle.summary === "object" ? bundle.summary : {};
+  const normalizeEntries = (entries) =>
+    (Array.isArray(entries) ? entries : [])
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        return Object.fromEntries(
+          Object.entries(entry).filter(([, value]) => value !== undefined),
+        );
+      })
+      .filter(Boolean);
+  return {
+    summary: {
+      plannerEventCount: Number(summary.plannerEventCount || 0) || 0,
+      decisionCount: Number(summary.decisionCount || 0) || 0,
+      evidenceCount: Number(summary.evidenceCount || 0) || 0,
+      artifactCount: Number(summary.artifactCount || 0) || 0,
+    },
+    plannerTimeline: normalizeEntries(bundle.plannerTimeline),
+    decisions: normalizeEntries(bundle.decisions),
+    evidence: normalizeEntries(bundle.evidence),
+    artifacts: normalizeEntries(bundle.artifacts),
+  };
+}
+
+function buildWorkflowRunProofSummary(run = {}) {
+  const bundle = normalizeWorkflowRunProofBundle(run?.proofBundle || null);
+  const plannerTimeline = bundle.plannerTimeline;
+  const plannerSummary = plannerTimeline.at(-1)?.summary || null;
+  return {
+    ...bundle.summary,
+    plannerSummary,
+    latestDecision: bundle.decisions[0] || null,
+    latestEvidence: bundle.evidence[0] || null,
+    latestArtifact: bundle.artifacts[0] || null,
+  };
+}
+
+function uniqueNonEmptyStrings(values = []) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function buildWorkflowRunAuditActivity(run = {}, options = {}) {
+  const repoRoot = String(options.repoRoot || "").trim();
+  const runId = String(run?.runId || "").trim();
+  if (!repoRoot || !runId) return null;
+
+  try {
+    const bundle = getRunAuditBundleFromStateLedger(runId, {
+      repoRoot,
+      limit: 120,
+    });
+    if (!bundle) return null;
+    return {
+      ...bundle,
+      taskTraceCount: Array.isArray(bundle.taskTraceEvents) ? bundle.taskTraceEvents.length : 0,
+    };
+  } catch (err) {
+    console.warn("[workflows] Failed to build run audit activity:", err?.message || err);
+    return null;
+  }
+}
+
+function buildTaskAuditActivity(taskId, options = {}) {
+  const repoRoot = String(options.repoRoot || "").trim();
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!repoRoot || !normalizedTaskId) return null;
+  try {
+    return getTaskAuditBundleFromStateLedger(normalizedTaskId, {
+      repoRoot,
+      limit: 160,
+    });
+  } catch (err) {
+    console.warn("[tasks] Failed to build task audit activity:", err?.message || err);
+    return null;
+  }
+}
+
+const SERVER_STATE_SECTION_ORDER = Object.freeze([
+  "coordination",
+  "scopeLocks",
+  "audit",
+  "executionJournal",
+  "planningAccounting",
+  "monitoring",
+]);
+
+function summarizeServerStateAvailability(availability = {}) {
+  const entries = Object.entries(
+    availability && typeof availability === "object" ? availability : {},
+  );
+  const summary = {
+    total: entries.length,
+    available: 0,
+    claimed: 0,
+    busy: 0,
+    unknown: 0,
+  };
+  const details = entries.map(([workspaceId, value]) => {
+    const raw = value && typeof value === "object" ? value : {};
+    const owner = String(raw.owner || raw.claimedBy || raw.holder || "").trim() || null;
+    const state = String(
+      raw.state
+      || raw.status
+      || (owner ? "claimed" : raw.available === true ? "available" : "unknown"),
+    ).trim().toLowerCase();
+    if (state === "available") summary.available += 1;
+    else if (state === "claimed") summary.claimed += 1;
+    else if (state === "busy") summary.busy += 1;
+    else summary.unknown += 1;
+    return {
+      workspaceId,
+      state,
+      owner,
+      updatedAt: raw.updatedAt || raw.expiresAt || null,
+    };
+  });
+  return { summary, details };
+}
+
+function summarizeScopeLockState(locks = []) {
+  const locksByTask = new Map();
+  const locksByPath = new Map();
+  const owners = new Set();
+  for (const lock of Array.isArray(locks) ? locks : []) {
+    const taskId = String(lock?.taskId || "").trim() || "(unknown)";
+    const ownerId = String(lock?.ownerId || "").trim() || null;
+    const relativePath = String(lock?.relativePath || lock?.path || "").trim() || "(unknown)";
+    locksByTask.set(taskId, (locksByTask.get(taskId) || 0) + 1);
+    locksByPath.set(relativePath, (locksByPath.get(relativePath) || 0) + 1);
+    if (ownerId) owners.add(ownerId);
+  }
+  const hotPaths = Array.from(locksByPath.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 10)
+    .map(([path, count]) => ({ path, count }));
+  const hotTasks = Array.from(locksByTask.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 10)
+    .map(([taskId, count]) => ({ taskId, count }));
+  return {
+    totalLocks: Array.isArray(locks) ? locks.length : 0,
+    uniqueTaskCount: locksByTask.size,
+    uniqueOwnerCount: owners.size,
+    hotPaths,
+    hotTasks,
+  };
+}
+
+function summarizeTaskLifecycleCounts(tasks = []) {
+  const counts = {
+    total: 0,
+    backlog: 0,
+    inProgress: 0,
+    inReview: 0,
+    blocked: 0,
+    done: 0,
+    other: 0,
+  };
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    counts.total += 1;
+    const status = String(task?.status || "").trim().toLowerCase();
+    if (status === "done" || status === "completed" || status === "closed" || status === "merged") {
+      counts.done += 1;
+      continue;
+    }
+    if (status === "blocked" || status === "failed" || status === "error") {
+      counts.blocked += 1;
+      continue;
+    }
+    if (status === "inreview" || status === "in-review" || status === "review") {
+      counts.inReview += 1;
+      continue;
+    }
+    if (status === "inprogress" || status === "in-progress" || status === "running" || status === "active") {
+      counts.inProgress += 1;
+      continue;
+    }
+    if (status === "todo" || status === "backlog" || status === "draft" || status === "new" || status === "open") {
+      counts.backlog += 1;
+      continue;
+    }
+    counts.other += 1;
+  }
+  return counts;
+}
+
+function summarizeStatusSnapshotCounts(snapshot = null) {
+  const counts = snapshot?.counts && typeof snapshot.counts === "object" ? snapshot.counts : {};
+  return {
+    backlog: Number(counts.todo || counts.backlog || 0),
+    inProgress: Number(counts.inprogress || counts.active || 0),
+    inReview: Number(counts.inreview || counts.review || 0),
+    blocked: Number(counts.blocked || counts.error || counts.failed || 0),
+    done: Number(counts.done || counts.completed || 0),
+  };
+}
+
+function sortTaskLifetimeRows(rows = []) {
+  return [...rows].sort((left, right) => {
+    const tokenDelta = Number(right?.tokenCount || 0) - Number(left?.tokenCount || 0);
+    if (tokenDelta !== 0) return tokenDelta;
+    const durationDelta = Number(right?.durationMs || 0) - Number(left?.durationMs || 0);
+    if (durationDelta !== 0) return durationDelta;
+    return String(left?.taskId || "").localeCompare(String(right?.taskId || ""));
+  });
+}
+
+function readServerStateSettings() {
+  const enabled = parseBooleanLike(process.env.BOSUN_UI_COORDINATION_STATE_ENABLED, false);
+  return {
+    enabled,
+    coordination: enabled,
+    scopeLocks: enabled && parseBooleanLike(process.env.BOSUN_UI_SCOPE_LOCK_STATE_ENABLED, false),
+    audit: enabled && parseBooleanLike(process.env.BOSUN_UI_AUDIT_SUMMARY_ENABLED, false),
+    executionJournal: enabled && parseBooleanLike(process.env.BOSUN_UI_EXECUTION_JOURNAL_STATE_ENABLED, false),
+    planningAccounting: enabled && parseBooleanLike(process.env.BOSUN_UI_PLANNING_ACCOUNTING_ENABLED, false),
+    monitoring: enabled && parseBooleanLike(process.env.BOSUN_UI_MONITORING_STATE_ENABLED, false),
+  };
+}
+
+async function buildCoordinationServerState(targetRepoRoot, details = false) {
+  let sharedStateStats = null;
+  let sharedStateEntries = [];
+  let instances = [];
+  let coordinator = null;
+  let sharedWorkspaceSweep = null;
+  let availability = {};
+
+  try {
+    sharedStateStats = await getStateStatistics(targetRepoRoot);
+    const sharedStates = await getAllSharedStates(targetRepoRoot);
+    sharedStateEntries = Object.entries(sharedStates || {}).map(([taskId, state]) => ({
+      taskId: String(taskId || "").trim(),
+      ownerId: String(state?.ownerId || "").trim() || null,
+      attemptStatus: String(state?.attemptStatus || state?.status || "").trim() || "unknown",
+      ignoreReason: String(state?.ignoreReason || "").trim() || null,
+      heartbeatAt: state?.ownerHeartbeat || state?.updatedAt || null,
+      workspaceId: String(state?.workspaceId || "").trim() || null,
+    })).filter((entry) => entry.taskId);
+  } catch {
+    sharedStateStats = null;
+    sharedStateEntries = [];
+  }
+
+  try {
+    await ensurePresenceLoaded();
+    instances = listActiveInstances({ ttlMs: PRESENCE_TTL_MS });
+    coordinator = selectCoordinator({ ttlMs: PRESENCE_TTL_MS });
+  } catch {
+    instances = [];
+    coordinator = null;
+  }
+
+  try {
+    const registry = await loadSharedWorkspaceRegistry();
+    sharedWorkspaceSweep = await sweepExpiredLeases({
+      registry,
+      actor: "ui-server.server-state",
+    });
+    availability = getSharedAvailabilityMap(sharedWorkspaceSweep.registry);
+  } catch {
+    sharedWorkspaceSweep = null;
+    availability = {};
+  }
+
+  const availabilitySummary = summarizeServerStateAvailability(availability);
+
+  return {
+    sharedStates: {
+      total: Number(sharedStateStats?.total || sharedStateEntries.length || 0),
+      staleCount: Number(sharedStateStats?.stale || 0),
+      ignoredCount: Number(sharedStateStats?.ignored || 0),
+      claimedCount: Number(sharedStateStats?.claimed || 0),
+      workingCount: Number(sharedStateStats?.working || 0),
+      failedCount: Number(sharedStateStats?.failed || 0),
+      byOwner: sharedStateStats?.byOwner || {},
+      ...(details ? { entries: sharedStateEntries.slice(0, 40) } : {}),
+    },
+    presence: {
+      instanceCount: instances.length,
+      coordinatorId: String(
+        coordinator?.instanceId
+        || coordinator?.id
+        || coordinator?.ownerId
+        || "",
+      ).trim() || null,
+      ...(details
+        ? {
+            instances: instances.slice(0, 20),
+            coordinator,
+          }
+        : {}),
+    },
+    sharedWorkspaces: {
+      total: availabilitySummary.summary.total,
+      available: availabilitySummary.summary.available,
+      claimed: availabilitySummary.summary.claimed,
+      busy: availabilitySummary.summary.busy,
+      expiredCount: Array.isArray(sharedWorkspaceSweep?.expired) ? sharedWorkspaceSweep.expired.length : 0,
+      ...(details
+        ? {
+            availability: availabilitySummary.details,
+            expired: Array.isArray(sharedWorkspaceSweep?.expired) ? sharedWorkspaceSweep.expired.slice(0, 20) : [],
+          }
+        : {}),
+    },
+  };
+}
+
+async function buildScopeLockServerState(targetRepoRoot, details = false) {
+  const locks = await listScopeLocks(targetRepoRoot).catch(() => []);
+  return {
+    ...summarizeScopeLockState(locks),
+    ...(details ? { locks: locks.slice(0, 40) } : {}),
+  };
+}
+
+function buildAuditServerState(targetRepoRoot, details = false) {
+  const taskLimit = details ? 40 : 12;
+  const eventLimit = details ? 80 : 20;
+  const taskSummaries = listTaskAuditSummariesFromStateLedger({
+    repoRoot: targetRepoRoot,
+    limit: taskLimit,
+    eventLimit,
+  });
+  const recentEvents = listAuditEventsFromStateLedger({
+    repoRoot: targetRepoRoot,
+    limit: eventLimit,
+    direction: "desc",
+  });
+  const promotedStrategies = listPromotedStrategiesFromStateLedger({
+    repoRoot: targetRepoRoot,
+  }).slice(0, details ? 40 : 12);
+  const failedTaskCount = taskSummaries.filter((entry) => {
+    const taskStatus = String(entry?.status || "").trim().toLowerCase();
+    return taskStatus === "blocked" || taskStatus === "error" || taskStatus === "failed";
+  }).length;
+  return {
+    taskCount: taskSummaries.length,
+    failedTaskCount,
+    recentEventCount: recentEvents.length,
+    promotedStrategyCount: promotedStrategies.length,
+    latestEventAt: recentEvents[0]?.timestamp || null,
+    tasksWithPromotions: new Set(
+      promotedStrategies.map((entry) => String(entry?.taskId || "").trim()).filter(Boolean),
+    ).size,
+    taskSummaries,
+    recentEvents,
+    promotedStrategies,
+  };
+}
+
+function buildExecutionJournalServerState(details = false) {
+  const tasks = getAllInternalTasks();
+  const taskStoreApi = getTaskStoreApiSync();
+  const getTaskRunsFn = typeof taskStoreApi?.getTaskRuns === "function"
+    ? taskStoreApi.getTaskRuns
+    : null;
+  const getStorePathFn = typeof taskStoreApi?.getStorePath === "function"
+    ? taskStoreApi.getStorePath
+    : null;
+  const taskStorePath = getStorePathFn ? getStorePathFn() : null;
+
+  let totalRuns = 0;
+  let journalledRuns = 0;
+  let totalSteps = 0;
+  let totalArtifacts = 0;
+  const taskSummaries = [];
+
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    const taskId = String(task?.id || "").trim();
+    if (!taskId) continue;
+    const runs = getTaskRunsFn ? getTaskRunsFn(taskId) : (Array.isArray(task?.runs) ? task.runs : []);
+    const safeRuns = Array.isArray(runs) ? runs : [];
+    totalRuns += safeRuns.length;
+    const journalEntries = [];
+
+    for (const run of safeRuns) {
+      const journalRef = normalizeTaskRunJournalRef(run?.journal || run?.meta?.journal);
+      if (!journalRef) continue;
+      journalledRuns += 1;
+      totalSteps += Number(journalRef.stepCount || 0);
+      totalArtifacts += Number(journalRef.artifactCount || 0);
+      if (!details) continue;
+      let journal = null;
+      try {
+        journal = readTaskRunJournal(journalRef, {
+          ...(taskStorePath ? { taskStorePath } : {}),
+        });
+      } catch {
+        journal = null;
+      }
+      journalEntries.push({
+        runId: journalRef.runId,
+        relativeDir: journalRef.relativeDir,
+        status: String(journal?.run?.status || run?.status || "").trim() || null,
+        stepCount: Number(journalRef.stepCount || journal?.run?.stepCount || 0),
+        artifactCount: Number(journalRef.artifactCount || journal?.run?.artifactCount || 0),
+        replayable: journal?.run?.replayable !== false,
+      });
+    }
+
+    if (details) {
+      if (journalEntries.length > 0) {
+        taskSummaries.push({
+          taskId,
+          title: String(task?.title || "").trim() || null,
+          totalRuns: safeRuns.length,
+          journalledRuns: journalEntries.length,
+          journals: journalEntries,
+        });
+      }
+      continue;
+    }
+
+    const journalledCount = safeRuns.filter((run) => normalizeTaskRunJournalRef(run?.journal || run?.meta?.journal)).length;
+    if (journalledCount > 0) {
+      taskSummaries.push({
+        taskId,
+        title: String(task?.title || "").trim() || null,
+        totalRuns: safeRuns.length,
+        journalledRuns: journalledCount,
+      });
+    }
+  }
+
+  return {
+    taskCount: Array.isArray(tasks) ? tasks.length : 0,
+    totalRuns,
+    journalledRuns,
+    coveragePercent: totalRuns > 0
+      ? Number(((journalledRuns / totalRuns) * 100).toFixed(1))
+      : 0,
+    totalSteps,
+    totalArtifacts,
+    tasks: taskSummaries.slice(0, details ? 30 : 10),
+  };
+}
+
+async function buildPlanningAccountingServerState(targetRepoRoot, details = false) {
+  const statusSnapshot = await readStatusSnapshot();
+  const runtimeStats = getRuntimeStats();
+  const tasks = getAllInternalTasks();
+  const lifetimeRows = sortTaskLifetimeRows(
+    tasks.map((task) => {
+      const totals = getTaskLifetimeTotals(task?.id);
+      return {
+        taskId: String(task?.id || "").trim() || null,
+        title: String(task?.title || "").trim() || null,
+        status: String(task?.status || "").trim() || null,
+        attemptsCount: Number(totals?.attemptsCount || 0),
+        tokenCount: Number(totals?.tokenCount || 0),
+        inputTokens: Number(totals?.inputTokens || 0),
+        outputTokens: Number(totals?.outputTokens || 0),
+        durationMs: Number(totals?.durationMs || 0),
+        lastSessionEndedAt: totals?.lastSessionEndedAt || null,
+      };
+    }).filter((entry) => entry.taskId),
+  );
+  const activeWorkflowRuns = Array.isArray(globalThis.__bosun_activeWorkflows)
+    ? globalThis.__bosun_activeWorkflows
+    : [];
+  const workflowStorage = getWorkflowStoragePaths(targetRepoRoot);
+
+  return {
+    tasks: {
+      ...summarizeTaskLifecycleCounts(tasks),
+      statusSnapshot: summarizeStatusSnapshotCounts(statusSnapshot),
+    },
+    runtimeAccounting: {
+      runtimeMs: Number(runtimeStats?.runtimeMs || 0),
+      totalCostUsd: Number(runtimeStats?.totalCostUsd || 0),
+      totalTokens: Number(runtimeStats?.totalTokens || 0),
+      totalInputTokens: Number(runtimeStats?.totalInputTokens || 0),
+      totalOutputTokens: Number(runtimeStats?.totalOutputTokens || 0),
+      sessionCount: Number(runtimeStats?.sessionCount || 0),
+      totalTurns: Number(runtimeStats?.totalTurns || 0),
+    },
+    workflows: {
+      activeRunCount: activeWorkflowRuns.length,
+      runsDir: workflowStorage.runsDir,
+      activeRuns: details ? activeWorkflowRuns.slice(0, 20) : activeWorkflowRuns.slice(0, 6),
+    },
+    topTasks: lifetimeRows.slice(0, details ? 20 : 8),
+  };
+}
+
+async function buildMonitoringServerState(details = false) {
+  const [uiStats, statusSnapshot] = await Promise.all([
+    collectUiStats().catch(() => null),
+    readStatusSnapshot(),
+  ]);
+  const runtimeStats = getRuntimeStats();
+  const activeThreads = typeof getActiveThreads === "function" ? (getActiveThreads() || []) : [];
+  const completedSessions = getCompletedSessions(details ? 16 : 6)
+    .slice()
+    .reverse();
+  const retryQueue = uiStats?.retryQueue && typeof uiStats.retryQueue === "object"
+    ? uiStats.retryQueue
+    : { count: 0, items: [], stats: { exhaustedTaskIds: [] } };
+
+  return {
+    activeThreadCount: activeThreads.length,
+    completedSessionCount: Number(runtimeStats?.sessionCount || uiStats?.completedSessions || 0),
+    totalCostUsd: Number(runtimeStats?.totalCostUsd || uiStats?.totalCostUsd || 0),
+    totalTokens: Number(runtimeStats?.totalTokens || 0),
+    totalInputTokens: Number(runtimeStats?.totalInputTokens || 0),
+    totalOutputTokens: Number(runtimeStats?.totalOutputTokens || 0),
+    failedTaskCount: Number(uiStats?.failedTasks || 0),
+    retryQueueDepth: Number(retryQueue?.count || 0),
+    exhaustedRetryTaskCount: Array.isArray(retryQueue?.stats?.exhaustedTaskIds)
+      ? retryQueue.stats.exhaustedTaskIds.length
+      : 0,
+    contextSummary: runtimeStats?.contextSummary || null,
+    healthBuckets: runtimeStats?.healthBuckets || null,
+    statusSnapshotUpdatedAt: statusSnapshot?.ts || statusSnapshot?.updatedAt || null,
+    recentCompletedSessions: completedSessions.slice(0, details ? 16 : 6),
+    ...(details
+      ? {
+          activeThreads: activeThreads.slice(0, 20),
+          uiStats,
+        }
+      : {}),
+  };
+}
+
+async function readServerStateSnapshot(options = {}) {
+  const details = options.details === true;
+  const targetRepoRoot = normalizeCandidatePath(options.repoRoot) || repoRoot;
+  const settings = readServerStateSettings();
+  const cacheKey = [
+    "server-state",
+    targetRepoRoot,
+    details ? "details" : "summary",
+    String(_settingsLastUpdateTime || 0),
+    settings.enabled ? "on" : "off",
+    settings.scopeLocks ? "scope" : "noscope",
+    settings.audit ? "audit" : "noaudit",
+    settings.executionJournal ? "journal" : "nojournal",
+    settings.planningAccounting ? "planning" : "noplanning",
+    settings.monitoring ? "monitoring" : "nomonitoring",
+  ].join(":");
+
+  return getOrComputeCachedApiResponse(cacheKey, details ? 1500 : 3000, async () => {
+    const data = {
+      enabled: settings.enabled,
+      details,
+      generatedAt: new Date().toISOString(),
+      repoRoot: targetRepoRoot,
+      features: settings,
+      coordination: null,
+      scopeLocks: null,
+      audit: null,
+      executionJournal: null,
+      planningAccounting: null,
+      monitoring: null,
+    };
+
+    if (!settings.enabled) {
+      data.summary = {
+        enabledSectionCount: 0,
+        sections: [],
+      };
+      return data;
+    }
+
+    data.coordination = await buildCoordinationServerState(targetRepoRoot, details);
+    if (settings.scopeLocks) data.scopeLocks = await buildScopeLockServerState(targetRepoRoot, details);
+    if (settings.audit) data.audit = buildAuditServerState(targetRepoRoot, details);
+    if (settings.executionJournal) data.executionJournal = buildExecutionJournalServerState(details);
+    if (settings.planningAccounting) {
+      data.planningAccounting = await buildPlanningAccountingServerState(targetRepoRoot, details);
+    }
+    if (settings.monitoring) data.monitoring = await buildMonitoringServerState(details);
+
+    data.summary = {
+      enabledSectionCount: SERVER_STATE_SECTION_ORDER.filter((section) => Boolean(data[section])).length,
+      sections: SERVER_STATE_SECTION_ORDER.filter((section) => Boolean(data[section])),
+      latestActivityAt:
+        data.audit?.latestEventAt
+        || data.monitoring?.statusSnapshotUpdatedAt
+        || data.generatedAt,
+    };
+    return data;
+  });
 }
 
 function buildWorkflowNodeTypeMap(wfMod) {
@@ -5463,6 +6607,12 @@ function mapEnvKeyToConfigPath(key, schema) {
     const rest = envKey.slice("KANBAN_".length);
     const sub = toCamelCaseFromEnv(rest);
     if (schema.properties.kanban.properties[sub]) return buildConfigPath(["kanban", sub]);
+  }
+  if (envKey.startsWith("GNAP_")) {
+    const gnapSchema = schema.properties.kanban?.properties?.gnap?.properties;
+    const rest = envKey.slice("GNAP_".length);
+    const sub = toCamelCaseFromEnv(rest);
+    if (gnapSchema?.[sub]) return buildConfigPath(["kanban", "gnap", sub]);
   }
   if (envKey.startsWith("JIRA_STATUS_")) {
     const jiraSchema = schema.properties.kanban?.properties?.jira?.properties?.statusMapping?.properties;
@@ -6618,6 +7768,8 @@ const SETTINGS_KNOWN_KEYS = [
   "CODEX_SUBAGENT_MODEL", "ANTHROPIC_API_KEY", "CLAUDE_MODEL",
   "COPILOT_MODEL", "COPILOT_CLI_TOKEN",
   "KANBAN_BACKEND", "KANBAN_SYNC_POLICY", "BOSUN_TASK_LABEL",
+  "GNAP_ENABLED", "GNAP_REPO_PATH", "GNAP_SYNC_MODE",
+  "GNAP_RUN_STORAGE", "GNAP_MESSAGE_STORAGE", "GNAP_PUBLIC_ROADMAP_ENABLED",
   "BOSUN_ENFORCE_TASK_LABEL", "STALE_TASK_AGE_HOURS",
   "TASK_TRIGGER_SYSTEM_ENABLED",
   "TASK_BRANCH_MODE", "TASK_BRANCH_AUTO_MODULE", "TASK_UPSTREAM_SYNC_MAIN",
@@ -6784,6 +7936,57 @@ function buildSettingsResponseData() {
   }
 
   return { data, sources };
+}
+
+function buildEnvOverrideMapForConfigEditor(schema) {
+  const overrides = new Map();
+  for (const key of SETTINGS_SCHEMA_KEYS) {
+    const envValue = process.env[key];
+    if (!hasSettingValue(envValue)) continue;
+    const pathInfo = mapEnvKeyToConfigPath(key, schema);
+    if (!pathInfo?.pathParts?.length) continue;
+    const path = pathInfo.pathParts.join(".");
+    if (overrides.has(path)) continue;
+    overrides.set(path, {
+      envKey: key,
+      value: envValue,
+    });
+  }
+  return overrides;
+}
+
+function resolveConfigDocumentPath() {
+  const explicit = resolveConfigPath();
+  if (explicit) return explicit;
+  const configDir = resolveUiConfigDir();
+  return resolve(configDir, CONFIG_FILES[0] || "bosun.config.json");
+}
+
+function buildTuiConfigResponse() {
+  const schema = getConfigSchema();
+  if (!schema) {
+    throw new Error("bosun.schema.json could not be loaded");
+  }
+  const configPath = resolveConfigDocumentPath();
+  const { configData } = readConfigDocument();
+  const envOverridesByPath = buildEnvOverrideMapForConfigEditor(schema);
+  const model = buildConfigEditorModel({
+    schema,
+    configData,
+    envOverridesByPath,
+  });
+  return {
+    schema,
+    envOverridesByPath,
+    sections: model.sections,
+    configData,
+    meta: {
+      configPath,
+      configDir: dirname(configPath),
+      configExists: existsSync(configPath),
+      configSchemaPath: CONFIG_SCHEMA_PATH,
+    },
+  };
 }
 
 function updateEnvFile(changes) {
@@ -7047,9 +8250,9 @@ function buildManualFlowGuardrailsInput(template, templateId, formValues = {}, e
   };
 }
 
-function buildGuardrailsSnapshot() {
+function buildGuardrailsSnapshot(targetWorkspaceDir) {
   const workspaceContext = resolveActiveWorkspaceExecutionContext();
-  const workspaceDir = String(workspaceContext?.workspaceDir || repoRoot).trim() || repoRoot;
+  const workspaceDir = targetWorkspaceDir || String(workspaceContext?.workspaceDir || repoRoot).trim() || repoRoot;
   const { configData } = readConfigDocument();
   const guardrailsPolicy = ensureGuardrailsPolicy(workspaceDir);
   const hooks = buildHookGuardrailsOverview(workspaceDir);
@@ -7070,8 +8273,13 @@ function buildGuardrailsSnapshot() {
   if (!guardrailsPolicy.push.workflowOnly) warnings.push("Workflow-only push ownership is disabled.");
   if (!guardrailsPolicy.push.blockAgentPushes) warnings.push("Agents are allowed to push directly.");
   if (!guardrailsPolicy.push.requireManagedPrePush) warnings.push("Managed worktree pre-push validation is not required.");
-  if (!repoGuardrails.categories.prepush.detected) warnings.push("No prepush package script detected.");
-  if (!repoGuardrails.categories.ci.detected) warnings.push("No CI-like package scripts detected.");
+  if (!repoGuardrails.categories.prepush.detected) warnings.push("No prepush validation detected.");
+  if (!repoGuardrails.categories.ci.detected) warnings.push("No CI/test/build/lint commands detected.");
+
+  // Stack-aware info
+  const primaryStack = repoGuardrails.primaryStack || null;
+  const detectedLanguages = Array.isArray(repoGuardrails.detectedLanguages) ? repoGuardrails.detectedLanguages : [];
+  if (detectedLanguages.length === 0) warnings.push("No programming language or build system detected.");
 
   return {
     workspace: {
@@ -7093,6 +8301,18 @@ function buildGuardrailsSnapshot() {
     hooks,
     runtime,
     repoGuardrails,
+    projectStack: {
+      primary: primaryStack,
+      stacks: Array.isArray(repoGuardrails.stacks) ? repoGuardrails.stacks.map((s) => ({
+        id: s.id,
+        label: s.label,
+        packageManager: s.packageManager,
+        frameworks: s.frameworks || [],
+        commands: s.commands || {},
+      })) : [],
+      isMonorepo: repoGuardrails.isMonorepo === true,
+      detectedLanguages,
+    },
     INPUT: {
       policyPath: getGuardrailsPolicyPath(workspaceDir),
       policy: guardrailsPolicy.INPUT,
@@ -7141,6 +8361,27 @@ function validateConfigSchemaChanges(changes) {
     }
 
     if (pathMap.size === 0) return {};
+    const kanbanBackend = String(candidate?.kanban?.backend || "")
+      .trim()
+      .toLowerCase();
+    if (kanbanBackend === "gnap") {
+      const gnap = candidate?.kanban?.gnap && typeof candidate.kanban.gnap === "object"
+        ? candidate.kanban.gnap
+        : {};
+      const fieldErrors = {};
+      if (gnap.enabled !== true) {
+        fieldErrors.GNAP_ENABLED = "GNAP must be enabled before selecting the GNAP backend.";
+      }
+      if (!String(gnap.repoPath || "").trim()) {
+        fieldErrors.GNAP_REPO_PATH = "GNAP repo path is required when the GNAP backend is selected.";
+      }
+      if (String(gnap.syncMode || "projection").trim().toLowerCase() !== "projection") {
+        fieldErrors.GNAP_SYNC_MODE = "Only projection sync mode is supported for the GNAP backend.";
+      }
+      if (Object.keys(fieldErrors).length > 0) {
+        return fieldErrors;
+      }
+    }
     const valid = validator(candidate);
     if (valid) return {};
 
@@ -7216,11 +8457,13 @@ function shouldHideSessionFromDefaultList(session) {
     session.metadata && typeof session.metadata === "object"
       ? session.metadata
       : {};
+  const normalizedVisibility = String(metadata.visibility || "").trim().toLowerCase();
+  const normalizedSource = String(metadata.source || "").trim().toLowerCase();
   if (
     metadata.hiddenInLists === true
     || metadata.hidden === true
     || metadata.testSession === true
-    || String(metadata.visibility || "").trim().toLowerCase() === "hidden"
+    || normalizedVisibility === "hidden"
   ) {
     return true;
   }
@@ -7230,7 +8473,31 @@ function shouldHideSessionFromDefaultList(session) {
     session.title,
     session.taskTitle,
   ];
+  const internalTransportSession =
+    normalizedSource === "voice-http"
+    || normalizedSource === "voice-http-tool"
+    || normalizedSource === "vision-http"
+    || identifiers.some((value) =>
+      /^(?:primary-(?:voice|vision)-http-|primary-voice-trace-)/i.test(
+        String(value || "").trim(),
+      )
+    );
+  if (internalTransportSession) return true;
   return identifiers.some((value) => /^smoke(?:-vision)?-/i.test(String(value || "").trim()));
+}
+
+function buildInternalVoiceSessionMetadata(base = {}, source = "voice-http") {
+  const normalizedBase =
+    base && typeof base === "object"
+      ? base
+      : {};
+  return {
+    ...normalizedBase,
+    autoCreated: true,
+    hiddenInLists: true,
+    visibility: "hidden",
+    source,
+  };
 }
 
 function checkRateLimit(req, maxPerMin = 30, scope = "global") {
@@ -9812,6 +11079,19 @@ function applyInternalLifecycleTransition(taskId, action, options = {}) {
   return null;
 }
 
+function evaluateTaskCompletionGuard(taskOrId, action, options = {}) {
+  const api = getTaskStoreApiSync();
+  if (!api || typeof api.evaluateTaskCompletionGuard !== "function") return null;
+  return api.evaluateTaskCompletionGuard(taskOrId, {
+    action,
+    targetStatus: options.targetStatus || null,
+    status: options.status || null,
+    force: options.force === true,
+    manualOverride: options.manualOverride === true,
+    patch: options.patch && typeof options.patch === "object" ? options.patch : null,
+  });
+}
+
 async function persistTaskStatusForExecution(adapter, taskId, nextStatus, source) {
   if (!taskId || !nextStatus || !adapter) return null;
   const normalized = String(nextStatus || "").trim();
@@ -10759,6 +12039,293 @@ function buildCurrentTuiMonitorStats() {
     },
     uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
   });
+}
+
+function isTerminalSharedAttemptStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized === "complete"
+    || normalized === "completed"
+    || normalized === "failed"
+    || normalized === "abandoned"
+    || normalized === "ignored";
+}
+
+function summarizeTaskStatusCounts(tasks = []) {
+  const counts = {};
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    const key = normalizeTaskStatusKey(task?.status || task?.meta?.status || "unknown") || "unknown";
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
+function summarizeExecutionJournalCoverage(tasks = [], options = {}) {
+  const includeDetails = options.details === true;
+  const recentRuns = [];
+  const seenRunIds = new Set();
+  let taskCount = 0;
+  let runCount = 0;
+  let stepCount = 0;
+  let artifactCount = 0;
+
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    const runs = Array.isArray(task?.runs) ? task.runs : [];
+    let taskHasJournal = false;
+    for (const run of runs) {
+      const journal = run?.journal && typeof run.journal === "object"
+        ? run.journal
+        : (run?.meta?.journal && typeof run.meta.journal === "object" ? run.meta.journal : null);
+      if (!journal) continue;
+      const runId = String(journal.runId || run?.runId || run?.id || "").trim();
+      if (!runId || seenRunIds.has(runId)) continue;
+      seenRunIds.add(runId);
+      taskHasJournal = true;
+      runCount += 1;
+      stepCount += Number.isFinite(Number(journal.stepCount)) ? Number(journal.stepCount) : 0;
+      artifactCount += Number.isFinite(Number(journal.artifactCount)) ? Number(journal.artifactCount) : 0;
+      if (includeDetails) {
+        recentRuns.push({
+          taskId: String(task?.id || "").trim() || null,
+          taskTitle: String(task?.title || "").trim() || null,
+          runId,
+          status: String(run?.status || "").trim() || null,
+          summary: String(run?.summary || "").trim() || null,
+          persistedAt: String(journal.persistedAt || run?.endedAt || run?.startedAt || "").trim() || null,
+          stepCount: Number.isFinite(Number(journal.stepCount)) ? Number(journal.stepCount) : 0,
+          artifactCount: Number.isFinite(Number(journal.artifactCount)) ? Number(journal.artifactCount) : 0,
+          relativeDir: String(journal.relativeDir || "").trim() || null,
+        });
+      }
+    }
+    if (taskHasJournal) taskCount += 1;
+  }
+
+  recentRuns.sort((left, right) => {
+    const leftTs = Date.parse(String(left?.persistedAt || "")) || 0;
+    const rightTs = Date.parse(String(right?.persistedAt || "")) || 0;
+    return rightTs - leftTs;
+  });
+
+  return {
+    taskCount,
+    runCount,
+    stepCount,
+    artifactCount,
+    ...(includeDetails ? { recentRuns: recentRuns.slice(0, 12) } : {}),
+  };
+}
+
+async function buildUiServerStatePayload(reqUrl, options = {}) {
+  const details = options.details === true;
+  const workspaceContext = resolveWorkspaceContextFromRequest(reqUrl, { allowAll: false })
+    || resolveActiveWorkspaceExecutionContext();
+  const workspaceDir = normalizeCandidatePath(workspaceContext?.workspaceDir) || repoRoot;
+  const workspaceRoot = normalizeCandidatePath(workspaceContext?.workspaceRoot) || workspaceDir;
+  const flags = {
+    coordinationEnabled: parseBooleanEnv(process.env.BOSUN_UI_COORDINATION_STATE_ENABLED, false),
+    scopeLocksEnabled: parseBooleanEnv(process.env.BOSUN_UI_SCOPE_LOCK_STATE_ENABLED, false),
+    auditSummaryEnabled: parseBooleanEnv(process.env.BOSUN_UI_AUDIT_SUMMARY_ENABLED, false),
+    executionJournalEnabled: parseBooleanEnv(process.env.BOSUN_UI_EXECUTION_JOURNAL_STATE_ENABLED, false),
+    planningAccountingEnabled: parseBooleanEnv(process.env.BOSUN_UI_PLANNING_ACCOUNTING_ENABLED, false),
+    monitoringEnabled: parseBooleanEnv(process.env.BOSUN_UI_MONITORING_STATE_ENABLED, false),
+  };
+
+  const payload = {
+    enabled: flags.coordinationEnabled,
+    generatedAt: new Date().toISOString(),
+    workspace: {
+      workspaceId: String(workspaceContext?.workspaceId || "").trim(),
+      workspaceDir,
+      workspaceRoot,
+      allWorkspaces: workspaceContext?.allWorkspaces === true,
+    },
+    flags,
+    coordination: null,
+    scopeLocks: null,
+    audit: null,
+    executionJournals: null,
+    planningAccounting: null,
+    monitoring: null,
+  };
+  if (!flags.coordinationEnabled) return payload;
+
+  const [{ tasks: workspaceTasks = [] } = {}, sharedStateStats, sharedStates, statusSnapshot, worktreeRecovery] = await Promise.all([
+    listTasksForWorkspaceContext(workspaceContext).catch(() => ({ tasks: [] })),
+    getStateStatistics(workspaceDir).catch(() => ({
+      total: 0,
+      claimed: 0,
+      working: 0,
+      complete: 0,
+      failed: 0,
+      abandoned: 0,
+      ignored: 0,
+      stale: 0,
+      byOwner: {},
+    })),
+    getAllSharedStates(workspaceDir).catch(() => ({})),
+    readStatusSnapshot().catch(() => null),
+    readUiWorktreeRecovery().catch(() => null),
+  ]);
+
+  const mergedById = new Map();
+  for (const source of [
+    Array.isArray(workspaceTasks) ? workspaceTasks : [],
+    (await listAllTasksForApi(resolveInjectedTaskStoreApi() || getKanbanAdapter()).catch(() => [])) || [],
+    getAllInternalTasks(),
+  ]) {
+    for (const task of Array.isArray(source) ? source : []) {
+      const taskId = String(task?.id || task?.taskId || "").trim();
+      if (!taskId) continue;
+      const existing = mergedById.get(taskId);
+      mergedById.set(taskId, existing ? { ...existing, ...task, meta: { ...(existing?.meta || {}), ...(task?.meta || {}) } } : task);
+    }
+  }
+  const tasks = [...mergedById.values()].filter((task) => taskMatchesWorkspaceContext(task, workspaceContext));
+
+  const taskStatusCounts = summarizeTaskStatusCounts(tasks);
+  const sharedStateEntries = Object.values(sharedStates || {});
+  const activeSharedStates = sharedStateEntries.filter((entry) => !isTerminalSharedAttemptStatus(entry?.attemptStatus));
+  payload.coordination = {
+    taskCount: Array.isArray(tasks) ? tasks.length : 0,
+    taskStatusCounts,
+    sharedState: {
+      ...sharedStateStats,
+      ownerCount: Object.keys(sharedStateStats?.byOwner || {}).length,
+      activeTaskCount: activeSharedStates.length,
+      ...(details
+        ? {
+            activeTasks: activeSharedStates.slice(0, 12).map((entry) => ({
+              taskId: String(entry?.taskId || "").trim() || null,
+              ownerId: String(entry?.ownerId || "").trim() || null,
+              attemptStatus: String(entry?.attemptStatus || "").trim() || null,
+              ownerHeartbeat: entry?.ownerHeartbeat || null,
+              scopePathCount: Array.isArray(entry?.scopePaths) ? entry.scopePaths.length : 0,
+            })),
+          }
+        : {}),
+    },
+  };
+
+  if (flags.scopeLocksEnabled) {
+    const locks = await listScopeLocks(workspaceDir).catch(() => []);
+    const ownerIds = new Set();
+    const taskIds = new Set();
+    let staleCount = 0;
+    const now = Date.now();
+    for (const lock of locks) {
+      if (lock?.ownerId) ownerIds.add(String(lock.ownerId));
+      if (lock?.taskId) taskIds.add(String(lock.taskId));
+      const expiresAtMs = Date.parse(String(lock?.expiresAt || ""));
+      if (Number.isFinite(expiresAtMs) && expiresAtMs <= now) staleCount += 1;
+    }
+    payload.scopeLocks = {
+      lockCount: locks.length,
+      taskCount: taskIds.size,
+      ownerCount: ownerIds.size,
+      staleCount,
+      ...(details
+        ? {
+            locks: locks
+              .slice()
+              .sort((left, right) => (Date.parse(String(right?.refreshedAt || right?.createdAt || "")) || 0) - (Date.parse(String(left?.refreshedAt || left?.createdAt || "")) || 0))
+              .slice(0, 20),
+          }
+        : {}),
+    };
+  }
+
+  if (flags.auditSummaryEnabled) {
+    const taskSummaries = listTaskAuditSummariesFromStateLedger({
+      repoRoot: workspaceDir,
+      limit: details ? 20 : 8,
+      eventLimit: details ? 100 : 40,
+    });
+    const recentEvents = listAuditEventsFromStateLedger({
+      repoRoot: workspaceDir,
+      limit: details ? 50 : 12,
+    });
+    const promotedStrategies = listPromotedStrategiesFromStateLedger({
+      repoRoot: workspaceDir,
+      limit: details ? 20 : 8,
+    });
+    payload.audit = {
+      summary: {
+        taskCount: taskSummaries.length,
+        recentEventCount: recentEvents.length,
+        promotedStrategyCount: promotedStrategies.length,
+        failedTaskCount: taskSummaries.filter((entry) => ["blocked", "error", "failed"].includes(String(entry?.status || "").trim().toLowerCase())).length,
+        latestEventAt: recentEvents[0]?.timestamp || null,
+      },
+      ...(details ? { tasks: taskSummaries, recentEvents, promotedStrategies } : {}),
+    };
+  }
+
+  if (flags.executionJournalEnabled) {
+    payload.executionJournals = summarizeExecutionJournalCoverage(tasks, { details });
+  }
+
+  if (flags.planningAccountingEnabled) {
+    const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false }).catch(() => null);
+    const workflowRuns = wfCtx?.ok
+      ? await Promise.resolve(wfCtx.engine?.list?.() || []).catch(() => [])
+      : [];
+    const budgetStatusCounts = {};
+    const policyStatusCounts = {};
+    let goalBackedRunCount = 0;
+    let heartbeatRunCount = 0;
+    let wakeupRequestCount = 0;
+    for (const run of Array.isArray(workflowRuns) ? workflowRuns : []) {
+      const budgetStatus = String(run?.budgetOutcome?.status || "").trim() || "unknown";
+      const policyStatus = String(run?.policyOutcome?.status || "").trim() || "unknown";
+      budgetStatusCounts[budgetStatus] = (budgetStatusCounts[budgetStatus] || 0) + 1;
+      policyStatusCounts[policyStatus] = (policyStatusCounts[policyStatus] || 0) + 1;
+      if (run?.primaryGoalId || (Array.isArray(run?.goalAncestry) && run.goalAncestry.length > 0)) goalBackedRunCount += 1;
+      if (run?.heartbeatRun?.runId) heartbeatRunCount += 1;
+      if (run?.wakeupRequest?.requestId) wakeupRequestCount += 1;
+    }
+    payload.planningAccounting = {
+      taskCount: Array.isArray(tasks) ? tasks.length : 0,
+      blockedTaskCount: Number(taskStatusCounts.blocked || 0),
+      inProgressTaskCount: Number(taskStatusCounts.inprogress || 0),
+      workflowRunCount: Array.isArray(workflowRuns) ? workflowRuns.length : 0,
+      goalBackedRunCount,
+      heartbeatRunCount,
+      wakeupRequestCount,
+      budgetStatusCounts,
+      policyStatusCounts,
+      ...(details
+        ? {
+            runs: workflowRuns.slice(0, 20).map((run) => ({
+              runId: run?.runId || run?.id || null,
+              workflowId: run?.workflowId || null,
+              workflowName: run?.workflowName || null,
+              status: run?.status || null,
+              primaryGoalId: run?.primaryGoalId || null,
+              primaryGoalTitle: run?.primaryGoalTitle || null,
+              budgetStatus: run?.budgetOutcome?.status || null,
+              policyStatus: run?.policyOutcome?.status || null,
+            })),
+          }
+        : {}),
+    };
+  }
+
+  if (flags.monitoringEnabled) {
+    const monitor = buildCurrentTuiMonitorStats();
+    const monitorSessions = Array.isArray(monitor?.sessions) ? monitor.sessions : [];
+    payload.monitoring = {
+      summary: {
+        sessionCount: monitorSessions.length,
+        activeSessionCount: monitorSessions.filter((entry) => entry?.live === true).length,
+        throughputTps: Number(monitor?.throughputTps || 0),
+        worktreeRecoveryHealth: worktreeRecovery?.health || null,
+        statusCounts: statusSnapshot?.counts && typeof statusSnapshot.counts === "object" ? statusSnapshot.counts : {},
+      },
+      ...(details ? { monitor, worktreeRecovery } : {}),
+    };
+  }
+
+  return payload;
 }
 
 function normalizeWorkflowNodeStatus(status) {
@@ -12398,6 +13965,9 @@ async function readStatusSnapshot() {
 }
 
 async function readUiWorktreeRecovery() {
+  if (uiDeps && Object.prototype.hasOwnProperty.call(uiDeps, "worktreeRecovery")) {
+    return normalizeWorktreeRecoveryState(uiDeps.worktreeRecovery);
+  }
   const snapshot = await readStatusSnapshot();
   if (snapshot && typeof snapshot === "object" && snapshot.worktreeRecovery) {
     return snapshot.worktreeRecovery;
@@ -12675,6 +14245,80 @@ function buildTaskMetadataPatch(input = {}) {
     }
   }
 
+  if (hasOwn(input, "goalId")) {
+    const goalId = normalizeOptionalStringInput(input?.goalId);
+    if (goalId) {
+      topLevel.goalId = goalId;
+      topLevel.primaryGoalId = goalId;
+      meta.goalId = goalId;
+      meta.primaryGoalId = goalId;
+    }
+  }
+
+  if (hasOwn(input, "parentGoalId")) {
+    const parentGoalId = normalizeOptionalStringInput(input?.parentGoalId);
+    if (parentGoalId) {
+      topLevel.parentGoalId = parentGoalId;
+      meta.parentGoalId = parentGoalId;
+    }
+  }
+
+  if (hasOwn(input, "budgetWindow")) {
+    const budgetWindow = normalizeOptionalStringInput(input?.budgetWindow);
+    if (budgetWindow) {
+      topLevel.budgetWindow = budgetWindow;
+      meta.budgetWindow = budgetWindow;
+    }
+  }
+
+  if (hasOwn(input, "budgetCents")) {
+    const budgetCents = Number(input?.budgetCents);
+    if (Number.isFinite(budgetCents) && budgetCents >= 0) {
+      topLevel.budgetCents = Math.trunc(budgetCents);
+      meta.budgetCents = Math.trunc(budgetCents);
+    }
+  }
+
+  if (hasOwn(input, "budgetCurrency")) {
+    const budgetCurrency = normalizeOptionalStringInput(input?.budgetCurrency);
+    if (budgetCurrency) {
+      topLevel.budgetCurrency = budgetCurrency;
+      meta.budgetCurrency = budgetCurrency;
+    }
+  }
+
+  if (hasOwn(input, "coordinationTeamId")) {
+    const coordinationTeamId = normalizeOptionalStringInput(input?.coordinationTeamId);
+    if (coordinationTeamId) {
+      topLevel.coordinationTeamId = coordinationTeamId;
+      meta.coordinationTeamId = coordinationTeamId;
+    }
+  }
+
+  if (hasOwn(input, "coordinationRole")) {
+    const coordinationRole = normalizeOptionalStringInput(input?.coordinationRole);
+    if (coordinationRole) {
+      topLevel.coordinationRole = coordinationRole;
+      meta.coordinationRole = coordinationRole;
+    }
+  }
+
+  if (hasOwn(input, "coordinationReportsTo")) {
+    const coordinationReportsTo = normalizeOptionalStringInput(input?.coordinationReportsTo);
+    if (coordinationReportsTo) {
+      topLevel.coordinationReportsTo = coordinationReportsTo;
+      meta.coordinationReportsTo = coordinationReportsTo;
+    }
+  }
+
+  if (hasOwn(input, "coordinationLevel")) {
+    const coordinationLevel = normalizeOptionalStringInput(input?.coordinationLevel);
+    if (coordinationLevel) {
+      topLevel.coordinationLevel = coordinationLevel;
+      meta.coordinationLevel = coordinationLevel;
+    }
+  }
+
   return { topLevel, meta };
 }
 
@@ -12742,7 +14386,24 @@ function withTaskMetadataTopLevel(task) {
   if (!meta) return task;
 
   let next = task;
-  const keys = ["assignee", "assignees", "epicId", "storyPoints", "parentTaskId", "dueDate"];
+  const keys = [
+    "assignee",
+    "assignees",
+    "epicId",
+    "storyPoints",
+    "parentTaskId",
+    "dueDate",
+    "goalId",
+    "primaryGoalId",
+    "parentGoalId",
+    "budgetWindow",
+    "budgetCents",
+    "budgetCurrency",
+    "coordinationTeamId",
+    "coordinationRole",
+    "coordinationReportsTo",
+    "coordinationLevel",
+  ];
   for (const key of keys) {
     if (meta[key] != null && next[key] !== meta[key]) {
       next = { ...next, [key]: meta[key] };
@@ -12752,6 +14413,75 @@ function withTaskMetadataTopLevel(task) {
     next = { ...next, assignee: next.assignees[0] };
   }
   return next;
+}
+
+function buildTaskWorkflowGovernance(task = {}) {
+  const goalId = normalizeOptionalStringInput(
+    task?.goalId || task?.primaryGoalId || task?.meta?.goalId || task?.meta?.primaryGoalId,
+  );
+  const parentGoalId = normalizeOptionalStringInput(task?.parentGoalId || task?.meta?.parentGoalId);
+  const goalAncestry = [];
+  if (parentGoalId) {
+    goalAncestry.push({
+      goalId: parentGoalId,
+      depth: 0,
+      source: "task-metadata",
+    });
+  }
+  if (goalId) {
+    goalAncestry.push({
+      goalId,
+      parentGoalId: parentGoalId || null,
+      depth: parentGoalId ? 1 : 0,
+      source: "task-metadata",
+    });
+  }
+  const budgetWindow = normalizeOptionalStringInput(task?.budgetWindow || task?.meta?.budgetWindow);
+  const budgetCentsRaw = Number(task?.budgetCents ?? task?.meta?.budgetCents);
+  const budgetCents = Number.isFinite(budgetCentsRaw) && budgetCentsRaw >= 0
+    ? Math.trunc(budgetCentsRaw)
+    : null;
+  const budgetCurrency = normalizeOptionalStringInput(task?.budgetCurrency || task?.meta?.budgetCurrency) || "USD";
+  const budgetPolicy = (budgetWindow || budgetCents != null)
+    ? {
+        ...(budgetWindow ? { budgetWindow } : {}),
+        ...(budgetCents != null ? { budgetCents } : {}),
+        currency: budgetCurrency,
+      }
+    : null;
+  const coordinationTeamId = normalizeOptionalStringInput(
+    task?.coordinationTeamId || task?.meta?.coordinationTeamId,
+  );
+  const coordinationRole = normalizeOptionalStringInput(
+    task?.coordinationRole || task?.meta?.coordinationRole,
+  );
+  const coordinationReportsTo = normalizeOptionalStringInput(
+    task?.coordinationReportsTo || task?.meta?.coordinationReportsTo,
+  );
+  const coordinationLevel = normalizeOptionalStringInput(
+    task?.coordinationLevel || task?.meta?.coordinationLevel,
+  );
+  const coordination = (coordinationTeamId || coordinationRole || coordinationReportsTo || coordinationLevel)
+    ? {
+        ...(coordinationTeamId ? { teamId: coordinationTeamId } : {}),
+        ...(coordinationRole ? { role: coordinationRole } : {}),
+        ...(coordinationReportsTo ? { reportsTo: coordinationReportsTo } : {}),
+        ...(coordinationLevel ? { level: coordinationLevel } : {}),
+        source: "task-metadata",
+      }
+    : null;
+  return {
+    ...(goalAncestry.length > 0 ? { goalAncestry } : {}),
+    ...(goalId ? { primaryGoalId: goalId } : {}),
+    ...(budgetPolicy ? { budgetPolicy } : {}),
+    ...(coordination ? {
+      coordination,
+      coordinationTeamId,
+      coordinationRole,
+      coordinationReportsTo,
+      coordinationLevel,
+    } : {}),
+  };
 }
 
 async function getLatestLogTail(lineCount) {
@@ -12768,7 +14498,7 @@ function parseSystemLogTimestamp(line) {
 async function getMergedSystemLogTail(
   lineCount,
   {
-    fileLimit = 4,
+    fileLimit = Object.keys(SYSTEM_LOG_PRIORITY).length,
     maxBytesPerFile = 350_000,
   } = {},
 ) {
@@ -13905,10 +15635,57 @@ async function handleApi(req, res, url) {
   if (path === "/api/status") {
     const cached = getCachedApiResponse("status", 2000);
     if (cached) { jsonResponse(res, 200, cached); return; }
-    const data = await readStatusSnapshot();
+    const workspaceContext = resolveActiveWorkspaceExecutionContext();
+    const serverState = await readServerStateSnapshot({
+      repoRoot: workspaceContext?.workspaceDir || repoRoot,
+      details: false,
+    });
+    const rawData = await readStatusSnapshot();
+    const data = serverState?.enabled === true
+      ? {
+          ...(rawData && typeof rawData === "object" ? rawData : {}),
+          serverState,
+        }
+      : rawData;
     const payload = { ok: true, data };
     setCachedApiResponse("status", payload);
     jsonResponse(res, 200, payload);
+    return;
+  }
+
+  if (path === "/api/server-state" && req.method === "GET") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
+        || resolveActiveWorkspaceExecutionContext();
+      const details = parseBooleanLike(url.searchParams.get("details"), false);
+      const data = await readServerStateSnapshot({
+        repoRoot: workspaceContext?.workspaceDir || repoRoot,
+        details,
+      });
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/server-state") {
+    try {
+      const details = url.searchParams.get("details") === "1";
+      const workspaceKey = String(url.searchParams.get("workspace") || "active").trim().toLowerCase() || "active";
+      const cacheKey = `server-state:${workspaceKey}:${details ? "details" : "summary"}`;
+      const cached = getCachedApiResponse(cacheKey, 2000);
+      if (cached) {
+        jsonResponse(res, 200, cached);
+        return;
+      }
+      const data = await buildUiServerStatePayload(url, { details });
+      const payload = { ok: true, data };
+      setCachedApiResponse(cacheKey, payload);
+      jsonResponse(res, 200, payload);
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err?.message || String(err) });
+    }
     return;
   }
 
@@ -14622,6 +16399,9 @@ async function handleApi(req, res, url) {
         const linkedSessionIds = collectTaskLinkedSessionIds(detailTask, tracker);
         const primarySessionId = linkedSessionIds[0] || null;
         const linkedWorktreePath = await resolveTaskLinkedWorktreePath(detailTask, tracker);
+        const auditActivity = buildTaskAuditActivity(detailTask.id, {
+          repoRoot: workspaceContext?.workspaceDir || repoRoot,
+        });
 
         detailTask.meta = {
           ...(detailTask.meta || {}),
@@ -14632,6 +16412,7 @@ async function handleApi(req, res, url) {
           primarySessionId,
           canStart,
           blockedContext,
+          ...(auditActivity ? { auditActivity } : {}),
           ...(diagnostics ? { diagnostics } : {}),
           ...(sprintId ? { sprintId } : {}),
           ...(sprintDag ? { sprintDag: sprintDag.data } : {}),
@@ -14642,6 +16423,7 @@ async function handleApi(req, res, url) {
         if (globalDag) detailTask.dagOfDags = globalDag.data;
         detailTask.canStart = canStart;
         detailTask.blockedContext = blockedContext;
+        if (auditActivity) detailTask.auditActivity = auditActivity;
         if (diagnostics) detailTask.diagnostics = diagnostics;
         if (primarySessionId && !detailTask.sessionId) detailTask.sessionId = primarySessionId;
         if (primarySessionId && !detailTask.primarySessionId) detailTask.primarySessionId = primarySessionId;
@@ -14649,6 +16431,112 @@ async function handleApi(req, res, url) {
         detailTask = withTaskRuntimeSnapshot(detailTask);
       }
       jsonResponse(res, 200, { ok: true, data: detailTask });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/audit/summary") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      const auditRepoRoot = workspaceContext?.workspaceDir || repoRoot;
+      const taskSummaries = listTaskAuditSummariesFromStateLedger({
+        repoRoot: auditRepoRoot,
+        limit: Number(url.searchParams.get("limit")) || 25,
+        eventLimit: 60,
+      });
+      const recentEvents = listAuditEventsFromStateLedger({
+        repoRoot: auditRepoRoot,
+        limit: Number(url.searchParams.get("recentLimit")) || 40,
+      });
+      const failedTaskCount = taskSummaries.filter((entry) => {
+        const taskStatus = String(entry?.status || "").trim().toLowerCase();
+        return taskStatus === "blocked" || taskStatus === "error" || taskStatus === "failed";
+      }).length;
+      jsonResponse(res, 200, {
+        ok: true,
+        summary: {
+          taskCount: taskSummaries.length,
+          failedTaskCount,
+          recentEventCount: recentEvents.length,
+          latestEventAt: recentEvents[0]?.timestamp || null,
+        },
+        tasks: taskSummaries,
+        recentEvents,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/audit/events") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      const auditRepoRoot = workspaceContext?.workspaceDir || repoRoot;
+      const payload = listAuditEventsFromStateLedger({
+        repoRoot: auditRepoRoot,
+        taskId: url.searchParams.get("taskId") || "",
+        runId: url.searchParams.get("runId") || "",
+        sessionId: url.searchParams.get("sessionId") || "",
+        agentId: url.searchParams.get("agentId") || "",
+        search: url.searchParams.get("search") || "",
+        limit: Number(url.searchParams.get("limit")) || 120,
+        direction: url.searchParams.get("direction") || "desc",
+      });
+      jsonResponse(res, 200, { ok: true, events: payload });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/audit/tasks") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      const auditRepoRoot = workspaceContext?.workspaceDir || repoRoot;
+      const payload = listTaskAuditSummariesFromStateLedger({
+        repoRoot: auditRepoRoot,
+        search: url.searchParams.get("search") || "",
+        limit: Number(url.searchParams.get("limit")) || 50,
+        eventLimit: Number(url.searchParams.get("eventLimit")) || 80,
+      });
+      jsonResponse(res, 200, { ok: true, tasks: payload });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/audit/tasks/")) {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      const auditRepoRoot = workspaceContext?.workspaceDir || repoRoot;
+      const taskId = decodeURIComponent(path.slice("/api/audit/tasks/".length));
+      const payload = buildTaskAuditActivity(taskId, { repoRoot: auditRepoRoot });
+      if (!payload) {
+        jsonResponse(res, 404, { ok: false, error: "Task audit not found" });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, audit: payload });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/audit/runs/")) {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      const auditRepoRoot = workspaceContext?.workspaceDir || repoRoot;
+      const runId = decodeURIComponent(path.slice("/api/audit/runs/".length));
+      const payload = buildWorkflowRunAuditActivity({ runId }, { repoRoot: auditRepoRoot });
+      if (!payload) {
+        jsonResponse(res, 404, { ok: false, error: "Run audit not found" });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, audit: payload });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -14704,10 +16592,12 @@ async function handleApi(req, res, url) {
       }
 
       // ── Build event context ─────────────────────────────────────────────
+      const governance = buildTaskWorkflowGovernance(task);
       const eventData = {
         eventType: "task.assigned",
         taskId: task.id,
         taskTitle: task.title || "",
+        ...governance,
         task: {
           id: task.id, title: task.title || "",
           description: task.description || "",
@@ -14715,11 +16605,12 @@ async function handleApi(req, res, url) {
           agentType: task.agentType || task.assignedAgentType || "",
           assignedAgentType: task.assignedAgentType || task.agentType || "",
           agentProfile: task.agentProfile || "",
+          ...governance,
         },
       };
 
-      const allWorkflows = engine.list();
-      const fullWorkflows = allWorkflows.map((w) => engine.get(w.id)).filter(Boolean);
+      const allWorkflows = await engine.list();
+      const fullWorkflows = (await Promise.all(allWorkflows.map((w) => engine.get(w.id)))).filter(Boolean);
 
       // ── Helper: resolve variables in a config object ──────────────────
       const resolveVarsInConfig = (config, variables, taskCtx) => {
@@ -15318,7 +17209,7 @@ async function handleApi(req, res, url) {
       if (mode === "dry-run") {
         dryRunResults = [];
         for (const stage of stages) {
-          const wf = engine.get(stage.workflowId);
+          const wf = await engine.get(stage.workflowId);
           if (!wf) continue;
           const simResult = { workflowId: stage.workflowId, workflowName: stage.workflowName, nodes: [] };
           try {
@@ -16016,6 +17907,33 @@ async function handleApi(req, res, url) {
         });
         return;
       }
+      const lifecycleAction = inferLifecycleAction(
+        previousTask?.status || null,
+        requestedStatus || patch.status || null,
+        body?.lifecycleAction,
+      );
+      const completionGuard = evaluateTaskCompletionGuard(previousTask || taskId, lifecycleAction, {
+        targetStatus: requestedStatus || patch.status || null,
+        force: forceStart || manualOverride,
+        manualOverride,
+        patch,
+      });
+      if (completionGuard) {
+        jsonResponse(res, 409, {
+          ok: false,
+          error: completionGuard.error || "completion_guard_blocked",
+          reason: completionGuard.reason || null,
+          message: completionGuard.message || "Task completion is blocked.",
+          task: previousTask ? withTaskMetadataTopLevel(previousTask) : null,
+          lifecycle: {
+            action: lifecycleAction,
+            previousStatus: previousTask?.status || null,
+            nextStatus: requestedStatus || patch.status || null,
+            guard: completionGuard,
+          },
+        });
+        return;
+      }
       const updatedRaw =
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
@@ -16030,11 +17948,6 @@ async function handleApi(req, res, url) {
         resetExecutorTaskThrottleState(taskId);
       }
       const nextStatus = updated?.status || patch.status || null;
-      const lifecycleAction = inferLifecycleAction(
-        previousTask?.status || null,
-        nextStatus,
-        body?.lifecycleAction,
-      );
       applyInternalLifecycleTransition(taskId, lifecycleAction, {
         source: "api.tasks.update",
         actor: "ui",
@@ -16171,6 +18084,33 @@ async function handleApi(req, res, url) {
         });
         return;
       }
+      const lifecycleAction = inferLifecycleAction(
+        previousTask?.status || null,
+        requestedStatus || patch.status || null,
+        body?.lifecycleAction,
+      );
+      const completionGuard = evaluateTaskCompletionGuard(previousTask || taskId, lifecycleAction, {
+        targetStatus: requestedStatus || patch.status || null,
+        force: forceStart || manualOverride,
+        manualOverride,
+        patch,
+      });
+      if (completionGuard) {
+        jsonResponse(res, 409, {
+          ok: false,
+          error: completionGuard.error || "completion_guard_blocked",
+          reason: completionGuard.reason || null,
+          message: completionGuard.message || "Task completion is blocked.",
+          task: previousTask ? withTaskMetadataTopLevel(previousTask) : null,
+          lifecycle: {
+            action: lifecycleAction,
+            previousStatus: previousTask?.status || null,
+            nextStatus: requestedStatus || patch.status || null,
+            guard: completionGuard,
+          },
+        });
+        return;
+      }
       const updatedRaw =
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
@@ -16185,11 +18125,6 @@ async function handleApi(req, res, url) {
         resetExecutorTaskThrottleState(taskId);
       }
       const nextStatus = updated?.status || patch.status || null;
-      const lifecycleAction = inferLifecycleAction(
-        previousTask?.status || null,
-        nextStatus,
-        body?.lifecycleAction,
-      );
       applyInternalLifecycleTransition(taskId, lifecycleAction, {
         source: "api.tasks.edit",
         actor: "ui",
@@ -16490,6 +18425,93 @@ async function handleApi(req, res, url) {
         taskId: created?.id || null,
         parentTaskId,
       });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/decompose" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const phase = String(body?.action || body?.mode || "propose").trim().toLowerCase();
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      if (!["propose", "proposal", "apply", "commit"].includes(phase)) {
+        jsonResponse(res, 400, { ok: false, error: "action must be propose or apply" });
+        return;
+      }
+      const result = phase === "apply" || phase === "commit"
+        ? await applyTaskPlanningProposal({ taskId, body, url, mode: "decompose" })
+        : await generateTaskPlanningProposal({ taskId, url, mode: "decompose" });
+      jsonResponse(res, result.status || 200, result.body);
+      if (result.status === 200) {
+        broadcastUiEvent(["tasks", "overview"], "invalidate", {
+          reason: result.broadcastReason || `task-decompose-${phase === "apply" || phase === "commit" ? "applied" : "proposed"}`,
+          taskId: result.taskId || taskId,
+        });
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (
+    req.method === "POST"
+    && (
+      path === "/api/tasks/replan/propose"
+      || path === "/api/tasks/decompose/propose"
+    )
+  ) {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const mode = path.startsWith("/api/tasks/decompose") ? "decompose" : normalizeTaskPlanningMode(body?.planningMode || body?.mode || "replan", "replan");
+      const result = await generateTaskPlanningProposal({ taskId, url, mode });
+      jsonResponse(res, result.status || 200, result.body);
+      if (result.status === 200) {
+        broadcastUiEvent(["tasks", "overview"], "invalidate", {
+          reason: result.broadcastReason || `task-${mode}-proposed`,
+          taskId: result.taskId || taskId,
+        });
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (
+    req.method === "POST"
+    && (
+      path === "/api/tasks/replan/apply"
+      || path === "/api/tasks/decompose/apply"
+    )
+  ) {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const mode = path.startsWith("/api/tasks/decompose") ? "decompose" : normalizeTaskPlanningMode(body?.planningMode || body?.mode || "replan", "replan");
+      const result = await applyTaskPlanningProposal({ taskId, body, url, mode });
+      jsonResponse(res, result.status || 200, result.body);
+      if (result.status === 200) {
+        broadcastUiEvent(["tasks", "overview"], "invalidate", {
+          reason: result.broadcastReason || `task-${mode}-applied`,
+          taskId: result.taskId || taskId,
+        });
+      }
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -17192,8 +19214,39 @@ async function handleApi(req, res, url) {
             workspaceId: workspaceContext.workspaceId || "",
           });
           jsonResponse(res, 200, { ok: true, data: state });
+        } else if (action === "bulk-enable") {
+          const category = body?.category;
+          if (!category) {
+            jsonResponse(res, 400, { ok: false, error: "Missing category for bulk-enable" });
+            return;
+          }
+          const result = bulkEnableByCategory(rootDir, category);
+          if (result.success) {
+            broadcastUiEvent(["guardrails", "library", "overview"], "invalidate", {
+              reason: "hook-bulk-enable",
+              category,
+              workspaceId: workspaceContext.workspaceId || "",
+            });
+          }
+          jsonResponse(res, result.success ? 200 : 400, { ok: result.success, ...result });
+        } else if (action === "bulk-disable") {
+          const category = body?.category;
+          const force = body?.force === true;
+          if (!category) {
+            jsonResponse(res, 400, { ok: false, error: "Missing category for bulk-disable" });
+            return;
+          }
+          const result = bulkDisableByCategory(rootDir, category, force);
+          if (result.success) {
+            broadcastUiEvent(["guardrails", "library", "overview"], "invalidate", {
+              reason: "hook-bulk-disable",
+              category,
+              workspaceId: workspaceContext.workspaceId || "",
+            });
+          }
+          jsonResponse(res, result.success ? 200 : 400, { ok: result.success, ...result });
         } else {
-          jsonResponse(res, 400, { ok: false, error: `Unknown action: ${action}. Use enable, disable, or initialize.` });
+          jsonResponse(res, 400, { ok: false, error: `Unknown action: ${action}. Use enable, disable, initialize, bulk-enable, or bulk-disable.` });
         }
         return;
       }
@@ -17217,6 +19270,74 @@ async function handleApi(req, res, url) {
     try {
       const hooks = getDefaultHooks();
       jsonResponse(res, 200, { ok: true, data: hooks });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/hooks/override") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const rootDir = workspaceContext.repoRoot || workspaceContext.workspaceRoot || process.cwd();
+
+      if (req.method === "GET") {
+        const hookId = url.searchParams.get("id");
+        if (hookId) {
+          const hook = getHookWithOverrides(rootDir, hookId);
+          if (!hook) {
+            jsonResponse(res, 404, { ok: false, error: `Hook not found: ${hookId}` });
+            return;
+          }
+          jsonResponse(res, 200, { ok: true, data: hook });
+        } else {
+          const overrides = loadHookOverrides(rootDir);
+          jsonResponse(res, 200, { ok: true, data: overrides });
+        }
+        return;
+      }
+
+      if (req.method === "POST") {
+        const body = await readJsonBody(req).catch(() => ({}));
+        const hookId = body?.hookId;
+        if (!hookId) {
+          jsonResponse(res, 400, { ok: false, error: "Missing hookId" });
+          return;
+        }
+        const result = saveHookOverride(rootDir, hookId, body);
+        if (result.success) {
+          broadcastUiEvent(["guardrails", "library"], "invalidate", {
+            reason: "hook-override-updated",
+            hookId,
+            workspaceId: workspaceContext.workspaceId || "",
+          });
+        }
+        jsonResponse(res, result.success ? 200 : 400, { ok: result.success, ...result });
+        return;
+      }
+
+      if (req.method === "DELETE") {
+        const body = await readJsonBody(req).catch(() => ({}));
+        const hookId = body?.hookId || url.searchParams.get("id");
+        if (!hookId) {
+          jsonResponse(res, 400, { ok: false, error: "Missing hookId" });
+          return;
+        }
+        const result = deleteHookOverride(rootDir, hookId);
+        if (result.success) {
+          broadcastUiEvent(["guardrails", "library"], "invalidate", {
+            reason: "hook-override-deleted",
+            hookId,
+            workspaceId: workspaceContext.workspaceId || "",
+          });
+        }
+        jsonResponse(res, 200, { ok: true, ...result });
+        return;
+      }
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -18478,6 +20599,12 @@ if (path === "/api/agent-logs/context") {
       const executor = uiDeps.getInternalExecutor?.();
       const status = executor?.getStatus?.() || {};
       const worktreeRecovery = await readUiWorktreeRecovery();
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
+        || resolveActiveWorkspaceExecutionContext();
+      const serverState = await readServerStateSnapshot({
+        repoRoot: workspaceContext?.workspaceDir || repoRoot,
+        details: false,
+      });
       const data = {
         executor: {
           mode: uiDeps.getExecutorMode?.() || "internal",
@@ -18493,6 +20620,9 @@ if (path === "/api/agent-logs/context") {
           platform: process.platform,
         },
       };
+      if (serverState?.enabled === true) {
+        data.serverState = serverState;
+      }
       jsonResponse(res, 200, { ok: true, data });
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: null });
@@ -19097,9 +21227,24 @@ if (path === "/api/agent-logs/context") {
         }
         const engine = wfCtx.engine;
         const all = (await engine.list()).filter((workflow) => !shouldHideGeneratedWorkflowFromList(workflow));
+        /* Deduplicate template-installed workflows: when the same name appears
+         * both as a UUID-based install (with metadata.installedFrom) and as a
+         * raw template-id-based file (without metadata.installedFrom), keep
+         * only the properly-installed variant. */
+        const installedNames = new Set();
+        for (const w of all) {
+          if (w.metadata?.installedFrom) installedNames.add(String(w.name || "").trim());
+        }
+        const deduped = all.filter((w) => {
+          if (w.metadata?.installedFrom) return true;
+          const wName = String(w.name || "").trim();
+          const wId = String(w.id || "").trim();
+          if (installedNames.has(wName) && wId.startsWith("template-")) return false;
+          return true;
+        });
         return {
           ok: true,
-          workflows: all.map((w) => ({
+          workflows: deduped.map((w) => ({
             id: w.id, name: w.name, description: w.description, category: w.category,
             enabled: w.enabled !== false,
             nodeCount: Number.isFinite(w.nodeCount) ? w.nodeCount : (w.nodes || []).length,
@@ -19203,7 +21348,7 @@ if (path === "/api/agent-logs/context") {
 
       // 2. Find or auto-install the workflow
       let workflowId;
-      const installed = engine.list().find(
+      const installed = (await engine.list()).find(
         (wf) => wf.metadata?.installedFrom === templateId || wf.name === template.name,
       );
       if (installed) {
@@ -19365,8 +21510,8 @@ if (path === "/api/agent-logs/context") {
       const result = _wfTemplates.relayoutInstalledTemplateWorkflows(wfCtx.engine, {
         workflowIds: body?.workflowIds || body?.workflowId,
       });
-      const workflows = result.updatedWorkflowIds
-        .map((workflowId) => wfCtx.engine.get(workflowId))
+      const workflows = (await Promise.all(result.updatedWorkflowIds
+        .map((workflowId) => wfCtx.engine.get(workflowId))))
         .filter(Boolean);
       jsonResponse(res, 200, { ok: true, result, workflows });
     } catch (err) {
@@ -19521,6 +21666,113 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  if (path === "/api/workflows/approvals") {
+    try {
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const { listApprovalRequests, upsertWorkflowRunApprovalRequest, isWorkflowRunApprovalPending } =
+        await import("../workflow/approval-queue.mjs");
+      const engine = wfCtx.engine;
+      const rawLimit = Number(url.searchParams.get("limit"));
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.floor(rawLimit), 500)
+        : 100;
+      const statusFilter = String(url.searchParams.get("status") || "").trim().toLowerCase();
+      const scopeTypeFilter = String(url.searchParams.get("scopeType") || "").trim().toLowerCase();
+      const repoRootForApprovals = wfCtx.workspaceContext?.workspaceDir || repoRoot;
+      const historyLimit = Math.max(limit, 200);
+      const history = typeof engine.getRunHistory === "function"
+        ? await engine.getRunHistory(null, historyLimit)
+        : [];
+      for (const run of Array.isArray(history) ? history : []) {
+        if (!isWorkflowRunApprovalPending(run)) continue;
+        upsertWorkflowRunApprovalRequest(run, { repoRoot: repoRootForApprovals });
+      }
+      const listing = listApprovalRequests({
+        repoRoot: repoRootForApprovals,
+        status: statusFilter,
+        scopeType: scopeTypeFilter,
+        limit,
+        includeResolved: statusFilter === "all",
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        requests: listing.requests,
+        queuePath: listing.path,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err?.message || String(err) });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/workflows/approvals/")) {
+    try {
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const subPath = path.replace("/api/workflows/approvals/", "");
+      const segments = subPath.split("/").map(decodeURIComponent);
+      const requestId = String(segments[0] || "").trim();
+      const action = String(segments[1] || "").trim();
+      if (!requestId) {
+        jsonResponse(res, 400, { ok: false, error: "requestId is required" });
+        return;
+      }
+      if (action !== "resolve" || req.method !== "POST") {
+        jsonResponse(res, 404, { ok: false, error: "Approval action not found" });
+        return;
+      }
+      const {
+        getApprovalRequestById,
+        resolveApprovalRequest,
+      } = await import("../workflow/approval-queue.mjs");
+      const approvalsRepoRoot = wfCtx.workspaceContext?.workspaceDir || repoRoot;
+      const request = getApprovalRequestById(requestId, { repoRoot: approvalsRepoRoot });
+      if (!request) {
+        jsonResponse(res, 404, { ok: false, error: "Approval request not found" });
+        return;
+      }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const decision = String(body?.decision || "").trim().toLowerCase();
+      if (!["approved", "denied"].includes(decision)) {
+        jsonResponse(res, 400, { ok: false, error: "decision must be approved or denied" });
+        return;
+      }
+      const actorId = String(body?.actorId || body?.actor || "ui-operator").trim() || "ui-operator";
+      const note = String(body?.note || "").trim();
+      const resolved = resolveApprovalRequest(request.requestId, {
+        repoRoot: approvalsRepoRoot,
+        decision,
+        actorId,
+        note,
+      });
+      const runId = String(request?.runId || request?.scopeId || "").trim();
+      let refreshedRun = null;
+      if (runId && typeof wfCtx.engine?.getRunDetail === "function") {
+        try {
+          refreshedRun = await Promise.resolve(wfCtx.engine.getRunDetail(runId));
+        } catch {
+          refreshedRun = null;
+        }
+      }
+      invalidateApiCache("server-state");
+      jsonResponse(res, 200, {
+        ok: true,
+        request: resolved.request,
+        run: refreshedRun,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err?.message || String(err) });
+    }
+    return;
+  }
+
   if (path.startsWith("/api/workflows/runs/")) {
     try {
       const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
@@ -19608,8 +21860,63 @@ if (path === "/api/agent-logs/context") {
         });
         return;
       }
+
+      if (action === "approval" && (req.method === "GET" || req.method === "POST")) {
+        const {
+          getWorkflowRunApprovalRequest,
+          isWorkflowRunApprovalPending,
+          resolveApprovalRequest,
+          upsertWorkflowRunApprovalRequest,
+        } = await import("../workflow/approval-queue.mjs");
+        const run = typeof engine.getRunDetail === "function" ? await engine.getRunDetail(runId) : null;
+        if (!run) {
+          jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
+          return;
+        }
+        const approvalsRepoRoot = wfCtx.workspaceContext?.workspaceDir || repoRoot;
+        let request = getWorkflowRunApprovalRequest(runId, { repoRoot: approvalsRepoRoot });
+        if (!request && isWorkflowRunApprovalPending(run)) {
+          request = upsertWorkflowRunApprovalRequest(run, { repoRoot: approvalsRepoRoot }).request;
+        }
+        if (req.method === "GET") {
+          jsonResponse(res, 200, {
+            ok: true,
+            request,
+            approvalPending: isWorkflowRunApprovalPending(run),
+          });
+          return;
+        }
+        if (!request) {
+          jsonResponse(res, 409, { ok: false, error: "No pending approval request exists for this workflow run." });
+          return;
+        }
+        const body = await readJsonBody(req).catch(() => ({}));
+        const decision = String(body?.decision || "").trim().toLowerCase();
+        if (!["approved", "denied"].includes(decision)) {
+          jsonResponse(res, 400, { ok: false, error: "decision must be approved or denied" });
+          return;
+        }
+        const actorId = String(body?.actorId || body?.actor || "ui-operator").trim() || "ui-operator";
+        const note = String(body?.note || "").trim();
+        const resolved = resolveApprovalRequest(request.requestId, {
+          repoRoot: approvalsRepoRoot,
+          decision,
+          actorId,
+          note,
+        });
+        const refreshedRun = typeof engine.getRunDetail === "function" ? await engine.getRunDetail(runId) : run;
+        invalidateApiCache("server-state");
+        jsonResponse(res, 200, {
+          ok: true,
+          request: resolved.request,
+          run: refreshedRun,
+        });
+        return;
+      }
+
       // ── POST /api/workflows/runs/:id/retry ──────────────────────────
-      // Manual retry endpoint. Accepts { mode: "from_failed" | "from_scratch" }.
+      // Manual retry endpoint. Accepts
+      // { mode: "from_failed" | "from_scratch" | "replan_from_failed" | "replan_subgraph" }.
       // If mode is omitted, returns available retry options so the UI can
       // present a choice to the user.
       if (action === "retry" && req.method === "POST") {
@@ -19646,8 +21953,8 @@ if (path === "/api/agent-logs/context") {
           });
           return;
         }
-        if (mode !== "from_failed" && mode !== "from_scratch") {
-          jsonResponse(res, 400, { ok: false, error: `Invalid mode "${mode}". Use "from_failed" or "from_scratch".` });
+        if (!["from_failed", "from_scratch", "replan_from_failed", "replan_subgraph"].includes(mode)) {
+          jsonResponse(res, 400, { ok: false, error: `Invalid mode "${mode}". Use "from_failed", "from_scratch", "replan_from_failed", or "replan_subgraph".` });
           return;
         }
         const result = await engine.retryRun(runId, { mode });
@@ -19782,12 +22089,18 @@ if (path === "/api/agent-logs/context") {
       }
 
       // ── GET /api/workflows/runs/:id ─────────────────────────────────
-      const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+      const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
       if (!run) {
         jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
         return;
       }
-      jsonResponse(res, 200, { ok: true, run });
+      const auditActivity = buildWorkflowRunAuditActivity(run, {
+        repoRoot: wfCtx.workspaceContext?.workspaceDir || repoRoot,
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        run: auditActivity ? { ...run, auditActivity } : run,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -19861,7 +22174,7 @@ if (path === "/api/agent-logs/context") {
         const result = _wfTemplates.relayoutInstalledTemplateWorkflows(engine, {
           workflowId,
         });
-        const workflow = engine.get(workflowId);
+        const workflow = await engine.get(workflowId);
         if (!workflow) {
           jsonResponse(res, 404, { ok: false, error: "Workflow not found after relayout" });
           return;
@@ -19881,10 +22194,10 @@ if (path === "/api/agent-logs/context") {
             ? Math.min(rawLimit, 5000)
             : 20;
           const page = typeof engine.getRunHistoryPage === "function"
-            ? engine.getRunHistoryPage(workflowId, { offset, limit })
+            ? await engine.getRunHistoryPage(workflowId, { offset, limit })
             : {
-                runs: engine.getRunHistory ? engine.getRunHistory(workflowId, limit) : [],
-                total: engine.getRunHistory ? engine.getRunHistory(workflowId).length : 0,
+                runs: engine.getRunHistory ? await engine.getRunHistory(workflowId, limit) : [],
+                total: engine.getRunHistory ? (await engine.getRunHistory(workflowId)).length : 0,
                 offset,
                 limit,
               };
@@ -19912,7 +22225,7 @@ if (path === "/api/agent-logs/context") {
 
       if (action === "copilot-context" && (req.method === "GET" || req.method === "POST")) {
         const requestBody = req.method === "POST" ? await readJsonBody(req).catch(() => ({})) : {};
-        const persistedWorkflow = engine.get(workflowId);
+        const persistedWorkflow = await engine.get(workflowId);
         if (!persistedWorkflow && !requestBody?.workflow) {
           jsonResponse(res, 404, { ok: false, error: "Workflow not found" });
           return;
@@ -19946,7 +22259,7 @@ if (path === "/api/agent-logs/context") {
 
       // ── Workflow Code View ─────────────────────────────────────────
       if (action === "code" && req.method === "GET") {
-        const wf = engine.get(workflowId);
+        const wf = await engine.get(workflowId);
         if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
         try {
           const { serializeWorkflowToCode } = await import("../workflow/workflow-serializer.mjs");
@@ -19959,7 +22272,7 @@ if (path === "/api/agent-logs/context") {
       }
 
       if (action === "code" && req.method === "PUT") {
-        const wf = engine.get(workflowId);
+        const wf = await engine.get(workflowId);
         if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
         try {
           const body = await readJsonBody(req);
@@ -19970,7 +22283,7 @@ if (path === "/api/agent-logs/context") {
             return;
           }
           const merged = { ...wf, ...result.workflow, id: wf.id };
-          engine.save(merged);
+          await engine.save(merged);
           jsonResponse(res, 200, { ok: true, workflow: merged });
         } catch (err) {
           jsonResponse(res, 500, { ok: false, error: err.message });
@@ -19996,7 +22309,7 @@ if (path === "/api/agent-logs/context") {
 
       // ── Workflow Export ──────────────────────────────────────────────
       if (action === "export" && req.method === "GET") {
-        const wf = engine.get(workflowId);
+        const wf = await engine.get(workflowId);
         if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
         try {
           const { generateExportBundle } = await import("../workflow/workflow-exporter.mjs");
@@ -20135,7 +22448,7 @@ if (path === "/api/agent-logs/context") {
 
       // GET — return full workflow definition
       const payload = await getOrComputeCachedApiResponse(`workflows:detail:${workflowId}:${url.search}`, 3000, async () => {
-        const wf = engine.get(workflowId);
+        const wf = await engine.get(workflowId);
         if (!wf) {
           return { __error: true, status: 404, body: { ok: false, error: "Workflow not found" } };
         }
@@ -20216,7 +22529,7 @@ if (path === "/api/agent-logs/context") {
         jsonResponse(res, 503, { ok: false, error: "Workflow engine unavailable" });
         return;
       }
-      const wf = wfCtx.engine.get(webhookWorkflowId);
+      const wf = await wfCtx.engine.get(webhookWorkflowId);
       if (!wf || wf.enabled === false) {
         jsonResponse(res, 404, { ok: false, error: "Workflow not found or disabled" });
         return;
@@ -20276,7 +22589,7 @@ if (path === "/api/agent-logs/context") {
         jsonResponse(res, wfCtx.status || 503, { ok: false, error: wfCtx.error });
         return;
       }
-      const wf = wfCtx.engine.get(wfId);
+      const wf = await wfCtx.engine.get(wfId);
       if (!wf) {
         jsonResponse(res, 404, { ok: false, error: "Workflow not found" });
         return;
@@ -20353,7 +22666,7 @@ if (path === "/api/agent-logs/context") {
         return;
       }
       const engine = wfCtx.engine;
-      const wf = engine.get(wfId);
+      const wf = await engine.get(wfId);
       if (!wf) {
         jsonResponse(res, 404, { ok: false, error: "Workflow not found" });
         return;
@@ -20414,7 +22727,7 @@ if (path === "/api/agent-logs/context") {
         }
 
         // Save the updated workflow
-        engine.save(wf);
+        await engine.save(wf);
         jsonResponse(res, 200, {
           ok: true,
           workflowId: wfId,
@@ -20431,7 +22744,7 @@ if (path === "/api/agent-logs/context") {
       if (req.method === "DELETE") {
         if (triggerNode?.config) {
           delete triggerNode.config.cron;
-          engine.save(wf);
+          await engine.save(wf);
         }
         jsonResponse(res, 200, { ok: true, workflowId: wfId, scheduleDisabled: true });
         return;
@@ -20662,8 +22975,54 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/guardrails" && req.method === "GET") {
     try {
-      const snapshot = buildGuardrailsSnapshot();
+      const repoParam = url?.searchParams?.get("repo") || "";
+      const targetDir = repoParam ? repoParam : undefined;
+      const snapshot = buildGuardrailsSnapshot(targetDir);
       jsonResponse(res, 200, { ok: true, snapshot });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/guardrails/repos" && req.method === "GET") {
+    try {
+      const configDir = resolveUiConfigDir();
+      const active = getActiveManagedWorkspace(configDir);
+      const repos = Array.isArray(active?.repos) ? active.repos : [];
+      const results = [];
+      for (const repo of repos) {
+        const repoPath = repo?.path || "";
+        if (!repoPath) continue;
+        try {
+          const snapshot = buildGuardrailsSnapshot(repoPath);
+          results.push({
+            name: repo.name || repo.path || "",
+            path: repoPath,
+            primary: Boolean(repo.primary),
+            snapshot,
+          });
+        } catch {
+          results.push({
+            name: repo.name || repo.path || "",
+            path: repoPath,
+            primary: Boolean(repo.primary),
+            snapshot: null,
+            error: "Failed to detect guardrails for this repo",
+          });
+        }
+      }
+      // If no repos in workspace, still return the active workspace dir as a single repo
+      if (results.length === 0) {
+        const snapshot = buildGuardrailsSnapshot();
+        results.push({
+          name: snapshot.workspace?.workspaceDir || repoRoot,
+          path: snapshot.workspace?.workspaceDir || repoRoot,
+          primary: true,
+          snapshot,
+        });
+      }
+      jsonResponse(res, 200, { ok: true, repos: results });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -21142,6 +23501,92 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  if (path === "/api/tui/config" && req.method === "GET") {
+    try {
+      const response = buildTuiConfigResponse();
+      jsonResponse(res, 200, {
+        ok: true,
+        sections: response.sections,
+        meta: response.meta,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tui/config" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const pathValue = String(body?.path || "").trim();
+      if (!pathValue) {
+        jsonResponse(res, 400, { ok: false, error: "path is required" });
+        return;
+      }
+
+      const response = buildTuiConfigResponse();
+      const pathParts = pathValue.split(".").filter(Boolean);
+      const fieldSchema = getConfigSchemaProperty(response.schema, pathParts);
+      if (!fieldSchema) {
+        jsonResponse(res, 404, { ok: false, error: `Unknown config path: ${pathValue}` });
+        return;
+      }
+      const envOverride = response.envOverridesByPath.get(pathValue);
+      if (envOverride) {
+        jsonResponse(res, 409, {
+          ok: false,
+          error: `${pathValue} is read-only because ${envOverride.envKey} is set in the environment`,
+        });
+        return;
+      }
+
+      let nextValue;
+      try {
+        nextValue = parseConfigEditorInput(fieldSchema, body?.value);
+      } catch (parseError) {
+        jsonResponse(res, 400, { ok: false, error: parseError.message || "Invalid value" });
+        return;
+      }
+
+      const candidate = cloneConfigDocument(response.configData || {});
+      if (!candidate.$schema) {
+        candidate.$schema = "./bosun.schema.json";
+      }
+      setConfigValueAtPath(candidate, pathParts, nextValue);
+
+      const validationErrors = validateConfigDocument(response.schema, candidate);
+      if (validationErrors.length > 0) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: findConfigValidationMessage(validationErrors, pathParts),
+        });
+        return;
+      }
+
+      writeJsonFileAtomic(response.meta.configPath, candidate);
+      emitConfigReload({
+        reason: "tui-config-update",
+        path: pathValue,
+        source: "ui-server",
+      });
+      invalidateApiCache("status");
+      invalidateApiCache("server-state");
+      invalidateApiCache("infra");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "tui-config-updated",
+        path: pathValue,
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        path: pathValue,
+        configPath: response.meta.configPath,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/settings/update") {
     try {
       const body = await readJsonBody(req);
@@ -21213,7 +23658,55 @@ if (path === "/api/agent-logs/context") {
       const updated = updateEnvFile(strChanges);
       const configUpdate = updateConfigFile(changes);
       const configDir = configUpdate.path ? dirname(configUpdate.path) : null;
+      try {
+        const actorId =
+          String(
+            req.headers["x-bosun-operator"]
+            || req.headers["x-forwarded-user"]
+            || req.headers["x-remote-user"]
+            || req.socket?.remoteAddress
+            || "operator",
+          ).trim() || "operator";
+        const ledgerScopeId =
+          String(configDir || repoRoot || process.cwd()).trim() || "settings";
+        for (const [key, value] of Object.entries(strChanges)) {
+          upsertStateLedgerKeyValue({
+            scope: "settings",
+            scopeId: ledgerScopeId,
+            key,
+            value,
+            source: "ui.settings.update",
+            metadata: {
+              configPath: configUpdate.path || null,
+              updatedConfig: configUpdate.updated || [],
+            },
+          }, { repoRoot });
+        }
+        appendOperatorActionToStateLedger({
+          actionType: "settings.update",
+          actorId,
+          actorType: "operator",
+          scope: "settings",
+          scopeId: ledgerScopeId,
+          targetId: Object.keys(strChanges).join(","),
+          status: "completed",
+          request: { changes: strChanges },
+          result: {
+            updated,
+            updatedConfig: configUpdate.updated || [],
+            configPath: configUpdate.path || null,
+          },
+          metadata: {
+            configDir,
+          },
+        }, { repoRoot });
+      } catch (ledgerErr) {
+        console.warn(`[settings] state ledger mirror failed: ${ledgerErr.message}`);
+      }
       _settingsLastUpdateTime = now;
+      invalidateApiCache("server-state");
+      invalidateApiCache("status");
+      invalidateApiCache("infra");
       broadcastUiEvent(["settings", "overview"], "invalidate", { reason: "settings-updated", keys: updated });
       jsonResponse(res, 200, {
         ok: true,
@@ -23382,16 +25875,18 @@ if (path === "/api/agent-logs/context") {
       let session = null;
       if (context.sessionId) {
         tracker = getSessionTracker();
-        session = tracker.getSessionById(context.sessionId);
+        session =
+          tracker.getSessionById(context.sessionId)
+          || tracker.getSessionMessages(context.sessionId);
         if (!session) {
           session = tracker.createSession({
             id: context.sessionId,
-            type: "primary",
-            metadata: {
+            type: "voice",
+            metadata: buildInternalVoiceSessionMetadata({
               agent: context.executor || getPrimaryAgentName() || "",
               mode: context.mode || getAgentMode() || "",
               model: context.model || undefined,
-            },
+            }, "voice-http-tool"),
           });
         }
         tracker.recordEvent(session?.id || context.sessionId, {
@@ -23542,16 +26037,18 @@ if (path === "/api/agent-logs/context") {
       }
 
       const tracker = getSessionTracker();
-      let session = tracker.getSessionById(sessionId);
+      let session =
+        tracker.getSessionById(sessionId)
+        || tracker.getSessionMessages(sessionId);
       if (!session) {
         session = tracker.createSession({
           id: sessionId,
-          type: "primary",
-          metadata: {
+          type: "voice",
+          metadata: buildInternalVoiceSessionMetadata({
             agent: String(body?.executor || getPrimaryAgentName() || ""),
             mode: String(body?.mode || getAgentMode() || ""),
             model: String(body?.model || "").trim() || undefined,
-          },
+          }, "voice-http"),
         });
       }
 
@@ -23711,16 +26208,18 @@ if (path === "/api/agent-logs/context") {
       }
 
       const tracker = getSessionTracker();
-      let session = tracker.getSessionById(sessionId);
+      let session =
+        tracker.getSessionById(sessionId)
+        || tracker.getSessionMessages(sessionId);
       if (!session) {
         session = tracker.createSession({
           id: sessionId,
-          type: "primary",
-          metadata: {
+          type: "voice",
+          metadata: buildInternalVoiceSessionMetadata({
             agent: String(body?.executor || getPrimaryAgentName() || ""),
             mode: String(body?.mode || getAgentMode() || ""),
             model: String(body?.model || "").trim() || undefined,
-          },
+          }, "vision-http"),
         });
       }
 

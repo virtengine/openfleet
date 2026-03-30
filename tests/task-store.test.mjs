@@ -278,6 +278,76 @@ describe("task-store review persistence", () => {
     expect(reviewed.updatedAt).toBe(reviewed.reviewedAt);
     expect(reviewed.lastActivityAt).toBe(reviewed.reviewedAt);
   });
+
+  it("blocks completing a review-backed task until review is approved", async () => {
+    const dir = makeTempDir("task-store-review-blocked-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "review-blocked-1",
+      title: "Needs approval",
+      status: "inreview",
+      prUrl: "https://example.test/pr/1",
+    });
+
+    const result = ts.completeTask("review-blocked-1");
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("completion_guard_blocked");
+    expect(result.reason).toBe("review_not_approved");
+    expect(ts.getTask("review-blocked-1")?.status).toBe("inreview");
+  });
+
+  it("allows completing a review-backed task after approval", async () => {
+    const dir = makeTempDir("task-store-review-approved-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "review-approved-1",
+      title: "Approved task",
+      status: "inreview",
+      prNumber: 42,
+    });
+    ts.setReviewResult("review-approved-1", { approved: true });
+
+    const result = ts.completeTask("review-approved-1");
+    expect(result.ok).toBe(true);
+    expect(result.toStatus).toBe("done");
+    expect(ts.getTask("review-approved-1")?.status).toBe("done");
+  });
+
+  it("allows forced completion overrides for review-backed tasks", async () => {
+    const dir = makeTempDir("task-store-review-force-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "review-force-1",
+      title: "Force override",
+      status: "inreview",
+      prUrl: "https://example.test/pr/force",
+    });
+
+    const result = ts.completeTask("review-force-1", { force: true });
+    expect(result.ok).toBe(true);
+    expect(ts.getTask("review-force-1")?.status).toBe("done");
+  });
 });
 
 describe("task-store DAG organization", () => {

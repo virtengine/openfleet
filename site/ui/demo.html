@@ -3970,6 +3970,87 @@
           addLog('info', 'config', 'Trigger templates updated');
           return { ok: true, data: STATE.triggerTemplates };
         }
+        if (route === '/api/hooks/override') {
+          const hookId = String(body?.hookId || params.get('id') || 'demo-hook').trim() || 'demo-hook';
+          const workspace = getActiveDemoWorkspace();
+          const workspaceDir = getActiveDemoWorkspaceDir();
+          if (method === 'GET') {
+            if (params.get('id')) {
+              return {
+                ok: true,
+                data: {
+                  hookId,
+                  enabled: true,
+                  mode: 'allow',
+                  updatedAt: new Date().toISOString(),
+                  repoRoot: workspaceDir,
+                  workspaceId: workspace?.id || 'demo',
+                  filters: { repos: ['virtengine-gh/bosun'], branches: ['main'] },
+                },
+              };
+            }
+            return {
+              ok: true,
+              data: [
+                {
+                  hookId: 'demo-hook',
+                  enabled: true,
+                  mode: 'allow',
+                  updatedAt: new Date().toISOString(),
+                },
+              ],
+            };
+          }
+          if (method === 'DELETE') {
+            return { ok: true, success: true, hookId, deleted: true };
+          }
+          return {
+            ok: true,
+            success: true,
+            hookId,
+            override: {
+              ...body,
+              hookId,
+              updatedAt: new Date().toISOString(),
+              workspaceId: workspace?.id || 'demo',
+              repoRoot: workspaceDir,
+            },
+          };
+        }
+        if (route === '/api/guardrails/repos') {
+          const workspace = getActiveDemoWorkspace();
+          const workspaceDir = getActiveDemoWorkspaceDir();
+          return {
+            ok: true,
+            repos: [
+              {
+                name: workspace?.name || 'Bosun Demo',
+                path: workspaceDir,
+                primary: true,
+                snapshot: {
+                  workspace: {
+                    workspaceId: workspace?.id || 'demo',
+                    workspaceDir,
+                  },
+                  policy: {
+                    mode: 'advisory',
+                    blockPushOnCritical: true,
+                    reviewRequired: true,
+                  },
+                  hooks: {
+                    total: 4,
+                    enabled: 3,
+                    overrides: 1,
+                  },
+                  status: {
+                    healthy: true,
+                    summary: 'Demo guardrails policy active',
+                  },
+                },
+              },
+            ],
+          };
+        }
         if (route === '/api/telemetry/summary')
           return { data: { status: 'ok', updatedAt: Date.now(), totals: { tasks: STATE.tasks.length, executors: STATE.executors.length } } };
         if (route === '/api/telemetry/errors')

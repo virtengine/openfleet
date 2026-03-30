@@ -1,31 +1,3 @@
 {
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@upstash/context7-mcp"
-      ],
-      "startup_timeout_sec": 120
-    },
-    "sequential-thinking": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ],
-      "startup_timeout_sec": 120
-    },
-    "playwright": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@playwright/mcp@latest"
-      ],
-      "startup_timeout_sec": 120
-    },
-    "microsoft-docs": {
-      "url": "https://learn.microsoft.com/api/mcp"
-    }
-  }
+  "mcpServers": {}
 }

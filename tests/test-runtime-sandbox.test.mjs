@@ -91,19 +91,22 @@ describe("test runtime sandbox", () => {
     }
   });
 
-  it("wires both Vitest and node:test through the shared bootstrap", () => {
+  it("wires both Vitest and node:test through the shared bootstrap", async () => {
     const vitestSetup = readFileSync(resolve(process.cwd(), "tests/setup.mjs"), "utf8");
     const nodeBootstrap = readFileSync(resolve(process.cwd(), "tests/node-test-bootstrap.mjs"), "utf8");
     const runtimeBootstrap = readFileSync(resolve(process.cwd(), "tests/runtime-bootstrap.mjs"), "utf8");
-    const sessionTracker = readFileSync(resolve(process.cwd(), "infra/session-tracker.mjs"), "utf8");
     const uiServer = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
     const agentPool = readFileSync(resolve(process.cwd(), "agent/agent-pool.mjs"), "utf8");
     const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
+    const sessionTrackerModule = await import("../infra/session-tracker.mjs");
 
     expect(vitestSetup).toContain('import "./runtime-bootstrap.mjs";');
     expect(nodeBootstrap).toContain('import "./runtime-bootstrap.mjs";');
     expect(runtimeBootstrap).toContain("installTestRuntimeGuards()");
-    expect(sessionTracker).toContain("return isTestRuntime() ? null : SESSIONS_DIR;");
+    expect(sessionTrackerModule._test.resolveSessionTrackerPersistDir()).toBeNull();
+    expect(sessionTrackerModule._test.resolveSessionTrackerPersistDir({ persistDir: "/tmp/custom-sessions" })).toBe(
+      "/tmp/custom-sessions",
+    );
     expect(uiServer).toContain("shouldHideGeneratedWorkflowFromList");
     expect(uiServer).toContain("const cacheDir = sandbox?.cacheDir || resolve(repoRoot, \".bosun\", \".cache\");");
     expect(agentPool).toContain('resolve(testSandbox.cacheDir, "thread-registry.json")');

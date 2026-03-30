@@ -114,6 +114,25 @@ describe("manual-flows", () => {
         ]),
       );
     });
+
+    it("research agent template exposes evidence sidecar controls", () => {
+      const research = BUILTIN_FLOW_TEMPLATES.find((t) => t.id === "research-agent");
+      const fieldIds = research.fields.map((f) => f.id);
+      expect(fieldIds).toEqual(
+        expect.arrayContaining([
+          "problem",
+          "domain",
+          "searchLiterature",
+          "useEvidenceSidecar",
+          "evidenceMode",
+          "corpusPaths",
+          "maxEvidenceSources",
+          "promoteReviewedFindings",
+          "sidecarCommand",
+          "executionMode",
+        ]),
+      );
+    });
   });
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -516,6 +535,137 @@ describe("manual-flows", () => {
       expect(run.status).toBe("completed");
       expect(run.result.mode).toBe("indexed");
       expect(run.result.indexedFiles).toBeGreaterThan(0);
+    });
+
+    it("dispatches research-agent task mode with sidecar-aware instructions", async () => {
+      let createdTask = null;
+      const mockTaskManager = {
+        createTask: async (spec) => {
+          createdTask = spec;
+          return { id: "task-research-1" };
+        },
+      };
+
+      const run = await executeFlow(
+        "research-agent",
+        {
+          problem: "Evaluate whether retrieval-augmented evidence can reduce hallucination in literature synthesis.",
+          domain: "computer-science",
+          executionMode: "task",
+          useEvidenceSidecar: true,
+          evidenceMode: "contradictions",
+          corpusPaths: "docs/research\nnotes/findings.md",
+          maxEvidenceSources: 4,
+          promoteReviewedFindings: true,
+          sidecarCommand: "uv run ace-sidecar --mode research",
+        },
+        testRoot,
+        { taskManager: mockTaskManager },
+      );
+
+      expect(run.status).toBe("completed");
+      expect(run.result.mode).toBe("task-dispatched");
+      expect(run.result.taskId).toBe("task-research-1");
+      expect(run.result.useEvidenceSidecar).toBe(true);
+      expect(run.result.evidenceMode).toBe("contradictions");
+      expect(createdTask.title).toContain("evidence-backed");
+      expect(createdTask.description).toContain("Evidence mode: contradictions");
+      expect(createdTask.description).toContain("docs/research");
+      expect(createdTask.description).toContain("Only write back reviewed findings");
+    });
+
+    it("dispatches research-agent workflow mode with the evidence template when enabled", async () => {
+      const saved = new Map();
+      let executeCall = null;
+      const mockEngine = {
+        get: (id) => saved.get(id) || null,
+        save: (def) => {
+          saved.set(def.id, def);
+          return def;
+        },
+        execute: async (workflowId, input, opts) => {
+          executeCall = { workflowId, input, opts };
+          return { runId: "wf-run-1" };
+        },
+      };
+
+      const run = await executeFlow(
+        "research-agent",
+        {
+          problem: "Summarize the best-supported mechanisms behind test-time retrieval gains.",
+          domain: "computer-science",
+          executionMode: "workflow",
+          useEvidenceSidecar: true,
+          evidenceMode: "answer",
+          corpusPaths: "docs/research",
+          maxEvidenceSources: 5,
+          promoteReviewedFindings: true,
+        },
+        testRoot,
+        { engine: mockEngine, runMetadata: { workspaceId: "virtengine-gh" } },
+      );
+
+      await Promise.resolve();
+
+      expect(run.status).toBe("completed");
+      expect(run.result.mode).toBe("workflow-dispatched");
+      expect(run.result.workflowId).toBe("template-research-evidence-agent");
+      expect(saved.has("template-research-evidence-agent")).toBe(true);
+      expect(executeCall.workflowId).toBe("template-research-evidence-agent");
+      expect(executeCall.input.useEvidenceSidecar).toBe(true);
+      expect(executeCall.input.evidenceMode).toBe("answer");
+      expect(executeCall.input.corpusPaths).toEqual(["docs/research"]);
+      expect(executeCall.input.repoRoot).toBe(testRoot);
+      expect(executeCall.input.workspaceId).toBe("virtengine-gh");
+    });
+
+    it("treats string false values as disabled for research sidecar toggles", async () => {
+      let installedTemplateId = null;
+      let executeCall = null;
+      const mockEngine = {
+        get: (id) => {
+          if (id === "template-research-agent") return { id };
+          return null;
+        },
+        save: (def) => def,
+        execute: async (workflowId, input, opts) => {
+          executeCall = { workflowId, input, opts };
+          return { runId: "wf-run-2" };
+        },
+      };
+
+      const run = await executeFlow(
+        "research-agent",
+        {
+          problem: "Check whether string booleans disable optional evidence features.",
+          domain: "computer-science",
+          executionMode: "workflow",
+          useEvidenceSidecar: "false",
+          searchLiterature: "false",
+          evidenceMode: "answer",
+        },
+        testRoot,
+        {
+          engine: {
+            ...mockEngine,
+            get: (id) => {
+              installedTemplateId = id;
+              return mockEngine.get(id);
+            },
+          },
+        },
+      );
+
+      await Promise.resolve();
+
+      expect(run.status).toBe("completed");
+      expect(run.result.workflowId).toBe("template-research-agent");
+      expect(run.result.useEvidenceSidecar).toBe(false);
+      expect(run.result.searchLiterature).toBe(false);
+      expect(installedTemplateId).toBe("template-research-agent");
+      expect(executeCall.workflowId).toBe("template-research-agent");
+      expect(executeCall.input.useEvidenceSidecar).toBe(false);
+      expect(executeCall.input.searchLiterature).toBe(false);
     });
 
     it("executes custom template with task action placeholders", async () => {

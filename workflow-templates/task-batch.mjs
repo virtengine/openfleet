@@ -255,7 +255,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
 
     node("create-pr", "action.create_pr", "Create PR", {
       title: "{{task.taskTitle}}",
-      body: "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
+      body: "## Summary\n\n{{task.taskDescription}}\n\n---\nTask-ID: {{task.taskId}}",
       base: "{{defaultBaseBranch}}",
       branch: "{{task.branch}}",
       draft: "{{draftPR}}",
@@ -309,9 +309,9 @@ export const TASK_BATCH_PR_TEMPLATE = {
   ],
   metadata: {
     author: "bosun",
-    version: 1,
+    version: 2,
     createdAt: "2026-03-15T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.1.0",
     tags: ["task", "batch", "pr", "agent", "autonomous"],
     requiredTemplates: ["template-bosun-pr-progressor"],
   },

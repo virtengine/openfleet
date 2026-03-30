@@ -601,7 +601,7 @@ Example: "feat: add portal login rate limiting"`,
 
       node("create-pr", "action.create_pr", "Handoff PR Lifecycle", {
         title: "feat: {{taskTitle}}",
-        body: "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
+        body: "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology: tests written before implementation.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing (build, test, lint).\n\n---\nTask-ID: {{taskId}}",
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         failOnError: true,
@@ -713,7 +713,7 @@ RULES:
 
       node("create-pr-retry", "action.create_pr", "Handoff PR Lifecycle (After Retry)", {
         title: "feat: {{taskTitle}}",
-        body: "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
+        body: "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with one automated remediation pass.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after auto-fix remediation.\n\n---\nTask-ID: {{taskId}}",
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         failOnError: true,
@@ -830,7 +830,7 @@ Create a descriptive commit: "fix: <concrete failure resolved>"`,
 
       node("create-pr-retry2", "action.create_pr", "Handoff PR Lifecycle (After Retry 2)", {
         title: "feat: {{taskTitle}}",
-        body: "Implements backend task after two auto-fix passes.\n\n**Plan:**\n{{plan}}\n\nValidation passed after 2nd remediation. Bosun lifecycle handoff ready.",
+        body: "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with two automated remediation passes.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after 2nd remediation round.\n\n---\nTask-ID: {{taskId}}",
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         failOnError: true,
@@ -923,9 +923,9 @@ Create a descriptive commit: "fix: <concrete failure resolved>"`,
     ],
     metadata: {
       author: "bosun",
-      version: 3,
+      version: 4,
       createdAt: "2025-02-25T00:00:00Z",
-      templateVersion: "3.0.0",
+      templateVersion: "3.1.0",
       tags: ["agent", "task-completion", "test-first", "tdd", "multi-language", "multi-remediation"],
       replaces: {
         module: "primary-agent.mjs",

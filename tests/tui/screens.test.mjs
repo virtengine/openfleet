@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../tui/app.mjs";
 import AgentsScreen from "../../tui/screens/agents.mjs";
+import SettingsScreen from "../../tui/screens/settings.mjs";
 import StatusScreen from "../../tui/screens/status.mjs";
 import TasksScreen from "../../tui/screens/tasks.mjs";
 import {
@@ -11,6 +12,7 @@ import {
   sessionDiffFixture,
   sessionsFixture,
   tasksFixture,
+  tuiConfigFixture,
 } from "./fixtures.mjs";
 import { waitFor } from "./render-helpers.mjs";
 import { renderInk } from "./render-ink.mjs";
@@ -26,6 +28,18 @@ function createMockBridge() {
       if (!listeners.has(event)) listeners.set(event, new Set());
       listeners.get(event).add(callback);
       return () => listeners.get(event)?.delete(callback);
+    },
+    async getConfigTree() {
+      return tuiConfigFixture;
+    },
+    async saveConfigField(path, value) {
+      const target = tuiConfigFixture.sections
+        .flatMap((section) => section.items)
+        .find((item) => item.path === path);
+      if (target) {
+        target.valueText = String(value);
+      }
+      return { ok: true, path };
     },
     emit(event, payload) {
       for (const callback of listeners.get(event) || []) callback(payload);
@@ -53,6 +67,9 @@ describe("tui screen rendering", () => {
       }
       if (href.includes("/api/sessions/") && init.method === "POST") {
         return { ok: true, json: async () => ({ ok: true }) };
+      }
+      if (href.includes("/api/tui/config")) {
+        return { ok: true, json: async () => tuiConfigFixture };
       }
       return { ok: false, json: async () => ({ error: `Unhandled URL ${href}` }) };
     });
@@ -257,9 +274,71 @@ describe("tui screen rendering", () => {
     await view.press("3");
     await waitFor(() => view.latestText().includes("Backoff queue"));
 
+    bridge.emit("workflow:status", {
+      workflowId: "workflow-1",
+      workflowName: "Workflow One",
+      eventType: "run:end",
+      status: "completed",
+      timestamp: "2026-03-23T00:00:30.000Z",
+      message: "completed cleanly",
+    });
+    await view.press("5");
+    await waitFor(() => view.latestText().includes("Workflow Event Timeline"));
+    expect(view.latestText()).toContain("Workflow One");
+
+    await view.press("6");
+    await waitFor(() => view.latestText().includes("Rate Limits"));
+
+    await view.press("7");
+    await waitFor(() => view.latestText().includes("bosun.config.json"));
+
     await view.unmount();
     expect(bridge.connect).toHaveBeenCalled();
     expect(bridge.disconnect).toHaveBeenCalled();
+  });
+
+  it("renders the settings screen and masks env-backed secrets", async () => {
+    const view = await renderInk(
+      React.createElement(SettingsScreen, {
+        settingsService: {
+          load: async () => ({
+            ok: true,
+            meta: { configPath: "/tmp/bosun.config.json" },
+            sections: [
+              {
+                id: "integrations",
+                label: "Integrations",
+                items: [
+                  {
+                    kind: "field",
+                    id: "voice.openaiApiKey",
+                    path: "voice.openaiApiKey",
+                    depth: 0,
+                    label: "openaiApiKey",
+                    valueText: "super-secret",
+                    sourceLabel: "from env",
+                    description: "Key",
+                    editorKind: "string",
+                    readOnly: true,
+                    envKey: "OPENAI_API_KEY",
+                    masked: true,
+                    enumValues: [],
+                  },
+                ],
+              },
+            ],
+          }),
+          save: vi.fn(),
+        },
+      }),
+      { columns: 220 },
+    );
+
+    await waitFor(() => view.latestText().includes("voice.openaiApiKey"));
+    expect(view.text()).toContain("****");
+    expect(view.text()).toContain("🔒 Locked by OPENAI_API_KEY");
+
+    await view.unmount();
   });
   it("shows the always-visible footer help and toggles the help overlay", async () => {
     const bridge = createMockBridge();
@@ -328,3 +407,5 @@ describe("tui screen rendering", () => {
     await view.unmount();
   });
 });
+
+

@@ -405,6 +405,81 @@ function formatIssueAdvisorAction(action) {
   return normalized ? normalized.replaceAll("_", " ") : "No recommendation";
 }
 
+function formatGovernanceLabel(value, fallback = "—") {
+  const normalized = String(value || "").trim();
+  if (!normalized) return fallback;
+  return normalized.replaceAll("_", " ");
+}
+
+function formatBudgetCents(value, currency = "USD") {
+  const cents = Number(value);
+  if (!Number.isFinite(cents)) return "—";
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: String(currency || "USD").trim() || "USD",
+      maximumFractionDigits: 2,
+    }).format(cents / 100);
+  } catch {
+    return `${(cents / 100).toFixed(2)} ${String(currency || "USD").trim() || "USD"}`;
+  }
+}
+
+function readWorkflowGovernance(run = {}) {
+  const detail = run?.detail && typeof run.detail === "object" ? run.detail : {};
+  const goalAncestry = Array.isArray(run?.goalAncestry)
+    ? run.goalAncestry
+    : (Array.isArray(detail?.goalAncestry) ? detail.goalAncestry : []);
+  const budgetPolicy =
+    run?.budgetPolicy && typeof run.budgetPolicy === "object"
+      ? run.budgetPolicy
+      : (detail?.budgetPolicy && typeof detail.budgetPolicy === "object" ? detail.budgetPolicy : null);
+  const budgetOutcome =
+    run?.budgetOutcome && typeof run.budgetOutcome === "object"
+      ? run.budgetOutcome
+      : (detail?.budgetOutcome && typeof detail.budgetOutcome === "object" ? detail.budgetOutcome : null);
+  const executionPolicy =
+    run?.executionPolicy && typeof run.executionPolicy === "object"
+      ? run.executionPolicy
+      : (detail?.executionPolicy && typeof detail.executionPolicy === "object" ? detail.executionPolicy : null);
+  const policyOutcome =
+    run?.policyOutcome && typeof run.policyOutcome === "object"
+      ? run.policyOutcome
+      : (detail?.policyOutcome && typeof detail.policyOutcome === "object" ? detail.policyOutcome : null);
+  const heartbeatRun =
+    run?.heartbeatRun && typeof run.heartbeatRun === "object"
+      ? run.heartbeatRun
+      : (detail?.heartbeatRun && typeof detail.heartbeatRun === "object" ? detail.heartbeatRun : null);
+  const wakeupRequest =
+    run?.wakeupRequest && typeof run.wakeupRequest === "object"
+      ? run.wakeupRequest
+      : (detail?.wakeupRequest && typeof detail.wakeupRequest === "object" ? detail.wakeupRequest : null);
+  const approvalPending =
+    run?.approvalPending === true
+    || detail?.approvalPending === true
+    || (
+      executionPolicy?.approvalRequired === true
+      && (!executionPolicy?.approvalState || executionPolicy.approvalState === "pending")
+    )
+    || (
+      budgetPolicy?.approvalRequired === true
+      && ["near_limit", "exceeded"].includes(String(budgetOutcome?.status || "").trim().toLowerCase())
+    );
+  return {
+    goalAncestry,
+    primaryGoalId: String(run?.primaryGoalId || detail?.primaryGoalId || "").trim() || null,
+    primaryGoalTitle: String(run?.primaryGoalTitle || detail?.primaryGoalTitle || "").trim() || null,
+    goalDepth: Number.isFinite(Number(run?.goalDepth ?? detail?.goalDepth)) ? Number(run?.goalDepth ?? detail?.goalDepth) : null,
+    budgetPolicy,
+    budgetOutcome,
+    executionPolicy,
+    policyOutcome,
+    heartbeatRun,
+    wakeupRequest,
+    approvalPending,
+  };
+}
+
 function summarizeLedgerEvent(event) {
   if (!event || typeof event !== "object") return "Unknown event";
   const parts = [String(event.eventType || "event").trim() || "event"];
@@ -413,6 +488,153 @@ function summarizeLedgerEvent(event) {
   if (event.retryMode) parts.push(`mode=${String(event.retryMode).trim()}`);
   if (event.error) parts.push(`error=${String(event.error).trim()}`);
   return parts.join(" · ");
+}
+
+function summarizeProofBundleEntry(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const parts = [];
+  const label = String(entry.label || entry.kind || "").trim();
+  const summary = String(entry.summary || "").trim();
+  const path = String(entry.path || "").trim();
+  if (label) parts.push(label);
+  if (summary && summary !== label) parts.push(summary);
+  if (path) parts.push(path);
+  return parts.join(" · ");
+}
+
+function summarizePlannerTimelineEntry(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const parts = [];
+  const step = String(
+    entry.currentPlanStep?.stepLabel
+    || entry.stepResult?.stepLabel
+    || entry.plan?.stepLabel
+    || entry.stepLabel
+    || entry.nodeLabel
+    || entry.nodeId
+    || "",
+  ).trim();
+  const summary = String(entry.summary || entry.reason || entry.error || "").trim();
+  const attachmentKind = String(entry.stepResult?.attachmentKind || entry.attachmentKind || "").trim();
+  if (step) parts.push(step);
+  if (summary) parts.push(summary);
+  if (attachmentKind) parts.push(attachmentKind.replaceAll("_", " "));
+  return parts.join(" · ");
+}
+
+function toRunGraphTimestamp(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareRunGraphByTime(left, right) {
+  const delta =
+    toRunGraphTimestamp(left?.startedAt || left?.endedAt || left?.updatedAt)
+    - toRunGraphTimestamp(right?.startedAt || right?.endedAt || right?.updatedAt);
+  if (delta !== 0) return delta;
+  return String(left?.runId || left?.executionId || "").localeCompare(String(right?.runId || right?.executionId || ""));
+}
+
+function formatRunGraphRunKind(kind) {
+  const normalized = String(kind || "").trim().toLowerCase();
+  if (!normalized) return "run";
+  return normalized.replaceAll("_", " ");
+}
+
+function formatRunGraphExecutionLabel(entry) {
+  if (!entry || typeof entry !== "object") return "execution";
+  return String(
+    entry.executionLabel
+    || entry.nodeLabel
+    || entry.toolName
+    || entry.nodeId
+    || entry.executionKind
+    || entry.executionId
+    || "execution",
+  ).trim();
+}
+
+function summarizeRunGraphTimelineEvent(entry) {
+  if (!entry || typeof entry !== "object") return "workflow event";
+  const parts = [];
+  const eventType = String(entry.eventType || "event").trim();
+  const label = String(entry.nodeLabel || entry.toolName || entry.nodeId || "").trim();
+  const status = String(entry.status || "").trim();
+  const childRunId = String(entry.childRunId || "").trim();
+  const error = String(entry.error || "").trim();
+  parts.push(eventType || "event");
+  if (label) parts.push(label);
+  if (status) parts.push(`status=${status}`);
+  if (childRunId) parts.push(`child=${childRunId}`);
+  if (error) parts.push(`error=${error}`);
+  return parts.join(" · ");
+}
+
+function buildRunGraphStats(runGraph) {
+  const runs = Array.isArray(runGraph?.runs) ? runGraph.runs : [];
+  const executions = Array.isArray(runGraph?.executions) ? runGraph.executions : [];
+  const timeline = Array.isArray(runGraph?.timeline) ? runGraph.timeline : [];
+  const edges = Array.isArray(runGraph?.edges) ? runGraph.edges : [];
+  return {
+    runCount: runs.length,
+    executionCount: executions.length,
+    timelineCount: timeline.length,
+    edgeCount: edges.length,
+    retryEdgeCount: edges.filter((entry) => entry?.type === "retry").length,
+    causalEdgeCount: edges.filter((entry) => entry?.type === "causal").length,
+    executionEdgeCount: edges.filter((entry) => entry?.type === "execution").length,
+    executionRunEdgeCount: edges.filter((entry) => entry?.type === "execution-run").length,
+  };
+}
+
+function buildRunGraphLineageRows(runGraph, requestedRunId = "") {
+  const runs = Array.isArray(runGraph?.runs) ? runGraph.runs : [];
+  if (runs.length === 0) return [];
+  const runMap = new Map(
+    runs.map((entry) => [
+      entry.runId,
+      {
+        ...entry,
+        children: [],
+      },
+    ]),
+  );
+  for (const entry of runMap.values()) {
+    const parent = entry.parentRunId ? runMap.get(entry.parentRunId) : null;
+    if (parent) parent.children.push(entry);
+  }
+  const ordered = [];
+  const seen = new Set();
+  const visit = (entry, depth = 0) => {
+    if (!entry || seen.has(entry.runId)) return;
+    seen.add(entry.runId);
+    entry.children.sort(compareRunGraphByTime);
+    ordered.push({
+      ...entry,
+      depth,
+      isRequested: entry.runId === requestedRunId,
+    });
+    for (const child of entry.children) {
+      visit(child, depth + 1);
+    }
+  };
+  const roots = Array.from(runMap.values())
+    .filter((entry) => !entry.parentRunId || !runMap.has(entry.parentRunId))
+    .sort(compareRunGraphByTime);
+  for (const root of roots) visit(root, 0);
+  const remaining = Array.from(runMap.values())
+    .filter((entry) => !seen.has(entry.runId))
+    .sort(compareRunGraphByTime);
+  for (const entry of remaining) visit(entry, 0);
+  return ordered;
+}
+
+function buildRunGraphExecutionRows(runGraph) {
+  const executions = Array.isArray(runGraph?.executions) ? runGraph.executions.slice() : [];
+  executions.sort(compareRunGraphByTime);
+  return executions;
 }
 
 function summarizeRunExecutionInsights(run, limit = 12) {
@@ -5261,6 +5483,9 @@ function RunHistoryView() {
   const scopedWorkflowName = scopedWorkflowId ? getWorkflowNameById(scopedWorkflowId) : "";
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
   const [nowTick, setNowTick] = useState(Date.now());
+  const [approvalRequests, setApprovalRequests] = useState([]);
+  const [approvalStatusFilter, setApprovalStatusFilter] = useState("pending");
+  const [approvalQueueLoading, setApprovalQueueLoading] = useState(false);
   const hasRunningRuns = runs.some((run) => run?.status === "running");
   const selectedRunIsRunning = selectedRun?.status === "running";
   const [statusFilter, setStatusFilter] = useState("all");
@@ -5286,12 +5511,17 @@ function RunHistoryView() {
   }, []);
 
   useEffect(() => {
+    loadApprovals(approvalStatusFilter).catch(() => {});
+  }, [approvalStatusFilter, loadApprovals]);
+
+  useEffect(() => {
     let cancelled = false;
     const pollMs = hasRunningRuns || selectedRunIsRunning ? 3000 : 15000;
 
     const poll = async () => {
       if (cancelled) return;
       await loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) }).catch(() => {});
+      await loadApprovals(approvalStatusFilter).catch(() => {});
       if (!cancelled && selectedRunId.value && selectedRunIsRunning) {
         await loadRunDetail(selectedRunId.value).catch(() => {});
       }
@@ -5303,7 +5533,7 @@ function RunHistoryView() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [hasRunningRuns, runs.length, selectedRunIsRunning, selectedRunId.value]);
+  }, [approvalStatusFilter, hasRunningRuns, loadApprovals, runs.length, selectedRunIsRunning, selectedRunId.value]);
 
   const workflowOptions = useMemo(() => {
     const map = new Map();
@@ -5372,6 +5602,26 @@ function RunHistoryView() {
       activeNodes,
     };
   }, [runs, runCounts]);
+  const pendingApprovalCount = useMemo(
+    () => approvalRequests.filter((entry) => String(entry?.status || "").trim().toLowerCase() === "pending").length,
+    [approvalRequests],
+  );
+  const loadApprovals = useCallback(async (statusOverride = approvalStatusFilter) => {
+    setApprovalQueueLoading(true);
+    try {
+      const data = await apiFetch(buildWorkflowRunApiPath(
+        appendQueryParams("/api/workflows/approvals", {
+          limit: 100,
+          status: statusOverride || "pending",
+        }),
+      ));
+      setApprovalRequests(Array.isArray(data?.requests) ? data.requests : []);
+    } catch (err) {
+      console.error("[workflows] Failed to load approvals:", err);
+    } finally {
+      setApprovalQueueLoading(false);
+    }
+  }, [approvalStatusFilter]);
 
   const canLoadMoreRuns =
     hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
@@ -5386,6 +5636,47 @@ function RunHistoryView() {
     });
     return true;
   }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
+  const resolveQueuedApproval = useCallback(async (request, decision) => {
+    if (!request?.requestId) return;
+    const notePrompt = decision === "approved" ? "Optional approval note" : "Reason for denying approval";
+    const note = window.prompt(notePrompt, "") || "";
+    try {
+      const endpoint = request.scopeType === "workflow-run" && request.scopeId
+        ? `/api/workflows/runs/${encodeURIComponent(request.scopeId)}/approval`
+        : `/api/workflows/approvals/${encodeURIComponent(request.requestId)}/resolve`;
+      await apiFetch(buildWorkflowRunApiPath(endpoint), {
+        method: "POST",
+        body: JSON.stringify({ decision, note }),
+      });
+      showToast(decision === "approved" ? "Approval request granted" : "Approval request denied", "success");
+      await loadApprovals(approvalStatusFilter);
+      const requestRunId = String(request?.runId || "").trim();
+      if (requestRunId && selectedRunId.value === requestRunId) {
+        setTimeout(() => loadRunDetail(requestRunId), 250);
+      } else if (request.scopeType === "workflow-run" && request.scopeId && selectedRunId.value === request.scopeId) {
+        setTimeout(() => loadRunDetail(request.scopeId), 250);
+      }
+    } catch (err) {
+      showToast("Approval resolution failed: " + (err.message || err), "error");
+    }
+  }, [approvalStatusFilter, loadApprovals]);
+  const describeApprovalRequest = useCallback((request) => {
+    const scopeType = String(request?.scopeType || "").trim().toLowerCase();
+    if (scopeType === "workflow-gate") {
+      return `Manual Gate · ${request?.nodeLabel || request?.nodeId || request?.scopeId || "gate"}`;
+    }
+    if (scopeType === "workflow-action") {
+      return `Action Approval · ${request?.action?.label || request?.nodeLabel || request?.nodeType || request?.scopeId || "action"}`;
+    }
+    return `Workflow Run · ${request?.workflowName || request?.runId || request?.scopeId || "run"}`;
+  }, []);
+  const describeApprovalTarget = useCallback((request) => {
+    const parts = [];
+    if (request?.workflowName) parts.push(request.workflowName);
+    if (request?.taskTitle) parts.push(request.taskTitle);
+    if (request?.runId) parts.push(`run ${request.runId}`);
+    return parts.join(" · ") || "No workflow target metadata";
+  }, []);
   const openRunCopilot = useCallback((run, intent = "ask") => {
     const safeRunId = String(run?.runId || "").trim();
     const safeIntent = String(intent || "ask").trim().toLowerCase();
@@ -5497,9 +5788,55 @@ function RunHistoryView() {
       selectedRun?.detail?.issueAdvisor && typeof selectedRun.detail.issueAdvisor === "object"
         ? selectedRun.detail.issueAdvisor
         : null;
+    const proofBundle =
+      selectedRun?.proofBundle && typeof selectedRun.proofBundle === "object"
+        ? selectedRun.proofBundle
+        : { summary: {}, plannerTimeline: [], decisions: [], evidence: [], artifacts: [] };
+    const plannerTimeline = Array.isArray(selectedRun?.plannerTimeline)
+      ? selectedRun.plannerTimeline
+      : (Array.isArray(proofBundle?.plannerTimeline) ? proofBundle.plannerTimeline : []);
+    const proofSummary = proofBundle?.summary && typeof proofBundle.summary === "object"
+      ? proofBundle.summary
+      : {};
+    const proofDecisions = Array.isArray(proofBundle?.decisions) ? proofBundle.decisions : [];
+    const proofEvidence = Array.isArray(proofBundle?.evidence) ? proofBundle.evidence : [];
+    const proofArtifacts = Array.isArray(proofBundle?.artifacts) ? proofBundle.artifacts : [];
+    const governance = readWorkflowGovernance(selectedRun);
+    const runGraph = selectedRun?.runGraph && typeof selectedRun.runGraph === "object"
+      ? selectedRun.runGraph
+      : null;
+    const runGraphStats = buildRunGraphStats(runGraph);
+    const runGraphLineage = buildRunGraphLineageRows(runGraph, selectedRun.runId);
+    const runGraphExecutions = buildRunGraphExecutionRows(runGraph);
+    const runGraphTimeline = Array.isArray(runGraph?.timeline) ? runGraph.timeline.slice().reverse() : [];
     const dagCounts = getRunDagCounts(selectedRun);
     const dagRevisions = Array.isArray(selectedRun?.detail?.dagState?.revisions) ? selectedRun.detail.dagState.revisions : [];
     const ledgerEvents = Array.isArray(selectedRun?.ledger?.events) ? selectedRun.ledger.events : [];
+    const auditActivity =
+      selectedRun?.auditActivity && typeof selectedRun.auditActivity === "object"
+        ? selectedRun.auditActivity
+        : {};
+    const auditTaskTraceEvents = Array.isArray(auditActivity?.taskTraceEvents) ? auditActivity.taskTraceEvents : [];
+    const auditPromotedStrategies = Array.isArray(auditActivity?.promotedStrategies) ? auditActivity.promotedStrategies : [];
+    const auditPromotedStrategyEvents = Array.isArray(auditActivity?.promotedStrategyEvents) ? auditActivity.promotedStrategyEvents : [];
+    const auditEvents = Array.isArray(auditActivity?.auditEvents) ? auditActivity.auditEvents : [];
+    const auditArtifacts = Array.isArray(auditActivity?.artifacts) ? auditActivity.artifacts : [];
+    const auditToolCalls = Array.isArray(auditActivity?.toolCalls) ? auditActivity.toolCalls : [];
+    const auditOperatorActions = Array.isArray(auditActivity?.operatorActions) ? auditActivity.operatorActions : [];
+    const auditClaimEvents = Array.isArray(auditActivity?.claimEvents) ? auditActivity.claimEvents : [];
+    const auditSummary = auditActivity?.summary && typeof auditActivity.summary === "object"
+      ? auditActivity.summary
+      : {};
+    const auditSessionActivity =
+      auditActivity?.sessionActivity && typeof auditActivity.sessionActivity === "object"
+        ? auditActivity.sessionActivity
+        : null;
+    const auditAgentActivity =
+      auditActivity?.agentActivity && typeof auditActivity.agentActivity === "object"
+        ? auditActivity.agentActivity
+        : null;
+    const latestAuditTrace = auditTaskTraceEvents[0] || null;
+    const latestPromotedStrategy = auditPromotedStrategies[0] || null;
     const normalizedLogsSearch = String(logsPaneSearch || "").trim().toLowerCase();
     const normalizedErrorsSearch = String(errorsPaneSearch || "").trim().toLowerCase();
     const normalizedLedgerSearch = String(ledgerPaneSearch || "").trim().toLowerCase();
@@ -5606,6 +5943,21 @@ function RunHistoryView() {
             <span class="wf-badge" style="background: ${statusStyles.bg}; color: ${statusStyles.color};">
               ${selectedRun.status || "unknown"}
             </span>
+            ${governance.approvalPending && html`
+              <span class="wf-badge" style="background:#f59e0b24; color:#fbbf24; border-color:#f59e0b55;">
+                Approval Hold
+              </span>
+            `}
+            ${governance.policyOutcome?.blocked === true && html`
+              <span class="wf-badge" style="background:#ef444420; color:#fca5a5; border-color:#ef444455;">
+                Governance Blocked
+              </span>
+            `}
+            ${governance.budgetOutcome?.status && governance.budgetOutcome.status !== "ok" && html`
+              <span class="wf-badge" style="background:#0ea5e920; color:#7dd3fc; border-color:#0ea5e955;">
+                Budget ${formatGovernanceLabel(governance.budgetOutcome.status)}
+              </span>
+            `}
             ${showStuck && html`
               <span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">
                 Stuck
@@ -5673,7 +6025,306 @@ function RunHistoryView() {
               `}
             </div>
           </div>
+
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#8b5cf620; color:#c4b5fd;">Governance & Goals</span>
+              ${governance.approvalPending && html`
+                <span class="wf-badge" style="background:#f59e0b24; color:#fbbf24;">Approval Pending</span>
+              `}
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Primary Goal:</b> ${governance.primaryGoalTitle || governance.primaryGoalId || "—"}</div>
+              <div><b>Goal Depth:</b> ${governance.goalDepth ?? "—"} · <b>Goal Ancestry:</b> ${governance.goalAncestry.length}</div>
+              ${governance.goalAncestry.length > 0 && html`
+                <div style="margin-top: 6px; color: #e9d5ff;">
+                  ${governance.goalAncestry.map((entry) => String(entry?.title || entry?.goalId || "goal").trim() || "goal").join(" → ")}
+                </div>
+              `}
+              <div style="margin-top: 6px;"><b>Budget:</b> ${formatGovernanceLabel(governance.budgetOutcome?.status, "not configured")}</div>
+              <div><b>Spent:</b> ${formatBudgetCents(governance.budgetPolicy?.spentCents, governance.budgetPolicy?.currency)} · <b>Budget Window:</b> ${formatBudgetCents(governance.budgetPolicy?.budgetCents, governance.budgetPolicy?.currency)}</div>
+              <div><b>Remaining:</b> ${formatBudgetCents(governance.budgetPolicy?.remainingCents, governance.budgetPolicy?.currency)} · <b>Reserved:</b> ${formatBudgetCents(governance.budgetPolicy?.reservedCents, governance.budgetPolicy?.currency)}</div>
+              <div style="margin-top: 6px;"><b>Execution Policy:</b> ${formatGovernanceLabel(governance.executionPolicy?.mode, governance.executionPolicy ? "configured" : "not configured")}</div>
+              <div><b>Approval State:</b> ${formatGovernanceLabel(governance.executionPolicy?.approvalState, governance.approvalPending ? "pending" : "not required")}</div>
+              <div><b>Policy Outcome:</b> ${formatGovernanceLabel(governance.policyOutcome?.status, "—")} · <b>Violations:</b> ${Number(governance.policyOutcome?.violationCount || 0)}</div>
+              <div style="margin-top: 6px;"><b>Heartbeat Run:</b> <code>${governance.heartbeatRun?.runId || "—"}</code>${governance.heartbeatRun?.status ? ` · ${formatGovernanceLabel(governance.heartbeatRun.status)}` : ""}</div>
+              <div><b>Wakeup Request:</b> <code>${governance.wakeupRequest?.requestId || "—"}</code>${governance.wakeupRequest?.source ? ` · ${formatGovernanceLabel(governance.wakeupRequest.source)}` : ""}</div>
+            </div>
+            ${governance.approvalPending && html`
+              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+                <${Button}
+                  variant="contained"
+                  size="small"
+                  color="success"
+                  onClick=${async () => {
+                    try {
+                      const note = window.prompt("Optional approval note", "") || "";
+                      await apiFetch(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`, {
+                        method: "POST",
+                        body: JSON.stringify({ decision: "approved", note }),
+                      });
+                      showToast("Workflow approval granted", "success");
+                      setTimeout(() => loadRunDetail(selectedRun.runId), 250);
+                    } catch (err) {
+                      showToast("Approval failed: " + (err.message || err), "error");
+                    }
+                  }}
+                >
+                  Approve Run
+                <//>
+                <${Button}
+                  variant="outlined"
+                  size="small"
+                  color="warning"
+                  onClick=${async () => {
+                    try {
+                      const note = window.prompt("Reason for denying approval", "") || "";
+                      await apiFetch(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`, {
+                        method: "POST",
+                        body: JSON.stringify({ decision: "denied", note }),
+                      });
+                      showToast("Workflow approval denied", "success");
+                      setTimeout(() => loadRunDetail(selectedRun.runId), 250);
+                    } catch (err) {
+                      showToast("Denial failed: " + (err.message || err), "error");
+                    }
+                  }}
+                >
+                  Deny Run
+                <//>
+              </div>
+            `}
+          </div>
+
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#22c55e20; color:#86efac;">Planner & Proof</span>
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Planner Events:</b> ${Number(proofSummary.plannerEventCount || plannerTimeline.length || 0)}</div>
+              <div><b>Decisions:</b> ${Number(proofSummary.decisionCount || proofDecisions.length || 0)} · <b>Evidence:</b> ${Number(proofSummary.evidenceCount || proofEvidence.length || 0)} · <b>Artifacts:</b> ${Number(proofSummary.artifactCount || proofArtifacts.length || 0)}</div>
+              ${plannerTimeline[plannerTimeline.length - 1]?.summary && html`
+                <div style="margin-top: 6px; color: #e5e7eb;">${plannerTimeline[plannerTimeline.length - 1].summary}</div>
+              `}
+              ${proofDecisions[0]?.summary && html`
+                <div style="margin-top: 6px; color: #cbd5e1;">Decision: ${proofDecisions[0].summary}</div>
+              `}
+            </div>
+          </div>
+
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#f9731620; color:#fdba74;">State Ledger Audit</span>
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Audit Events:</b> ${auditEvents.length} · <b>Trace Events:</b> ${Number(auditSummary.taskTraceCount || auditActivity?.taskTraceCount || auditTaskTraceEvents.length || 0)}</div>
+              <div><b>Tool Calls:</b> ${Number(auditSummary.toolCallCount || auditToolCalls.length || 0)} · <b>Artifacts:</b> ${Number(auditSummary.artifactCount || auditArtifacts.length || 0)} · <b>Claims:</b> ${Number(auditSummary.claimEventCount || auditClaimEvents.length || 0)}</div>
+              <div><b>Promoted Strategies:</b> ${Number(auditSummary.promotedStrategyCount || auditPromotedStrategies.length || 0)} · <b>Operator Actions:</b> ${Number(auditSummary.operatorActionCount || auditOperatorActions.length || 0)}</div>
+              <div><b>Session:</b> <code>${auditSessionActivity?.sessionId || selectedRun.primarySessionId || selectedRun.sessionId || "—"}</code></div>
+              <div><b>Agent:</b> <code>${auditAgentActivity?.agentId || "—"}</code></div>
+              <div><b>Latest Session Event:</b> ${auditSessionActivity?.latestEventType || "—"}${auditSessionActivity?.updatedAt ? ` · ${formatRelative(auditSessionActivity.updatedAt)}` : ""}</div>
+              <div><b>Latest Agent Event:</b> ${auditAgentActivity?.latestEventType || "—"}${auditAgentActivity?.updatedAt ? ` · ${formatRelative(auditAgentActivity.updatedAt)}` : ""}</div>
+              ${latestAuditTrace && html`
+                <div style="margin-top: 6px; color: #e5e7eb;">Trace: ${latestAuditTrace.eventType || "event"}${latestAuditTrace.summary ? ` · ${latestAuditTrace.summary}` : ""}</div>
+              `}
+              ${latestPromotedStrategy && html`
+                <div style="margin-top: 6px; color: #fed7aa;">Strategy: ${latestPromotedStrategy.recommendation || latestPromotedStrategy.decision || latestPromotedStrategy.strategyId}</div>
+              `}
+            </div>
+          </div>
+
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#a855f720; color:#d8b4fe;">Execution Graph</span>
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Runs:</b> ${runGraphStats.runCount} · <b>Execution Steps:</b> ${runGraphStats.executionCount}</div>
+              <div><b>Timeline Events:</b> ${runGraphStats.timelineCount} · <b>Edges:</b> ${runGraphStats.edgeCount}</div>
+              <div><b>Retries:</b> ${runGraphStats.retryEdgeCount} · <b>Causal Links:</b> ${runGraphStats.causalEdgeCount}</div>
+              <div><b>Execution Links:</b> ${runGraphStats.executionEdgeCount} · <b>Execution→Run Links:</b> ${runGraphStats.executionRunEdgeCount}</div>
+              ${runGraph?.rootRunId && html`<div style="margin-top: 6px; color: #e9d5ff;"><b>Graph Root:</b> <code>${runGraph.rootRunId}</code></div>`}
+            </div>
+          </div>
         </div>
+
+        <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Lineage (${runGraphLineage.length})</summary>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+            ${runGraphLineage.length === 0 && html`<div style="font-size:12px; opacity:0.6;">No execution lineage recorded for this run family.</div>`}
+            ${runGraphLineage.map((entry) => {
+              const entryStatusStyles = getRunStatusBadgeStyles(entry.status);
+              const indentPx = Math.min(Number(entry.depth || 0), 6) * 18;
+              return html`
+                <div
+                  key=${`run-graph-lineage-${entry.runId}`}
+                  style=${{
+                    marginLeft: `${indentPx}px`,
+                    border: `1px solid ${entry.isRequested ? "#8b5cf680" : "#334155"}`,
+                    borderRadius: "8px",
+                    padding: "10px",
+                    background: entry.isRequested ? "#1f1830" : "#0f172a",
+                    fontSize: "12px",
+                    color: "#cbd5e1",
+                  }}
+                >
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <b style="color:#f8fafc;">${entry.workflowName || entry.workflowId || entry.runId || "run"}</b>
+                    <span class="wf-badge" style="background: ${entryStatusStyles.bg}; color: ${entryStatusStyles.color};">${entry.status || "unknown"}</span>
+                    <span class="wf-badge">${formatRunGraphRunKind(entry.runKind)}</span>
+                    ${entry.isRequested && html`<span class="wf-badge" style="background:#8b5cf620; color:#c4b5fd;">Selected</span>`}
+                    ${entry.retryOf && html`<span class="wf-badge" style="background:#f59e0b20; color:#fbbf24;">${formatRetryModeLabel(entry.retryMode || "from_failed")}</span>`}
+                  </div>
+                  <div style="margin-top:6px; line-height:1.6;">
+                    <div><b>Run:</b> <code>${entry.runId || "—"}</code></div>
+                    <div><b>Started:</b> ${entry.startedAt ? `${formatDate(entry.startedAt)} (${formatRelative(entry.startedAt)})` : "—"}</div>
+                    <div><b>Finished:</b> ${entry.endedAt ? `${formatDate(entry.endedAt)} (${formatRelative(entry.endedAt)})` : "—"}</div>
+                    <div><b>Parent:</b> <code>${entry.parentRunId || "—"}</code></div>
+                    <div><b>Retry Of:</b> <code>${entry.retryOf || "—"}</code></div>
+                    <div><b>Task:</b> ${entry.taskTitle || entry.taskId || "—"}</div>
+                    <div><b>Session:</b> <code>${entry.sessionId || "—"}</code></div>
+                  </div>
+                  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                    ${entry.runId && entry.runId !== selectedRun.runId && html`
+                      <${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(entry.runId)}>
+                        Open This Run
+                      <//>
+                    `}
+                  </div>
+                </div>
+              `;
+            })}
+          </div>
+        </details>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Activity (${runGraphExecutions.length})</summary>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+            ${runGraphExecutions.length === 0 && html`<div style="font-size:12px; opacity:0.6;">No execution-step lineage recorded.</div>`}
+            ${runGraphExecutions.slice(0, 24).map((entry, index) => {
+              const executionStatusStyles = getRunStatusBadgeStyles(entry.status);
+              return html`
+                <div key=${`run-graph-execution-${index}`} style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <b style="color:#f8fafc;">${formatRunGraphExecutionLabel(entry)}</b>
+                    <span class="wf-badge" style="background: ${executionStatusStyles.bg}; color: ${executionStatusStyles.color};">${entry.status || "unknown"}</span>
+                    <span class="wf-badge">${String(entry.executionKind || "execution").replaceAll("_", " ")}</span>
+                    ${Number(entry.attempt || 0) > 0 && html`<span class="wf-badge">attempt ${entry.attempt}</span>`}
+                  </div>
+                  <div style="margin-top:6px; line-height:1.6;">
+                    <div><b>Execution:</b> <code>${entry.executionId || "—"}</code></div>
+                    <div><b>Run:</b> <code>${entry.runId || "—"}</code></div>
+                    <div><b>Node:</b> ${entry.nodeLabel || entry.nodeId || entry.nodeType || "—"}</div>
+                    <div><b>Tool:</b> ${entry.toolName || entry.toolId || "—"}${entry.serverId ? ` · server ${entry.serverId}` : ""}</div>
+                    <div><b>Parent Execution:</b> <code>${entry.parentExecutionId || "—"}</code></div>
+                    <div><b>Caused By:</b> <code>${entry.causedByExecutionId || "—"}</code></div>
+                    <div><b>Child Runs:</b> ${Array.isArray(entry.childRunIds) && entry.childRunIds.length ? entry.childRunIds.join(", ") : "—"}</div>
+                    <div><b>Window:</b> ${entry.startedAt ? formatDate(entry.startedAt) : "—"}${entry.endedAt ? ` → ${formatDate(entry.endedAt)}` : ""}</div>
+                    ${Array.isArray(entry.errors) && entry.errors[0] && html`<div style="color:#fca5a5;"><b>Error:</b> ${entry.errors[0]}</div>`}
+                  </div>
+                </div>
+              `;
+            })}
+            ${runGraphExecutions.length > 24 && html`<div style="font-size:12px; opacity:0.7;">Showing the first 24 execution steps.</div>`}
+          </div>
+        </details>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Timeline (${runGraphTimeline.length})</summary>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+            ${runGraphTimeline.length === 0 && html`<div style="font-size:12px; opacity:0.6;">No execution timeline events recorded.</div>`}
+            ${runGraphTimeline.slice(0, 30).map((entry, index) => html`
+              <div key=${`run-graph-timeline-${index}`} style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+                <div style="color:#c4b5fd;">${entry?.timestamp ? `${formatDate(entry.timestamp)} (${formatRelative(entry.timestamp)})` : "unknown time"}</div>
+                <div style="margin-top:4px;"><b>${summarizeRunGraphTimelineEvent(entry)}</b></div>
+                <div style="margin-top:4px;"><b>Run:</b> <code>${entry?.runId || "—"}</code> · <b>Execution:</b> <code>${entry?.executionId || "—"}</code></div>
+              </div>
+            `)}
+            ${runGraphTimeline.length > 30 && html`<div style="font-size:12px; opacity:0.7;">Showing the most recent 30 timeline events.</div>`}
+          </div>
+        </details>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Planner Timeline (${plannerTimeline.length})</summary>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+            ${plannerTimeline.length === 0 && html`<div style="font-size:12px; opacity:0.6;">No planner timeline events recorded.</div>`}
+            ${plannerTimeline.slice().reverse().map((entry, index) => html`
+              <div key=${`planner-event-${index}`} style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+                <div style="color:#93c5fd;">${entry?.timestamp ? `${formatDate(entry.timestamp)} (${formatRelative(entry.timestamp)})` : "unknown time"}</div>
+                <div style="margin-top:4px;"><b>${entry.normalizedEventType || entry.eventType || "planner.event"}</b></div>
+                ${entry.normalizedEventType && entry.normalizedEventType !== entry.eventType && html`
+                  <div style="margin-top:2px; opacity:0.7;"><code>${entry.eventType}</code></div>
+                `}
+                <div style="margin-top:4px;">${summarizePlannerTimelineEntry(entry) || "Planner timeline event"}</div>
+              </div>
+            `)}
+          </div>
+        </details>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">State Ledger Activity (${auditEvents.length})</summary>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:8px;">
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Recent Trace Events</div>
+              ${auditTaskTraceEvents.length === 0
+                ? html`<div style="opacity:0.6;">No state-ledger trace events found for this run.</div>`
+                : auditTaskTraceEvents.map((entry, index) => html`
+                  <div key=${`audit-trace-${index}`} style="margin-bottom:8px;">
+                    <div><b>${entry.eventType || "event"}</b>${entry.status ? ` · ${entry.status}` : ""}</div>
+                    <div style="opacity:0.8;"><code>${entry.nodeLabel || entry.nodeId || entry.runId || "—"}</code></div>
+                    ${entry.summary && html`<div style="margin-top:2px;">${entry.summary}</div>`}
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Promoted Strategies</div>
+              ${auditPromotedStrategies.length === 0
+                ? html`<div style="opacity:0.6;">No promoted strategies recorded for this run.</div>`
+                : auditPromotedStrategies.map((entry, index) => html`
+                  <div key=${`audit-strategy-${index}`} style="margin-bottom:8px;">
+                    <div><b>${entry.recommendation || entry.decision || entry.strategyId}</b></div>
+                    <div style="opacity:0.8;">${entry.status || "unknown"}${entry.verificationStatus ? ` · ${entry.verificationStatus}` : ""}${entry.confidence != null ? ` · confidence ${entry.confidence}` : ""}</div>
+                    ${entry.rationale && html`<div style="margin-top:2px;">${entry.rationale}</div>`}
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Unified Audit Timeline</div>
+              ${auditEvents.length === 0
+                ? html`<div style="opacity:0.6;">No normalized audit events recorded for this run.</div>`
+                : auditEvents.slice(0, 10).map((entry, index) => html`
+                  <div key=${`audit-event-${index}`} style="margin-bottom:8px;">
+                    <div><b>${(entry.auditType || "audit").replace(/_/g, " ")}</b>${entry.status ? ` · ${entry.status}` : ""}</div>
+                    <div style="opacity:0.8;">${entry.timestamp ? `${formatDate(entry.timestamp)} (${formatRelative(entry.timestamp)})` : "unknown time"}</div>
+                    <div style="margin-top:2px;">${entry.summary || entry.eventType || "Audit event"}</div>
+                  </div>
+                `)}
+            </div>
+          </div>
+        </details>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Proof Bundle (${proofEvidence.length + proofArtifacts.length})</summary>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:8px;">
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Decisions</div>
+              ${proofDecisions.length === 0
+                ? html`<div style="opacity:0.6;">No decision metadata recorded.</div>`
+                : proofDecisions.slice(0, 8).map((entry, index) => html`<div key=${`decision-${index}`} style="margin-bottom:6px;">${summarizeProofBundleEntry(entry) || entry?.decision || "decision"}</div>`)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Evidence</div>
+              ${proofEvidence.length === 0
+                ? html`<div style="opacity:0.6;">No evidence metadata recorded.</div>`
+                : proofEvidence.slice(0, 10).map((entry, index) => html`<div key=${`evidence-${index}`} style="margin-bottom:6px;">${summarizeProofBundleEntry(entry) || entry?.kind || "evidence"}</div>`)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Artifacts</div>
+              ${proofArtifacts.length === 0
+                ? html`<div style="opacity:0.6;">No artifact metadata recorded.</div>`
+                : proofArtifacts.slice(0, 10).map((entry, index) => html`<div key=${`artifact-${index}`} style="margin-bottom:6px;">${summarizeProofBundleEntry(entry) || entry?.kind || "artifact"}</div>`)}
+            </div>
+          </div>
+        </details>
 
         <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
           <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">DAG Revisions (${dagRevisions.length})</summary>
@@ -5944,6 +6595,69 @@ function RunHistoryView() {
           <div style="font-size:20px;font-weight:700;line-height:1.2;color:${runMetrics.stuckCount > 0 ? "#fbbf24" : "#34d399"};">${runMetrics.stuckCount}</div>
           <div style="font-size:11px;opacity:0.6;">Potential intervention</div>
         </div>
+      </div>
+
+      <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:10px;padding:12px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="wf-badge" style="background:#f59e0b24;color:#fbbf24;">Approval Queue</span>
+            <span class="wf-runs-count">Pending Approvals ${pendingApprovalCount}</span>
+            <span class="wf-runs-count">${approvalRequests.length} loaded</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <${Select} size="small" value=${approvalStatusFilter} onChange=${(event) => setApprovalStatusFilter(event.target.value)}>
+              <${MenuItem} value="pending">Pending Only</${MenuItem}>
+              <${MenuItem} value="all">Pending + Resolved</${MenuItem}>
+            </${Select}>
+            <${Button} variant="text" size="small" onClick=${() => loadApprovals(approvalStatusFilter)} disabled=${approvalQueueLoading}>
+              ${approvalQueueLoading ? "Refreshing…" : "Refresh Queue"}
+            <//>
+          </div>
+        </div>
+        ${approvalRequests.length === 0
+          ? html`<div style="font-size:12px;color:var(--color-text-secondary,#8b95a5);">No approval requests are currently queued.</div>`
+          : html`
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              ${approvalRequests.map((request) => {
+                const requestStatus = String(request?.status || "pending").trim().toLowerCase() || "pending";
+                const canResolve = requestStatus === "pending";
+                const requestRunId = String(request?.runId || "").trim();
+                return html`
+                  <div key=${request.requestId} style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <span class="wf-badge" style="background:${requestStatus === "pending" ? "#f59e0b24" : (requestStatus === "approved" ? "#22c55e22" : "#ef444422")};color:${requestStatus === "pending" ? "#fbbf24" : (requestStatus === "approved" ? "#86efac" : "#fca5a5")};">
+                          ${requestStatus}
+                        </span>
+                        <span style="font-size:12px;font-weight:600;color:#e5e7eb;">${describeApprovalRequest(request)}</span>
+                      </div>
+                      <div style="font-size:11px;color:#93c5fd;">
+                        ${request?.requestedAt ? `${formatDate(request.requestedAt)} (${formatRelative(request.requestedAt)})` : "queued now"}
+                      </div>
+                    </div>
+                    <div style="margin-top:6px;font-size:12px;color:var(--color-text-secondary,#cbd5e1);line-height:1.6;">
+                      <div><b>Target:</b> ${describeApprovalTarget(request)}</div>
+                      <div><b>Reason:</b> ${request?.reason || "No approval reason recorded."}</div>
+                      ${request?.nodeId && html`<div><b>${String(request?.scopeType || "").trim().toLowerCase() === "workflow-action" ? "Action Node" : "Gate Node"}:</b> <code>${request.nodeId}</code>${request?.nodeLabel ? ` · ${request.nodeLabel}` : ""}${request?.nodeType ? ` · ${request.nodeType}` : ""}</div>`}
+                      ${request?.action?.preview && html`<div><b>Preview:</b> <code>${request.action.preview}</code></div>`}
+                      ${request?.resolution?.actorId && html`<div><b>Resolved By:</b> ${request.resolution.actorId}${request?.resolution?.note ? ` · ${request.resolution.note}` : ""}</div>`}
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+                      ${requestRunId && html`<${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(requestRunId)}>Open Run<//>`}
+                      ${canResolve && html`
+                        <${Button} variant="contained" size="small" color="success" onClick=${() => resolveQueuedApproval(request, "approved")}>
+                          Approve Request
+                        <//>
+                        <${Button} variant="outlined" size="small" color="warning" onClick=${() => resolveQueuedApproval(request, "denied")}>
+                          Deny Request
+                        <//>
+                      `}
+                    </div>
+                  </div>
+                `;
+              })}
+            </div>
+          `}
       </div>
 
       ${runs.length === 0 && html`

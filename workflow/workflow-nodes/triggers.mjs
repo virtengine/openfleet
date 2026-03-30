@@ -624,14 +624,22 @@ registerNodeType("trigger.task_available", {
   describe: () =>
     "Polling trigger that fires when todo tasks are available. Handles " +
     "slot limits, anti-thrash filtering, cooldowns, task sorting (fire " +
-    "tasks first), and listTasks retry with backoff.",
+    "tasks first, then review tasks before new tasks), and listTasks retry with backoff.",
   schema: {
     type: "object",
     properties: {
       maxParallel: { type: "number", default: 3, description: "Maximum parallel task slots" },
       pollIntervalMs: { type: "number", default: 30000, description: "Poll interval in ms" },
       projectId: { type: "string", description: "Kanban project ID (optional)" },
-      status: { type: "string", default: "todo", description: "Status to poll for" },
+      status: { type: "string", default: "todo", description: "Status to poll for (single status, overridden by statuses)" },
+      statuses: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Ordered list of statuses to poll. Tasks from earlier statuses are " +
+          "prioritized over later ones (e.g. [\"inreview\", \"todo\"] dispatches " +
+          "review fixes before new work). Falls back to singular 'status' if omitted.",
+      },
       filterCodexScoped: { type: "boolean", default: true, description: "Only codex-scoped tasks" },
       filterDrafts: { type: "boolean", default: true, description: "Exclude draft tasks" },
       listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
@@ -644,7 +652,11 @@ registerNodeType("trigger.task_available", {
   },
   async execute(node, ctx, engine) {
     const maxParallel = node.config?.maxParallel ?? 3;
-    const status = node.config?.status ?? "todo";
+    const singleStatus = node.config?.status ?? "todo";
+    const statusesRaw = Array.isArray(node.config?.statuses) ? node.config.statuses : null;
+    const statuses = statusesRaw && statusesRaw.length > 0
+      ? statusesRaw.map((s) => String(s || "").trim().toLowerCase()).filter(Boolean)
+      : [singleStatus];
     const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
     const filterDrafts = node.config?.filterDrafts !== false;
     const listRetries = node.config?.listRetries ?? 3;
@@ -664,38 +676,58 @@ registerNodeType("trigger.task_available", {
       return { triggered: false, reason: "slots_full", activeSlotCount, maxParallel };
     }
 
-    // Query kanban with retry + backoff
+    // Query kanban for each status with retry + backoff, merge results
     let tasks = [];
     let lastErr = null;
-    for (let attempt = 0; attempt <= listRetries; attempt++) {
-      try {
-        const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
-        if (kanban?.listTasks) {
-          tasks = await kanban.listTasks(projectId, { status });
-        } else {
-          const ka = await ensureKanbanAdapterMod();
-          tasks = await ka.listTasks(projectId, { status });
+    const statusPriorityMap = new Map();
+    for (let si = 0; si < statuses.length; si++) {
+      statusPriorityMap.set(statuses[si], si);
+    }
+    for (const queryStatus of statuses) {
+      let statusTasks = [];
+      for (let attempt = 0; attempt <= listRetries; attempt++) {
+        try {
+          const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
+          if (kanban?.listTasks) {
+            statusTasks = await kanban.listTasks(projectId, { status: queryStatus });
+          } else {
+            const ka = await ensureKanbanAdapterMod();
+            statusTasks = await ka.listTasks(projectId, { status: queryStatus });
+          }
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < listRetries) {
+            const delay = listRetryDelayMs * Math.pow(2, attempt);
+            ctx.log(node.id, `listTasks(${queryStatus}) attempt ${attempt + 1} failed: ${err.message} — retrying in ${delay}ms`);
+            await new Promise((r) => setTimeout(r, delay));
+          }
         }
-        lastErr = null;
-        break;
-      } catch (err) {
-        lastErr = err;
-        if (attempt < listRetries) {
-          const delay = listRetryDelayMs * Math.pow(2, attempt);
-          ctx.log(node.id, `listTasks attempt ${attempt + 1} failed: ${err.message} — retrying in ${delay}ms`);
-          await new Promise((r) => setTimeout(r, delay));
+      }
+      if (statusTasks?.length > 0) {
+        // Client-side status filter + tag source status for priority sorting
+        for (const t of statusTasks) {
+          if (t.status === queryStatus) {
+            t._sourceStatusPriority = statusPriorityMap.get(queryStatus) ?? 999;
+            tasks.push(t);
+          }
         }
       }
     }
-    if (lastErr) {
+    if (lastErr && tasks.length === 0) {
       ctx.log(node.id, `listTasks failed after ${listRetries + 1} attempts: ${lastErr.message}`);
       return { triggered: false, reason: "list_error", error: lastErr.message };
     }
 
-    // Client-side status filter (backend may not respect status param)
-    if (tasks?.length > 0) {
-      tasks = tasks.filter((t) => t.status === status);
-    }
+    // Deduplicate tasks across statuses (same id may appear in multiple queries)
+    const seenIds = new Set();
+    tasks = tasks.filter((t) => {
+      const id = String(t.id || t.task_id || "");
+      if (!id || seenIds.has(id)) return false;
+      seenIds.add(id);
+      return true;
+    });
     // Draft filter
     if (filterDrafts && tasks?.length > 0) {
       tasks = tasks.filter((t) => !t.draft && !t.isDraft);
@@ -832,15 +864,24 @@ registerNodeType("trigger.task_available", {
       }
     }
 
-    // Sort: fire tasks first, then by priority, then by created date
+    // Sort: status priority first (inreview before todo), then fire tasks,
+    // then by numeric priority, then by created date (oldest first — FIFO).
+    // This ensures review/fix tasks get dispatched before new work starts.
     tasks.sort((a, b) => {
+      // 1. Status priority: earlier statuses in the config array come first
+      const aStatusPri = a._sourceStatusPriority ?? 999;
+      const bStatusPri = b._sourceStatusPriority ?? 999;
+      if (aStatusPri !== bStatusPri) return aStatusPri - bStatusPri;
+      // 2. Fire labels
       const aFire = (a.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
       const bFire = (b.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
       if (aFire && !bFire) return -1;
       if (!aFire && bFire) return 1;
+      // 3. Numeric priority (lower = higher priority)
       const aPri = a.priority ?? 999;
       const bPri = b.priority ?? 999;
       if (aPri !== bPri) return aPri - bPri;
+      // 4. Created date (oldest first — FIFO)
       return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
     });
 

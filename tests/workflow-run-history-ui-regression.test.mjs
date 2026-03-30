@@ -54,6 +54,35 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("Graph After:");
     });
 
+    it(`${label} exposes execution lineage detail in run details`, () => {
+      expect(source).toContain("Execution Lineage");
+      expect(source).toContain("Execution Activity");
+      expect(source).toContain("Execution Timeline");
+      expect(source).toContain("runGraph?.executions");
+      expect(source).toContain("runGraph?.timeline");
+    });
+
+    it(`${label} exposes governance and goal context in run details`, () => {
+      expect(source).toContain("Governance & Goals");
+      expect(source).toContain("Primary Goal:");
+      expect(source).toContain("Goal Ancestry:");
+      expect(source).toContain("Budget Window:");
+      expect(source).toContain("Approval Hold");
+      expect(source).toContain("Approval Pending");
+      expect(source).toContain("Heartbeat Run:");
+      expect(source).toContain("Wakeup Request:");
+      expect(source).toContain("Approve Run");
+      expect(source).toContain("Deny Run");
+    });
+
+    it(`${label} exposes the operator approval queue in run history`, () => {
+      expect(source).toContain("Approval Queue");
+      expect(source).toContain("Pending Approvals");
+      expect(source).toContain("Approve Request");
+      expect(source).toContain("Deny Request");
+      expect(source).toContain("/api/workflows/approvals");
+    });
+
     it(`${label} exposes explicit edge port mapping controls`, () => {
       if (label !== "ui") return;
       expect(source).toContain("Port Bindings");

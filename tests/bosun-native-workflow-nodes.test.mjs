@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -1429,5 +1429,352 @@ describe("cross-node data piping", () => {
     const invokeOutput = ctx.getNodeOutput("invoke-child");
     expect(invokeOutput.success).toBe(true);
     expect(invokeOutput.workflowId).toBe("chain-child-wf");
+  });
+});
+
+describe("self-improvement workflow nodes", () => {
+  afterEach(() => {
+    if (tmpDir) {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
+  it("action.evaluate_run evaluates a persisted run and surfaces promotion insights", async () => {
+    const dir = makeTmpDir();
+    const engine = new WorkflowEngine({
+      workflowDir: join(dir, "workflows"),
+      runsDir: join(dir, "runs"),
+      services: {},
+    });
+    registerNodeType("test.self_improvement.pass", {
+      describe: () => "pass",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { ok: true };
+      },
+    });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "pass", type: "test.self_improvement.pass", label: "Pass", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "pass" }],
+      { id: "wf-self-improvement-pass" },
+    );
+    engine.save(wf);
+
+    const runCtx = await engine.execute(wf.id, {
+      taskId: "TASK-SI-1",
+      taskTitle: "Baseline run",
+      workspaceId: "workspace-1",
+      sessionId: "session-1",
+    });
+
+    const handler = getNodeType("action.evaluate_run");
+    const ctx = new WorkflowContext({
+      runId: runCtx.id,
+      repoRoot: dir,
+      _workflowId: wf.id,
+    });
+    const node = {
+      id: "eval-run",
+      type: "action.evaluate_run",
+      config: {
+        runId: runCtx.id,
+        repoRoot: dir,
+        outputVariable: "evaluationResult",
+      },
+    };
+    const result = await handler.execute(node, ctx, engine);
+    expect(result.success).toBe(true);
+    expect(result.workflowId).toBe(wf.id);
+    expect(result.benchmark.traceEventCount).toBeGreaterThan(0);
+    expect(Array.isArray(result.strategies)).toBe(true);
+    expect(result.promotion).toEqual(expect.objectContaining({
+      decision: expect.any(String),
+      summary: expect.any(String),
+    }));
+    expect(ctx.data.evaluationResult.score).toBe(result.score);
+
+    const historyPath = join(dir, ".bosun", "evaluation-history.json");
+    expect(existsSync(historyPath)).toBe(true);
+    const history = JSON.parse(readFileSync(historyPath, "utf8"));
+    expect(Array.isArray(history[wf.id])).toBe(true);
+    expect(history[wf.id].some((entry) => entry.runId === runCtx.id)).toBe(true);
+  });
+
+  it("action.promote_strategy persists promoted strategy knowledge", async () => {
+    const repoRoot = makeTmpDir();
+    const promoteHandler = getNodeType("action.promote_strategy");
+    const ctx = new WorkflowContext({
+      repoRoot,
+      _workspaceId: "workspace-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      _workflowId: "wf-self-improvement-pass",
+      taskId: "TASK-SI-2",
+      _lastRunEvaluation: {
+        runId: "run-1",
+        workflowId: "wf-self-improvement-pass",
+        score: 91,
+        grade: "A",
+        benchmark: {
+          throughputPerMinute: 8,
+          retryDensity: 0,
+          traceCoverage: 1,
+        },
+        strategies: [
+          {
+            strategyId: "wf-self-improvement-pass:preserve_current_pattern:global:quality",
+            category: "quality",
+            recommendation: "Preserve the current workflow pattern as the reliability baseline.",
+            rationale: "Healthy execution with no actionable failures.",
+            confidence: 0.82,
+            evidence: ["grade:A", "score:91"],
+            tags: ["self-improvement", "baseline"],
+          },
+        ],
+        promotion: {
+          shouldPromote: true,
+          decision: "capture_baseline",
+          selectedStrategy: {
+            strategyId: "wf-self-improvement-pass:preserve_current_pattern:global:quality",
+            category: "quality",
+            recommendation: "Preserve the current workflow pattern as the reliability baseline.",
+            rationale: "Healthy execution with no actionable failures.",
+            confidence: 0.82,
+            evidence: ["grade:A", "score:91"],
+            tags: ["self-improvement", "baseline"],
+          },
+          rationale: "Healthy baseline worth preserving.",
+        },
+      },
+    });
+    const node = {
+      id: "promote",
+      type: "action.promote_strategy",
+      config: {
+        scopeLevel: "workspace",
+        scope: "workflow-reliability",
+        repoRoot,
+        outputVariable: "promotionResult",
+      },
+    };
+
+    const result = await promoteHandler.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.persisted).toBe(true);
+    expect(result.strategyId).toContain("wf-self-improvement-pass");
+
+    const registryPath = join(repoRoot, ".cache", "bosun", "persistent-memory.json");
+    expect(existsSync(registryPath)).toBe(true);
+    const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+    expect(Array.isArray(registry.entries)).toBe(true);
+    expect(registry.entries.some((entry) => entry.strategyId === result.strategyId)).toBe(true);
+    const skillbookPath = join(repoRoot, ".bosun", "skillbook", "strategies.json");
+    expect(existsSync(skillbookPath)).toBe(true);
+    const skillbook = JSON.parse(readFileSync(skillbookPath, "utf8"));
+    expect(Array.isArray(skillbook.strategies)).toBe(true);
+    expect(skillbook.strategies.some((entry) => entry.strategyId === result.strategyId)).toBe(true);
+    const { getPromotedStrategyFromStateLedger } = await import("../lib/state-ledger-sqlite.mjs");
+    expect(getPromotedStrategyFromStateLedger(result.strategyId, { repoRoot })).toEqual(
+      expect.objectContaining({
+        strategyId: result.strategyId,
+        workflowId: "wf-self-improvement-pass",
+        decision: "capture_baseline",
+        status: "promoted",
+      }),
+    );
+    expect(result.skillbookPath).toContain(".bosun");
+    expect(result.ledgerPath).toContain(".sqlite");
+    expect(ctx.data.promotionResult.strategyId).toBe(result.strategyId);
+  });
+
+  it("action.load_skillbook_strategies ranks reusable strategies for the current workflow", async () => {
+    const repoRoot = makeTmpDir();
+    const skillbookDir = join(repoRoot, ".bosun", "skillbook");
+    mkdirSync(skillbookDir, { recursive: true });
+    writeFileSync(join(skillbookDir, "strategies.json"), JSON.stringify({
+      version: "1.0.0",
+      updatedAt: "2026-03-31T00:00:00.000Z",
+      strategies: [
+        {
+          strategyId: "wf-self-improvement-pass:preferred",
+          workflowId: "wf-self-improvement-pass",
+          category: "strategy",
+          scopeLevel: "workspace",
+          status: "promoted",
+          confidence: 0.93,
+          recommendation: "Retry by running targeted validation before wider retries.",
+          rationale: "This pattern recovered recent validation failures without reopening unrelated work.",
+          tags: ["recovery", "validation"],
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          strategyId: "other-workflow:secondary",
+          workflowId: "wf-other",
+          category: "strategy",
+          scopeLevel: "workspace",
+          status: "promoted",
+          confidence: 0.41,
+          recommendation: "Unrelated fallback strategy.",
+          rationale: "Lower confidence and wrong workflow.",
+          tags: ["fallback"],
+          updatedAt: "2024-01-01T00:00:00.000Z",
+        },
+      ],
+    }, null, 2), "utf8");
+
+    const handler = getNodeType("action.load_skillbook_strategies");
+    const ctx = new WorkflowContext({
+      repoRoot,
+      _workflowId: "wf-self-improvement-pass",
+      taskTitle: "Recover validation failures",
+      lastError: "validation step failed on retry",
+    });
+    const result = await handler.execute({
+      id: "load-skillbook",
+      type: "action.load_skillbook_strategies",
+      config: {
+        repoRoot,
+        query: "validation retry recovery",
+        outputVariable: "loadedGuidance",
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.matched).toBe(1);
+    expect(result.strategyIds).toEqual(["wf-self-improvement-pass:preferred"]);
+    expect(result.guidanceSummary).toContain("Retry by running targeted validation before wider retries.");
+    expect(ctx.data.loadedGuidance.strategyIds).toEqual(["wf-self-improvement-pass:preferred"]);
+  });
+
+  it("agent.run_planner injects reusable skillbook guidance into the planner prompt", async () => {
+    const repoRoot = makeTmpDir();
+    const skillbookDir = join(repoRoot, ".bosun", "skillbook");
+    mkdirSync(skillbookDir, { recursive: true });
+    writeFileSync(join(skillbookDir, "strategies.json"), JSON.stringify({
+      version: "1.0.0",
+      updatedAt: "2026-03-31T00:00:00.000Z",
+      strategies: [
+        {
+          strategyId: "wf-plan:triage",
+          workflowId: "wf-plan",
+          category: "strategy",
+          scopeLevel: "workspace",
+          status: "promoted",
+          confidence: 0.88,
+          recommendation: "Break reliability work into targeted validation-first tasks.",
+          rationale: "This reduces blocked downstream work and shortens review loops.",
+          tags: ["planner", "reliability"],
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    }, null, 2), "utf8");
+
+    const handler = getNodeType("agent.run_planner");
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: '```json\n{"tasks":[]}\n```',
+      sdk: "codex",
+      items: [],
+      threadId: "planner-thread-skillbook",
+    });
+    const engine = {
+      services: {
+        agentPool: { launchEphemeralThread },
+        prompts: { planner: "Plan the next backlog tasks." },
+      },
+    };
+    const ctx = new WorkflowContext({
+      repoRoot,
+      _workflowId: "wf-plan",
+      taskTitle: "Improve reliability backlog",
+      taskDescription: "Find the highest-value reliability fixes.",
+    });
+
+    const result = await handler.execute({
+      id: "planner-with-skillbook",
+      type: "agent.run_planner",
+      config: {
+        taskCount: 3,
+        context: "Focus on reliability and validation ordering.",
+      },
+    }, ctx, engine);
+
+    expect(result.success).toBe(true);
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+    expect(sentPrompt).toContain("Reusable strategy guidance:");
+    expect(sentPrompt).toContain("Break reliability work into targeted validation-first tasks.");
+  });
+
+  it("workflow proof bundles surface skillbook guidance captured during execution", async () => {
+    const repoRoot = makeTmpDir();
+    const skillbookDir = join(repoRoot, ".bosun", "skillbook");
+    mkdirSync(skillbookDir, { recursive: true });
+    writeFileSync(join(skillbookDir, "strategies.json"), JSON.stringify({
+      version: "1.0.0",
+      updatedAt: "2026-03-31T00:00:00.000Z",
+      strategies: [
+        {
+          strategyId: "wf-proof:reuse",
+          workflowId: "wf-proof",
+          category: "strategy",
+          scopeLevel: "workspace",
+          status: "promoted",
+          confidence: 0.79,
+          recommendation: "Reuse the proven recovery sequencing before escalating.",
+          rationale: "Promoted after the last healthy recovery run.",
+          tags: ["recovery"],
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    }, null, 2), "utf8");
+
+    const engine = new WorkflowEngine({
+      workflowDir: join(repoRoot, "workflows"),
+      runsDir: join(repoRoot, "runs"),
+      services: {},
+    });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "load-skillbook",
+          type: "action.load_skillbook_strategies",
+          label: "Load Skillbook",
+          config: {
+            repoRoot,
+            workflowId: "wf-proof",
+            query: "recovery escalation",
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "load-skillbook" }],
+      { id: "wf-proof", name: "Skillbook Proof" },
+    );
+    engine.save(wf);
+
+    const runCtx = await engine.execute("wf-proof", { repoRoot, _workflowId: "wf-proof" });
+    const run = engine.getRunDetail(runCtx.id);
+
+    expect(run?.detail?.skillbookGuidance?.strategyIds).toEqual(["wf-proof:reuse"]);
+    expect(run?.proofBundle?.decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "skillbook",
+          decision: "reuse_strategies",
+        }),
+      ]),
+    );
+    expect(run?.proofBundle?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "skillbook",
+          kind: "reusable_strategy",
+        }),
+      ]),
+    );
   });
 });

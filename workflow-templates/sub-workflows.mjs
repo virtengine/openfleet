@@ -62,6 +62,7 @@ export const VALIDATE_AND_PR_SUB = subWorkflow(
     node("create-pr", "action.create_pr", "Create / Update PR", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      body: "## Summary\n\n{{taskDescription}}\n\n---\nTask-ID: {{taskId}}",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
     }, { x: 400, y: 585 }),
@@ -91,6 +92,7 @@ export const PR_HANDOFF_SUB = subWorkflow(
     node("create-pr", "action.create_pr", "Create / Update PR", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      body: "## Summary\n\n{{taskDescription}}\n\n---\nTask-ID: {{taskId}}",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
     }, { x: 400, y: 0 }),

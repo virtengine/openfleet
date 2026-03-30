@@ -129,7 +129,7 @@ registerNodeType("agent.select_profile", {
   },
 });
 
-function parsePlannerJsonFromText(value) {
+export function parsePlannerJsonFromText(value) {
   const text = normalizeLineEndings(String(value || ""))
     .replace(/\u001b\[[0-9;]*m/g, "")
     // Strip common agent prefixes: "Agent: ", "Assistant: ", etc.
@@ -319,6 +319,19 @@ export function normalizePlannerTaskForCreation(task, index) {
     }
     return normalized;
   };
+  const normalizeOptionalStringList = (value) => {
+    if (Array.isArray(value)) return normalizeStringList(value);
+    const entry = String(value || "").trim();
+    return entry ? [entry] : [];
+  };
+  const normalizeTaskGraphKey = (value, fallback = "") => {
+    const normalized = String(value || fallback || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    return normalized || "";
+  };
   const scoreMode = inferPlannerTaskScoreMode(task);
   const preferTenScaleIntegers = scoreMode === PLANNER_SCORE_MODE_TEN;
 
@@ -337,6 +350,41 @@ export function normalizePlannerTaskForCreation(task, index) {
   const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
+  const taskKey = normalizeTaskGraphKey(
+    task.task_key || task.taskKey || task.key || task.id || "",
+    title,
+  );
+  const parentTaskKey = normalizeTaskGraphKey(
+    task.parent_task_key ||
+      task.parentTaskKey ||
+      task.parent_key ||
+      task.parentKey ||
+      task.parent_task_title ||
+      task.parentTaskTitle ||
+      task.parent_title ||
+      task.parentTitle ||
+      "",
+  );
+  const parentTaskId = String(task.parent_task_id || task.parentTaskId || "").trim() || null;
+  const dependencyTaskKeys = Array.from(new Set([
+    ...normalizeOptionalStringList(task.depends_on_task_keys),
+    ...normalizeOptionalStringList(task.dependsOnTaskKeys),
+    ...normalizeOptionalStringList(task.dependency_keys),
+    ...normalizeOptionalStringList(task.dependencyKeys),
+    ...normalizeOptionalStringList(task.depends_on_titles),
+    ...normalizeOptionalStringList(task.dependsOnTitles),
+    ...normalizeOptionalStringList(task.dependency_titles),
+    ...normalizeOptionalStringList(task.dependencyTitles),
+  ].map((entry) => normalizeTaskGraphKey(entry)).filter(Boolean)));
+  const dependencyTaskIds = Array.from(new Set([
+    ...normalizeOptionalStringList(task.depends_on_task_ids),
+    ...normalizeOptionalStringList(task.dependsOnTaskIds),
+    ...normalizeOptionalStringList(task.dependency_task_ids),
+    ...normalizeOptionalStringList(task.dependencyTaskIds),
+  ].map((entry) => String(entry || "").trim()).filter(Boolean)));
+  const decompositionKind = String(task.decomposition_kind || task.decompositionKind || "").trim().toLowerCase() || null;
+  const spawnWhen = String(task.spawn_when || task.spawnWhen || "").trim() || null;
+  const mergeBackPolicy = String(task.merge_back_policy || task.mergeBackPolicy || "").trim() || null;
 
   const appendList = (heading, values) => {
     if (!Array.isArray(values) || values.length === 0) return;
@@ -391,6 +439,14 @@ export function normalizePlannerTaskForCreation(task, index) {
     estimatedEffort: estimatedEffort || null,
     whyNow: whyNow || null,
     killCriteria: killCriteria.length > 0 ? killCriteria : null,
+    taskKey: taskKey || null,
+    parentTaskKey: parentTaskKey || null,
+    parentTaskId,
+    dependencyTaskKeys,
+    dependencyTaskIds,
+    decompositionKind,
+    spawnWhen,
+    mergeBackPolicy,
   };
 }
 export function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
@@ -1256,7 +1312,5 @@ registerNodeType("agent.evidence_collect", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  FLOW CONTROL — Gates, barriers, and routing
 // ═══════════════════════════════════════════════════════════════════════════
-
-
 
 

@@ -72,3 +72,5 @@ node-compile-cache/*
 {{*}}
 *tmp*
 *null*
+*git-cache*
+_docs/2026-03-31-sibling-project-adoption-analysis.md
