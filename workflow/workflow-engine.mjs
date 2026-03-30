@@ -155,6 +155,102 @@ function resolveWorkflowRootRunId(inputData = {}, opts = {}) {
   ).trim() || null;
 }
 
+const DEFAULT_DELEGATION_WATCHDOG_TIMEOUT_MS = readBoundedEnvInt(
+  "WORKFLOW_DELEGATION_WATCHDOG_TIMEOUT_MS",
+  5 * 60 * 1000,
+  { min: 1000, max: NODE_TIMEOUT_MAX_MS },
+);
+const DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES = readBoundedEnvInt(
+  "WORKFLOW_DELEGATION_WATCHDOG_MAX_RECOVERIES",
+  1,
+  { min: 0, max: 10 },
+);
+
+function parseWatchdogTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function buildDelegationWatchdogDecision(detail = {}) {
+  const watchdog = detail?.data?._delegationWatchdog;
+  if (!watchdog || typeof watchdog !== "object") return null;
+
+  const delegationType = String(watchdog.delegationType || "").trim().toLowerCase();
+  const taskScoped = watchdog.taskScoped === true;
+  if (taskScoped || delegationType === "task") return null;
+
+  const state = String(watchdog.state || "").trim().toLowerCase();
+  if (state && state !== "delegated" && state !== "running" && state !== "stalled") {
+    return null;
+  }
+
+  const startedAt = parseWatchdogTimestamp(watchdog.startedAt)
+    ?? parseWatchdogTimestamp(watchdog.updatedAt)
+    ?? parseWatchdogTimestamp(detail?.startedAt);
+  if (!Number.isFinite(startedAt)) return null;
+
+  const timeoutMs = Math.max(
+    NODE_TIMEOUT_MIN_MS,
+    Math.min(
+      NODE_TIMEOUT_MAX_MS,
+      Number(watchdog.timeoutMs ?? watchdog.delegationWatchdogTimeoutMs ?? DEFAULT_DELEGATION_WATCHDOG_TIMEOUT_MS)
+        || DEFAULT_DELEGATION_WATCHDOG_TIMEOUT_MS,
+    ),
+  );
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs < timeoutMs) return null;
+
+  const maxRecoveries = Math.max(
+    0,
+    Math.trunc((() => {
+      const raw = watchdog.maxRecoveries
+        ?? watchdog.delegationWatchdogMaxRecoveries
+        ?? detail?.data?.delegationWatchdogMaxRecoveries
+        ?? DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES;
+    })()),
+  );
+  const recoveryAttempts = Math.max(
+    0,
+    Math.trunc((() => {
+      const parsed = Number(watchdog.recoveryAttempts);
+      if (Number.isFinite(parsed)) return parsed;
+      return watchdog.recoveryAttempted === true ? 1 : 0;
+    })()),
+  );
+
+  const reasonBase = `delegation_watchdog:${watchdog.nodeId || "unknown"}:${elapsedMs}ms>${timeoutMs}ms`;
+  if (recoveryAttempts >= maxRecoveries) {
+    return {
+      type: "exhausted",
+      reason: `delegation_watchdog_exhausted:${watchdog.nodeId || "unknown"}:${recoveryAttempts}/${maxRecoveries}`,
+      nodeId: watchdog.nodeId || null,
+      elapsedMs,
+      timeoutMs,
+      recoveryAttempts,
+      maxRecoveries,
+    };
+  }
+
+  return {
+    type: "retry",
+    mode: "from_failed",
+    reason: `${reasonBase}:retryable`,
+    nodeId: watchdog.nodeId || null,
+    elapsedMs,
+    timeoutMs,
+    recoveryAttempts,
+    maxRecoveries,
+  };
+}
+
 function resolveNodeTimeoutMs(node, resolvedConfig) {
   const candidates = [
     resolvedConfig?.timeout,
@@ -5635,7 +5731,14 @@ export class WorkflowEngine extends EventEmitter {
 
           // Reuse cached detail if available (already parsed above)
           const detail = runDetailCache.get(run.runId) ?? JSON.parse(readFileSync(detailPath, "utf8"));
-          const retryDecision = this._chooseRetryModeFromDetail(detail, {
+          const watchdogDecision = buildDelegationWatchdogDecision(detail);
+          if (watchdogDecision?.type === "exhausted") {
+            console.warn(`${TAG} Skipping run ${run.runId}: ${watchdogDecision.reason}`);
+            this._markRunUnresumable(run.runId, watchdogDecision.reason);
+            continue;
+          }
+
+          const retryDecision = watchdogDecision || this._chooseRetryModeFromDetail(detail, {
             fallbackMode: "from_scratch",
           });
 
@@ -5876,4 +5979,5 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
 

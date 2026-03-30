@@ -4370,6 +4370,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                     value=${binding.requestedSourcePort}
                     onChange=${(e) => updateEdgePortMapping(binding.edge.id, { sourcePort: e.target.value })}
                   >
+                    <option value="">Select source port</option>
                     ${sourceOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
                   </select>
                 </div>
@@ -4380,6 +4381,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                     value=${binding.requestedTargetPort}
                     onChange=${(e) => updateEdgePortMapping(binding.edge.id, { targetPort: e.target.value })}
                   >
+                    <option value="">Select target port</option>
                     ${targetOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
                   </select>
                 </div>
