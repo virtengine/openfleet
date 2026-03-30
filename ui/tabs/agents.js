@@ -474,6 +474,7 @@ function WorkspaceViewer({ agent, onClose }) {
         .catch(() => { if (active) setLogText("(failed to load logs)"); });
     };
 
+
     const fetchContext = () => {
       apiFetch(`/api/agent-context?query=${encodeURIComponent(query)}`, { _silent: true })
         .then((res) => { if (active) setContextData(res.data ?? res ?? null); })
@@ -1949,6 +1950,7 @@ export function AgentsTab() {
                   }}
                 >
                   <div class="task-card-header">
+                    <div class="session-turn-chip">Turns ${s.turnCount || 0}</div>
                     <div>
                       <div class="task-card-title">
                         <${StatusDot} status=${s.status || "idle"} />
@@ -1958,6 +1960,7 @@ export function AgentsTab() {
                         ${s.id || "?"}
                         ${s.taskId ? ` · ${s.taskId}` : ""}
                         ${s.branch ? ` · ${s.branch}` : ""}
+                        · Turns ${s.turnCount || 0}
                       </div>
                       <div class="task-card-meta">
                         ${`Turns ${Number(s.turnCount || 0)}`}
@@ -2041,6 +2044,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
     setError(null);
     setCtx(null);
     fetchContext();
+
     intervalRef.current = setInterval(fetchContext, 10000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [fetchContext]);
@@ -2082,7 +2086,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
   };
 
   const copyContext = () => {
-    if (!ctx?.context) return;
+
     const c = ctx.context;
     const ab = parseAheadBehind(c.gitAheadBehind);
     const commits = parseCommits(c.gitLogDetailed);

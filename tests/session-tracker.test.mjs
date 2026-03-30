@@ -269,6 +269,47 @@ describe("session-tracker", () => {
       expect(messages[0].type).toBe("agent_message");
       expect(messages[0].content).toContain("Done. Changes are applied.");
     });
+    it("builds per-turn token and duration timeline insights", () => {
+      tracker.startSession("task-1", "Timeline Test");
+      tracker.recordEvent("task-1", {
+        role: "user",
+        content: "Check the failing tests",
+        timestamp: "2026-03-26T10:00:00.000Z",
+      });
+      tracker.recordEvent("task-1", {
+        type: "tool_call",
+        content: "read_file(tests/app.test.mjs)",
+        timestamp: "2026-03-26T10:00:01.000Z",
+        meta: { toolName: "read_file" },
+      });
+      tracker.recordEvent("task-1", {
+        role: "assistant",
+        content: "I found the flaky assertion.",
+        timestamp: "2026-03-26T10:00:04.000Z",
+        meta: {
+          usage: { input_tokens: 120, output_tokens: 30, total_tokens: 150 },
+        },
+      });
+      tracker.recordEvent("task-1", {
+        type: "system",
+        content: "Turn completed",
+        timestamp: "2026-03-26T10:00:05.000Z",
+        meta: { lifecycle: "turn_completed" },
+      });
+
+      const session = tracker.getSession("task-1");
+      expect(session.turnCount).toBeGreaterThanOrEqual(1);
+      expect(session.insights?.turns).toEqual([
+        expect.objectContaining({
+          index: 1,
+          durationMs: 4000,
+          inputTokens: 120,
+          outputTokens: 30,
+          tokenCount: 150,
+          toolCalls: 1,
+        }),
+      ]);
+    });
 
     it("ignores low-signal stream noise for activity tracking", () => {
       tracker.startSession("task-1", "Test");
@@ -980,3 +1021,6 @@ describe("session-tracker", () => {
     });
   });
 });
+
+
+
