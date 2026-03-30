@@ -101,6 +101,36 @@ for (const { relPath, source } of sourceFiles) {
       expect(surroundingChunk).not.toMatch(/key=\$\{i\}\s*\n/);
     });
 
+
+    it("renders live turn counts in agent cards and exposes the turns detail tab", () => {
+      expect(source).toContain("fleet-slot-meta-turns");
+      expect(source).toContain("Turns ${Number(entry.session?.turnCount || 0)}");
+      expect(source).toContain('detailTab === "turns"');
+      expect(source).toContain('iconText(":repeat: Turns")');
+      expect(source).toContain("fleet-turn-timeline");
+      expect(source).toContain("formatTurnTokens(turn)");
+      expect(source).toContain("formatMsDuration(turn.durationMs || 0)");
+    });
+
+    it("scopes Fleet metrics to workspace slot summaries and separates session-only activity", () => {
+      expect(source).toContain("const workspaceSummary = execData?.workspaceSummary || null;");
+      expect(source).not.toContain('loadSessions({ type: "task", workspace: "all" });');
+      expect(source).not.toContain("Math.max(activeSlots, activeSessionCount)");
+      expect(source).toContain('label: "Dedicated Slots"');
+      expect(source).toContain('label: "Session Only"');
+      expect(source).toContain('label: "Active Sessions"');
+      expect(source).toContain('label: "Workflows"');
+      expect(source).toContain("getFleetEntryMetaLabel(entry)");
+      expect(source).toContain("getFleetEntryOriginLabel(selectedEntry)");
+      expect(source).toContain('return isFleetEntryActive(entry) ? "Session only" : "Session history";');
+    });
+
+    it("preserves backend slot indexes when workspace-filtered slots are rendered", () => {
+      expect(source).toContain("function resolveFleetSlotIndex(slot, fallbackIndex = 0)");
+      expect(source).toContain("resolveFleetSlotIndex(slot, i)");
+      expect(source).toContain("index: resolveFleetSlotIndex(slots[slotIndex], slotIndex)");
+    });
+
     it("agent threads list uses stable keys, not array indices", () => {
       // The "Agent Threads" section should key on a stable identifier
       const threadsSection = source.slice(
@@ -246,6 +276,21 @@ describe("fleet entry building logic", () => {
       const uniqueKeys = new Set(keys);
       expect(uniqueKeys.size).toBe(keys.length);
     }
+  });
+});
+
+describe("executor workspace summary source", () => {
+  const serverSource = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
+
+  it("adds workspace-scoped slot summaries to /api/executor", () => {
+    expect(serverSource).toContain("function buildWorkspaceExecutorSummary(execStatus, workspaceContext)");
+    expect(serverSource).toContain("const workspaceSummary = execStatus");
+    expect(serverSource).toContain("{ ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails }");
+  });
+
+  it("uses the actual request url when augmenting executor workflow counts", () => {
+    expect(serverSource).toContain("getWorkflowRequestContext(url, { bootstrapTemplates: false })");
+    expect(serverSource).not.toContain("getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false }).catch(() => null);");
   });
 });
 

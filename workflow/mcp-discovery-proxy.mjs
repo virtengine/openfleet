@@ -18,16 +18,24 @@ import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import * as mcpServer from "@modelcontextprotocol/sdk/server/index.js";
+import * as mcpStdio from "@modelcontextprotocol/sdk/server/stdio.js";
+import * as mcpTypes from "@modelcontextprotocol/sdk/types.js";
 import {
   invokeCustomTool,
   listCustomTools,
 } from "../agent/agent-custom-tools.mjs";
+
+const Server = mcpServer.Server ?? mcpServer.default?.Server;
+const StdioServerTransport =
+  mcpStdio.StdioServerTransport ??
+  mcpStdio.default?.StdioServerTransport;
+const CallToolRequestSchema =
+  mcpTypes.CallToolRequestSchema ??
+  mcpTypes.default?.CallToolRequestSchema;
+const ListToolsRequestSchema =
+  mcpTypes.ListToolsRequestSchema ??
+  mcpTypes.default?.ListToolsRequestSchema;
 
 const TAG = "[mcp-discovery-proxy]";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -165,6 +173,7 @@ function createStdioRequest(server, method, params, timeoutMs = DEFAULT_TIMEOUT_
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(server.command, server.args || [], {
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
       env: {
         ...process.env,
         ...(server.env || {}),

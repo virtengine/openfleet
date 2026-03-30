@@ -1095,12 +1095,17 @@ const COMMON_MCP_SERVER_DEFS = [
     lines: [
       "[mcp_servers.microsoft-docs]",
       'url = "https://learn.microsoft.com/api/mcp"',
-      '# NOTE: Tool list intentionally limited to avoid Azure Responses API schema-size/parser issues.',
-      'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
     ],
     isPresent: hasMicrosoftDocsMcp,
   },
 ];
+
+function shouldIncludeDefaultMcpServers(env = process.env) {
+  const raw = String(env.BOSUN_MCP_ALLOW_DEFAULT_SERVERS || "")
+    .trim()
+    .toLowerCase();
+  return ["1", "true", "yes", "on", "y"].includes(raw);
+}
 
 function buildCommonMcpBlock(definition) {
   return [
@@ -1111,7 +1116,10 @@ function buildCommonMcpBlock(definition) {
   ].join("\n");
 }
 
-export function buildCommonMcpBlocks() {
+export function buildCommonMcpBlocks(env = process.env) {
+  if (!shouldIncludeDefaultMcpServers(env)) {
+    return "";
+  }
   return COMMON_MCP_SERVER_DEFS.map(buildCommonMcpBlock).join("");
 }
 
@@ -1150,6 +1158,30 @@ function ensureMcpStartupTimeout(toml, name, timeoutSec = 120) {
     toml: toml.substring(0, afterHeader) + section + toml.substring(sectionEnd),
     changed: true,
   };
+}
+
+function stripUnsupportedMicrosoftDocsToolsConfig(toml) {
+  let nextToml = String(toml || "");
+  for (const name of ["microsoft-docs", "microsoft_docs"]) {
+    const header = `[mcp_servers.${name}]`;
+    const headerIdx = nextToml.indexOf(header);
+    if (headerIdx === -1) continue;
+
+    const afterHeader = headerIdx + header.length;
+    const nextSection = nextToml.indexOf("\n[", afterHeader);
+    const sectionEnd = nextSection === -1 ? nextToml.length : nextSection;
+    const section = nextToml.substring(afterHeader, sectionEnd);
+    const cleaned = section.replace(
+      /^\s*tools\s*=\s*\[[^\n]*\]\s*(?:\r?\n)?/gm,
+      "",
+    );
+
+    if (cleaned !== section) {
+      nextToml =
+        nextToml.substring(0, afterHeader) + cleaned + nextToml.substring(sectionEnd);
+    }
+  }
+  return nextToml;
 }
 
 function stripDeprecatedSandboxPermissions(toml) {
@@ -1502,7 +1534,10 @@ function applyAgentSdkDefaults(toml, env, primarySdk, result) {
   return nextToml;
 }
 
-function ensureCommonMcpDefaults(toml, result) {
+function ensureCommonMcpDefaults(toml, result, env = process.env) {
+  if (!shouldIncludeDefaultMcpServers(env)) {
+    return toml;
+  }
   let nextToml = toml;
   for (const definition of COMMON_MCP_SERVER_DEFS) {
     if (!definition.isPresent(nextToml)) {
@@ -1590,7 +1625,9 @@ function initializeCodexConfigState(result) {
   }
   return {
     originalToml,
-    toml: stripDeprecatedSandboxPermissions(originalToml),
+    toml: stripUnsupportedMicrosoftDocsToolsConfig(
+      stripDeprecatedSandboxPermissions(originalToml),
+    ),
   };
 }
 
@@ -1604,7 +1641,7 @@ function applyEnsureCodexConfigDefaults(toml, env, primarySdk, result) {
   result.featuresAdded = featureResult.added;
   nextToml = featureResult.toml;
 
-  nextToml = ensureCommonMcpDefaults(nextToml, result);
+  nextToml = ensureCommonMcpDefaults(nextToml, result, env);
   nextToml = applyModelProviderDefaults(nextToml, env, result);
 
   return { sandboxState, toml: nextToml };

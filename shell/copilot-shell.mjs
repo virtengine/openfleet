@@ -7,11 +7,12 @@
  * as the primary executor.
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
 import { existsSync, readFileSync, appendFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execSync as nodeExecSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { loadConfig } from "../config/config.mjs";
@@ -22,6 +23,13 @@ import {
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
+
+function execSync(command, options = {}) {
+  return nodeExecSync(command, {
+    ...options,
+    windowsHide: options.windowsHide ?? (process.platform === "win32"),
+  });
+}
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const require = createRequire(import.meta.url);
@@ -74,6 +82,10 @@ function getMcpRuntimeConfig() {
   } catch {
     return {};
   }
+}
+
+function shouldAllowExternalMcpSources(mcpCfg = getMcpRuntimeConfig()) {
+  return mcpCfg?.allowExternalSources === true;
 }
 
 function resolveCopilotTransport() {
@@ -736,6 +748,9 @@ function loadMcpServersFromFile(path) {
 }
 
 function loadMcpServers(profile = null) {
+  if (!shouldAllowExternalMcpSources()) {
+    return null;
+  }
   if (profile?.mcpServers) return profile.mcpServers;
   if (profile?.mcpConfig) {
     return loadMcpServersFromFile(profile.mcpConfig);
@@ -768,7 +783,9 @@ async function mergeLibraryMcpServers(existingServers) {
     const installedIds = installed && installed.length ? installed.map((e) => e.id) : [];
 
     // Resolve all installed servers into full configs
-    let resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, installedIds);
+    let resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, installedIds, {
+      requireAuth: mcpCfg.requireAuth !== false,
+    });
     if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
       resolved = registry.wrapServersWithDiscoveryProxy(REPO_ROOT, resolved, {
         enabled: mcpCfg.useDiscoveryProxy !== false,
@@ -777,7 +794,9 @@ async function mergeLibraryMcpServers(existingServers) {
         executeTimeoutMs: mcpCfg.discoveryProxyExecuteTimeoutMs,
       });
     }
-    if (!resolved || !resolved.length) return existingServers;
+    if (!resolved || !resolved.length) {
+      return shouldAllowExternalMcpSources(mcpCfg) ? existingServers : null;
+    }
 
     // Convert to Copilot mcpServers format: { [id]: { command, args, env? } | { url } }
     const copilotJson = registry.buildCopilotMcpJson(resolved);
@@ -785,14 +804,21 @@ async function mergeLibraryMcpServers(existingServers) {
     if (!Object.keys(libraryServers).length) return existingServers;
 
     // Merge: existing servers take precedence over library ones (user overrides win)
+    if (!shouldAllowExternalMcpSources(mcpCfg)) {
+      console.log(
+        `[copilot-shell] injected ${Object.keys(libraryServers).length} Bosun-managed MCP server(s) into session`,
+      );
+      return libraryServers;
+    }
+
     const merged = { ...libraryServers, ...(existingServers || {}) };
     console.log(
-      `[copilot-shell] Merged ${Object.keys(libraryServers).length} library MCP server(s) into session`,
+      `[copilot-shell] merged ${Object.keys(libraryServers).length} library MCP server(s) into session`,
     );
     return merged;
   } catch (err) {
     console.warn(`[copilot-shell] Failed to merge library MCP servers: ${err.message}`);
-    return existingServers;
+    return shouldAllowExternalMcpSources() ? existingServers : null;
   }
 }
 
