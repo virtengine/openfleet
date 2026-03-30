@@ -691,6 +691,15 @@ export class SessionTracker {
   }
 
   /**
+   * Backward-compatible alias for older callers/tests.
+   * @param {string} taskId
+   * @param {Object|string} event
+   */
+  appendEvent(taskId, event) {
+    return this.recordEvent(taskId, event);
+  }
+
+  /**
    * Mark a session as completed.
    * @param {string} taskId
    * @param {string} [status="completed"]
@@ -2235,6 +2244,15 @@ export function getSessionMessages(sessionId) {
  */
 export async function createSession(opts) {
   return getSessionTracker().createSession(opts);
+}
+
+/**
+ * Append an event/message to an existing session.
+ * @param {string} sessionId
+ * @param {Object|string} event
+ */
+export function appendEvent(sessionId, event) {
+  return getSessionTracker().appendEvent(sessionId, event);
 }
 
 /**
