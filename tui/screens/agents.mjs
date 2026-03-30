@@ -182,7 +182,6 @@ function detailLines(sessionPayload) {
   ];
 }
 
-<<<<<<< HEAD
 function sliceWindow(items, offset, size) {
   return items.slice(offset, offset + size);
 }
@@ -270,12 +269,7 @@ function SessionDetail({
   `;
 }
 
-export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null }) {
-||||||| bb6eaeec
-export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null }) {
-=======
 export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null, onFooterHintsChange }) {
->>>>>>> origin/main
   const resolvedHost = wsBridge?.host || host;
   const resolvedPort = wsBridge?.port || port;
   const { stdout } = useStdout();
@@ -368,18 +362,73 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   }, [applyRetryQueue, stats]);
 
   React.useEffect(() => {
-    if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
-    const off = wsBridge.on("logs:stream", (payload) => {
-      const payloadSessionId = String(payload?.sessionId || payload?.id || payload?.session?.id || "");
-      if (!detailView?.session?.id || payloadSessionId !== String(detailView.session.id)) return;
-      const line = streamPayloadToLogLine(payload);
-      if (!line) return;
-      setLogLines((current) => [...current.slice(-(MAX_LOG_LINES - 1)), line]);
-    });
+    let active = true;
+    void refreshData();
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      setClockMs(now);
+      setEntries((previous) => reconcileSessionEntries(previous, liveSessionsRef.current, now));
+    }, DETAIL_POLL_MS);
     return () => {
-      if (typeof off === "function") off();
+      active = false;
+      clearInterval(intervalId);
+      if (!active) {
+        return;
+      }
     };
-  }, [detailView?.session?.id, wsBridge]);
+  }, [refreshData]);
+
+  React.useEffect(() => {
+    if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
+    const handlers = [
+      wsBridge.on("sessions:update", (payload) => {
+        const nextSessions = Array.isArray(payload?.sessions)
+          ? payload.sessions
+          : Array.isArray(payload)
+            ? payload
+            : [];
+        applySessionSnapshot(nextSessions, Date.now());
+      }),
+      wsBridge.on("session:event", (payload) => {
+        const session = payload?.session;
+        if (!session?.id) return;
+        const nextSessions = Array.isArray(liveSessionsRef.current)
+          ? [...liveSessionsRef.current]
+          : [];
+        const existingIndex = nextSessions.findIndex((candidate) => candidate.id === session.id);
+        if (existingIndex >= 0) nextSessions[existingIndex] = session;
+        else nextSessions.unshift(session);
+        applySessionSnapshot(nextSessions, Date.now());
+
+        if (String(detailView?.session?.id || "") !== String(session.id)) return;
+        setDetailView(payload);
+        if (Array.isArray(payload?.session?.messages) || payload?.event?.kind === "message") {
+          setLogLines(sessionMessagesToLogLines(payload).slice(-MAX_LOG_LINES));
+        }
+      }),
+      wsBridge.on("retry:update", applyRetryQueue),
+      wsBridge.on("retry-queue-updated", applyRetryQueue),
+      wsBridge.on("logs:stream", (payload) => {
+        if (!detailView?.session?.id) return;
+        const detailSession = readSession(detailView);
+        const workspaceDir = String(detailSession?.metadata?.workspaceDir || detailSession?.workspaceDir || "").trim();
+        const taskId = String(detailSession?.taskId || "").trim().toLowerCase();
+        const filePath = String(payload?.filePath || "").trim().toLowerCase();
+        const query = String(payload?.query || "").trim().toLowerCase();
+        const matchesWorkspace = workspaceDir && filePath.includes(workspaceDir.toLowerCase());
+        const matchesTask = taskId && query === taskId;
+        if (!matchesWorkspace && !matchesTask) return;
+        const line = streamPayloadToLogLine(payload);
+        if (!line) return;
+        setLogLines((current) => [...current.slice(-(MAX_LOG_LINES - 1)), line]);
+      }),
+    ];
+    return () => {
+      handlers.forEach((unsubscribe) => {
+        if (typeof unsubscribe === "function") unsubscribe();
+      });
+    };
+  }, [applyRetryQueue, applySessionSnapshot, detailView, wsBridge]);
 
   React.useEffect(() => () => clearDetailPoll(), [clearDetailPoll]);
 
@@ -586,13 +635,8 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }
   });
 
-<<<<<<< HEAD
   const eventWidth = Math.max(12, terminalColumns - FIXED_TABLE_WIDTH);
   const backoffMessageWidth = Math.max(20, terminalColumns - 34);
-||||||| bb6eaeec
-  const eventWidth = Math.max(12, (stdout?.columns || 120) - FIXED_TABLE_WIDTH);
-  const backoffMessageWidth = Math.max(20, (stdout?.columns || 120) - 34);
-=======
   React.useEffect(() => {
     if (typeof onFooterHintsChange !== "function") return;
     onFooterHintsChange(getFooterHints("agents", {
@@ -602,10 +646,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       diffOpen: Boolean(diffView),
     }));
   }, [confirmKill, detailView, diffView, logLines.length, onFooterHintsChange]);
-
-  const eventWidth = Math.max(12, (stdout?.columns || 120) - FIXED_TABLE_WIDTH);
-  const backoffMessageWidth = Math.max(20, (stdout?.columns || 120) - 34);
->>>>>>> origin/main
 
   return html`
     <${Box} flexDirection="column" paddingY=${1}>
@@ -727,6 +767,5 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     <//>
   `;
 }
-
 
 

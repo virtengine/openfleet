@@ -220,10 +220,13 @@ describe("tui screen rendering", () => {
     await waitFor(() => view.text().includes("Session Detail"));
 
     bridge.emit("logs:stream", {
-      sessionId: "session-active-1",
+      logType: "agent",
+      query: "task-1",
+      filePath: "/tmp/ws-1/agent.log",
       timestamp: "2026-03-23T00:00:31.000Z",
-      stream: "stdout",
       line: "Steer message accepted by running session",
+      raw: "Steer message accepted by running session",
+      level: "info",
     });
 
     await waitFor(() => view.text().includes("Steer message accepted by running session"));
@@ -327,12 +330,3 @@ describe("tui screen rendering", () => {
     await view.unmount();
   });
 });
-
-
-<<<<<<< HEAD
-||||||| bb6eaeec
-=======
-
-
-
->>>>>>> origin/main
