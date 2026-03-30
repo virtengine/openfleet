@@ -17,6 +17,16 @@
  *     "defaults": {
  *       "builtinTools": [...],          // default tool list for all agents
  *       "updatedAt": "..."
+ *     },
+ *     "toolOverhead": {
+ *       "<agentId>": {
+ *         "total": 12345,               // total serialized chars across tool defs
+ *         "bySource": {
+ *           "builtin": 3456,
+ *           "github": 8889
+ *         },
+ *         "updatedAt": "2026-01-01T00:00:00.000Z"
+ *       }
  *     }
  *   }
  *
@@ -259,7 +269,7 @@ export function loadToolConfig(rootDir) {
 /**
  * Save the full tool configuration.
  * @param {string} rootDir
- * @param {{ agents: Object, defaults: Object }} config
+ * @param {{ agents: Object, defaults: Object, toolOverhead?: Object }} config
  */
 export function saveToolConfig(rootDir, config) {
   const configPath = getConfigPath(rootDir);

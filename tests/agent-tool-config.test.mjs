@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import {
   DEFAULT_BUILTIN_TOOLS,
   getToolOverheadReport,
   measureToolDefinitionChars,
+  refreshToolOverheadReport,
   saveToolConfig,
 } from "../agent/agent-tool-config.mjs";
 
@@ -59,6 +60,40 @@ describe("agent tool overhead", () => {
       expect(getToolOverheadReport(bosunDir, "primary")).toEqual({
         total: 23456,
         bySource: { builtin: 3456, "huge-server": 20000 },
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes and persists builtin overhead without nesting .bosun twice", async () => {
+    const rootDir = mkdtempSync(resolve(tmpdir(), "bosun-agent-tools-refresh-"));
+    const bosunDir = resolve(rootDir, ".bosun");
+
+    try {
+      saveToolConfig(bosunDir, {
+        agents: {
+          primary: {
+            enabledMcpServers: [],
+            updatedAt: "2026-03-25T00:00:00.000Z",
+          },
+        },
+        defaults: {
+          builtinTools: ["search-files"],
+          updatedAt: "2026-03-25T00:00:00.000Z",
+        },
+        toolOverhead: {},
+      });
+
+      const refreshed = await refreshToolOverheadReport(bosunDir, "primary");
+
+      expect(existsSync(resolve(bosunDir, "agent-tools.json"))).toBe(true);
+      expect(existsSync(resolve(bosunDir, ".bosun", "agent-tools.json"))).toBe(false);
+      expect(refreshed.total).toBeGreaterThan(0);
+      expect(refreshed.bySource).toEqual({ builtin: refreshed.total });
+      expect(getToolOverheadReport(bosunDir, "primary")).toEqual({
+        total: refreshed.total,
+        bySource: { builtin: refreshed.total },
       });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
