@@ -391,8 +391,6 @@ function WorkspaceViewer({ agent, onClose }) {
   const [expandedEventItems, setExpandedEventItems] = useState(() => new Set());
   const [expandedFileItems, setExpandedFileItems] = useState(() => new Set());
   const [expandedModelResponse, setExpandedModelResponse] = useState(false);
-  const [runHistory, setRunHistory] = useState([]);
-  const [runDetail, setRunDetail] = useState(null);
   const logRef = useRef(null);
 
   const query = buildSessionLogQuery([
@@ -446,11 +444,9 @@ function WorkspaceViewer({ agent, onClose }) {
 
     fetchLogs();
     fetchContext();
-    fetchRunHistory();
     const interval = setInterval(() => {
       fetchLogs();
       fetchContext();
-    fetchRunHistory();
     }, 5000);
     return () => { active = false; clearInterval(interval); };
   }, [query]);
