@@ -220,8 +220,6 @@ describe("tui screen rendering", () => {
     bridge.emit("logs:stream", {
       logType: "stdout",
       raw: "Steer message accepted by running session",
-      logType: "stdout",
-      raw: "Steer message accepted by running session",
       line: "Steer message accepted by running session",
       level: "info",
       timestamp: "2026-03-23T00:00:31.000Z",
@@ -293,6 +291,10 @@ describe("tui screen rendering", () => {
 
     await view.press("?");
     await view.press(" ", 40);
+    await waitFor(() => view.text().includes("? Help"));
+
+    await view.unmount();
+  });
 
   it("updates footer hints when task form focus changes", async () => {
     const bridge = createMockBridge();
