@@ -19,7 +19,7 @@ export const wsReconnectIn = signal(null);
 export const wsReconnectCount = signal(0);
 /** Reactive signal: WebSocket badge status for portal header */
 export const wsStatus = signal("offline");
-/** Reactive signal: timestamp of the last successful reconnect */
+/** Reactive signal: timestamp of the last successful (re)connect */
 export const wsLastReconnectAt = signal(null);
 /** Reactive signal: count of in-flight apiFetch calls (drives top loading bar) */
 export const loadingCount = signal(0);

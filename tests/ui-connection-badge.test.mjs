@@ -8,11 +8,21 @@ describe("portal websocket connection badge", () => {
 
     expect(apiSource).toContain("wsStatus = signal");
     expect(apiSource).toContain("wsLastReconnectAt = signal");
-    expect(apiSource).toContain("'connected'");
-    expect(apiSource).toContain("'reconnecting'");
-    expect(apiSource).toContain("'offline'");
+    expect(apiSource).toContain('"connected"');
+    expect(apiSource).toContain('"reconnecting"');
+    expect(apiSource).toContain('"offline"');
     expect(apiSource).toContain('wsLastReconnectAt.value = Date.now()');
-    expect(apiSource).not.toContain('wsStatus.value = "reconnecting";\n    wsLastReconnectAt.value = Date.now()');
+  });
+
+  it("site/ui/modules/api.js exports wsStatus and wsLastReconnectAt badge signals", () => {
+    const siteApiSource = readFileSync(resolve(process.cwd(), "site/ui/modules/api.js"), "utf8");
+
+    expect(siteApiSource).toContain("export const wsStatus");
+    expect(siteApiSource).toContain("export const wsLastReconnectAt");
+    expect(siteApiSource).toContain('"connected"');
+    expect(siteApiSource).toContain('"reconnecting"');
+    expect(siteApiSource).toContain('"offline"');
+    expect(siteApiSource).toContain('wsLastReconnectAt.value = Date.now()');
   });
 
   it("renders a connection badge in the portal header before settings", () => {

@@ -51,6 +51,12 @@
   100% { transform: scale(1); opacity: 1; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .connection-badge-pulse {
+    animation: none;
+  }
+}
+
 /* @import directives moved to <link> tags in index.html for parallel loading */
 
 .floating-call-restore {
