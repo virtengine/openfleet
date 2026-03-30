@@ -4709,6 +4709,47 @@ describe("ui-server mini app", () => {
     }
   }, process.platform === "win32" ? 30000 : 15000);
 
+  it("includes split token counts in session list payloads", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const tracker = getSessionTracker();
+    tracker.createSession({
+      id: "tokens-visible-session",
+      type: "primary",
+      metadata: { title: "Tokens Visible Session" },
+    });
+    tracker.appendEvent("tokens-visible-session", {
+      role: "assistant",
+      content: "Done",
+      meta: {
+        tokenUsage: {
+          totalTokens: 2000,
+          inputTokens: 1200,
+          outputTokens: 800,
+        },
+      },
+    });
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
+    const listJson = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    const session = listJson.sessions.find((entry) => entry.id === "tokens-visible-session");
+    expect(session).toBeTruthy();
+    expect(session.totalTokens).toBe(2000);
+    expect(session.inputTokens).toBe(1200);
+    expect(session.outputTokens).toBe(800);
+  });
+
   it("sources agent-run analytics from completed session history when session-start events are stale", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-usage-"));
     const previousRepoRoot = process.env.REPO_ROOT;
@@ -4805,6 +4846,10 @@ describe("ui-server mini app", () => {
       expect(payload.data?.diagnostics?.agentRunSource).toBe("completed_sessions");
       expect(payload.data?.diagnostics?.completedSessions).toBe(2);
       expect(payload.data?.diagnostics?.sessionStarts).toBe(0);
+      expect(payload.data?.totalInputTokens).toBe(1700);
+      expect(payload.data?.totalOutputTokens).toBe(1000);
+      expect(payload.data?.trend?.inputTokens).toEqual([1700]);
+      expect(payload.data?.trend?.outputTokens).toEqual([1000]);
       expect(payload.data?.topAgents).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ name: "codex", count: 1 }),

@@ -36,6 +36,7 @@ import {
   workspaces as managedWorkspaces,
 } from "../components/workspace-switcher.js";
 import { ICONS } from "../modules/icons.js";
+import { formatCompactCount } from "../modules/session-insights.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 import { resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import {
@@ -334,6 +335,44 @@ function getFleetEntrySearchBlob(entry) {
   ]
     .map((part) => String(part || "").toLowerCase())
     .join(" ");
+}
+
+function getFleetEntryTokenUsage(entry) {
+  const session = entry?.session || null;
+  const tokenUsage = session?.insights?.tokenUsage || null;
+  const totalTokens = Number(session?.totalTokens ?? tokenUsage?.totalTokens ?? 0);
+  const inputTokens = Number(session?.inputTokens ?? tokenUsage?.inputTokens ?? 0);
+  const outputTokens = Number(session?.outputTokens ?? tokenUsage?.outputTokens ?? 0);
+  return {
+    totalTokens: Number.isFinite(totalTokens) ? totalTokens : 0,
+    inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
+    outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
+  };
+}
+
+function buildFleetEntryTokenTooltip(entry) {
+  const usage = getFleetEntryTokenUsage(entry);
+  const total = usage.totalTokens || (usage.inputTokens + usage.outputTokens);
+  if (total <= 0) return "No token usage yet";
+  const ratio = usage.outputTokens > 0
+    ? `${(usage.inputTokens / Math.max(usage.outputTokens, 1)).toFixed(2)}:1 in/out`
+    : "output pending";
+  return `Input ${usage.inputTokens.toLocaleString()} · Output ${usage.outputTokens.toLocaleString()} · Total ${total.toLocaleString()} · ${ratio}`;
+}
+
+function renderFleetEntryTokenSplit(entry) {
+  const usage = getFleetEntryTokenUsage(entry);
+  const total = usage.totalTokens || (usage.inputTokens + usage.outputTokens);
+  if (total <= 0) return null;
+  return html`
+    <${Tooltip} title=${buildFleetEntryTokenTooltip(entry)} arrow>
+      <span class="fleet-slot-token-split" aria-label=${`Input ${usage.inputTokens} Output ${usage.outputTokens}`}>
+        <span class="fleet-slot-token-segment"><strong>In</strong> ${formatCompactCount(usage.inputTokens)}</span>
+        <span class="fleet-slot-token-divider">/</span>
+        <span class="fleet-slot-token-segment"><strong>Out</strong> ${formatCompactCount(usage.outputTokens)}</span>
+      </span>
+    <//>
+  `;
 }
 
 function getFleetEntryRelativeTime(entry) {
@@ -1924,6 +1963,7 @@ export function AgentsTab() {
                         ${`Turns ${Number(s.turnCount || 0)}`}
                         ${Number(s.elapsedMs || 0) > 0 ? ` · ${formatMsDuration(s.elapsedMs || 0)}` : ""}
                       </div>
+                      ${renderFleetEntryTokenSplit({ session: s })}
                     </div>
                     <${Badge} status=${s.status || "idle"} text=${s.status || "idle"} />
                   </div>
@@ -2791,6 +2831,3 @@ export function FleetSessionsTab() {
     `}
   `;
 }
-
-
-

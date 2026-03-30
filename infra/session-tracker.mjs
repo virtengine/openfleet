@@ -691,6 +691,15 @@ export class SessionTracker {
   }
 
   /**
+   * Backward-compatible alias for older callers/tests.
+   * @param {string} taskId
+   * @param {Object|string} event
+   */
+  appendEvent(taskId, event) {
+    return this.recordEvent(taskId, event);
+  }
+
+  /**
    * Mark a session as completed.
    * @param {string} taskId
    * @param {string} [status="completed"]
@@ -1012,6 +1021,9 @@ export class SessionTracker {
         recommendation: progress?.recommendation || "none",
         preview: this.#lastMessagePreview(s),
         lastMessage: this.#lastMessagePreview(s),
+        totalTokens: Number(tokenUsage?.totalTokens || 0),
+        inputTokens: Number(tokenUsage?.inputTokens || 0),
+        outputTokens: Number(tokenUsage?.outputTokens || 0),
         insights: s.insights || null,
       });
     };
@@ -2235,6 +2247,15 @@ export async function createSession(opts) {
 }
 
 /**
+ * Append an event/message to an existing session.
+ * @param {string} sessionId
+ * @param {Object|string} event
+ */
+export function appendEvent(sessionId, event) {
+  return getSessionTracker().appendEvent(sessionId, event);
+}
+
+/**
  * Update session status.
  * @param {string} sessionId
  * @param {string} status
@@ -2302,5 +2323,3 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
-
-
