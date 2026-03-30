@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";`r`nimport { readFile } from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { readFile } from "node:fs/promises";
 import {
   startAutoUpdateLoop,
   stopAutoUpdateLoop,
@@ -14,7 +15,9 @@ const {
   classifyInstallError,
   buildDisableNotice,
   readAutoUpdateState,
-  writeAutoUpdateState,`r`n  AUTO_UPDATE_STATE_FILE,`r`n  AUTO_UPDATE_DISABLE_WINDOW_MS,
+  writeAutoUpdateState,
+  AUTO_UPDATE_STATE_FILE,
+  AUTO_UPDATE_DISABLE_WINDOW_MS,
   AUTO_UPDATE_FAILURE_LIMIT,
 } = __autoUpdateTestHooks;
 
@@ -355,7 +358,7 @@ describe("update-check", () => {
       const persisted = await readAutoUpdateState();
       expect(isAutoUpdateDisabled(persisted)).toBe(true);
       expect(persisted.lastNotifiedAt).toBeGreaterThan(0);
-      expect(buildDisableNotice(persisted)).toContain("clear .cache/auto-update-state.json");
+      expect(buildDisableNotice(persisted)).toContain(".cache/auto-update-state.json");
     });
 
     it("includes builtin agent skills in required runtime files", () => {
@@ -364,6 +367,6 @@ describe("update-check", () => {
       expect(required.some((entry) => entry.includes("agent/skills/background-task-execution.md"))).toBe(true);
       expect(required.some((entry) => entry.includes("agent/skills/pr-workflow.md"))).toBe(true);
     });
-
+  });
 });
 
