@@ -13436,6 +13436,25 @@ async function readReplayableAgentRun(attemptId) {
   const first = events[0] || null;
   const last = events[events.length - 1] || null;
   const overview = buildReplayOverview(events);
+  const turns = [];
+  let turnIndex = 0;
+  for (const event of events) {
+    if (event?.type !== "usage") continue;
+    turnIndex += 1;
+    const usage = event?.data?.usage && typeof event.data.usage === "object" ? event.data.usage : {};
+    const tokenCount = Number(usage.total_tokens ?? usage.totalTokens ?? event?.data?.tokenCount ?? 0) || 0;
+    const inputTokens = Number(usage.input_tokens ?? usage.inputTokens ?? 0) || 0;
+    const outputTokens = Number(usage.output_tokens ?? usage.outputTokens ?? 0) || 0;
+    const durationMs = Number(event?.data?.duration_ms ?? event?.data?.durationMs ?? 0) || 0;
+    turns.push({
+      index: turnIndex,
+      timestamp: event.timestamp || null,
+      tokenCount,
+      inputTokens,
+      outputTokens,
+      durationMs,
+    });
+  }
   return {
     attemptId: normalizedAttemptId,
     taskId: first?.taskId || last?.taskId || null,
@@ -13448,6 +13467,7 @@ async function readReplayableAgentRun(attemptId) {
       : "in_progress",
     shortSteps: overview.shortSteps,
     totals: overview.totals,
+    turns,
     events,
   };
 }

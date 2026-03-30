@@ -474,6 +474,7 @@ function WorkspaceViewer({ agent, onClose }) {
         .catch(() => { if (active) setLogText("(failed to load logs)"); });
     };
 
+
     const fetchContext = () => {
       apiFetch(`/api/agent-context?query=${encodeURIComponent(query)}`, { _silent: true })
         .then((res) => { if (active) setContextData(res.data ?? res ?? null); })
@@ -1713,12 +1714,12 @@ export function AgentsTab() {
             <div class="fleet-capacity">
               <div class="fleet-label">Capacity</div>
               <div class="fleet-capacity-value">
-                ${activeSlots}
+                <span class="numeral">${activeSlots}</span>
                 <span class="fleet-capacity-divider">/</span>
-                ${maxParallel}
+                <span class="numeral">${maxParallel}</span>
               </div>
               <div class="fleet-subtext">
-                ${capacityPct}% used · ${freeSlots} free
+                <span class="numeral">${capacityPct}%</span> used · <span class="numeral">${freeSlots}</span> free
               </div>
               <div class="fleet-capacity-bar">
                 <${ProgressBar} percent=${capacityPct} />
@@ -1731,7 +1732,7 @@ export function AgentsTab() {
               (metric) => html`
                 <div class="fleet-metric" key=${metric.label}>
                   <div class="fleet-metric-label">${metric.label}</div>
-                  <div class="fleet-metric-value">${metric.value}</div>
+                  <div class="fleet-metric-value numeral">${metric.value}</div>
                 </div>
               `,
             )}
@@ -1793,13 +1794,13 @@ export function AgentsTab() {
         <${Card} className="fleet-active-card">
           <${Collapsible}
             title=${activeSlots > 0
-              ? `Active Slots · ${activeSlots} active`
+              ? html`Active Slots · <span class="numeral">${activeSlots}</span> active`
               : "Active Slots"}
             defaultOpen=${!isCompact}
           >
             <div class="meta-text mb-sm">
               ${activeSlots > 0
-                ? `${activeSlots} active · ${freeSlots} free`
+                ? html`<span class="numeral">${activeSlots}</span> active · <span class="numeral">${freeSlots}</span> free`
                 : "No active slots"}
             </div>
             <${TextField}
@@ -1839,9 +1840,9 @@ export function AgentsTab() {
                         />
                       </div>
                       <div class="flex-between">
-                        <div class="meta-text">Attempt ${slot.attempt || 1}</div>
+                        <div class="meta-text">Attempt <span class="numeral">${slot.attempt || 1}</span></div>
                         ${slot.startedAt && html`
-                          <div class="agent-duration">${formatDuration(slot.startedAt)}</div>
+                          <div class="agent-duration numeral">${formatDuration(slot.startedAt)}</div>
                         `}
                       </div>
 
@@ -1865,7 +1866,7 @@ export function AgentsTab() {
                         </div>`}
                         ${slot.completedCount != null &&
                         html`<div class="meta-text">
-                          Completed: ${slot.completedCount} tasks
+                          Completed: <span class="numeral">${slot.completedCount}</span> tasks
                         </div>`}
                         ${slot.avgDurationMs &&
                         html`<div class="meta-text">
@@ -1949,6 +1950,7 @@ export function AgentsTab() {
                   }}
                 >
                   <div class="task-card-header">
+                    <div class="session-turn-chip">Turns ${s.turnCount || 0}</div>
                     <div>
                       <div class="task-card-title">
                         <${StatusDot} status=${s.status || "idle"} />
@@ -1958,6 +1960,7 @@ export function AgentsTab() {
                         ${s.id || "?"}
                         ${s.taskId ? ` · ${s.taskId}` : ""}
                         ${s.branch ? ` · ${s.branch}` : ""}
+                        · Turns ${s.turnCount || 0}
                       </div>
                       <div class="task-card-meta">
                         ${`Turns ${Number(s.turnCount || 0)}`}
@@ -2041,6 +2044,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
     setError(null);
     setCtx(null);
     fetchContext();
+
     intervalRef.current = setInterval(fetchContext, 10000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [fetchContext]);
@@ -2082,7 +2086,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
   };
 
   const copyContext = () => {
-    if (!ctx?.context) return;
+
     const c = ctx.context;
     const ab = parseAheadBehind(c.gitAheadBehind);
     const commits = parseCommits(c.gitLogDetailed);
