@@ -352,6 +352,9 @@ import {
   wsLatency,
   wsReconnectIn,
   wsConnected,
+  wsReconnectCount,
+  wsStatus,
+  wsLastReconnectAt,
   loadingCount,
 } from "./modules/api.js";
 import {
@@ -814,6 +817,39 @@ function inferUiConnected() {
 /* ═══════════════════════════════════════════════
  *  Header
  * ═══════════════════════════════════════════════ */
+function ConnectionBadge() {
+  const status = wsStatus.value;
+  const reconnectCount = wsReconnectCount.value;
+  const lastReconnectAt = wsLastReconnectAt.value;
+
+  let label = "Offline";
+  let badgeClass = "offline";
+  if (status === "connected") {
+    label = "Connected";
+    badgeClass = "connected";
+  } else if (status === "reconnecting") {
+    label = reconnectCount > 0 ? `Reconnecting... ${reconnectCount}` : "Reconnecting...";
+    badgeClass = "reconnecting";
+  }
+
+  const lastReconnectLabel =
+    lastReconnectAt != null
+      ? new Date(lastReconnectAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })
+      : "never";
+  const tooltip = `Connection status: ${label}; last reconnect ${lastReconnectLabel}`;
+
+  return html`
+    <div
+      class=${`connection-badge ${badgeClass}`}
+      title=${tooltip}
+      aria-label=${tooltip}
+    >
+      <span class=${`connection-badge-dot ${badgeClass} ${status === "reconnecting" ? "connection-badge-pulse" : ""}`}></span>
+      <span class="connection-badge-label">${label}</span>
+    </div>
+  `;
+}
+
 function Header() {
   const isConn = inferUiConnected();
   const user = getTelegramUser();
@@ -858,6 +894,7 @@ function Header() {
         </${Box}>
         <${Box} sx=${{flexGrow: 1}} />
         <${Stack} direction="row" spacing=${1} alignItems="center">
+          <${ConnectionBadge} />
           <${Chip}
             size="small"
             label=${connLabel}
