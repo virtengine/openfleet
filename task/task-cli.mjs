@@ -1728,13 +1728,14 @@ async function cliCreateBatch(args) {
     process.exit(1);
   }
 
-  if (!existsSync(resolve(payloadFile))) {
+  const resolvedPayloadFile = resolve(payloadFile);
+  if (!existsSync(resolvedPayloadFile)) {
     console.error(`  Error: file not found: ${payloadFile}`);
     process.exit(1);
   }
 
   try {
-    const result = await taskImport(payloadFile);
+    const result = await taskImport(resolvedPayloadFile);
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     console.error(`  Error: ${err.message}`);
