@@ -502,8 +502,10 @@ export const BACKEND_AGENT_TEMPLATE = (() => {
   // ── Embed sub-workflows ────────────────────────────────────────────────
   const mainValidation = embedSubWorkflow(VALIDATION_GATE_SUB, "main-");
   const retryValidation = embedSubWorkflow(VALIDATION_GATE_SUB, "retry-");
+  const retry2Validation = embedSubWorkflow(VALIDATION_GATE_SUB, "retry2-");
   const mainPrHandoff = embedSubWorkflow(PR_CHECK_HANDOFF_SUB, "main-");
   const retryPrHandoff = embedSubWorkflow(PR_CHECK_HANDOFF_SUB, "retry-");
+  const retry2PrHandoff = embedSubWorkflow(PR_CHECK_HANDOFF_SUB, "retry2-");
 
   return {
     id: "template-backend-agent",
@@ -525,6 +527,7 @@ export const BACKEND_AGENT_TEMPLATE = (() => {
       protectedBranches: ["main", "master", "develop", "production"],
       agentSdk: "auto",
       timeoutMs: 3600000,
+      testTimeoutMs: 1800000,
       autoFixTimeoutMs: 1200000,
     },
     nodes: [
@@ -550,7 +553,8 @@ Write comprehensive tests FIRST before any implementation:
 3. Edge cases and error scenarios
 
 Use the project's test command: {{testCommand}}
-Commit with message "test: add tests for [feature]"`,
+Create a descriptive test commit message that names the behavior or surface covered.
+Example: "test: cover portal login validation"`,
         sdk: "{{agentSdk}}",
         timeoutMs: "{{timeoutMs}}",
       }, { x: 400, y: 330 }),
@@ -565,7 +569,8 @@ The tests have been written. Now implement the feature to make them pass:
 4. Do NOT modify the tests — make the code fit the contract
 
 Run \`{{testCommand}}\` after implementation.
-Commit with message "feat: implement [feature]"`,
+Create a descriptive feat/fix commit message that names the shipped capability.
+Example: "feat: add portal login rate limiting"`,
         sdk: "{{agentSdk}}",
         timeoutMs: "{{timeoutMs}}",
       }, { x: 400, y: 490 }),
@@ -583,9 +588,16 @@ Commit with message "feat: implement [feature]"`,
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         rebaseBeforePush: true,
+        mergeBaseBeforePush: true,
+        autoResolveMergeConflicts: true,
+        conflictResolverSdk: "{{agentSdk}}",
         emptyDiffGuard: true,
         protectedBranches: "{{protectedBranches}}",
       }, { x: 250, y: 1110 }),
+
+      node("push-ok", "condition.expression", "Push OK?", {
+        expression: "$ctx.getNodeOutput('push-branch')?.pushed === true",
+      }, { x: 250, y: 1170, outputs: ["yes", "no"] }),
 
       node("create-pr", "action.create_pr", "Handoff PR Lifecycle", {
         title: "feat: {{taskTitle}}",
@@ -634,7 +646,8 @@ Do NOT weaken, remove, or bypass tests.
 Keep the original task scope.
 
 Run build + tests + lint locally before finishing.
-Commit with message "fix: address validation failures"`,
+Create a descriptive fix commit message that names the concrete failure resolved.
+Example: "fix: handle empty workflow assignee validation"`,
         sdk: "{{agentSdk}}",
         timeoutMs: "{{autoFixTimeoutMs}}",
       }, { x: 620, y: 1170 }),
@@ -652,9 +665,16 @@ Commit with message "fix: address validation failures"`,
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         rebaseBeforePush: true,
+        mergeBaseBeforePush: true,
+        autoResolveMergeConflicts: true,
+        conflictResolverSdk: "{{agentSdk}}",
         emptyDiffGuard: true,
         protectedBranches: "{{protectedBranches}}",
       }, { x: 450, y: 1760 }),
+
+      node("push-ok-retry", "condition.expression", "Push OK? (Retry)", {
+        expression: "$ctx.getNodeOutput('push-branch-retry')?.pushed === true",
+      }, { x: 450, y: 1820, outputs: ["yes", "no"] }),
 
       node("create-pr-retry", "action.create_pr", "Handoff PR Lifecycle (After Retry)", {
         title: "feat: {{taskTitle}}",
@@ -675,13 +695,101 @@ Commit with message "fix: address validation failures"`,
         level: "info",
       }, { x: 360, y: 1980 }),
 
-      node("notify-fail", "notify.telegram", "Checks Failed", {
-        message: ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
+      // ── Retry-2 path (2nd remediation: escalated context) ─────────────
+      node("set-retry2-summary", "action.set_variable", "Summarize Retry-1 Output", {
+        key: "retry2Summary",
+        value:
+          "(() => { const build1 = $ctx.getNodeOutput('main-build') || {}; const test1 = $ctx.getNodeOutput('main-test') || {}; const lint1 = $ctx.getNodeOutput('main-lint') || {}; const build2 = $ctx.getNodeOutput('retry-build') || {}; const test2 = $ctx.getNodeOutput('retry-test') || {}; const lint2 = $ctx.getNodeOutput('retry-lint') || {}; return ['=== ORIGINAL validation (failed) ===', '- build.passed: ' + (build1.passed === true), '- test.passed: ' + (test1.passed === true), '- lint.passed: ' + (lint1.passed === true), '', 'Build output:', String(build1.output || '').slice(0, 4000), 'Test output:', String(test1.output || '').slice(0, 4000), 'Lint output:', String(lint1.output || '').slice(0, 4000), '', '=== RETRY-1 validation (also failed) ===', '- build.passed: ' + (build2.passed === true), '- test.passed: ' + (test2.passed === true), '- lint.passed: ' + (lint2.passed === true), '', 'Build output:', String(build2.output || '').slice(0, 4000), 'Test output:', String(test2.output || '').slice(0, 4000), 'Lint output:', String(lint2.output || '').slice(0, 4000)].join('\\n'); })()",
+        isExpression: true,
       }, { x: 820, y: 1820 }),
+
+      node("auto-fix-2", "action.run_agent", "Auto-Fix (Escalated, Pass 2)", {
+        prompt: `# Fix Validation Failures — FINAL AUTOMATED ATTEMPT
+
+This is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.
+The first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.
+
+Plan:
+{{plan}}
+
+FULL history of both failed validation passes:
+{{retry2Summary}}
+
+CRITICAL RULES:
+- Study the SPECIFIC errors above — do NOT repeat the same fix that already failed.
+- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.
+- If the build/lint/test commands themselves are misconfigured, fix the config.
+- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.
+- Keep the original task scope — do not revert the feature.
+
+Run build + tests + lint locally and confirm ALL pass before finishing.
+Create a descriptive commit: "fix: <concrete failure resolved>"`,
+        sdk: "{{agentSdk}}",
+        timeoutMs: "{{autoFixTimeoutMs}}",
+      }, { x: 820, y: 1900 }),
+
+      // ── Retry-2 Validation Gate via sub-workflow ───────────────────────
+      ...retry2Validation.nodes,
+
+      node("retry2-passed", "condition.expression", "Retry-2 Checks Passed?", {
+        expression: `$ctx.getNodeOutput('retry2-build')?.passed === true && $ctx.getNodeOutput('retry2-test')?.passed === true && $ctx.getNodeOutput('retry2-lint')?.passed === true`,
+      }, { x: 820, y: 2400, outputs: ["yes", "no"] }),
+
+      // ── Retry-2 Push + PR path ─────────────────────────────────────────
+      node("push-branch-retry2", "action.push_branch", "Push Branch (Retry 2)", {
+        worktreePath: "{{worktreePath}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        rebaseBeforePush: true,
+        mergeBaseBeforePush: true,
+        autoResolveMergeConflicts: true,
+        conflictResolverSdk: "{{agentSdk}}",
+        emptyDiffGuard: true,
+        protectedBranches: "{{protectedBranches}}",
+      }, { x: 650, y: 2470 }),
+
+      node("push-ok-retry2", "condition.expression", "Push OK? (Retry 2)", {
+        expression: "$ctx.getNodeOutput('push-branch-retry2')?.pushed === true",
+      }, { x: 650, y: 2530, outputs: ["yes", "no"] }),
+
+      node("create-pr-retry2", "action.create_pr", "Handoff PR Lifecycle (After Retry 2)", {
+        title: "feat: {{taskTitle}}",
+        body: "Implements backend task after two auto-fix passes.\n\n**Plan:**\n{{plan}}\n\nValidation passed after 2nd remediation. Bosun lifecycle handoff ready.",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        failOnError: true,
+        maxRetries: 3,
+        retryDelayMs: 15000,
+        continueOnError: true,
+      }, { x: 650, y: 2530 }),
+
+      // ── Retry-2 PR handoff via sub-workflow ────────────────────────────
+      ...retry2PrHandoff.nodes,
+
+      node("notify-done-retry2", "notify.log", "Task Complete (After Retry 2)", {
+        message: "Task completion agent finished task after 2nd retry — PR lifecycle handoff recorded",
+        level: "info",
+      }, { x: 560, y: 2690 }),
+
+      // ── Final failure: block task to stop re-dispatch loop ─────────────
+      node("set-blocked-validation", "action.update_task_status", "Block Task (Validation Exhausted)", {
+        taskId: "{{taskId}}",
+        status: "blocked",
+        taskTitle: "{{taskTitle}}",
+        blockedReason: "Validation failed after 2 automated remediation passes",
+      }, { x: 1020, y: 2470 }),
+
+      node("notify-fail", "notify.telegram", "Checks Failed (Exhausted)", {
+        message: ":alert: Backend agent: validation failed for task {{taskTitle}} even after 2 remediation passes. Task blocked — manual review needed.",
+      }, { x: 1020, y: 2560 }),
 
       node("notify-pr-failed-retry", "notify.telegram", "Escalate Lifecycle Failure (Retry Path)", {
         message: ":alert: Task completion agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
       }, { x: 620, y: 1980 }),
+
+      node("notify-pr-failed-retry2", "notify.telegram", "Escalate Lifecycle Failure (Retry 2)", {
+        message: ":alert: Task completion agent 2nd remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed. Manual follow-up required.",
+      }, { x: 820, y: 2690 }),
     ],
     edges: [
       edge("trigger", "plan-work"),
@@ -696,7 +804,9 @@ Commit with message "fix: address validation failures"`,
       // Main pass → push → PR → handoff
       edge("all-passed", "push-branch", { condition: "$output?.result === true", port: "yes" }),
       edge("all-passed", "set-validation-summary", { condition: "$output?.result !== true", port: "no" }),
-      edge("push-branch", "create-pr"),
+      edge("push-branch", "push-ok"),
+      edge("push-ok", "create-pr", { condition: "$output?.result === true", port: "yes" }),
+      edge("push-ok", "notify-pr-failed", { condition: "$output?.result !== true", port: "no" }),
       wire("create-pr", mainPrHandoff.entryNodeId),
       ...mainPrHandoff.edges,
       wire(mainPrHandoff.exitNodeId, "notify-done"),
@@ -709,19 +819,38 @@ Commit with message "fix: address validation failures"`,
       wire(retryValidation.exitNodeId, "retry-passed"),
 
       edge("retry-passed", "push-branch-retry", { condition: "$output?.result === true", port: "yes" }),
-      edge("retry-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
-      edge("push-branch-retry", "create-pr-retry"),
+      edge("retry-passed", "set-retry2-summary", { condition: "$output?.result !== true", port: "no" }),
+      edge("push-branch-retry", "push-ok-retry"),
+      edge("push-ok-retry", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
+      edge("push-ok-retry", "notify-pr-failed-retry", { condition: "$output?.result !== true", port: "no" }),
       wire("create-pr-retry", retryPrHandoff.entryNodeId),
       ...retryPrHandoff.edges,
       wire(retryPrHandoff.exitNodeId, "notify-done-retry"),
       edge(retryPrHandoff.entryNodeId, "notify-pr-failed-retry", { condition: "$output?.result !== true", port: "no" }),
+
+      // Retry-2 path: escalated auto-fix → retry2 validation → push → PR → handoff
+      edge("set-retry2-summary", "auto-fix-2"),
+      wire("auto-fix-2", retry2Validation.entryNodeId),
+      ...retry2Validation.edges,
+      wire(retry2Validation.exitNodeId, "retry2-passed"),
+
+      edge("retry2-passed", "push-branch-retry2", { condition: "$output?.result === true", port: "yes" }),
+      edge("retry2-passed", "set-blocked-validation", { condition: "$output?.result !== true", port: "no" }),
+      edge("set-blocked-validation", "notify-fail"),
+      edge("push-branch-retry2", "push-ok-retry2"),
+      edge("push-ok-retry2", "create-pr-retry2", { condition: "$output?.result === true", port: "yes" }),
+      edge("push-ok-retry2", "notify-pr-failed-retry2", { condition: "$output?.result !== true", port: "no" }),
+      wire("create-pr-retry2", retry2PrHandoff.entryNodeId),
+      ...retry2PrHandoff.edges,
+      wire(retry2PrHandoff.exitNodeId, "notify-done-retry2"),
+      edge(retry2PrHandoff.entryNodeId, "notify-pr-failed-retry2", { condition: "$output?.result !== true", port: "no" }),
     ],
     metadata: {
       author: "bosun",
-      version: 2,
+      version: 3,
       createdAt: "2025-02-25T00:00:00Z",
-      templateVersion: "2.0.0",
-      tags: ["agent", "task-completion", "test-first", "tdd", "multi-language"],
+      templateVersion: "3.0.0",
+      tags: ["agent", "task-completion", "test-first", "tdd", "multi-language", "multi-remediation"],
       replaces: {
         module: "primary-agent.mjs",
         functions: ["runAgentWithTask"],

@@ -24,6 +24,44 @@ const DEFAULT_REVIEW_TIMEOUT_MS = 5 * 60 * 1000;
 /** Default max concurrent reviews. */
 const DEFAULT_MAX_CONCURRENT = 2;
 
+function normalizeReviewDedupFragment(value) {
+  return String(value || "")
+    .trim()
+    .replaceAll(/\s+/g, " ")
+    .slice(0, 240);
+}
+
+function buildReviewNotificationDedupKey(taskId, result) {
+  const issues = Array.isArray(result?.issues) ? result.issues : [];
+  const issueFingerprint = issues
+    .map((issue) => ({
+      severity: normalizeReviewDedupFragment(issue?.severity),
+      category: normalizeReviewDedupFragment(issue?.category),
+      file: normalizeReviewDedupFragment(issue?.file),
+      line: Number.isFinite(Number(issue?.line)) ? Number(issue.line) : "",
+    }))
+    .sort((left, right) =>
+      `${left.file}:${left.line}:${left.category}:${left.severity}`.localeCompare(
+        `${right.file}:${right.line}:${right.category}:${right.severity}`,
+      ),
+    )
+    .map((issue) =>
+      [
+        issue.severity,
+        issue.category,
+        issue.file,
+        issue.line,
+      ].join(":"),
+    )
+    .join("|");
+  return [
+    "review",
+    normalizeReviewDedupFragment(taskId),
+    result?.approved ? "approved" : "changes_requested",
+    issueFingerprint,
+  ].join("|");
+}
+
 // ---------------------------------------------------------------------------
 // Review Prompt
 // ---------------------------------------------------------------------------
@@ -626,7 +664,10 @@ export class ReviewAgent {
         .join("\n");
 
       try {
-        this.#sendTelegram(message);
+        this.#sendTelegram(message, {
+          dedupKey: buildReviewNotificationDedupKey(taskId, result),
+          exactDedup: true,
+        });
       } catch {
         /* best effort */
       }

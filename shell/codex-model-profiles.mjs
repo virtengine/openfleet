@@ -275,6 +275,12 @@ function inferGlobalProvider(env, configDefaults = null) {
     }
     return "openai";
   }
+  if (hasEnvValue(env, "AZURE_OPENAI_API_KEY")) {
+    return "azure";
+  }
+  if (hasEnvValue(env, "OPENAI_API_KEY")) {
+    return "openai";
+  }
   const configured = selectConfigProviderForRuntime(configDefaults, env);
   return configured?.provider || "openai";
 }

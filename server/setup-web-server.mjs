@@ -17,7 +17,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
+import { execSync as nodeExecSync } from "node:child_process";
 import { homedir } from "node:os";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { scaffoldSkills } from "../agent/bosun-skills.mjs";
@@ -32,6 +32,13 @@ import {
 import { discoverTelegramChats } from "../telegram/get-telegram-chat-id.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function execSync(command, options = {}) {
+  return nodeExecSync(command, {
+    ...options,
+    windowsHide: options.windowsHide ?? (process.platform === "win32"),
+  });
+}
 
 function trimTrailingSlashes(value) {
   let out = String(value || "");

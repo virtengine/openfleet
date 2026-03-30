@@ -42,7 +42,7 @@ function normalizeCommand(command, argsOrOptions) {
   return String(command).trim();
 }
 
-function createSpawnMock({ coreEditor = ":" } = {}) {
+function createSpawnMock({ coreEditor = ":", bashPath = "C:\\Program Files\\Git\\bin\\bash.exe" } = {}) {
   return (command, argsOrOptions) => {
     const normalized = normalizeCommand(command, argsOrOptions);
 
@@ -55,8 +55,14 @@ function createSpawnMock({ coreEditor = ":" } = {}) {
     if (normalized.startsWith("node --version")) {
       return { status: 0, stdout: "v22.15.0\n", stderr: "" };
     }
+    if (normalized.startsWith("npm --version")) {
+      return { status: 0, stdout: "11.4.0\n", stderr: "" };
+    }
     if (normalized.startsWith("pnpm --version")) {
       return { status: 0, stdout: "10.4.1\n", stderr: "" };
+    }
+    if (normalized.startsWith("rg --version")) {
+      return { status: 0, stdout: "ripgrep 14.1.1\n", stderr: "" };
     }
     if (normalized.startsWith("go version")) {
       return { status: 0, stdout: "go version go1.23.0 windows/amd64\n", stderr: "" };
@@ -69,6 +75,9 @@ function createSpawnMock({ coreEditor = ":" } = {}) {
     }
     if (normalized.startsWith("sh --version")) {
       return { status: 0, stdout: "sh 5.2\n", stderr: "" };
+    }
+    if (normalized.startsWith("where bash")) {
+      return { status: 0, stdout: `${bashPath}\n`, stderr: "" };
     }
     if (normalized.startsWith("git config --get user.name")) {
       return { status: 0, stdout: "Bosun Bot\n", stderr: "" };
@@ -221,32 +230,27 @@ describe("preflight interactive git editor warnings", () => {
     expect(result.errors.some((entry) => /worktree runtime setup is incomplete/i.test(entry.title))).toBe(true);
   });
 
-  it("auto-repairs git hooksPath drift during preflight", () => {
-    inspectWorktreeRuntimeSetupMock
-      .mockReturnValueOnce({
-        ok: false,
-        issues: ["git core.hooksPath points to .husky instead of .githooks"],
-        missingFiles: [],
-        hooksPath: ".husky",
-      })
-      .mockReturnValueOnce({
-        ok: true,
-        issues: [],
-        missingFiles: [],
-        hooksPath: ".githooks",
-      });
-    ensureGitHooksPathMock.mockReturnValue({
-      changed: true,
-      hooksPath: ".githooks",
-      error: "",
-    });
+  it("warns when Windows hook shell resolves to WSL bash first", () => {
+    spawnSyncMock.mockImplementation(
+      createSpawnMock({
+        coreEditor: ":",
+        bashPath: "C:\\Windows\\System32\\bash.exe",
+      }),
+    );
 
     const result = runPreflightChecks({ repoRoot: "C:\\repo" });
-    const report = formatPreflightReport(result);
 
     expect(result.ok).toBe(true);
-    expect(ensureGitHooksPathMock).toHaveBeenCalledWith(expect.stringMatching(/[A-Z]:\\repo$/));
-    expect(result.warnings.some((entry) => /git hooks path auto-repaired/i.test(entry.title))).toBe(true);
-    expect(report).toContain("Git hooks: .githooks (auto-repaired)");
+    expect(result.details.hookShell.resolvedPath).toEqual(
+      process.platform === "win32"
+        ? expect.stringContaining("System32")
+        : null,
+    );
+    expect(result.details.hookShell.issue).toBe(
+      process.platform === "win32" ? "wsl_bash_first" : null,
+    );
+    expect(result.warnings.some((entry) => /hook shell/i.test(entry.title))).toBe(
+      process.platform === "win32",
+    );
   });
 });

@@ -321,11 +321,22 @@ registerNodeType("validation.tests", {
   async execute(node, ctx) {
     const command = ctx.resolve(node.config?.command || "npm test");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
-    const timeout = node.config?.timeoutMs || 600000;
+    const resolvedTimeout = Number(ctx.resolve(node.config?.timeoutMs ?? 600000));
+    const timeout = Number.isFinite(resolvedTimeout) && resolvedTimeout > 0
+      ? Math.round(resolvedTimeout)
+      : 600000;
 
     ctx.log(node.id, `Running tests: ${command}`);
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const useShell = /^(?:npm|pnpm|yarn|bun)(?:\s|$)/i.test(String(command || "").trim());
+      const output = execSync(command, {
+        cwd,
+        timeout,
+        encoding: "utf8",
+        stdio: "pipe",
+        windowsHide: true,
+        ...(useShell ? { shell: true } : {}),
+      });
       ctx.log(node.id, "Tests passed");
       return { passed: true, output: output?.trim() };
     } catch (err) {
@@ -358,7 +369,15 @@ registerNodeType("validation.build", {
     }
     ctx.log(node.id, `Building: ${command}`);
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const useShell = /^(?:npm|pnpm|yarn|bun)(?:\s|$)/i.test(String(command || "").trim());
+      const output = execSync(command, {
+        cwd,
+        timeout,
+        encoding: "utf8",
+        stdio: "pipe",
+        windowsHide: true,
+        ...(useShell ? { shell: true } : {}),
+      });
       const hasWarnings = /warning/i.test(output || "");
       if (node.config?.zeroWarnings && hasWarnings) {
         return { passed: false, reason: "warnings_found", output: output?.trim() };

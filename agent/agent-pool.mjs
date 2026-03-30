@@ -1,3 +1,8 @@
+// CLAUDE:SUMMARY — agent-pool
+// Resolves SDK selection and fallback order for ephemeral agent threads,
+// including env/config-driven failover and launch orchestration across Codex,
+// Copilot, Claude, and compatible adapters.
+
 /**
  * agent-pool.mjs — Universal SDK-Aware Ephemeral Agent Pool
  *
@@ -39,11 +44,13 @@
  *   getAvailableSdks()   → returns list of non-disabled SDKs
  */
 
+import { randomUUID } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import "../infra/windows-hidden-child-processes.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { resolveAgentSdkModuleEntry, resolveCodexSdkInstall } from "./agent-sdk.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
@@ -99,9 +106,13 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 
 /** Tag for console logging */
 const TAG = "[agent-pool]";
+const DEFAULT_AGENT_EXECUTION_MAX_PARALLEL = 3;
 const require = createRequire(import.meta.url);
 const CODEX_SDK_SPECIFIER = "@openai/codex-sdk";
 const MODULE_PRESENCE_CACHE = new Map();
+const activeAgentExecutionSlots = new Map();
+const queuedAgentExecutionSlots = [];
+
 function resolveCodexWindowsRuntime() {
   if (process.platform !== "win32") {
     return { supported: false, packageName: null, binaryPath: null };
@@ -164,6 +175,290 @@ function isDeterministicSdkFailure(errorValue) {
   return false;
 }
 
+function parsePositiveInt(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(1, Math.trunc(parsed));
+}
+
+function resolveAgentExecutionMaxParallel(explicit = null) {
+  const direct = parsePositiveInt(explicit);
+  if (direct) return direct;
+  const envValue =
+    parsePositiveInt(process.env.AGENT_POOL_MAX_PARALLEL) ||
+    parsePositiveInt(process.env.WORKFLOW_AGENT_MAX_PARALLEL);
+  if (envValue) return envValue;
+  try {
+    const cfg = loadConfig();
+    const configValue =
+      parsePositiveInt(cfg?.agentPool?.maxParallel) ||
+      parsePositiveInt(cfg?.internalExecutor?.maxParallel);
+    if (configValue) return configValue;
+  } catch {
+    // Best-effort only; fall back to a safe default.
+  }
+  return DEFAULT_AGENT_EXECUTION_MAX_PARALLEL;
+}
+
+function summarizeAgentSlotMeta(meta = {}) {
+  if (!meta || typeof meta !== "object") return {};
+  const summary = {};
+  const scalarKeys = [
+    "taskKey",
+    "taskId",
+    "taskTitle",
+    "workflowRunId",
+    "workflowId",
+    "workflowName",
+    "workflowNodeId",
+    "workflowNodeLabel",
+    "cwd",
+    "sdk",
+    "model",
+    "sessionType",
+  ];
+  for (const key of scalarKeys) {
+    const value = meta[key];
+    if (value == null) continue;
+    const normalized = String(value).trim();
+    if (normalized) summary[key] = normalized;
+  }
+  return summary;
+}
+
+function emitAgentSlotHook(hook, payload) {
+  if (typeof hook !== "function") return;
+  try {
+    hook(payload);
+  } catch {
+    // Slot telemetry must never break agent execution.
+  }
+}
+
+function buildAgentSlotSnapshot(overrides = {}) {
+  const maxParallel = resolveAgentExecutionMaxParallel(overrides.maxParallel);
+  return {
+    maxParallel,
+    activeSlots: activeAgentExecutionSlots.size,
+    queuedSlots: queuedAgentExecutionSlots.length,
+    ...overrides,
+  };
+}
+
+function grantQueuedAgentExecutionSlot(request) {
+  const grantedAt = Date.now();
+  const lease = {
+    slotId: request.slotId,
+    ownerKey: request.ownerKey,
+    requestedAt: request.requestedAt,
+    queuedAt: request.queuedAt,
+    acquiredAt: grantedAt,
+    waitedMs: Math.max(0, grantedAt - request.requestedAt),
+    maxParallel: request.maxParallel,
+    meta: request.meta,
+    onReleased: request.onReleased,
+  };
+  activeAgentExecutionSlots.set(lease.slotId, lease);
+  const payload = buildAgentSlotSnapshot({
+    slotId: lease.slotId,
+    ownerKey: lease.ownerKey,
+    queuedAt: lease.queuedAt,
+    acquiredAt: lease.acquiredAt,
+    requestedAt: lease.requestedAt,
+    waitedMs: lease.waitedMs,
+    maxParallel: lease.maxParallel,
+    meta: lease.meta,
+  });
+  emitAgentSlotHook(request.onAcquired, payload);
+  request.resolve(lease);
+}
+
+function pumpQueuedAgentExecutionSlots() {
+  while (queuedAgentExecutionSlots.length > 0) {
+    const next = queuedAgentExecutionSlots[0];
+    const maxParallel = resolveAgentExecutionMaxParallel(next.maxParallel);
+    if (activeAgentExecutionSlots.size >= maxParallel) break;
+    queuedAgentExecutionSlots.shift();
+    grantQueuedAgentExecutionSlot(next);
+  }
+}
+
+export function getAvailableSlots(maxParallel = null) {
+  return Math.max(
+    0,
+    resolveAgentExecutionMaxParallel(maxParallel) - activeAgentExecutionSlots.size,
+  );
+}
+
+export function getAgentExecutionSlotStatus() {
+  return {
+    maxParallel: resolveAgentExecutionMaxParallel(),
+    activeSlots: activeAgentExecutionSlots.size,
+    queuedSlots: queuedAgentExecutionSlots.length,
+    active: Array.from(activeAgentExecutionSlots.values()).map((lease) => ({
+      slotId: lease.slotId,
+      ownerKey: lease.ownerKey,
+      requestedAt: lease.requestedAt,
+      queuedAt: lease.queuedAt,
+      acquiredAt: lease.acquiredAt,
+      waitedMs: lease.waitedMs,
+      maxParallel: lease.maxParallel,
+      meta: { ...lease.meta },
+    })),
+    queued: queuedAgentExecutionSlots.map((request) => ({
+      slotId: request.slotId,
+      ownerKey: request.ownerKey,
+      requestedAt: request.requestedAt,
+      queuedAt: request.queuedAt,
+      maxParallel: request.maxParallel,
+      meta: { ...request.meta },
+    })),
+  };
+}
+
+export async function allocateSlot(ownerKey = "", options = {}) {
+  const normalizedOwnerKey =
+    String(
+      ownerKey ||
+      options.taskKey ||
+      options.taskId ||
+      options.workflowRunId ||
+      options.workflowId ||
+      "",
+    ).trim() || `agent-slot:${randomUUID()}`;
+  const slotId = `agent-slot-${randomUUID().slice(0, 8)}`;
+  const requestedAt = Date.now();
+  const maxParallel = resolveAgentExecutionMaxParallel(options.maxParallel);
+  const meta = summarizeAgentSlotMeta({
+    ...options.meta,
+    taskKey: options.taskKey,
+    taskId: options.taskId,
+    taskTitle: options.taskTitle,
+    workflowRunId: options.workflowRunId,
+    workflowId: options.workflowId,
+    workflowName: options.workflowName,
+    workflowNodeId: options.workflowNodeId,
+    workflowNodeLabel: options.workflowNodeLabel,
+    cwd: options.cwd,
+    sdk: options.sdk,
+    model: options.model,
+    sessionType: options.sessionType,
+  });
+  const request = {
+    slotId,
+    ownerKey: normalizedOwnerKey,
+    requestedAt,
+    queuedAt: null,
+    maxParallel,
+    meta,
+    onAcquired: options.onAcquired,
+    onReleased: options.onReleased,
+    resolve: null,
+    reject: null,
+  };
+
+  if (activeAgentExecutionSlots.size < maxParallel) {
+    return await new Promise((resolve) => {
+      request.resolve = resolve;
+      grantQueuedAgentExecutionSlot(request);
+    });
+  }
+
+  request.queuedAt = Date.now();
+  emitAgentSlotHook(
+    options.onQueued,
+    buildAgentSlotSnapshot({
+      slotId,
+      ownerKey: normalizedOwnerKey,
+      requestedAt,
+      queuedAt: request.queuedAt,
+      maxParallel,
+      queuedSlots: queuedAgentExecutionSlots.length + 1,
+      meta,
+      queueDepth: queuedAgentExecutionSlots.length + 1,
+    }),
+  );
+  return await new Promise((resolve, reject) => {
+    request.resolve = resolve;
+    request.reject = reject;
+    queuedAgentExecutionSlots.push(request);
+  });
+}
+
+export async function releaseSlot(slotRef = null) {
+  const slotId =
+    typeof slotRef === "string"
+      ? slotRef
+      : String(slotRef?.slotId || "").trim();
+  if (!slotId) {
+    return buildAgentSlotSnapshot({ released: false, reason: "missing_slot_id" });
+  }
+  const lease = activeAgentExecutionSlots.get(slotId);
+  if (!lease) {
+    return buildAgentSlotSnapshot({ released: false, slotId, reason: "slot_not_found" });
+  }
+  activeAgentExecutionSlots.delete(slotId);
+  const releasedAt = Date.now();
+  const payload = buildAgentSlotSnapshot({
+    slotId,
+    ownerKey: lease.ownerKey,
+    requestedAt: lease.requestedAt,
+    queuedAt: lease.queuedAt,
+    acquiredAt: lease.acquiredAt,
+    releasedAt,
+    waitedMs: lease.waitedMs,
+    runDurationMs: Math.max(0, releasedAt - lease.acquiredAt),
+    maxParallel: lease.maxParallel,
+    meta: lease.meta,
+    released: true,
+  });
+  emitAgentSlotHook(lease.onReleased, payload);
+  pumpQueuedAgentExecutionSlots();
+  return payload;
+}
+
+async function withAgentExecutionSlot(cwd, extra = {}, runner) {
+  if (extra?.slotLease) {
+    return await runner(extra.slotLease);
+  }
+  const slotOwnerKey =
+    String(
+      extra?.slotOwnerKey ||
+      extra?.taskKey ||
+      extra?.taskId ||
+      extra?.workflowRunId ||
+      extra?.workflowId ||
+      "",
+    ).trim() || `agent-slot:${randomUUID()}`;
+  let slotLease = null;
+  try {
+    slotLease = await allocateSlot(slotOwnerKey, {
+      taskKey: extra?.taskKey,
+      taskId: extra?.taskId,
+      taskTitle: extra?.taskTitle,
+      workflowRunId: extra?.workflowRunId,
+      workflowId: extra?.workflowId,
+      workflowName: extra?.workflowName,
+      workflowNodeId: extra?.workflowNodeId,
+      workflowNodeLabel: extra?.workflowNodeLabel,
+      cwd,
+      sdk: extra?.sdk,
+      model: extra?.model,
+      sessionType: extra?.sessionType,
+      meta: extra?.slotMeta,
+      maxParallel: extra?.slotMaxParallel,
+      onQueued: extra?.onSlotQueued,
+      onAcquired: extra?.onSlotAcquired,
+      onReleased: extra?.onSlotReleased,
+    });
+    return await runner(slotLease);
+  } finally {
+    if (slotLease?.slotId) {
+      await releaseSlot(slotLease);
+    }
+  }
+}
+
 function hasOptionalModule(specifier) {
   if (MODULE_PRESENCE_CACHE.has(specifier)) {
     return MODULE_PRESENCE_CACHE.get(specifier);
@@ -194,6 +489,7 @@ let timeoutClampWarningKey = "";
 const MIN_SILENT_STREAM_FRACTION = 0.25;
 const MAX_SILENT_STREAM_GRACE_MS = 30_000;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
+const COPILOT_IDLE_TIMEOUT_GRACE_MS = 1_000;
 const DEFAULT_MAX_ITEMS_PER_TURN = 600;
 const DEFAULT_MAX_ITEM_CHARS = 12_000;
 const TOOL_OUTPUT_GUARDRAIL = String.raw`
@@ -652,6 +948,7 @@ function shouldFallbackForSdkError(error) {
   if (message.includes("connection refused")) return true;
   if (message.includes("connection reset")) return true;
   if (message.includes("etimedout")) return true;
+  if (message.includes("failed to list models")) return true;
   // Runtime/provider instability: fail over to next SDK immediately.
   if (message.includes("timeout")) return true;
   if (message.includes("rate limit") || message.includes("429")) return true;
@@ -1031,6 +1328,18 @@ const SDK_ADAPTERS = {
  */
 let SDK_FALLBACK_ORDER = ["codex", "copilot", "claude"];
 
+function getSdkFallbackOrder() {
+  const envOrder = String(process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER || "").trim();
+  if (envOrder) {
+    const parsed = envOrder
+      .split(",")
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter((value, index, arr) => SDK_ADAPTERS[value] && arr.indexOf(value) === index);
+    if (parsed.length > 0) return parsed;
+  }
+  return SDK_FALLBACK_ORDER;
+}
+
 // Attempt to load custom fallback order from config
 try {
   const cfg = loadConfig();
@@ -1091,17 +1400,17 @@ function shouldApplySdkCooldown(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
-  if (message.includes("failed to list models: 400")) return false;
+
   if (
     message.includes("failed to list models")
     && (
+      message.includes("400")
+      ||
       message.includes("bad request")
       || message.includes("invalid url")
       || message.includes("deployment")
       || message.includes("api version")
       || message.includes("/models")
-      || message.includes("list models")
-      || message.includes("400")
     )
   ) {
     return false;
@@ -1275,7 +1584,7 @@ function resolvePoolSdkName() {
   }
 
   // 4. Fallback chain: first non-disabled SDK
-  for (const name of SDK_FALLBACK_ORDER) {
+  for (const name of getSdkFallbackOrder()) {
     if (!isDisabled(name)) {
       resolvedSdkName = name;
       logResolution(name, "fallback chain");
@@ -2615,6 +2924,7 @@ export async function launchEphemeralThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  return await withAgentExecutionSlot(cwd, extra, async (slotLease) => {
   const resolvedGithubToken = await resolveGithubSessionToken();
   const baseRuntimeEnv =
     extra?.envOverrides && typeof extra.envOverrides === "object"
@@ -2624,6 +2934,7 @@ export async function launchEphemeralThread(
   const launchExtra = {
     ...extra,
     envOverrides: sessionEnv,
+    slotLease,
   };
 
   // ── Resolve MCP servers for this launch ──────────────────────────────────
@@ -2682,7 +2993,7 @@ export async function launchEphemeralThread(
     ? [primaryName]
     : [
         primaryName,
-        ...SDK_FALLBACK_ORDER.filter((name) => name !== primaryName),
+        ...getSdkFallbackOrder().filter((name) => name !== primaryName),
       ];
 
   let lastAttemptResult = null;
@@ -2956,6 +3267,7 @@ export async function launchEphemeralThread(
     sdk: primaryName,
     threadId: null,
   };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3610,6 +3922,7 @@ export async function launchOrResumeThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  return await withAgentExecutionSlot(cwd, extra, async (slotLease) => {
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
   const resolvedGithubToken = await resolveGithubSessionToken();
@@ -3622,6 +3935,7 @@ export async function launchOrResumeThread(
     resolvedGithubToken,
   );
   restExtra.envOverrides = applyNodeWarningSuppressionEnv(restExtra.envOverrides);
+  restExtra.slotLease = slotLease;
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
   if (restExtra.sdk && restExtra.pinSdk === true) {
@@ -3928,11 +4242,104 @@ export async function launchOrResumeThread(
   }
 
   return { ...result, threadId: finalThreadId, resumed: false };
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Error Recovery Wrapper
 // ---------------------------------------------------------------------------
+
+const RETRY_OUTPUT_PLACEHOLDERS = new Set([
+  "",
+  "(agent completed with no text output)",
+  "continued",
+  "model response continued",
+]);
+
+const RETRY_RECONNECT_PATTERNS = [
+  /session\.idle/i,
+  /no events received/i,
+  /first_event_timeout/i,
+  /timeout_no_events/i,
+  /stream disconnection/i,
+  /transient stream error/i,
+  /transport/i,
+  /network/i,
+  /econnreset/i,
+  /socket hang up/i,
+  /connection.*closed/i,
+  /connection.*reset/i,
+  /reconnect/i,
+];
+
+function hasMeaningfulRetryResult(result = {}) {
+  const output = String(result?.output || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!RETRY_OUTPUT_PLACEHOLDERS.has(output)) return true;
+  if (Array.isArray(result?.items) && result.items.length > 0) return true;
+  return false;
+}
+
+function normalizeRetryFailureFingerprint(result = {}) {
+  const errorText = String(result?.error || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!errorText) return "";
+  if (RETRY_RECONNECT_PATTERNS.some((pattern) => pattern.test(errorText))) {
+    return errorText
+      .replace(/\bafter \d+ms\b/g, "after <ms>")
+      .replace(/attempt \d+\/\d+/g, "attempt <n>/<n>")
+      .replace(/[a-f0-9]{8,}/g, "<id>")
+      .slice(0, 160);
+  }
+  return "";
+}
+
+function classifyRetryCircuitBreak(result = {}, state = {}) {
+  if (result?.success) {
+    return {
+      fingerprint: "",
+      repeatedFingerprint: false,
+      noOutputFailure: false,
+      shouldBreak: false,
+      blockedReason: null,
+      error: null,
+    };
+  }
+
+  const fingerprint = normalizeRetryFailureFingerprint(result);
+  const repeatedFingerprint = Boolean(fingerprint) && Number(state.failureFingerprints?.get(fingerprint) || 0) >= 1;
+  const noOutputFailure = !hasMeaningfulRetryResult(result);
+  const repeatedNoOutput = noOutputFailure && Number(state.consecutiveNoOutputFailures || 0) >= 1;
+
+  if (repeatedFingerprint) {
+    return {
+      fingerprint,
+      repeatedFingerprint: true,
+      noOutputFailure,
+      shouldBreak: true,
+      blockedReason: "blocked_by_env",
+      error: `Repeated reconnect fingerprint detected: ${fingerprint}`,
+    };
+  }
+
+  if (repeatedNoOutput) {
+    return {
+      fingerprint,
+      repeatedFingerprint: false,
+      noOutputFailure: true,
+      shouldBreak: true,
+      blockedReason: "no_output",
+      error: "Repeated no-output agent starts detected; stopping retries",
+    };
+  }
+
+  return {
+    fingerprint,
+    repeatedFingerprint: false,
+    noOutputFailure,
+    shouldBreak: false,
+    blockedReason: null,
+    error: null,
+  };
+}
 
 /**
  * Execute a prompt with automatic error recovery via thread resume.
@@ -3979,6 +4386,12 @@ export async function execWithRetry(prompt, options = {}) {
     sessionType = "task",
     onEvent,
     onAbortControllerReplaced,
+    slotOwnerKey,
+    slotMeta,
+    slotMaxParallel,
+    onSlotQueued,
+    onSlotAcquired,
+    onSlotReleased,
   } = options;
 
   // AbortController can be replaced on idle_continue, so track it mutably
@@ -3994,6 +4407,8 @@ export async function execWithRetry(prompt, options = {}) {
   const totalAttempts = 1 + maxRetries;
   let continuesUsed = 0;
   let attempt = 0;
+  const failureFingerprints = new Map();
+  let consecutiveNoOutputFailures = 0;
 
   while (attempt < totalAttempts + continuesUsed) {
     attempt++;
@@ -4067,6 +4482,12 @@ export async function execWithRetry(prompt, options = {}) {
       onEvent,
       abortController,
       ignoreSdkCooldown: attempt > 1,
+      slotOwnerKey,
+      slotMeta,
+      slotMaxParallel,
+      onSlotQueued,
+      onSlotAcquired,
+      onSlotReleased,
     });
 
     // Check post-launch if aborted with idle_continue (race: abort fired during execution)
@@ -4092,6 +4513,33 @@ export async function execWithRetry(prompt, options = {}) {
 
       lastResult._idleContinue = true;
       continue;
+    }
+
+    const retryCircuit = classifyRetryCircuitBreak(lastResult, {
+      failureFingerprints,
+      consecutiveNoOutputFailures,
+    });
+    if (retryCircuit.fingerprint) {
+      failureFingerprints.set(
+        retryCircuit.fingerprint,
+        Number(failureFingerprints.get(retryCircuit.fingerprint) || 0) + 1,
+      );
+    }
+    consecutiveNoOutputFailures = retryCircuit.noOutputFailure
+      ? consecutiveNoOutputFailures + 1
+      : 0;
+
+    if (retryCircuit.shouldBreak) {
+      console.warn(`${TAG} execWithRetry circuit breaker tripped for "${taskKey}": ${retryCircuit.error}`);
+      return {
+        ...lastResult,
+        error: retryCircuit.error,
+        blockedReason: retryCircuit.blockedReason,
+        retryCircuitBroken: true,
+        failureFingerprint: retryCircuit.fingerprint || null,
+        attempts: attempt,
+        continues: continuesUsed,
+      };
     }
 
     // Check if we should retry
@@ -4263,5 +4711,20 @@ export function getActiveThreads() {
   }
   return result;
 }
+
+
+
+export const __testables = {
+  shouldApplySdkCooldown,
+  shouldFallbackForSdkError,
+  hasMeaningfulRetryResult,
+  normalizeRetryFailureFingerprint,
+  classifyRetryCircuitBreak,
+};
+
+
+
+
+
 
 

@@ -507,6 +507,15 @@ describe("hook-library", () => {
       }
     });
 
+    it("powershell file writers force UTF-8 encoding", () => {
+      for (const hook of BUILTIN_HOOKS) {
+        if (!hook.command.includes("powershell -NoProfile -Command")) continue;
+        const writes = hook.command.match(/\b(?:Set-Content|Add-Content)\b/g) || [];
+        if (!writes.length) continue;
+        expect(hook.command).not.toMatch(/\b(?:Set-Content|Add-Content)\b(?!\s+-Encoding UTF8)/);
+      }
+    });
+
     it("all hooks have positive timeout", () => {
       for (const hook of BUILTIN_HOOKS) {
         expect(hook.timeout).toBeGreaterThan(0);

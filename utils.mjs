@@ -198,10 +198,16 @@ export function parsePrNumberFromUrl(url) {
  */
 export async function spawnAsync(cmd, args = [], options = {}) {
   const { spawn } = await import("node:child_process");
+  const isWindows = process.platform === "win32";
+  const normalizedCommand = isWindows && cmd === "npm" ? "npm.cmd" : cmd;
   return new Promise((resolve, reject) => {
     const stdoutChunks = [];
     const stderrChunks = [];
-    const proc = spawn(cmd, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(normalizedCommand, args, {
+      ...options,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: options.windowsHide ?? true,
+    });
     proc.stdout.on("data", (d) => stdoutChunks.push(d));
     proc.stderr.on("data", (d) => stderrChunks.push(d));
     proc.on("close", (code) => {
@@ -209,7 +215,7 @@ export async function spawnAsync(cmd, args = [], options = {}) {
       const stderr = Buffer.concat(stderrChunks).toString("utf8");
       if (code !== 0) {
         const err = Object.assign(
-          new Error(`spawnAsync: ${cmd} ${args.join(" ")} exited ${code}\n${stderr || stdout}`),
+          new Error(`spawnAsync: ${normalizedCommand} ${args.join(" ")} exited ${code}\n${stderr || stdout}`),
           { stdout, stderr, status: code },
         );
         reject(err);
@@ -217,7 +223,13 @@ export async function spawnAsync(cmd, args = [], options = {}) {
         resolve({ stdout, stderr, status: code });
       }
     });
-    proc.on("error", reject);
+    proc.on("error", (error) => {
+      reject(Object.assign(error, {
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        status: null,
+      }));
+    });
   });
 }
 

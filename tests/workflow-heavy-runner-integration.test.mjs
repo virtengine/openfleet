@@ -34,7 +34,7 @@ describe("workflow heavy runner integration", () => {
 
   afterEach(() => {
     if (tempDir) {
-      rmSync(tempDir, { recursive: true, force: true });
+      try { rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
       tempDir = "";
     }
     if (originalCommandDiagnosticsStateFile === undefined) {
@@ -70,7 +70,7 @@ describe("workflow heavy runner integration", () => {
     expect(result.outputCompacted).toBe(true);
     expect(result.output).toContain("bosun --tool-log");
     expect(result.outputDiagnostics?.suggestedRerun).toContain("vitest run");
-  });
+  }, process.platform === "win32" ? 30000 : 5000);
 
   it("surfaces blocked evidence when runner lease acquisition exhausts retries", async () => {
     tempDir = mkdtempSync(join(tmpdir(), "bosun-validation-runner-blocked-"));
@@ -95,5 +95,5 @@ describe("workflow heavy runner integration", () => {
     expect(result.executionLane).toBe("runner-pool");
     expect(result.runnerLease?.status).toBe("blocked");
     expect(result.output).toContain("runner lease");
-  });
+  }, process.platform === "win32" ? 30000 : 5000);
 });

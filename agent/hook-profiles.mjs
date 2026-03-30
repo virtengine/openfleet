@@ -33,24 +33,28 @@ export const HOOK_PROFILES = Object.freeze([
 const PRESET_FLAGS = Object.freeze({
   strict: {
     includeSessionHooks: true,
+    includePostToolUse: true,
     includePreCommit: true,
     includePrePush: true,
     includeTaskComplete: true,
   },
   balanced: {
     includeSessionHooks: true,
+    includePostToolUse: true,
     includePreCommit: false,
     includePrePush: true,
     includeTaskComplete: true,
   },
   lightweight: {
     includeSessionHooks: true,
+    includePostToolUse: false,
     includePreCommit: false,
     includePrePush: false,
     includeTaskComplete: false,
   },
   none: {
     includeSessionHooks: false,
+    includePostToolUse: false,
     includePreCommit: false,
     includePrePush: false,
     includeTaskComplete: false,
@@ -76,6 +80,15 @@ const PRESET_COMMANDS = Object.freeze({
       description: "Log agent session end for audit trail",
       blocking: false,
       timeout: 10_000,
+    },
+  ]),
+  PostToolUse: Object.freeze([
+    {
+      id: "post-tool-use-validation",
+      command: "",
+      description: "Run lightweight repository validation after edit tools complete",
+      blocking: false,
+      timeout: 120_000,
     },
   ]),
   TaskComplete: Object.freeze([
@@ -195,10 +208,22 @@ function createHookEntry({
 function buildDetectedValidationCommands(rootDir) {
   const detected = detectProjectStack(rootDir);
   const qualityGate = String(detected?.commands?.qualityGate || "").trim();
+  const postEdit = String(detected?.commands?.postEdit || "").trim();
   const lint = String(detected?.commands?.lint || "").trim();
   const syntaxCheck = String(detected?.commands?.syntaxCheck || "").trim();
 
   return {
+    PostToolUse: (postEdit || lint || syntaxCheck)
+      ? [
+          createHookEntry({
+            id: `posttooluse-detected-${slugifyHookId(postEdit || lint || syntaxCheck)}`,
+            command: postEdit || lint || syntaxCheck,
+            description: `Run lightweight repository validation after edits (${detected?.primary?.label || "project"})`,
+            blocking: false,
+            timeout: 120_000,
+          }),
+        ]
+      : [],
     PrePush: qualityGate
       ? [
           createHookEntry({
@@ -333,6 +358,9 @@ export function buildHookScaffoldOptionsFromEnv(env = process.env) {
       SessionStop: normalizeOverrideCommands(
         env.BOSUN_HOOK_SESSION_STOP,
       ),
+      PostToolUse: normalizeOverrideCommands(
+        env.BOSUN_HOOK_POST_TOOL_USE ?? env.BOSUN_HOOK_POSTEDIT,
+      ),
       PrePush: normalizeOverrideCommands(env.BOSUN_HOOK_PREPUSH),
       PreCommit: normalizeOverrideCommands(env.BOSUN_HOOK_PRECOMMIT),
       TaskComplete: normalizeOverrideCommands(
@@ -362,6 +390,9 @@ export function buildCanonicalHookConfig(options = {}) {
       sdks: ["*"],
     }));
   }
+  if (flags.includePostToolUse) {
+    hooks.PostToolUse = buildDefaultHooksForEvent("PostToolUse", rootDir);
+  }
   if (flags.includePrePush) {
     hooks.PrePush = buildDefaultHooksForEvent("PrePush", rootDir);
   }
@@ -380,6 +411,7 @@ export function buildCanonicalHookConfig(options = {}) {
   for (const event of [
     "SessionStart",
     "SessionStop",
+    "PostToolUse",
     "PrePush",
     "PreCommit",
     "TaskComplete",

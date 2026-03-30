@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -149,6 +150,42 @@ describe("ui-server mini app", () => {
     expect(typeof mod.getTelegramUiUrl).toBe("function");
     expect(typeof mod.injectUiDependencies).toBe("function");
     expect(typeof mod.getLocalLanIp).toBe("function");
+  }, 15000);
+
+  it("reclaims stale live-pid instance locks when the recorded UI is unresponsive", async () => {
+    const cacheDir = join(process.env.BOSUN_HOME, ".cache");
+    const lockPath = join(cacheDir, "ui-server.instance.lock.json");
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: Math.max(1, Number(process.ppid || 1)),
+        port: 6552,
+        host: "127.0.0.1",
+        protocol: "http",
+        url: "http://127.0.0.1:6552",
+        startedAt: Date.now() - 10 * 60 * 1000,
+      }, null, 2),
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: false,
+      skipAutoOpen: true,
+      instanceLockStaleGraceMs: 0,
+      instanceLockProbeTimeoutMs: 100,
+    });
+    try {
+      expect(server).toBeTruthy();
+      const payload = JSON.parse(readFileSync(lockPath, "utf8"));
+      expect(payload.pid).toBe(process.pid);
+      expect(payload.port).toBe(server.address().port);
+    } finally {
+      mod.stopTelegramUiServer();
+    }
   }, 15000);
 
   it("surfaces worktree recovery state through status, infra, and worktree endpoints", async () => {
@@ -370,7 +407,7 @@ describe("ui-server mini app", () => {
       delete process.env.BOSUN_UI_TOKEN;
     }
     expect(token).not.toBe("a".repeat(64));
-  });
+  }, 15000);
 
 
   it("bootstraps local static requests into a session cookie", async () => {
@@ -409,6 +446,7 @@ describe("ui-server mini app", () => {
     });
     expect(third.status).toBe(200);
     expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
+    expect(String(third.headers.get("cache-control") || "")).toContain("no-cache");
   });
 
   it("serves shared /lib modules after local bootstrap", async () => {
@@ -637,6 +675,39 @@ describe("ui-server mini app", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("suppresses browser auto-open when the requested port falls back to another port", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "1";
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
+    delete process.env.BOSUN_UI_BROWSER_OPEN_MODE;
+
+    const blocker = createNetServer();
+    await new Promise((resolveReady) => blocker.listen(0, "127.0.0.1", resolveReady));
+    const blockedPort = blocker.address().port;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const markerPath = resolve(process.env.BOSUN_HOME, ".cache", "ui-auto-open.json");
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: blockedPort,
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+      });
+      expect(server).toBeTruthy();
+      expect(server.address().port).not.toBe(blockedPort);
+      expect(existsSync(markerPath)).toBe(false);
+      expect(
+        logSpy.mock.calls.some((args) =>
+          String(args[0] || "").includes("auto-open suppressed because requested port"),
+        ),
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      await new Promise((resolveDone) => blocker.close(resolveDone));
+    }
+  }, 20000);
 
   it("reports running monitor and server components from /healthz during monitor-mode portal startup", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -2421,7 +2492,7 @@ describe("ui-server mini app", () => {
     expect(paused.ok).toBe(true);
     expect(paused.lifecycle.action).toBe("pause");
     expect(abortTask).toHaveBeenCalledWith(taskId, "task_lifecycle_pause");
-  });
+  }, 20000);
 
   it("serves retry queue snapshots from the agent event bus when available", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -3001,7 +3072,7 @@ describe("ui-server mini app", () => {
     expect(detail.data.meta.linkedSessionIds).toContain("session-linked-task-1");
   }, 20000);
 
-  it("preserves stored workflow session links while adding primary session ids from workflow detail", async () => {
+  it("preserves stored workflow session links while merging summary metadata without rereading run detail files", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-merge-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_HOME = isolatedDir;
@@ -3012,28 +3083,11 @@ describe("ui-server mini app", () => {
     const mod = await import("../server/ui-server.mjs");
     const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
     const fakeEngine = {
-      getRunHistory: vi.fn(() => [{ runId: "run-merge-1" }]),
-      getRunDetail: vi.fn(() => ({
-        runId: "run-merge-1",
-        workflowId: "wf-merge-1",
-        workflowName: "Merged workflow",
-        status: "completed",
-        startedAt: "2026-03-15T12:00:00.000Z",
-        endedAt: "2026-03-15T12:02:00.000Z",
-        duration: 120000,
-        detail: {
-          data: {
-            taskId: "__task__",
-            sessionId: "derived-session-1",
-          },
-        },
-      })),
-      getTaskTraceEvents: vi.fn(() => [
-        {
-          taskId: "__task__",
-          meta: { sessionId: "trace-session-1" },
-        },
-      ]),
+      getRunHistory: vi.fn(() => []),
+      getRunDetail: vi.fn(() => {
+        throw new Error("run detail should not be loaded when summary metadata is present");
+      }),
+      getTaskTraceEvents: vi.fn(() => []),
       registerTaskTraceHook: vi.fn(),
       load: vi.fn(),
     };
@@ -3060,25 +3114,20 @@ describe("ui-server mini app", () => {
       expect(created.ok).toBe(true);
       const taskId = created.data.id;
 
-      fakeEngine.getRunDetail.mockImplementation(() => ({
-        runId: "run-merge-1",
-        workflowId: "wf-merge-1",
-        workflowName: "Merged workflow",
-        status: "completed",
-        startedAt: "2026-03-15T12:00:00.000Z",
-        endedAt: "2026-03-15T12:02:00.000Z",
-        duration: 120000,
-        detail: {
-          data: {
-            taskId,
-            sessionId: "derived-session-1",
-          },
-        },
-      }));
-      fakeEngine.getTaskTraceEvents.mockImplementation(() => [
+      fakeEngine.getRunHistory.mockImplementation(() => [
         {
+          runId: "run-merge-1",
+          workflowId: "wf-merge-1",
+          workflowName: "Merged workflow",
+          status: "completed",
+          startedAt: "2026-03-15T12:00:00.000Z",
+          endedAt: "2026-03-15T12:02:00.000Z",
+          duration: 120000,
           taskId,
-          meta: { sessionId: "trace-session-1" },
+          taskIds: [taskId],
+          sessionId: "derived-session-1",
+          primarySessionId: "derived-session-1",
+          sessionIds: ["derived-session-1"],
         },
       ]);
 
@@ -3109,6 +3158,8 @@ describe("ui-server mini app", () => {
         primarySessionId: "derived-session-1",
       });
       expect(mergedRun.meta?.sessionId).toBe("stored-session-1");
+      expect(fakeEngine.getRunDetail).not.toHaveBeenCalled();
+      expect(fakeEngine.getTaskTraceEvents).not.toHaveBeenCalled();
     } finally {
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
@@ -3404,6 +3455,70 @@ describe("ui-server mini app", () => {
     expect(listJson.ok).toBe(true);
     expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
   });
+
+  it("reads task log diagnostics from bounded monitor-log tails on task detail", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod._testInjectWorkflowEngine(null, null);
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const logsDir = resolve(process.cwd(), ".bosun", "logs");
+    mkdirSync(logsDir, { recursive: true });
+    const monitorErrorPath = resolve(logsDir, "monitor-error.log");
+    const previousMonitorError = existsSync(monitorErrorPath)
+      ? readFileSync(monitorErrorPath, "utf8")
+      : null;
+
+    try {
+      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "blocked worktree task",
+          description: "collect recent worktree failure evidence",
+          status: "blocked",
+          branchName: "ve/task-log-tail-12345678",
+        }),
+      }).then((r) => r.json());
+
+      expect(created.ok).toBe(true);
+      const taskId = created.data.id;
+      const filler = Array.from({ length: 8000 }, (_, index) => `2026-03-04T04:00:${String(index % 60).padStart(2, "0")}.000Z filler line ${index}`);
+      filler.push(
+        `2026-03-04T04:30:00.000Z [ERROR] Worktree acquisition failed for ${taskId} branch ve/task-log-tail-12345678`,
+      );
+      writeFileSync(monitorErrorPath, `${filler.join("\n")}\n`, "utf8");
+
+      const detail = await fetch(
+        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+      ).then((r) => r.json());
+
+      expect(detail.ok).toBe(true);
+      expect(detail.data.blockedContext.worktreeFailureCount).toBeGreaterThan(0);
+      expect(detail.data.blockedContext.logEvidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: "monitor-error.log",
+            message: expect.stringContaining("Worktree acquisition failed"),
+          }),
+        ]),
+      );
+    } finally {
+      if (previousMonitorError == null) {
+        rmSync(monitorErrorPath, { force: true });
+      } else {
+        writeFileSync(monitorErrorPath, previousMonitorError, "utf8");
+      }
+    }
+  }, 15000);
 
   it("surfaces repo-area contention summaries on /api/telemetry/summary", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -4310,6 +4425,100 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("serves persisted historic session detail and diff payloads", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const previousRepoRoot = process.env.REPO_ROOT;
+    delete process.env.REPO_ROOT;
+
+    const repoDir = mkdtempSync(join(tmpdir(), "bosun-persisted-session-diff-"));
+    const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-history-"));
+    const filePath = join(repoDir, "notes.txt");
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    writeFileSync(filePath, "line one\n", "utf8");
+    execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    writeFileSync(filePath, "line one\nline two\n", "utf8");
+
+    const trackerMod = await import("../infra/session-tracker.mjs");
+    trackerMod._resetSingleton({ persistDir });
+    const tracker = trackerMod.getSessionTracker();
+    tracker.startSession("TASK-201", "Historic Task 201");
+    const liveSession = tracker.getSession("TASK-201");
+    liveSession.metadata.workspaceDir = repoDir;
+    liveSession.metadata.branch = "main";
+    tracker.recordEvent("TASK-201", {
+      role: "user",
+      content: "Inspect persisted history",
+      timestamp: "2026-03-28T14:00:00.000Z",
+    });
+    tracker.recordEvent("TASK-201", {
+      role: "assistant",
+      content: "Persisted history ready",
+      timestamp: "2026-03-28T14:00:03.000Z",
+    });
+    tracker.endSession("TASK-201", "completed");
+
+    trackerMod._resetSingleton({ persistDir });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const detailPayload = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("TASK-201")}?workspace=all&full=1`,
+      ).then((r) => r.json());
+      expect(detailPayload?.ok).toBe(true);
+      expect(detailPayload?.session).toEqual(expect.objectContaining({
+        id: "TASK-201",
+        status: "completed",
+      }));
+
+      const diffPayload = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("TASK-201")}/diff?workspace=all`,
+      ).then((r) => r.json());
+      expect(diffPayload?.ok).toBe(true);
+      expect(diffPayload?.diff?.totalFiles).toBeGreaterThan(0);
+      expect(diffPayload?.source).toMatchObject({
+        kind: "session",
+        detail: repoDir,
+      });
+
+      const taskDiffPayload = await fetch(`http://127.0.0.1:${port}/api/tasks/diff`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task: {
+            id: "TASK-201",
+            title: "Historic Task 201",
+            sessionId: "TASK-201",
+          },
+        }),
+      }).then((r) => r.json());
+      expect(taskDiffPayload?.ok).toBe(true);
+      expect(taskDiffPayload?.diff?.totalFiles).toBeGreaterThan(0);
+      expect(taskDiffPayload?.source).toMatchObject({
+        kind: "worktree",
+        detail: repoDir,
+      });
+    } finally {
+      trackerMod._resetSingleton({ persistDir: null });
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(persistDir, { recursive: true, force: true });
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("builds task diff payloads from a posted task snapshot and linked worktree path", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const previousRepoRoot = process.env.REPO_ROOT;
@@ -4498,7 +4707,7 @@ describe("ui-server mini app", () => {
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
-  });
+  }, process.platform === "win32" ? 30000 : 15000);
 
   it("sources agent-run analytics from completed session history when session-start events are stale", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-usage-"));
@@ -5055,4 +5264,3 @@ describe("ui-server mini app", () => {
   });
 
 });
-

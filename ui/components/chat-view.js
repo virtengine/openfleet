@@ -1004,20 +1004,21 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     const statusSessionId = String(globalStatus.sessionId || "");
     const statusMatchesSession =
       statusSessionId.length > 0 && statusSessionId === currentSessionId;
+    const liveState = statusMatchesSession ? (globalStatus.state || "idle") : "idle";
     statusState = paused
       ? "paused"
-      : statusMatchesSession
-        ? globalStatus.state || "idle"
-        : "idle";
+      : liveState !== "idle"
+        ? liveState
+        : isActive ? "active" : "idle";
     statusText = paused
       ? "Stream paused"
-      : statusMatchesSession
-        ? agentStatusText.value || "Ready"
-        : "Ready";
+      : liveState !== "idle"
+        ? agentStatusText.value
+        : isActive ? "Active" : "Ready";
   } catch (err) {
     console.warn("[ChatView] Failed to read status signals:", err);
-    statusState = paused ? "paused" : "idle";
-    statusText = paused ? "Stream paused" : "Ready";
+    statusState = paused ? "paused" : isActive ? "active" : "idle";
+    statusText = paused ? "Stream paused" : isActive ? "Active" : "Ready";
   }
 
   const renderItems = useMemo(() => {

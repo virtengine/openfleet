@@ -415,6 +415,7 @@ import { ChatTab } from "./tabs/chat.js";
 
 /* ── Lazy tab loading ── */
 const _lazyTabCache = {};
+const _lazyTabInflight = {};
 
 function resolveLazyTabComponent(mod, exportName) {
   const direct = exportName ? mod?.[exportName] : mod?.default;
@@ -431,13 +432,34 @@ function LazyTab({ loader, fallback, ...props }) {
   const [Comp, setComp] = useState(_lazyTabCache[loader.key] || null);
   const [err, setErr] = useState(null);
   useEffect(() => {
-    if (_lazyTabCache[loader.key]) { setComp(() => _lazyTabCache[loader.key]); return; }
+    setErr(null);
+    if (_lazyTabCache[loader.key]) {
+      setComp(() => _lazyTabCache[loader.key]);
+      return;
+    }
     let cancelled = false;
-    loader().then((mod) => {
-      const C = resolveLazyTabComponent(mod, loader.exportName);
-      _lazyTabCache[loader.key] = C;
-      if (!cancelled) setComp(() => C);
-    }).catch((e) => { if (!cancelled) setErr(e); });
+    const pendingLoad = _lazyTabInflight[loader.key]
+      || loader()
+        .then((mod) => {
+          const C = resolveLazyTabComponent(mod, loader.exportName);
+          _lazyTabCache[loader.key] = C;
+          return C;
+        })
+        .finally(() => {
+          delete _lazyTabInflight[loader.key];
+        });
+    _lazyTabInflight[loader.key] = pendingLoad;
+
+    pendingLoad
+      .then((resolvedComp) => {
+        if (!cancelled) setComp(() => resolvedComp);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setComp(null);
+          setErr(e);
+        }
+      });
     return () => { cancelled = true; };
   }, [loader]);
   if (err) return html`<div style="padding:2rem;color:#ef4444">Failed to load tab: ${err.message}</div>`;
@@ -468,6 +490,7 @@ const ControlTab = lazyTab("./tabs/control.js", "ControlTab", () => import("./ta
 const LogsTab = lazyTab("./tabs/logs.js", "LogsTab", () => import("./tabs/logs.js"));
 const TelemetryTab = lazyTab("./tabs/telemetry.js", "TelemetryTab", () => import("./tabs/telemetry.js"));
 const SettingsTab = lazyTab("./tabs/settings.js", "SettingsTab", () => import("./tabs/settings.js"));
+const IntegrationsTab = lazyTab("./tabs/integrations.js", "IntegrationsTab", () => import("./tabs/integrations.js"));
 const WorkflowsTab = lazyTab("./tabs/workflows.js", "WorkflowsTab", () => import("./tabs/workflows.js"));
 const LibraryTab = lazyTab("./tabs/library.js", "LibraryTab", () => import("./tabs/library.js"));
 const LibraryMarketplaceTab = lazyTab("./tabs/library.js", "LibraryMarketplaceTab", () => import("./tabs/library.js"));
@@ -762,8 +785,8 @@ const TAB_COMPONENTS = {
   library: LibraryTab,
   marketplace: LibraryMarketplaceTab,
   settings: SettingsTab,
+  integrations: IntegrationsTab,
 };
-
 function getMaxFreshnessMs(rawFreshness) {
   if (typeof rawFreshness === "number") {
     return Number.isFinite(rawFreshness) ? rawFreshness : null;
@@ -1238,6 +1261,28 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   const contextWindow = insights?.contextWindow || null;
   const tokenUsage = insights?.tokenUsage || null;
   const recentActions = Array.isArray(insights?.recentActions) ? insights.recentActions : [];
+
+  // Context window breakdown grouping
+  const _SYSTEM_CTX = new Set(["system instructions", "tool definitions", "system"]);
+  const _USER_CTX = new Set(["messages", "files", "tool results", "user context"]);
+  const ctxRefTokens = contextWindow?.totalTokens || tokenUsage?.totalTokens || 0;
+  const ctxSystemRows = insightsContextBreakdown.filter((r) => _SYSTEM_CTX.has(String(r.label || "").toLowerCase()));
+  const ctxUserRows = insightsContextBreakdown.filter((r) => _USER_CTX.has(String(r.label || "").toLowerCase()));
+  const ctxOtherRows = insightsContextBreakdown.filter(
+    (r) => !_SYSTEM_CTX.has(String(r.label || "").toLowerCase()) && !_USER_CTX.has(String(r.label || "").toLowerCase()),
+  );
+  const renderCtxRow = (row, idx) => {
+    const approxTokens = ctxRefTokens > 0 ? Math.round((row.percent / 100) * ctxRefTokens) : null;
+    return html`
+      <div class="inspector-ctx-row" key=${row.label || idx}>
+        <span>${row.label}</span>
+        <span class="inspector-ctx-row-right">
+          ${approxTokens != null ? html`<span class="inspector-ctx-tokens">${formatCompactCount(approxTokens)}</span>` : ""}
+          <span class="inspector-ctx-pct">${row.percent}%</span>
+        </span>
+      </div>`;
+  };
+
   let smartLogsContent = html`
     <div class="inspector-scroll">
       ${smartLogs.map(
@@ -1323,54 +1368,55 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
                         <div class="inspector-metric"><span class="label">Messages</span><strong>${formatCompactCount(insightsTotals.messages)}</strong></div>
                         <div class="inspector-metric"><span class="label">Errors</span><strong>${formatCompactCount(insightsTotals.errors)}</strong></div>
                       </div>
-                      ${(contextWindow || tokenUsage) &&
+                      ${(contextWindow || tokenUsage || insightsContextBreakdown.length > 0 || insightsTopTools.length > 0) &&
                         html`
                           <div class="inspector-context">
-                            ${contextWindow &&
-                              html`
-                                <div class="inspector-kv"><span>Context Window</span><strong>
-                                  ${contextWindow.percent != null
-                                    ? `${contextWindow.percent}%`
-                                    : "Tracked"}
-                                </strong></div>
-                                ${(contextWindow.usedTokens || contextWindow.totalTokens) &&
-                                  html`
-                                    <div class="inspector-kv"><span>Token Fill</span><strong>
-                                      ${contextWindow.usedTokens != null ? formatCompactCount(contextWindow.usedTokens) : "—"}
-                                      ${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)}` : ""}
-                                    </strong></div>
-                                  `}
-                              `}
+                            <div class="inspector-ctx-header">
+                              <span class="inspector-ctx-title">Context Window</span>
+                              ${contextWindow?.percent != null
+                                ? html`<span class="inspector-ctx-pct-badge">${contextWindow.percent}%</span>`
+                                : html`<span class="inspector-ctx-pct-badge">Tracked</span>`}
+                            </div>
+                            ${contextWindow?.percent != null &&
+                              html`<div class="inspector-ctx-bar">
+                                <div class="inspector-ctx-bar-fill" style=${{ width: `${Math.min(100, contextWindow.percent)}%` }}></div>
+                              </div>`}
+                            ${contextWindow?.usedTokens != null &&
+                              html`<div class="inspector-ctx-summary">
+                                ${formatCompactCount(contextWindow.usedTokens)}${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)} tokens` : " tokens"}
+                              </div>`}
+                            ${ctxSystemRows.length > 0 &&
+                              html`<div class="inspector-ctx-group">
+                                <div class="inspector-ctx-group-label">System</div>
+                                ${ctxSystemRows.map(renderCtxRow)}
+                              </div>`}
+                            ${ctxUserRows.length > 0 &&
+                              html`<div class="inspector-ctx-group">
+                                <div class="inspector-ctx-group-label">User Context</div>
+                                ${ctxUserRows.map(renderCtxRow)}
+                              </div>`}
+                            ${ctxOtherRows.length > 0 && ctxOtherRows.map(renderCtxRow)}
                             ${tokenUsage &&
-                              html`
-                                <div class="inspector-kv"><span>Token Usage</span><strong>${formatCompactCount(tokenUsage.totalTokens || 0)}</strong></div>
-                                <div class="inspector-kv"><span>Input / Output</span><strong>${formatCompactCount(tokenUsage.inputTokens || 0)} / ${formatCompactCount(tokenUsage.outputTokens || 0)}</strong></div>
-                              `}
-                          </div>
-                        `}
-                      ${insightsTopTools.length > 0 &&
-                        html`
-                          <div class="inspector-pill-row">
-                            ${insightsTopTools.map(
-                              (tool) => html`
-                                <span class="inspector-pill" key=${tool.name}>
-                                  ${tool.name}: ${formatCompactCount(tool.count)}
-                                </span>
-                              `,
-                            )}
-                          </div>
-                        `}
-                      ${insightsContextBreakdown.length > 0 &&
-                        html`
-                          <div class="inspector-breakdown">
-                            ${insightsContextBreakdown.slice(0, 6).map(
-                              (row) => html`
-                                <div class="inspector-breakdown-row" key=${row.label}>
-                                  <span>${row.label}</span>
-                                  <strong>${row.percent}%</strong>
+                              html`<div class="inspector-ctx-group">
+                                <div class="inspector-ctx-group-label">Token Usage</div>
+                                <div class="inspector-ctx-row">
+                                  <span>Input</span>
+                                  <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(tokenUsage.inputTokens)}</span></span>
                                 </div>
-                              `,
-                            )}
+                                <div class="inspector-ctx-row">
+                                  <span>Output</span>
+                                  <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(tokenUsage.outputTokens)}</span></span>
+                                </div>
+                              </div>`}
+                            ${insightsTopTools.length > 0 &&
+                              html`<div class="inspector-ctx-group">
+                                <div class="inspector-ctx-group-label">Top Tools</div>
+                                <div class="inspector-pill-row">
+                                  ${insightsTopTools.map(
+                                    (tool) => html`<span class="inspector-pill" key=${tool.name}>${tool.name}: ${formatCompactCount(tool.count)}</span>`,
+                                  )}
+                                </div>
+                              </div>`}
                           </div>
                         `}
                     `

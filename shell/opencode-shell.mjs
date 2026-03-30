@@ -14,6 +14,7 @@
  * Server: opencode binary on PATH (https://opencode.ai)
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";

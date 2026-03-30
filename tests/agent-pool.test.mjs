@@ -12,6 +12,27 @@ let mockCopilotResumeSession;
 let mockClaudeQuery;
 let isolatedHomeDir;
 let setSdkFailureCooldownForTest;
+function ensureMock(name) {
+  const candidate = globalThis[name];
+  if (typeof candidate === "function") {
+    return candidate;
+  }
+  return (...args) => {
+    const current = globalThis[name];
+    if (typeof current !== "function") {
+      throw new Error(`Missing test mock: ${name}`);
+    }
+    return current(...args);
+  };
+}
+
+const callMockCodexCtor = ensureMock("__agentPoolMockCodexCtor");
+const callMockCodexStartThread = ensureMock("__agentPoolMockCodexStartThread");
+const callMockCodexResumeThread = ensureMock("__agentPoolMockCodexResumeThread");
+const callMockCopilotStart = ensureMock("__agentPoolMockCopilotStart");
+const callMockCopilotCreateSession = ensureMock("__agentPoolMockCopilotCreateSession");
+const callMockCopilotResumeSession = ensureMock("__agentPoolMockCopilotResumeSession");
+const callMockClaudeQuery = ensureMock("__agentPoolMockClaudeQuery");
 
 function makeCodexMockThread(
   threadId = "mock-codex-thread",
@@ -56,12 +77,19 @@ mockCopilotStart = vi.fn();
 mockCopilotCreateSession = vi.fn();
 mockCopilotResumeSession = vi.fn();
 mockClaudeQuery = vi.fn();
+globalThis.__agentPoolMockCodexStartThread = mockCodexStartThread;
+globalThis.__agentPoolMockCodexResumeThread = mockCodexResumeThread;
+globalThis.__agentPoolMockCodexCtor = mockCodexCtor;
+globalThis.__agentPoolMockCopilotStart = mockCopilotStart;
+globalThis.__agentPoolMockCopilotCreateSession = mockCopilotCreateSession;
+globalThis.__agentPoolMockCopilotResumeSession = mockCopilotResumeSession;
+globalThis.__agentPoolMockClaudeQuery = mockClaudeQuery;
 
 vi.mock("@openai/codex-sdk", () => {
   return {
     Codex: class MockCodex {
       constructor(...args) {
-        mockCodexCtor(...args);
+        callMockCodexCtor(...args);
       }
 
       startThread(...args) {
@@ -73,7 +101,7 @@ vi.mock("@openai/codex-sdk", () => {
             },
           };
         }
-        const injected = mockCodexStartThread(...args);
+        const injected = callMockCodexStartThread(...args);
         if (injected !== undefined) return injected;
         return makeCodexMockThread("mock-codex-thread-new", "codex-output");
       }
@@ -82,7 +110,7 @@ vi.mock("@openai/codex-sdk", () => {
         if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
           throw new Error("Codex SDK not available: mocked unavailable");
         }
-        const injected = mockCodexResumeThread(...args);
+        const injected = callMockCodexResumeThread(...args);
         if (injected !== undefined) return injected;
         const [threadId] = args;
         return makeCodexMockThread(
@@ -99,12 +127,12 @@ vi.mock("@github/copilot-sdk", () => {
     return {
       CopilotClient: class MockCopilotClient {
         async start() {
-          const injected = mockCopilotStart();
+          const injected = callMockCopilotStart();
           if (injected !== undefined) return injected;
         }
         async stop() {}
         async resumeSession(...args) {
-          const injected = mockCopilotResumeSession(...args);
+          const injected = callMockCopilotResumeSession(...args);
           if (injected !== undefined) return injected;
           const [sessionId] = args;
           return {
@@ -120,7 +148,7 @@ vi.mock("@github/copilot-sdk", () => {
           };
         }
         async createSession(...args) {
-          const injected = mockCopilotCreateSession(...args);
+          const injected = callMockCopilotCreateSession(...args);
           if (injected !== undefined) return injected;
           return {
             sessionId: "mock-copilot-session-new",
@@ -144,7 +172,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   if (process.env.__MOCK_CLAUDE_AVAILABLE === "1") {
     return {
       query: function mockQuery(payload = {}) {
-        const injected = mockClaudeQuery(payload);
+        const injected = callMockClaudeQuery(payload);
         if (injected !== undefined) return injected;
         return {
           async *[Symbol.asyncIterator]() {
@@ -298,6 +326,10 @@ let getPoolSdkName,
   resetPoolSdkCache,
   setSdkFailureCooldownForTest,
   getAvailableSdks,
+  getAvailableSlots,
+  getAgentExecutionSlotStatus,
+  allocateSlot,
+  releaseSlot,
   launchEphemeralThread,
   execPooledPrompt,
   launchOrResumeThread,
@@ -323,6 +355,10 @@ beforeEach(async () => {
   resetPoolSdkCache = mod.resetPoolSdkCache;
   setSdkFailureCooldownForTest = mod.setSdkFailureCooldownForTest;
   getAvailableSdks = mod.getAvailableSdks;
+  getAvailableSlots = mod.getAvailableSlots;
+  getAgentExecutionSlotStatus = mod.getAgentExecutionSlotStatus;
+  allocateSlot = mod.allocateSlot;
+  releaseSlot = mod.releaseSlot;
   launchEphemeralThread = mod.launchEphemeralThread;
   execPooledPrompt = mod.execPooledPrompt;
   launchOrResumeThread = mod.launchOrResumeThread;
@@ -357,6 +393,68 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. SDK Resolution
 // ═══════════════════════════════════════════════════════════════════════════
+
+describe("agent execution slot queue", () => {
+  it("keeps later requests pending until a shared slot is released", async () => {
+    process.env.AGENT_POOL_MAX_PARALLEL = "1";
+
+    const first = await allocateSlot("slot-owner-1", {
+      taskKey: "slot-owner-1",
+      workflowId: "wf-a",
+    });
+    expect(first.slotId).toMatch(/^agent-slot-/);
+    expect(getAvailableSlots()).toBe(0);
+
+    const queuedSnapshots = [];
+    const acquiredSnapshots = [];
+    let secondResolved = false;
+    const secondPromise = allocateSlot("slot-owner-2", {
+      taskKey: "slot-owner-2",
+      workflowId: "wf-b",
+      onQueued: (snapshot) => queuedSnapshots.push(snapshot),
+      onAcquired: (snapshot) => acquiredSnapshots.push(snapshot),
+    }).then((lease) => {
+      secondResolved = true;
+      return lease;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(secondResolved).toBe(false);
+    expect(getAgentExecutionSlotStatus()).toMatchObject({
+      activeSlots: 1,
+      queuedSlots: 1,
+      maxParallel: 1,
+    });
+    expect(queuedSnapshots).toHaveLength(1);
+    expect(queuedSnapshots[0]).toMatchObject({
+      ownerKey: "slot-owner-2",
+      activeSlots: 1,
+      queuedSlots: 1,
+      maxParallel: 1,
+    });
+
+    await releaseSlot(first);
+    const second = await secondPromise;
+
+    expect(secondResolved).toBe(true);
+    expect(second.ownerKey).toBe("slot-owner-2");
+    expect(acquiredSnapshots).toHaveLength(1);
+    expect(acquiredSnapshots[0]).toMatchObject({
+      ownerKey: "slot-owner-2",
+      slotId: second.slotId,
+      activeSlots: 1,
+      maxParallel: 1,
+    });
+
+    await releaseSlot(second);
+    expect(getAgentExecutionSlotStatus()).toMatchObject({
+      activeSlots: 0,
+      queuedSlots: 0,
+      maxParallel: 1,
+    });
+    expect(getAvailableSlots()).toBe(1);
+  });
+});
 
 describe("SDK resolution", () => {
   it("uses AGENT_POOL_SDK env var when set", () => {
@@ -1887,6 +1985,37 @@ describe("launchOrResumeThread", () => {
 // 5. execWithRetry
 // ═══════════════════════════════════════════════════════════════════════════
 
+
+describe("sdk cooldown heuristics", () => {
+  it("treats 400 model-list failures as fallback-worthy but not cooldown-worthy errors", async () => {
+    const { __testables } = await import("../agent/agent-pool.mjs");
+    expect(__testables.shouldFallbackForSdkError("Error: Failed to list models: 400")).toBe(true);
+    expect(__testables.shouldApplySdkCooldown("Error: Failed to list models: 400")).toBe(false);
+  });
+
+  it("detects repeated reconnect fingerprints as retry circuit breakers", async () => {
+    const { __testables } = await import("../agent/agent-pool.mjs");
+    const failureFingerprints = new Map([
+      ["[agent-pool] copilot timeout after <ms> waiting for session.idle", 1],
+    ]);
+
+    const classified = __testables.classifyRetryCircuitBreak(
+      {
+        success: false,
+        error: "[agent-pool] copilot timeout after 120000ms waiting for session.idle",
+        output: "",
+        items: [],
+      },
+      {
+        failureFingerprints,
+        consecutiveNoOutputFailures: 0,
+      },
+    );
+
+    expect(classified.shouldBreak).toBe(true);
+    expect(classified.blockedReason).toBe("blocked_by_env");
+  });
+});
 describe("execWithRetry", () => {
   it("retries after timeout without treating the next attempt as externally aborted", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
@@ -1932,6 +2061,45 @@ describe("execWithRetry", () => {
     expect(result.attempts).toBe(2);
     expect(result.error).toBeNull();
     expect(result.output).toContain("recovered-output");
+  });
+
+  it("stops retrying after repeated no-output starts", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementation(() => ({
+      id: "timeout-thread-repeat",
+      runStreamed: async (_prompt, { signal } = {}) => {
+        await new Promise((_, reject) => {
+          const abortNow = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal?.aborted) {
+            abortNow();
+            return;
+          }
+          signal?.addEventListener("abort", abortNow, { once: true });
+        });
+      },
+    }));
+
+    const result = await execWithRetry("repeat no output", {
+      taskKey: "retry-no-output-task",
+      cwd: process.cwd(),
+      timeoutMs: 25,
+      maxRetries: 2,
+      sdk: "codex",
+      abortController: new AbortController(),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.retryCircuitBroken).toBe(true);
+    expect(result.blockedReason).toBe("no_output");
+    expect(result.attempts).toBe(2);
   });
 });
 
@@ -2056,6 +2224,8 @@ describe("resolution and launch integration", () => {
   });
 });
 }
+
+
 
 
 

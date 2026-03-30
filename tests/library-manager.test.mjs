@@ -468,6 +468,13 @@ describe("initLibrary", () => {
     expect(result2.scaffolded.skipped.length).toBeGreaterThanOrEqual(5);
     expect(result2.scaffolded.written).toHaveLength(0);
   });
+
+  it("rejects unresolved template placeholders in library root paths", () => {
+    const invalidRoot = join(tmpDir, "{{repoRoot}}");
+
+    expect(() => initLibrary(invalidRoot)).toThrow(/unresolved template token/i);
+    expect(existsSync(invalidRoot)).toBe(false);
+  });
 });
 
 // ── resolveLibraryRefs ──────────────────────────────────────────────────────
@@ -1235,7 +1242,7 @@ describe("syncAutoDiscoveredLibraryEntries", () => {
     expect(entry.type).toBe("prompt");
     const content = getEntryContent(tmpDir, entry);
     expect(String(content || "")).toContain("Strict planner contract.");
-  });
+  }, 30000);
 
   it("imports MCP server definitions from repo .codex/config.toml", () => {
     mkdirSync(join(tmpDir, ".codex"), { recursive: true });

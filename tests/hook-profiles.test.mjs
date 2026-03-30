@@ -59,6 +59,7 @@ describe("hook-profiles", () => {
         {
           name: "hook-fixture",
           scripts: {
+            "format:check": "prettier --check .",
             lint: "eslint .",
             "prepush:check": "npm run lint && npm test",
           },
@@ -77,6 +78,9 @@ describe("hook-profiles", () => {
     expect(config.hooks.PrePush?.map((item) => item.command)).toContain(
       "npm run prepush:check",
     );
+    expect(config.hooks.PostToolUse?.map((item) => item.command)).toContain(
+      "npm run format:check",
+    );
     expect(config.hooks.PreCommit?.map((item) => item.command)).toContain(
       "npm run lint",
     );
@@ -91,11 +95,16 @@ describe("hook-profiles", () => {
     const opts = buildHookScaffoldOptionsFromEnv({
       BOSUN_HOOK_PROFILE: "balanced",
       BOSUN_HOOK_TARGETS: "codex,copilot",
+      BOSUN_HOOK_POST_TOOL_USE: "npm run format:check;;npm run lint",
       BOSUN_HOOK_PREPUSH: "go test ./...;;go build ./...",
     });
 
     expect(opts.profile).toBe("balanced");
     expect(opts.targets).toEqual(["codex", "copilot"]);
+    expect(opts.commands.PostToolUse).toEqual([
+      "npm run format:check",
+      "npm run lint",
+    ]);
     expect(opts.commands.PrePush).toEqual(["go test ./...", "go build ./..."]);
   });
 
@@ -106,6 +115,7 @@ describe("hook-profiles", () => {
         {
           name: "hook-scaffold-fixture",
           scripts: {
+            "format:check": "prettier --check .",
             lint: "eslint .",
             "prepush:check": "npm run lint && npm test",
           },
@@ -135,6 +145,9 @@ describe("hook-profiles", () => {
     expect(codexHooks.hooks.PrePush?.length).toBeGreaterThan(0);
     expect(codexHooks.hooks.PrePush?.map((item) => item.command)).toContain(
       "npm run prepush:check",
+    );
+    expect(codexHooks.hooks.PostToolUse?.map((item) => item.command)).toContain(
+      "npm run format:check",
     );
     expect(codexHooks.hooks.PreCommit?.map((item) => item.command)).toContain(
       "npm run lint",

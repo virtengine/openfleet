@@ -31,6 +31,7 @@ const ROUTE_TABS = new Set([
   "marketplace",
   "telemetry",
   "settings",
+  "integrations",
 ]);
 
 function getParentTab(tabId) {
@@ -266,6 +267,7 @@ export const TAB_CONFIG = [
   { id: "telemetry", label: "Telemetry", icon: "chart" },
   { id: "benchmarks", label: "Bench", icon: "chart" },
   { id: "settings", label: "Settings", icon: "settings" },
+  { id: "integrations", label: "Vault", icon: "lock" },
 ];
 
 if (typeof window !== "undefined") {

@@ -1,10 +1,19 @@
 #!/usr/bin/env node
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
 import { format } from "node:util";
 import * as mcpServer from "@modelcontextprotocol/sdk/server/index.js";
 import * as mcpStdio from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as mcpTypes from "@modelcontextprotocol/sdk/types.js";
+import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 
 const Server = mcpServer.Server ?? mcpServer.default?.Server;
 const StdioServerTransport =
@@ -617,7 +626,123 @@ export function listBosunMcpTools() {
         required: ["toolName"],
       },
     },
+    // ── File tools ─────────────────────────────────────────────────────────
+    {
+      name: "str_replace_editor",
+      description:
+        "Make a surgical edit to a file by replacing an exact string. " +
+        "Safer than full rewrites — preserves encoding, only changes what's specified. " +
+        "Prefer this over shell-based patching. " +
+        "The old_str must match exactly (whitespace included). " +
+        "Call read_file first if you need to verify the exact text.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or workspace-relative file path." },
+          old_str: { type: "string", description: "Exact string to find and replace (must be unique in the file)." },
+          new_str: { type: "string", description: "Replacement string." },
+          workspace_path: { type: "string", description: "Workspace root for resolving relative paths." },
+        },
+        required: ["path", "old_str", "new_str"],
+      },
+    },
+    {
+      name: "write_file",
+      description:
+        "Write content to a file, creating it and any missing parent directories if needed. " +
+        "Use for new files or when a complete rewrite is necessary. " +
+        "For editing existing files prefer str_replace_editor.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or workspace-relative file path." },
+          content: { type: "string", description: "Full file content to write." },
+          workspace_path: { type: "string", description: "Workspace root for resolving relative paths." },
+        },
+        required: ["path", "content"],
+      },
+    },
+    {
+      name: "read_file",
+      description:
+        "Read a file's content with line numbers. Use start_line and end_line to focus on a range. " +
+        "Always call this before str_replace_editor to confirm the exact text you want to replace.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or workspace-relative file path." },
+          start_line: { type: "number", description: "First line to read (1-indexed, inclusive)." },
+          end_line: { type: "number", description: "Last line to read (1-indexed, inclusive)." },
+          workspace_path: { type: "string", description: "Workspace root for resolving relative paths." },
+        },
+        required: ["path"],
+      },
+    },
+    {
+      name: "grep_search",
+      description:
+        "Search for text or regex patterns across files. Returns matching lines with file paths and line numbers. " +
+        "Use this to locate code before editing rather than guessing paths.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          pattern: { type: "string", description: "Text or regex pattern to search for." },
+          path: { type: "string", description: "Directory or file to search in (defaults to workspace root)." },
+          glob: { type: "string", description: "Glob pattern to filter files, e.g. '**/*.mjs' or '*.ts'." },
+          case_insensitive: { type: "boolean", description: "Case-insensitive search. Default: false." },
+          max_results: { type: "number", description: "Maximum number of matching lines to return. Default: 50." },
+          workspace_path: { type: "string", description: "Workspace root for resolving relative paths." },
+        },
+        required: ["pattern"],
+      },
+    },
   ];
+}
+
+// ── File tool helpers ──────────────────────────────────────────────────────
+
+function resolveFilePath(filePath, workspacePath) {
+  const p = String(filePath ?? "").trim();
+  if (!p) throw new Error("path is required");
+  if (p.match(/^([A-Za-z]:\\|\/)/)) return p; // already absolute
+  const base = workspacePath ? resolve(String(workspacePath).trim()) : process.cwd();
+  return join(base, p);
+}
+
+function countOccurrences(haystack, needle) {
+  let count = 0;
+  let pos = 0;
+  while ((pos = haystack.indexOf(needle, pos)) !== -1) { count++; pos += needle.length; }
+  return count;
+}
+
+const GREP_SKIP_DIRS = new Set(["node_modules", ".git", ".bosun", "dist", "build", ".next", "coverage"]);
+
+function matchGlob(filePath, pattern) {
+  if (!pattern || pattern === "**/*") return true;
+  // Simple glob: supports *.ext and **/*.ext patterns only
+  let ext = "";
+  if (pattern.startsWith("*.")) {
+    ext = pattern.slice(2);
+  } else if (pattern.startsWith("**/*.")) {
+    ext = pattern.slice(5);
+  }
+  if (ext && !pattern.includes("/")) return filePath.endsWith(`.${ext}`);
+  return true;
+}
+
+function walkForGrep(dir, glob, callback) {
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!GREP_SKIP_DIRS.has(entry.name)) walkForGrep(full, glob, callback);
+      } else if (entry.isFile() && matchGlob(entry.name, glob)) {
+        if (callback(full) === false) return;
+      }
+    }
+  } catch { /* skip inaccessible dirs */ }
 }
 
 const BOSUN_TOOL_HANDLERS = {
@@ -929,6 +1054,112 @@ const BOSUN_TOOL_HANDLERS = {
       },
     });
     return response.data;
+  },
+
+  // ── File system tools ──────────────────────────────────────────────────────
+  // These are implemented as local fs operations (not Bosun HTTP API calls)
+  // so they work reliably with correct encoding regardless of shell/platform.
+
+  str_replace_editor(_runtime, args) {
+    const absPath = resolveFilePath(args.path, args.workspace_path);
+    if (!existsSync(absPath)) throw new Error(`File not found: ${absPath}`);
+    const original = readFileSync(absPath, "utf8");
+    const oldStr = String(args.old_str ?? "");
+    const newStr = repairCommonMojibake(String(args.new_str ?? ""));
+    if (!oldStr) throw new Error("old_str must not be empty");
+    const idx = original.indexOf(oldStr);
+    if (idx === -1) {
+      throw new Error(
+        `str_replace_editor: old_str not found in ${absPath}.\n` +
+        `Verify the exact text including whitespace. ` +
+        `Tip: read_file the target first, then copy the exact text to old_str.`,
+      );
+    }
+    const occurrences = countOccurrences(original, oldStr);
+    if (occurrences > 1) {
+      throw new Error(
+        `str_replace_editor: old_str matched ${occurrences} times in ${absPath}. ` +
+        `Add more surrounding context to make it unique.`,
+      );
+    }
+    const updated = original.slice(0, idx) + newStr + original.slice(idx + oldStr.length);
+    writeFileSync(absPath, updated, "utf8");
+    const lineNum = original.slice(0, idx).split("\n").length;
+    return {
+      success: true,
+      path: absPath,
+      replaced_at_line: lineNum,
+      occurrences_checked: occurrences,
+      repairedMojibake: newStr !== String(args.new_str ?? ""),
+    };
+  },
+
+  write_file(_runtime, args) {
+    const absPath = resolveFilePath(args.path, args.workspace_path);
+    const rawContent = String(args.content ?? "");
+    const content = repairCommonMojibake(rawContent);
+    const dir = dirname(absPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(absPath, content, "utf8");
+    const lineCount = content.split("\n").length;
+    return {
+      success: true,
+      path: absPath,
+      bytes_written: Buffer.byteLength(content, "utf8"),
+      lines: lineCount,
+      repairedMojibake: content !== rawContent,
+    };
+  },
+
+  read_file(_runtime, args) {
+    const absPath = resolveFilePath(args.path, args.workspace_path);
+    if (!existsSync(absPath)) throw new Error(`File not found: ${absPath}`);
+    const raw = readFileSync(absPath, "utf8");
+    const lines = raw.split("\n");
+    const startLine = args.start_line ? Math.max(1, Number(args.start_line)) : 1;
+    const endLine = args.end_line ? Math.min(lines.length, Number(args.end_line)) : lines.length;
+    const sliced = lines.slice(startLine - 1, endLine);
+    const content = sliced
+      .map((line, i) => `${String(startLine + i).padStart(6)} | ${line}`)
+      .join("\n");
+    return { path: absPath, start_line: startLine, end_line: startLine + sliced.length - 1, total_lines: lines.length, content };
+  },
+
+  grep_search(_runtime, args) {
+    const pattern = String(args.pattern ?? "");
+    if (!pattern) throw new Error("pattern is required");
+    const base = args.workspace_path
+      ? resolve(args.workspace_path)
+      : process.cwd();
+    const searchRoot = args.path
+      ? resolveFilePath(args.path, args.workspace_path)
+      : base;
+    const glob = String(args.glob ?? "**/*");
+    const caseInsensitive = Boolean(args.case_insensitive);
+    const maxResults = Math.min(Number(args.max_results ?? 50), 500);
+    const flags = caseInsensitive ? "gi" : "g";
+    let regex;
+    try {
+      regex = new RegExp(pattern, flags);
+    } catch {
+      regex = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+    }
+    const matches = [];
+    walkForGrep(searchRoot, glob, (filePath) => {
+      if (matches.length >= maxResults) return false;
+      try {
+        const text = readFileSync(filePath, "utf8");
+        const fileLines = text.split("\n");
+        for (let i = 0; i < fileLines.length; i++) {
+          if (matches.length >= maxResults) break;
+          if (regex.test(fileLines[i])) {
+            matches.push({ file: filePath, line: i + 1, text: fileLines[i].trim() });
+          }
+        }
+      } catch { /* skip unreadable files */ }
+      return true;
+    });
+    return { pattern, results: matches, total: matches.length, truncated: matches.length >= maxResults };
   },
 };
 

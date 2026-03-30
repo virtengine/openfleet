@@ -12,6 +12,7 @@
  * thread_id so we can resume the same conversation across restarts.
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -214,8 +215,10 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
 
   Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
 
-  if (providerSectionNameResolved && env.CODEX_MODEL) {
+  if (providerSectionNameResolved) {
     config.model_provider = providerSectionNameResolved;
+  }
+  if (env.CODEX_MODEL) {
     config.model = env.CODEX_MODEL;
   }
 
@@ -576,6 +579,19 @@ You have FULL ACCESS to:
 - Shell: git, gh, node, go, make, and all system commands (pwsh optional)
 - File read/write: read any file, create/edit any file
 - MCP servers configured in this environment (availability varies)
+
+## File Editing Strategy — IMPORTANT
+
+When editing files, always prefer the Bosun MCP file tools (available via the bosun MCP server):
+
+1. **LOCATE first** — use \`grep_search\` to find the exact code location before editing.
+2. **READ before editing** — use \`read_file\` to confirm the exact text including whitespace.
+3. **PREFER surgical edits** — use \`str_replace_editor\` for targeted changes.
+   - \`old_str\` must exactly match the file content (copy from \`read_file\` output).
+   - Include more surrounding lines if the text is not unique.
+4. **Full rewrites only when necessary** — use \`write_file\` for new files or complete rewrites.
+5. **NEVER use shell workarounds** to edit files (no \`node -e\`, no \`sed -i\`, no temp scripts, no patch files).
+   These break on Windows due to encoding and quoting issues. The MCP tools handle encoding correctly.
 
 Key files:
   ${REPO_ROOT} — Repository root

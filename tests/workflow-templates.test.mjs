@@ -539,6 +539,22 @@ describe("workflow-templates", () => {
     expect(triggerNode?.config?.filter).toBeUndefined();
   });
 
+  it("backend agent template requires descriptive commit guidance", () => {
+    const template = getTemplate("template-backend-agent");
+    expect(template).toBeDefined();
+
+    const writeTests = template.nodes.find((n) => n.id === "write-tests");
+    const implement = template.nodes.find((n) => n.id === "implement");
+    const autoFix = template.nodes.find((n) => n.id === "auto-fix");
+
+    expect(String(writeTests?.config?.prompt || "")).toContain("descriptive test commit message");
+    expect(String(writeTests?.config?.prompt || "")).not.toContain("Commit with message \"test: add tests for [feature]\"");
+    expect(String(implement?.config?.prompt || "")).toContain("descriptive feat/fix commit message");
+    expect(String(implement?.config?.prompt || "")).not.toContain("Commit with message \"feat: implement [feature]\"");
+    expect(String(autoFix?.config?.prompt || "")).toContain("descriptive fix commit message");
+    expect(String(autoFix?.config?.prompt || "")).not.toContain("Commit with message \"fix: address validation failures\"");
+  });
+
   it("agent templates only advance to inreview after a real PR is linked", () => {
     const backendTemplate = getTemplate("template-backend-agent");
     expect(backendTemplate).toBeDefined();
@@ -568,7 +584,7 @@ describe("workflow-templates", () => {
   it("continuation loop template exposes configurable turn/stuck controls", () => {
     const template = getTemplate("template-continuation-loop");
     expect(template).toBeDefined();
-    expect(template?.trigger).toBe("trigger.manual");
+    expect(template?.trigger).toBe("trigger.task_available");
 
     expect(template?.variables?.maxTurns).toBe(8);
     expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
@@ -667,7 +683,7 @@ describe("workflow-templates", () => {
   it("continuation loop template includes stuck handling and terminal-state exits", () => {
     const template = getTemplate("template-continuation-loop");
     expect(template).toBeDefined();
-    expect(template?.trigger).toBe("trigger.manual");
+    expect(template?.trigger).toBe("trigger.task_available");
     expect(template?.variables?.onStuck).toBe("escalate");
     expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
 
@@ -826,9 +842,6 @@ describe("template API functions", () => {
       "template-task-repair-worktree",
       "template-task-orphan-worktree-recovery",
       "template-task-status-transition-manager",
-      // template-pr-conflict-resolver deliberately excluded — superseded by
-      // template-bosun-pr-watchdog which owns conflict detection, CI checks,
-      // diff-safety review, and merge in one consolidated workflow.
       "template-agent-session-monitor",
       "template-release-pipeline",
       "template-backend-agent",
@@ -1507,7 +1520,10 @@ describe("github template CLI compatibility", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
     const securityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
-    const securityAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agent");
+    const securityDispatchNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agents");
+    const securityTemplate = getTemplate("template-pr-security-fix-single");
+    const securityPromptNode = securityTemplate?.nodes.find((n) => n.id === "setup-prompt");
+    const securityFixAgentNode = securityTemplate?.nodes.find((n) => n.id === "fix-agent");
 
     expect(getNodeCommandCode(fetchNode)).toContain("SECURITY_CHECK_RE");
     expect(getNodeCommandCode(fetchNode)).toContain("securityFailures");
@@ -1521,22 +1537,26 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(securityNode)).toContain("reviewComments");
     expect(getNodeCommandCode(securityNode)).toContain("digestSummary");
     expect(getNodeCommandCode(securityNode)).toContain("reason:'security_code_scanning_failure'");
-    expect(securityAgentNode?.config?.prompt).toContain("CodeQL or GitHub code scanning");
-    expect(securityAgentNode?.config?.prompt).toContain("Only fix the listed code-scanning or CodeQL findings");
-    expect(securityAgentNode?.config?.prompt).toContain("prDigest.body");
-    expect(securityAgentNode?.config?.prompt).toContain("prDigest.reviewComments");
+    expect(securityDispatchNode?.type).toBe("loop.for_each");
+    expect(securityDispatchNode?.config?.workflowId).toBe("template-pr-security-fix-single");
+    expect(securityPromptNode?.config?.value).toContain("security remediation");
+    expect(securityPromptNode?.config?.value).toContain("Fix ONLY the security/CodeQL findings");
+    expect(securityPromptNode?.config?.value).toContain("prDigest.reviewComments");
+    expect(securityFixAgentNode?.config?.prompt).toContain("Fix ONLY the listed security/CodeQL findings");
+    expect(securityFixAgentNode?.config?.prompt).toContain("code-scanning/alerts");
 
     expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "security-fix-needed")).toBeDefined();
-    expect(watchdogTemplate.edges.find((e) => e.source === "security-agent-needed" && e.target === "dispatch-security-fix-agent")).toBeDefined();
-    expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agent" && e.target === "generic-fix-needed")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "has-unclaimed-security-fixes" && e.target === "dispatch-security-fix-agents")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agents" && e.target === "generic-fix-needed")).toBeDefined();
   });
 
   it("PR watchdog enriches generic CI fallback with run diagnostics and bounded reruns", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
-    const fixAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
+    const claimNode = watchdogTemplate.nodes.find((n) => n.id === "claim-unclaimed-prs");
+    const dispatchNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agents");
+    const singleFixTemplate = getTemplate("template-pr-fix-single");
     const command = getNodeCommandCode(fixNode);
-
     expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
     expect(command).toContain("collectCiDiagnostics(repo,failedRun,runGh)");
@@ -1549,10 +1569,15 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt");
-    expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
+    expect(getNodeCommandCode(claimNode)).toContain("BOSUN_PROGRAMMATIC_FIX");
+    expect(getNodeCommandCode(claimNode)).toContain("pr-fix-claims.json");
+    expect(getNodeCommandCode(claimNode)).toContain("unclaimedCount");
+    expect(dispatchNode?.type).toBe("loop.for_each");
+    expect(dispatchNode?.config?.items).toContain("d.unclaimed");
+    expect(dispatchNode?.config?.maxConcurrent).toBe("{{maxConcurrentFixes}}");
+    expect(dispatchNode?.config?.workflowId).toBe("template-pr-fix-single");
+    expect(singleFixTemplate?.trigger).toBe("trigger.manual");
   });
-
   it("PR progressor is registered as the immediate single-PR handoff workflow", () => {
     const progressorTemplate = getTemplate("template-bosun-pr-progressor");
     expect(progressorTemplate).toBeDefined();
