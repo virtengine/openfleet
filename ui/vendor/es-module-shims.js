@@ -1,16 +1,1499 @@
-/* esm.sh - es-module-shims@1.10.0 */
-var z0=Object.create;var Vt=Object.defineProperty;var Q0=Object.getOwnPropertyDescriptor;var G0=Object.getOwnPropertyNames;var K0=Object.getPrototypeOf,V0=Object.prototype.hasOwnProperty;var X0=(v,O)=>()=>(O||v((O={exports:{}}).exports,O),O.exports);var Y0=(v,O,B,M)=>{if(O&&typeof O=="object"||typeof O=="function")for(let y of G0(O))!V0.call(v,y)&&y!==B&&Vt(v,y,{get:()=>O[y],enumerable:!(M=Q0(O,y))||M.enumerable});return v};var Z0=(v,O,B)=>(B=v!=null?z0(K0(v)):{},Y0(O||!v||!v.__esModule?Vt(B,"default",{value:v,enumerable:!0}):B,v));var Xt=X0(()=>{(function(){let v=typeof document<"u",O=()=>{},B=v?document.querySelector("script[type=esms-options]"):void 0,M=B?JSON.parse(B.innerHTML):{};Object.assign(M,self.esmsInitOptions||{});let y=v?!!M.shimMode:!0,$e=te(y&&M.onimport),ve=te(y&&M.resolve),Yt=M.fetch?te(M.fetch):fetch,Zt=M.meta?te(y&&M.meta):O,bt=M.mapOverrides,W=M.nonce;if(!W&&v){let n=document.querySelector("script[nonce]");n&&(W=n.nonce||n.getAttribute("nonce"))}let Ut=te(M.onerror||O),{revokeBlobURLs:pt,noLoadEventRetriggers:Se,globalLoadEventRetrigger:e0,enforceIntegrity:t0}=M;function te(n){return typeof n=="string"?self[n]:n}let Ee=Array.isArray(M.polyfillEnable)?M.polyfillEnable:[],xe=Ee.includes("css-modules"),Ce=Ee.includes("json-modules"),ne=Ee.includes("wasm-modules"),re=Ee.includes("source-phase"),ht=M.onpolyfill?te(M.onpolyfill):()=>{console.log("%c^^ Module error above is polyfilled and can be ignored ^^","font-weight:900;color:#391")},n0=!navigator.userAgentData&&!!navigator.userAgent.match(/Edge\/\d+\.\d+/),Z=v?document.baseURI:`${location.protocol}//${location.host}${location.pathname.includes("/")?location.pathname.slice(0,location.pathname.lastIndexOf("/")+1):location.pathname}`,R=(n,s="text/javascript")=>URL.createObjectURL(new Blob([n],{type:s})),{skip:D}=M;if(Array.isArray(D)){let n=D.map(s=>new URL(s,Z).href);D=s=>n.some(a=>a[a.length-1]==="/"&&s.startsWith(a)||s===a)}else if(typeof D=="string"){let n=new RegExp(D);D=s=>n.test(s)}else D instanceof RegExp&&(D=n=>D.test(n));let r0=n=>self.dispatchEvent(Object.assign(new Event("error"),{error:n})),Fe=n=>{(self.reportError||r0)(n),Ut(n)};function ce(n){return n?` imported from ${n}`:""}let Ae=!1;function s0(){Ae=!0}if(!y)if(document.querySelectorAll("script[type=module-shim],script[type=importmap-shim],link[rel=modulepreload-shim]").length)y=!0;else{let n=!1;for(let s of document.querySelectorAll("script[type=module],script[type=importmap]"))if(!n)s.type==="module"&&!s.ep&&(n=!0);else if(s.type==="importmap"&&n){Ae=!0;break}}let i0=/\\/g;function Le(n){try{if(n.indexOf(":")!==-1)return new URL(n).href}catch{}}function kt(n,s){return z(n,s)||Le(n)||z("./"+n,s)}function z(n,s){let a=s.indexOf("#"),d=s.indexOf("?");if(a+d>-2&&(s=s.slice(0,a===-1?d:d===-1||d>a?a:d)),n.indexOf("\\")!==-1&&(n=n.replace(i0,"/")),n[0]==="/"&&n[1]==="/")return s.slice(0,s.indexOf(":")+1)+n;if(n[0]==="."&&(n[1]==="/"||n[1]==="."&&(n[2]==="/"||n.length===2&&(n+="/"))||n.length===1&&(n+="/"))||n[0]==="/"){let c=s.slice(0,s.indexOf(":")+1);if(c==="blob:")throw new TypeError(`Failed to resolve module specifier "${n}". Invalid relative url or base scheme isn't hierarchical.`);let f;if(s[c.length+1]==="/"?c!=="file:"?(f=s.slice(c.length+2),f=f.slice(f.indexOf("/")+1)):f=s.slice(8):f=s.slice(c.length+(s[c.length]==="/")),n[0]==="/")return s.slice(0,s.length-f.length-1)+n;let m=f.slice(0,f.lastIndexOf("/")+1)+n,p=[],w=-1;for(let b=0;b<m.length;b++){if(w!==-1){m[b]==="/"&&(p.push(m.slice(w,b+1)),w=-1);continue}else if(m[b]==="."){if(m[b+1]==="."&&(m[b+2]==="/"||b+2===m.length)){p.pop(),b+=2;continue}else if(m[b+1]==="/"||b+1===m.length){b+=1;continue}}for(;m[b]==="/";)b++;w=b}return w!==-1&&p.push(m.slice(w)),s.slice(0,s.length-f.length)+p.join("")}}function wt(n,s,a){let d={imports:Object.assign({},a.imports),scopes:Object.assign({},a.scopes),integrity:Object.assign({},a.integrity)};if(n.imports&&gt(n.imports,d.imports,s,a),n.scopes)for(let c in n.scopes){let f=kt(c,s);gt(n.scopes[c],d.scopes[f]||(d.scopes[f]={}),s,a)}return n.integrity&&o0(n.integrity,d.integrity,s),d}function Je(n,s){if(s[n])return n;let a=n.length;do{let d=n.slice(0,a+1);if(d in s)return d}while((a=n.lastIndexOf("/",a-1))!==-1)}function yt(n,s){let a=Je(n,s);if(a){let d=s[a];return d===null?void 0:d+n.slice(a.length)}}function Be(n,s,a){let d=a&&Je(a,n.scopes);for(;d;){let c=yt(s,n.scopes[d]);if(c)return c;d=Je(d.slice(0,d.lastIndexOf("/")),n.scopes)}return yt(s,n.imports)||s.indexOf(":")!==-1&&s}function gt(n,s,a,d){for(let c in n){let f=z(c,a)||c;if((!y||!bt)&&s[f]&&s[f]!==n[f])throw Error(`Rejected map override "${f}" from ${s[f]} to ${n[f]}.`);let m=n[c];if(typeof m!="string")continue;let p=Be(d,z(m,a)||m,a);if(p){s[f]=p;continue}console.warn(`Mapping "${c}" -> "${n[c]}" does not resolve`)}}function o0(n,s,a){for(let d in n){let c=z(d,a)||d;if((!y||!bt)&&s[c]&&s[c]!==n[c])throw Error(`Rejected map integrity override "${c}" from ${s[c]} to ${n[c]}.`);s[c]=n[d]}}let q=!v&&(0,eval)("u=>import(u)"),fe,a0=v&&new Promise(n=>{let s=Object.assign(document.createElement("script"),{src:R("self._d=u=>import(u)"),ep:!0});s.setAttribute("nonce",W),s.addEventListener("load",()=>{if(!(fe=!!(q=self._d))){let a;window.addEventListener("error",d=>a=d),q=(d,c)=>new Promise((f,m)=>{let p=Object.assign(document.createElement("script"),{type:"module",src:R(`import*as m from'${d}';self._esmsi=m`)});a=void 0,p.ep=!0,W&&p.setAttribute("nonce",W),p.addEventListener("error",w),p.addEventListener("load",w);function w(b){document.head.removeChild(p),self._esmsi?(f(self._esmsi,Z),self._esmsi=void 0):(m(!(b instanceof Event)&&b||a&&a.error||new Error(`Error loading ${c&&c.errUrl||d} (${p.src}).`)),a=void 0)}document.head.appendChild(p)})}document.head.removeChild(s),delete self._d,n()}),document.head.appendChild(s)}),Oe=!1,Me=!1,ze=v&&HTMLScriptElement.supports,se=ze&&ze.name==="supports"&&ze("importmap"),je=fe,Ie=!1,Pe=!1,Re=[0,97,115,109,1,0,0,0],c0=Promise.resolve(a0).then(()=>{if(fe)return v?new Promise(n=>{let s=document.createElement("iframe");s.style.display="none",s.setAttribute("nonce",W);function a({data:p}){Array.isArray(p)&&p[0]==="esms"&&([,se,je,Me,Oe,Ie,Pe]=p,n(),document.head.removeChild(s),window.removeEventListener("message",a,!1))}window.addEventListener("message",a,!1);let d=`<script nonce=${W||""}>b=(s,type='text/javascript')=>URL.createObjectURL(new Blob([s],{type}));document.head.appendChild(Object.assign(document.createElement('script'),{type:'importmap',nonce:"${W}",innerText:\`{"imports":{"x":"\${b('')}"}}\`}));Promise.all([${se?"true,true":"'x',b('import.meta')"}, ${xe?`b(\`import"\${b('','text/css')}"with{type:"css"}\`)`:"false"}, ${Ce?`b(\`import"\${b('{}','text/json')}"with{type:"json"}\`)`:"false"}, ${ne?`b(\`import"\${b(new Uint8Array(${JSON.stringify(Re)}),'application/wasm')}"\`)`:"false"}, ${ne&&re?`b(\`import source x from "\${b(new Uint8Array(${JSON.stringify(Re)}),'application/wasm')}"\`)`:"false"}].map(x =>typeof x==='string'?import(x).then(()=>true,()=>false):x)).then(a=>parent.postMessage(['esms'].concat(a),'*'))<\/script>`,c=!1,f=!1;function m(){if(!c){f=!0;return}let p=s.contentDocument;if(p&&p.head.childNodes.length===0){let w=p.createElement("script");W&&w.setAttribute("nonce",W),w.innerHTML=d.slice(15+(W?W.length:0),-9),p.head.appendChild(w)}}s.onload=m,document.head.appendChild(s),c=!0,"srcdoc"in s?s.srcdoc=d:s.contentDocument.write(d),f&&m()}):Promise.all([se||q(R("import.meta")).then(()=>je=!0,O),xe&&q(R(`import"${R("","text/css")}"with{type:"css"}`)).then(()=>Me=!0,O),Ce&&q(R(`import"${R("{}","text/json")}"with{type:"json"}`)).then(()=>Oe=!0,O),ne&&q(R(`import"${R(new Uint8Array(Re),"application/wasm")}"`)).then(()=>Ie=!0,O),ne&&re&&q(R(`import source x from"${R(new Uint8Array(Re),"application/wasm")}"`)).then(()=>Pe=!0,O)])}),E,_e,Qe,le=2<<19,$t=new Uint8Array(new Uint16Array([1]).buffer)[0]===1?function(n,s){let a=n.length,d=0;for(;d<a;)s[d]=n.charCodeAt(d++)}:function(n,s){let a=n.length,d=0;for(;d<a;){let c=n.charCodeAt(d);s[d++]=(255&c)<<8|c>>>8}},f0="xportmportlassetaourceromsyncunctionssertvoyiedelecontininstantybreareturdebuggeawaithrwhileforifcatcfinallels",C,vt,g;function l0(n,s="@"){C=n,vt=s;let a=2*C.length+(2<<18);if(a>le||!E){for(;a>le;)le*=2;_e=new ArrayBuffer(le),$t(f0,new Uint16Array(_e,16,110)),E=(function(m,p,w){var b=new m.Int8Array(w),l=new m.Int16Array(w),t=new m.Int32Array(w),T=new m.Uint8Array(w),S=new m.Uint16Array(w),A=1040;function N(){var e=0,r=0,o=0,u=0,i=0,h=0;h=A,A=A+10240|0,b[804]=1,b[803]=0,l[399]=0,l[400]=0,t[69]=t[2],b[805]=0,t[68]=0,b[802]=0,t[70]=h+2048,t[71]=h,b[806]=0,e=(t[3]|0)+-2|0,t[72]=e,r=e+(t[66]<<1)|0,t[73]=r;e:for(;;){if(o=e+2|0,t[72]=o,e>>>0>=r>>>0){i=18;break}n:do switch(l[o>>1]|0){case 9:case 10:case 11:case 12:case 13:case 32:break;case 101:{if((l[400]|0)==0&&ye(o)|0&&(_(e+4|0,16,10)|0)==0&&(V(),(b[804]|0)==0)){i=9;break e}else i=17;break}case 105:{ye(o)|0&&(_(e+4|0,26,10)|0)==0&&X(),i=17;break}case 59:{i=17;break}case 47:switch(l[e+4>>1]|0){case 47:{at();break n}case 42:{ot(1);break n}default:{i=16;break e}}default:{i=16;break e}}while(!1);(i|0)==17&&(i=0,t[69]=t[72]),e=t[72]|0,r=t[73]|0}(i|0)==9?(e=t[72]|0,t[69]=e,i=19):(i|0)==16?(b[804]=0,t[72]=e,i=19):(i|0)==18&&(b[802]|0?e=0:(e=o,i=19));do if((i|0)==19){e:for(;;){if(r=e+2|0,t[72]=r,e>>>0>=(t[73]|0)>>>0){i=86;break}n:do switch(l[r>>1]|0){case 9:case 10:case 11:case 12:case 13:case 32:break;case 101:{(l[400]|0)==0&&ye(r)|0&&(_(e+4|0,16,10)|0)==0&&V(),i=85;break}case 105:{ye(r)|0&&(_(e+4|0,26,10)|0)==0&&X(),i=85;break}case 99:{ye(r)|0&&(_(e+4|0,36,8)|0)==0&&ae(l[e+12>>1]|0)|0&&(b[806]=1),i=85;break}case 40:{u=t[70]|0,r=l[400]|0,i=r&65535,t[u+(i<<3)>>2]=1,o=t[69]|0,l[400]=r+1<<16>>16,t[u+(i<<3)+4>>2]=o,i=85;break}case 41:{if(r=l[400]|0,!(r<<16>>16)){i=36;break e}i=r+-1<<16>>16,l[400]=i,u=l[399]|0,r=u&65535,u<<16>>16!=0&&(t[(t[70]|0)+((i&65535)<<3)>>2]|0)==5&&(r=t[(t[71]|0)+(r+-1<<2)>>2]|0,o=r+4|0,t[o>>2]|0||(t[o>>2]=(t[69]|0)+2),t[r+12>>2]=e+4,l[399]=u+-1<<16>>16),i=85;break}case 123:{i=t[69]|0,u=t[63]|0,e=i;do if((l[i>>1]|0)==41&(u|0)!=0&&(t[u+4>>2]|0)==(i|0))if(r=t[64]|0,t[63]=r,r){t[r+32>>2]=0;break}else{t[59]=0;break}while(!1);u=t[70]|0,o=l[400]|0,i=o&65535,t[u+(i<<3)>>2]=(b[806]|0)==0?2:6,l[400]=o+1<<16>>16,t[u+(i<<3)+4>>2]=e,b[806]=0,i=85;break}case 125:{if(e=l[400]|0,!(e<<16>>16)){i=49;break e}u=t[70]|0,i=e+-1<<16>>16,l[400]=i,(t[u+((i&65535)<<3)>>2]|0)==4&&he(),i=85;break}case 39:{P(39),i=85;break}case 34:{P(34),i=85;break}case 47:switch(l[e+4>>1]|0){case 47:{at();break n}case 42:{ot(1);break n}default:{e=t[69]|0,r=l[e>>1]|0;t:do if(v0(r)|0)switch(r<<16>>16){case 46:if(((l[e+-2>>1]|0)+-48&65535)<10){i=66;break t}else break t;case 43:if((l[e+-2>>1]|0)==43){i=66;break t}else break t;case 45:if((l[e+-2>>1]|0)==45){i=66;break t}else break t;default:break t}else{switch(r<<16>>16){case 41:if(C0(t[(t[70]|0)+(S[400]<<3)+4>>2]|0)|0)break t;i=66;break t;case 125:break;default:{i=66;break t}}o=t[70]|0,u=S[400]|0,!($0(t[o+(u<<3)+4>>2]|0)|0)&&(t[o+(u<<3)>>2]|0)!=6&&(i=66)}while(!1);t:do if((i|0)==66&&!(j(e)|0)){switch(r<<16>>16){case 0:break t;case 47:{if(b[805]|0)break t;break}default:}if(i=t[65]|0,i|0&&e>>>0>=(t[i>>2]|0)>>>0&&e>>>0<=(t[i+4>>2]|0)>>>0){it(),b[805]=0,i=85;break n}o=t[3]|0;do{if(e>>>0<=o>>>0)break;e=e+-2|0,t[69]=e,r=l[e>>1]|0}while(!(De(r)|0));if(qe(r)|0){do{if(e>>>0<=o>>>0)break;e=e+-2|0,t[69]=e}while(qe(l[e>>1]|0)|0);if(E0(e)|0){it(),b[805]=0,i=85;break n}}b[805]=1,i=85;break n}while(!1);it(),b[805]=0,i=85;break n}}case 96:{u=t[70]|0,o=l[400]|0,i=o&65535,t[u+(i<<3)+4>>2]=t[69],l[400]=o+1<<16>>16,t[u+(i<<3)>>2]=3,he(),i=85;break}default:i=85}while(!1);(i|0)==85&&(i=0,t[69]=t[72]),e=t[72]|0}if((i|0)==36){H(),e=0;break}else if((i|0)==49){H(),e=0;break}else if((i|0)==86){e=(b[802]|0)==0?(l[399]|l[400])<<16>>16==0:0;break}}while(!1);return A=h,e|0}function V(){var e=0,r=0,o=0,u=0,i=0,h=0,L=0,ee=0,ft=0,lt=0,ut=0,dt=0,$=0,x=0;ee=t[72]|0,ft=t[65]|0,x=ee+12|0,t[72]=x,o=k(1)|0,e=t[72]|0,(e|0)==(x|0)&&!(We(o)|0)||($=3);e:do if(($|0)==3){n:do switch(o<<16>>16){case 123:{for(t[72]=e+2,e=k(1)|0,r=t[72]|0;;){if(ge(e)|0?(P(e),e=(t[72]|0)+2|0,t[72]=e):(J(e)|0,e=t[72]|0),k(1)|0,e=ke(r,e)|0,e<<16>>16==44&&(t[72]=(t[72]|0)+2,e=k(1)|0),e<<16>>16==125){$=15;break}if(x=r,r=t[72]|0,(r|0)==(x|0)){$=12;break}if(r>>>0>(t[73]|0)>>>0){$=14;break}}if(($|0)==12){H();break e}else if(($|0)==14){H();break e}else if(($|0)==15){b[803]=1,t[72]=(t[72]|0)+2;break n}break}case 42:{t[72]=e+2,k(1)|0,x=t[72]|0,ke(x,x)|0;break}default:{switch(b[804]=0,o<<16>>16){case 100:{switch(ee=e+14|0,t[72]=ee,(k(1)|0)<<16>>16){case 97:{r=t[72]|0,(_(r+2|0,66,8)|0)==0&&(i=r+10|0,qe(l[i>>1]|0)|0)&&(t[72]=i,k(0)|0,$=22);break}case 102:{$=22;break}case 99:{r=t[72]|0,(_(r+2|0,36,8)|0)==0&&(u=r+10|0,x=l[u>>1]|0,ae(x)|0|x<<16>>16==123)&&(t[72]=u,h=k(1)|0,h<<16>>16!=123)&&(dt=h,$=31);break}default:}t:do if(($|0)==22&&(L=t[72]|0,(_(L+2|0,74,14)|0)==0)){if(o=L+16|0,r=l[o>>1]|0,!(ae(r)|0))switch(r<<16>>16){case 40:case 42:break;default:break t}t[72]=o,r=k(1)|0,r<<16>>16==42&&(t[72]=(t[72]|0)+2,r=k(1)|0),r<<16>>16!=40&&(dt=r,$=31)}while(!1);if(($|0)==31&&(lt=t[72]|0,J(dt)|0,ut=t[72]|0,ut>>>0>lt>>>0)){oe(e,ee,lt,ut),t[72]=(t[72]|0)+-2;break e}oe(e,ee,0,0),t[72]=e+12;break e}case 97:{t[72]=e+10,k(0)|0,e=t[72]|0,$=35;break}case 102:{$=35;break}case 99:{if((_(e+2|0,36,8)|0)==0&&(r=e+10|0,De(l[r>>1]|0)|0)){t[72]=r,x=k(1)|0,$=t[72]|0,J(x)|0,x=t[72]|0,oe($,x,$,x),t[72]=(t[72]|0)+-2;break e}e=e+4|0,t[72]=e;break}case 108:case 118:break;default:break e}if(($|0)==35){t[72]=e+16,e=k(1)|0,e<<16>>16==42&&(t[72]=(t[72]|0)+2,e=k(1)|0),$=t[72]|0,J(e)|0,x=t[72]|0,oe($,x,$,x),t[72]=(t[72]|0)+-2;break e}t[72]=e+6,b[804]=0,o=k(1)|0,e=t[72]|0,o=(J(o)|0|32)<<16>>16==123,u=t[72]|0,o&&(t[72]=u+2,x=k(1)|0,e=t[72]|0,J(x)|0);t:for(;r=t[72]|0,(r|0)!=(e|0);){if(oe(e,r,e,r),r=k(1)|0,o)switch(r<<16>>16){case 93:case 125:break e;default:}if(e=t[72]|0,r<<16>>16!=44){$=51;break}switch(t[72]=e+2,r=k(1)|0,e=t[72]|0,r<<16>>16){case 91:case 123:{$=51;break t}default:}J(r)|0}if(($|0)==51&&(t[72]=e+-2),!o)break e;t[72]=u+-2;break e}}while(!1);if(x=(k(1)|0)<<16>>16==102,e=t[72]|0,x&&(_(e+2|0,60,6)|0)==0)for(t[72]=e+8,Y(ee,k(1)|0,0),e=(ft|0)==0?240:ft+16|0;;){if(e=t[e>>2]|0,!e)break e;t[e+12>>2]=0,t[e+8>>2]=0,e=e+16|0}t[72]=e+-2}while(!1)}function X(){var e=0,r=0,o=0,u=0,i=0,h=0,L=0;i=t[72]|0,o=i+12|0,t[72]=o,u=k(1)|0,r=t[72]|0;e:do if(u<<16>>16!=46)u<<16>>16==115&r>>>0>o>>>0?(_(r+2|0,50,10)|0)==0&&(e=r+12|0,ae(l[e>>1]|0)|0)?h=14:(r=6,o=0,h=46):(e=u,o=0,h=15);else switch(t[72]=r+2,(k(1)|0)<<16>>16){case 109:{if(e=t[72]|0,_(e+2|0,44,6)|0||(r=t[69]|0,!(ct(r)|0)&&(l[r>>1]|0)==46))break e;F(i,i,e+8|0,2);break e}case 115:{if(e=t[72]|0,_(e+2|0,50,10)|0||(r=t[69]|0,!(ct(r)|0)&&(l[r>>1]|0)==46))break e;e=e+12|0,h=14;break e}default:break e}while(!1);(h|0)==14&&(t[72]=e,e=k(1)|0,o=1,h=15);e:do if((h|0)==15)switch(e<<16>>16){case 40:{if(r=t[70]|0,L=l[400]|0,u=L&65535,t[r+(u<<3)>>2]=5,e=t[72]|0,l[400]=L+1<<16>>16,t[r+(u<<3)+4>>2]=e,(l[t[69]>>1]|0)==46)break e;switch(t[72]=e+2,r=k(1)|0,F(i,t[72]|0,0,e),o?(e=t[63]|0,t[e+28>>2]=5):e=t[63]|0,i=t[71]|0,L=l[399]|0,l[399]=L+1<<16>>16,t[i+((L&65535)<<2)>>2]=e,r<<16>>16){case 39:{P(39);break}case 34:{P(34);break}default:{t[72]=(t[72]|0)+-2;break e}}switch(e=(t[72]|0)+2|0,t[72]=e,(k(1)|0)<<16>>16){case 44:{t[72]=(t[72]|0)+2,k(1)|0,i=t[63]|0,t[i+4>>2]=e,L=t[72]|0,t[i+16>>2]=L,b[i+24>>0]=1,t[72]=L+-2;break e}case 41:{l[400]=(l[400]|0)+-1<<16>>16,L=t[63]|0,t[L+4>>2]=e,t[L+12>>2]=(t[72]|0)+2,b[L+24>>0]=1,l[399]=(l[399]|0)+-1<<16>>16;break e}default:{t[72]=(t[72]|0)+-2;break e}}}case 123:{if(o){r=12,o=1,h=46;break e}if(e=t[72]|0,l[400]|0){t[72]=e+-2;break e}for(;!(e>>>0>=(t[73]|0)>>>0);){if(e=k(1)|0,ge(e)|0)P(e);else if(e<<16>>16==125){h=36;break}e=(t[72]|0)+2|0,t[72]=e}if((h|0)==36&&(t[72]=(t[72]|0)+2),L=(k(1)|0)<<16>>16==102,e=t[72]|0,L&&_(e+2|0,60,6)|0){H();break e}if(t[72]=e+8,e=k(1)|0,ge(e)|0){Y(i,e,0);break e}else{H();break e}}default:{if(o){r=12,o=1,h=46;break e}switch(e<<16>>16){case 42:case 39:case 34:{o=0,h=48;break e}default:{r=6,o=0,h=46;break e}}}}while(!1);(h|0)==46&&(e=t[72]|0,(e|0)==(i+(r<<1)|0)?t[72]=e+-2:h=48);do if((h|0)==48){if(l[400]|0){t[72]=(t[72]|0)+-2;break}for(e=t[73]|0,r=t[72]|0;;){if(r>>>0>=e>>>0){h=55;break}if(u=l[r>>1]|0,ge(u)|0){h=53;break}L=r+2|0,t[72]=L,r=L}if((h|0)==53){Y(i,u,o);break}else if((h|0)==55){H();break}}while(!1)}function j(e){e=e|0;var r=0,o=0;e:do switch(l[e>>1]|0){case 100:switch(l[e+-2>>1]|0){case 105:{r=I(e+-4|0,98,2)|0;break e}case 108:{r=I(e+-4|0,102,3)|0;break e}default:{r=0;break e}}case 101:switch(l[e+-2>>1]|0){case 115:switch(l[e+-4>>1]|0){case 108:{r=we(e+-6|0,101)|0;break e}case 97:{r=we(e+-6|0,99)|0;break e}default:{r=0;break e}}case 116:{r=I(e+-4|0,108,4)|0;break e}case 117:{r=I(e+-4|0,116,6)|0;break e}default:{r=0;break e}}case 102:{if((l[e+-2>>1]|0)==111)if(o=e+-4|0,(o|0)!=(t[3]|0)&&(r=l[o>>1]|0,!(De(r)|0)))if(r<<16>>16==101)switch(l[e+-6>>1]|0){case 99:{r=I(e+-8|0,128,6)|0;break e}case 112:{r=I(e+-8|0,140,2)|0;break e}default:{r=0;break e}}else r=0;else r=1;else r=0;break}case 107:{r=I(e+-2|0,144,4)|0;break}case 110:{r=e+-2|0,we(r,105)|0?r=1:r=I(r,152,5)|0;break}case 111:{r=we(e+-2|0,100)|0;break}case 114:{r=I(e+-2|0,162,7)|0;break}case 116:{r=I(e+-2|0,176,4)|0;break}case 119:switch(l[e+-2>>1]|0){case 101:{r=we(e+-4|0,110)|0;break e}case 111:{r=I(e+-4|0,184,3)|0;break e}default:{r=0;break e}}default:r=0}while(!1);return r|0}function Y(e,r,o){e=e|0,r=r|0,o=o|0;var u=0,i=0;switch(u=(t[72]|0)+2|0,r<<16>>16){case 39:{P(39),i=5;break}case 34:{P(34),i=5;break}default:H()}do if((i|0)==5){if(F(e,u,t[72]|0,1),o&&(t[(t[63]|0)+28>>2]=4),t[72]=(t[72]|0)+2,r=k(0)|0,o=r<<16>>16==97,o?(u=t[72]|0,_(u+2|0,88,10)|0&&(i=13)):(u=t[72]|0,r<<16>>16==119&&(l[u+2>>1]|0)==105&&(l[u+4>>1]|0)==116&&(l[u+6>>1]|0)==104||(i=13)),(i|0)==13){t[72]=u+-2;break}if(t[72]=u+((o?6:4)<<1),(k(1)|0)<<16>>16!=123){t[72]=u;break}o=t[72]|0,r=o;e:for(;;){switch(t[72]=r+2,r=k(1)|0,r<<16>>16){case 39:{P(39),t[72]=(t[72]|0)+2,r=k(1)|0;break}case 34:{P(34),t[72]=(t[72]|0)+2,r=k(1)|0;break}default:r=J(r)|0}if(r<<16>>16!=58){i=22;break}switch(t[72]=(t[72]|0)+2,(k(1)|0)<<16>>16){case 39:{P(39);break}case 34:{P(34);break}default:{i=26;break e}}switch(t[72]=(t[72]|0)+2,(k(1)|0)<<16>>16){case 125:{i=31;break e}case 44:break;default:{i=30;break e}}if(t[72]=(t[72]|0)+2,(k(1)|0)<<16>>16==125){i=31;break}r=t[72]|0}if((i|0)==22){t[72]=u;break}else if((i|0)==26){t[72]=u;break}else if((i|0)==30){t[72]=u;break}else if((i|0)==31){i=t[63]|0,t[i+16>>2]=o,t[i+12>>2]=(t[72]|0)+2;break}}while(!1)}function he(){var e=0,r=0,o=0,u=0;r=t[73]|0,o=t[72]|0;e:for(;;){if(e=o+2|0,o>>>0>=r>>>0){r=10;break}switch(l[e>>1]|0){case 96:{r=7;break e}case 36:{if((l[o+4>>1]|0)==123){r=6;break e}break}case 92:{e=o+4|0;break}default:}o=e}(r|0)==6?(e=o+4|0,t[72]=e,r=t[70]|0,u=l[400]|0,o=u&65535,t[r+(o<<3)>>2]=4,l[400]=u+1<<16>>16,t[r+(o<<3)+4>>2]=e):(r|0)==7?(t[72]=e,o=t[70]|0,u=(l[400]|0)+-1<<16>>16,l[400]=u,(t[o+((u&65535)<<3)>>2]|0)!=3&&H()):(r|0)==10&&(t[72]=e,H())}function k(e){e=e|0;var r=0,o=0,u=0;o=t[72]|0;e:do{r=l[o>>1]|0;n:do if(r<<16>>16!=47)if(e){if(ae(r)|0)break;break e}else{if(qe(r)|0)break;break e}else switch(l[o+2>>1]|0){case 47:{at();break n}case 42:{ot(e);break n}default:{r=47;break e}}while(!1);u=t[72]|0,o=u+2|0,t[72]=o}while(u>>>0<(t[73]|0)>>>0);return r|0}function F(e,r,o,u){e=e|0,r=r|0,o=o|0,u=u|0;var i=0,h=0;h=t[67]|0,t[67]=h+36,i=t[63]|0,t[((i|0)==0?236:i+32|0)>>2]=h,t[64]=i,t[63]=h,t[h+8>>2]=e,(u|0)==2?(e=3,i=o):(i=(u|0)==1,e=i?1:2,i=i?o+2|0:0),t[h+12>>2]=i,t[h+28>>2]=e,t[h>>2]=r,t[h+4>>2]=o,t[h+16>>2]=0,t[h+20>>2]=u,r=(u|0)==1,b[h+24>>0]=r&1,t[h+32>>2]=0,r|(u|0)==2&&(b[803]=1)}function P(e){e=e|0;var r=0,o=0,u=0,i=0;for(i=t[73]|0,r=t[72]|0;;){if(u=r+2|0,r>>>0>=i>>>0){r=9;break}if(o=l[u>>1]|0,o<<16>>16==e<<16>>16){r=10;break}if(o<<16>>16==92)o=r+4|0,(l[o>>1]|0)==13?(r=r+6|0,r=(l[r>>1]|0)==10?r:o):r=o;else if(Kt(o)|0){r=9;break}else r=u}(r|0)==9?(t[72]=u,H()):(r|0)==10&&(t[72]=u)}function ke(e,r){e=e|0,r=r|0;var o=0,u=0,i=0,h=0;return o=t[72]|0,u=l[o>>1]|0,h=(e|0)==(r|0),i=h?0:e,h=h?0:r,u<<16>>16==97&&(t[72]=o+4,o=k(1)|0,e=t[72]|0,ge(o)|0?(P(o),r=(t[72]|0)+2|0,t[72]=r):(J(o)|0,r=t[72]|0),u=k(1)|0,o=t[72]|0),(o|0)!=(e|0)&&oe(e,r,i,h),u|0}function g0(){var e=0,r=0,o=0;o=t[73]|0,r=t[72]|0;e:for(;;){if(e=r+2|0,r>>>0>=o>>>0){r=6;break}switch(l[e>>1]|0){case 13:case 10:{r=6;break e}case 93:{r=7;break e}case 92:{e=r+4|0;break}default:}r=e}return(r|0)==6?(t[72]=e,H(),e=0):(r|0)==7&&(t[72]=e,e=93),e|0}function it(){var e=0,r=0,o=0;e:for(;;){if(e=t[72]|0,r=e+2|0,t[72]=r,e>>>0>=(t[73]|0)>>>0){o=7;break}switch(l[r>>1]|0){case 13:case 10:{o=7;break e}case 47:break e;case 91:{g0()|0;break}case 92:{t[72]=e+4;break}default:}}(o|0)==7&&H()}function $0(e){switch(e=e|0,l[e>>1]|0){case 62:{e=(l[e+-2>>1]|0)==61;break}case 41:case 59:{e=1;break}case 104:{e=I(e+-2|0,210,4)|0;break}case 121:{e=I(e+-2|0,218,6)|0;break}case 101:{e=I(e+-2|0,230,3)|0;break}default:e=0}return e|0}function ot(e){e=e|0;var r=0,o=0,u=0,i=0,h=0;for(i=(t[72]|0)+2|0,t[72]=i,o=t[73]|0;r=i+2|0,!(i>>>0>=o>>>0||(u=l[r>>1]|0,!e&&Kt(u)|0));){if(u<<16>>16==42&&(l[i+4>>1]|0)==47){h=8;break}i=r}(h|0)==8&&(t[72]=r,r=i+4|0),t[72]=r}function _(e,r,o){e=e|0,r=r|0,o=o|0;var u=0,i=0;e:do if(!o)e=0;else{for(;u=b[e>>0]|0,i=b[r>>0]|0,u<<24>>24==i<<24>>24;)if(o=o+-1|0,o)e=e+1|0,r=r+1|0;else{e=0;break e}e=(u&255)-(i&255)|0}while(!1);return e|0}function We(e){e=e|0;e:do switch(e<<16>>16){case 38:case 37:case 33:{e=1;break}default:if((e&-8)<<16>>16==40|(e+-58&65535)<6)e=1;else{switch(e<<16>>16){case 91:case 93:case 94:{e=1;break e}default:}e=(e+-123&65535)<4}}while(!1);return e|0}function v0(e){e=e|0;e:do switch(e<<16>>16){case 38:case 37:case 33:break;default:if(!((e+-58&65535)<6|(e+-40&65535)<7&e<<16>>16!=41)){switch(e<<16>>16){case 91:case 94:break e;default:}return e<<16>>16!=125&(e+-123&65535)<4|0}}while(!1);return 1}function Gt(e){e=e|0;var r=0;r=l[e>>1]|0;e:do if((r+-9&65535)>=5){switch(r<<16>>16){case 160:case 32:{r=1;break e}default:}if(We(r)|0)return r<<16>>16!=46|(ct(e)|0)|0;r=0}else r=1;while(!1);return r|0}function S0(e){e=e|0;var r=0,o=0,u=0,i=0;return o=A,A=A+16|0,u=o,t[u>>2]=0,t[66]=e,r=t[3]|0,i=r+(e<<1)|0,e=i+2|0,l[i>>1]=0,t[u>>2]=e,t[67]=e,t[59]=0,t[63]=0,t[61]=0,t[60]=0,t[65]=0,t[62]=0,A=o,r|0}function oe(e,r,o,u){e=e|0,r=r|0,o=o|0,u=u|0;var i=0,h=0;i=t[67]|0,t[67]=i+20,h=t[65]|0,t[((h|0)==0?240:h+16|0)>>2]=i,t[65]=i,t[i>>2]=e,t[i+4>>2]=r,t[i+8>>2]=o,t[i+12>>2]=u,t[i+16>>2]=0,b[803]=1}function I(e,r,o){e=e|0,r=r|0,o=o|0;var u=0,i=0;return u=e+(0-o<<1)|0,i=u+2|0,e=t[3]|0,i>>>0>=e>>>0&&(_(i,r,o<<1)|0)==0?(i|0)==(e|0)?e=1:e=Gt(u)|0:e=0,e|0}function E0(e){switch(e=e|0,l[e>>1]|0){case 107:{e=I(e+-2|0,144,4)|0;break}case 101:{(l[e+-2>>1]|0)==117?e=I(e+-4|0,116,6)|0:e=0;break}default:e=0}return e|0}function we(e,r){e=e|0,r=r|0;var o=0;return o=t[3]|0,o>>>0<=e>>>0&&(l[e>>1]|0)==r<<16>>16?(o|0)==(e|0)?o=1:o=De(l[e+-2>>1]|0)|0:o=0,o|0}function De(e){e=e|0;e:do if((e+-9&65535)<5)e=1;else{switch(e<<16>>16){case 32:case 160:{e=1;break e}default:}e=e<<16>>16!=46&(We(e)|0)}while(!1);return e|0}function at(){var e=0,r=0,o=0;e=t[73]|0,o=t[72]|0;e:for(;r=o+2|0,!(o>>>0>=e>>>0);)switch(l[r>>1]|0){case 13:case 10:break e;default:o=r}t[72]=r}function J(e){for(e=e|0;!(ae(e)|0||We(e)|0);)if(e=(t[72]|0)+2|0,t[72]=e,e=l[e>>1]|0,!(e<<16>>16)){e=0;break}return e|0}function x0(){var e=0;switch(e=t[(t[61]|0)+20>>2]|0,e|0){case 1:{e=-1;break}case 2:{e=-2;break}default:e=e-(t[3]|0)>>1}return e|0}function C0(e){return e=e|0,!(I(e,190,5)|0)&&!(I(e,200,3)|0)?e=I(e,206,2)|0:e=1,e|0}function qe(e){switch(e=e|0,e<<16>>16){case 160:case 32:case 12:case 11:case 9:{e=1;break}default:e=0}return e|0}function ct(e){return e=e|0,(l[e>>1]|0)==46&&(l[e+-2>>1]|0)==46?e=(l[e+-4>>1]|0)==46:e=0,e|0}function ye(e){return e=e|0,(t[3]|0)==(e|0)?e=1:e=Gt(e+-2|0)|0,e|0}function A0(){var e=0;return e=t[(t[62]|0)+12>>2]|0,e?e=e-(t[3]|0)>>1:e=-1,e|0}function L0(){var e=0;return e=t[(t[61]|0)+12>>2]|0,e?e=e-(t[3]|0)>>1:e=-1,e|0}function O0(){var e=0;return e=t[(t[62]|0)+8>>2]|0,e?e=e-(t[3]|0)>>1:e=-1,e|0}function M0(){var e=0;return e=t[(t[61]|0)+16>>2]|0,e?e=e-(t[3]|0)>>1:e=-1,e|0}function j0(){var e=0;return e=t[(t[61]|0)+4>>2]|0,e?e=e-(t[3]|0)>>1:e=-1,e|0}function I0(){var e=0;return e=t[61]|0,e=t[((e|0)==0?236:e+32|0)>>2]|0,t[61]=e,(e|0)!=0|0}function P0(){var e=0;return e=t[62]|0,e=t[((e|0)==0?240:e+16|0)>>2]|0,t[62]=e,(e|0)!=0|0}function H(){b[802]=1,t[68]=(t[72]|0)-(t[3]|0)>>1,t[72]=(t[73]|0)+2}function ae(e){return e=e|0,(e|128)<<16>>16==160|(e+-9&65535)<5|0}function ge(e){return e=e|0,e<<16>>16==39|e<<16>>16==34|0}function R0(){return(t[(t[61]|0)+8>>2]|0)-(t[3]|0)>>1|0}function _0(){return(t[(t[62]|0)+4>>2]|0)-(t[3]|0)>>1|0}function Kt(e){return e=e|0,e<<16>>16==13|e<<16>>16==10|0}function T0(){return(t[t[61]>>2]|0)-(t[3]|0)>>1|0}function N0(){return(t[t[62]>>2]|0)-(t[3]|0)>>1|0}function H0(){return T[(t[61]|0)+24>>0]|0|0}function W0(e){e=e|0,t[3]=e}function D0(){return t[(t[61]|0)+28>>2]|0}function q0(){return(b[803]|0)!=0|0}function F0(){return(b[804]|0)!=0|0}function J0(){return t[68]|0}function B0(e){return e=e|0,A=e+992+15&-16,992}return{su:B0,ai:M0,e:J0,ee:_0,ele:A0,els:O0,es:N0,f:F0,id:x0,ie:j0,ip:H0,is:T0,it:D0,ms:q0,p:N,re:P0,ri:I0,sa:S0,se:L0,ses:W0,ss:R0}})(typeof self<"u"?self:globalThis,{},_e),Qe=E.su(le-(2<<17))}let d=C.length+1;E.ses(Qe),E.sa(d-1),$t(C,new Uint16Array(_e,Qe,d)),E.p()||(g=E.e(),Q());let c=[],f=[];for(;E.ri();){let m=E.is(),p=E.ie(),w=E.ai(),b=E.id(),l=E.ss(),t=E.se(),T=E.it(),S;E.ip()&&(S=Ge(b===-1?m:m+1,C.charCodeAt(b===-1?m-1:m))),c.push({t:T,n:S,s:m,e:p,ss:l,se:t,d:b,a:w})}for(;E.re();){let m=E.es(),p=E.ee(),w=E.els(),b=E.ele(),l=C.charCodeAt(m),t=w>=0?C.charCodeAt(w):-1;f.push({s:m,e:p,ls:w,le:b,n:l===34||l===39?Ge(m+1,l):C.slice(m,p),ln:w<0?void 0:t===34||t===39?Ge(w+1,t):C.slice(w,b)})}return[c,f,!!E.f(),!!E.ms()]}function Ge(n,s){g=n;let a="",d=g;for(;;){g>=C.length&&Q();let c=C.charCodeAt(g);if(c===s)break;c===92?(a+=C.slice(d,g),a+=u0(),d=g):(c===8232||c===8233||St(c)&&Q(),++g)}return a+=C.slice(d,g++),a}function u0(){let n=C.charCodeAt(++g);switch(++g,n){case 110:return`
-`;case 114:return"\r";case 120:return String.fromCharCode(Ke(2));case 117:return(function(){let s=C.charCodeAt(g),a;return s===123?(++g,a=Ke(C.indexOf("}",g)-g),++g,a>1114111&&Q()):a=Ke(4),a<=65535?String.fromCharCode(a):(a-=65536,String.fromCharCode(55296+(a>>10),56320+(1023&a)))})();case 116:return"	";case 98:return"\b";case 118:return"\v";case 102:return"\f";case 13:C.charCodeAt(g)===10&&++g;case 10:return"";case 56:case 57:Q();default:if(n>=48&&n<=55){let s=C.substr(g-1,3).match(/^[0-7]+/)[0],a=parseInt(s,8);return a>255&&(s=s.slice(0,-1),a=parseInt(s,8)),g+=s.length-1,n=C.charCodeAt(g),s==="0"&&n!==56&&n!==57||Q(),String.fromCharCode(a)}return St(n)?"":String.fromCharCode(n)}}function Ke(n){let s=g,a=0,d=0;for(let c=0;c<n;++c,++g){let f,m=C.charCodeAt(g);if(m!==95){if(m>=97)f=m-97+10;else if(m>=65)f=m-65+10;else{if(!(m>=48&&m<=57))break;f=m-48}if(f>=16)break;d=m,a=16*a+f}else d!==95&&c!==0||Q(),d=m}return d!==95&&g-s===n||Q(),a}function St(n){return n===13||n===10}function Q(){throw Object.assign(Error(`Parse error ${vt}:${C.slice(0,g).split(`
-`).length}:${g-C.lastIndexOf(`
-`,g-1)}`),{idx:g})}async function Et(n,s){let a=z(n,s)||Le(n);return{r:Be(K,a||n,s)||At(n,s),b:!a&&!Le(n)}}let xt=ve?async(n,s)=>{let a=ve(n,s,Ve);return a&&a.then&&(a=await a),a?{r:a,b:!z(n,s)&&!Le(n)}:Et(n,s)}:Et;async function Ct(n,...s){let a=s[s.length-1];return typeof a!="string"&&(a=Z),await ie,$e&&await $e(n,typeof s[1]!="string"?s[1]:{},a),(de||y||!U)&&(v&&Ue(!0),y||(de=!1)),await Te,(await xt(n,a)).r}async function G(...n){return Mt(await Ct(...n),{credentials:"same-origin"})}re&&(G.source=async function(...s){let a=await Ct(...s),d=Ze(a,{credentials:"same-origin"},null,null);return be=void 0,Ne&&!y&&d.n&&nativelyLoaded&&(ht(),Ne=!1),await d.f,G._s[d.r]}),self.importShim=G;function Ve(n,s){return Be(K,z(n,s)||n,s)||At(n,s)}function At(n,s){throw Error(`Unable to resolve specifier '${n}'${ce(s)}`)}let Lt=(n,s=Z)=>{s=`${s}`;let a=ve&&ve(n,s,Ve);return a&&!a.then?a:Ve(n,s)};function d0(n,s=this.url){return Lt(n,s)}G.resolve=Lt,G.getImportMap=()=>JSON.parse(JSON.stringify(K)),G.addImportMap=n=>{if(!y)throw new Error("Unsupported in polyfill mode.");K=wt(n,Z,K)};let ue=G._r={},Xe=G._s={};async function Ot(n,s){s[n.u]=1,await n.L,await Promise.all(n.d.map(({l:a,s:d})=>{if(!(a.b||s[a.u]))return d?a.f:Ot(a,s)})),n.n||(n.n=n.d.some(a=>a.l.n))}let K={imports:{},scopes:{},integrity:{}},U,ie=c0.then(()=>{if(U=M.polyfillEnable!==!0&&fe&&je&&se&&(!Ce||Oe)&&(!xe||Me)&&(!ne||Ie)&&(!re||Pe)&&!Ae,re&&typeof WebAssembly<"u"&&!Object.getPrototypeOf(WebAssembly.Module).name){let n=Symbol(),s=m=>Object.defineProperty(m,n,{writable:!1,configurable:!1,value:"WebAssembly.Module"});class a{get[Symbol.toStringTag](){if(this[n])return this[n];throw new TypeError("Not an AbstractModuleSource")}}let{Module:d,compile:c,compileStreaming:f}=WebAssembly;WebAssembly.Module=Object.setPrototypeOf(Object.assign(function(...p){return s(new d(...p))},d),a),WebAssembly.Module.prototype=Object.setPrototypeOf(d.prototype,a.prototype),WebAssembly.compile=function(...p){return c(...p).then(s)},WebAssembly.compileStreaming=function(...p){return f(...p).then(s)}}if(v){if(!se){let n=HTMLScriptElement.supports||(s=>s==="classic"||s==="module");HTMLScriptElement.supports=s=>s==="importmap"||n(s)}if(y||!U)if(new MutationObserver(n=>{for(let s of n)if(s.type==="childList")for(let a of s.addedNodes)a.tagName==="SCRIPT"?(a.type===(y?"module-shim":"module")&&zt(a,!0),a.type===(y?"importmap-shim":"importmap")&&Bt(a,!0)):a.tagName==="LINK"&&a.rel===(y?"modulepreload-shim":"modulepreload")&&Qt(a)}).observe(document,{childList:!0,subtree:!0}),Ue(),document.readyState==="complete")rt();else{async function n(){await ie,Ue(),document.readyState==="complete"&&(rt(),document.removeEventListener("readystatechange",n))}document.addEventListener("readystatechange",n)}}}),Te=ie,Ne=!0,de=!0;async function Mt(n,s,a,d,c){if(y||(de=!1),await ie,await Te,$e&&await $e(n,typeof s!="string"?s:{},""),!y&&U)return d?null:(await c,q(a?R(a):n,{errUrl:n||a}));let f=Ze(n,s,null,a);Ht(f,s);let m={};if(await Ot(f,m),be=void 0,It(f,m),await c,a&&!y&&!f.n)return d?void 0:(pt&&jt(Object.keys(m)),await q(R(a),{errUrl:a}));Ne&&!y&&f.n&&d&&(ht(),Ne=!1);let p=await q(!y&&!f.n&&d?f.u:f.b,{errUrl:f.u});return f.s&&(await q(f.s)).u$_(p),pt&&jt(Object.keys(m)),p}function jt(n){let s=0,a=n.length,d=self.requestIdleCallback?self.requestIdleCallback:self.requestAnimationFrame;d(c);function c(){let f=s*100;if(!(f>a)){for(let m of n.slice(f,f+100)){let p=ue[m];p&&URL.revokeObjectURL(p.b)}s++,d(c)}}}function me(n){return`'${n.replace(/'/g,"\\'")}'`}let be;function It(n,s){if(n.b||!s[n.u])return;s[n.u]=0;for(let{l:S,s:A}of n.d)A||It(S,s);let[a,d]=n.a,c=n.S,f=n0&&be?`import '${be}';`:"",m=0,p=0,w=[];function b(S){for(;w[w.length-1]<S;){let A=w.pop();f+=`${c.slice(m,A)}, ${me(n.r)}`,m=A}f+=c.slice(m,S),m=S}for(let{s:S,ss:A,se:N,d:V,t:X}of a)if(X===4){let{l:j}=n.d[p++];b(A),f+="import ",m=A+14,b(S-1),f+=`/*${c.slice(S-1,N)}*/'${R(`export default importShim._s[${me(j.r)}]`)}'`,m=N}else if(V===-1){let{l:j}=n.d[p++],Y=j.b,he=!Y;he&&((Y=j.s)||(Y=j.s=R(`export function u$_(m){${j.a[1].map(({s:k,e:F},P)=>{let ke=j.S[k]==='"'||j.S[k]==="'";return`e$_${P}=m${ke?"[":"."}${j.S.slice(k,F)}${ke?"]":""}`}).join(",")}}${j.a[1].length?`let ${j.a[1].map((k,F)=>`e$_${F}`).join(",")};`:""}export {${j.a[1].map(({s:k,e:F},P)=>`e$_${P} as ${j.S.slice(k,F)}`).join(",")}}
-//# sourceURL=${j.r}?cycle`))),b(S-1),f+=`/*${c.slice(S-1,N)}*/'${Y}'`,!he&&j.s&&(f+=`;import*as m$_${p} from'${j.b}';import{u$_ as u$_${p}}from'${j.s}';u$_${p}(m$_${p})`,j.s=void 0),m=N}else V===-2?(n.m={url:n.r,resolve:d0},Zt(n.m,n.u),b(S),f+=`importShim._r[${me(n.u)}].m`,m=N):(b(A+6),f+=`Shim${X===5?".source":""}(`,w.push(N-1),m=S);n.s&&(a.length===0||a[a.length-1].d===-1)&&(f+=`
-;import{u$_}from'${n.s}';try{u$_({${d.filter(S=>S.ln).map(({s:S,e:A,ln:N})=>`${c.slice(S,A)}:${N}`).join(",")}})}catch(_){};
-`);function l(S,A){let N=A+S.length,V=c.indexOf(`
-`,N),X=V!==-1?V:c.length;b(N),f+=new URL(c.slice(N,X),n.r).href,m=X}let t=c.lastIndexOf(He),T=c.lastIndexOf(Pt);t<m&&(t=-1),T<m&&(T=-1),t!==-1&&(T===-1||T>t)&&l(He,t),T!==-1&&(l(Pt,T),t!==-1&&t>T&&l(He,t)),b(c.length),t===-1&&(f+=He+n.r),n.b=be=R(f),n.S=void 0}let He=`
-//# sourceURL=`,Pt=`
-//# sourceMappingURL=`,m0=/^(text|application)\/(x-)?javascript(;|$)/,b0=/^(application)\/wasm(;|$)/,p0=/^(text|application)\/json(;|$)/,h0=/^(text|application)\/css(;|$)/,k0=/url\(\s*(?:(["'])((?:\\.|[^\n\\"'])+)\1|((?:\\.|[^\s,"'()\\])+))\s*\)/g,Ye=[],Rt=0;function w0(){if(++Rt>100)return new Promise(n=>Ye.push(n))}function y0(){Rt--,Ye.length&&Ye.shift()()}async function _t(n,s,a){if(t0&&!s.integrity)throw Error(`No integrity for ${n}${ce(a)}.`);let d=w0();d&&await d;try{var c=await Yt(n,s)}catch(f){throw f.message=`Unable to fetch ${n}${ce(a)} - see network log for details.
-`+f.message,f}finally{y0()}if(!c.ok){let f=new TypeError(`${c.status} ${c.statusText} ${c.url}${ce(a)}`);throw f.response=c,f}return c}async function Tt(n,s,a){let d=K.integrity[n],c=await _t(n,d&&!s.integrity?Object.assign({},s,{integrity:d}):s,a),f=c.url,m=c.headers.get("content-type");if(m0.test(m))return{r:f,s:await c.text(),sp:null,t:"js"};if(b0.test(m)){let p=await(Xe[f]||(Xe[f]=WebAssembly.compileStreaming(c)));Xe[f]=p;let w="",b=0,l="";for(let t of WebAssembly.Module.imports(p)){let T=me(t.module);w+=`import * as impt${b} from ${T};
-`,l+=`${T}:impt${b++},`}b=0,w+=`const instance = await WebAssembly.instantiate(importShim._s[${me(f)}], {${l}});
-`;for(let t of WebAssembly.Module.exports(p))w+=`export const ${t.name} = instance.exports['${t.name}'];
-`;return{r:f,s:w,t:"wasm"}}else{if(p0.test(m))return{r:f,s:`export default ${await c.text()}`,sp:null,t:"json"};if(h0.test(m))return{r:f,s:`var s=new CSSStyleSheet();s.replaceSync(${JSON.stringify((await c.text()).replace(k0,(p,w="",b,l)=>`url(${w}${kt(b||l,n)}${w})`))});export default s;`,ss:null,t:"css"};throw Error(`Unsupported Content-Type "${m}" loading ${n}${ce(a)}. Modules must be served with a valid MIME type like application/javascript.`)}}function Ze(n,s,a,d){if(d&&ue[n]){let f=0;for(;ue[n+ ++f];);n+=f}let c=ue[n];return c||(ue[n]=c={u:n,r:d?n:void 0,f:void 0,S:d,L:void 0,a:void 0,d:void 0,b:void 0,s:void 0,n:!1,t:null,m:null},c.f=(async()=>{if(!c.S){let f;if({r:c.r,s:c.S,t:f}=await(st[n]||Tt(n,s,a)),f&&!y){if(f==="css"&&!xe||f==="json"&&!Ce||f==="wasm"&&!ne)throw Nt(`${f}-modules`);(f==="css"&&!Me||f==="json"&&!Oe||f==="wasm"&&!Ie)&&(c.n=!0)}}try{c.a=l0(c.S,c.u)}catch(f){Fe(f),c.a=[[],[],!1]}return c})(),c)}let Nt=n=>Error(`${n} feature must be enabled via <script type="esms-options">{ "polyfillEnable": ["${n}"] }<\/script>`);function Ht(n,s){n.L||(n.L=n.f.then(async()=>{let a=s;n.d=(await Promise.all(n.a[0].map(async({n:d,d:c,t:f})=>{let m=f>=4;if(m&&!re)throw Nt("source-phase");if((c>=0&&!fe||c===-2&&!je||m&&!Pe)&&(n.n=!0),c!==-1||!d)return;let{r:p,b:w}=await xt(d,n.r||n.u);if(w&&(!se||Ae)&&(n.n=!0),c!==-1)return;if(D&&D(p)&&!m)return{l:{b:p},s:!1};a.integrity&&(a=Object.assign({},a,{integrity:void 0}));let b={l:Ze(p,a,n.r,null),s:m};return b.s||Ht(b.l,s),b}))).filter(d=>d)}))}function Ue(n=!1){if(!n)for(let s of document.querySelectorAll(y?"link[rel=modulepreload-shim]":"link[rel=modulepreload]"))Qt(s);for(let s of document.querySelectorAll(y?"script[type=importmap-shim]":"script[type=importmap]"))Bt(s);if(!n)for(let s of document.querySelectorAll(y?"script[type=module-shim]":"script[type=module]"))zt(s)}function et(n){let s={};return n.integrity&&(s.integrity=n.integrity),n.referrerPolicy&&(s.referrerPolicy=n.referrerPolicy),n.fetchPriority&&(s.priority=n.fetchPriority),n.crossOrigin==="use-credentials"?s.credentials="include":n.crossOrigin==="anonymous"?s.credentials="omit":s.credentials="same-origin",s}let Wt=Promise.resolve(),tt=1;function Dt(){--tt===0&&!Se&&(y||!U)&&document.dispatchEvent(new Event("DOMContentLoaded"))}let nt=1;function qt(){--nt===0&&e0&&!Se&&(y||!U)&&window.dispatchEvent(new Event("load"))}v&&(document.addEventListener("DOMContentLoaded",async()=>{await ie,Dt()}),window.addEventListener("load",async()=>{await ie,qt()}));let pe=1;function rt(){--pe===0&&!Se&&(y||!U)&&document.dispatchEvent(new Event("readystatechange"))}let Ft=n=>n.nextSibling||n.parentNode&&Ft(n.parentNode),Jt=(n,s)=>n.ep||!s&&(!n.src&&!n.innerHTML||!Ft(n))||n.getAttribute("noshim")!==null||!(n.ep=!0);function Bt(n,s=pe>0){if(!Jt(n,s)){if(n.src){if(!y)return;s0()}de&&(Te=Te.then(async()=>{K=wt(n.src?await(await _t(n.src,et(n))).json():JSON.parse(n.innerHTML),n.src||Z,K)}).catch(a=>{console.log(a),a instanceof SyntaxError&&(a=new Error(`Unable to parse import map ${a.message} in: ${n.src||n.innerHTML}`)),Fe(a)}),y||(de=!1))}}function zt(n,s=pe>0){if(Jt(n,s))return;let a=n.getAttribute("async")===null&&pe>0,d=tt>0,c=nt>0;c&&nt++,a&&pe++,d&&tt++;let f=Mt(n.src||Z,et(n),!n.src&&n.innerHTML,!y,a&&Wt).catch(Fe);Se||f.then(()=>n.dispatchEvent(new Event("load"))),a&&(Wt=f.then(rt)),d&&f.then(Dt),c&&f.then(qt)}let st={};function Qt(n){n.ep||(n.ep=!0,!st[n.href]&&(st[n.href]=Tt(n.href,et(n))))}})()});var mt=Z0(Xt()),nn=mt.default??mt;export{nn as default};
-//# sourceMappingURL=es-module-shims.mjs.map
+/** ES Module Shims @version 2.8.0 */
+(function () {
+
+  const self_ = typeof globalThis !== 'undefined' ? globalThis : self;
+
+  let invalidate;
+  const hotReload$1 = url => invalidate(new URL(url, baseUrl).href);
+  const initHotReload = (topLevelLoad, importShim) => {
+    let _importHook = importHook,
+      _resolveHook = resolveHook,
+      _metaHook = metaHook;
+
+    let defaultResolve;
+    let hotResolveHook = (id, parent, _defaultResolve) => {
+      if (!defaultResolve) defaultResolve = _defaultResolve;
+      const originalParent = stripVersion(parent);
+      const url = stripVersion(defaultResolve(id, originalParent));
+      const hotState = getHotState(url);
+      const parents = hotState.p;
+      if (!parents.includes(originalParent)) parents.push(originalParent);
+      return toVersioned(url, hotState);
+    };
+    const hotImportHook = (url, _, __, source, sourceType) => {
+      const hotState = getHotState(url);
+      hotState.e = typeof source === 'string' ? source : true;
+      hotState.t = sourceType;
+    };
+    const hotMetaHook = (metaObj, url) => (metaObj.hot = new Hot(url));
+
+    const Hot = class Hot {
+      constructor(url) {
+        this.data = getHotState((this.url = stripVersion(url))).d;
+      }
+      accept(deps, cb) {
+        if (typeof deps === 'function') {
+          cb = deps;
+          deps = null;
+        }
+        const hotState = getHotState(this.url);
+        if (!hotState.A) return;
+        (hotState.a = hotState.a || []).push([
+          typeof deps === 'string' ? defaultResolve(deps, this.url)
+          : deps ? deps.map(d => defaultResolve(d, this.url))
+          : null,
+          cb
+        ]);
+      }
+      dispose(cb) {
+        getHotState(this.url).u = cb;
+      }
+      invalidate() {
+        const hotState = getHotState(this.url);
+        hotState.a = hotState.A = null;
+        const seen = [this.url];
+        hotState.p.forEach(p => invalidate(p, this.url, seen));
+      }
+    };
+
+    const versionedRegEx = /\?v=\d+$/;
+    const stripVersion = url => {
+      const versionMatch = url.match(versionedRegEx);
+      return versionMatch ? url.slice(0, -versionMatch[0].length) : url;
+    };
+
+    const toVersioned = (url, hotState) => {
+      const { v } = hotState;
+      return url + (v ? '?v=' + v : '');
+    };
+
+    let hotRegistry = {},
+      curInvalidationRoots = new Set(),
+      curInvalidationInterval;
+    const getHotState = url =>
+      hotRegistry[url] ||
+      (hotRegistry[url] = {
+        // version
+        v: 0,
+        // accept list ([deps, cb] pairs)
+        a: null,
+        // accepting acceptors
+        A: true,
+        // unload callback
+        u: null,
+        // entry point or inline script source
+        e: false,
+        // hot data
+        d: {},
+        // parents
+        p: [],
+        // source type
+        t: undefined
+      });
+
+    invalidate = (url, fromUrl, seen = []) => {
+      const hotState = hotRegistry[url];
+      if (!hotState || seen.includes(url)) return false;
+      seen.push(url);
+      hotState.A = false;
+      if (
+        fromUrl &&
+        hotState.a &&
+        hotState.a.some(([d]) => d && (typeof d === 'string' ? d === fromUrl : d.includes(fromUrl)))
+      ) {
+        curInvalidationRoots.add(fromUrl);
+      } else {
+        if (hotState.e || hotState.a) curInvalidationRoots.add(url);
+        hotState.v++;
+        if (!hotState.a) hotState.p.forEach(p => invalidate(p, url, seen));
+      }
+      if (!curInvalidationInterval) curInvalidationInterval = setTimeout(handleInvalidations, hotReloadInterval);
+      return true;
+    };
+
+    const handleInvalidations = () => {
+      curInvalidationInterval = null;
+      const earlyRoots = new Set();
+      for (const root of curInvalidationRoots) {
+        const hotState = hotRegistry[root];
+        topLevelLoad(
+          toVersioned(root, hotState),
+          baseUrl,
+          defaultFetchOpts,
+          typeof hotState.e === 'string' ? hotState.e : undefined,
+          false,
+          undefined,
+          hotState.t
+        ).then(m => {
+          if (hotState.a) {
+            hotState.a.forEach(([d, c]) => d === null && !earlyRoots.has(c) && c(m));
+            // unload should be the latest unload handler from the just loaded module
+            if (hotState.u) {
+              hotState.u(hotState.d);
+              hotState.u = null;
+            }
+          }
+          hotState.p.forEach(p => {
+            const hotState = hotRegistry[p];
+            if (hotState && hotState.a)
+              hotState.a.forEach(
+                async ([d, c]) =>
+                  d &&
+                  !earlyRoots.has(c) &&
+                  (typeof d === 'string' ?
+                    d === root && c(m)
+                  : c(await Promise.all(d.map(d => (earlyRoots.push(c), importShim(toVersioned(d, getHotState(d))))))))
+              );
+          });
+        }, throwError);
+      }
+      curInvalidationRoots = new Set();
+    };
+
+    setHooks(
+      _importHook ? chain(_importHook, hotImportHook) : hotImportHook,
+      _resolveHook ?
+        (id, parent, defaultResolve) =>
+          hotResolveHook(id, parent, (id, parent) => _resolveHook(id, parent, defaultResolve))
+      : hotResolveHook,
+      _metaHook ? chain(_metaHook, hotMetaHook) : hotMetaHook
+    );
+  };
+
+  const hasDocument = typeof document !== 'undefined';
+
+  const noop = () => {};
+
+  const chain = (a, b) =>
+    function () {
+      a.apply(this, arguments);
+      b.apply(this, arguments);
+    };
+
+  const dynamicImport = (u, _errUrl) => import(u);
+
+  const defineValue = (obj, prop, value) =>
+    Object.defineProperty(obj, prop, { writable: false, configurable: false, value });
+
+  const optionsScript = hasDocument ? document.querySelector('script[type=esms-options]') : undefined;
+
+  const esmsInitOptions = optionsScript ? JSON.parse(optionsScript.innerHTML) : {};
+  Object.assign(esmsInitOptions, self_.esmsInitOptions || {});
+
+  const version = "2.8.0";
+
+  const r$1 = esmsInitOptions.version;
+  if (self_.importShim || (r$1 && r$1 !== version)) {
+    return;
+  }
+
+  // shim mode is determined on initialization, no late shim mode
+  const shimMode =
+    esmsInitOptions.shimMode ||
+    (hasDocument ?
+      document.querySelectorAll('script[type=module-shim],script[type=importmap-shim],link[rel=modulepreload-shim]')
+        .length > 0
+      // Without a document, shim mode is always true as we cannot polyfill
+    : true);
+
+  let importHook,
+    resolveHook,
+    fetchHook = fetch,
+    sourceHook,
+    metaHook,
+    tsTransform =
+      esmsInitOptions.tsTransform ||
+      (hasDocument && document.currentScript && document.currentScript.src.replace(/(\.\w+)?\.js$/, '-typescript.js')) ||
+      './es-module-shims-typescript.js';
+
+  const defaultFetchOpts = { credentials: 'same-origin' };
+
+  const globalHook = name => (typeof name === 'string' ? self_[name] : name);
+
+  if (esmsInitOptions.onimport) importHook = globalHook(esmsInitOptions.onimport);
+  if (esmsInitOptions.resolve) resolveHook = globalHook(esmsInitOptions.resolve);
+  if (esmsInitOptions.fetch) fetchHook = globalHook(esmsInitOptions.fetch);
+  if (esmsInitOptions.source) sourceHook = globalHook(esmsInitOptions.source);
+  if (esmsInitOptions.meta) metaHook = globalHook(esmsInitOptions.meta);
+
+  const hasCustomizationHooks = importHook || resolveHook || fetchHook !== fetch || sourceHook || metaHook;
+
+  const {
+    noLoadEventRetriggers,
+    enforceIntegrity,
+    hotReload,
+    hotReloadInterval = 100,
+    nativePassthrough = !hasCustomizationHooks && !hotReload
+  } = esmsInitOptions;
+
+  const setHooks = (importHook_, resolveHook_, metaHook_) => (
+    (importHook = importHook_),
+    (resolveHook = resolveHook_),
+    (metaHook = metaHook_)
+  );
+
+  const mapOverrides = esmsInitOptions.mapOverrides;
+
+  let nonce = esmsInitOptions.nonce;
+  if (!nonce && hasDocument) {
+    const nonceElement = document.querySelector('script[nonce]');
+    if (nonceElement) nonce = nonceElement.nonce || nonceElement.getAttribute('nonce');
+  }
+
+  const onerror = globalHook(esmsInitOptions.onerror || console.error.bind(console));
+
+  const enable = Array.isArray(esmsInitOptions.polyfillEnable) ? esmsInitOptions.polyfillEnable : [];
+  const disable = Array.isArray(esmsInitOptions.polyfillDisable) ? esmsInitOptions.polyfillDisable : [];
+
+  const enableAll = esmsInitOptions.polyfillEnable === 'all' || enable.includes('all');
+  const wasmInstancePhaseEnabled =
+    enable.includes('wasm-modules') || enable.includes('wasm-module-instances') || enableAll;
+  const wasmSourcePhaseEnabled =
+    enable.includes('wasm-modules') || enable.includes('wasm-module-sources') || enableAll;
+  const deferPhaseEnabled = enable.includes('import-defer') || enableAll;
+  const cssModulesEnabled = !disable.includes('css-modules');
+  const jsonModulesEnabled = !disable.includes('json-modules');
+
+  const onpolyfill =
+    esmsInitOptions.onpolyfill ?
+      globalHook(esmsInitOptions.onpolyfill)
+    : () => {
+        console.log(`%c^^ Module error above is polyfilled and can be ignored ^^`, 'font-weight:900;color:#391');
+      };
+
+  const baseUrl =
+    hasDocument ? document.baseURI
+    : typeof location !== 'undefined' ?
+      `${location.protocol}//${location.host}${
+      location.pathname.includes('/') ?
+        location.pathname.slice(0, location.pathname.lastIndexOf('/') + 1)
+      : location.pathname
+    }`
+    : 'about:blank';
+
+  const createBlob = (source, type = 'text/javascript') => URL.createObjectURL(new Blob([source], { type }));
+  let { skip } = esmsInitOptions;
+  if (Array.isArray(skip)) {
+    const l = skip.map(s => new URL(s, baseUrl).href);
+    skip = s => l.some(i => (i[i.length - 1] === '/' && s.startsWith(i)) || s === i);
+  } else if (typeof skip === 'string') {
+    const r = new RegExp(skip);
+    skip = s => r.test(s);
+  } else if (skip instanceof RegExp) {
+    skip = s => skip.test(s);
+  }
+
+  const dispatchError = error => self_.dispatchEvent(Object.assign(new Event('error'), { error }));
+
+  const throwError = err => {
+    (self_.reportError || dispatchError)(err);
+    onerror(err);
+  };
+
+  const fromParent = parent => (parent ? ` imported from ${parent}` : '');
+
+  const backslashRegEx = /\\/g;
+
+  const asURL = url => {
+    try {
+      if (url.indexOf(':') !== -1) return new URL(url).href;
+    } catch (_) {}
+  };
+
+  const resolveUrl = (relUrl, parentUrl) =>
+    resolveIfNotPlainOrUrl(relUrl, parentUrl) || asURL(relUrl) || resolveIfNotPlainOrUrl('./' + relUrl, parentUrl);
+
+  const resolveIfNotPlainOrUrl = (relUrl, parentUrl) => {
+    const hIdx = parentUrl.indexOf('#'),
+      qIdx = parentUrl.indexOf('?');
+    if (hIdx + qIdx > -2)
+      parentUrl = parentUrl.slice(
+        0,
+        hIdx === -1 ? qIdx
+        : qIdx === -1 || qIdx > hIdx ? hIdx
+        : qIdx
+      );
+    if (relUrl.indexOf('\\') !== -1) relUrl = relUrl.replace(backslashRegEx, '/');
+    // protocol-relative
+    if (relUrl[0] === '/' && relUrl[1] === '/') {
+      return parentUrl.slice(0, parentUrl.indexOf(':') + 1) + relUrl;
+    }
+    // relative-url
+    else if (
+      (relUrl[0] === '.' &&
+        (relUrl[1] === '/' ||
+          (relUrl[1] === '.' && (relUrl[2] === '/' || (relUrl.length === 2 && (relUrl += '/')))) ||
+          (relUrl.length === 1 && (relUrl += '/')))) ||
+      relUrl[0] === '/'
+    ) {
+      const parentProtocol = parentUrl.slice(0, parentUrl.indexOf(':') + 1);
+      if (parentProtocol === 'blob:') {
+        throw new TypeError(
+          `Failed to resolve module specifier "${relUrl}". Invalid relative url or base scheme isn't hierarchical.`
+        );
+      }
+      // Disabled, but these cases will give inconsistent results for deep backtracking
+      //if (parentUrl[parentProtocol.length] !== '/')
+      //  throw new Error('Cannot resolve');
+      // read pathname from parent URL
+      // pathname taken to be part after leading "/"
+      let pathname;
+      if (parentUrl[parentProtocol.length + 1] === '/') {
+        // resolving to a :// so we need to read out the auth and host
+        if (parentProtocol !== 'file:') {
+          pathname = parentUrl.slice(parentProtocol.length + 2);
+          pathname = pathname.slice(pathname.indexOf('/') + 1);
+        } else {
+          pathname = parentUrl.slice(8);
+        }
+      } else {
+        // resolving to :/ so pathname is the /... part
+        pathname = parentUrl.slice(parentProtocol.length + (parentUrl[parentProtocol.length] === '/'));
+      }
+
+      if (relUrl[0] === '/') return parentUrl.slice(0, parentUrl.length - pathname.length - 1) + relUrl;
+
+      // join together and split for removal of .. and . segments
+      // looping the string instead of anything fancy for perf reasons
+      // '../../../../../z' resolved to 'x/y' is just 'z'
+      const segmented = pathname.slice(0, pathname.lastIndexOf('/') + 1) + relUrl;
+
+      const output = [];
+      let segmentIndex = -1;
+      for (let i = 0; i < segmented.length; i++) {
+        // busy reading a segment - only terminate on '/'
+        if (segmentIndex !== -1) {
+          if (segmented[i] === '/') {
+            output.push(segmented.slice(segmentIndex, i + 1));
+            segmentIndex = -1;
+          }
+          continue;
+        }
+        // new segment - check if it is relative
+        else if (segmented[i] === '.') {
+          // ../ segment
+          if (segmented[i + 1] === '.' && (segmented[i + 2] === '/' || i + 2 === segmented.length)) {
+            output.pop();
+            i += 2;
+            continue;
+          }
+          // ./ segment
+          else if (segmented[i + 1] === '/' || i + 1 === segmented.length) {
+            i += 1;
+            continue;
+          }
+        }
+        // it is the start of a new segment
+        while (segmented[i] === '/') i++;
+        segmentIndex = i;
+      }
+      // finish reading out the last segment
+      if (segmentIndex !== -1) output.push(segmented.slice(segmentIndex));
+      return parentUrl.slice(0, parentUrl.length - pathname.length) + output.join('');
+    }
+  };
+
+  const resolveAndComposeImportMap = (json, baseUrl, parentMap) => {
+    const outMap = {
+      imports: { ...parentMap.imports },
+      scopes: { ...parentMap.scopes },
+      integrity: { ...parentMap.integrity }
+    };
+
+    if (json.imports) resolveAndComposePackages(json.imports, outMap.imports, baseUrl, parentMap);
+
+    if (json.scopes)
+      for (let s in json.scopes) {
+        const resolvedScope = resolveUrl(s, baseUrl);
+        resolveAndComposePackages(
+          json.scopes[s],
+          outMap.scopes[resolvedScope] || (outMap.scopes[resolvedScope] = {}),
+          baseUrl,
+          parentMap
+        );
+      }
+
+    if (json.integrity) resolveAndComposeIntegrity(json.integrity, outMap.integrity, baseUrl);
+
+    return outMap;
+  };
+
+  const getMatch = (path, matchObj) => {
+    if (matchObj[path]) return path;
+    let sepIndex = path.length;
+    do {
+      const segment = path.slice(0, sepIndex + 1);
+      if (segment in matchObj) return segment;
+    } while ((sepIndex = path.lastIndexOf('/', sepIndex - 1)) !== -1);
+  };
+
+  const applyPackages = (id, packages) => {
+    const pkgName = getMatch(id, packages);
+    if (pkgName) {
+      const pkg = packages[pkgName];
+      if (pkg === null) return;
+      return pkg + id.slice(pkgName.length);
+    }
+  };
+
+  const resolveImportMap = (importMap, resolvedOrPlain, parentUrl) => {
+    let scopeUrl = parentUrl && getMatch(parentUrl, importMap.scopes);
+    while (scopeUrl) {
+      const packageResolution = applyPackages(resolvedOrPlain, importMap.scopes[scopeUrl]);
+      if (packageResolution) return packageResolution;
+      scopeUrl = getMatch(scopeUrl.slice(0, scopeUrl.lastIndexOf('/')), importMap.scopes);
+    }
+    return applyPackages(resolvedOrPlain, importMap.imports) || (resolvedOrPlain.indexOf(':') !== -1 && resolvedOrPlain);
+  };
+
+  const resolveAndComposePackages = (packages, outPackages, baseUrl, parentMap) => {
+    for (let p in packages) {
+      const resolvedLhs = resolveIfNotPlainOrUrl(p, baseUrl) || p;
+      if (
+        (!shimMode || !mapOverrides) &&
+        outPackages[resolvedLhs] &&
+        outPackages[resolvedLhs] !== packages[resolvedLhs]
+      ) {
+        console.warn(
+          `es-module-shims: Rejected map override "${resolvedLhs}" from ${outPackages[resolvedLhs]} to ${packages[resolvedLhs]}.`
+        );
+        continue;
+      }
+      let target = packages[p];
+      if (typeof target !== 'string') continue;
+      const mapped = resolveImportMap(parentMap, resolveIfNotPlainOrUrl(target, baseUrl) || target, baseUrl);
+      if (mapped) {
+        outPackages[resolvedLhs] = mapped;
+        continue;
+      }
+      console.warn(`es-module-shims: Mapping "${p}" -> "${packages[p]}" does not resolve`);
+    }
+  };
+
+  const resolveAndComposeIntegrity = (integrity, outIntegrity, baseUrl) => {
+    for (let p in integrity) {
+      const resolvedLhs = resolveIfNotPlainOrUrl(p, baseUrl) || p;
+      if (
+        (!shimMode || !mapOverrides) &&
+        outIntegrity[resolvedLhs] &&
+        outIntegrity[resolvedLhs] !== integrity[resolvedLhs]
+      ) {
+        console.warn(
+          `es-module-shims: Rejected map integrity override "${resolvedLhs}" from ${outIntegrity[resolvedLhs]} to ${integrity[resolvedLhs]}.`
+        );
+      }
+      outIntegrity[resolvedLhs] = integrity[p];
+    }
+  };
+
+  let policy;
+  if (typeof window.trustedTypes !== 'undefined' || typeof window.TrustedTypes !== 'undefined') {
+    try {
+      policy = (window.trustedTypes || window.TrustedTypes).createPolicy('es-module-shims', {
+        createHTML: html => html,
+        createScript: script => script
+      });
+    } catch {}
+  }
+
+  function maybeTrustedInnerHTML(html) {
+    return policy ? policy.createHTML(html) : html;
+  }
+
+  function maybeTrustedScript(script) {
+    return policy ? policy.createScript(script) : script;
+  }
+
+  // support browsers without dynamic import support (eg Firefox 6x)
+  let supportsJsonType = false;
+  let supportsCssType = false;
+  const jsInjectionEscapeMap = {
+    '<': '\\u003C',
+    '>': '\\u003E',
+    '/': '\\u002F',
+    '\\': '\\\\',
+    '\b': '\\b',
+    '\f': '\\f',
+    '\n': '\\n',
+    '\r': '\\r',
+    '\t': '\\t',
+    '\0': '\\0',
+    '\u2028': '\\u2028',
+    '\u2029': '\\u2029'
+  };
+  const serializeForCode = value =>
+    JSON.stringify(value).replace(/[<>\/\\\b\f\n\r\t\0\u2028\u2029]/g, char => jsInjectionEscapeMap[char]);
+
+  const supports = hasDocument && HTMLScriptElement.supports;
+
+  let supportsImportMaps = supports && supports.name === 'supports' && supports('importmap');
+  let supportsWasmInstancePhase = false;
+  let supportsWasmSourcePhase = false;
+  let supportsMultipleImportMaps = false;
+
+  const wasmBytes = [0, 97, 115, 109, 1, 0, 0, 0];
+
+  let featureDetectionPromise = (async function () {
+    if (!hasDocument)
+      return Promise.all([
+        import(createBlob(`import"${createBlob('{}', 'text/json')}"with{type:"json"}`)).then(
+          () => (
+            (supportsJsonType = true),
+            import(createBlob(`import"${createBlob('', 'text/css')}"with{type:"css"}`)).then(
+              () => (supportsCssType = true),
+              noop
+            )
+          ),
+          noop
+        ),
+        wasmInstancePhaseEnabled &&
+          import(createBlob(`import"${createBlob(new Uint8Array(wasmBytes), 'application/wasm')}"`)).then(
+            () => (supportsWasmInstancePhase = true),
+            noop
+          ),
+        wasmSourcePhaseEnabled &&
+          import(createBlob(`import source x from"${createBlob(new Uint8Array(wasmBytes), 'application/wasm')}"`)).then(
+            () => (supportsWasmSourcePhase = true),
+            noop
+          )
+      ]);
+
+    const msgTag = `s${version}`;
+    return new Promise(resolve => {
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.setAttribute('nonce', nonce);
+      function cb({ data }) {
+        const isFeatureDetectionMessage = Array.isArray(data) && data[0] === msgTag;
+        if (!isFeatureDetectionMessage) return;
+        [
+          ,
+          supportsImportMaps,
+          supportsMultipleImportMaps,
+          supportsJsonType,
+          supportsCssType,
+          supportsWasmSourcePhase,
+          supportsWasmInstancePhase
+        ] = data;
+        resolve();
+        document.head.removeChild(iframe);
+        window.removeEventListener('message', cb, false);
+      }
+      window.addEventListener('message', cb, false);
+      // Feature checking with careful avoidance of unnecessary work - all gated on initial import map supports check. CSS gates on JSON feature check, Wasm instance phase gates on wasm source phase check.
+      const serializedWasmBytes = serializeForCode(wasmBytes);
+      const importMapTest = `<script nonce=${nonce || ''}>${
+      policy ? 't=(window.trustedTypes||window.TrustedTypes).createPolicy("es-module-shims",{createScript:s=>s});' : ''
+    }b=(s,type='text/javascript')=>URL.createObjectURL(new Blob([s],{type}));c=u=>import(u).then(()=>true,()=>false);i=innerText=>${
+      policy ? 't.createScript(innerText=>' : ''
+    }document.head.appendChild(Object.assign(document.createElement('script'),{type:'importmap',nonce:"${nonce}",innerText}))${
+      policy ? ')' : ''
+    };i(\`{"imports":{"x":"\${b('')}"}}\`);i(\`{"imports":{"y":"\${b('')}"}}\`);cm=${
+      supportsImportMaps && jsonModulesEnabled ? `c(b(\`import"\${b('{}','text/json')}"with{type:"json"}\`))` : 'false'
+    };sp=${
+      supportsImportMaps && wasmSourcePhaseEnabled ?
+        `c(b(\`import source x from "\${b(new Uint8Array(${serializedWasmBytes}),'application/wasm')\}"\`))`
+      : 'false'
+    };Promise.all([${supportsImportMaps ? 'true' : "c('x')"},${supportsImportMaps ? "c('y')" : false},cm,${
+      supportsImportMaps && cssModulesEnabled ?
+        `cm.then(s=>s?c(b(\`import"\${b('','text/css')\}"with{type:"css"}\`)):false)`
+      : 'false'
+    },sp,${
+      supportsImportMaps && wasmInstancePhaseEnabled ?
+        `${wasmSourcePhaseEnabled ? 'sp.then(s=>s?' : ''}c(b(\`import"\${b(new Uint8Array(${serializedWasmBytes}),'application/wasm')\}"\`))${wasmSourcePhaseEnabled ? ':false)' : ''}`
+      : 'false'
+    }]).then(a=>parent.postMessage(['${msgTag}'].concat(a),'*'))<${''}/script>`;
+
+      // Safari will call onload eagerly on head injection, but we don't want the Wechat
+      // path to trigger before setting srcdoc, therefore we track the timing
+      let readyForOnload = false,
+        onloadCalledWhileNotReady = false;
+      function doOnload() {
+        if (!readyForOnload) {
+          onloadCalledWhileNotReady = true;
+          return;
+        }
+        // WeChat browser doesn't support setting srcdoc scripts
+        // But iframe sandboxes don't support contentDocument so we do this as a fallback
+        const doc = iframe.contentDocument;
+        if (doc && doc.head.childNodes.length === 0) {
+          const s = doc.createElement('script');
+          if (nonce) s.setAttribute('nonce', nonce);
+          s.innerText = maybeTrustedScript(importMapTest.slice(15 + (nonce ? nonce.length : 0), -9));
+          doc.head.appendChild(s);
+        }
+      }
+
+      iframe.onload = doOnload;
+      // WeChat browser requires append before setting srcdoc
+      document.head.appendChild(iframe);
+
+      // setting srcdoc is not supported in React native webviews on iOS
+      // setting src to a blob URL results in a navigation event in webviews
+      // document.write gives usability warnings
+      readyForOnload = true;
+      if ('srcdoc' in iframe) iframe.srcdoc = maybeTrustedInnerHTML(importMapTest);
+      else iframe.contentDocument.write(importMapTest);
+      // retrigger onload for Safari only if necessary
+      if (onloadCalledWhileNotReady) doOnload();
+    });
+  })();
+
+  /* es-module-lexer 2.0.0 */
+  let e,a,r,i=2<<19;const s=1===new Uint8Array(new Uint16Array([1]).buffer)[0]?function(e,a){const r=e.length;let i=0;for(;i<r;)a[i]=e.charCodeAt(i++);}:function(e,a){const r=e.length;let i=0;for(;i<r;){const r=e.charCodeAt(i);a[i++]=(255&r)<<8|r>>>8;}},f="xportmportlassforetaourceeferromsyncunctionvoyiedelecontininstantybreareturdebuggeawaithrwhileifcatcfinallels";let t,c$1,n;function parse(k,u="@"){t=k,c$1=u;const l=2*t.length+(2<<18);if(l>i||!e){for(;l>i;)i*=2;a=new ArrayBuffer(i),s(f,new Uint16Array(a,16,109)),e=function(e,a,r){"use asm";var i=new e.Int8Array(r),s=new e.Int16Array(r),f=new e.Int32Array(r),t=new e.Uint8Array(r),c=new e.Uint16Array(r),n=1040;function b(){var e=0,a=0,r=0,t=0,c=0,b=0,l=0;l=n;n=n+10240|0;i[808]=1;i[807]=0;s[401]=0;s[402]=0;f[70]=f[2];i[809]=0;f[68]=0;i[806]=0;f[71]=l+2048;f[72]=l;i[810]=0;e=(f[3]|0)+-2|0;f[73]=e;a=e+(f[66]<<1)|0;f[74]=a;e:while(1){r=e+2|0;f[73]=r;if(e>>>0>=a>>>0){t=18;break}a:do{switch(s[r>>1]|0){case 9:case 10:case 11:case 12:case 13:case 32:break;case 101:{if((((s[402]|0)==0?H(r)|0:0)?(m(e+4|0,16,10)|0)==0:0)?(k(),(i[808]|0)==0):0){t=9;break e}else t=17;break}case 105:{if(H(r)|0?(m(e+4|0,26,10)|0)==0:0){u();t=17;}else t=17;break}case 59:{t=17;break}case 47:switch(s[e+4>>1]|0){case 47:{E();break a}case 42:{y(1);break a}default:{t=16;break e}}default:{t=16;break e}}}while(0);if((t|0)==17){t=0;f[70]=f[73];}e=f[73]|0;a=f[74]|0;}if((t|0)==9){e=f[73]|0;f[70]=e;t=19;}else if((t|0)==16){i[808]=0;f[73]=e;t=19;}else if((t|0)==18)if(!(i[806]|0)){e=r;t=19;}else e=0;do{if((t|0)==19){e:while(1){a=e+2|0;f[73]=a;if(e>>>0>=(f[74]|0)>>>0){t=92;break}a:do{switch(s[a>>1]|0){case 9:case 10:case 11:case 12:case 13:case 32:break;case 101:{if(((s[402]|0)==0?H(a)|0:0)?(m(e+4|0,16,10)|0)==0:0){k();t=91;}else t=91;break}case 105:{if(H(a)|0?(m(e+4|0,26,10)|0)==0:0){u();t=91;}else t=91;break}case 99:{if((H(a)|0?(m(e+4|0,36,8)|0)==0:0)?W(s[e+12>>1]|0)|0:0){i[810]=1;t=91;}else t=91;break}case 40:{r=f[71]|0;e=s[402]|0;t=e&65535;f[r+(t<<3)>>2]=1;a=f[70]|0;s[402]=e+1<<16>>16;f[r+(t<<3)+4>>2]=a;t=91;break}case 41:{a=s[402]|0;if(!(a<<16>>16)){t=36;break e}r=a+-1<<16>>16;s[402]=r;t=s[401]|0;a=t&65535;if(t<<16>>16!=0?(f[(f[71]|0)+((r&65535)<<3)>>2]|0)==5:0){a=f[(f[72]|0)+(a+-1<<2)>>2]|0;r=a+4|0;if(!(f[r>>2]|0))f[r>>2]=(f[70]|0)+2;f[a+12>>2]=e+4;s[401]=t+-1<<16>>16;t=91;}else t=91;break}case 123:{t=f[70]|0;r=f[63]|0;e=t;do{if((s[t>>1]|0)==41&(r|0)!=0?(f[r+4>>2]|0)==(t|0):0){a=f[64]|0;f[63]=a;if(!a){f[59]=0;break}else {f[a+36>>2]=0;break}}}while(0);r=f[71]|0;a=s[402]|0;t=a&65535;f[r+(t<<3)>>2]=(i[810]|0)==0?2:6;s[402]=a+1<<16>>16;f[r+(t<<3)+4>>2]=e;i[810]=0;t=91;break}case 125:{e=s[402]|0;if(!(e<<16>>16)){t=49;break e}r=f[71]|0;t=e+-1<<16>>16;s[402]=t;if((f[r+((t&65535)<<3)>>2]|0)==4){h();t=91;}else t=91;break}case 39:{v(39);t=91;break}case 34:{v(34);t=91;break}case 47:switch(s[e+4>>1]|0){case 47:{E();break a}case 42:{y(1);break a}default:{e=f[70]|0;a=s[e>>1]|0;r:do{if(!(U(a)|0))if(a<<16>>16==41){r=s[402]|0;if(!(z(f[(f[71]|0)+((r&65535)<<3)+4>>2]|0)|0))t=65;}else t=64;else switch(a<<16>>16){case 46:if(((s[e+-2>>1]|0)+-48&65535)<10){t=64;break r}else break r;case 43:if((s[e+-2>>1]|0)==43){t=64;break r}else break r;case 45:if((s[e+-2>>1]|0)==45){t=64;break r}else break r;default:break r}}while(0);if((t|0)==64){r=s[402]|0;t=65;}r:do{if((t|0)==65){t=0;if(r<<16>>16!=0?(c=f[71]|0,b=(r&65535)+-1|0,a<<16>>16==102?(f[c+(b<<3)>>2]|0)==1:0):0){if((s[e+-2>>1]|0)==111?$(f[c+(b<<3)+4>>2]|0,44,3)|0:0)break}else t=69;if((t|0)==69?(0,a<<16>>16==125):0){t=f[71]|0;r=r&65535;if(p(f[t+(r<<3)+4>>2]|0)|0)break;if((f[t+(r<<3)>>2]|0)==6)break}if(!(o(e)|0)){switch(a<<16>>16){case 0:break r;case 47:{if(i[809]|0)break r;break}default:{}}t=f[65]|0;if((t|0?e>>>0>=(f[t>>2]|0)>>>0:0)?e>>>0<=(f[t+4>>2]|0)>>>0:0){g();i[809]=0;t=91;break a}r=f[3]|0;do{if(e>>>0<=r>>>0)break;e=e+-2|0;f[70]=e;a=s[e>>1]|0;}while(!(B(a)|0));if(D(a)|0){do{if(e>>>0<=r>>>0)break;e=e+-2|0;f[70]=e;}while(D(s[e>>1]|0)|0);if(T(e)|0){g();i[809]=0;t=91;break a}}i[809]=1;t=91;break a}}}while(0);g();i[809]=0;t=91;break a}}case 96:{r=f[71]|0;a=s[402]|0;t=a&65535;f[r+(t<<3)+4>>2]=f[70];s[402]=a+1<<16>>16;f[r+(t<<3)>>2]=3;h();t=91;break}default:t=91;}}while(0);if((t|0)==91){t=0;f[70]=f[73];}e=f[73]|0;}if((t|0)==36){V();e=0;break}else if((t|0)==49){V();e=0;break}else if((t|0)==92){e=(i[806]|0)==0?(s[401]|s[402])<<16>>16==0:0;break}}}while(0);n=l;return e|0}function k(){var e=0,a=0,r=0,t=0,c=0,n=0,b=0,k=0,u=0,o=0,h=0,d=0,C=0,g=0;k=f[73]|0;u=f[65]|0;g=k+12|0;f[73]=g;r=w(1)|0;e=f[73]|0;if(!((e|0)==(g|0)?!(I(r)|0):0))C=3;e:do{if((C|0)==3){a:do{switch(r<<16>>16){case 123:{f[73]=e+2;e=w(1)|0;a=f[73]|0;while(1){if(X(e)|0){v(e);e=(f[73]|0)+2|0;f[73]=e;}else {P(e)|0;e=f[73]|0;}w(1)|0;e=A(a,e)|0;if(e<<16>>16==44){f[73]=(f[73]|0)+2;e=w(1)|0;}if(e<<16>>16==125){C=15;break}g=a;a=f[73]|0;if((a|0)==(g|0)){C=12;break}if(a>>>0>(f[74]|0)>>>0){C=14;break}}if((C|0)==12){V();break e}else if((C|0)==14){V();break e}else if((C|0)==15){i[807]=1;f[73]=(f[73]|0)+2;break a}break}case 42:{f[73]=e+2;w(1)|0;g=f[73]|0;A(g,g)|0;break}default:{i[808]=0;switch(r<<16>>16){case 100:{k=e+14|0;f[73]=k;switch((w(1)|0)<<16>>16){case 97:{a=f[73]|0;if((m(a+2|0,80,8)|0)==0?(c=a+10|0,D(s[c>>1]|0)|0):0){f[73]=c;w(0)|0;C=22;}break}case 102:{C=22;break}case 99:{a=f[73]|0;if(((m(a+2|0,36,8)|0)==0?(t=a+10|0,g=s[t>>1]|0,W(g)|0|g<<16>>16==123):0)?(f[73]=t,n=w(1)|0,n<<16>>16!=123):0){d=n;C=31;}break}default:{}}r:do{if((C|0)==22?(b=f[73]|0,(m(b+2|0,88,14)|0)==0):0){r=b+16|0;a=s[r>>1]|0;if(!(W(a)|0))switch(a<<16>>16){case 40:case 42:break;default:break r}f[73]=r;a=w(1)|0;if(a<<16>>16==42){f[73]=(f[73]|0)+2;a=w(1)|0;}if(a<<16>>16!=40){d=a;C=31;}}}while(0);if((C|0)==31?(o=f[73]|0,P(d)|0,h=f[73]|0,h>>>0>o>>>0):0){O(e,k,o,h);f[73]=(f[73]|0)+-2;break e}O(e,k,0,0);f[73]=e+12;break e}case 97:{f[73]=e+10;w(0)|0;e=f[73]|0;C=35;break}case 102:{C=35;break}case 99:{if((m(e+2|0,36,8)|0)==0?(a=e+10|0,B(s[a>>1]|0)|0):0){f[73]=a;g=w(1)|0;C=f[73]|0;P(g)|0;g=f[73]|0;O(C,g,C,g);f[73]=(f[73]|0)+-2;break e}e=e+4|0;f[73]=e;break}case 108:case 118:break;default:break e}if((C|0)==35){f[73]=e+16;e=w(1)|0;if(e<<16>>16==42){f[73]=(f[73]|0)+2;e=w(1)|0;}C=f[73]|0;P(e)|0;g=f[73]|0;O(C,g,C,g);f[73]=(f[73]|0)+-2;break e}f[73]=e+6;i[808]=0;r=w(1)|0;e=f[73]|0;r=(P(r)|0|32)<<16>>16==123;t=f[73]|0;if(r){f[73]=t+2;g=w(1)|0;e=f[73]|0;P(g)|0;}r:while(1){a=f[73]|0;if((a|0)==(e|0))break;O(e,a,e,a);a=w(1)|0;if(r)switch(a<<16>>16){case 93:case 125:break e;default:{}}e=f[73]|0;if(a<<16>>16!=44){C=51;break}f[73]=e+2;a=w(1)|0;e=f[73]|0;switch(a<<16>>16){case 91:case 123:{C=51;break r}default:{}}P(a)|0;}if((C|0)==51)f[73]=e+-2;if(!r)break e;f[73]=t+-2;break e}}}while(0);g=(w(1)|0)<<16>>16==102;e=f[73]|0;if(g?(m(e+2|0,74,6)|0)==0:0){f[73]=e+8;l(k,w(1)|0,0);e=(u|0)==0?240:u+16|0;while(1){e=f[e>>2]|0;if(!e)break e;f[e+12>>2]=0;f[e+8>>2]=0;e=e+16|0;}}f[73]=e+-2;}}while(0);return}function u(){var e=0,a=0,r=0,t=0,c=0,n=0,b=0;b=f[73]|0;c=b+12|0;f[73]=c;e=w(1)|0;t=f[73]|0;e:do{if(e<<16>>16!=46){if(!(e<<16>>16==115&t>>>0>c>>>0)){if(!(e<<16>>16==100&t>>>0>(b+10|0)>>>0)){t=0;n=28;break}if(m(t+2|0,66,8)|0){a=t;e=100;t=0;n=59;break}e=t+10|0;if(!(W(s[e>>1]|0)|0)){a=t;e=100;t=0;n=59;break}f[73]=e;e=w(1)|0;if(e<<16>>16==42){e=42;t=2;n=61;break}f[73]=t;t=0;n=28;break}if((m(t+2|0,56,10)|0)==0?(r=t+12|0,W(s[r>>1]|0)|0):0){f[73]=r;e=w(1)|0;a=f[73]|0;if((a|0)!=(r|0)){if(e<<16>>16!=102){t=1;n=28;break}if(m(a+2|0,74,6)|0){e=102;t=1;n=59;break}if(!(B(s[a+8>>1]|0)|0)){e=102;t=1;n=59;break}}f[73]=t;t=0;n=28;}else {a=t;e=115;t=0;n=59;}}else {f[73]=t+2;switch((w(1)|0)<<16>>16){case 109:{e=f[73]|0;if(m(e+2|0,50,6)|0)break e;a=f[70]|0;if(!(F(a)|0)?(s[a>>1]|0)==46:0)break e;d(b,b,e+8|0,2);break e}case 115:{e=f[73]|0;if(m(e+2|0,56,10)|0)break e;a=f[70]|0;if(!(F(a)|0)?(s[a>>1]|0)==46:0)break e;f[73]=e+12;e=w(1)|0;t=1;n=28;break e}case 100:{e=f[73]|0;if(m(e+2|0,66,8)|0)break e;a=f[70]|0;if(!(F(a)|0)?(s[a>>1]|0)==46:0)break e;f[73]=e+10;e=w(1)|0;t=2;n=28;break e}default:break e}}}while(0);e:do{if((n|0)==28){if(e<<16>>16==40){r=f[71]|0;a=s[402]|0;c=a&65535;f[r+(c<<3)>>2]=5;e=f[73]|0;s[402]=a+1<<16>>16;f[r+(c<<3)+4>>2]=e;if((s[f[70]>>1]|0)==46)break;f[73]=e+2;a=w(1)|0;d(b,f[73]|0,0,e);if(!t)e=f[63]|0;else {e=f[63]|0;f[e+28>>2]=(t|0)==1?5:7;}c=f[72]|0;b=s[401]|0;s[401]=b+1<<16>>16;f[c+((b&65535)<<2)>>2]=e;switch(a<<16>>16){case 39:{v(39);break}case 34:{v(34);break}default:{f[73]=(f[73]|0)+-2;break e}}e=(f[73]|0)+2|0;f[73]=e;switch((w(1)|0)<<16>>16){case 44:{f[73]=(f[73]|0)+2;w(1)|0;c=f[63]|0;f[c+4>>2]=e;b=f[73]|0;f[c+16>>2]=b;i[c+24>>0]=1;f[73]=b+-2;break e}case 41:{s[402]=(s[402]|0)+-1<<16>>16;b=f[63]|0;f[b+4>>2]=e;f[b+12>>2]=(f[73]|0)+2;i[b+24>>0]=1;s[401]=(s[401]|0)+-1<<16>>16;break e}default:{f[73]=(f[73]|0)+-2;break e}}}if(!((t|0)==0&e<<16>>16==123)){switch(e<<16>>16){case 42:case 39:case 34:{n=61;break e}default:{}}a=f[73]|0;n=59;break}e=f[73]|0;if(s[402]|0){f[73]=e+-2;break}while(1){if(e>>>0>=(f[74]|0)>>>0)break;e=w(1)|0;if(!(X(e)|0)){if(e<<16>>16==125){n=49;break}}else v(e);e=(f[73]|0)+2|0;f[73]=e;}if((n|0)==49)f[73]=(f[73]|0)+2;c=(w(1)|0)<<16>>16==102;e=f[73]|0;if(c?m(e+2|0,74,6)|0:0){V();break}f[73]=e+8;e=w(1)|0;if(X(e)|0){l(b,e,0);break}else {V();break}}}while(0);if((n|0)==59)if((a|0)==(c|0))f[73]=b+10;else n=61;do{if((n|0)==61){if(!((e<<16>>16==42|(t|0)!=2)&(s[402]|0)==0)){f[73]=(f[73]|0)+-2;break}e=f[74]|0;a=f[73]|0;while(1){if(a>>>0>=e>>>0){n=68;break}r=s[a>>1]|0;if(X(r)|0){n=66;break}n=a+2|0;f[73]=n;a=n;}if((n|0)==66){l(b,r,t);break}else if((n|0)==68){V();break}}}while(0);return}function l(e,a,r){e=e|0;a=a|0;r=r|0;var i=0,t=0,c=0,n=0,b=0;i=(f[73]|0)+2|0;switch(a<<16>>16){case 39:{v(39);t=5;break}case 34:{v(34);t=5;break}default:V();}do{if((t|0)==5){d(e,i,f[73]|0,1);if((r|0)>0)f[(f[63]|0)+28>>2]=(r|0)==1?4:6;f[73]=(f[73]|0)+2;n=(w(0)|0)<<16>>16==119;c=f[73]|0;if(((n?(s[c+2>>1]|0)==105:0)?(s[c+4>>1]|0)==116:0)?(s[c+6>>1]|0)==104:0){f[73]=c+8;if((w(1)|0)<<16>>16!=123){f[73]=c;break}n=f[73]|0;i=n;t=0;e:while(1){f[73]=i+2;i=w(1)|0;do{if(i<<16>>16!=39){a=f[73]|0;if(i<<16>>16==34){v(34);e=(f[73]|0)+2|0;f[73]=e;i=w(1)|0;break}else {i=P(i)|0;e=f[73]|0;break}}else {a=f[73]|0;v(39);e=(f[73]|0)+2|0;f[73]=e;i=w(1)|0;}}while(0);if(i<<16>>16!=58){t=21;break}f[73]=(f[73]|0)+2;switch((w(1)|0)<<16>>16){case 39:{i=f[73]|0;v(39);break}case 34:{i=f[73]|0;v(34);break}default:{t=25;break e}}b=(f[73]|0)+2|0;r=f[67]|0;f[67]=r+20;f[r>>2]=a;f[r+4>>2]=e;f[r+8>>2]=i;f[r+12>>2]=b;f[r+16>>2]=0;f[((t|0)==0?(f[63]|0)+32|0:t+16|0)>>2]=r;f[73]=(f[73]|0)+2;switch((w(1)|0)<<16>>16){case 125:{t=29;break e}case 44:break;default:{t=27;break e}}i=(f[73]|0)+2|0;f[73]=i;t=r;}if((t|0)==21){f[73]=c;break}else if((t|0)==25){f[73]=c;break}else if((t|0)==27){f[73]=c;break}else if((t|0)==29){b=f[63]|0;f[b+16>>2]=n;f[b+12>>2]=(f[73]|0)+2;break}}f[73]=c+-2;}}while(0);return}function o(e){e=e|0;e:do{switch(s[e>>1]|0){case 100:switch(s[e+-2>>1]|0){case 105:{e=$(e+-4|0,102,2)|0;break e}case 108:{e=$(e+-4|0,106,3)|0;break e}default:{e=0;break e}}case 101:switch(s[e+-2>>1]|0){case 115:switch(s[e+-4>>1]|0){case 108:{e=j(e+-6|0,101)|0;break e}case 97:{e=j(e+-6|0,99)|0;break e}default:{e=0;break e}}case 116:{e=$(e+-4|0,112,4)|0;break e}case 117:{e=$(e+-4|0,120,6)|0;break e}default:{e=0;break e}}case 102:{if((s[e+-2>>1]|0)==111?(s[e+-4>>1]|0)==101:0)switch(s[e+-6>>1]|0){case 99:{e=$(e+-8|0,132,6)|0;break e}case 112:{e=$(e+-8|0,144,2)|0;break e}default:{e=0;break e}}else e=0;break}case 107:{e=$(e+-2|0,148,4)|0;break}case 110:{e=e+-2|0;if(j(e,105)|0)e=1;else e=$(e,156,5)|0;break}case 111:{e=j(e+-2|0,100)|0;break}case 114:{e=$(e+-2|0,166,7)|0;break}case 116:{e=$(e+-2|0,180,4)|0;break}case 119:switch(s[e+-2>>1]|0){case 101:{e=j(e+-4|0,110)|0;break e}case 111:{e=$(e+-4|0,188,3)|0;break e}default:{e=0;break e}}default:e=0;}}while(0);return e|0}function h(){var e=0,a=0,r=0,i=0;a=f[74]|0;r=f[73]|0;e:while(1){e=r+2|0;if(r>>>0>=a>>>0){a=10;break}switch(s[e>>1]|0){case 96:{a=7;break e}case 36:{if((s[r+4>>1]|0)==123){a=6;break e}break}case 92:{e=r+4|0;break}default:{}}r=e;}if((a|0)==6){e=r+4|0;f[73]=e;a=f[71]|0;i=s[402]|0;r=i&65535;f[a+(r<<3)>>2]=4;s[402]=i+1<<16>>16;f[a+(r<<3)+4>>2]=e;}else if((a|0)==7){f[73]=e;r=f[71]|0;i=(s[402]|0)+-1<<16>>16;s[402]=i;if((f[r+((i&65535)<<3)>>2]|0)!=3)V();}else if((a|0)==10){f[73]=e;V();}return}function w(e){e=e|0;var a=0,r=0,i=0;r=f[73]|0;e:do{a=s[r>>1]|0;a:do{if(a<<16>>16!=47)if(e)if(W(a)|0)break;else break e;else if(D(a)|0)break;else break e;else switch(s[r+2>>1]|0){case 47:{E();break a}case 42:{y(e);break a}default:{a=47;break e}}}while(0);i=f[73]|0;r=i+2|0;f[73]=r;}while(i>>>0<(f[74]|0)>>>0);return a|0}function d(e,a,r,s){e=e|0;a=a|0;r=r|0;s=s|0;var t=0,c=0;c=f[67]|0;f[67]=c+40;t=f[63]|0;f[((t|0)==0?236:t+36|0)>>2]=c;f[64]=t;f[63]=c;f[c+8>>2]=e;if(2==(s|0)){e=3;t=r;}else {t=1==(s|0);e=t?1:2;t=t?r+2|0:0;}f[c+12>>2]=t;f[c+28>>2]=e;f[c>>2]=a;f[c+4>>2]=r;f[c+16>>2]=0;f[c+20>>2]=s;a=1==(s|0);i[c+24>>0]=a&1;f[c+32>>2]=0;f[c+36>>2]=0;if(a|2==(s|0))i[807]=1;return}function v(e){e=e|0;var a=0,r=0,i=0,t=0;t=f[74]|0;a=f[73]|0;while(1){i=a+2|0;if(a>>>0>=t>>>0){a=9;break}r=s[i>>1]|0;if(r<<16>>16==e<<16>>16){a=10;break}if(r<<16>>16==92){r=a+4|0;if((s[r>>1]|0)==13){a=a+6|0;a=(s[a>>1]|0)==10?a:r;}else a=r;}else if(re(r)|0){a=9;break}else a=i;}if((a|0)==9){f[73]=i;V();}else if((a|0)==10)f[73]=i;return}function A(e,a){e=e|0;a=a|0;var r=0,i=0,t=0,c=0;r=f[73]|0;i=s[r>>1]|0;c=(e|0)==(a|0);t=c?0:e;c=c?0:a;if(i<<16>>16==97){f[73]=r+4;r=w(1)|0;e=f[73]|0;if(X(r)|0){v(r);a=(f[73]|0)+2|0;f[73]=a;}else {P(r)|0;a=f[73]|0;}i=w(1)|0;r=f[73]|0;}if((r|0)!=(e|0))O(e,a,t,c);return i|0}function C(){var e=0,a=0,r=0;r=f[74]|0;a=f[73]|0;e:while(1){e=a+2|0;if(a>>>0>=r>>>0){a=6;break}switch(s[e>>1]|0){case 13:case 10:{a=6;break e}case 93:{a=7;break e}case 92:{e=a+4|0;break}default:{}}a=e;}if((a|0)==6){f[73]=e;V();e=0;}else if((a|0)==7){f[73]=e;e=93;}return e|0}function g(){var e=0,a=0,r=0;e:while(1){e=f[73]|0;a=e+2|0;f[73]=a;if(e>>>0>=(f[74]|0)>>>0){r=7;break}switch(s[a>>1]|0){case 13:case 10:{r=7;break e}case 47:break e;case 91:{C()|0;break}case 92:{f[73]=e+4;break}default:{}}}if((r|0)==7)V();return}function p(e){e=e|0;switch(s[e>>1]|0){case 62:{e=(s[e+-2>>1]|0)==61;break}case 41:case 59:{e=1;break}case 104:{e=$(e+-2|0,208,4)|0;break}case 121:{e=$(e+-2|0,216,6)|0;break}case 101:{e=$(e+-2|0,228,3)|0;break}default:e=0;}return e|0}function y(e){e=e|0;var a=0,r=0,i=0,t=0,c=0;t=(f[73]|0)+2|0;f[73]=t;r=f[74]|0;while(1){a=t+2|0;if(t>>>0>=r>>>0)break;i=s[a>>1]|0;if(!e?re(i)|0:0)break;if(i<<16>>16==42?(s[t+4>>1]|0)==47:0){c=8;break}t=a;}if((c|0)==8){f[73]=a;a=t+4|0;}f[73]=a;return}function m(e,a,r){e=e|0;a=a|0;r=r|0;var s=0,f=0;e:do{if(!r)e=0;else {while(1){s=i[e>>0]|0;f=i[a>>0]|0;if(s<<24>>24!=f<<24>>24)break;r=r+-1|0;if(!r){e=0;break e}else {e=e+1|0;a=a+1|0;}}e=(s&255)-(f&255)|0;}}while(0);return e|0}function I(e){e=e|0;e:do{switch(e<<16>>16){case 38:case 37:case 33:{e=1;break}default:if((e&-8)<<16>>16==40|(e+-58&65535)<6)e=1;else {switch(e<<16>>16){case 91:case 93:case 94:{e=1;break e}default:{}}e=(e+-123&65535)<4;}}}while(0);return e|0}function U(e){e=e|0;e:do{switch(e<<16>>16){case 38:case 37:case 33:break;default:if(!((e+-58&65535)<6|(e+-40&65535)<7&e<<16>>16!=41)){switch(e<<16>>16){case 91:case 94:break e;default:{}}return e<<16>>16!=125&(e+-123&65535)<4|0}}}while(0);return 1}function x(e){e=e|0;var a=0;a=s[e>>1]|0;e:do{if((a+-9&65535)>=5){switch(a<<16>>16){case 160:case 32:{a=1;break e}default:{}}if(I(a)|0)return a<<16>>16!=46|(F(e)|0)|0;else a=0;}else a=1;}while(0);return a|0}function S(e){e=e|0;var a=0,r=0,i=0,t=0;r=n;n=n+16|0;i=r;f[i>>2]=0;f[66]=e;a=f[3]|0;t=a+(e<<1)|0;e=t+2|0;s[t>>1]=0;f[i>>2]=e;f[67]=e;f[59]=0;f[63]=0;f[61]=0;f[60]=0;f[65]=0;f[62]=0;n=r;return a|0}function O(e,a,r,s){e=e|0;a=a|0;r=r|0;s=s|0;var t=0,c=0;t=f[67]|0;f[67]=t+20;c=f[65]|0;f[((c|0)==0?240:c+16|0)>>2]=t;f[65]=t;f[t>>2]=e;f[t+4>>2]=a;f[t+8>>2]=r;f[t+12>>2]=s;f[t+16>>2]=0;i[807]=1;return}function $(e,a,r){e=e|0;a=a|0;r=r|0;var i=0,s=0;i=e+(0-r<<1)|0;s=i+2|0;e=f[3]|0;if(s>>>0>=e>>>0?(m(s,a,r<<1)|0)==0:0)if((s|0)==(e|0))e=1;else e=x(i)|0;else e=0;return e|0}function T(e){e=e|0;switch(s[e>>1]|0){case 107:{e=$(e+-2|0,148,4)|0;break}case 101:{if((s[e+-2>>1]|0)==117)e=$(e+-4|0,120,6)|0;else e=0;break}default:e=0;}return e|0}function j(e,a){e=e|0;a=a|0;var r=0;r=f[3]|0;if(r>>>0<=e>>>0?(s[e>>1]|0)==a<<16>>16:0)if((r|0)==(e|0))r=1;else r=B(s[e+-2>>1]|0)|0;else r=0;return r|0}function B(e){e=e|0;e:do{if((e+-9&65535)<5)e=1;else {switch(e<<16>>16){case 32:case 160:{e=1;break e}default:{}}e=e<<16>>16!=46&(I(e)|0);}}while(0);return e|0}function E(){var e=0,a=0,r=0;e=f[74]|0;r=f[73]|0;e:while(1){a=r+2|0;if(r>>>0>=e>>>0)break;switch(s[a>>1]|0){case 13:case 10:break e;default:r=a;}}f[73]=a;return}function P(e){e=e|0;while(1){if(W(e)|0)break;if(I(e)|0)break;e=(f[73]|0)+2|0;f[73]=e;e=s[e>>1]|0;if(!(e<<16>>16)){e=0;break}}return e|0}function q(){var e=0;e=f[(f[61]|0)+20>>2]|0;switch(e|0){case 1:{e=-1;break}case 2:{e=-2;break}default:e=e-(f[3]|0)>>1;}return e|0}function z(e){e=e|0;if(!($(e,194,5)|0)?!($(e,44,3)|0):0)e=$(e,204,2)|0;else e=1;return e|0}function D(e){e=e|0;switch(e<<16>>16){case 160:case 32:case 12:case 11:case 9:{e=1;break}default:e=0;}return e|0}function F(e){e=e|0;if((s[e>>1]|0)==46?(s[e+-2>>1]|0)==46:0)e=(s[e+-4>>1]|0)==46;else e=0;return e|0}function G(){var e=0;e=f[69]|0;e=f[((e|0)==0?(f[61]|0)+32|0:e+16|0)>>2]|0;f[69]=e;return (e|0)!=0|0}function H(e){e=e|0;if((f[3]|0)==(e|0))e=1;else e=x(e+-2|0)|0;return e|0}function J(){var e=0;e=f[(f[62]|0)+12>>2]|0;if(!e)e=-1;else e=e-(f[3]|0)>>1;return e|0}function K(){var e=0;e=f[(f[61]|0)+12>>2]|0;if(!e)e=-1;else e=e-(f[3]|0)>>1;return e|0}function L(){var e=0;e=f[(f[62]|0)+8>>2]|0;if(!e)e=-1;else e=e-(f[3]|0)>>1;return e|0}function M(){var e=0;e=f[(f[61]|0)+16>>2]|0;if(!e)e=-1;else e=e-(f[3]|0)>>1;return e|0}function N(){var e=0;e=f[(f[61]|0)+4>>2]|0;if(!e)e=-1;else e=e-(f[3]|0)>>1;return e|0}function Q(){var e=0;e=f[61]|0;e=f[((e|0)==0?236:e+36|0)>>2]|0;f[61]=e;return (e|0)!=0|0}function R(){var e=0;e=f[62]|0;e=f[((e|0)==0?240:e+16|0)>>2]|0;f[62]=e;return (e|0)!=0|0}function V(){i[806]=1;f[68]=(f[73]|0)-(f[3]|0)>>1;f[73]=(f[74]|0)+2;return}function W(e){e=e|0;return (e|128)<<16>>16==160|(e+-9&65535)<5|0}function X(e){e=e|0;return e<<16>>16==39|e<<16>>16==34|0}function Y(){return (f[(f[69]|0)+12>>2]|0)-(f[3]|0)>>1|0}function Z(){return (f[(f[69]|0)+8>>2]|0)-(f[3]|0)>>1|0}function _(){return (f[(f[69]|0)+4>>2]|0)-(f[3]|0)>>1|0}function ee(){return (f[(f[61]|0)+8>>2]|0)-(f[3]|0)>>1|0}function ae(){return (f[(f[62]|0)+4>>2]|0)-(f[3]|0)>>1|0}function re(e){e=e|0;return e<<16>>16==13|e<<16>>16==10|0}function ie(){return (f[f[69]>>2]|0)-(f[3]|0)>>1|0}function se(){return (f[f[61]>>2]|0)-(f[3]|0)>>1|0}function fe(){return (f[f[62]>>2]|0)-(f[3]|0)>>1|0}function te(){return t[(f[61]|0)+24>>0]|0|0}function ce(e){e=e|0;f[3]=e;return}function ne(){return f[(f[61]|0)+28>>2]|0}function be(){return (i[807]|0)!=0|0}function ke(){return (i[808]|0)!=0|0}function ue(){f[69]=0;return}function le(){return f[68]|0}function oe(e){e=e|0;n=e+992+15&-16;return 992}return {su:oe,ai:M,ake:_,aks:ie,ave:Y,avs:Z,e:le,ee:ae,ele:J,els:L,es:fe,f:ke,id:q,ie:N,ip:te,is:se,it:ne,ms:be,p:b,ra:G,re:R,ri:Q,rsa:ue,sa:S,se:K,ses:ce,ss:ee}}("undefined"!=typeof globalThis?globalThis:self,{},a),r=e.su(i-(2<<17));}const h=t.length+1;e.ses(r),e.sa(h-1),s(t,new Uint16Array(a,r,h)),e.p()||(n=e.e(),o());const w=[],d=[];for(;e.ri();){const a=e.is(),r=e.ie(),i=e.ai(),s=e.id(),f=e.ss(),c=e.se(),n=e.it();let k;e.ip()&&(k=b(-1===s?a:a+1,t.charCodeAt(-1===s?a-1:a)));const u=[];for(e.rsa();e.ra();){const a=e.aks(),r=e.ake(),i=e.avs(),s=e.ave(),f=v(a,r),t=v(i,s);u.push([f,t]);}w.push({t:n,n:k,s:a,e:r,ss:f,se:c,d:s,a:i,at:u.length>0?u:null});}for(;e.re();){const a=e.es(),r=e.ee(),i=e.els(),s=e.ele(),f=v(a,r),t=i<0?void 0:v(i,s);d.push({s:a,e:r,ls:i,le:s,n:f,ln:t});}return [w,d,!!e.f(),!!e.ms()];function v(e,a){const r=t.charCodeAt(e);return 34===r||39===r?b(e+1,r):t.slice(e,a)}}function b(e,a){n=e;let r="",i=n;for(;;){n>=t.length&&o();const e=t.charCodeAt(n);if(e===a)break;92===e?(r+=t.slice(i,n),r+=k(),i=n):(8232===e||8233===e||l(e)&&o(),++n);}return r+=t.slice(i,n++),r}function k(){let e=t.charCodeAt(++n);switch(++n,e){case 110:return "\n";case 114:return "\r";case 120:return String.fromCharCode(u(2));case 117:return function(){const e=t.charCodeAt(n);let a;123===e?(++n,a=u(t.indexOf("}",n)-n),++n,a>1114111&&o()):a=u(4);return a<=65535?String.fromCharCode(a):(a-=65536,String.fromCharCode(55296+(a>>10),56320+(1023&a)))}();case 116:return "\t";case 98:return "\b";case 118:return "\v";case 102:return "\f";case 13:10===t.charCodeAt(n)&&++n;case 10:return "";case 56:case 57:o();default:if(e>=48&&e<=55){let a=t.substr(n-1,3).match(/^[0-7]+/)[0],r=parseInt(a,8);return r>255&&(a=a.slice(0,-1),r=parseInt(a,8)),n+=a.length-1,e=t.charCodeAt(n),"0"===a&&56!==e&&57!==e||o(),String.fromCharCode(r)}return l(e)?"":String.fromCharCode(e)}}function u(e){const a=n;let r=0,i=0;for(let a=0;a<e;++a,++n){let e,s=t.charCodeAt(n);if(95!==s){if(s>=97)e=s-97+10;else if(s>=65)e=s-65+10;else {if(!(s>=48&&s<=57))break;e=s-48;}if(e>=16)break;i=s,r=16*r+e;}else 95!==i&&0!==a||o(),i=s;}return 95!==i&&n-a===e||o(),r}function l(e){return 13===e||10===e}function o(){throw Object.assign(Error(`Parse error ${c$1}:${t.slice(0,n).split("\n").length}:${n-t.lastIndexOf("\n",n-1)}`),{idx:n})}
+
+  const _resolve = (id, parentUrl = baseUrl) => {
+    const urlResolved = resolveIfNotPlainOrUrl(id, parentUrl) || asURL(id);
+    const firstResolved = firstImportMap && resolveImportMap(firstImportMap, urlResolved || id, parentUrl);
+    const composedResolved =
+      composedImportMap === firstImportMap ? firstResolved : (
+        resolveImportMap(composedImportMap, urlResolved || id, parentUrl)
+      );
+    const resolved = composedResolved || firstResolved || throwUnresolved(id, parentUrl);
+    // needsShim, shouldShim per load record to set on parent
+    let n = false,
+      N = false;
+    if (!supportsImportMaps) {
+      // bare specifier -> needs shim
+      if (!urlResolved) n = true;
+      // url mapping -> should shim
+      else if (urlResolved !== resolved) N = true;
+    } else if (!supportsMultipleImportMaps) {
+      // bare specifier and not resolved by first import map -> needs shim
+      if (!urlResolved && !firstResolved) n = true;
+      // resolution doesn't match first import map -> should shim
+      if (firstResolved && resolved !== firstResolved) N = true;
+    }
+    return { r: resolved, n, N };
+  };
+
+  const resolve = (id, parentUrl) => {
+    if (!resolveHook) return _resolve(id, parentUrl);
+    const result = resolveHook(id, parentUrl, defaultResolve);
+
+    return result ? { r: result, n: true, N: true } : _resolve(id, parentUrl);
+  };
+
+  // import()
+  async function importShim(id, opts, parentUrl) {
+    if (typeof opts === 'string') {
+      parentUrl = opts;
+      opts = undefined;
+    }
+    await initPromise; // needed for shim check
+    if (shimMode || !baselineSupport) {
+      if (hasDocument) processScriptsAndPreloads();
+      legacyAcceptingImportMaps = false;
+    }
+    let sourceType = undefined;
+    if (typeof opts === 'object') {
+      if (opts.lang === 'ts') sourceType = 'ts';
+      if (typeof opts.with === 'object' && typeof opts.with.type === 'string') {
+        sourceType = opts.with.type;
+      }
+    }
+    return topLevelLoad(id, parentUrl || baseUrl, defaultFetchOpts, undefined, undefined, undefined, sourceType);
+  }
+
+  // import.source()
+  // (opts not currently supported as no use cases yet)
+  if (shimMode || wasmSourcePhaseEnabled)
+    importShim.source = async (id, opts, parentUrl) => {
+      if (typeof opts === 'string') {
+        parentUrl = opts;
+        opts = undefined;
+      }
+      await initPromise; // needed for shim check
+      if (shimMode || !baselineSupport) {
+        if (hasDocument) processScriptsAndPreloads();
+        legacyAcceptingImportMaps = false;
+      }
+      await importMapPromise;
+      const url = resolve(id, parentUrl || baseUrl).r;
+      const load = getOrCreateLoad(url, defaultFetchOpts, undefined, undefined);
+      await load.f;
+      return importShim._s[load.r];
+    };
+
+  // import.defer() is just a proxy for import(), since we can't actually defer
+  if (shimMode || deferPhaseEnabled) importShim.defer = importShim;
+
+  if (hotReload) {
+    initHotReload(topLevelLoad, importShim);
+    importShim.hotReload = hotReload$1;
+  }
+
+  const defaultResolve = (id, parentUrl) => {
+    return (
+      resolveImportMap(composedImportMap, resolveIfNotPlainOrUrl(id, parentUrl) || id, parentUrl) ||
+      throwUnresolved(id, parentUrl)
+    );
+  };
+
+  const throwUnresolved = (id, parentUrl) => {
+    throw Error(`Unable to resolve specifier '${id}'${fromParent(parentUrl)}`);
+  };
+
+  const metaResolve = function (id, parentUrl = this.url) {
+    return resolve(id, `${parentUrl}`).r;
+  };
+
+  importShim.resolve = (id, parentUrl) => resolve(id, parentUrl).r;
+  importShim.getImportMap = () => JSON.parse(JSON.stringify(composedImportMap));
+  importShim.addImportMap = importMapIn => {
+    if (!shimMode) throw new Error('Unsupported in polyfill mode.');
+    composedImportMap = resolveAndComposeImportMap(importMapIn, baseUrl, composedImportMap);
+  };
+  importShim.version = version;
+
+  const registry = (importShim._r = {});
+  // Wasm caches
+  const sourceCache = (importShim._s = {});
+  /* const instanceCache = */ importShim._i = new WeakMap();
+
+  // Ensure this version is the only version
+  defineValue(self_, 'importShim', Object.freeze(importShim));
+  const shimModeOptions = { ...esmsInitOptions, shimMode: true };
+  if (optionsScript) optionsScript.innerText = maybeTrustedScript(JSON.stringify(shimModeOptions));
+  self_.esmsInitOptions = shimModeOptions;
+
+  const loadAll = async (load, seen) => {
+    seen[load.u] = 1;
+    await load.L;
+    await Promise.all(
+      load.d.map(({ l: dep, s: sourcePhase }) => {
+        if (dep.b || seen[dep.u]) return;
+        if (sourcePhase) return dep.f;
+        return loadAll(dep, seen);
+      })
+    );
+  };
+
+  let importMapSrc = false;
+  let multipleImportMaps = false;
+  let firstImportMap = null;
+  // To support polyfilling multiple import maps, we separately track the composed import map from the first import map
+  let composedImportMap = { imports: {}, scopes: {}, integrity: {} };
+  let baselineSupport;
+
+  const initPromise = featureDetectionPromise.then(() => {
+    baselineSupport =
+      supportsImportMaps &&
+      (!jsonModulesEnabled || supportsJsonType) &&
+      (!cssModulesEnabled || supportsCssType) &&
+      (!wasmInstancePhaseEnabled || supportsWasmInstancePhase) &&
+      (!wasmSourcePhaseEnabled || supportsWasmSourcePhase) &&
+      !deferPhaseEnabled &&
+      (!multipleImportMaps || supportsMultipleImportMaps) &&
+      !importMapSrc &&
+      !hasCustomizationHooks;
+    if (!shimMode && typeof WebAssembly !== 'undefined') {
+      if (wasmSourcePhaseEnabled && !Object.getPrototypeOf(WebAssembly.Module).name) {
+        const s = Symbol();
+        const brand = m => defineValue(m, s, 'WebAssembly.Module');
+        class AbstractModuleSource {
+          get [Symbol.toStringTag]() {
+            if (this[s]) return this[s];
+            throw new TypeError('Not an AbstractModuleSource');
+          }
+        }
+        const { Module: wasmModule, compile: wasmCompile, compileStreaming: wasmCompileStreaming } = WebAssembly;
+        WebAssembly.Module = Object.setPrototypeOf(
+          Object.assign(function Module(...args) {
+            return brand(new wasmModule(...args));
+          }, wasmModule),
+          AbstractModuleSource
+        );
+        WebAssembly.Module.prototype = Object.setPrototypeOf(wasmModule.prototype, AbstractModuleSource.prototype);
+        WebAssembly.compile = function compile(...args) {
+          return wasmCompile(...args).then(brand);
+        };
+        WebAssembly.compileStreaming = function compileStreaming(...args) {
+          return wasmCompileStreaming(...args).then(brand);
+        };
+      }
+    }
+    if (hasDocument) {
+      if (!supportsImportMaps) {
+        const supports = HTMLScriptElement.supports || (type => type === 'classic' || type === 'module');
+        HTMLScriptElement.supports = type => type === 'importmap' || supports(type);
+      }
+      if (shimMode || !baselineSupport) {
+        attachMutationObserver();
+        if (document.readyState === 'complete') {
+          readyStateCompleteCheck();
+        } else {
+          document.addEventListener('readystatechange', readyListener);
+        }
+      }
+      processScriptsAndPreloads();
+    }
+    return undefined;
+  });
+
+  const attachMutationObserver = () => {
+    const observer = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        if (mutation.type !== 'childList') continue;
+        for (const node of mutation.addedNodes) {
+          if (node.tagName === 'SCRIPT') {
+            if (node.type === (shimMode ? 'module-shim' : 'module') && !node.ep) processScript(node, true);
+            if (node.type === (shimMode ? 'importmap-shim' : 'importmap') && !node.ep) processImportMap(node, true);
+          } else if (
+            node.tagName === 'LINK' &&
+            node.rel === (shimMode ? 'modulepreload-shim' : 'modulepreload') &&
+            !node.ep
+          ) {
+            processPreload(node);
+          }
+        }
+      }
+    });
+    observer.observe(document, { childList: true });
+    observer.observe(document.head, { childList: true });
+    processScriptsAndPreloads();
+  };
+
+  let importMapPromise = initPromise;
+  let firstPolyfillLoad = true;
+  let legacyAcceptingImportMaps = true;
+
+  async function topLevelLoad(
+    url,
+    parentUrl,
+    fetchOpts,
+    source,
+    nativelyLoaded,
+    lastStaticLoadPromise,
+    sourceType
+  ) {
+    await initPromise;
+    await importMapPromise;
+    url = (await resolve(url, parentUrl)).r;
+
+    // we mock import('./x.css', { with: { type: 'css' }}) support via an inline static reexport
+    // because we can't syntactically pass through to dynamic import with a second argument
+    if (sourceType === 'css' || sourceType === 'json') {
+      // Direct reexport for hot reloading skipped due to Firefox bug https://bugzilla.mozilla.org/show_bug.cgi?id=1965620
+      source = `import m from'${url}'with{type:"${sourceType}"};export default m;`;
+      url += '?entry';
+    }
+
+    if (importHook) await importHook(url, typeof fetchOpts !== 'string' ? fetchOpts : {}, parentUrl, source, sourceType);
+    // early analysis opt-out - no need to even fetch if we have feature support
+    if (!shimMode && baselineSupport && nativePassthrough && sourceType !== 'ts') {
+      // for polyfill case, only dynamic import needs a return value here, and dynamic import will never pass nativelyLoaded
+      if (nativelyLoaded) return null;
+      await lastStaticLoadPromise;
+      return dynamicImport(source ? createBlob(source) : url);
+    }
+    const load = getOrCreateLoad(url, fetchOpts, undefined, source);
+    linkLoad(load, fetchOpts);
+    const seen = {};
+    await loadAll(load, seen);
+    resolveDeps(load, seen);
+    await lastStaticLoadPromise;
+    if (!shimMode && !load.n) {
+      if (nativelyLoaded) {
+        return;
+      }
+      if (source) {
+        return await dynamicImport(createBlob(source));
+      }
+    }
+    if (firstPolyfillLoad && !shimMode && load.n && nativelyLoaded) {
+      onpolyfill();
+      firstPolyfillLoad = false;
+    }
+    const module = await (shimMode || load.n || load.N || !nativePassthrough || (!nativelyLoaded && source) ?
+      dynamicImport(load.b, load.u)
+    : import(load.u));
+    // if the top-level load is a shell, run its update function
+    if (load.s) (await dynamicImport(load.s, load.u)).u$_(module);
+    revokeObjectURLs(Object.keys(seen));
+    return module;
+  }
+
+  const revokeObjectURLs = registryKeys => {
+    let curIdx = 0;
+    const handler = self_.requestIdleCallback || self_.requestAnimationFrame || (fn => setTimeout(fn, 0));
+    handler(cleanup);
+    function cleanup() {
+      for (const key of registryKeys.slice(curIdx, (curIdx += 100))) {
+        const load = registry[key];
+        if (load && load.b && load.b !== load.u) URL.revokeObjectURL(load.b);
+      }
+      if (curIdx < registryKeys.length) handler(cleanup);
+    }
+  };
+
+  const urlJsString = url => serializeForCode(String(url));
+
+  let resolvedSource, lastIndex;
+  const pushStringTo = (load, originalIndex, dynamicImportEndStack) => {
+    while (dynamicImportEndStack[dynamicImportEndStack.length - 1] < originalIndex) {
+      const dynamicImportEnd = dynamicImportEndStack.pop();
+      resolvedSource += `${load.S.slice(lastIndex, dynamicImportEnd)}, ${urlJsString(load.r)}`;
+      lastIndex = dynamicImportEnd;
+    }
+    resolvedSource += load.S.slice(lastIndex, originalIndex);
+    lastIndex = originalIndex;
+  };
+
+  const pushSourceURL = (load, commentPrefix, commentStart, dynamicImportEndStack) => {
+    const urlStart = commentStart + commentPrefix.length;
+    const commentEnd = load.S.indexOf('\n', urlStart);
+    const urlEnd = commentEnd !== -1 ? commentEnd : load.S.length;
+    let sourceUrl = load.S.slice(urlStart, urlEnd);
+    try {
+      sourceUrl = new URL(sourceUrl, load.r).href;
+    } catch (e) {}
+    pushStringTo(load, urlStart, dynamicImportEndStack);
+    resolvedSource += sourceUrl;
+    lastIndex = urlEnd;
+  };
+
+  const resolveDeps = (load, seen) => {
+    if (load.b || !seen[load.u]) return;
+    seen[load.u] = 0;
+
+    for (const { l: dep, s: sourcePhase } of load.d) {
+      if (!sourcePhase) resolveDeps(dep, seen);
+    }
+
+    if (!load.n) load.n = load.d.some(dep => dep.l.n);
+    if (!load.N) load.N = load.d.some(dep => dep.l.N);
+
+    // use native loader whenever possible (n = needs shim) via executable subgraph passthrough
+    // so long as the module doesn't use dynamic import or unsupported URL mappings (N = should shim)
+    if (nativePassthrough && !shimMode && !load.n && !load.N) {
+      load.b = load.u;
+      load.S = undefined;
+      return;
+    }
+
+    const [imports, exports] = load.a;
+
+    // "execution"
+    let source = load.S,
+      depIndex = 0,
+      dynamicImportEndStack = [];
+
+    // once all deps have loaded we can inline the dependency resolution blobs
+    // and define this blob
+    resolvedSource = '';
+    lastIndex = 0;
+
+    for (const { s: start, e: end, ss: statementStart, se: statementEnd, d: dynamicImportIndex, t, a, at } of imports) {
+      // source phase
+      if (t === 4) {
+        let { l: depLoad } = load.d[depIndex++];
+        pushStringTo(load, statementStart, dynamicImportEndStack);
+        resolvedSource += `${source.slice(statementStart, start - 1).replace('source', '')}/*${source.slice(start - 1, end + 1)}*/'${createBlob(`export default importShim._s[${urlJsString(depLoad.r)}]`)}'`;
+        lastIndex = end + 1;
+      }
+      // dependency source replacements
+      else if (dynamicImportIndex === -1) {
+        let keepAssertion = false;
+        if (a > 0 && !shimMode) {
+          // strip assertions only when unsupported in polyfill mode
+          keepAssertion =
+            nativePassthrough &&
+            ((supportsJsonType && at.some(([s, t]) => s === 'type' && t === 'json')) ||
+              (supportsCssType && at.some(([s, t]) => s === 'type' && t === 'css')));
+        }
+
+        // defer phase stripping
+        if (t === 6) {
+          pushStringTo(load, statementStart, dynamicImportEndStack);
+          resolvedSource += source.slice(statementStart, start - 1).replace('defer', '');
+          lastIndex = start;
+        }
+        let { l: depLoad } = load.d[depIndex++],
+          blobUrl = depLoad.b,
+          cycleShell = !blobUrl;
+        if (cycleShell) {
+          // circular shell creation
+          if (!(blobUrl = depLoad.s)) {
+            blobUrl = depLoad.s = createBlob(
+              `export function u$_(m){${depLoad.a[1]
+              .map(({ s, e }, i) => {
+                const q = depLoad.S[s] === '"' || depLoad.S[s] === "'";
+                return `e$_${i}=m${q ? `[` : '.'}${depLoad.S.slice(s, e)}${q ? `]` : ''}`;
+              })
+              .join(',')}}${
+              depLoad.a[1].length ? `let ${depLoad.a[1].map((_, i) => `e$_${i}`).join(',')};` : ''
+            }export {${depLoad.a[1]
+              .map(({ s, e }, i) => `e$_${i} as ${depLoad.S.slice(s, e)}`)
+              .join(',')}}\n//# sourceURL=${depLoad.r}?cycle`
+            );
+          }
+        }
+
+        pushStringTo(load, start - 1, dynamicImportEndStack);
+        resolvedSource += `/*${source.slice(start - 1, end + 1)}*/'${blobUrl}'`;
+
+        // circular shell execution
+        if (!cycleShell && depLoad.s) {
+          resolvedSource += `;import*as m$_${depIndex} from'${depLoad.b}';import{u$_ as u$_${depIndex}}from'${depLoad.s}';u$_${depIndex}(m$_${depIndex})`;
+          depLoad.s = undefined;
+        }
+        lastIndex = keepAssertion ? end + 1 : statementEnd;
+      }
+      // import.meta
+      else if (dynamicImportIndex === -2) {
+        load.m = { url: load.r, resolve: metaResolve };
+        if (metaHook) metaHook(load.m, load.u);
+        pushStringTo(load, start, dynamicImportEndStack);
+        resolvedSource += `importShim._r[${urlJsString(load.u)}].m`;
+        lastIndex = statementEnd;
+      }
+      // dynamic import
+      else {
+        pushStringTo(load, statementStart + 6, dynamicImportEndStack);
+        resolvedSource += `Shim${t === 5 ? '.source' : ''}(`;
+        dynamicImportEndStack.push(statementEnd - 1);
+        lastIndex = start;
+      }
+    }
+
+    // support progressive cycle binding updates (try statement avoids tdz errors)
+    if (load.s && (imports.length === 0 || imports[imports.length - 1].d === -1))
+      resolvedSource += `\n;import{u$_}from'${load.s}';try{u$_({${exports
+      .filter(e => e.ln)
+      .map(({ s, e, ln }) => `${source.slice(s, e)}:${ln}`)
+      .join(',')}})}catch(_){};\n`;
+
+    let sourceURLCommentStart = source.lastIndexOf(sourceURLCommentPrefix);
+    let sourceMapURLCommentStart = source.lastIndexOf(sourceMapURLCommentPrefix);
+
+    // ignore sourceMap comments before already spliced code
+    if (sourceURLCommentStart < lastIndex) sourceURLCommentStart = -1;
+    if (sourceMapURLCommentStart < lastIndex) sourceMapURLCommentStart = -1;
+
+    // sourceURL first / only
+    if (
+      sourceURLCommentStart !== -1 &&
+      (sourceMapURLCommentStart === -1 || sourceMapURLCommentStart > sourceURLCommentStart)
+    ) {
+      pushSourceURL(load, sourceURLCommentPrefix, sourceURLCommentStart, dynamicImportEndStack);
+    }
+    // sourceMappingURL
+    if (sourceMapURLCommentStart !== -1) {
+      pushSourceURL(load, sourceMapURLCommentPrefix, sourceMapURLCommentStart, dynamicImportEndStack);
+      // sourceURL last
+      if (sourceURLCommentStart !== -1 && sourceURLCommentStart > sourceMapURLCommentStart)
+        pushSourceURL(load, sourceURLCommentPrefix, sourceURLCommentStart, dynamicImportEndStack);
+    }
+
+    pushStringTo(load, source.length, dynamicImportEndStack);
+
+    if (sourceURLCommentStart === -1) resolvedSource += sourceURLCommentPrefix + load.r;
+
+    load.b = createBlob(resolvedSource);
+    load.S = resolvedSource = undefined;
+  };
+
+  const sourceURLCommentPrefix = '\n//# sourceURL=';
+  const sourceMapURLCommentPrefix = '\n//# sourceMappingURL=';
+  const cssUrlRegEx = /url\(\s*(?:(["'])((?:\\.|[^\n\\"'])+)\1|((?:\\.|[^\s,"'()\\])+))\s*\)/g;
+
+  // restrict in-flight fetches to a pool of 100
+  let p = [];
+  let c = 0;
+  const pushFetchPool = () => {
+    if (++c > 100) return new Promise(r => p.push(r));
+  };
+  const popFetchPool = () => {
+    c--;
+    if (p.length) p.shift()();
+  };
+
+  const doFetch = async (url, fetchOpts, parent) => {
+    if (enforceIntegrity && !fetchOpts.integrity) throw Error(`No integrity for ${url}${fromParent(parent)}.`);
+    let res,
+      poolQueue = pushFetchPool();
+    if (poolQueue) await poolQueue;
+    try {
+      res = await fetchHook(url, fetchOpts);
+    } catch (e) {
+      e.message = `Unable to fetch ${url}${fromParent(parent)} - see network log for details.\n` + e.message;
+      throw e;
+    } finally {
+      popFetchPool();
+    }
+
+    if (!res.ok) {
+      const error = new TypeError(`${res.status} ${res.statusText} ${res.url}${fromParent(parent)}`);
+      error.response = res;
+      throw error;
+    }
+    return res;
+  };
+
+  let esmsTsTransform;
+  const initTs = async () => {
+    const m = await import(tsTransform);
+    if (!esmsTsTransform) esmsTsTransform = m.transform;
+  };
+
+  async function defaultSourceHook(url, fetchOpts, parent) {
+    let res = await doFetch(url, fetchOpts, parent),
+      contentType,
+      [, json, type, jsts] =
+        (contentType = res.headers.get('content-type') || '').match(
+          /^(?:[^/;]+\/(?:[^/+;]+\+)?(json)|(?:text|application)\/(?:x-)?((java|type)script|wasm|css))(?:;|$)/
+        ) || [];
+    if (!(type = json || (jsts ? jsts[0] + 's' : type || (/\.m?ts(\?|#|$)/.test(url) && 'ts')))) {
+      throw Error(
+        `Unsupported Content-Type "${contentType}" loading ${url}${fromParent(parent)}. Modules must be served with a valid MIME type like application/javascript.`
+      );
+    }
+    return {
+      url: res.url,
+      source: await (type > 'v' ? WebAssembly.compileStreaming(res) : res.text()),
+      type
+    };
+  }
+
+  const hotPrefix = 'var h=import.meta.hot,';
+  const fetchModule = async (reqUrl, fetchOpts, parent) => {
+    const mapIntegrity = composedImportMap.integrity[reqUrl];
+    fetchOpts = mapIntegrity && !fetchOpts.integrity ? { ...fetchOpts, integrity: mapIntegrity } : fetchOpts;
+    let {
+      url = reqUrl,
+      source,
+      type
+    } = (await (sourceHook || defaultSourceHook)(reqUrl, fetchOpts, parent, defaultSourceHook)) || {};
+    if (type === 'wasm') {
+      const exports = WebAssembly.Module.exports((sourceCache[url] = source));
+      const imports = WebAssembly.Module.imports(source);
+      const rStr = urlJsString(url);
+      source = `import*as $_ns from${rStr};`;
+      let i = 0,
+        obj = '';
+      for (const { module, kind } of imports) {
+        const specifier = urlJsString(module);
+        source += `import*as impt${i} from${specifier};\n`;
+        obj += `${specifier}:${kind === 'global' ? `importShim._i.get(impt${i})||impt${i++}` : `impt${i++}`},`;
+      }
+      source += `${hotPrefix}i=await WebAssembly.instantiate(importShim._s[${rStr}],{${obj}});importShim._i.set($_ns,i);`;
+      obj = '';
+      for (const { name, kind } of exports) {
+        source += `export let ${name}=i.exports['${name}'];`;
+        if (kind === 'global') source += `try{${name}=${name}.value}catch(_){${name}=undefined}`;
+        obj += `${name},`;
+      }
+      source += `if(h)h.accept(m=>({${obj}}=m))`;
+    } else if (type === 'json') {
+      source = `${hotPrefix}j=JSON.parse(${JSON.stringify(source)});export{j as default};if(h)h.accept(m=>j=m.default)`;
+    } else if (type === 'css') {
+      source = `${hotPrefix}s=h&&h.data.s||new CSSStyleSheet();s.replaceSync(${JSON.stringify(
+      source.replace(
+        cssUrlRegEx,
+        (_match, quotes = '', relUrl1, relUrl2) => `url(${quotes}${resolveUrl(relUrl1 || relUrl2, url)}${quotes})`
+      )
+    )});if(h){h.data.s=s;h.accept(()=>{})}export default s`;
+    } else if (type === 'ts') {
+      if (!esmsTsTransform) await initTs();
+      const transformed = esmsTsTransform(source, url);
+      // even if the TypeScript is valid JavaScript, unless it was a top-level inline source, it wasn't served with
+      // a valid JS MIME here, so we must still polyfill it
+      source = transformed === undefined ? source : transformed;
+    }
+    return { url, source, type };
+  };
+
+  const getOrCreateLoad = (url, fetchOpts, parent, source) => {
+    if (source && registry[url]) {
+      let i = 0;
+      while (registry[url + '#' + ++i]);
+      url += '#' + i;
+    }
+    let load = registry[url];
+    if (load) return load;
+    registry[url] = load = {
+      // url
+      u: url,
+      // response url
+      r: source ? url : undefined,
+      // fetchPromise
+      f: undefined,
+      // source
+      S: source,
+      // linkPromise
+      L: undefined,
+      // analysis
+      a: undefined,
+      // deps
+      d: undefined,
+      // blobUrl
+      b: undefined,
+      // shellUrl
+      s: undefined,
+      // needsShim: does it fail execution in the current native loader?
+      n: false,
+      // shouldShim: does it need to be loaded by the polyfill loader?
+      N: false,
+      // type
+      t: null,
+      // meta
+      m: null
+    };
+    load.f = (async () => {
+      if (load.S === undefined) {
+        // preload fetch options override fetch options (race)
+        ({ url: load.r, source: load.S, type: load.t } = await (fetchCache[url] || fetchModule(url, fetchOpts, parent)));
+        if (
+          !load.n &&
+          load.t !== 'js' &&
+          !shimMode &&
+          ((load.t === 'css' && !supportsCssType) ||
+            (load.t === 'json' && !supportsJsonType) ||
+            (load.t === 'wasm' && !supportsWasmInstancePhase && !supportsWasmSourcePhase) ||
+            load.t === 'ts')
+        ) {
+          load.n = true;
+        }
+      }
+      try {
+        load.a = parse(load.S, load.u);
+      } catch (e) {
+        throwError(e);
+        load.a = [[], [], false];
+      }
+      return load;
+    })();
+    return load;
+  };
+
+  const featErr = feat =>
+    Error(
+      `${feat} feature must be enabled via <script type="esms-options">{ "polyfillEnable": ["${feat}"] }<${''}/script>`
+    );
+
+  const linkLoad = (load, fetchOpts) => {
+    if (load.L) return;
+    load.L = load.f.then(() => {
+      let childFetchOpts = fetchOpts;
+      load.d = load.a[0]
+        .map(({ n, d, t, a, se }) => {
+          const phaseImport = t >= 4;
+          const sourcePhase = phaseImport && t < 6;
+          if (phaseImport) {
+            if (!shimMode && (sourcePhase ? !wasmSourcePhaseEnabled : !deferPhaseEnabled))
+              throw featErr(sourcePhase ? 'wasm-module-sources' : 'import-defer');
+            if (!sourcePhase || !supportsWasmSourcePhase) load.n = true;
+          }
+          let source = undefined;
+          if (a > 0 && !shimMode && nativePassthrough) {
+            const assertion = load.S.slice(a, se - 1);
+            // no need to fetch JSON/CSS if supported, since it's a leaf node, we'll just strip the assertion syntax
+            if (assertion.includes('json')) {
+              if (supportsJsonType) source = '';
+              else load.n = true;
+            } else if (assertion.includes('css')) {
+              if (supportsCssType) source = '';
+              else load.n = true;
+            }
+          }
+          if (d !== -1 || !n) return;
+          const resolved = resolve(n, load.r || load.u);
+          if (resolved.n || hasCustomizationHooks) load.n = true;
+          if (d >= 0 || resolved.N) load.N = true;
+          if (d !== -1) return;
+          if (skip && skip(resolved.r) && !sourcePhase) return { l: { b: resolved.r }, s: false };
+          if (childFetchOpts.integrity) childFetchOpts = { ...childFetchOpts, integrity: undefined };
+          const child = { l: getOrCreateLoad(resolved.r, childFetchOpts, load.r, source), s: sourcePhase };
+          // assertion case -> inline the CSS / JSON URL directly
+          if (source === '') child.l.b = child.l.u;
+          if (!child.s) linkLoad(child.l, fetchOpts);
+          // load, sourcePhase
+          return child;
+        })
+        .filter(l => l);
+    });
+  };
+
+  const processScriptsAndPreloads = () => {
+    for (const link of document.querySelectorAll(shimMode ? 'link[rel=modulepreload-shim]' : 'link[rel=modulepreload]')) {
+      if (!link.ep) processPreload(link);
+    }
+    for (const script of document.querySelectorAll('script[type]')) {
+      if (script.type === 'importmap' + (shimMode ? '-shim' : '')) {
+        if (!script.ep) processImportMap(script);
+      } else if (script.type === 'module' + (shimMode ? '-shim' : '')) {
+        legacyAcceptingImportMaps = false;
+        if (!script.ep) processScript(script);
+      }
+    }
+  };
+
+  const getFetchOpts = script => {
+    const fetchOpts = {};
+    if (script.integrity) fetchOpts.integrity = script.integrity;
+    if (script.referrerPolicy) fetchOpts.referrerPolicy = script.referrerPolicy;
+    if (script.fetchPriority) fetchOpts.priority = script.fetchPriority;
+    if (script.crossOrigin === 'use-credentials') fetchOpts.credentials = 'include';
+    else if (script.crossOrigin === 'anonymous') fetchOpts.credentials = 'omit';
+    else fetchOpts.credentials = 'same-origin';
+    return fetchOpts;
+  };
+
+  let lastStaticLoadPromise = Promise.resolve();
+
+  let domContentLoaded = false;
+  let domContentLoadedCnt = 1;
+  const domContentLoadedCheck = m => {
+    if (m === undefined) {
+      if (domContentLoaded) return;
+      domContentLoaded = true;
+      domContentLoadedCnt--;
+    }
+    if (--domContentLoadedCnt === 0 && !noLoadEventRetriggers && (shimMode || !baselineSupport)) {
+      document.removeEventListener('DOMContentLoaded', domContentLoadedEvent);
+      document.dispatchEvent(new Event('DOMContentLoaded'));
+    }
+  };
+  let loadCnt = 1;
+  const loadCheck = () => {
+    if (--loadCnt === 0 && !noLoadEventRetriggers && (shimMode || !baselineSupport)) {
+      window.removeEventListener('load', loadEvent);
+      window.dispatchEvent(new Event('load'));
+    }
+  };
+
+  const domContentLoadedEvent = async () => {
+    await initPromise;
+    domContentLoadedCheck();
+  };
+  const loadEvent = async () => {
+    await initPromise;
+    domContentLoadedCheck();
+    loadCheck();
+  };
+
+  // this should always trigger because we assume es-module-shims is itself a domcontentloaded requirement
+  if (hasDocument) {
+    document.addEventListener('DOMContentLoaded', domContentLoadedEvent);
+    window.addEventListener('load', loadEvent);
+  }
+
+  const readyListener = async () => {
+    await initPromise;
+    processScriptsAndPreloads();
+    if (document.readyState === 'complete') {
+      readyStateCompleteCheck();
+    }
+  };
+
+  let readyStateCompleteCnt = 1;
+  const readyStateCompleteCheck = () => {
+    if (--readyStateCompleteCnt === 0) {
+      domContentLoadedCheck();
+      if (!noLoadEventRetriggers && (shimMode || !baselineSupport)) {
+        document.removeEventListener('readystatechange', readyListener);
+        document.dispatchEvent(new Event('readystatechange'));
+      }
+    }
+  };
+
+  const hasNext = script => script.nextSibling || (script.parentNode && hasNext(script.parentNode));
+  const epCheck = (script, ready) =>
+    script.ep ||
+    (!ready && ((!script.src && !script.innerHTML) || !hasNext(script))) ||
+    script.getAttribute('noshim') !== null ||
+    !(script.ep = true);
+
+  const processImportMap = (script, ready = readyStateCompleteCnt > 0) => {
+    if (epCheck(script, ready)) return;
+    // we dont currently support external import maps in polyfill mode to match native
+    if (script.src) {
+      if (!shimMode) return;
+      importMapSrc = true;
+    }
+    importMapPromise = importMapPromise
+      .then(async () => {
+        composedImportMap = resolveAndComposeImportMap(
+          script.src ? await (await doFetch(script.src, getFetchOpts(script))).json() : JSON.parse(script.innerHTML),
+          script.src || baseUrl,
+          composedImportMap
+        );
+      })
+      .catch(e => {
+        if (e instanceof SyntaxError)
+          e = new Error(`Unable to parse import map ${e.message} in: ${script.src || script.innerHTML}`);
+        throwError(e);
+      });
+    if (!firstImportMap && legacyAcceptingImportMaps) importMapPromise.then(() => (firstImportMap = composedImportMap));
+    if (!legacyAcceptingImportMaps && !multipleImportMaps) {
+      multipleImportMaps = true;
+      if (!shimMode && baselineSupport && !supportsMultipleImportMaps) {
+        baselineSupport = false;
+        if (hasDocument) attachMutationObserver();
+      }
+    }
+    legacyAcceptingImportMaps = false;
+  };
+
+  const processScript = (script, ready = readyStateCompleteCnt > 0) => {
+    if (epCheck(script, ready)) return;
+    // does this load block readystate complete
+    const isBlockingReadyScript = script.getAttribute('async') === null && readyStateCompleteCnt > 0;
+    // does this load block DOMContentLoaded
+    const isDomContentLoadedScript = domContentLoadedCnt > 0;
+    const isLoadScript = loadCnt > 0;
+    if (isLoadScript) loadCnt++;
+    if (isBlockingReadyScript) readyStateCompleteCnt++;
+    if (isDomContentLoadedScript) domContentLoadedCnt++;
+    let loadPromise;
+    const ts = script.lang === 'ts';
+    if (ts && !script.src) {
+      loadPromise = Promise.resolve(esmsTsTransform || initTs())
+        .then(() => {
+          const transformed = esmsTsTransform(script.innerHTML, baseUrl);
+          if (transformed !== undefined) {
+            onpolyfill();
+            firstPolyfillLoad = false;
+          }
+          return topLevelLoad(
+            script.src || baseUrl,
+            baseUrl,
+            getFetchOpts(script),
+            transformed === undefined ? script.innerHTML : transformed,
+            !shimMode && transformed === undefined,
+            isBlockingReadyScript && lastStaticLoadPromise,
+            'ts'
+          );
+        })
+        .catch(throwError);
+    } else {
+      loadPromise = topLevelLoad(
+        script.src || baseUrl,
+        baseUrl,
+        getFetchOpts(script),
+        !script.src ? script.innerHTML : undefined,
+        !shimMode,
+        isBlockingReadyScript && lastStaticLoadPromise,
+        ts ? 'ts' : undefined
+      ).catch(throwError);
+    }
+    if (!noLoadEventRetriggers) loadPromise.then(() => script.dispatchEvent(new Event('load')));
+    if (isBlockingReadyScript && !ts) {
+      lastStaticLoadPromise = loadPromise.then(readyStateCompleteCheck);
+    }
+    if (isDomContentLoadedScript) loadPromise.then(domContentLoadedCheck);
+    if (isLoadScript) loadPromise.then(loadCheck);
+  };
+
+  const fetchCache = {};
+  const processPreload = link => {
+    link.ep = true;
+    initPromise.then(() => {
+      if (baselineSupport && !shimMode) return;
+      if (fetchCache[link.href]) return;
+      fetchCache[link.href] = fetchModule(link.href, getFetchOpts(link));
+    });
+  };
+
+})();

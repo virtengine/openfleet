@@ -639,13 +639,13 @@ function ShreddingPanel({ period }) {
                     <//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption">${formatBytes(ev.originalChars)}<//>
+                    <${Typography} variant="caption" className="numeral">${formatBytes(ev.originalChars)}<//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption">${formatBytes(ev.compressedChars)}<//>
+                    <${Typography} variant="caption" className="numeral">${formatBytes(ev.compressedChars)}<//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption" color="success.main">
+                    <${Typography} variant="caption" color="success.main" className="numeral">
                       ${ev.savedChars > 0 ? `-${formatBytes(ev.savedChars)}` : "0"}
                     <//>
                   <//>
@@ -658,10 +658,10 @@ function ShreddingPanel({ period }) {
                     />
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption">${formatCount(ev.estimatedSavedTokens || 0)}<//>
+                    <${Typography} variant="caption" className="numeral">${formatCount(ev.estimatedSavedTokens || 0)}<//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption">
+                    <${Typography} variant="caption" className="numeral">
                       ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}
                     <//>
                   <//>
@@ -986,7 +986,7 @@ function ClassicTelemetry() {
                         <${Typography} variant="body2" sx=${{ fontFamily: "monospace" }}>${err.fingerprint}<//>
                       <//>
                       <${TableCell} align="right">
-                        <${Chip} label=${String(err.count)} size="small" color="error" />
+                        <${Chip} label=${String(err.count)} size="small" color="error" className="numeral" />
                       <//>
                     </${TableRow}>
                   `)}
