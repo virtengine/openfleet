@@ -1106,7 +1106,8 @@ function normalizePrEventName(value) {
 }
 
 function evaluateTaskAssignedTriggerConfig(config = {}, eventData = {}) {
-  let triggered = eventData?.eventType === "task.assigned";
+  const evtType = eventData?.eventType;
+  let triggered = evtType === "task.assigned" || evtType === "task.review_fix_requested";
   if (!triggered) return false;
 
   const task = eventData?.task || eventData || {};
@@ -3668,6 +3669,11 @@ registerBuiltinNodeType("action.run_agent", {
     const agentProfileId = String(
       ctx.resolve(node.config?.agentProfile || ctx.data?.agentProfile || ""),
     ).trim();
+    const agentToolConfig = agentProfileId ? getAgentToolConfig(cwd, agentProfileId) : null;
+    const enabledMcpServerIds = Array.isArray(agentToolConfig?.enabledMcpServers)
+      ? agentToolConfig.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
+      : [];
+    const selectedMcpServers = agentToolConfig ? enabledMcpServerIds : undefined;
     const resolvedTimeoutMs = ctx.resolve(node.config?.timeoutMs ?? ctx.data?.taskTimeoutMs ?? 3600000);
     const timeoutMs = Number.isFinite(Number(resolvedTimeoutMs))
       ? Math.max(1000, Math.trunc(Number(resolvedTimeoutMs)))
@@ -4218,6 +4224,7 @@ registerBuiltinNodeType("action.run_agent", {
         if (sessionId) launchExtra.resumeThreadId = sessionId;
         if (sdkOverride) launchExtra.sdk = sdkOverride;
         if (modelOverride) launchExtra.model = modelOverride;
+        if (selectedMcpServers !== undefined) launchExtra.mcpServers = selectedMcpServers;
         const slotOwnerKey = `${recoveryTaskKey}:${node.id}`;
         const slotMeta = {
           taskKey: recoveryTaskKey,
@@ -4406,6 +4413,7 @@ registerBuiltinNodeType("action.run_agent", {
                   sessionType: trackedSessionType,
                   sdk: sdkOverride,
                   model: modelOverride,
+                  mcpServers: selectedMcpServers,
                   onEvent: launchExtra.onEvent,
                   systemPrompt: effectiveSystemPrompt,
                   slotOwnerKey,
@@ -4429,6 +4437,7 @@ registerBuiltinNodeType("action.run_agent", {
                   sessionType: trackedSessionType,
                   sdk: sdkOverride,
                   model: modelOverride,
+                  mcpServers: selectedMcpServers,
                   onEvent: launchExtra.onEvent,
                   systemPrompt: effectiveSystemPrompt,
                   slotOwnerKey,

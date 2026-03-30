@@ -2,7 +2,11 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { buildRepoCodexConfig, ensureRepoConfigs } from "../config/repo-config.mjs";
+import {
+  buildRepoCodexConfig,
+  buildRepoVsCodeMcpConfig,
+  ensureRepoConfigs,
+} from "../config/repo-config.mjs";
 import {
   buildCommonMcpBlocks,
   buildSandboxPermissions,
@@ -267,6 +271,38 @@ describe("codex-config defaults", () => {
     expect(toml).toContain("[mcp_servers.microsoft-docs]");
   });
 
+  it("does not seed installed library MCP servers into repo Codex config unless explicitly enabled", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "repo-codex-installed-"));
+    mkdirSync(join(repoRoot, ".bosun"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, ".bosun", "library.json"),
+      JSON.stringify(
+        {
+          entries: [
+            {
+              id: "github",
+              type: "mcp",
+              meta: {
+                command: "npx",
+                args: ["-y", "@anthropic/mcp-github"],
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const toml = buildRepoCodexConfig({
+      repoRoot,
+      env: {},
+    });
+
+    expect(toml).not.toContain("[mcp_servers.github]");
+  });
+
   it("does not duplicate common MCP servers from installed library entries", () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "repo-codex-mcp-"));
     mkdirSync(join(repoRoot, ".bosun"), { recursive: true });
@@ -333,6 +369,76 @@ describe("codex-config defaults", () => {
     const merged = readFileSync(join(repoRoot, ".codex", "config.toml"), "utf8");
     expect(merged).toContain("[mcp_servers.microsoft-docs]");
     expect(merged).not.toContain("tools = [");
+  });
+
+  it("strips managed default MCP sections from existing repo Codex config when defaults are disabled", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "repo-codex-strip-defaults-"));
+    mkdirSync(join(repoRoot, ".codex"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, ".codex", "config.toml"),
+      [
+        "[mcp_servers.context7]",
+        'command = "npx"',
+        'args = ["-y", "@upstash/context7-mcp"]',
+        "",
+        "[features]",
+        "child_agents_md = true",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    ensureRepoConfigs(repoRoot, { env: {} });
+
+    const merged = readFileSync(join(repoRoot, ".codex", "config.toml"), "utf8");
+    expect(merged).not.toContain("[mcp_servers.context7]");
+    expect(merged).toContain("[features]");
+  });
+
+  it("builds an empty repo VS Code MCP config by default", () => {
+    expect(buildRepoVsCodeMcpConfig({ env: {} })).toEqual({ mcpServers: {} });
+  });
+
+  it("can opt back into repo VS Code MCP defaults", () => {
+    const config = buildRepoVsCodeMcpConfig({
+      env: {
+        BOSUN_MCP_ALLOW_DEFAULT_SERVERS: "1",
+      },
+    });
+
+    expect(config.mcpServers.context7).toBeTruthy();
+    expect(config.mcpServers["microsoft-docs"]).toBeTruthy();
+  });
+
+  it("strips managed default MCP servers from existing VS Code MCP config when defaults are disabled", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "repo-vscode-mcp-strip-defaults-"));
+    mkdirSync(join(repoRoot, ".vscode"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, ".vscode", "mcp.json"),
+      JSON.stringify(
+        {
+          mcpServers: {
+            context7: {
+              command: "npx",
+              args: ["-y", "@upstash/context7-mcp"],
+            },
+            github: {
+              command: "npx",
+              args: ["-y", "@anthropic/mcp-github"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    ensureRepoConfigs(repoRoot, { env: {} });
+
+    const merged = JSON.parse(readFileSync(join(repoRoot, ".vscode", "mcp.json"), "utf8"));
+    expect(merged.mcpServers.context7).toBeUndefined();
+    expect(merged.mcpServers.github).toBeTruthy();
   });
 
   it("supports legacy sandbox_permissions helper names", () => {

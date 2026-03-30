@@ -64,7 +64,8 @@ describe("resolveCopilotCliLaunchConfig", () => {
   it("defaults to Bosun-managed MCP servers only", () => {
     expect(copilotShellSource).toContain("function shouldAllowExternalMcpSources");
     expect(copilotShellSource).toContain("if (!shouldAllowExternalMcpSources()) {");
-    expect(copilotShellSource).toContain("return libraryServers;");
-    expect(copilotShellSource).toContain("Bosun-managed MCP server(s)");
+    expect(copilotShellSource).toContain("Bosun-managed per-agent MCP selection is injected by the agent pool.");
+    expect(copilotShellSource).not.toContain("listInstalledMcpServers(REPO_ROOT)");
+    expect(copilotShellSource).not.toContain("library MCP server(s) via CLI args");
   });
 });
