@@ -395,6 +395,17 @@ function updateTurnTimeline(session, msg) {
     };
   }
   turn.durationMs = Math.max(0, Number(turn.endedAt || timestampMs) - Number(turn.startedAt || timestampMs));
+  const derivedInsights = buildSessionInsights({
+    ...session,
+    insights: null,
+    messages: Array.isArray(session.messages) ? session.messages : [],
+  });
+  session.insights = {
+    ...(session.insights && typeof session.insights === "object" ? session.insights : {}),
+    ...derivedInsights,
+    turnTimeline: derivedInsights.turnTimeline,
+    turns: derivedInsights.turns,
+  };
 }
 
 /** Debounce interval for disk writes (ms). */
@@ -1391,6 +1402,8 @@ export class SessionTracker {
       startedAt,
       endedAt,
       durationMs: Math.max(0, endedAt - startedAt),
+      turnCount: session.turnCount || 0,
+      turns: turns.map((turn) => ({ ...turn })),
       tokenCount: tokenUsage?.totalTokens || 0,
       inputTokens: tokenUsage?.inputTokens || 0,
       outputTokens: tokenUsage?.outputTokens || 0,
@@ -1415,6 +1428,7 @@ export class SessionTracker {
 
   #extractTrajectoryStep(event, session) {
     const ts = new Date().toISOString();
+    const eventTimestamp = String(event?.timestamp || event?.item?.timestamp || "").trim() || ts;
     const id = `step-${Date.now()}-${randomToken(6)}`;
 
     // String event
@@ -1435,13 +1449,13 @@ export class SessionTracker {
     if (event?.type === "item.started" && event?.item) {
       const item = event.item;
       if (item.type === "command_execution") {
-        return { id, kind: "tool_call", summary: `Ran ${item.command || "unknown"}`, timestamp: ts };
+        return { id, kind: "tool_call", summary: `Ran ${item.command || "unknown"}`, timestamp: eventTimestamp };
       }
       if (item.type === "reasoning") {
-        return { id, kind: "reasoning", summary: item.text || "", timestamp: ts };
+        return { id, kind: "reasoning", summary: item.text || "", timestamp: eventTimestamp };
       }
       if (item.type === "function_call" || item.type === "mcp_tool_call") {
-        return { id, kind: "tool_call", summary: `${item.name || "call"} ${item.arguments || ""}`.trim(), timestamp: ts };
+        return { id, kind: "tool_call", summary: `${item.name || "call"} ${item.arguments || ""}`.trim(), timestamp: eventTimestamp };
       }
       return null;
     }
@@ -1450,10 +1464,10 @@ export class SessionTracker {
     if (event?.type === "item.completed" && event?.item) {
       const item = event.item;
       if (item.type === "reasoning") {
-        return { id, kind: "reasoning", summary: item.text || "", timestamp: ts };
+        return { id, kind: "reasoning", summary: item.text || "", timestamp: eventTimestamp };
       }
       if (item.type === "function_call" || item.type === "mcp_tool_call") {
-        return { id, kind: "tool_call", summary: `${item.name || "call"} ${item.arguments || ""}`.trim(), timestamp: ts };
+        return { id, kind: "tool_call", summary: `${item.name || "call"} ${item.arguments || ""}`.trim(), timestamp: eventTimestamp };
       }
       if (item.type === "command_execution") {
         const cmd = item.command || "";
@@ -1461,12 +1475,12 @@ export class SessionTracker {
           (s) => s.kind === "tool_call" && s.summary === `Ran ${cmd}`,
         );
         if (hasPriorStart) {
-          return { id, kind: "tool_result", summary: `${cmd} (exit ${item.exit_code ?? "?"})`, timestamp: ts };
+          return { id, kind: "tool_result", summary: `${cmd} (exit ${item.exit_code ?? "?"})`, timestamp: eventTimestamp };
         }
-        return { id, kind: "command", summary: cmd, timestamp: ts };
+        return { id, kind: "command", summary: cmd, timestamp: eventTimestamp };
       }
       if (item.type === "agent_message") {
-        return { id, kind: "assistant", summary: item.text || "", timestamp: ts };
+        return { id, kind: "assistant", summary: item.text || "", timestamp: eventTimestamp };
       }
       return null;
     }
@@ -1474,7 +1488,7 @@ export class SessionTracker {
     // Assistant message events
     if (event?.type === "assistant.message") {
       const content = event?.data?.content || event?.content || "";
-      return { id, kind: "agent_message", summary: content.slice(0, 200), timestamp: ts };
+      return { id, kind: "agent_message", summary: content.slice(0, 200), timestamp: eventTimestamp };
     }
 
     return null;
@@ -1790,6 +1804,7 @@ export class SessionTracker {
     if (!event || !event.type) return null;
 
     const ts = new Date().toISOString();
+    const eventTimestamp = String(event.timestamp || "").trim() || ts;
     const toText = (value) => {
       if (value == null) return "";
       if (typeof value === "string") return value;
@@ -2049,7 +2064,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "system",
         content: "Turn completed",
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { lifecycle: "turn_completed" },
       };
     }
@@ -2058,7 +2073,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "system",
         content: "Session completed",
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { lifecycle: "session_completed" },
       };
     }
@@ -2068,7 +2083,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "error",
         content: `Turn failed: ${detail}`.slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
       };
     }
 
@@ -2076,7 +2091,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "agent_message",
         content: toText(event.data.content).slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
       };
     }
 
@@ -2084,7 +2099,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "agent_message",
         content: toText(event.data.deltaContent).slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
       };
     }
 
@@ -2094,7 +2109,7 @@ ${items.join("\n")}` : "todo updated";
         type: "agent_message",
         content: (typeof event.content === "string" ? event.content : JSON.stringify(event.content))
           .slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
       };
     }
 
@@ -2102,7 +2117,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "tool_call",
         content: `${event.name || event.tool || "tool"}(${(event.arguments || event.input || "").slice(0, 500)})`,
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { toolName: event.name || event.tool },
       };
     }
@@ -2111,7 +2126,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "tool_result",
         content: (event.output || event.result || "").slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
       };
     }
 
@@ -2120,7 +2135,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "agent_message",
         content: event.delta.text.slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
       };
     }
 
@@ -2129,7 +2144,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "system",
         content: `${event.type}${event.delta?.stop_reason ? ` (${event.delta.stop_reason})` : ""}`,
-        timestamp: ts,
+        timestamp: eventTimestamp,
         ...(lifecycle ? { meta: { lifecycle } } : {}),
       };
     }
@@ -2139,7 +2154,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "error",
         content: (event.error?.message || event.message || JSON.stringify(event)).slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
       };
     }
 
@@ -2148,7 +2163,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "system",
         content: `Voice session started (provider: ${event.provider || "unknown"}, tier: ${event.tier || "?"})`,
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { voiceEvent: "start", provider: event.provider, tier: event.tier },
       };
     }
@@ -2156,7 +2171,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "system",
         content: `Voice session ended (duration: ${event.duration || 0}s)`,
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { voiceEvent: "end", duration: event.duration },
       };
     }
@@ -2164,7 +2179,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "user",
         content: (event.text || event.transcript || "").slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { voiceEvent: "transcript" },
       };
     }
@@ -2172,7 +2187,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "agent_message",
         content: (event.text || event.response || "").slice(0, MAX_MESSAGE_CHARS),
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { voiceEvent: "response" },
       };
     }
@@ -2180,7 +2195,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "tool_call",
         content: `voice:${event.name || "tool"}(${(event.arguments || "").slice(0, 500)})`,
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { voiceEvent: "tool_call", toolName: event.name },
       };
     }
@@ -2188,7 +2203,7 @@ ${items.join("\n")}` : "todo updated";
       return {
         type: "system",
         content: `Voice delegated to ${event.executor || "agent"}: ${(event.message || "").slice(0, 500)}`,
-        timestamp: ts,
+        timestamp: eventTimestamp,
         meta: { voiceEvent: "delegate", executor: event.executor },
       };
     }
