@@ -1948,6 +1948,7 @@ export function AgentsTab() {
                   }}
                 >
                   <div class="task-card-header">
+                    <div class="session-turn-chip">Turns ${s.turnCount || 0}</div>
                     <div>
                       <div class="task-card-title">
                         <${StatusDot} status=${s.status || "idle"} />
@@ -1957,6 +1958,7 @@ export function AgentsTab() {
                         ${s.id || "?"}
                         ${s.taskId ? ` · ${s.taskId}` : ""}
                         ${s.branch ? ` · ${s.branch}` : ""}
+                        · Turns ${s.turnCount || 0}
                       </div>
                       <div class="task-card-meta">
                         ${`Turns ${Number(s.turnCount || 0)}`}
