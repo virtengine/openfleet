@@ -564,18 +564,31 @@ registerNodeType("action.run_agent", {
           let watchdogState = null;
 
           while (true) {
-            subRun = await engine.execute(candidate.id, {
-              ...eventPayload,
-              _agentWorkflowActive: true,
-            });
+            subRun = await engine.execute(
+              candidate.id,
+              {
+                ...eventPayload,
+                _agentWorkflowActive: true,
+              },
+              {
+                _parentRunId: ctx?.id,
+                _rootRunId: ctx?._rootRunId || ctx?.id,
+              },
+            );
 
             const delegatedRunId = String(subRun?.runId || subRun?.id || "").trim();
-            const delegatedHistory = delegatedRunId && typeof engine.getRunHistory === "function"
-              ? engine.getRunHistory(candidate.id, 10)
-              : [];
-            watchdogState = Array.isArray(delegatedHistory)
-              ? delegatedHistory.find((entry) => String(entry?.runId || "") === delegatedRunId) || null
-              : null;
+            watchdogState = null;
+            if (delegatedRunId) {
+              if (typeof engine.getRunDetail === "function") {
+                // Prefer a lightweight, per-run lookup when available to avoid hydrating full history.
+                watchdogState = await engine.getRunDetail(delegatedRunId);
+              } else if (typeof engine.getRunHistory === "function") {
+                const delegatedHistory = engine.getRunHistory(candidate.id, 10);
+                watchdogState = Array.isArray(delegatedHistory)
+                  ? delegatedHistory.find((entry) => String(entry?.runId || "") === delegatedRunId) || null
+                  : null;
+              }
+            }
             const stalledDelegation = Boolean(
               subRun?.status === "running" &&
               watchdogState?.status === "running" &&
@@ -615,7 +628,7 @@ registerNodeType("action.run_agent", {
             subStatus,
             subRun,
             watchdogRecovered,
-            recoveredFromStall: watchdogRecovered,
+            recoveredFromStall: watchdogRecovered && !stalledDelegation,
             watchdogRetryCount,
             failureKind: stalledDelegation ? "stalled_delegation" : undefined,
             retryable: stalledDelegation ? true : undefined,

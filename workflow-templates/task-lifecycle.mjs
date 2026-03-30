@@ -68,9 +68,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     claimRenewIntervalMs: 60000,
     defaultSdk: "auto",
     defaultTargetBranch: "origin/main",
-    taskTimeoutMs: 21600000,
+    taskTimeoutMs: 21600000, // 6 hours
     delegationWatchdogTimeoutMs: 300000,
-    delegationWatchdogMaxRecoveries: 1, // 6 hours
+    delegationWatchdogMaxRecoveries: 1,
     prePrValidationEnabled: true,
     prePrValidationCommand: "auto",
     autoMergeOnCreate: false,
