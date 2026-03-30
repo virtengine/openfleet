@@ -177,6 +177,44 @@ function extractGithubSlug(url) {
   return extractSlug(raw);
 }
 
+function readWorkspaceRepoRemoteUrls(childProcess, repoPath) {
+  try {
+    const raw = childProcess.execSync("git remote", {
+      cwd: repoPath,
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "ignore"],
+      env: sanitizeGitProcessEnv(),
+    }).trim();
+    const names = raw.split(/\r?\n/).map((value) => String(value || "").trim()).filter(Boolean);
+    return names.map((name) => {
+      try {
+        const url = childProcess.execSync(`git remote get-url ${name}`, {
+          cwd: repoPath,
+          encoding: "utf8",
+          timeout: 3000,
+          stdio: ["pipe", "pipe", "ignore"],
+          env: sanitizeGitProcessEnv(),
+        }).trim();
+        return { name, url, slug: extractSlug(url), githubSlug: extractGithubSlug(url) };
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function pickPreferredWorkspaceRemoteUrl(childProcess, repoPath) {
+  const remotes = readWorkspaceRepoRemoteUrls(childProcess, repoPath);
+  if (remotes.length === 0) return "";
+  return remotes.find((remote) => remote.githubSlug)?.url
+    || remotes.find((remote) => remote.slug)?.url
+    || remotes[0]?.url
+    || "";
+}
+
 function resolveRepoUrl(repo) {
   return repo.url || (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
 }
@@ -448,19 +486,19 @@ export function listWorkspaces(configDir, opts = {}) {
     const repos = (ws.repos || []).map((repo) => {
       const standardPath = resolve(wsPath, repo.name);
       const standardExists = existsSync(standardPath);
-      let effectivePath = standardPath;
-      let exists = standardExists;
       const repoUrlRaw = String(repo.url || "").trim();
       const looksLikeRemoteUrl =
         /^https?:\/\//i.test(repoUrlRaw) ||
         /^git@[^:]+:/i.test(repoUrlRaw) ||
         /^ssh:\/\//i.test(repoUrlRaw);
       const repoUrlPath = repoUrlRaw && !looksLikeRemoteUrl ? resolve(repoUrlRaw) : null;
-      if (!standardExists && repoUrlPath && existsSync(repoUrlPath)) {
-        effectivePath = repoUrlPath;
-        exists = true;
-      }
-      if (!standardExists && repoRootOverride) {
+      const repoUrlExists = Boolean(repoUrlPath && existsSync(repoUrlPath));
+      // An explicitly configured local filesystem repo should outrank the
+      // managed workspace clone so workspace-scoped APIs point at the live
+      // checkout rather than a stale shadow copy under .bosun/workspaces/.
+      let effectivePath = repoUrlExists ? repoUrlPath : standardPath;
+      let exists = repoUrlExists || standardExists;
+      if (!exists && repoRootOverride) {
         const altPath = resolve(repoRootOverride, repo.name);
         if (existsSync(altPath)) {
           effectivePath = altPath;
@@ -1121,13 +1159,7 @@ export function detectWorkspaces(configDir) {
       if (existsSync(resolve(subPath, ".git"))) {
         let slug = "";
         try {
-          const remote = childProcess.execSync("git remote get-url origin", {
-            cwd: subPath,
-            encoding: "utf8",
-            timeout: 3000,
-            stdio: ["pipe", "pipe", "ignore"],
-            env: sanitizeGitProcessEnv(),
-          }).trim();
+          const remote = pickPreferredWorkspaceRemoteUrl(childProcess, subPath);
           slug = extractSlug(remote);
         } catch { /* no remote */ }
         repos.push({
