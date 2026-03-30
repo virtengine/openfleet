@@ -57,6 +57,12 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain('taskkillPidsElevated(alive, { force: true });');
   });
 
+  it("re-verifies EPERM/EACCES pids on Windows before treating monitor locks as alive", () => {
+    expect(cliSource).toContain('if (process.platform === "win32") {');
+    expect(cliSource).toContain('Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(pid)}"');
+    expect(cliSource).toContain('return output === String(Number(pid));');
+  });
+
   it("shuts down restart-capable processes before monitor pids during terminate", () => {
     expect(cliSource).toContain('const ancestorPids = findWindowsManagedAncestorPids([');
     expect(cliSource).toContain('const sentinelGhostPids = findGhostSentinelPids();');
@@ -107,7 +113,8 @@ describe("cli daemon pid tracking", () => {
   });
 
   it("reports a live monitor lock owner before falling back to broad daemon-status process scans", () => {
-    expect(cliSource).toContain("const existingMonitorOwner = detectExistingMonitorLockOwner();");
+    expect(cliSource).toContain("const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();");
+    expect(cliSource).toContain("const existingMonitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);");
     expect(cliSource).toContain("bosun daemon is not running in daemon mode, but bosun monitor is active");
     expect(cliSource).toContain("Bosun is running in monitor mode with lock file");
     expect(cliSource).toContain("Use 'bosun --terminate' to stop it, or 'bosun --daemon' only after it is fully stopped.");
@@ -132,3 +139,4 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("sentinelExplicit,");
   });
 });
+

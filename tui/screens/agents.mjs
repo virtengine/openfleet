@@ -1,6 +1,12 @@
 import React from "react";
 import htm from "htm";
-import { Box, Text, useInput, useStdout } from "ink";
+import { getFooterHints } from "../../ui/tui/HelpScreen.js";
+import * as ink from "ink";
+
+const Box = ink.Box ?? ink.default?.Box;
+const Text = ink.Text ?? ink.default?.Text;
+const useInput = ink.useInput ?? ink.default?.useInput;
+const useStdout = ink.useStdout ?? ink.default?.useStdout;
 
 import {
   buildOsc52CopySequence,
@@ -88,7 +94,7 @@ function detailLines(sessionPayload) {
   ];
 }
 
-export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null }) {
+export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null, onFooterHintsChange }) {
   const resolvedHost = wsBridge?.host || host;
   const resolvedPort = wsBridge?.port || port;
   const { stdout } = useStdout();
@@ -326,6 +332,16 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }
   });
 
+  React.useEffect(() => {
+    if (typeof onFooterHintsChange !== "function") return;
+    onFooterHintsChange(getFooterHints("agents", {
+      confirmKill,
+      detailOpen: Boolean(detailView),
+      logsOpen: logLines.length > 0,
+      diffOpen: Boolean(diffView),
+    }));
+  }, [confirmKill, detailView, diffView, logLines.length, onFooterHintsChange]);
+
   const eventWidth = Math.max(12, (stdout?.columns || 120) - FIXED_TABLE_WIDTH);
   const backoffMessageWidth = Math.max(20, (stdout?.columns || 120) - 34);
 
@@ -433,14 +449,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
                 : html`<${Text} dimColor>No changed files<//>`}
             <//>
           `
-        : null}
-
-      <${Box} marginTop=${1} borderStyle="single" paddingX=${1}>
-        <${Text} dimColor>
-          [K]ill session  [P]ause  [R]esume  [L]ogs  [D]iff  [C]opy ID  [Enter] Detail
-        <//>
-      <//>
-      ${statusLine
+        : null}${statusLine
         ? html`
             <${Box} marginTop=${1}>
               <${Text} color="yellow">${statusLine}<//>
@@ -450,7 +459,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     <//>
   `;
 }
-
 
 
 

@@ -585,6 +585,7 @@ export function runCodexExec(
       child = spawn(codexBin, args, {
         ...spawnOptions,
         shell: false,
+        windowsHide: true,
       });
     } catch (err) {
       return promiseResolve({

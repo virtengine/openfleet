@@ -73,9 +73,9 @@ describe("tui screen rendering", () => {
       { columns: 220 },
     );
 
-    expect(view.text()).toContain("Runtime Snapshot");
-    expect(view.text()).toContain("Active Sessions: 1");
-    expect(view.text()).toContain("Investigate failing build");
+    expect(view.latestText()).toContain("Runtime Snapshot");
+    expect(view.latestText()).toContain("Active Sessions: 1");
+    expect(view.latestText()).toContain("Investigate failing build");
 
     await view.unmount();
   });
@@ -86,10 +86,10 @@ describe("tui screen rendering", () => {
       { columns: 220 },
     );
 
-    expect(view.text()).toContain("[F]ilter: (title, tag, id)");
-    expect(view.text()).toContain("TODO (1)");
-    expect(view.text()).toContain("Review PR #404");
-    expect(view.text()).toContain("DONE (1)");
+    expect(view.latestText()).toContain("[F]ilter: (title, tag, id)");
+    expect(view.latestText()).toContain("TODO (1)");
+    expect(view.latestText()).toContain("Review PR #404");
+    expect(view.latestText()).toContain("DONE (1)");
 
     await view.unmount();
   });
@@ -107,14 +107,14 @@ describe("tui screen rendering", () => {
       { columns: 220 },
     );
 
-    await waitFor(() => view.text().includes("Backoff queue (1)"));
-    expect(view.text()).toContain("Investigate fa");
+    await waitFor(() => view.latestText().includes("Backoff queue (1)"));
+    expect(view.latestText()).toContain("Investigate fa");
 
     await view.press("l");
-    await waitFor(() => view.text().includes("Logs"));
+    await waitFor(() => view.latestText().includes("Logs"));
 
-    expect(view.text()).toContain("Loaded logs for session-");
-    expect(view.text()).toContain("assistant");
+    expect(view.latestText()).toContain("Loaded logs for session-");
+    expect(view.latestText()).toContain("assistant");
 
     await view.unmount();
   });
@@ -138,16 +138,86 @@ describe("tui screen rendering", () => {
     bridge.emit("sessions:update", { sessions: sessionsFixture });
     bridge.emit("task:create", tasksFixture[0]);
     await view.press(" ", 40);
-    await waitFor(() => view.text().includes("Runtime Snapshot"));
+    await waitFor(() => view.latestText().includes("Runtime Snapshot"));
 
     await view.press("2");
-    await waitFor(() => view.text().includes("[F]ilter: (title, tag, id)"));
+    await waitFor(() => view.latestText().includes("[F]ilter: (title, tag, id)"));
 
     await view.press("3");
-    await waitFor(() => view.text().includes("Backoff queue"));
+    await waitFor(() => view.latestText().includes("Backoff queue"));
 
     await view.unmount();
     expect(bridge.connect).toHaveBeenCalled();
     expect(bridge.disconnect).toHaveBeenCalled();
   });
+  it("shows the always-visible footer help and toggles the help overlay", async () => {
+    const bridge = createMockBridge();
+    const view = await renderInk(
+      React.createElement(App, {
+        host: "127.0.0.1",
+        port: 3080,
+        connectOnly: true,
+        initialScreen: "status",
+        refreshMs: 2000,
+        wsClient: bridge,
+      }),
+      { columns: 220, rows: 20 },
+    );
+
+    bridge.emit("connect", {});
+    bridge.emit("stats", monitorStatsFixture);
+    bridge.emit("sessions:update", { sessions: sessionsFixture });
+    bridge.emit("task:create", tasksFixture[0]);
+    await view.press(" ", 40);
+    await waitFor(() => view.text().includes("? Help"));
+    expect(view.text()).toContain("[1] Status");
+
+    await view.press("?");
+    await waitFor(() => view.text().includes("Keyboard Shortcuts"), { timeoutMs: 3000 });
+    expect(view.text()).toContain("Global");
+    expect(view.text()).toContain("Agents screen");
+    expect(view.text()).toContain("Modals");
+
+    await view.press("?");
+    await view.press(" ", 40);
+
+    await view.unmount();
+  });
+
+  it("updates footer hints when task form focus changes", async () => {
+    const bridge = createMockBridge();
+    const view = await renderInk(
+      React.createElement(App, {
+        host: "127.0.0.1",
+        port: 3080,
+        connectOnly: true,
+        initialScreen: "tasks",
+        refreshMs: 2000,
+        wsClient: bridge,
+      }),
+      { columns: 220, rows: 20 },
+    );
+
+    bridge.emit("connect", {});
+    bridge.emit("task:create", tasksFixture[0]);
+    await view.press(" ", 40);
+    await waitFor(() => view.latestText().includes("[F]ilter: (title, tag, id)"));
+    expect(view.latestText()).toContain("N New");
+    expect(view.latestText()).toContain("? Help");
+
+    const baseline = view.latestText();
+    await view.press("n");
+    await waitFor(() => view.latestText().includes("New Task"));
+    const updated = view.latestText().slice(baseline.length);
+    expect(updated).toContain("Ctrl+S Save");
+    expect(updated).toContain("Esc Cancel");
+    expect(updated).not.toContain("N New  |  E Edit  |  D Delete");
+
+    await view.unmount();
+  });
 });
+
+
+
+
+

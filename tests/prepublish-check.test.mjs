@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -114,5 +114,10 @@ describe("prepublish-check", () => {
     const result = await validatePublishedLocalImports({ rootDir: root, pkg });
 
     expect(result.missing).toEqual([]);
+  });
+
+  it("publishes the builtin agent skills directory", () => {
+    const pkg = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
+    expect(pkg.files).toContain("agent/skills/");
   });
 });

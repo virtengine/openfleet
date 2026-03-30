@@ -1,4 +1,7 @@
 import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   AgentSupervisor,
   createAgentSupervisor,
@@ -18,6 +21,7 @@ describe("agent-supervisor", () => {
   let mockRedispatch;
   let mockPauseExecutor;
   let mockDispatchFix;
+  let tempGuardrailDirs;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -30,6 +34,7 @@ describe("agent-supervisor", () => {
     mockRedispatch = vi.fn();
     mockPauseExecutor = vi.fn();
     mockDispatchFix = vi.fn();
+    tempGuardrailDirs = [];
 
     supervisor = createAgentSupervisor({
       sendTelegram: mockSendTelegram,
@@ -47,6 +52,9 @@ describe("agent-supervisor", () => {
 
   afterEach(() => {
     supervisor.stop();
+    for (const dir of tempGuardrailDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
     vi.useRealTimers();
   });
 
@@ -345,7 +353,26 @@ describe("agent-supervisor", () => {
       const result = supervisor.assess("task-1", {
         situation: SITUATION.COMMITS_NOT_PUSHED,
       });
-      expect(result.prompt).toContain("push");
+      expect(result.prompt).toContain("Do NOT run git push");
+    });
+
+    it("does not diagnose commits_not_pushed when workflow owns push lifecycle", () => {
+      const repoRoot = mkdtempSync(join(tmpdir(), "bosun-supervisor-guardrails-"));
+      tempGuardrailDirs.push(repoRoot);
+      mkdirSync(join(repoRoot, ".bosun"), { recursive: true });
+      writeFileSync(join(repoRoot, ".bosun", "guardrails.json"), JSON.stringify({
+        INPUT: { enabled: true },
+        push: { workflowOnly: true, blockAgentPushes: true, requireManagedPrePush: true },
+      }, null, 2));
+
+      const result = supervisor.assess("task-1", {
+        hasCommits: true,
+        isPushed: false,
+        repoRoot,
+      });
+
+      expect(result.situation).toBe(SITUATION.HEALTHY);
+      expect(result.intervention).toBe(INTERVENTION.NONE);
     });
 
     it("generates tool_loop prompt", () => {
@@ -479,6 +506,33 @@ describe("agent-supervisor", () => {
       expect(mockDispatchFix).toHaveBeenCalledWith("task-1", [
         { severity: "critical", description: "bug" },
       ]);
+    });
+
+    it("sends a notification when review remediation starts", async () => {
+      mockDispatchFix.mockReturnValue({
+        dispatched: true,
+        mode: "redispatch",
+        issueCount: 1,
+      });
+      supervisor.onReviewComplete("task-1", {
+        approved: false,
+        issues: [{ severity: "critical", description: "bug" }],
+      });
+
+      await supervisor.intervene("task-1", {
+        intervention: INTERVENTION.DISPATCH_FIX,
+        prompt: "Fix review issues",
+        reason: "review rejected",
+        situation: SITUATION.POOR_QUALITY,
+      });
+
+      expect(mockSendTelegram).toHaveBeenCalledWith(
+        expect.stringContaining("Review follow-up started"),
+        expect.objectContaining({
+          dedupKey: "review-fix-start|task-1|redispatch|1",
+          exactDedup: true,
+        }),
+      );
     });
 
     it("NONE does nothing", async () => {
