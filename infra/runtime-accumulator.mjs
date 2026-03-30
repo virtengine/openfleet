@@ -497,7 +497,11 @@ export function getSessionAccumulatorLogPath() {
 }
 
 export function _resetRuntimeAccumulatorForTests(options = {}) {
-	configureCachePaths(options.cacheDir || DEFAULT_CACHE_DIR);
+	// When no explicit cacheDir is given, prefer the test-sandbox dir set by
+	// bootstrapTestRuntime() so that bare reset calls (e.g. in finally blocks)
+	// never redirect writes back to the real workspace .cache folder.
+	const fallback = process.env.BOSUN_TEST_CACHE_DIR || DEFAULT_CACHE_DIR;
+	configureCachePaths(options.cacheDir || fallback);
 	_state = cloneDefaultState();
 	_initialized = false;
 	_lastSaveTime = 0;

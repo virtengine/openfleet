@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   detectHeavyRunnerIntent,
   resolveHeavyRunnerPolicy,
+  resolveLocalProcessLaunch,
   runCommandInHeavyRunnerLease,
 } from "../workflow/heavy-runner-pool.mjs";
 
@@ -93,5 +94,25 @@ describe("heavy runner pool leases", () => {
     expect(result.attempts).toBe(2);
     expect(result.lease.status).toBe("blocked");
     expect(result.blockedEvidence.summary).toContain("remote-sandbox");
+  });
+
+  it("keeps npm shell launches portable on Windows", () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      expect(
+        resolveLocalProcessLaunch({
+          executable: "npm",
+          args: ["run", "build"],
+          raw: "npm run build",
+        }),
+      ).toEqual({
+        launchCommand: "npm",
+        launchArgs: ["run", "build"],
+        shell: true,
+      });
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
   });
 });

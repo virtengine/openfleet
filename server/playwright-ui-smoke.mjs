@@ -1,4 +1,7 @@
-import { test, expect } from "@playwright/test";
+import * as playwrightTest from "@playwright/test";
+
+const test = playwrightTest.test ?? playwrightTest.default?.test;
+const expect = playwrightTest.expect ?? playwrightTest.default?.expect;
 
 const CRITICAL_ROUTES = [
   { path: "/", label: "portal home" },

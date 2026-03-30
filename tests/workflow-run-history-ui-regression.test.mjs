@@ -33,6 +33,12 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("data?.pagination?.hasMore");
     });
 
+    it(`${label} scopes workflow run requests to the selected workspace`, () => {
+      expect(source).toContain("buildWorkflowRunApiPath");
+      expect(source).toContain("activeWorkspaceId.value");
+      expect(source).toContain("searchParams.set(\"workspace\", workspaceId)");
+    });
+
     it(`${label} keeps older workflow pagination manual-only`, () => {
       expect(source).not.toContain("tailSentinelRef");
       expect(source).not.toContain("autoLoadMoreRef");

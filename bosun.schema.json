@@ -108,6 +108,10 @@
             ]
           },
           "description": "Override reusable relative paths to link from the repo root into a managed worktree for each detected ecosystem."
+        },
+        "worktreeSetupScript": {
+          "type": "string",
+          "description": "Global shell command (or commands joined with &&) run once in every new managed worktree across all repos, before per-repo environment commands. Per-repo environment.worktreeSetupScript overrides this."
         }
       }
     },
@@ -1696,6 +1700,51 @@
         },
         "telegramPollLockPath": {
           "type": "string"
+        },
+        "environment": {
+          "type": "object",
+          "description": "Per-repo environment configuration for worktree setup and agent operations. Overrides global worktreeBootstrap settings for this repository.",
+          "additionalProperties": true,
+          "properties": {
+            "template": {
+              "type": "string",
+              "description": "Environment template identifier (e.g. 'node-ts', 'python-poetry', 'rust', 'dotnet-csharp'). Used to populate defaults."
+            },
+            "installCommands": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Ordered commands to install dependencies in a fresh worktree. Supports 'auto' as a single-element array to auto-detect."
+            },
+            "startCommand": {
+              "type": "string",
+              "description": "Command to start the development server or main process."
+            },
+            "buildCommand": {
+              "type": "string",
+              "description": "Command to produce build artifacts. Supports 'auto'."
+            },
+            "testCommand": {
+              "type": "string",
+              "description": "Command to run the test suite. Supports 'auto'."
+            },
+            "lintCommand": {
+              "type": "string",
+              "description": "Command to lint and style-check the codebase. Supports 'auto'."
+            },
+            "debugCommand": {
+              "type": "string",
+              "description": "Command to start a debug session."
+            },
+            "worktreeSetupScript": {
+              "type": "string",
+              "description": "Shell command (or commands joined with &&) run once in every new managed worktree before install commands."
+            },
+            "sharedPaths": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Relative paths to symlink from the repo root into each managed worktree (e.g. node_modules, vendor)."
+            }
+          }
         }
       }
     },

@@ -313,6 +313,21 @@ export function getBosunHomeDir() {
   return resolve(homedir(), ".bosun");
 }
 
+const UNRESOLVED_TEMPLATE_TOKEN_RE = /\{\{[^{}]+\}\}/;
+
+export function hasUnresolvedTemplateTokens(value) {
+  return UNRESOLVED_TEMPLATE_TOKEN_RE.test(String(value || ""));
+}
+
+function resolveLibraryRootDir(rootDir) {
+  const raw = String(rootDir || "").trim();
+  if (!raw) return getBosunHomeDir();
+  if (hasUnresolvedTemplateTokens(raw)) {
+    throw new Error(`Invalid library root path \"${raw}\": unresolved template token detected`);
+  }
+  return resolve(raw);
+}
+
 function ensureDir(dir) {
   mkdirSync(dir, { recursive: true });
   return dir;
@@ -572,7 +587,7 @@ function buildSkillIndexRevision(manifest) {
 }
 
 function updateIndexCache(cache, rootDir, index, manifestMtimeMs = 0) {
-  const cacheKey = resolve(rootDir || getBosunHomeDir());
+  const cacheKey = resolveLibraryRootDir(rootDir);
   const payload = {
     ...index,
     count: Array.isArray(index?.profiles)
@@ -1012,19 +1027,19 @@ function resolveToolSelection(rootDir, best) {
 }
 
 export function getLibraryIndexDir(rootDir) {
-  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR);
+  return resolve(resolveLibraryRootDir(rootDir), LIBRARY_INDEX_DIR);
 }
 
 export function getAgentProfileIndexPath(rootDir) {
-  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR, AGENT_PROFILE_INDEX);
+  return resolve(resolveLibraryRootDir(rootDir), LIBRARY_INDEX_DIR, AGENT_PROFILE_INDEX);
 }
 
 export function getSkillEntryIndexPath(rootDir) {
-  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR, SKILL_ENTRY_INDEX);
+  return resolve(resolveLibraryRootDir(rootDir), LIBRARY_INDEX_DIR, SKILL_ENTRY_INDEX);
 }
 
 export function rebuildAgentProfileIndex(rootDir, manifest = loadManifest(rootDir)) {
-  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const normalizedRoot = resolveLibraryRootDir(rootDir);
   const profiles = (manifest?.entries || [])
     .filter((entry) => entry?.type === "agent")
     .map((entry) => buildIndexedAgentProfile(normalizedRoot, entry))
@@ -1041,7 +1056,7 @@ export function rebuildAgentProfileIndex(rootDir, manifest = loadManifest(rootDi
 }
 
 export function loadAgentProfileIndex(rootDir, options = {}) {
-  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const normalizedRoot = resolveLibraryRootDir(rootDir);
   const manifestPath = getManifestPath(normalizedRoot);
   const manifestMtimeMs = getFileMtimeMs(manifestPath);
   const cacheEntry = agentProfileIndexCache.get(normalizedRoot);
@@ -1082,7 +1097,7 @@ export function listIndexedAgentProfiles(rootDir, options = {}) {
 }
 
 export function rebuildSkillEntryIndex(rootDir, manifest = loadManifest(rootDir)) {
-  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const normalizedRoot = resolveLibraryRootDir(rootDir);
   const skills = (manifest?.entries || [])
     .filter((entry) => entry?.type === "skill")
     .map((entry) => buildIndexedSkillEntry(entry));
@@ -1112,7 +1127,7 @@ export function rebuildSkillEntryIndex(rootDir, manifest = loadManifest(rootDir)
 }
 
 export function loadSkillEntryIndex(rootDir, options = {}) {
-  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const normalizedRoot = resolveLibraryRootDir(rootDir);
   const manifestPath = getManifestPath(normalizedRoot);
   const manifestMtimeMs = getFileMtimeMs(manifestPath);
   const cacheEntry = skillEntryIndexCache.get(normalizedRoot);
@@ -1242,7 +1257,7 @@ export function resolveLibraryPlan(rootDir, criteria = {}, opts = {}) {
  * Get the manifest path for a workspace (or global).
  */
 export function getManifestPath(rootDir) {
-  return resolve(rootDir || getBosunHomeDir(), ".bosun", LIBRARY_MANIFEST);
+  return resolve(resolveLibraryRootDir(rootDir), ".bosun", LIBRARY_MANIFEST);
 }
 
 /**
@@ -1270,7 +1285,7 @@ export function saveManifest(rootDir, manifest) {
 // ── CRUD operations ──────────────────────────────────────────────────────────
 
 function dirForType(rootDir, type) {
-  const root = rootDir || getBosunHomeDir();
+  const root = resolveLibraryRootDir(rootDir);
   switch (type) {
     case "prompt": return resolve(root, PROMPT_DIR);
     case "skill":  return resolve(root, SKILL_DIR);
@@ -2155,7 +2170,7 @@ function discoverMcpServersFromCodexConfig(rootDir) {
  * them into the library manifest/filesystem.
  */
 export function syncAutoDiscoveredLibraryEntries(rootDir) {
-  const root = rootDir || getBosunHomeDir();
+  const root = resolveLibraryRootDir(rootDir);
   const manifestSnapshot = loadManifest(root);
   const existingEntries = Array.isArray(manifestSnapshot?.entries)
     ? manifestSnapshot.entries

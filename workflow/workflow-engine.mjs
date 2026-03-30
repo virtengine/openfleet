@@ -1,3 +1,7 @@
+// CLAUDE:SUMMARY — workflow-engine
+// Orchestrates workflow execution, persistence, retries, history, concurrency,
+// and node dispatch for Bosun workflows and their runtime bookkeeping.
+
 /**
  * workflow-engine.mjs — Bosun Workflow Engine
  *
@@ -45,6 +49,7 @@ import { getTemplate } from "./workflow-templates.mjs";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
+import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -134,7 +139,8 @@ const CHECKPOINT_DEBOUNCE_MS = readBoundedEnvInt(
   500,
   { min: 50, max: 10000 },
 );
-const ACTIVE_RUNS_INDEX = "_active-runs.json";const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
+const ACTIVE_RUNS_INDEX = "_active-runs.json";
+const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
   "WORKFLOW_TASK_TRACE_MAX_EVENTS",
   250,
   { min: 20, max: 5000 },
@@ -202,17 +208,22 @@ function buildDelegationWatchdogDecision(detail = {}) {
 
   const maxRecoveries = Math.max(
     0,
-    Math.trunc(Number(
-      watchdog.maxRecoveries
-      ?? watchdog.delegationWatchdogMaxRecoveries
-      ?? detail?.data?.delegationWatchdogMaxRecoveries
-      ?? DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES,
-    ) || DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES),
+    Math.trunc((() => {
+      const raw = watchdog.maxRecoveries
+        ?? watchdog.delegationWatchdogMaxRecoveries
+        ?? detail?.data?.delegationWatchdogMaxRecoveries
+        ?? DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES;
+    })()),
   );
   const recoveryAttempts = Math.max(
     0,
-    Math.trunc(Number(watchdog.recoveryAttempts)
-      || (watchdog.recoveryAttempted === true ? 1 : 0)),
+    Math.trunc((() => {
+      const parsed = Number(watchdog.recoveryAttempts);
+      if (Number.isFinite(parsed)) return parsed;
+      return watchdog.recoveryAttempted === true ? 1 : 0;
+    })()),
   );
 
   const reasonBase = `delegation_watchdog:${watchdog.nodeId || "unknown"}:${elapsedMs}ms>${timeoutMs}ms`;
@@ -284,6 +295,47 @@ function resolveTraceAgentId(data = {}, fallback = "") {
 }
 
 // ── Node Status ─────────────────────────────────────────────────────────────
+
+function normalizeDelegationTrail(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({ ...entry }))
+    .sort((a, b) => {
+      const aRaw = a?.at || a?.timestamp || 0;
+      const bRaw = b?.at || b?.timestamp || 0;
+
+      let aTime = Number(aRaw);
+      if (!Number.isFinite(aTime) && typeof aRaw === "string") {
+        const parsed = Date.parse(aRaw);
+        aTime = Number.isFinite(parsed) ? parsed : 0;
+      }
+
+      let bTime = Number(bRaw);
+      if (!Number.isFinite(bTime) && typeof bRaw === "string") {
+        const parsed = Date.parse(bRaw);
+        bTime = Number.isFinite(parsed) ? parsed : 0;
+      }
+      return aTime - bTime;
+    });
+}
+
+function normalizeDelegationGuardMap(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter(([key, value]) => String(key || "").trim() && value && typeof value === "object")
+      .map(([key, value]) => [String(key).trim(), { ...value }]),
+  );
+}
+
+function extractDelegationGuardMap(detail, run = null) {
+  return normalizeDelegationGuardMap(
+    detail?.data?._delegationTransitionGuards ??
+    run?.detail?.data?._delegationTransitionGuards ??
+    run?.delegationTransitionGuards,
+  );
+}
 
 export const NodeStatus = Object.freeze({
   PENDING: "pending",
@@ -477,8 +529,27 @@ function resolveNodePorts(node) {
   // Merge explicit outputPorts with configuredOutputs so that type-specific
   // ports (yes/no for conditions, case names for switches, etc.) are always
   // present even when outputPorts was auto-persisted with only "default".
+  // When handler ports exist, refresh stored port type/accepts to avoid stale
+  // port metadata causing false validation failures after handler updates.
   let resolvedOutputs;
-  if (outputPorts.length > 0 && configuredOutputs.length > 0) {
+  if (handlerOutputs.length > 0) {
+    const handlerByName = new Map(handlerOutputs.map((p) => [p.name, p]));
+    const storedBase = outputPorts.length > 0 ? outputPorts : configuredOutputs;
+    if (storedBase.length > 0) {
+      // Refresh stored ports with handler type/accepts where names match; preserve
+      // extra stored ports (dynamic switch/condition outputs not in the handler).
+      const refreshed = storedBase.map((p) => {
+        const hp = handlerByName.get(p.name);
+        return hp ? { ...p, type: hp.type, accepts: hp.accepts } : p;
+      });
+      const storedNames = new Set(storedBase.map((p) => p.name));
+      const extra = configuredOutputs.filter((p) => !storedNames.has(p.name) && !handlerByName.has(p.name));
+      const missingHandlerPorts = handlerOutputs.filter((p) => !storedNames.has(p.name));
+      resolvedOutputs = [...refreshed, ...extra, ...missingHandlerPorts];
+    } else {
+      resolvedOutputs = handlerOutputs;
+    }
+  } else if (outputPorts.length > 0 && configuredOutputs.length > 0) {
     const existingNames = new Set(outputPorts.map((p) => p.name));
     const additional = configuredOutputs.filter((p) => !existingNames.has(p.name));
     resolvedOutputs = [...outputPorts, ...additional];
@@ -486,19 +557,21 @@ function resolveNodePorts(node) {
     resolvedOutputs = outputPorts;
   } else if (configuredOutputs.length > 0) {
     resolvedOutputs = configuredOutputs;
-  } else if (handlerOutputs.length > 0) {
-    resolvedOutputs = handlerOutputs;
   } else {
     resolvedOutputs = [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "output", 0)];
   }
 
+  // For inputs, always prefer the handler definition over persisted ports.
+  // Input ports are purely derived from node type registrations — they are never
+  // authored by users — so stale persisted types must not override fresh handler
+  // definitions (which may have expanded accepts lists in later versions).
   return {
-    inputs: inputPorts.length > 0
-      ? inputPorts
-      : (configuredInputs.length > 0
-        ? configuredInputs
-        : (handlerInputs.length > 0
-          ? handlerInputs
+    inputs: handlerInputs.length > 0
+      ? handlerInputs
+      : (inputPorts.length > 0
+        ? inputPorts
+        : (configuredInputs.length > 0
+          ? configuredInputs
           : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "input", 0)])),
     outputs: resolvedOutputs,
   };
@@ -687,6 +760,82 @@ function cloneRunSnapshot(value) {
     if (typeof structuredClone === "function") return structuredClone(value);
   } catch {}
   return JSON.parse(JSON.stringify(value));
+}
+
+function sanitizeJsonValue(value, seen = new WeakSet()) {
+  if (value == null) return value;
+  const valueType = typeof value;
+  if (
+    valueType === "string" ||
+    valueType === "number" ||
+    valueType === "boolean"
+  ) {
+    return value;
+  }
+  if (valueType === "bigint") return String(value);
+  if (valueType === "function" || valueType === "symbol") return undefined;
+  if (value instanceof Date) {
+    const ts = value.getTime();
+    return Number.isFinite(ts) ? value.toISOString() : null;
+  }
+  if (value instanceof Error) {
+    return cleanObject({
+      name: value.name || "Error",
+      message: value.message || String(value),
+      stack: value.stack || undefined,
+    });
+  }
+  if (Buffer.isBuffer(value)) {
+    return value.toString("base64");
+  }
+  if (valueType !== "object") {
+    return String(value);
+  }
+  const ctorName = String(value?.constructor?.name || "");
+  if (
+    ctorName === "Timeout" ||
+    ctorName === "Immediate" ||
+    ctorName === "AbortSignal" ||
+    ctorName === "Promise"
+  ) {
+    return `[${ctorName}]`;
+  }
+  if (seen.has(value)) return "[Circular]";
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((entry) => {
+        const sanitized = sanitizeJsonValue(entry, seen);
+        return sanitized === undefined ? null : sanitized;
+      });
+    }
+    if (value instanceof Map) {
+      const out = {};
+      for (const [entryKey, entryValue] of value.entries()) {
+        const normalizedKey = String(entryKey || "").trim();
+        if (!normalizedKey) continue;
+        const sanitized = sanitizeJsonValue(entryValue, seen);
+        if (sanitized !== undefined) out[normalizedKey] = sanitized;
+      }
+      return out;
+    }
+    if (value instanceof Set) {
+      const out = [];
+      for (const entry of value.values()) {
+        const sanitized = sanitizeJsonValue(entry, seen);
+        if (sanitized !== undefined) out.push(sanitized);
+      }
+      return out;
+    }
+    const out = {};
+    for (const [entryKey, entryValue] of Object.entries(value)) {
+      const sanitized = sanitizeJsonValue(entryValue, seen);
+      if (sanitized !== undefined) out[entryKey] = sanitized;
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
 }
 
 function cleanObject(value = {}) {
@@ -1039,6 +1188,95 @@ function collectValidationFailures(detail = {}) {
     .filter(Boolean);
 }
 
+function collectRunTaskIds(detail = {}) {
+  const ids = new Set();
+  const push = (value) => {
+    const normalized = String(value || "").trim();
+    if (normalized) ids.add(normalized);
+  };
+
+  push(detail?.data?.taskId);
+  push(detail?.data?.activeTaskId);
+  push(detail?.data?.task?.id);
+  push(detail?.data?.taskInfo?.id);
+  push(detail?.data?.taskDetail?.id);
+
+  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    push(event?.taskId);
+  }
+
+  return [...ids];
+}
+
+function resolveRunTaskTitle(detail = {}) {
+  const direct = [
+    detail?.data?.taskTitle,
+    detail?.data?.task?.title,
+    detail?.data?.taskInfo?.title,
+    detail?.data?.taskDetail?.title,
+  ]
+    .map((value) => String(value || "").trim())
+    .find(Boolean);
+  if (direct) return direct;
+
+  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    const title = String(event?.taskTitle || "").trim();
+    if (title) return title;
+  }
+
+  return null;
+}
+
+function collectRunSessionIds(detail = {}) {
+  const ids = [];
+  const seen = new Set();
+  const push = (value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    ids.push(normalized);
+  };
+
+  for (const value of [
+    detail?.data?.sessionId,
+    detail?.data?.threadId,
+    detail?.data?.task?.sessionId,
+    detail?.data?.task?.threadId,
+  ]) {
+    push(value);
+  }
+
+  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    for (const value of [
+      event?.sessionId,
+      event?.threadId,
+      event?.meta?.sessionId,
+      event?.meta?.threadId,
+    ]) {
+      push(value);
+    }
+  }
+
+  return ids;
+}
+
+function buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx) {
+  const detail = ctx?.toJSON?.(Date.now()) || {};
+  const taskIds = collectRunTaskIds(detail);
+  const sessionIds = collectRunSessionIds(detail);
+  return cleanObject({
+    runId,
+    workflowId,
+    workflowName,
+    startedAt: ctx?.startedAt || Date.now(),
+    taskId: taskIds[0] || undefined,
+    taskIds: taskIds.length > 0 ? taskIds : undefined,
+    taskTitle: resolveRunTaskTitle(detail) || undefined,
+    sessionId: sessionIds[0] || undefined,
+    sessionIds: sessionIds.length > 0 ? sessionIds : undefined,
+  });
+}
+
 export class WorkflowContext {
   constructor(initialData = {}) {
     this.id = randomUUID();
@@ -1164,6 +1402,71 @@ export class WorkflowContext {
     this.logs.push({ nodeId, message, level, timestamp: Date.now() });
   }
 
+  getDelegationAuditTrail() {
+    return normalizeDelegationTrail(
+      this.data?._delegationAuditTrail ??
+      this.data?._workflowDelegationTrail ??
+      this.data?._delegationTrail,
+    );
+  }
+
+  recordDelegationEvent(event = {}) {
+    if (!this.data || typeof this.data !== "object") this.data = {};
+    this.data._delegationTransitionGuards = normalizeDelegationGuardMap(this.data._delegationTransitionGuards);
+    const entry = {
+      ...event,
+      type: String(event?.type || event?.eventType || "").trim() || "unknown",
+      eventType: String(event?.eventType || event?.type || "").trim() || "unknown",
+      at: Number(event?.at) || Date.now(),
+      timestamp: event?.timestamp || new Date().toISOString(),
+    };
+    const key = String(event?.transitionKey || event?.idempotencyKey || "").trim();
+    if (key) {
+      if (!this.data._delegationTransitionGuards || typeof this.data._delegationTransitionGuards !== "object") {
+        this.data._delegationTransitionGuards = {};
+      }
+      if (this.data._delegationTransitionGuards[key]) {
+        return {
+          ...this.data._delegationTransitionGuards[key],
+          recorded: false,
+        };
+      }
+      entry.transitionKey = entry.transitionKey || key;
+      entry.idempotencyKey = entry.idempotencyKey || key;
+      this.data._delegationTransitionGuards[key] = entry;
+    }
+    const nextTrail = normalizeDelegationTrail([...this.getDelegationAuditTrail(), entry]);
+    this.data._delegationAuditTrail = nextTrail;
+    this.data._workflowDelegationTrail = nextTrail;
+    this.data._delegationTrail = nextTrail;
+    if (!this.__workflowRuntimeState || typeof this.__workflowRuntimeState !== "object") {
+      this.__workflowRuntimeState = {};
+    }
+    this.__workflowRuntimeState.delegationAuditTrail = nextTrail;
+    return {
+      ...entry,
+      recorded: true,
+    };
+  }
+
+  getDelegationTransitionGuard(key) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return null;
+    const guards = normalizeDelegationGuardMap(this.data?._delegationTransitionGuards);
+    return guards[normalizedKey] ? { ...guards[normalizedKey] } : null;
+  }
+
+  setDelegationTransitionGuard(key, value = {}) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return null;
+    if (!this.data || typeof this.data !== "object") this.data = {};
+    const guards = normalizeDelegationGuardMap(this.data._delegationTransitionGuards);
+    const nextValue = { ...value, transitionKey: value?.transitionKey || normalizedKey };
+    guards[normalizedKey] = nextValue;
+    this.data._delegationTransitionGuards = guards;
+    return { ...nextValue };
+  }
+
   /** Record an error */
   error(nodeId, error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -1235,6 +1538,12 @@ export class WorkflowContext {
       dagState: this.data?._dagState || null,
       issueAdvisor: this.data?._issueAdvisor || null,
       replayTrajectory: this.data?._replayTrajectory || null,
+      delegationAuditTrail: this.getDelegationAuditTrail(),
+      delegationTrail: this.getDelegationAuditTrail(),
+      delegationTransitionGuards:
+        this.data?._delegationTransitionGuards && typeof this.data._delegationTransitionGuards === "object"
+          ? { ...this.data._delegationTransitionGuards }
+          : {},
       stepSummaries: Array.isArray(this.data?._replayTrajectory?.steps)
         ? this.data._replayTrajectory.steps.map((s) => ({
             nodeId: s.nodeId,
@@ -2122,12 +2431,21 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {{ activeRuns: number, maxConcurrentRuns: number, queuedRuns: number, maxConcurrentBranches: number }}
    */
   getConcurrencyStats() {
+    let agentSlots;
+    try { agentSlots = getAgentExecutionSlotStatus(); } catch { agentSlots = null; }
     return {
       activeRuns: this._runSlots,
       maxConcurrentRuns: MAX_CONCURRENT_RUNS,
       queuedRuns: this._runQueue.length,
       sharedRootRuns: this._rootRunSlotRefs.size,
       maxConcurrentBranches: MAX_CONCURRENT_BRANCHES,
+      ...(agentSlots && {
+        agentSlots: {
+          active: agentSlots.activeSlots,
+          max: agentSlots.maxParallel,
+          queued: agentSlots.queuedSlots,
+        },
+      }),
     };
   }
 
@@ -2877,6 +3195,7 @@ export class WorkflowEngine extends EventEmitter {
     return {
       mode,
       reason,
+      suggestedRetryMode: mode,
       fallbackMode,
       completedCount,
       failedCount,
@@ -3024,7 +3343,11 @@ export class WorkflowEngine extends EventEmitter {
             !!eventData?.prEvent;
           if (!hasPrSignal) continue;
         }
-        if (tNode.type === "trigger.task_assigned" && eventType !== "task.assigned") {
+        if (
+          tNode.type === "trigger.task_assigned"
+          && eventType !== "task.assigned"
+          && eventType !== "task.review_fix_requested"
+        ) {
           continue;
         }
         if (tNode.type === "trigger.anomaly") {
@@ -3192,7 +3515,7 @@ export class WorkflowEngine extends EventEmitter {
 
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
-    runs = runs.map((run) => this.getRunDetail(run.runId) || run);
+      runs = runs.map((run) => this.getRunDetail(run.runId) || run);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     if (hasLimit) {
       return runs.slice(0, Math.floor(normalizedLimit));
@@ -3209,11 +3532,19 @@ export class WorkflowEngine extends EventEmitter {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
       : 20;
-    const allRuns = this.getRunHistory(workflowId);
+      const persisted = this._hydrateRunIndexFromDetails(Math.max(offset + limit, 200))
+        .map((entry) => this._normalizeRunSummary(entry))
+        .filter(Boolean);
+      const active = this.getActiveRuns();
+      const activeRunIds = new Set(active.map((run) => run.runId));
+      let allRuns = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
+      if (workflowId) allRuns = allRuns.filter((run) => run.workflowId === workflowId);
+      allRuns.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     const total = allRuns.length;
     const runs = allRuns.slice(offset, offset + limit);
     const nextOffset = offset + runs.length;
     return {
+      items: runs,
       runs,
       total,
       offset,
@@ -3285,8 +3616,7 @@ export class WorkflowEngine extends EventEmitter {
       if (runs.length > MAX_PERSISTED_RUNS) {
         runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
       }
-      const indexPath = resolve(this.runsDir, "index.json");
-      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      this._writeRunIndex(runs);
       return runs;
     } catch {
       return runs;
@@ -3380,13 +3710,68 @@ export class WorkflowEngine extends EventEmitter {
     return runMap.get(requestedRunId) || runMap.get(runGraph.rootRunId) || null;
   }
 
+  _extractDelegationTrail(detail, run = null) {
+    const candidates = [
+      detail?.delegationAuditTrail,
+      detail?.delegationTrail,
+      detail?.data?._delegationAuditTrail,
+      detail?.data?._workflowDelegationTrail,
+      detail?.data?._delegationTrail,
+      run?.detail?.delegationAuditTrail,
+      run?.detail?.delegationTrail,
+      run?.detail?.data?._delegationAuditTrail,
+      run?.detail?.data?._workflowDelegationTrail,
+      run?.detail?.data?._delegationTrail,
+      run?.delegationTrail,
+      run?.delegationAuditTrail,
+    ];
+    return normalizeDelegationTrail(candidates.find((value) => Array.isArray(value)) || []);
+  }
+
   _decorateRunDetail(run) {
     if (!run?.runId) return run;
     const runGraph = this.getRunGraph(run.runId);
+    const delegationTrail = this._extractDelegationTrail(run?.detail, run);
+    const delegationTransitionGuards = extractDelegationGuardMap(run?.detail, run);
+    const detail =
+      run?.detail && typeof run.detail === "object"
+        ? {
+            ...run.detail,
+            data:
+              run.detail.data && typeof run.detail.data === "object"
+                ? { ...run.detail.data }
+                : run.detail.data,
+          }
+        : run?.detail;
+    if (delegationTrail.length > 0 && detail && typeof detail === "object") {
+      if (!detail.data || typeof detail.data !== "object") {
+        detail.data = {};
+      }
+      if (!Array.isArray(detail.data._delegationAuditTrail)) {
+        detail.data._delegationAuditTrail = delegationTrail.map((entry) => ({ ...entry }));
+      }
+      if (!Array.isArray(detail.data._workflowDelegationTrail)) {
+        detail.data._workflowDelegationTrail = delegationTrail.map((entry) => ({ ...entry }));
+      }
+      if (!Array.isArray(detail.data._delegationTrail)) {
+        detail.data._delegationTrail = delegationTrail.map((entry) => ({ ...entry }));
+      }
+      if (!Array.isArray(detail.delegationAuditTrail)) {
+        detail.delegationAuditTrail = delegationTrail.map((entry) => ({ ...entry }));
+      }
+      if (!Array.isArray(detail.delegationTrail)) {
+        detail.delegationTrail = delegationTrail.map((entry) => ({ ...entry }));
+      }
+    }
     return {
       ...run,
+      detail,
       runGraph,
       executionTree: this._buildExecutionTree(runGraph, run.runId),
+      delegationTrail,
+      delegationAuditTrail: delegationTrail,
+      latestDelegationEvent: delegationTrail.at(-1) || null,
+      delegationTransitionGuards,
     };
   }
 
@@ -4415,7 +4800,7 @@ export class WorkflowEngine extends EventEmitter {
             // booleans so loop-exit expressions never fire.  Cap iterations
             // to a small number (2) to validate the loop structure without
             // executing hundreds of iterations.
-            const DRY_RUN_BACK_EDGE_CAP = 2;
+            const DRY_RUN_BACK_EDGE_CAP = 1;
             const maxIter = opts.dryRun
               ? Math.min(Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS, DRY_RUN_BACK_EDGE_CAP)
               : (Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS);
@@ -4594,7 +4979,7 @@ export class WorkflowEngine extends EventEmitter {
   /** @returns {string[]} service keys the node type needs (may be empty) */
   _getNodeRequiredCapabilities(nodeType) {
     // Agent nodes need the agentPool service
-    if (nodeType.startsWith("agent.") || nodeType === "action.run_agent") {
+    if (nodeType.startsWith("agent.")) {
       return ["agentPool"];
     }
     // Session continuation / restart also need agentPool
@@ -4662,10 +5047,21 @@ export class WorkflowEngine extends EventEmitter {
 
   _readRunIndex() {
     const indexPath = resolve(this.runsDir, "index.json");
-    if (!existsSync(indexPath)) return [];
+    if (!existsSync(indexPath)) {
+      this._runIndexCache = [];
+      this._runIndexCacheMtime = 0;
+      return [];
+    }
     try {
+      const mtimeMs = statSync(indexPath).mtimeMs || 0;
+      if (Array.isArray(this._runIndexCache) && this._runIndexCacheMtime === mtimeMs) {
+        return this._runIndexCache;
+      }
       const index = JSON.parse(readFileSync(indexPath, "utf8"));
-      return Array.isArray(index?.runs) ? index.runs : [];
+      const runs = Array.isArray(index?.runs) ? index.runs : [];
+      this._runIndexCache = runs;
+      this._runIndexCacheMtime = mtimeMs;
+      return runs;
     } catch {
       return [];
     }
@@ -4756,11 +5152,31 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _serializeRunContext(ctx, isRunning = false) {
-    const detail = ctx.toJSON(Date.now());
-    if (ctx?.data?._dagState) detail.dagState = ctx.data._dagState;
-    if (ctx?.data?._issueAdvisor) detail.issueAdvisor = ctx.data._issueAdvisor;
+    const detail = sanitizeJsonValue(ctx.toJSON(Date.now())) || {};
+    if (!detail.data || typeof detail.data !== "object") detail.data = {};
+    if (ctx?.data?._dagState) detail.dagState = sanitizeJsonValue(ctx.data._dagState);
+    if (ctx?.data?._issueAdvisor) detail.issueAdvisor = sanitizeJsonValue(ctx.data._issueAdvisor);
+    const runtimeDelegationTrail = Array.isArray(ctx?.__workflowRuntimeState?.delegationAuditTrail)
+      ? normalizeDelegationTrail(ctx.__workflowRuntimeState.delegationAuditTrail)
+      : [];
+    const persistedDelegationTrail = runtimeDelegationTrail.length > 0
+      ? runtimeDelegationTrail
+      : normalizeDelegationTrail(
+          ctx?.data?._delegationAuditTrail ??
+          ctx?.data?._workflowDelegationTrail ??
+          ctx?.data?._delegationTrail,
+        );
+    if (persistedDelegationTrail.length > 0) {
+      detail.data._delegationAuditTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
+      detail.data._workflowDelegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
+      detail.data._delegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
+      detail.delegationAuditTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
+      detail.delegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
+    }
     if (ctx?.data?._workflowDefinitionSnapshot) {
-      detail.workflowDefinition = cloneRunSnapshot(ctx.data._workflowDefinitionSnapshot);
+      detail.workflowDefinition = sanitizeJsonValue(
+        cloneRunSnapshot(ctx.data._workflowDefinitionSnapshot),
+      );
     }
     if (isRunning) {
       detail.endedAt = null;
@@ -4800,6 +5216,14 @@ export class WorkflowEngine extends EventEmitter {
     const triggeredBy = detail?.data?._triggeredBy || null;
     const targetRepo = detail?.data?._targetRepo || null;
     const triggerVars = detail?.data?._triggerVars || null;
+    const delegationTrail = normalizeDelegationTrail(
+      detail?.delegationAuditTrail ??
+      detail?.delegationTrail ??
+      detail?.data?._delegationAuditTrail ??
+      detail?.data?._workflowDelegationTrail ??
+      detail?.data?._delegationTrail,
+    );
+    const delegationTransitionGuards = extractDelegationGuardMap(detail);
     const rootRunId =
       detail?.dagState?.rootRunId ||
       detail?.data?._workflowRootRunId ||
@@ -4821,6 +5245,9 @@ export class WorkflowEngine extends EventEmitter {
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
     const dagRevisionCount = Array.isArray(detail?.dagState?.revisions) ? detail.dagState.revisions.length : 0;
     const validationFailures = collectValidationFailures(detail);
+    const taskIds = collectRunTaskIds(detail);
+    const sessionIds = collectRunSessionIds(detail);
+    const taskTitle = resolveRunTaskTitle(detail);
 
     return {
       runId,
@@ -4842,6 +5269,10 @@ export class WorkflowEngine extends EventEmitter {
       isStuck,
       stuckMs,
       stuckThresholdMs: threshold,
+      delegationTrail,
+      delegationAuditTrail: delegationTrail,
+      latestDelegationEvent: delegationTrail.at(-1) || null,
+      delegationTransitionGuards,
       triggerEvent,
       triggerSource,
       triggeredBy,
@@ -4855,6 +5286,12 @@ export class WorkflowEngine extends EventEmitter {
       issueAdvisorRecommendation,
       issueAdvisorSummary,
       dagRevisionCount,
+      taskId: taskIds[0] || null,
+      taskIds,
+      taskTitle,
+      sessionId: sessionIds[0] || null,
+      sessionIds,
+      primarySessionId: sessionIds[0] || null,
       ...(validationFailures.length > 0
         ? {
             validationFailures,
@@ -4954,7 +5391,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Add to active-runs index
       const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
-      entries.push({ runId, workflowId, workflowName, startedAt: ctx.startedAt });
+      entries.push(buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx));
       this._writeActiveRunsIndex(entries);
 
       // Write initial detail file so we can resume from it
@@ -5026,7 +5463,6 @@ export class WorkflowEngine extends EventEmitter {
    */
   _ensureRunInIndex(runId, workflowId, workflowName, detail) {
     try {
-      const indexPath = resolve(this.runsDir, "index.json");
       const runs = this._readRunIndex();
       const existingIdx = runs.findIndex((r) => r.runId === runId);
 
@@ -5044,7 +5480,7 @@ export class WorkflowEngine extends EventEmitter {
         runs.push(summary);
       }
       if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
-      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      this._writeRunIndex(runs);
     } catch (err) {
       console.error(`${TAG} Failed to ensure run in index:`, err.message);
     }
@@ -5157,9 +5593,8 @@ export class WorkflowEngine extends EventEmitter {
       }
 
       if (interrupted.length > 0) {
-        const indexPath = resolve(this.runsDir, "index.json");
         if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
-        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+        this._writeRunIndex(runs);
       }
 
       // Clear the active-runs index — we've handled recoverable entries.
@@ -5353,13 +5788,12 @@ export class WorkflowEngine extends EventEmitter {
    */
   _markRunUnresumable(runId, reason) {
     try {
-      const indexPath = resolve(this.runsDir, "index.json");
       const runs = this._readRunIndex();
       const idx = runs.findIndex((r) => r.runId === runId);
       if (idx >= 0) {
         runs[idx].resumable = false;
         runs[idx].resumeResult = reason;
-        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+        this._writeRunIndex(runs);
       }
     } catch (err) {
       console.error(`${TAG} Failed to mark run unresumable:`, err.message);
@@ -5382,12 +5816,11 @@ export class WorkflowEngine extends EventEmitter {
       });
 
       // Deduplicate: remove any existing entry for this runId before appending
-      const indexPath = resolve(this.runsDir, "index.json");
       let runs = this._readRunIndex().filter((r) => r.runId !== runId);
       runs.push(summary);
       // Keep last N runs
       if (runs.length > MAX_PERSISTED_RUNS) runs = runs.slice(-MAX_PERSISTED_RUNS);
-      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      this._writeRunIndex(runs);
 
       // Save full run detail
       this._writeRunDetail(runId, detail);
@@ -5399,6 +5832,60 @@ export class WorkflowEngine extends EventEmitter {
   _writeRunDetail(runId, detail) {
     const detailPath = resolve(this.runsDir, `${runId}.json`);
     writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+  }
+
+  _writeRunIndex(runs) {
+    const indexPath = resolve(this.runsDir, "index.json");
+    writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+    this._runIndexCache = runs;
+    try {
+      this._runIndexCacheMtime = statSync(indexPath).mtimeMs || Date.now();
+    } catch {
+      this._runIndexCacheMtime = Date.now();
+    }
+  }
+
+  /**
+   * Delete run detail files older than the most recent `keepCount` files.
+   * Keeps index.json and active-runs.json untouched.
+   * Safe to call on startup and periodically (e.g. daily).
+   *
+   * @param {number} [keepCount] Number of most-recent run files to retain (default MAX_PERSISTED_RUNS).
+   * @returns {{ deleted: number, kept: number, errors: number }}
+   */
+  pruneOldRunFiles(keepCount = MAX_PERSISTED_RUNS) {
+    const PROTECTED = new Set(["index.json", ACTIVE_RUNS_INDEX]);
+    const normalizedKeep = Math.max(20, Math.floor(Number(keepCount) || MAX_PERSISTED_RUNS));
+
+    if (!existsSync(this.runsDir)) return { deleted: 0, kept: 0, errors: 0 };
+
+    let allFiles;
+    try {
+      allFiles = readdirSync(this.runsDir)
+        .filter((f) => f.endsWith(".json") && !PROTECTED.has(f))
+        .map((f) => {
+          const p = resolve(this.runsDir, f);
+          let mtimeMs = 0;
+          try { mtimeMs = statSync(p).mtimeMs || 0; } catch { /* ignore */ }
+          return { file: f, path: p, mtimeMs };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    } catch {
+      return { deleted: 0, kept: 0, errors: 1 };
+    }
+
+    const toDelete = allFiles.slice(normalizedKeep);
+    let deleted = 0;
+    let errors = 0;
+    for (const entry of toDelete) {
+      try {
+        unlinkSync(entry.path);
+        deleted++;
+      } catch {
+        errors++;
+      }
+    }
+    return { deleted, kept: allFiles.length - toDelete.length, errors };
   }
 }
 
@@ -5492,3 +5979,5 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+

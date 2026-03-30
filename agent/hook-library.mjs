@@ -204,7 +204,7 @@ const BUILTIN_HOOKS = [
     events: "PostToolUse",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"ts\\":$(date +%s),\\"sdk\\":\\"$VE_SDK\\",\\"task\\":\\"$VE_TASK_ID\\"}" > .bosun/session-heartbeat.json'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{ts=[int](Get-Date -UFormat %s);sdk=$env:VE_SDK;task=$env:VE_TASK_ID} | ConvertTo-Json | Set-Content .bosun/session-heartbeat.json"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{ts=[int](Get-Date -UFormat %s);sdk=$env:VE_SDK;task=$env:VE_TASK_ID} | ConvertTo-Json | Set-Content -Encoding UTF8 .bosun/session-heartbeat.json"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -224,7 +224,7 @@ const BUILTIN_HOOKS = [
     events: "SessionStart",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"started\\":$(date +%s),\\"sdk\\":\\"$VE_SDK\\",\\"task\\":\\"$VE_TASK_ID\\",\\"branch\\":\\"$VE_BRANCH_NAME\\",\\"status\\":\\"active\\"}" > .bosun/session-state.json'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{started=[int](Get-Date -UFormat %s);sdk=$env:VE_SDK;task=$env:VE_TASK_ID;branch=$env:VE_BRANCH_NAME;status='active'} | ConvertTo-Json | Set-Content .bosun/session-state.json"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{started=[int](Get-Date -UFormat %s);sdk=$env:VE_SDK;task=$env:VE_TASK_ID;branch=$env:VE_BRANCH_NAME;status='active'} | ConvertTo-Json | Set-Content -Encoding UTF8 .bosun/session-state.json"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -245,7 +245,7 @@ const BUILTIN_HOOKS = [
     events: "SessionStop",
     command: shellCmd(
       `bash -c 'if [ -f .bosun/session-state.json ]; then TMP=$(cat .bosun/session-state.json); echo "$TMP" | sed "s/\\"status\\":\\"active\\"/\\"status\\":\\"completed\\"/" > .bosun/session-state.json; fi'`,
-      `powershell -NoProfile -Command "if (Test-Path .bosun/session-state.json) { $j = Get-Content .bosun/session-state.json | ConvertFrom-Json; $j.status = 'completed'; $j | ConvertTo-Json | Set-Content .bosun/session-state.json }"`,
+      `powershell -NoProfile -Command "if (Test-Path .bosun/session-state.json) { $j = Get-Content .bosun/session-state.json | ConvertFrom-Json; $j.status = 'completed'; $j | ConvertTo-Json | Set-Content -Encoding UTF8 .bosun/session-state.json }"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -266,7 +266,7 @@ const BUILTIN_HOOKS = [
     events: "PostToolUse",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"ts\\":$(date +%s),\\"tool\\":\\"$VE_HOOK_TOOL_NAME\\",\\"sdk\\":\\"$VE_SDK\\",\\"task\\":\\"$VE_TASK_ID\\"}" >> .bosun/tool-activity.jsonl'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{ts=[int](Get-Date -UFormat %s);tool=$env:VE_HOOK_TOOL_NAME;sdk=$env:VE_SDK;task=$env:VE_TASK_ID} | ConvertTo-Json -Compress | Add-Content .bosun/tool-activity.jsonl"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{ts=[int](Get-Date -UFormat %s);tool=$env:VE_HOOK_TOOL_NAME;sdk=$env:VE_SDK;task=$env:VE_TASK_ID} | ConvertTo-Json -Compress | Add-Content -Encoding UTF8 .bosun/tool-activity.jsonl"`,
     ),
     blocking: false,
     timeout: 3_000,
@@ -307,7 +307,7 @@ const BUILTIN_HOOKS = [
     events: "TaskComplete",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"task\\":\\"$VE_TASK_ID\\",\\"status\\":\\"completed\\",\\"ts\\":$(date +%s),\\"branch\\":\\"$VE_BRANCH_NAME\\"}" > .bosun/task-result.json && echo "OK: task result recorded"'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{task=$env:VE_TASK_ID;status='completed';ts=[int](Get-Date -UFormat %s);branch=$env:VE_BRANCH_NAME} | ConvertTo-Json | Set-Content .bosun/task-result.json; Write-Host 'OK: task result recorded'"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{task=$env:VE_TASK_ID;status='completed';ts=[int](Get-Date -UFormat %s);branch=$env:VE_BRANCH_NAME} | ConvertTo-Json | Set-Content -Encoding UTF8 .bosun/task-result.json; Write-Host 'OK: task result recorded'"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -590,7 +590,7 @@ const BUILTIN_HOOKS = [
     events: "SessionStart",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"event\\":\\"session_start\\",\\"ts\\":$(date +%s),\\"sdk\\":\\"$VE_SDK\\",\\"task\\":\\"$VE_TASK_ID\\",\\"branch\\":\\"$VE_BRANCH_NAME\\"}" >> .bosun/audit.jsonl'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{event='session_start';ts=[int](Get-Date -UFormat %s);sdk=$env:VE_SDK;task=$env:VE_TASK_ID;branch=$env:VE_BRANCH_NAME} | ConvertTo-Json -Compress | Add-Content .bosun/audit.jsonl"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{event='session_start';ts=[int](Get-Date -UFormat %s);sdk=$env:VE_SDK;task=$env:VE_TASK_ID;branch=$env:VE_BRANCH_NAME} | ConvertTo-Json -Compress | Add-Content -Encoding UTF8 .bosun/audit.jsonl"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -609,7 +609,7 @@ const BUILTIN_HOOKS = [
     events: "SessionStop",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"event\\":\\"session_stop\\",\\"ts\\":$(date +%s),\\"sdk\\":\\"$VE_SDK\\",\\"task\\":\\"$VE_TASK_ID\\"}" >> .bosun/audit.jsonl'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{event='session_stop';ts=[int](Get-Date -UFormat %s);sdk=$env:VE_SDK;task=$env:VE_TASK_ID} | ConvertTo-Json -Compress | Add-Content .bosun/audit.jsonl"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{event='session_stop';ts=[int](Get-Date -UFormat %s);sdk=$env:VE_SDK;task=$env:VE_TASK_ID} | ConvertTo-Json -Compress | Add-Content -Encoding UTF8 .bosun/audit.jsonl"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -628,7 +628,7 @@ const BUILTIN_HOOKS = [
     events: "PreToolUse",
     command: shellCmd(
       `bash -c 'if [ -f .bosun/session-heartbeat.json ]; then LAST=$(cat .bosun/session-heartbeat.json | grep -o "\\"ts\\":[0-9]*" | grep -o "[0-9]*"); NOW=$(date +%s); DIFF=$((NOW - LAST)); if [ "$DIFF" -gt 300 ]; then echo "{\\"event\\":\\"idle_detected\\",\\"idle_seconds\\":$DIFF,\\"ts\\":$NOW}" >> .bosun/audit.jsonl; echo "WARNING: Agent idle for \${DIFF}s" >&2; fi; fi'`,
-      `powershell -NoProfile -Command "if (Test-Path .bosun/session-heartbeat.json) { $j = Get-Content .bosun/session-heartbeat.json | ConvertFrom-Json; $diff = [int](Get-Date -UFormat %s) - $j.ts; if ($diff -gt 300) { @{event='idle_detected';idle_seconds=$diff;ts=[int](Get-Date -UFormat %s)} | ConvertTo-Json -Compress | Add-Content .bosun/audit.jsonl; Write-Warning \\"Agent idle for \${diff}s\\" } }"`,
+      `powershell -NoProfile -Command "if (Test-Path .bosun/session-heartbeat.json) { $j = Get-Content .bosun/session-heartbeat.json | ConvertFrom-Json; $diff = [int](Get-Date -UFormat %s) - $j.ts; if ($diff -gt 300) { @{event='idle_detected';idle_seconds=$diff;ts=[int](Get-Date -UFormat %s)} | ConvertTo-Json -Compress | Add-Content -Encoding UTF8 .bosun/audit.jsonl; Write-Warning \\"Agent idle for \${diff}s\\" } }"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -647,7 +647,7 @@ const BUILTIN_HOOKS = [
     events: ["SessionStart", "SessionStop"],
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && git diff --stat HEAD > .bosun/git-status-snapshot.txt 2>/dev/null && echo "OK: git snapshot saved"'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; git diff --stat HEAD 2>$null | Set-Content .bosun/git-status-snapshot.txt; Write-Host 'OK: git snapshot saved'"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; git diff --stat HEAD 2>$null | Set-Content -Encoding UTF8 .bosun/git-status-snapshot.txt; Write-Host 'OK: git snapshot saved'"`,
     ),
     blocking: false,
     timeout: 10_000,
@@ -666,7 +666,7 @@ const BUILTIN_HOOKS = [
     events: "PostCommit",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun; F=.bosun/session-metrics.json; if [ -f "$F" ]; then N=$(cat "$F" | grep -o "\\"commits\\":[0-9]*" | grep -o "[0-9]*" || echo 0); else N=0; fi; N=$((N + 1)); echo "{\\"commits\\":$N,\\"last_commit_ts\\":$(date +%s)}" > "$F"'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; $f = '.bosun/session-metrics.json'; $n = 0; if (Test-Path $f) { try { $n = (Get-Content $f | ConvertFrom-Json).commits } catch {} }; $n++; @{commits=$n;last_commit_ts=[int](Get-Date -UFormat %s)} | ConvertTo-Json | Set-Content $f"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; $f = '.bosun/session-metrics.json'; $n = 0; if (Test-Path $f) { try { $n = (Get-Content $f | ConvertFrom-Json).commits } catch {} }; $n++; @{commits=$n;last_commit_ts=[int](Get-Date -UFormat %s)} | ConvertTo-Json | Set-Content -Encoding UTF8 $f"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -689,7 +689,7 @@ const BUILTIN_HOOKS = [
     events: "PostToolUse",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && CMD="$VE_HOOK_COMMAND"; FILES=$(echo "$CMD" | grep -oE "[a-zA-Z0-9_./-]+\\.(js|mjs|ts|tsx|py|go|rs|java|rb|md|json|yaml|yml|toml)" | head -5 | tr "\\n" ","); if [ -n "$FILES" ]; then echo "{\\"ts\\":$(date +%s),\\"files\\":\\"$FILES\\",\\"tool\\":\\"$VE_HOOK_TOOL_NAME\\"}" >> .bosun/file-access.jsonl; fi'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; $files = [regex]::Matches($env:VE_HOOK_COMMAND, '[a-zA-Z0-9_.\\\\/-]+\\.(js|mjs|ts|tsx|py|go|rs|java|rb|md|json|yaml|yml|toml)') | Select-Object -First 5 -ExpandProperty Value; if ($files) { @{ts=[int](Get-Date -UFormat %s);files=($files -join ',');tool=$env:VE_HOOK_TOOL_NAME} | ConvertTo-Json -Compress | Add-Content .bosun/file-access.jsonl }"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; $files = [regex]::Matches($env:VE_HOOK_COMMAND, '[a-zA-Z0-9_.\\\\/-]+\\.(js|mjs|ts|tsx|py|go|rs|java|rb|md|json|yaml|yml|toml)') | Select-Object -First 5 -ExpandProperty Value; if ($files) { @{ts=[int](Get-Date -UFormat %s);files=($files -join ',');tool=$env:VE_HOOK_TOOL_NAME} | ConvertTo-Json -Compress | Add-Content -Encoding UTF8 .bosun/file-access.jsonl }"`,
     ),
     blocking: false,
     timeout: 3_000,
@@ -708,7 +708,7 @@ const BUILTIN_HOOKS = [
     events: "SessionStart",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"modified\\":$(git diff --name-only 2>/dev/null | wc -l),\\"staged\\":$(git diff --cached --name-only 2>/dev/null | wc -l),\\"recent_commits\\":[$(git log --oneline -5 --format="\\\"%h: %s\\\"" 2>/dev/null | tr "\\n" "," | sed "s/,$//")],\\"branch\\":\\"$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\\"}" > .bosun/working-set.json'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; $mod = (git diff --name-only 2>$null | Measure-Object).Count; $staged = (git diff --cached --name-only 2>$null | Measure-Object).Count; $commits = git log --oneline -5 2>$null; $branch = git rev-parse --abbrev-ref HEAD 2>$null; @{modified=$mod;staged=$staged;recent_commits=@($commits);branch=$branch} | ConvertTo-Json | Set-Content .bosun/working-set.json"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; $mod = (git diff --name-only 2>$null | Measure-Object).Count; $staged = (git diff --cached --name-only 2>$null | Measure-Object).Count; $commits = git log --oneline -5 2>$null; $branch = git rev-parse --abbrev-ref HEAD 2>$null; @{modified=$mod;staged=$staged;recent_commits=@($commits);branch=$branch} | ConvertTo-Json | Set-Content -Encoding UTF8 .bosun/working-set.json"`,
     ),
     blocking: false,
     timeout: 10_000,
@@ -931,7 +931,7 @@ const BUILTIN_HOOKS = [
     events: "TaskComplete",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && AHEAD=$(git rev-list --count $(git merge-base HEAD origin/main 2>/dev/null || echo HEAD)..HEAD 2>/dev/null || echo 0) && echo "{\\"event\\":\\"task_complete\\",\\"task\\":\\"$VE_TASK_ID\\",\\"commits\\":$AHEAD,\\"ts\\":$(date +%s),\\"branch\\":\\"$VE_BRANCH_NAME\\"}" >> .bosun/completions.jsonl'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; $mb = git merge-base HEAD origin/main 2>$null; $ahead = if ($mb) { [int](git rev-list --count \"$mb..HEAD\" 2>$null) } else { 0 }; @{event='task_complete';task=$env:VE_TASK_ID;commits=$ahead;ts=[int](Get-Date -UFormat %s);branch=$env:VE_BRANCH_NAME} | ConvertTo-Json -Compress | Add-Content .bosun/completions.jsonl"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; $mb = git merge-base HEAD origin/main 2>$null; $ahead = if ($mb) { [int](git rev-list --count \"$mb..HEAD\" 2>$null) } else { 0 }; @{event='task_complete';task=$env:VE_TASK_ID;commits=$ahead;ts=[int](Get-Date -UFormat %s);branch=$env:VE_BRANCH_NAME} | ConvertTo-Json -Compress | Add-Content -Encoding UTF8 .bosun/completions.jsonl"`,
     ),
     blocking: false,
     timeout: 10_000,
@@ -969,7 +969,7 @@ const BUILTIN_HOOKS = [
     events: "PostPR",
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"event\\":\\"pr_created\\",\\"task\\":\\"$VE_TASK_ID\\",\\"branch\\":\\"$VE_BRANCH_NAME\\",\\"ts\\":$(date +%s)}" >> .bosun/audit.jsonl'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{event='pr_created';task=$env:VE_TASK_ID;branch=$env:VE_BRANCH_NAME;ts=[int](Get-Date -UFormat %s)} | ConvertTo-Json -Compress | Add-Content .bosun/audit.jsonl"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{event='pr_created';task=$env:VE_TASK_ID;branch=$env:VE_BRANCH_NAME;ts=[int](Get-Date -UFormat %s)} | ConvertTo-Json -Compress | Add-Content -Encoding UTF8 .bosun/audit.jsonl"`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -992,7 +992,7 @@ const BUILTIN_HOOKS = [
     events: ["SessionStart", "SessionStop"],
     command: shellCmd(
       `bash -c 'mkdir -p .bosun/events && echo "{\\"event\\":\\"agent.$VE_HOOK_EVENT\\",\\"sdk\\":\\"$VE_SDK\\",\\"task\\":\\"$VE_TASK_ID\\",\\"ts\\":$(date +%s)}" > .bosun/events/$(date +%s)-$VE_HOOK_EVENT.json'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun/events | Out-Null; $ts = [int](Get-Date -UFormat %s); @{event=\"agent.$($env:VE_HOOK_EVENT)\";sdk=$env:VE_SDK;task=$env:VE_TASK_ID;ts=$ts} | ConvertTo-Json | Set-Content \".bosun/events/$ts-$($env:VE_HOOK_EVENT).json\""`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun/events | Out-Null; $ts = [int](Get-Date -UFormat %s); @{event=\"agent.$($env:VE_HOOK_EVENT)\";sdk=$env:VE_SDK;task=$env:VE_TASK_ID;ts=$ts} | ConvertTo-Json | Set-Content -Encoding UTF8 \".bosun/events/$ts-$($env:VE_HOOK_EVENT).json\""`,
     ),
     blocking: false,
     timeout: 5_000,
@@ -1033,7 +1033,7 @@ const BUILTIN_HOOKS = [
     events: ["SubagentStart", "SubagentStop"],
     command: shellCmd(
       `bash -c 'mkdir -p .bosun && echo "{\\"event\\":\\"$VE_HOOK_EVENT\\",\\"sdk\\":\\"$VE_SDK\\",\\"task\\":\\"$VE_TASK_ID\\",\\"ts\\":$(date +%s)}" >> .bosun/subagent-log.jsonl'`,
-      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{event=$env:VE_HOOK_EVENT;sdk=$env:VE_SDK;task=$env:VE_TASK_ID;ts=[int](Get-Date -UFormat %s)} | ConvertTo-Json -Compress | Add-Content .bosun/subagent-log.jsonl"`,
+      `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path .bosun | Out-Null; @{event=$env:VE_HOOK_EVENT;sdk=$env:VE_SDK;task=$env:VE_TASK_ID;ts=[int](Get-Date -UFormat %s)} | ConvertTo-Json -Compress | Add-Content -Encoding UTF8 .bosun/subagent-log.jsonl"`,
     ),
     blocking: false,
     timeout: 5_000,
