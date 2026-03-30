@@ -1,4 +1,9 @@
-import { defineConfig } from "@playwright/test";
+import * as playwrightTest from "@playwright/test";
+
+const defineConfig =
+  playwrightTest.defineConfig ??
+  playwrightTest.default?.defineConfig ??
+  ((config) => config);
 
 export default defineConfig({
   testDir: "server",

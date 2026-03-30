@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, it, afterEach } from "node:test";
@@ -8,8 +8,11 @@ import {
   __resetTelegramPollOwnerPathsForTest,
   __setTelegramPollOwnerPathsForTest,
   claimTelegramPollOwner,
+  configureTelegramPollOwnerScope,
   getActiveTelegramPollOwner,
   releaseTelegramPollOwner,
+  resolveTelegramPollPaths,
+  resolveTelegramPollScopeId,
 } from "../telegram/telegram-poll-owner.mjs";
 
 const root = mkdtempSync(resolve(tmpdir(), "bosun-poll-owner-"));
@@ -31,6 +34,44 @@ afterEach(() => {
 });
 
 describe("telegram poll owner arbitration", () => {
+  it("derives stable token-scoped shared lock paths", () => {
+    const scopeId = resolveTelegramPollScopeId("123456:token");
+    assert.match(scopeId, /^[0-9a-f]{12}$/);
+
+    const paths = resolveTelegramPollPaths({
+      token: "123456:token",
+      sharedBaseDir: root,
+    });
+    assert.equal(paths.scopeId, scopeId);
+    assert.equal(
+      paths.ownerStateFile,
+      resolve(cacheDir, `telegram-getupdates-${scopeId}-owner.json`),
+    );
+    assert.equal(
+      paths.pollLockFile,
+      resolve(cacheDir, `telegram-getupdates-${scopeId}.lock`),
+    );
+    assert.equal(
+      paths.conflictStateFile,
+      resolve(cacheDir, `telegram-getupdates-${scopeId}-conflict.json`),
+    );
+  });
+
+  it("reconfigures poll owner storage into the shared runtime cache", async () => {
+    const scoped = configureTelegramPollOwnerScope({
+      token: "654321:token",
+      sharedBaseDir: root,
+    });
+
+    const claim = await claimTelegramPollOwner("telegram-bot", {
+      pid: process.pid,
+      ttlMs: 120_000,
+    });
+    assert.equal(claim.ok, true);
+    assert.ok(scoped.ownerStateFile.includes(scopeIdFrom("654321:token")));
+    assert.equal(existsSync(scoped.ownerStateFile), true);
+  });
+
   it("allows a single owner and rejects a concurrent owner", async () => {
     setTestPaths();
     const first = await claimTelegramPollOwner("telegram-bot", {
@@ -90,6 +131,10 @@ describe("telegram poll owner arbitration", () => {
     assert.equal(after, null);
   });
 });
+
+function scopeIdFrom(token) {
+  return resolveTelegramPollScopeId(token);
+}
 
 process.on("exit", () => {
   try {

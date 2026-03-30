@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 function getParentDir(dir) {
   const parent = dirname(dir);
@@ -108,7 +109,22 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
   return 1;
 }
 
-if (import.meta.url === new URL(process.argv[1], "file:").href) {
+export function isDirectExecution(argv = process.argv) {
+  const scriptPath = argv?.[1];
+  if (!scriptPath) return false;
+
+  try {
+    return fileURLToPath(import.meta.url) === resolve(scriptPath);
+  } catch {
+    try {
+      return import.meta.url === pathToFileURL(resolve(scriptPath)).href;
+    } catch {
+      return false;
+    }
+  }
+}
+
+if (isDirectExecution()) {
   try {
     process.exit(runVitest());
   } catch (error) {

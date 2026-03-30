@@ -186,6 +186,17 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/hooks/state",
   "/api/hooks/core",
   "/api/hooks/defaults",
+  // Vault & secrets — server-only (requires OS keychain / encrypted vault on disk)
+  "/api/vault/status",
+  "/api/vault/init",
+  "/api/vault/integrations",
+  "/api/vault/secrets",
+  "/api/vault/env",
+  "/api/vault\\/:id",
+  // Environment detection & repo-level env config — server-only (filesystem access)
+  "/api/env/detect",
+  "/api/env/templates",
+  "/api/repos/environment",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
