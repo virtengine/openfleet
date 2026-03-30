@@ -2217,14 +2217,24 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
 
   const copySessionId = (sessionId) => {
     if (!sessionId) return;
+    if (!navigator?.clipboard?.writeText) {
+      setCopiedSessionId("");
+      showToast("Copy failed", "error");
+      return;
+    }
     setCopiedSessionId(sessionId);
-    navigator.clipboard
-      .writeText(sessionId)
-      .then(() => showToast("Session ID copied", "success"))
-      .catch(() => {
-        setCopiedSessionId("");
-        showToast("Copy failed", "error");
-      });
+    try {
+      navigator.clipboard
+        .writeText(sessionId)
+        .then(() => showToast("Session ID copied", "success"))
+        .catch(() => {
+          setCopiedSessionId("");
+          showToast("Copy failed", "error");
+        });
+    } catch (_err) {
+      setCopiedSessionId("");
+      showToast("Copy failed", "error");
+    }
   };
 
   /* Stabilise entries with useMemo so the reference only changes when the
@@ -2492,8 +2502,9 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
               : html`${visibleEntries.map((entry) => {
                   const entryStatus = getFleetEntryStatus(entry);
                   const relativeTime = getFleetEntryRelativeTime(entry);
+                  const sessionId = resolveFleetEntrySessionId(entry);
                   return html`
-                    <${Button} variant="text" size="small"
+                    <${Button} variant="text" size="small" component="div"
                       key=${entry.key}
                       className=${`fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""} ${entry.isHistory ? "history" : ""}`}
                       onClick=${() => {

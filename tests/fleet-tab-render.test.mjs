@@ -34,7 +34,7 @@ for (const { relPath, source } of sourceFiles) {
     it("renders a keyboard-accessible session id pill with copy feedback state", () => {
       expect(source).toContain("fleet-session-id-pill");
       expect(source).toContain("type=\"button\"");
-      expect(source).toContain("aria-label=${`Copy session ID ${sessionId}`}\");
+      expect(source).toContain("aria-label=${`Copy session ID ${sessionId}`}");
       expect(source).toContain("data-copied=${copiedSessionId === sessionId ? \"true\" : \"false\"}");
       expect(source).toContain("sessionId.slice(0, 8)");
       expect(source).toContain("copySessionId(sessionId)");
