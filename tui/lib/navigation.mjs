@@ -1,9 +1,10 @@
-const SCREEN_ORDER = ["status", "tasks", "agents", "telemetry"];
+const SCREEN_ORDER = ["status", "tasks", "agents", "telemetry", "logs"];
 const SCREEN_BY_INPUT = new Map([
   ["1", "status"],
   ["2", "tasks"],
   ["3", "agents"],
   ["4", "telemetry"],
+  ["5", "logs"],
 ]);
 
 export function getNextScreenForInput(currentScreen = "status", input = "") {

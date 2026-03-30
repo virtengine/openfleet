@@ -11,6 +11,7 @@
  *   cli            -> CLI only
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";

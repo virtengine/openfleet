@@ -12,16 +12,18 @@
  * thread_id so we can resume the same conversation across restarts.
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { resolveAgentSdkConfig } from "../agent/agent-sdk.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveAgentSdkConfig, resolveCodexSdkInstall } from "../agent/agent-sdk.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import {
   resolveCodexProfileRuntime,
   readCodexConfigRuntimeDefaults,
+  getProviderEndpointEnvKeys,
 } from "./codex-model-profiles.mjs";
 import { buildTaskWritableRoots } from "./codex-config.mjs";
 import {
@@ -127,6 +129,7 @@ function buildInjectedSandboxConfig(envInput, workingDirectory) {
 function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, workingDirectory = DEFAULT_WORKING_DIRECTORY) {
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
+  const runtimeDefaults = readCodexConfigRuntimeDefaults(envInput) || {};
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const hasCustomBaseUrl = Boolean(String(baseUrl || "").trim());
@@ -161,6 +164,16 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
         if (!unsetEnvKeys.includes(otherEnvKey)) {
           unsetEnvKeys.push(otherEnvKey);
         }
+        // Also remove endpoint/base URL env keys associated with the non-selected provider
+        const endpointKeys = getProviderEndpointEnvKeys(sectionName, "azure");
+        for (const epKey of endpointKeys) {
+          if (epKey in env) {
+            delete env[epKey];
+            if (!unsetEnvKeys.includes(epKey)) {
+              unsetEnvKeys.push(epKey);
+            }
+          }
+        }
       }
     } catch {
       // best effort — do not block SDK startup if config inspection fails
@@ -168,6 +181,11 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
   }
 
   const providerName = isAzure ? "azure" : "openai";
+  const providerSectionNameResolved = isAzure
+    ? providerSectionName
+    : hasCustomBaseUrl
+      ? (configProvider?.name || "openai-direct")
+      : null;
   const config = isAzure
     ? {
         model_providers: {
@@ -185,18 +203,22 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
       }
     : hasCustomBaseUrl
       ? {
-          model_providers: {
-            [providerSectionName]: {
-              ...streamProviderOverrides,
-            },
-          },
+          model_providers: providerSectionNameResolved
+            ? {
+                [providerSectionNameResolved]: {
+                  ...streamProviderOverrides,
+                },
+              }
+            : undefined,
         }
       : {};
 
   Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
 
-  if (isAzure && env.CODEX_MODEL) {
-    config.model_provider = providerSectionName;
+  if (providerSectionNameResolved) {
+    config.model_provider = providerSectionNameResolved;
+  }
+  if (env.CODEX_MODEL) {
     config.model = env.CODEX_MODEL;
   }
 
@@ -338,6 +360,7 @@ const DEFAULT_WORKING_DIRECTORY = REPO_ROOT;
 // ── State ────────────────────────────────────────────────────────────────────
 
 let CodexClass = null; // The Codex class from SDK
+const CODEX_SDK_SPECIFIER = "@openai/codex-sdk"; // Define the SDK specifier
 let codexInstance = null; // Singleton Codex instance
 let activeThread = null; // Current persistent Thread
 let activeThreadId = null; // Thread ID for resume
@@ -385,6 +408,17 @@ function resolveCodexTransport() {
   return "auto";
 }
 
+function shouldUseBareCodexSdkImport() {
+  return Boolean(import.meta.vitest || process.env.VITEST);
+}
+
+async function importCodexSdkModule(resolvedSdk) {
+  if (shouldUseBareCodexSdkImport()) {
+    return import(CODEX_SDK_SPECIFIER);
+  }
+  return import(pathToFileURL(resolvedSdk.entryPath).href);
+}
+
 // ── SDK Loading ──────────────────────────────────────────────────────────────
 
 async function loadCodexSdk() {
@@ -403,9 +437,14 @@ async function loadCodexSdk() {
   }
   if (CodexClass) return CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const resolvedSdk = resolveCodexSdkInstall({ extraRoots: [getWorkingDirectory()] });
+    if (!resolvedSdk?.entryPath) {
+      console.error("[codex-shell] failed to load SDK: no complete @openai/codex-sdk install found");
+      return null;
+    }
+    const mod = await importCodexSdkModule(resolvedSdk);
     CodexClass = mod.Codex;
-    console.log("[codex-shell] SDK loaded successfully");
+    console.log(`[codex-shell] SDK loaded successfully from ${resolvedSdk.rootDir}`);
     return CodexClass;
   } catch (err) {
     console.error(`[codex-shell] failed to load SDK: ${err.message}`);
@@ -541,6 +580,19 @@ You have FULL ACCESS to:
 - File read/write: read any file, create/edit any file
 - MCP servers configured in this environment (availability varies)
 
+## File Editing Strategy — IMPORTANT
+
+When editing files, always prefer the Bosun MCP file tools (available via the bosun MCP server):
+
+1. **LOCATE first** — use \`grep_search\` to find the exact code location before editing.
+2. **READ before editing** — use \`read_file\` to confirm the exact text including whitespace.
+3. **PREFER surgical edits** — use \`str_replace_editor\` for targeted changes.
+   - \`old_str\` must exactly match the file content (copy from \`read_file\` output).
+   - Include more surrounding lines if the text is not unique.
+4. **Full rewrites only when necessary** — use \`write_file\` for new files or complete rewrites.
+5. **NEVER use shell workarounds** to edit files (no \`node -e\`, no \`sed -i\`, no temp scripts, no patch files).
+   These break on Windows due to encoding and quoting issues. The MCP tools handle encoding correctly.
+
 Key files:
   ${REPO_ROOT} — Repository root
   .cache/orchestrator-status.json — Live status data (if enabled)
@@ -601,6 +653,9 @@ async function getThread() {
     codexInstance = new Cls({
       config: {
         ...runtime.config,
+        model_provider: runtime.config?.model_provider,
+        model_providers: runtime.config?.model_providers,
+        model: runtime.config?.model,
         features: {
           ...(runtime.config?.features || {}),
           child_agents_md: true,
@@ -1308,3 +1363,4 @@ export async function initCodexShell() {
     );
   }
 }
+

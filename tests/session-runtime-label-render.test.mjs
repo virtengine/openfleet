@@ -79,5 +79,10 @@ for (const relPath of appFiles) {
       expect(source).not.toContain("const sessions = sessionsData.value || [];");
       expect(source).not.toContain("defaultType=\"primary\"");
     });
+
+    it("does not depend on an undefined routeParams session source", () => {
+      expect(source).not.toContain("routeParams.value?.sessionId");
+      expect(source).toContain("const sessionId = selectedSessionId.value;");
+    });
   });
 }

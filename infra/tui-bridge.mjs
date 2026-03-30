@@ -271,17 +271,35 @@ export function buildMonitorStatsPayload({ agentPool, runtimeStats = {}, uptimeM
 }
 
 export function buildSessionsUpdatePayload(sessions = []) {
-  return Array.isArray(sessions) ? sessions.map((session) => ({ ...session })) : [];
+  return Array.isArray(sessions)
+    ? sessions.map((session) => {
+      const normalized = session && typeof session === "object" ? { ...session } : {};
+      const tokenUsage = normalized?.insights?.tokenUsage || null;
+      const inputTokens = Number(normalized.inputTokens ?? tokenUsage?.inputTokens ?? 0);
+      const outputTokens = Number(normalized.outputTokens ?? tokenUsage?.outputTokens ?? 0);
+      const totalTokens = Number(
+        normalized.totalTokens ?? normalized.tokenCount ?? tokenUsage?.totalTokens ?? (inputTokens + outputTokens),
+      );
+      normalized.inputTokens = Number.isFinite(inputTokens) ? Math.max(0, Math.round(inputTokens)) : 0;
+      normalized.outputTokens = Number.isFinite(outputTokens) ? Math.max(0, Math.round(outputTokens)) : 0;
+      normalized.totalTokens = Number.isFinite(totalTokens) ? Math.max(0, Math.round(totalTokens)) : (normalized.inputTokens + normalized.outputTokens);
+      normalized.tokenCount = normalized.totalTokens;
+      return normalized;
+    })
+    : [];
 }
 
 export function buildSessionEventPayload(payload = {}) {
   const event = payload?.event && typeof payload.event === "object"
     ? { ...payload.event }
     : { kind: "message", ...(payload?.message ? { message: payload.message } : {}) };
+  const session = payload?.session && typeof payload.session === "object"
+    ? buildSessionsUpdatePayload([payload.session])[0]
+    : {};
   return {
-    sessionId: String(payload?.sessionId || payload?.session?.id || "").trim(),
-    taskId: String(payload?.taskId || payload?.session?.taskId || "").trim(),
-    session: payload?.session && typeof payload.session === "object" ? { ...payload.session } : {},
+    sessionId: String(payload?.sessionId || session?.id || payload?.session?.id || "").trim(),
+    taskId: String(payload?.taskId || session?.taskId || payload?.session?.taskId || "").trim(),
+    session,
     event,
   };
 }
