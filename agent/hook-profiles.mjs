@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { detectProjectStack } from "../workflow/project-detection.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -8,7 +9,7 @@ const __dirname = dirname(__filename);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_HOOK_SCHEMA = "https://json-schema.org/draft/2020-12/schema";
 const LEGACY_BRIDGE_SNIPPET = "scripts/bosun/agent-hook-bridge.mjs";
-const DEFAULT_BRIDGE_SCRIPT_PATH = resolve(__dirname, "agent-hook-bridge.mjs");
+const DEFAULT_BRIDGE_SCRIPT_PATH = "agent/agent-hook-bridge.mjs";
 
 function getHookNodeBinary() {
   const configured = String(process.env.BOSUN_HOOK_NODE_BIN || "").trim();
@@ -32,24 +33,28 @@ export const HOOK_PROFILES = Object.freeze([
 const PRESET_FLAGS = Object.freeze({
   strict: {
     includeSessionHooks: true,
+    includePostToolUse: true,
     includePreCommit: true,
     includePrePush: true,
     includeTaskComplete: true,
   },
   balanced: {
     includeSessionHooks: true,
+    includePostToolUse: true,
     includePreCommit: false,
     includePrePush: true,
     includeTaskComplete: true,
   },
   lightweight: {
     includeSessionHooks: true,
+    includePostToolUse: false,
     includePreCommit: false,
     includePrePush: false,
     includeTaskComplete: false,
   },
   none: {
     includeSessionHooks: false,
+    includePostToolUse: false,
     includePreCommit: false,
     includePrePush: false,
     includeTaskComplete: false,
@@ -77,29 +82,13 @@ const PRESET_COMMANDS = Object.freeze({
       timeout: 10_000,
     },
   ]),
-  PrePush: Object.freeze([
+  PostToolUse: Object.freeze([
     {
-      id: "prepush-go-vet",
-      command: "go vet ./...",
-      description: "Run go vet before push",
-      blocking: true,
-      timeout: 120_000,
-    },
-    {
-      id: "prepush-go-build",
-      command: "go build ./...",
-      description: "Verify Go build succeeds before push",
-      blocking: true,
-      timeout: 300_000,
-    },
-  ]),
-  PreCommit: Object.freeze([
-    {
-      id: "precommit-gofmt",
-      command: "gofmt -l .",
-      description: "Check Go formatting before commit",
+      id: "post-tool-use-validation",
+      command: "",
+      description: "Run lightweight repository validation after edit tools complete",
       blocking: false,
-      timeout: 30_000,
+      timeout: 120_000,
     },
   ]),
   TaskComplete: Object.freeze([
@@ -109,6 +98,27 @@ const PRESET_COMMANDS = Object.freeze({
       description: "Audit log for task completion",
       blocking: false,
       timeout: 10_000,
+    },
+  ]),
+});
+
+const PORTABLE_VALIDATION_COMMANDS = Object.freeze({
+  PrePush: Object.freeze([
+    {
+      id: "prepush-git-diff-check",
+      command: "git diff --check",
+      description: "Check tracked changes for whitespace and conflict-marker issues before push",
+      blocking: true,
+      timeout: 30_000,
+    },
+  ]),
+  PreCommit: Object.freeze([
+    {
+      id: "precommit-git-staged-diff-check",
+      command: "git diff --cached --check",
+      description: "Check staged changes for whitespace and conflict-marker issues before commit",
+      blocking: false,
+      timeout: 30_000,
     },
   ]),
 });
@@ -153,8 +163,8 @@ function isPortableNodeCommandToken(token) {
 }
 
 function isPortableBridgeScriptToken(token) {
-  const raw = String(token || "");
-  return raw === DEFAULT_BRIDGE_SCRIPT_PATH || raw === LEGACY_BRIDGE_SNIPPET;
+  const raw = String(token || "").trim().replace(/\\/g, "/");
+  return raw === DEFAULT_BRIDGE_SCRIPT_PATH || raw === `./${DEFAULT_BRIDGE_SCRIPT_PATH}`;
 }
 
 function isCopilotBridgeCommandPortable(commandTokens) {
@@ -168,6 +178,98 @@ function isCopilotBridgeCommandPortable(commandTokens) {
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function slugifyHookId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "hook";
+}
+
+function createHookEntry({
+  id,
+  command,
+  description,
+  blocking = false,
+  timeout = DEFAULT_TIMEOUT_MS,
+}) {
+  return {
+    id,
+    command,
+    description,
+    blocking,
+    timeout,
+    sdks: ["*"],
+  };
+}
+
+function buildDetectedValidationCommands(rootDir) {
+  const detected = detectProjectStack(rootDir);
+  const qualityGate = String(detected?.commands?.qualityGate || "").trim();
+  const postEdit = String(detected?.commands?.postEdit || "").trim();
+  const lint = String(detected?.commands?.lint || "").trim();
+  const syntaxCheck = String(detected?.commands?.syntaxCheck || "").trim();
+
+  return {
+    PostToolUse: (postEdit || lint || syntaxCheck)
+      ? [
+          createHookEntry({
+            id: `posttooluse-detected-${slugifyHookId(postEdit || lint || syntaxCheck)}`,
+            command: postEdit || lint || syntaxCheck,
+            description: `Run lightweight repository validation after edits (${detected?.primary?.label || "project"})`,
+            blocking: false,
+            timeout: 120_000,
+          }),
+        ]
+      : [],
+    PrePush: qualityGate
+      ? [
+          createHookEntry({
+            id: `prepush-detected-${slugifyHookId(qualityGate)}`,
+            command: qualityGate,
+            description: `Run detected repository quality gate before push (${detected?.primary?.label || "project"})`,
+            blocking: true,
+            timeout: 300_000,
+          }),
+        ]
+      : [],
+    PreCommit: (lint || syntaxCheck)
+      ? [
+          createHookEntry({
+            id: `precommit-detected-${slugifyHookId(lint || syntaxCheck)}`,
+            command: lint || syntaxCheck,
+            description: `Run detected repository validation before commit (${detected?.primary?.label || "project"})`,
+            blocking: false,
+            timeout: 120_000,
+          }),
+        ]
+      : [],
+  };
+}
+
+function buildDefaultHooksForEvent(event, rootDir) {
+  const defaults = [
+    ...deepClone(PORTABLE_VALIDATION_COMMANDS[event] || []),
+  ];
+
+  if (rootDir && existsSync(rootDir)) {
+    defaults.push(...buildDetectedValidationCommands(rootDir)[event]);
+  }
+
+  const seen = new Set();
+  return defaults
+    .filter((entry) => {
+      const command = String(entry?.command || "").trim();
+      if (!command || seen.has(command)) return false;
+      seen.add(command);
+      return true;
+    })
+    .map((entry) => ({
+      ...entry,
+      sdks: ["*"],
+    }));
 }
 
 function normalizeProfile(profile) {
@@ -256,6 +358,9 @@ export function buildHookScaffoldOptionsFromEnv(env = process.env) {
       SessionStop: normalizeOverrideCommands(
         env.BOSUN_HOOK_SESSION_STOP,
       ),
+      PostToolUse: normalizeOverrideCommands(
+        env.BOSUN_HOOK_POST_TOOL_USE ?? env.BOSUN_HOOK_POSTEDIT,
+      ),
       PrePush: normalizeOverrideCommands(env.BOSUN_HOOK_PREPUSH),
       PreCommit: normalizeOverrideCommands(env.BOSUN_HOOK_PRECOMMIT),
       TaskComplete: normalizeOverrideCommands(
@@ -269,6 +374,7 @@ export function buildCanonicalHookConfig(options = {}) {
   const profile = normalizeProfile(options.profile);
   const flags = { ...PRESET_FLAGS[profile] };
   const commandOverrides = options.commands || {};
+  const rootDir = options.repoRoot ? resolve(options.repoRoot) : "";
 
   const hooks = {};
 
@@ -284,17 +390,14 @@ export function buildCanonicalHookConfig(options = {}) {
       sdks: ["*"],
     }));
   }
+  if (flags.includePostToolUse) {
+    hooks.PostToolUse = buildDefaultHooksForEvent("PostToolUse", rootDir);
+  }
   if (flags.includePrePush) {
-    hooks.PrePush = deepClone(PRESET_COMMANDS.PrePush).map((item) => ({
-      ...item,
-      sdks: ["*"],
-    }));
+    hooks.PrePush = buildDefaultHooksForEvent("PrePush", rootDir);
   }
   if (flags.includePreCommit) {
-    hooks.PreCommit = deepClone(PRESET_COMMANDS.PreCommit).map((item) => ({
-      ...item,
-      sdks: ["*"],
-    }));
+    hooks.PreCommit = buildDefaultHooksForEvent("PreCommit", rootDir);
   }
   if (flags.includeTaskComplete) {
     hooks.TaskComplete = deepClone(PRESET_COMMANDS.TaskComplete).map(
@@ -308,6 +411,7 @@ export function buildCanonicalHookConfig(options = {}) {
   for (const event of [
     "SessionStart",
     "SessionStop",
+    "PostToolUse",
     "PrePush",
     "PreCommit",
     "TaskComplete",
@@ -583,7 +687,10 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
     return result;
   }
 
-  const codexHookConfig = buildCanonicalHookConfig(options);
+  const codexHookConfig = buildCanonicalHookConfig({
+    ...options,
+    repoRoot: root,
+  });
   result.env = buildDisableEnv(codexHookConfig);
 
   if (targets.includes("codex")) {
@@ -657,10 +764,10 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
     const geminiPath = resolve(root, ".gemini", "settings.json");
     const geminiConfig = {
       hooks: {
-        SessionStart: [{ command: "node agent-hook-bridge.mjs --agent gemini --event SessionStart" }],
-        SessionStop: [{ command: "node agent-hook-bridge.mjs --agent gemini --event SessionStop" }],
-        PreToolUse: [{ command: "node agent-hook-bridge.mjs --agent gemini --event PreToolUse" }],
-        PostToolUse: [{ command: "node agent-hook-bridge.mjs --agent gemini --event PostToolUse" }],
+        SessionStart: [{ command: buildShellCommand(makeBridgeCommandTokens("gemini", "SessionStart")) }],
+        SessionStop: [{ command: buildShellCommand(makeBridgeCommandTokens("gemini", "SessionStop")) }],
+        PreToolUse: [{ command: buildShellCommand(makeBridgeCommandTokens("gemini", "PreToolUse")) }],
+        PostToolUse: [{ command: buildShellCommand(makeBridgeCommandTokens("gemini", "PostToolUse")) }],
       },
       _bosun: { managed: true, profile: result.profile, generated: new Date().toISOString() },
     };
@@ -682,11 +789,11 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
     const opencodePath = resolve(root, ".opencode", "hooks.json");
     const opencodeConfig = {
       hooks: {
-        SessionStart: [{ command: "node agent-hook-bridge.mjs --agent opencode --event SessionStart" }],
-        SessionStop: [{ command: "node agent-hook-bridge.mjs --agent opencode --event SessionStop" }],
-        PreToolUse: [{ command: "node agent-hook-bridge.mjs --agent opencode --event PreToolUse" }],
-        PostToolUse: [{ command: "node agent-hook-bridge.mjs --agent opencode --event PostToolUse" }],
-        TaskComplete: [{ command: "node agent-hook-bridge.mjs --agent opencode --event TaskComplete" }],
+        SessionStart: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "SessionStart")) }],
+        SessionStop: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "SessionStop")) }],
+        PreToolUse: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "PreToolUse")) }],
+        PostToolUse: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "PostToolUse")) }],
+        TaskComplete: [{ command: buildShellCommand(makeBridgeCommandTokens("opencode", "TaskComplete")) }],
       },
       _bosun: { managed: true, profile: result.profile, generated: new Date().toISOString() },
     };

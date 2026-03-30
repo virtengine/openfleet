@@ -32,7 +32,7 @@ export function stripAnsi(text) {
   // eslint-disable-next-line no-control-regex
   return String(text || "")
     .replace(/\x1b\[[0-9;]*m/g, "")
-    .replace(/\[\d+;?\d*m/g, "");
+    .replace(/\[(?:\d{1,3}(?:;\d{1,3})*)m/g, "");
 }
 
 /**
@@ -79,12 +79,12 @@ export function isErrorLine(line, errorPatterns, errorNoisePatterns) {
  * @returns {string} HTML-escaped string
  */
 export function escapeHtml(value) {
-  return String(value)
+  return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/</g, "&lt;");
 }
 
 /**
@@ -108,7 +108,7 @@ export function formatHtmlLink(url, label) {
  */
 export function getErrorFingerprint(line) {
   // Normalize: strip timestamps, attempt IDs, branch-specific parts
-  return line
+  return String(line ?? "")
     .replace(/\[\d{2}:\d{2}:\d{2}\]\s*/g, "")
     .replace(/\b[0-9a-f]{8}\b/gi, "<ID>") // attempt IDs
     .replace(/ve\/[\w.-]+/g, "ve/<BRANCH>") // branch names
@@ -164,11 +164,24 @@ export function getMaxParallelFromArgs(argsList) {
  * @returns {number|null} PR number or null if not found
  */
 export function parsePrNumberFromUrl(url) {
-  if (!url) return null;
-  const match = String(url).match(/\/pull\/(\d+)/i);
-  if (!match) return null;
+  if (!url) {
+    return null;
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(String(url));
+  } catch {
+    return null;
+  }
+
+  const match = parsedUrl.pathname.match(/\/pull\/(\d+)(?:\/|$)/i);
+  if (!match) {
+    return null;
+  }
+
   const num = Number(match[1]);
-  return Number.isFinite(num) ? num : null;
+  return Number.isSafeInteger(num) && num > 0 ? num : null;
 }
 
 // ── Async process helpers ─────────────────────────────────────────────────
@@ -185,10 +198,16 @@ export function parsePrNumberFromUrl(url) {
  */
 export async function spawnAsync(cmd, args = [], options = {}) {
   const { spawn } = await import("node:child_process");
+  const isWindows = process.platform === "win32";
+  const normalizedCommand = isWindows && cmd === "npm" ? "npm.cmd" : cmd;
   return new Promise((resolve, reject) => {
     const stdoutChunks = [];
     const stderrChunks = [];
-    const proc = spawn(cmd, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(normalizedCommand, args, {
+      ...options,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: options.windowsHide ?? true,
+    });
     proc.stdout.on("data", (d) => stdoutChunks.push(d));
     proc.stderr.on("data", (d) => stderrChunks.push(d));
     proc.on("close", (code) => {
@@ -196,7 +215,7 @@ export async function spawnAsync(cmd, args = [], options = {}) {
       const stderr = Buffer.concat(stderrChunks).toString("utf8");
       if (code !== 0) {
         const err = Object.assign(
-          new Error(`spawnAsync: ${cmd} ${args.join(" ")} exited ${code}\n${stderr || stdout}`),
+          new Error(`spawnAsync: ${normalizedCommand} ${args.join(" ")} exited ${code}\n${stderr || stdout}`),
           { stdout, stderr, status: code },
         );
         reject(err);
@@ -204,7 +223,13 @@ export async function spawnAsync(cmd, args = [], options = {}) {
         resolve({ stdout, stderr, status: code });
       }
     });
-    proc.on("error", reject);
+    proc.on("error", (error) => {
+      reject(Object.assign(error, {
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        status: null,
+      }));
+    });
   });
 }
 

@@ -28,7 +28,9 @@ import { homedir } from "node:os";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import {
   claimTelegramPollOwner,
+  configureTelegramPollOwnerScope,
   releaseTelegramPollOwner,
+  resolveTelegramPollPaths,
 } from "./telegram-poll-owner.mjs";
 import {
   execPrimaryPrompt,
@@ -157,16 +159,6 @@ function resolveTelegramConfigDir() {
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
 const statusPath = resolve(repoRoot, ".cache", "orchestrator-status.json");
-const telegramPollLockPath = resolve(
-  repoRoot,
-  ".cache",
-  "telegram-getupdates.lock",
-);
-const telegramPollConflictStatePath = resolve(
-  repoRoot,
-  ".cache",
-  "telegram-getupdates-conflict.json",
-);
 const liveDigestStatePath = resolve(repoRoot, ".cache", "ve-live-digest.json");
 const statusBoardStatePath = resolve(
   repoRoot,
@@ -175,6 +167,24 @@ const statusBoardStatePath = resolve(
 );
 const fwCooldownPath = resolve(repoRoot, ".cache", "ve-fw-cooldown.json");
 const FW_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function getTelegramPollPaths() {
+  return resolveTelegramPollPaths({
+    token: telegramToken || process.env.TELEGRAM_BOT_TOKEN || "",
+  });
+}
+
+function getTelegramPollConflictStateCandidates() {
+  const paths = getTelegramPollPaths();
+  const candidates = [paths.conflictStateFile, paths.legacyConflictStateFile];
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function getTelegramPollLockCandidates() {
+  const paths = getTelegramPollPaths();
+  const candidates = [paths.pollLockFile, paths.legacyPollLockFile];
+  return [...new Set(candidates.filter(Boolean))];
+}
 
 // ── Message History Auto-Cleanup ──────────────────────────────────────────
 const msgHistoryPath = resolve(repoRoot, ".cache", "ve-message-history.json");
@@ -242,8 +252,7 @@ let TELEGRAM_CURL_POLL_TIMEOUT_SEC = Math.max(
 );
 let TELEGRAM_CURL_FALLBACK = !["0", "false", "no"].includes(
   String(
-    process.env.TELEGRAM_CURL_FALLBACK ||
-      (process.platform === "win32" ? "false" : "true"),
+    process.env.TELEGRAM_CURL_FALLBACK || "true",
   ).toLowerCase(),
 );
 let telegramAllowedChatIds = new Set();
@@ -262,19 +271,22 @@ let pollLockRetryBackoffMs = 2000;
  * Returns { untilMs, reason, pid } or null if missing or corrupt.
  */
 function readTelegramPollConflictState() {
-  try {
-    if (!existsSync(telegramPollConflictStatePath)) return null;
-    const raw = readFileSync(telegramPollConflictStatePath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed.untilMs !== "number") return null;
-    return {
-      untilMs: parsed.untilMs,
-      reason: parsed.reason || "",
-      pid: Number(parsed.pid) || 0,
-    };
-  } catch {
-    return null;
+  for (const conflictPath of getTelegramPollConflictStateCandidates()) {
+    try {
+      if (!existsSync(conflictPath)) continue;
+      const raw = readFileSync(conflictPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.untilMs !== "number") continue;
+      return {
+        untilMs: parsed.untilMs,
+        reason: parsed.reason || "",
+        pid: Number(parsed.pid) || 0,
+      };
+    } catch {
+      /* try next candidate */
+    }
   }
+  return null;
 }
 
 /**
@@ -284,9 +296,10 @@ function readTelegramPollConflictState() {
  */
 function writeTelegramPollConflictState(untilMs, reason = "409 Conflict") {
   try {
-    mkdirSync(resolve(repoRoot, ".cache"), { recursive: true });
+    const { cacheDir, conflictStateFile } = getTelegramPollPaths();
+    mkdirSync(cacheDir, { recursive: true });
     writeFileSync(
-      telegramPollConflictStatePath,
+      conflictStateFile,
       JSON.stringify({ untilMs, reason, updatedAt: new Date().toISOString(), pid: process.pid }),
       "utf8",
     );
@@ -299,10 +312,12 @@ function writeTelegramPollConflictState(untilMs, reason = "409 Conflict") {
  * Remove the 409 conflict state file (best-effort, called on successful poll).
  */
 function clearTelegramPollConflictState() {
-  try {
-    unlinkSync(telegramPollConflictStatePath);
-  } catch {
-    /* best-effort */
+  for (const conflictPath of getTelegramPollConflictStateCandidates()) {
+    try {
+      unlinkSync(conflictPath);
+    } catch {
+      /* best effort */
+    }
   }
 }
 
@@ -338,6 +353,9 @@ function isAuthorizedTelegramActor(chatId, fromId) {
 function refreshTelegramConfigFromEnv() {
   telegramToken = process.env.TELEGRAM_BOT_TOKEN;
   telegramChatId = process.env.TELEGRAM_CHAT_ID;
+  configureTelegramPollOwnerScope({
+    token: telegramToken || "",
+  });
   TELEGRAM_API_BASE = String(
     process.env.TELEGRAM_API_BASE_URL || "https://api.telegram.org",
   ).replace(/\/+$/, "");
@@ -363,8 +381,7 @@ function refreshTelegramConfigFromEnv() {
   );
   TELEGRAM_CURL_FALLBACK = !["0", "false", "no"].includes(
     String(
-      process.env.TELEGRAM_CURL_FALLBACK ||
-        (process.platform === "win32" ? "false" : "true"),
+      process.env.TELEGRAM_CURL_FALLBACK || "true",
     ).toLowerCase(),
   );
   const allowedIds = new Set([
@@ -388,6 +405,7 @@ const AGENT_TIMEOUT_MS = (() => {
   return 90 * 60 * 1000; // 90 min default
 })();
 let telegramPollLockHeld = false;
+let telegramPollLockHeldPath = null;
 const presenceIntervalSec = Number(
   process.env.TELEGRAM_PRESENCE_INTERVAL_SEC || "60",
 );
@@ -858,34 +876,58 @@ function canSignalProcess(pid) {
 
 async function acquireTelegramPollLock(owner) {
   if (telegramPollLockHeld) return true;
+  const [pollLockPath, legacyPollLockPath] = getTelegramPollLockCandidates();
   try {
     const payload = JSON.stringify(
       { owner, pid: process.pid, started_at: new Date().toISOString() },
       null,
       2,
     );
-    await writeFile(telegramPollLockPath, payload, { flag: "wx" });
+    if (
+      legacyPollLockPath &&
+      legacyPollLockPath !== pollLockPath &&
+      existsSync(legacyPollLockPath)
+    ) {
+      try {
+        const raw = await readFile(legacyPollLockPath, "utf8");
+        if (raw && raw.trim()) {
+          const data = JSON.parse(raw);
+          const pid = Number(data?.pid);
+          if (canSignalProcess(pid) && pid !== process.pid) {
+            return false;
+          }
+        }
+      } catch {
+        try {
+          await unlink(legacyPollLockPath);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    await writeFile(pollLockPath, payload, { flag: "wx" });
     telegramPollLockHeld = true;
+    telegramPollLockHeldPath = pollLockPath;
     return true;
   } catch (err) {
     if (err && err.code === "EEXIST") {
       try {
-        const raw = await readFile(telegramPollLockPath, "utf8");
+        const raw = await readFile(pollLockPath, "utf8");
         if (!raw || !raw.trim()) {
           // Empty/corrupt lock file — treat as stale
-          await unlink(telegramPollLockPath);
+          await unlink(pollLockPath);
           return await acquireTelegramPollLock(owner);
         }
         const data = JSON.parse(raw);
         const pid = Number(data?.pid);
         if (!canSignalProcess(pid)) {
-          await unlink(telegramPollLockPath);
+          await unlink(pollLockPath);
           return await acquireTelegramPollLock(owner);
         }
       } catch {
         // Lock file is corrupt/unparseable — remove and retry
         try {
-          await unlink(telegramPollLockPath);
+          await unlink(pollLockPath);
         } catch {
           /* ignore */
         }
@@ -899,8 +941,10 @@ async function acquireTelegramPollLock(owner) {
 async function releaseTelegramPollLock() {
   if (!telegramPollLockHeld) return;
   telegramPollLockHeld = false;
+  const pollLockPath = telegramPollLockHeldPath || getTelegramPollLockCandidates()[0];
+  telegramPollLockHeldPath = null;
   try {
-    await unlink(telegramPollLockPath);
+    await unlink(pollLockPath);
   } catch {
     /* best effort */
   }
@@ -912,6 +956,8 @@ let lastUpdateId = 0;
 let polling = false;
 let pollAbort = null;
 let presenceReady = false;
+let telegramBotStarted = false;
+let telegramBotStartPromise = null;
 let workspaceRegistryPromise = null;
 let localWorkspaceCache = null;
 let telegramUiUrl = null;
@@ -1989,7 +2035,8 @@ async function editDirect(chatId, messageId, text, options = {}) {
     // "message can't be edited" — send new message instead
     if (
       body.includes("can't be edited") ||
-      body.includes("MESSAGE_ID_INVALID")
+      body.includes("MESSAGE_ID_INVALID") ||
+      body.includes("message to edit not found")
     ) {
       console.warn(`[telegram-bot] edit failed, sending new message`);
       return await sendDirect(chatId, truncated, options);
@@ -11666,6 +11713,24 @@ function stopBatchFlushLoop() {
  * Call injectMonitorFunctions() first if you want full integration.
  */
 export async function startTelegramBot(options = {}) {
+  if (telegramBotStarted) {
+    return;
+  }
+  if (telegramBotStartPromise) {
+    return telegramBotStartPromise;
+  }
+  telegramBotStartPromise = startTelegramBotInternal(options)
+    .catch((err) => {
+      telegramBotStarted = false;
+      throw err;
+    })
+    .finally(() => {
+      telegramBotStartPromise = null;
+    });
+  return telegramBotStartPromise;
+}
+
+async function startTelegramBotInternal(options = {}) {
   refreshTelegramConfigFromEnv();
   setComponentStatus("monitor", "running");
 
@@ -11723,6 +11788,7 @@ export async function startTelegramBot(options = {}) {
       "[telegram-bot] Telegram polling disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)" +
       (miniAppEnabled || miniAppPort > 0 ? " — portal UI is still active" : ""),
     );
+    telegramBotStarted = true;
     return;
   }
 
@@ -11962,11 +12028,13 @@ export async function startTelegramBot(options = {}) {
   }
 
   console.log("[telegram-bot] started — listening for messages");
+  telegramBotStarted = true;
 
   // Start the polling loop (non-blocking)
   pollLoop().catch((err) => {
     console.error(`[telegram-bot] fatal poll loop error: ${err.message}`);
     polling = false;
+    telegramBotStarted = false;
   });
 
   // ── Message history auto-cleanup ──
@@ -12000,6 +12068,8 @@ export async function startTelegramBot(options = {}) {
  * Stop the Telegram bot polling.
  */
 export function stopTelegramBot(options = {}) {
+  telegramBotStarted = false;
+  telegramBotStartPromise = null;
   polling = false;
   if (pollAbort) {
     try {

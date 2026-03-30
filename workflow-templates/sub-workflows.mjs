@@ -49,21 +49,29 @@ export const VALIDATE_AND_PR_SUB = subWorkflow(
       continueOnError: true,
     }, { x: 400, y: 260 }),
     node("push", "action.push_branch", "Push Branch", {
-      cwd: "{{worktreePath}}",
+      worktreePath: "{{worktreePath}}",
       branch: "{{branch}}",
+      baseBranch: "{{baseBranch}}",
+      mergeBaseBeforePush: true,
+      autoResolveMergeConflicts: true,
+      conflictResolverSdk: "auto",
     }, { x: 400, y: 390 }),
+    node("push-ok", "condition.expression", "Push OK?", {
+      expression: "$ctx.getNodeOutput('push')?.pushed === true",
+    }, { x: 400, y: 455, outputs: ["yes", "no"] }),
     node("create-pr", "action.create_pr", "Create / Update PR", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
-    }, { x: 400, y: 520 }),
+    }, { x: 400, y: 585 }),
   ],
   [
     edge("build", "test"),
     edge("test", "lint"),
     edge("lint", "push"),
-    edge("push", "create-pr"),
+    edge("push", "push-ok"),
+    edge("push-ok", "create-pr", { port: "yes" }),
   ],
   {
     entryNode: "build",
@@ -189,6 +197,7 @@ export const VALIDATION_GATE_SUB = subWorkflow(
     }, { x: 400, y: 0 }),
     node("test", "validation.tests", "Test Run", {
       command: "{{testCommand}}",
+      timeoutMs: "{{testTimeoutMs}}",
     }, { x: 400, y: 130 }),
     node("lint", "validation.lint", "Lint Check", {
       command: "{{lintCommand}}",

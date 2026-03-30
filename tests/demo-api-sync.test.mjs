@@ -129,6 +129,10 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/voice/providers",       // Voice provider routing config — server-only (reads/writes bosun.config.json)
   "/api/pr-automation",         // PR automation trust policy — server-only (reads/writes bosun.config.json)
   "/api/gates",                 // Gates and safeguards policy — server-only (reads/writes bosun.config.json)
+  "/api/guardrails",            // Guardrails admin snapshot — server-only (reads hooks, config, and workspace policy files)
+  "/api/guardrails/policy",     // Guardrails INPUT policy persistence — server-only
+  "/api/guardrails/runtime",    // Guardrails runtime persistence — server-only
+  "/api/guardrails/assess",     // Guardrails assessment endpoint — server-only
   "/api/vision/frame",         // Live vision frame ingestion + analysis
   "/api/voice/dispatch",       // Voice action dispatch — server-only (executes real tools/workflows)
   "/api/voice/dispatch-batch", // Batched voice action dispatch — server-only
@@ -186,6 +190,17 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/hooks/state",
   "/api/hooks/core",
   "/api/hooks/defaults",
+  // Vault & secrets — server-only (requires OS keychain / encrypted vault on disk)
+  "/api/vault/status",
+  "/api/vault/init",
+  "/api/vault/integrations",
+  "/api/vault/secrets",
+  "/api/vault/env",
+  "/api/vault\\/:id",
+  // Environment detection & repo-level env config — server-only (filesystem access)
+  "/api/env/detect",
+  "/api/env/templates",
+  "/api/repos/environment",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────

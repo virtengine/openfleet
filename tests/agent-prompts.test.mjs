@@ -290,6 +290,14 @@ describe("agent-prompts workspace", () => {
     expect(rendered).toBe("");
   });
 
+  it("skips custom tools context when only built-in tools are available", async () => {
+    const root = await createTempDir("prompts-custom-tools-builtins-only-");
+
+    const rendered = await buildCustomToolsContextPrompt(root, { includeBuiltins: true });
+
+    expect(rendered).toBe("");
+  });
+
   it("renders custom tools context when a custom tool is registered", async () => {
     const root = await createTempDir("prompts-custom-tools-present-");
     registerCustomTool(root, {
@@ -311,3 +319,4 @@ describe("agent-prompts workspace", () => {
     expect(rendered).toContain("Summarizes prompt metadata");
   });
 });
+
