@@ -11,6 +11,7 @@ const Box = ink.Box ?? ink.default?.Box;
 const Text = ink.Text ?? ink.default?.Text;
 const useApp = ink.useApp ?? ink.default?.useApp;
 const useInput = ink.useInput ?? ink.default?.useInput;
+const useStdout = ink.useStdout ?? ink.default?.useStdout;
 
 import wsBridgeFactory from "./lib/ws-bridge.mjs";
 import { getNextScreenForInput } from "./lib/navigation.mjs";
@@ -22,14 +23,14 @@ import StatusScreen from "./screens/status.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
 import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "../ui/tui/HelpScreen.js";
-
-const CLI_SHORTCUT_TITLES = new Set(["Global", "Tasks screen", "Agents screen", "Modals"]);
-const CLI_SHORTCUT_GROUPS = SHORTCUT_GROUPS.filter((g) => CLI_SHORTCUT_TITLES.has(g.title));
 import {
   appendLogEntry,
   createDefaultLogsFilterState,
   ensureLogSource,
 } from "../ui/tui/logs-screen-helpers.js";
+
+const CLI_SHORTCUT_TITLES = new Set(["Global", "Tasks screen", "Agents screen", "Modals"]);
+const CLI_SHORTCUT_GROUPS = SHORTCUT_GROUPS.filter((g) => CLI_SHORTCUT_TITLES.has(g.title));
 
 const html = htm.bind(React.createElement);
 
