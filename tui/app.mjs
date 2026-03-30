@@ -10,7 +10,10 @@ import AgentsScreen from "./screens/agents.mjs";
 import StatusScreen from "./screens/status.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
-import HelpScreen, { getFooterHints } from "../ui/tui/HelpScreen.js";
+import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "../ui/tui/HelpScreen.js";
+
+const CLI_SHORTCUT_TITLES = new Set(["Global", "Tasks screen", "Agents screen", "Modals"]);
+const CLI_SHORTCUT_GROUPS = SHORTCUT_GROUPS.filter((g) => CLI_SHORTCUT_TITLES.has(g.title));
 
 const html = htm.bind(React.createElement);
 
@@ -186,7 +189,10 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [bridge, refreshMs]);
 
   useEffect(() => {
-    if (helpOpen) return;
+    if (helpOpen) {
+      setFooterHints(getFooterHints(screen, { helpOpen: true }));
+      return;
+    }
     setFooterHints(getFooterHints(screen));
   }, [screen, helpOpen]);
 
@@ -197,14 +203,34 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     return () => clearInterval(intervalId);
   }, []);
 
+  const helpRows = Math.max(6, (stdout?.rows || 24) - 5);
+  const helpRowCount = CLI_SHORTCUT_GROUPS.reduce((totalRows, group, index, groups) => {
+    if (index % 2 === 1) return totalRows;
+    const right = groups[index + 1];
+    const pairHeight = 1 + Math.max(group.items.length, right?.items?.length || 0);
+    return totalRows + pairHeight;
+  }, 0);
+  const maxHelpScrollOffset = Math.max(0, helpRowCount - helpRows);
+
   const handleInput = useCallback((input, key) => {
     if (input === "?") {
-      setHelpOpen((current) => !current);
+      setHelpOpen((current) => {
+        const opening = !current;
+        if (opening) {
+          setHelpScrollOffset(0);
+          setFooterHints(getFooterHints(screen, { helpOpen: true }));
+        } else {
+          setFooterHints(getFooterHints(screen));
+        }
+        return opening;
+      });
       return;
     }
     if (helpOpen) {
       if (key?.escape) {
         setHelpOpen(false);
+        setHelpScrollOffset(0);
+        setFooterHints(getFooterHints(screen));
         return;
       }
       if (key?.upArrow) {
@@ -212,7 +238,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         return;
       }
       if (key?.downArrow) {
-        setHelpScrollOffset((current) => current + 1);
+        setHelpScrollOffset((current) => Math.min(maxHelpScrollOffset, current + 1));
         return;
       }
       return;
@@ -222,7 +248,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       return;
     }
     setScreen((current) => getNextScreenForInput(current, input));
-  }, [exit, helpOpen]);
+  }, [exit, helpOpen, maxHelpScrollOffset, screen]);
 
   useInput((input, key) => {
     if (screenInputLocked && !helpOpen && input !== "?") return;
@@ -232,7 +258,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const ScreenComponent = SCREENS[screen] || StatusScreen;
   const screenStats = screen === "status" ? stats : undefined;
   const footerText = (footerHints || []).map(([keysLabel, description]) => `${keysLabel} ${description}`).join("  |  ");
-  const helpRows = Math.max(6, (stdout?.rows || 24) - 5);
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
@@ -272,7 +297,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
                 <${HelpScreen}
                   scrollOffset=${helpScrollOffset}
                   maxRows=${helpRows}
-                  groups=${[]}
+                  groups=${CLI_SHORTCUT_GROUPS}
                 />
               <//>
             `
