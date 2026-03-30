@@ -1516,11 +1516,14 @@ async function main() {
   const evalFlagIndex = args.indexOf("--eval");
   const evalCommandIndex = args.indexOf("eval");
   if (evalFlagIndex >= 0 || evalCommandIndex >= 0) {
-    const commandStartIndex = evalCommandIndex >= 0 ? evalCommandIndex : evalFlagIndex;
+    const commandStartIndex =
+      evalFlagIndex >= 0 && evalCommandIndex >= 0
+        ? Math.min(evalFlagIndex, evalCommandIndex)
+        : (evalCommandIndex >= 0 ? evalCommandIndex : evalFlagIndex);
     const evalArgs = args.slice(commandStartIndex + 1);
     const { runEvalCli } = await import("./bench/eval-framework.mjs");
     const { exitCode } = await runEvalCli(evalArgs);
-    process.exit(exitCode);
+    process.exit(exitCode ?? 0);
   }
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
