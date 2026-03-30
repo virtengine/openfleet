@@ -1,3 +1,5 @@
+import { addSpanEvent, recordIntervention } from "../infra/tracing.mjs";
+import { shouldBlockAgentPushes } from "../infra/guardrails.mjs";
 /**
  * agent-supervisor.mjs — Unified Agent Health Scoring & Intervention Engine
  *
@@ -28,9 +30,6 @@
  *
  * @module agent-supervisor
  */
-
-import { addSpanEvent, recordIntervention } from "../infra/tracing.mjs";
-
 const TAG = "[agent-supervisor]";
 const API_ERROR_CONTINUE_COOLDOWNS_MS = Object.freeze([
   3 * 60_000,
@@ -38,6 +37,15 @@ const API_ERROR_CONTINUE_COOLDOWNS_MS = Object.freeze([
   5 * 60_000,
 ]);
 const API_ERROR_RECOVERY_RESET_MS = 15 * 60_000;
+
+function workflowOwnsPushLifecycle(context = {}) {
+  const repoRoot = String(context.repoRoot || context.worktreePath || process.cwd()).trim();
+  try {
+    return shouldBlockAgentPushes(repoRoot);
+  } catch {
+    return true;
+  }
+}
 
 // ── Situation Types (30+ edge cases) ────────────────────────────────────────
 
@@ -176,7 +184,7 @@ const RECOVERY_PROMPTS = {
   [SITUATION.PLAN_STUCK]: (ctx) =>
     `CRITICAL: You created a plan for "${ctx.taskTitle}" but stopped before implementing. ` +
     `This is autonomous execution — NO ONE will respond to "ready to implement?" questions. ` +
-    `IMPLEMENT NOW: edit files, run tests, commit with conventional commits, and push. ` +
+    `IMPLEMENT NOW: edit files, run tests, commit with conventional commits, and hand off for workflow push. ` +
     `Do NOT create another plan. Do NOT ask for permission. Start coding immediately.`,
 
   [SITUATION.FALSE_COMPLETION]: (ctx) =>
@@ -185,19 +193,21 @@ const RECOVERY_PROMPTS = {
     `1. Make the actual code changes (edit files)\n` +
     `2. Run tests: go test ./...\n` +
     `3. Commit: git add -A && git commit -s -m "feat(scope): description"\n` +
-    `4. Push: git push --set-upstream origin ${ctx.branch || "<branch>"}\n` +
+    `4. Stop after local validation and mark the run ready for Bosun-managed workflow push handoff\n` +
     `Verify each step succeeded before claiming completion.`,
 
   [SITUATION.NO_COMMITS]: (ctx) =>
     `Task "${ctx.taskTitle}" completed ${ctx.attemptCount || 0} time(s) with zero commits. ` +
     `Check existing progress: git log --oneline -5 && git status\n` +
-    `If changes exist but aren't committed, commit and push them.\n` +
+    `If changes exist but aren't committed, commit them and prepare workflow handoff.\n` +
     `If no changes exist, implement the task requirements fully before completing.`,
 
   [SITUATION.COMMITS_NOT_PUSHED]: (ctx) =>
-    `You made commits for "${ctx.taskTitle}" but never pushed them. Run:\n` +
-    `git push --set-upstream origin ${ctx.branch || "$(git branch --show-current)"}\n` +
-    `If push fails due to pre-push hooks, fix the issues and push again.`,
+    `You made commits for "${ctx.taskTitle}" and direct agent pushes are disabled.\n` +
+    `Do NOT run git push. Instead:\n` +
+    `1. Run the local validation expected by the repository, including the pre-push quality gate\n` +
+    `2. Resolve any failures locally\n` +
+    `3. Mark the run ready for Bosun-managed workflow push and PR lifecycle handoff.`,
 
   [SITUATION.PR_NOT_CREATED]: (ctx) =>
     `You pushed commits for "${ctx.taskTitle}" but no PR is visible yet.\n` +
@@ -450,7 +460,7 @@ export class AgentSupervisor {
   assess(taskId, context = {}) {
     const state = this._ensureTaskState(taskId);
     const signals = this._gatherSignals(taskId, context);
-    const situation = this._diagnose(signals, context);
+    const situation = this._diagnose(signals, context) ?? SITUATION.HEALTHY;
     const healthScore = this._computeHealthScore(signals);
     const recoveryOverride = this._selectRecoveryIntervention(taskId, situation, context, state);
     const attemptIndex = Math.min(
@@ -1272,6 +1282,7 @@ export class AgentSupervisor {
     if (context.hasCommits && !context.prUrl && !context.prNumber) {
       // Has commits but no PR
       const isPushed = context.isPushed ?? true; // assume pushed unless told otherwise
+      if (!isPushed && workflowOwnsPushLifecycle(context)) return null;
       if (!isPushed) return SITUATION.COMMITS_NOT_PUSHED;
       return SITUATION.PR_NOT_CREATED;
     }

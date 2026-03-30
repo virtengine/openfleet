@@ -23,6 +23,7 @@ import { resolveRepoRoot } from "../config/repo-root.mjs";
 import {
   resolveCodexProfileRuntime,
   readCodexConfigRuntimeDefaults,
+  getProviderEndpointEnvKeys,
 } from "./codex-model-profiles.mjs";
 import { buildTaskWritableRoots } from "./codex-config.mjs";
 import {
@@ -128,6 +129,7 @@ function buildInjectedSandboxConfig(envInput, workingDirectory) {
 function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, workingDirectory = DEFAULT_WORKING_DIRECTORY) {
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
+  const runtimeDefaults = readCodexConfigRuntimeDefaults(envInput) || {};
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const hasCustomBaseUrl = Boolean(String(baseUrl || "").trim());
@@ -161,6 +163,16 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
         delete env[otherEnvKey];
         if (!unsetEnvKeys.includes(otherEnvKey)) {
           unsetEnvKeys.push(otherEnvKey);
+        }
+        // Also remove endpoint/base URL env keys associated with the non-selected provider
+        const endpointKeys = getProviderEndpointEnvKeys(sectionName, "azure");
+        for (const epKey of endpointKeys) {
+          if (epKey in env) {
+            delete env[epKey];
+            if (!unsetEnvKeys.includes(epKey)) {
+              unsetEnvKeys.push(epKey);
+            }
+          }
         }
       }
     } catch {
@@ -641,6 +653,9 @@ async function getThread() {
     codexInstance = new Cls({
       config: {
         ...runtime.config,
+        model_provider: runtime.config?.model_provider,
+        model_providers: runtime.config?.model_providers,
+        model: runtime.config?.model,
         features: {
           ...(runtime.config?.features || {}),
           child_agents_md: true,

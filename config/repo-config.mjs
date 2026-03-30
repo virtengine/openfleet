@@ -436,6 +436,25 @@ function mergeArrayUnique(existing, additions) {
   return result;
 }
 
+function normalizeClaudePermissionsAllow(values) {
+  const normalized = [];
+  const seen = new Set();
+
+  for (const rawValue of values || []) {
+    let value = String(rawValue || "").trim();
+    if (!value) continue;
+
+    if (value === "computer:*") value = "Computer:*";
+    if (value === "go *") continue;
+
+    if (seen.has(value)) continue;
+    seen.add(value);
+    normalized.push(value);
+  }
+
+  return normalized;
+}
+
 /**
  * Check whether a TOML string contains a given section header.
  * @param {string} toml
@@ -519,7 +538,7 @@ function ensureMcpStartupTimeout(toml, name, timeoutSec = 120) {
  */
 function resolveBridgePath(explicit) {
   if (explicit) return explicit;
-  return resolve(__dirname, "agent-hook-bridge.mjs");
+  return "agent/agent-hook-bridge.mjs";
 }
 
 // ── 1. Codex project-level config.toml ──────────────────────────────────────
@@ -720,8 +739,6 @@ const CLAUDE_PERMISSIONS_ALLOW = [
   // Web access (trusted domains)
   "WebFetch(domain:github.com)",
   "WebFetch(domain:bosun.ai)",
-  // Go toolchain
-  "go *",
   // File editing
   "Edit",
   "MultiEdit",
@@ -729,7 +746,7 @@ const CLAUDE_PERMISSIONS_ALLOW = [
   "Read",
   "Write",
   // Computer tool
-  "computer:*",
+  "Computer:*",
 ];
 
 /** Claude Code permission deny list (empty — we trust managed repos). */
@@ -737,7 +754,7 @@ const CLAUDE_PERMISSIONS_DENY = [];
 
 /**
  * Build the Claude hooks object using the bosun bridge.
- * @param {string} bridgePath  Absolute path to agent-hook-bridge.mjs
+ * @param {string} bridgePath  Repo-relative or absolute path to agent-hook-bridge.mjs
  * @returns {object}  Hooks section for settings.local.json
  */
 function buildClaudeHooks(bridgePath) {
@@ -781,7 +798,7 @@ function buildClaudeHooks(bridgePath) {
  *
  * @param {object} options
  * @param {string}  options.repoRoot         Absolute path to the repo
- * @param {string}  [options.bosunBridgePath]  Path to agent-hook-bridge.mjs
+ * @param {string}  [options.bosunBridgePath]  Repo-relative or absolute path to agent-hook-bridge.mjs
  * @returns {object}  JSON-serializable settings object
  */
 export function buildRepoClaudeSettings(options = {}) {
@@ -821,7 +838,9 @@ function mergeClaudeSettings(existing, generated) {
   const genPerms = generated.permissions || {};
 
   base.permissions = {
-    allow: mergeArrayUnique(existingPerms.allow, genPerms.allow),
+    allow: normalizeClaudePermissionsAllow(
+      mergeArrayUnique(existingPerms.allow, genPerms.allow),
+    ),
     deny: genPerms.deny || [],
   };
 
@@ -917,7 +936,7 @@ export function buildRepoVsCodeMcpConfig(options = {}) {
  * @param {string} repoRoot  Absolute path to the repo directory
  * @param {object} [options]
  * @param {string}  [options.primarySdk]       "codex" | "copilot" | "claude" (default: "codex")
- * @param {string}  [options.bosunBridgePath]  Path to agent-hook-bridge.mjs
+ * @param {string}  [options.bosunBridgePath]  Repo-relative or absolute path to agent-hook-bridge.mjs
  * @param {object}  [options.env]              Environment overrides
  * @param {boolean} [options.dryRun]           If true, return results without writing files
  * @returns {RepoConfigResult}

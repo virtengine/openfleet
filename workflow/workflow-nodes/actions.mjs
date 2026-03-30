@@ -1,3 +1,5 @@
+import { bootstrapWorktreeForPath, fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
+import { shouldRequireManagedPrePush } from "../../infra/guardrails.mjs";
 /**
  * workflow-nodes.mjs — Built-in Workflow Node Types for Bosun
  *
@@ -1145,7 +1147,10 @@ registerNodeType("action.run_agent", {
         (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
         [],
       cwd,
-      repoRoot: ctx.data?.repoRoot || cwd,
+      repoRoot:
+        String(ctx.data?.repoRoot || "").trim() && !isUnresolvedTemplateToken(ctx.data?.repoRoot)
+          ? ctx.data.repoRoot
+          : cwd,
     }, effectiveMode);
     if (
       architectEditorFrame &&

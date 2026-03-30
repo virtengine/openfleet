@@ -575,6 +575,26 @@ describe("workflow-templates E2E execution", { timeout: 60_000 }, () => {
     });
   });
 
+  describe("PR Review Quality Striker (template-pr-review-quality-striker)", () => {
+    it("scans PR review signals without crashing", async () => {
+      const installed = installTemplate("template-pr-review-quality-striker", engine);
+      const ctx = await engine.execute(installed.id, {}, { force: true });
+
+      expect(ctx).toBeDefined();
+      expect(ctx.errors).toEqual([]);
+    });
+  });
+
+  describe("SonarQube PR Striker (template-sonarqube-pr-striker)", () => {
+    it("scans SonarQube signals without crashing", async () => {
+      const installed = installTemplate("template-sonarqube-pr-striker", engine);
+      const ctx = await engine.execute(installed.id, {}, { force: true });
+
+      expect(ctx).toBeDefined();
+      expect(ctx.errors).toEqual([]);
+    });
+  });
+
   describe("GitHub Kanban Sync (template-github-kanban-sync)", () => {
     it("syncs GitHub issues with kanban board", async () => {
       const installed = installTemplate("template-github-kanban-sync", engine);

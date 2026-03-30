@@ -5758,6 +5758,46 @@ it("agent.run_planner appends planner feedback context from workflow data", asyn
   expect(sentPrompt).toContain("Planner feedback context:");
   expect(sentPrompt).toContain("Previous run skipped high-risk tasks in workflow area.");
 });
+
+it("agent.run_planner avoids duplicating planner feedback already present in the prompt context", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const feedback = "Previous run skipped high-risk tasks in workflow area.";
+  const ctx = new WorkflowContext({
+    _plannerFeedback: feedback,
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-feedback-dedupe",
+  });
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: `Planner prompt\n\nPlanner feedback context:\n${feedback}`,
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-feedback-dedupe",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 2,
+    },
+  };
+
+  await handler.execute(node, ctx, mockEngine);
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt.split("Planner feedback context:").length - 1).toBe(1);
+  expect(sentPrompt.split(feedback).length - 1).toBe(1);
+});
 it("agent.run_planner injects compact repo topology when enabled", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
