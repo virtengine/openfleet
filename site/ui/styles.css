@@ -1,3 +1,62 @@
+:root {
+  --ws-badge-connected: #22c55e;
+  --ws-badge-reconnecting: #f59e0b;
+  --ws-badge-offline: #ef4444;
+}
+
+.connection-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.24));
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-secondary, #cbd5e1);
+  background: var(--bg-elevated, rgba(15, 23, 42, 0.24));
+}
+
+.connection-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 8px;
+  background: var(--ws-badge-offline);
+}
+
+.connection-badge-dot.connected {
+  background: var(--ws-badge-connected);
+}
+
+.connection-badge-dot.reconnecting {
+  background: var(--ws-badge-reconnecting);
+}
+
+.connection-badge-dot.offline {
+  background: var(--ws-badge-offline);
+}
+
+.connection-badge-label {
+  white-space: nowrap;
+}
+
+.connection-badge-pulse {
+  animation: connection-badge-pulse 1s ease-in-out infinite;
+}
+
+@keyframes connection-badge-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.55; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-badge-pulse {
+    animation: none;
+  }
+}
+
 /* @import directives moved to <link> tags in index.html for parallel loading */
 
 .floating-call-restore {
