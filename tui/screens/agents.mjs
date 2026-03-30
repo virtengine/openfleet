@@ -363,6 +363,8 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   }, [applyRetryQueue, stats]);
 
   React.useEffect(() => {
+    let active = true;
+    void refreshData();
     const intervalId = setInterval(() => {
       const now = Date.now();
       setClockMs(now);
@@ -375,23 +377,57 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         return nextEntries;
       });
     }, 1000);
-
     return () => {
+      active = false;
       clearInterval(intervalId);
+      if (!active) {
+        return;
+      }
     };
-  }, []);
+  }, [refreshData]);
 
   React.useEffect(() => {
     if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
-    const off = wsBridge.on("logs:stream", (payload) => {
-      const line = streamPayloadToLogLine(payload);
-      if (!line) return;
-      setLogLines((current) => [...current.slice(-(MAX_LOG_LINES - 1)), line]);
-    });
+    const handlers = [
+      wsBridge.on("sessions:update", (payload) => {
+        const nextSessions = Array.isArray(payload?.sessions)
+          ? payload.sessions
+          : Array.isArray(payload)
+            ? payload
+            : [];
+        applySessionSnapshot(nextSessions, Date.now());
+      }),
+      wsBridge.on("session:event", (payload) => {
+        const session = payload?.session;
+        if (!session?.id) return;
+        const nextSessions = Array.isArray(liveSessionsRef.current)
+          ? [...liveSessionsRef.current]
+          : [];
+        const existingIndex = nextSessions.findIndex((candidate) => candidate.id === session.id);
+        if (existingIndex >= 0) nextSessions[existingIndex] = session;
+        else nextSessions.unshift(session);
+        applySessionSnapshot(nextSessions, Date.now());
+
+        if (String(detailView?.session?.id || "") !== String(session.id)) return;
+        setDetailView(payload);
+        if (Array.isArray(payload?.session?.messages) || payload?.event?.kind === "message") {
+          setLogLines(sessionMessagesToLogLines(payload).slice(-MAX_LOG_LINES));
+        }
+      }),
+      wsBridge.on("retry:update", applyRetryQueue),
+      wsBridge.on("retry-queue-updated", applyRetryQueue),
+      wsBridge.on("logs:stream", (payload) => {
+        const line = streamPayloadToLogLine(payload);
+        if (!line) return;
+        setLogLines((current) => [...current.slice(-(MAX_LOG_LINES - 1)), line]);
+      }),
+    ];
     return () => {
-      if (typeof off === "function") off();
+      handlers.forEach((unsubscribe) => {
+        if (typeof unsubscribe === "function") unsubscribe();
+      });
     };
-  }, [wsBridge]);
+  }, [applyRetryQueue, applySessionSnapshot, detailView, wsBridge]);
 
   React.useEffect(() => () => clearDetailPoll(), [clearDetailPoll]);
 
@@ -597,6 +633,9 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }
   });
 
+  const eventWidth = Math.max(12, terminalColumns - FIXED_TABLE_WIDTH);
+  const backoffMessageWidth = Math.max(20, terminalColumns - 34);
+
   React.useEffect(() => {
     if (typeof onFooterHintsChange !== "function") return;
     onFooterHintsChange(getFooterHints("agents", {
@@ -607,8 +646,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }));
   }, [confirmKill, detailView, diffView, logLines.length, onFooterHintsChange]);
 
-  const eventWidth = Math.max(12, terminalColumns - FIXED_TABLE_WIDTH);
-  const backoffMessageWidth = Math.max(20, terminalColumns - 34);
 
   return html`
     <${Box} flexDirection="column" paddingY=${1}>
