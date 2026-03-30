@@ -25,8 +25,11 @@
 
 import { resolve, join, dirname } from "node:path";
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import "../infra/windows-hidden-child-processes.mjs";
 import { listCustomTools } from "../agent/agent-custom-tools.mjs";
 
 // Lazy-import library manager to avoid circular dependency at module load.
@@ -45,6 +48,7 @@ const TAG = "[mcp-registry]";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DISCOVERY_PROXY_SCRIPT = resolve(__dirname, "mcp-discovery-proxy.mjs");
 const DISCOVERY_PROXY_ID = "bosun-discovery-proxy";
+const DEFAULT_SHARED_HOST_STARTUP_TIMEOUT_MS = 5_000;
 
 /**
  * Curated catalog of popular, reliable MCP servers.
@@ -584,13 +588,126 @@ function writeDiscoveryProxyConfig(rootDir, payload) {
   return filePath;
 }
 
-export function wrapServersWithDiscoveryProxy(rootDir, servers = [], options = {}) {
+function envFlagEnabled(value, fallback = false) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  return ["1", "true", "yes", "on", "y"].includes(normalized);
+}
+
+function sleep(ms) {
+  return new Promise((resolvePromise) => {
+    const timer = setTimeout(resolvePromise, ms);
+    if (typeof timer?.unref === "function") timer.unref();
+  });
+}
+
+function isProcessAlive(pid) {
+  const parsed = Number(pid);
+  if (!Number.isInteger(parsed) || parsed <= 0) return false;
+  try {
+    process.kill(parsed, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readJsonFileSafe(filePath) {
+  try {
+    if (!existsSync(filePath)) return null;
+    const raw = readFileSync(filePath, "utf8");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function isSharedDiscoveryHostHealthy(url) {
+  const normalized = String(url || "").trim();
+  if (!normalized) return false;
+  try {
+    const healthUrl = new URL(normalized.replace(/\/mcp$/, "/health"));
+    const response = await fetch(healthUrl, {
+      method: "GET",
+      headers: { accept: "application/json" },
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureSharedDiscoveryProxyHost(rootDir, configPath, options = {}) {
+  const startupTimeoutMs =
+    Number(options.startupTimeoutMs) || DEFAULT_SHARED_HOST_STARTUP_TIMEOUT_MS;
+  const statePath = String(options.statePath || "")
+    .trim() || configPath.replace(/\.json$/i, ".host.json");
+  const host = String(options.host || process.env.BOSUN_DISCOVERY_HOST || "127.0.0.1").trim() || "127.0.0.1";
+
+  const existing = readJsonFileSafe(statePath);
+  if (existing?.url && isProcessAlive(existing.pid) && await isSharedDiscoveryHostHealthy(existing.url)) {
+    return existing;
+  }
+
+  const child = spawn(
+    process.execPath,
+    [DISCOVERY_PROXY_SCRIPT, "--shared-host", configPath, statePath],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: process.platform === "win32",
+      cwd: homedir(),
+      env: {
+        ...process.env,
+        BOSUN_DISCOVERY_HOST: host,
+        BOSUN_DISCOVERY_HOST_STATE_PATH: statePath,
+      },
+    },
+  );
+  child.unref();
+
+  const deadline = Date.now() + startupTimeoutMs;
+  while (Date.now() < deadline) {
+    const state = readJsonFileSafe(statePath);
+    if (state?.url && isProcessAlive(state.pid) && await isSharedDiscoveryHostHealthy(state.url)) {
+      return state;
+    }
+    await sleep(125);
+  }
+
+  throw new Error(`${TAG} shared discovery host failed to start within ${startupTimeoutMs}ms`);
+}
+
+function buildStdioDiscoveryProxyEntry(configPath, servers, discoveredCustomTools) {
+  return [
+    {
+      id: DISCOVERY_PROXY_ID,
+      name: "Bosun Discovery Proxy",
+      transport: "stdio",
+      command: process.execPath,
+      args: [DISCOVERY_PROXY_SCRIPT, configPath],
+      env: {
+        BOSUN_DISCOVERY_PROXY_CONFIG_PATH: configPath,
+      },
+      tags: ["bosun", "discovery", "proxy"],
+      meta: {
+        wrappedServerIds: servers.map((server) => server.id),
+        customToolCount: discoveredCustomTools.length,
+        sharedHost: false,
+      },
+    },
+  ];
+}
+
+export async function wrapServersWithDiscoveryProxy(rootDir, servers = [], options = {}) {
   const {
     enabled = true,
     includeCustomTools = true,
     timeoutMs = 30000,
     cacheTtlMs = 60000,
     executeTimeoutMs = 10000,
+    sharedHost = envFlagEnabled(process.env.BOSUN_MCP_DISCOVERY_SHARED, true),
+    sharedHostStartupTimeoutMs = DEFAULT_SHARED_HOST_STARTUP_TIMEOUT_MS,
   } = options;
 
   if (enabled === false) return servers;
@@ -618,23 +735,34 @@ export function wrapServersWithDiscoveryProxy(rootDir, servers = [], options = {
     servers,
   });
 
-  return [
-    {
-      id: DISCOVERY_PROXY_ID,
-      name: "Bosun Discovery Proxy",
-      transport: "stdio",
-      command: process.execPath,
-      args: [DISCOVERY_PROXY_SCRIPT, configPath],
-      env: {
-        BOSUN_DISCOVERY_PROXY_CONFIG_PATH: configPath,
+  if (sharedHost === false) {
+    return buildStdioDiscoveryProxyEntry(configPath, servers, discoveredCustomTools);
+  }
+
+  try {
+    const state = await ensureSharedDiscoveryProxyHost(normalizedRootDir, configPath, {
+      startupTimeoutMs: sharedHostStartupTimeoutMs,
+    });
+    return [
+      {
+        id: DISCOVERY_PROXY_ID,
+        name: "Bosun Discovery Proxy",
+        transport: "url",
+        url: state.url,
+        env: {},
+        tags: ["bosun", "discovery", "proxy"],
+        meta: {
+          wrappedServerIds: servers.map((server) => server.id),
+          customToolCount: discoveredCustomTools.length,
+          sharedHost: true,
+          sharedHostPid: state.pid,
+        },
       },
-      tags: ["bosun", "discovery", "proxy"],
-      meta: {
-        wrappedServerIds: servers.map((server) => server.id),
-        customToolCount: discoveredCustomTools.length,
-      },
-    },
-  ];
+    ];
+  } catch (error) {
+    console.warn(`${TAG} shared discovery host unavailable; falling back to stdio proxy: ${error?.message || error}`);
+    return buildStdioDiscoveryProxyEntry(configPath, servers, discoveredCustomTools);
+  }
 }
 
 // ── SDK-Specific Format Builders ──────────────────────────────────────────────
