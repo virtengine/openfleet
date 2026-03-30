@@ -1633,7 +1633,21 @@ export async function compactCommandOutputPayload(
   const compactedItem = compactedItems[0] || syntheticItem;
   const compactedText = String(getItemText(compactedItem) || combinedText).trim();
   const toolLogId = compactedItem?._cachedLogId || null;
-  const commandDiagnostics = compactedItem?._commandDiagnostics || null;
+  let commandDiagnostics = compactedItem?._commandDiagnostics || null;
+  if (!commandDiagnostics) {
+    const { analyzeCommandDiagnostic } = await getCommandDiagnosticsMod();
+    commandDiagnostics = await analyzeCommandDiagnostic({
+      command: String(payload.command || "").trim(),
+      args: Array.isArray(payload.args) ? payload.args.map((value) => String(value || "")) : payload.args,
+      output: outputText,
+      stderr: stderrText,
+      exitCode: Number.isFinite(Number(payload.exitCode)) ? Number(payload.exitCode) : undefined,
+      durationMs: Number.isFinite(Number(payload.durationMs)) ? Number(payload.durationMs) : undefined,
+    });
+    if (commandDiagnostics && compactedItem && typeof compactedItem === "object") {
+      compactedItem._commandDiagnostics = commandDiagnostics;
+    }
+  }
   const contextEnvelope = compactedItem?._contextEnvelope || buildContextEnvelope({
     scope: "command",
     command: extractCommandLine(syntheticItem) || extractToolName(syntheticItem),
@@ -3337,7 +3351,6 @@ export async function maybeCompressSessionItems(
 
   return compressedItems;
 }
-
 
 
 

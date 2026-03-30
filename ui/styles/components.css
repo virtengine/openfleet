@@ -2213,6 +2213,29 @@ select.input {
   }
 }
 
+@media (max-width: 599px) {
+  .dashboard-shell {
+    padding: 12px;
+    gap: 16px;
+  }
+
+  .dashboard-header {
+    padding: 20px;
+    border-radius: 20px;
+  }
+
+  .dashboard-health-grid,
+  .dashboard-metric-grid,
+  .dashboard-actions-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-card {
+    padding: 18px;
+    border-radius: 20px;
+  }
+}
+
 @media (min-width: 600px) {
   .stats-grid {
     grid-template-columns: repeat(4, 1fr);
@@ -2396,12 +2419,14 @@ select.input {
   color: var(--text-bright);
   font-family: "SF Pro Display", "SF Pro Text", "Helvetica Neue", var(--font-ui);
   margin-bottom: 4px;
+  margin-top: 0;
 }
 
 .dashboard-subtitle {
   font-size: 14px;
   color: var(--text-secondary);
   font-weight: 400;
+  margin: 0;
 }
 
 .dashboard-header-meta {
@@ -2589,6 +2614,12 @@ select.input {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.01) 100%);
   transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.dashboard-metric:focus-visible,
+.dashboard-action-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .dashboard-metric:hover {
@@ -2795,6 +2826,7 @@ select.input {
   position: relative;
   overflow: hidden;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  min-height: 120px;
 }
 
 .dashboard-action-btn::before {

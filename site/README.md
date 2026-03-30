@@ -5,10 +5,14 @@ Static landing page and documentation for Bosun — the control plane for your a
 ## Local Development
 
 ```bash
-cd scripts/bosun/site
-npx http-server -p 8080 -c-1
-# Open http://localhost:8080
+npm run site:serve
+# Open http://127.0.0.1:4173
 ```
+
+VS Code also exposes this as:
+
+- Run Task: `Serve Bosun Site`
+- Run and Debug: `Serve Bosun Site`
 
 ## Structure
 

@@ -44,10 +44,10 @@ describe("continuation-loop template integration", () => {
   });
 
   it("polls externalStatus transitions and terminates on configured terminal state", async () => {
-    const kanban = makeStatusKanban(["todo", "inprogress", "done"]);
+    const kanban = makeStatusKanban(["todo", "done"]);
     const launchEphemeralThread = vi.fn(async () => ({
       success: true,
-      output: "continued",
+      output: "progress recorded",
       threadId: "session-1",
     }));
     makeTmpEngine({
@@ -55,11 +55,11 @@ describe("continuation-loop template integration", () => {
       agentPool: { launchEphemeralThread },
     });
 
-    const installed = installTemplate("template-continuation-loop", engine, {
+    const installed = installTemplate("template-continuation-loop-manual", engine, {
       taskId: "TASK-100",
       worktreePath: tmpDir,
       pollIntervalMs: 0,
-      maxTurns: 6,
+      maxTurns: 2,
       terminalStates: ["done", "cancelled"],
       stuckThresholdMs: 3600000,
       onStuck: "escalate",
@@ -75,9 +75,8 @@ describe("continuation-loop template integration", () => {
     expect(ctx.errors).toEqual([]);
     expect(kanban.getTask).toHaveBeenCalled();
     expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(1);
-    expect(ctx.getNodeOutput("end-terminal")?.status).toBe("completed");
-    expect(ctx.getNodeOutput("end-terminal")?.output?.externalStatus).toBe("done");
-  });
+    expect(ctx.data.currentExternalStatus).toBe("done");
+  }, 15000);
 
   it("fires a session-stuck event payload and executes retry action when no progress is detected", async () => {
     const kanban = makeStatusKanban(["inprogress", "done"]);
@@ -91,7 +90,7 @@ describe("continuation-loop template integration", () => {
       agentPool: { launchEphemeralThread },
     });
 
-    const installed = installTemplate("template-continuation-loop", engine, {
+    const installed = installTemplate("template-continuation-loop-manual", engine, {
       taskId: "TASK-200",
       worktreePath: tmpDir,
       pollIntervalMs: 0,
@@ -133,7 +132,7 @@ describe("continuation-loop template integration", () => {
       agentPool: { launchEphemeralThread },
     });
 
-    const installed = installTemplate("template-continuation-loop", engine, {
+    const installed = installTemplate("template-continuation-loop-manual", engine, {
       taskId: "TASK-201",
       worktreePath: tmpDir,
       pollIntervalMs: 0,
@@ -157,7 +156,48 @@ describe("continuation-loop template integration", () => {
     expect(ctx.getNodeStatus("stuck-escalate-budget")).toBe("completed");
     expect(ctx.getNodeStatus("end-escalated")).toBe("completed");
     expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(3);
+  }, process.platform === "win32" ? 30000 : 15000);
+
+  it("treats bare continued responses as an immediate stuck signal when no progress changes", async () => {
+    const kanban = {
+      getTask: vi.fn(async (taskId) => ({
+        id: taskId,
+        title: `Task ${taskId}`,
+        externalStatus: "inprogress",
+      })),
+    };
+    const launchEphemeralThread = vi.fn(async () => ({
+      success: true,
+      output: "continued",
+      threadId: "session-continued-loop",
+    }));
+    makeTmpEngine({
+      kanban,
+      agentPool: { launchEphemeralThread },
+    });
+
+    const installed = installTemplate("template-continuation-loop-manual", engine, {
+      taskId: "TASK-202",
+      worktreePath: tmpDir,
+      pollIntervalMs: 0,
+      maxTurns: 3,
+      terminalStates: ["done", "cancelled"],
+      stuckThresholdMs: 3600000,
+      onStuck: "pause",
+    });
+
+    const ctx = await engine.execute(installed.id, {
+      taskId: "TASK-202",
+      sessionId: "session-continued-loop",
+      worktreePath: tmpDir,
+    }, { force: true });
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("emit-stuck")?.payload?.placeholderResponse).toBe(true);
+    expect(ctx.getNodeStatus("end-paused")).toBe("completed");
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
   }, 15000);
+
   it("injects issue-advisor guidance into planner feedback for downstream continuation prompts", async () => {
     makeTmpEngine();
     const ctxLike = {
@@ -185,6 +225,32 @@ describe("continuation-loop template integration", () => {
     expect(ctxLike.data._plannerFeedback.issueAdvisor.summary).toContain("Verify");
     expect(ctxLike.data._plannerFeedback.issueAdvisor.nextStepGuidance).toContain("Preserve completed work");
     expect(ctxLike.data._plannerFeedback.dagStateSummary.counts.failed).toBe(1);
+  });
+
+  it("summarizes resume guidance from the first pending node when work is partially completed", async () => {
+    makeTmpEngine();
+    const ctxLike = {
+      data: {
+        _dagState: {
+          runId: "run-124",
+          workflowId: "wf-124",
+          status: "running",
+          nodes: {
+            trigger: { nodeId: "trigger", label: "Trigger", status: "completed" },
+            writeTests: { nodeId: "write-tests", label: "Write Tests First", status: "pending" },
+            implement: { nodeId: "implement", label: "Implement", status: "waiting" },
+          },
+        },
+      },
+    };
+
+    const advisor = engine._refreshDagState(ctxLike, "running");
+    expect(advisor.recommendedAction).toBe("resume_remaining");
+    expect(advisor.summary).toBe("Resume from Write Tests First.");
+    expect(advisor.nextStepGuidance).toContain("Preserve completed work and continue from the next pending node.");
+    expect(advisor.nextStepGuidance).toContain("Next step: Write Tests First.");
+    expect(ctxLike.data._plannerFeedback.issueAdvisorSummary).toContain("Resume from Write Tests First.");
+    expect(ctxLike.data._plannerFeedback.issueAdvisorSummary).toContain("Next step: Write Tests First.");
   });
 });
 

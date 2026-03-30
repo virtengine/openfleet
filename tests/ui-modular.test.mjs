@@ -10,6 +10,10 @@ import {
   undoHistory,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
 import {
+  buildNodeStatusesFromRunDetail as buildSiteNodeStatusesFromRunDetail,
+  searchNodeTypes as searchSiteNodeTypes,
+} from "../site/ui/tabs/workflow-canvas-utils.mjs";
+import {
   SETTINGS_SCHEMA as appSettingsSchema,
   validateSetting as validateAppSetting,
 } from "../ui/modules/settings-schema.js";
@@ -41,11 +45,10 @@ import {
 } from "../ui/tabs/tasks.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-
 const uiDir = resolve(process.cwd(), "ui");
 const uiComponentsCss = readFileSync(resolve(process.cwd(), "ui/styles/components.css"), "utf8");
 const siteComponentsCss = readFileSync(resolve(process.cwd(), "site/ui/styles/components.css"), "utf8");
-
+const dashboardSource = readFileSync(resolve(process.cwd(), "ui/tabs/dashboard.js"), "utf8");
 describe("modular mini app structure", () => {
   const requiredModules = [
     "app.js",
@@ -82,12 +85,51 @@ describe("modular mini app structure", () => {
   }
 });
 
+
+describe("dashboard accessibility regressions", () => {
+  it("adds semantic labels for overview and quick actions", () => {
+    expect(dashboardSource).toContain('role="region" aria-label="Dashboard overview"');
+    expect(dashboardSource).toContain('role="banner" aria-label="Dashboard status header"');
+    expect(dashboardSource).toContain('aria-label="Overview metrics"');
+    expect(dashboardSource).toContain('aria-label="Quick actions"');
+  });
+
+  it("renders the dashboard title as a heading and supports space-key activation", () => {
+    expect(dashboardSource).toContain('<h1 class="dashboard-title ${headlineClass}">${headline}</h1>');
+    expect(dashboardSource).toContain('e.key === "Enter" || e.key === " "');
+  });
+
+  it("adds mobile dashboard layout rules and focus-visible states", () => {
+    expect(uiComponentsCss).toContain('@media (max-width: 599px)');
+    expect(uiComponentsCss).toContain('.dashboard-health-grid,');
+    expect(uiComponentsCss).toContain('.dashboard-metric:focus-visible,');
+    expect(uiComponentsCss).toContain('.dashboard-action-btn:focus-visible');
+  });
+});
 describe("workflow canvas helpers", () => {
   it("keeps workflow node header constants defined at module scope for render-time aliases", () => {
     const workflowsSource = readFileSync(resolve(process.cwd(), "ui/tabs/workflows.js"), "utf8");
     expect(workflowsSource).toContain("const WORKFLOW_NODE_HEADER_HEIGHT = 44;");
     expect(workflowsSource).toContain("const NODE_HEADER = WORKFLOW_NODE_HEADER_HEIGHT;");
     expect(workflowsSource).toContain("const NODE_HEADER_H = WORKFLOW_NODE_HEADER_HEIGHT;");
+  });
+
+  it("keeps the hosted demo workflow canvas helper importable and behaviorally aligned", () => {
+    const runDetail = {
+      detail: {
+        nodeStatuses: { "node-1": "completed" },
+        nodeStatusEvents: [{ nodeId: "node-2", status: "running" }],
+      },
+    };
+    const searchableNodes = [{
+      type: "action.run_agent",
+      category: "action",
+      description: "Run an autonomous agent task",
+      schema: { properties: { prompt: { type: "string" } } },
+    }];
+
+    expect(buildSiteNodeStatusesFromRunDetail(runDetail)).toEqual(buildNodeStatusesFromRunDetail(runDetail));
+    expect(searchSiteNodeTypes(searchableNodes, "agent")).toEqual(searchNodeTypes(searchableNodes, "agent"));
   });
 
   it("finds agent nodes with fuzzy partial matches", () => {
@@ -595,3 +637,5 @@ describe("shared icon sizing rules", () => {
     }
   });
 });
+
+

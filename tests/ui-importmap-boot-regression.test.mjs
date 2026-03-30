@@ -3,17 +3,23 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const indexSource = readFileSync(resolve(process.cwd(), "ui", "index.html"), "utf8");
+const siteIndexSource = readFileSync(resolve(process.cwd(), "site", "ui", "index.html"), "utf8");
 const appSource = readFileSync(resolve(process.cwd(), "ui", "app.js"), "utf8");
 const siteAppSource = readFileSync(resolve(process.cwd(), "site", "ui", "app.js"), "utf8");
 
 describe("ui index module boot", () => {
   it("registers the import map before booting app.js", () => {
-    const importMapIndex = indexSource.indexOf('<script type="importmap">');
-    const moduleBootIndex = indexSource.indexOf('<script type="module">');
+    for (const source of [indexSource, siteIndexSource]) {
+      const importMapIndex = source.indexOf('<script type="importmap">');
+      const moduleBootIndex = source.indexOf('<script type="module">');
 
-    expect(importMapIndex).toBeGreaterThanOrEqual(0);
-    expect(moduleBootIndex).toBeGreaterThan(importMapIndex);
-    expect(indexSource).toContain('import "/app.js";');
+      expect(importMapIndex).toBeGreaterThanOrEqual(0);
+      expect(moduleBootIndex).toBeGreaterThan(importMapIndex);
+      expect(source).toContain('const appUrl = new URL("/app.js", window.location.origin);');
+      expect(source).toContain('if (appUrl.pathname !== "/app.js") throw new Error("Unexpected app entry path");');
+      expect(source).toContain('import "/app.js";');
+      expect(source).not.toContain('`r`n');
+    }
   });
 
   it("does not preload or dynamically import the app entry before import maps exist", () => {
