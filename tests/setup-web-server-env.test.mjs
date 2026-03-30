@@ -211,6 +211,21 @@ describe("setup web server non-blocking env defaults", () => {
     });
   });
 
+  it("preserves direct Azure v1 deployment paths when building model probes", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/v1/responses",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/v1/models",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
   it("normalizes Azure deployment endpoints to a stable models probe api-version", () => {
     const result = buildModelsProbeRequest({
       apiKey: "azure-secret",
@@ -716,3 +731,4 @@ describe("setup web server workspace normalization", () => {
     expect(merged.activeWorkspace).toBe("my-project");
   });
 });
+

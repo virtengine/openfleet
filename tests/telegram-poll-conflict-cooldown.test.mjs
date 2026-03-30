@@ -19,4 +19,9 @@ describe("telegram poll conflict cooldown", () => {
     expect(botSource).toContain("TELEGRAM_FETCH_FAILURE_COOLDOWN_MS");
     expect(botSource).toContain("telegramPreferCurlUntilMs");
   });
+
+  it("falls back to sending a new message when Telegram reports a missing edit target", () => {
+    expect(botSource).toContain("message to edit not found");
+    expect(botSource).toContain("edit failed, sending new message");
+  });
 });

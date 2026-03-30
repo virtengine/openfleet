@@ -157,6 +157,19 @@ function buildArtifactPointers(stdoutPath, stderrPath, metadataPath) {
 function isCommandWhitespace(char) {
   return char === " " || char === "\t" || char === "\n" || char === "\r";
 }
+function resolvePortableExecutable(executable) {
+  const value = String(executable || "").trim();
+  if (!value) return value;
+  if (process.platform !== "win32") return value;
+  const lower = value.toLowerCase();
+  if (lower === "npm") return "npm.cmd";
+  if (lower === "npx") return "npx.cmd";
+  if (lower === "pnpm") return "pnpm.cmd";
+  if (lower === "yarn") return "yarn.cmd";
+  if (lower === "bun") return "bun.cmd";
+  return value;
+}
+
 
 function isShellSafeSimpleToken(value) {
   for (const char of String(value || "")) {
@@ -241,6 +254,28 @@ function parseRunnerCommand(command) {
   };
 }
 
+
+export function resolveLocalProcessLaunch(parsedCommand) {
+  const executable = String(parsedCommand?.executable || "").trim();
+  const args = Array.isArray(parsedCommand?.args) ? [...parsedCommand.args] : [];
+  const raw = String(parsedCommand?.raw || "").trim();
+  if (process.platform !== "win32") {
+    return { launchCommand: executable, launchArgs: args, shell: false };
+  }
+  if (!executable) {
+    return { launchCommand: executable, launchArgs: args, shell: false };
+  }
+  const lowerExecutable = executable.toLowerCase();
+  if (lowerExecutable === "npm" || lowerExecutable === "npx") {
+    return {
+      launchCommand: executable,
+      launchArgs: args,
+      shell: true,
+    };
+  }
+  return { launchCommand: executable, launchArgs: args, shell: false };
+}
+
 function buildBlockedResult(policy, attemptCount, message, artifactRoot) {
   const leaseId = randomUUID();
   const leaseDir = ensureLeaseDir(artifactRoot || policy.artifactDir, leaseId);
@@ -314,8 +349,9 @@ async function runLeaseAttempt({
     throw new RunnerLeaseError("Runner command contains unsupported shell syntax.", { retryable: false });
   }
 
-  let launchCommand = parsedCommand.executable;
+  let launchCommand = resolvePortableExecutable(parsedCommand.executable);
   let launchArgs = [...parsedCommand.args];
+  let useShell = false;
 
   if (runtime !== "local-process") {
     if (!Array.isArray(commandPrefix) || commandPrefix.length === 0) {
@@ -323,6 +359,8 @@ async function runLeaseAttempt({
     }
     launchCommand = commandPrefix[0];
     launchArgs = [...commandPrefix.slice(1), parsedCommand.raw];
+  } else {
+    ({ launchCommand, launchArgs, shell: useShell } = resolveLocalProcessLaunch(parsedCommand));
   }
 
   return await new Promise((resolveRun, rejectRun) => {
@@ -336,7 +374,7 @@ async function runLeaseAttempt({
     const child = spawn(launchCommand, launchArgs, {
       cwd,
       env: { ...process.env, ...(env || {}) },
-      shell: false,
+      shell: useShell,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -374,7 +412,9 @@ async function runLeaseAttempt({
     });
 
     child.on("error", (error) => {
-      finishReject(new RunnerLeaseError(`Runner process spawn failed: ${error.message}`, { retryable: true }));
+      const errorCode = String(error?.code || "").trim();
+      const retryable = !(runtime === "local-process" && (errorCode === "ENOENT" || errorCode === "EACCES"));
+      finishReject(new RunnerLeaseError(`Runner process spawn failed: ${error.message}`, { retryable }));
     });
 
     timer = setTimeout(() => {
@@ -477,3 +517,5 @@ export async function runCommandInHeavyRunnerLease({
     artifactRoot || policy.artifactDir,
   );
 }
+
+
