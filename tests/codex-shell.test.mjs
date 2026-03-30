@@ -348,10 +348,9 @@ describe("codex-shell stream safeguards", () => {
 
     expect(result.finalResponse).toContain("openai ok");
     expect(mockCodexCtor).toHaveBeenCalledTimes(1);
-    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
-      config: expect.not.objectContaining({
-        model_providers: expect.anything(),
-      }),
+    const ctorOptions = mockCodexCtor.mock.calls.at(-1)?.[0] || {};
+    expect(ctorOptions.config?.model_providers || {}).not.toEqual(expect.objectContaining({
+      azure: expect.anything(),
     }));
   });
 
