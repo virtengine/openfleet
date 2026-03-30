@@ -99,7 +99,7 @@
           "label": "Normalize PR Context",
           "config": {
             "key": "prProgressContext",
-            "value": "(() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
             "isExpression": true
           },
           "position": {
@@ -255,6 +255,8 @@
             "prompt": "You are a Bosun PR repair fallback agent working one PR only.\n\n## CRITICAL RULES — Read Before Doing Anything\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-pr-worktree.output.branch}}`). The base branch (`{{setup-pr-worktree.output.base}}`) has been fetched.\n\n- Do NOT clone the repo. Do NOT create branches. Do NOT push.\n- Work ONLY in the current directory on the current branch.\n- The workflow will commit and push your changes automatically after you finish.\n\n## PR Context\n\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\n## Repair Attempt Output\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\n\n## Fix Instructions\n\n- Only fix this PR's CI or merge-conflict issue.\n- For merge conflicts: `git merge origin/{{setup-pr-worktree.output.base}}` and resolve.\n- For CI failures: study the error output and apply the MINIMAL code fix.\n- Do not merge, approve, or close the PR.\n- Keep the patch minimal and scoped to the reported failure.\n- After fixing, remove the label:\n  `gh pr edit {{setup-pr-worktree.output.number}} --repo {{setup-pr-worktree.output.repo}} --remove-label bosun-needs-fix`\n",
             "sdk": "auto",
             "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
@@ -1998,7 +2000,7 @@
           "label": "Pick Conflict PR",
           "config": {
             "key": "targetPrNumber",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
             "isExpression": true
           },
           "position": {
@@ -2015,7 +2017,7 @@
           "label": "Capture Conflict Branch",
           "config": {
             "key": "targetPrBranch",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
             "isExpression": true
           },
           "position": {
@@ -2032,7 +2034,7 @@
           "label": "Capture Base Branch",
           "config": {
             "key": "targetPrBase",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
             "isExpression": true
           },
           "position": {
@@ -2633,7 +2635,7 @@
           "type": "condition.expression",
           "label": "Bosun-Created PR?",
           "config": {
-            "expression": "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
+            "expression": "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()"
           },
           "position": {
             "x": 400,
@@ -3613,7 +3615,7 @@
           "type": "condition.expression",
           "label": "Detect Breaking Changes",
           "config": {
-            "expression": "(() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
+            "expression": "/* <!-- bosun-created --> */ (() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
           },
           "position": {
             "x": 400,
@@ -4298,6 +4300,8 @@
             "prompt": "# Merge Conflict Resolution\n\nYou are resolving merge conflicts in a git worktree.\n\n## Context\n- **Working directory**: `{{worktreePath}}`\n- **PR branch** (HEAD): `{{branch}}`\n- **Base branch** (incoming): `origin/{{baseBranch}}`\n- **PR**: #{{prNumber}}\n- **Task**: {{taskTitle}}\n\n## Conflicted files needing manual resolution:\n{{manualFiles}}\n\n## Instructions\n1. Read both sides of each conflict carefully\n2. Understand the INTENT of each change (feature vs upstream)\n3. Write a correct resolution that preserves both intents\n4. `git add` each resolved file\n5. Run `git commit --no-edit` to finalize the merge\n6. Do NOT use `--theirs` or `--ours` for code files\n7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
             "sdk": "auto",
             "timeoutMs": "{{timeoutMs}}",
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "failOnError": true,
             "continueOnError": true
           },
@@ -22506,6 +22510,8 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1,
         "prePrValidationEnabled": true,
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
@@ -22805,7 +22811,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -22830,7 +22838,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -22855,7 +22865,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -24798,7 +24810,7 @@
           "label": "Normalize PR Context",
           "config": {
             "key": "prProgressContext",
-            "value": "(() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
             "isExpression": true
           },
           "position": {
@@ -24954,6 +24966,8 @@
             "prompt": "You are a Bosun PR repair fallback agent working one PR only.\n\n## CRITICAL RULES — Read Before Doing Anything\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-pr-worktree.output.branch}}`). The base branch (`{{setup-pr-worktree.output.base}}`) has been fetched.\n\n- Do NOT clone the repo. Do NOT create branches. Do NOT push.\n- Work ONLY in the current directory on the current branch.\n- The workflow will commit and push your changes automatically after you finish.\n\n## PR Context\n\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\n## Repair Attempt Output\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\n\n## Fix Instructions\n\n- Only fix this PR's CI or merge-conflict issue.\n- For merge conflicts: `git merge origin/{{setup-pr-worktree.output.base}}` and resolve.\n- For CI failures: study the error output and apply the MINIMAL code fix.\n- Do not merge, approve, or close the PR.\n- Keep the patch minimal and scoped to the reported failure.\n- After fixing, remove the label:\n  `gh pr edit {{setup-pr-worktree.output.number}} --repo {{setup-pr-worktree.output.repo}} --remove-label bosun-needs-fix`\n",
             "sdk": "auto",
             "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
@@ -26595,7 +26609,7 @@
           "label": "Pick Conflict PR",
           "config": {
             "key": "targetPrNumber",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
             "isExpression": true
           },
           "position": {
@@ -26612,7 +26626,7 @@
           "label": "Capture Conflict Branch",
           "config": {
             "key": "targetPrBranch",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
             "isExpression": true
           },
           "position": {
@@ -26629,7 +26643,7 @@
           "label": "Capture Base Branch",
           "config": {
             "key": "targetPrBase",
-            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
             "isExpression": true
           },
           "position": {
@@ -27189,7 +27203,7 @@
           "type": "condition.expression",
           "label": "Bosun-Created PR?",
           "config": {
-            "expression": "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
+            "expression": "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()"
           },
           "position": {
             "x": 400,
@@ -28128,7 +28142,7 @@
           "type": "condition.expression",
           "label": "Detect Breaking Changes",
           "config": {
-            "expression": "(() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
+            "expression": "/* <!-- bosun-created --> */ (() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
           },
           "position": {
             "x": 400,
@@ -28751,6 +28765,8 @@
             "prompt": "# Merge Conflict Resolution\n\nYou are resolving merge conflicts in a git worktree.\n\n## Context\n- **Working directory**: `{{worktreePath}}`\n- **PR branch** (HEAD): `{{branch}}`\n- **Base branch** (incoming): `origin/{{baseBranch}}`\n- **PR**: #{{prNumber}}\n- **Task**: {{taskTitle}}\n\n## Conflicted files needing manual resolution:\n{{manualFiles}}\n\n## Instructions\n1. Read both sides of each conflict carefully\n2. Understand the INTENT of each change (feature vs upstream)\n3. Write a correct resolution that preserves both intents\n4. `git add` each resolved file\n5. Run `git commit --no-edit` to finalize the merge\n6. Do NOT use `--theirs` or `--ours` for code files\n7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
             "sdk": "auto",
             "timeoutMs": "{{timeoutMs}}",
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "failOnError": true,
             "continueOnError": true
           },
@@ -46060,6 +46076,8 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1,
         "prePrValidationEnabled": true,
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
@@ -46326,7 +46344,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -46351,7 +46371,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -46376,7 +46398,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
