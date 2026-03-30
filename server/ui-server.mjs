@@ -29,12 +29,34 @@ function execSync(command, options = {}) {
 
 const {
   createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+  X509Certificate,
+  argon2: nodeArgon2,
+} = nodeCrypto;
+const argon2 = typeof nodeArgon2 === "function" ? nodeArgon2 : null;
 
+// Response compression + caching helpers
+const GZIP_MIN_BYTES = 1024;
+const COMPRESSIBLE_TYPES = /^(text\/|application\/json|application\/javascript|image\/svg)/;
+
+function acceptsGzip(req) {
+  return String(req?.headers?.["accept-encoding"] || "").includes("gzip");
+}
+
+async function compressAndSend(req, res, statusCode, headers, body) {
+  const buf = typeof body === "string" ? Buffer.from(body) : body;
+  const ct = headers["Content-Type"] || "";
+  if (buf.length >= GZIP_MIN_BYTES && COMPRESSIBLE_TYPES.test(ct) && acceptsGzip(req)) {
+    try {
       const compressed = await gzipAsync(buf);
-      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
       res.end(compressed);
       return;
-    } catch { /* fall through to uncompressed */ }
+    } catch {
+      // Fall through to the uncompressed response path.
+    }
   }
   res.writeHead(statusCode, headers);
   res.end(buf);
