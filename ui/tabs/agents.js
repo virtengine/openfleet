@@ -36,6 +36,7 @@ import {
   workspaces as managedWorkspaces,
 } from "../components/workspace-switcher.js";
 import { ICONS } from "../modules/icons.js";
+import { formatCompactCount } from "../modules/session-insights.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 import { resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import {
@@ -1958,15 +1959,11 @@ export function AgentsTab() {
                         ${s.taskId ? ` · ${s.taskId}` : ""}
                         ${s.branch ? ` · ${s.branch}` : ""}
                       </div>
-<<<<<<< HEAD
-                      ${renderFleetEntryTokenSplit({ session: s })}
-||||||| bb6eaeec
-=======
                       <div class="task-card-meta">
                         ${`Turns ${Number(s.turnCount || 0)}`}
                         ${Number(s.elapsedMs || 0) > 0 ? ` · ${formatMsDuration(s.elapsedMs || 0)}` : ""}
                       </div>
->>>>>>> origin/main
+                      ${renderFleetEntryTokenSplit({ session: s })}
                     </div>
                     <${Badge} status=${s.status || "idle"} text=${s.status || "idle"} />
                   </div>
@@ -2834,10 +2831,3 @@ export function FleetSessionsTab() {
     `}
   `;
 }
-
-
-<<<<<<< HEAD
-||||||| bb6eaeec
-=======
-
->>>>>>> origin/main

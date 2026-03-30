@@ -5309,18 +5309,3 @@ describe("ui-server mini app", () => {
   });
 
 });
-<<<<<<< HEAD
-
-
-
-
-
-
-||||||| bb6eaeec
-
-
-
-
-
-=======
->>>>>>> origin/main

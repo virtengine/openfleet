@@ -967,14 +967,6 @@ export class SessionTracker {
         ? "completed"
         : (progress?.status || s.status);
       const lastActiveAt = s.lastActiveAt || new Date(s.lastActivityAt).toISOString();
-<<<<<<< HEAD
-      const tokenUsage = s.insights?.tokenUsage || null;
-      list.push({
-        id: s.id || s.taskId,
-||||||| bb6eaeec
-      list.push({
-        id: s.id || s.taskId,
-=======
       const turns = Array.isArray(s.turns)
         ? s.turns.map((turn) => ({ ...turn }))
         : (Array.isArray(s.insights?.turnTimeline)
@@ -996,7 +988,6 @@ export class SessionTracker {
       };
       byId.set(sessionId, {
         id: sessionId,
->>>>>>> origin/main
         taskId: s.taskId,
         title: s.taskTitle || s.title || null,
         type: s.type || "task",
@@ -2314,9 +2305,3 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
-
-<<<<<<< HEAD
-||||||| bb6eaeec
-=======
-
->>>>>>> origin/main
