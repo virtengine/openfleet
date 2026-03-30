@@ -699,3 +699,51 @@
   font-size: 12px;
 }
 
+
+
+.fleet-session-id-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  background: color-mix(in srgb, var(--surface-elevated, rgba(255,255,255,0.06)) 88%, transparent);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.fleet-session-id-pill:hover,
+.fleet-session-id-pill:focus-visible {
+  border-color: var(--accent-color, #7c3aed);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.fleet-session-id-pill:active {
+  transform: translateY(1px);
+}
+
+.fleet-session-id-pill-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+}
+
+.fleet-session-id-pill[data-copied="true"] {
+  color: var(--color-done);
+  border-color: color-mix(in srgb, var(--color-done) 70%, transparent);
+  background: color-mix(in srgb, var(--color-done) 14%, transparent);
+  animation: fleet-session-pill-copied 1.5s ease;
+}
+
+@keyframes fleet-session-pill-copied {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  20% {
+    transform: translateY(-1px);
+  }
+}

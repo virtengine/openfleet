@@ -256,6 +256,30 @@ describe("task-store concurrent save consistency", () => {
   });
 });
 
+describe("task-store review persistence", () => {
+  it("stores a current review verdict with a single stable timestamp", async () => {
+    const dir = makeTempDir("task-store-review-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "review-1", title: "Review me", status: "inreview" });
+    const reviewed = ts.setReviewResult("review-1", {
+      approved: false,
+      issues: [{ severity: "major", description: "Fix regression" }],
+    });
+
+    expect(reviewed.reviewStatus).toBe("changes_requested");
+    expect(reviewed.reviewedAt).toBeTruthy();
+    expect(reviewed.updatedAt).toBe(reviewed.reviewedAt);
+    expect(reviewed.lastActivityAt).toBe(reviewed.reviewedAt);
+  });
+});
+
 describe("task-store DAG organization", () => {
   it("reorders sprint orders, auto-applies sequential dependencies, and syncs epic dependencies", async () => {
     const dir = makeTempDir("task-store-dag-organize-");
