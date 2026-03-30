@@ -69,6 +69,25 @@ import {
 } from "../shell/gemini-shell.mjs";
 import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
 
+const toolOverheadRefreshCache = new Map();
+
+function scheduleToolOverheadRefresh(rootDir, agentProfileId, enabledMcpServers = []) {
+  if (!agentProfileId) return;
+  const normalizedServerIds = Array.from(new Set(
+    enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean),
+  )).sort();
+  const cacheKey = [rootDir, agentProfileId].join("::");
+  const signature = JSON.stringify(normalizedServerIds);
+  const cached = toolOverheadRefreshCache.get(cacheKey);
+  if (cached?.signature === signature) return;
+  const promise = refreshToolOverheadReport(rootDir, agentProfileId, { serverIds: normalizedServerIds })
+    .catch((error) => {
+      toolOverheadRefreshCache.delete(cacheKey);
+      console.warn("[primary-agent] failed to refresh tool overhead report:", error?.message || error);
+    });
+  toolOverheadRefreshCache.set(cacheKey, { signature, promise });
+}
+
 /** Valid agent interaction modes */
 const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
 /** Custom modes loaded from library */
@@ -235,10 +254,7 @@ function buildPrimaryToolCapabilityContract(options = {}) {
     ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
     : [];
   if (agentProfileId) {
-    void refreshToolOverheadReport(rootDir, agentProfileId, { serverIds: enabledMcpServers })
-      .catch((error) => {
-        console.warn("[primary-agent] failed to refresh tool overhead report:", error?.message || error);
-      });
+    scheduleToolOverheadRefresh(rootDir, agentProfileId, enabledMcpServers);
   }
   const manifest = {
     agentProfileId: agentProfileId || null,
@@ -1535,6 +1551,5 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
-
 
 
