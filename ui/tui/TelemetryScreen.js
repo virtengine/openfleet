@@ -8,8 +8,9 @@ import { buildRateLimitHours, deriveTelemetrySnapshot, renderSparkline } from ".
 const html = htm.bind(React.createElement);
 const REFRESH_MS = 5000;
 const HISTORY_SECONDS = 60;
+const MAX_HISTORY_SAMPLES = Math.ceil((HISTORY_SECONDS * 1000) / REFRESH_MS);
 
-function trimHistory(history, length = HISTORY_SECONDS) {
+function trimHistory(history, length = MAX_HISTORY_SAMPLES) {
   return history.length > length ? history.slice(history.length - length) : history;
 }
 
@@ -94,7 +95,10 @@ export default function TelemetryScreen({ wsState, config, terminalSize }) {
     "yellow",
     "red",
   );
-  const dailyCostUsd = history.reduce((sum, item) => sum + item.sessionCostUsd, 0);
+  const dailyCostUsd = Math.max(
+    0,
+    (latest.sessionCostUsd || 0) - (history[0]?.sessionCostUsd || 0),
+  );
 
   const wide = (terminalSize?.columns || 0) >= 140;
   const panelWidth = wide

@@ -116,12 +116,12 @@ export function buildTaskFunnel({ todo = 0, inProgress = 0, review = 0, done = 0
     done: Math.max(0, toNumber(done, 0)),
     failed: Math.max(0, toNumber(failed, 0)),
   };
-  const base = Math.max(1, counts.todo);
+  const base = counts.todo;
   return {
     stages: FUNNEL_ORDER.map((stage) => ({
       ...stage,
       count: counts[stage.key],
-      conversionPct: Math.round((counts[stage.key] / base) * 100),
+      conversionPct: base === 0 ? 0 : Math.round((counts[stage.key] / base) * 100),
     })),
   };
 }

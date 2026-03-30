@@ -8,12 +8,18 @@ const html = htm.bind(React.createElement);
 const WIDE_WIDTH = 140;
 
 function panel(title, body, props = {}) {
-  return html`
-    <${Box} borderStyle="single" paddingX=${1} paddingY=${0} flexDirection="column" ${...props}>
-      <${Text} bold color="cyan">${title}<//>
-      ${body}
-    <//>
-  `;
+  return React.createElement(
+    Box,
+    {
+      borderStyle: "single",
+      paddingX: 1,
+      paddingY: 0,
+      flexDirection: "column",
+      ...props,
+    },
+    React.createElement(Text, { bold: true, color: "cyan" }, title),
+    body,
+  );
 }
 
 function formatUsd(value) {
