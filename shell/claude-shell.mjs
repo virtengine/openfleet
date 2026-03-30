@@ -5,6 +5,7 @@
  * long-lived session with steering support via streaming input mode.
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";

@@ -3,11 +3,15 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import os from "node:os";
 import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
-import { inspectWorktreeRuntimeSetup } from "../workspace/worktree-setup.mjs";
+import {
+  ensureGitHooksPath,
+  inspectWorktreeRuntimeSetup,
+} from "../workspace/worktree-setup.mjs";
 
 const isWindows = process.platform === "win32";
 const MIN_FREE_GB = Number(process.env.BOSUN_MIN_FREE_GB || "10");
 const MIN_FREE_BYTES = MIN_FREE_GB * 1024 * 1024 * 1024;
+const GIT_EDITOR_FIX_COMMAND = "node git-editor-fix.mjs";
 
 function runCommand(command, args, options = {}) {
   try {
@@ -91,9 +95,35 @@ function checkWorktreeClean(repoRoot) {
 
 function checkWorktreeRuntimeSetup(repoRoot) {
   if (!existsSync(resolve(repoRoot, ".githooks"))) {
-    return { ok: true, issues: [], hooksPath: "", missingFiles: [] };
+    return {
+      ok: true,
+      issues: [],
+      hooksPath: "",
+      missingFiles: [],
+      repairedHooksPath: false,
+      repairError: "",
+    };
   }
-  return inspectWorktreeRuntimeSetup(repoRoot, repoRoot);
+  const initial = inspectWorktreeRuntimeSetup(repoRoot, repoRoot);
+  const needsHooksPathRepair = initial.issues.some((issue) =>
+    /core\.hooksPath/i.test(String(issue || "")),
+  );
+
+  if (!needsHooksPathRepair) {
+    return {
+      ...initial,
+      repairedHooksPath: false,
+      repairError: "",
+    };
+  }
+
+  const repair = ensureGitHooksPath(repoRoot);
+  const final = inspectWorktreeRuntimeSetup(repoRoot, repoRoot);
+  return {
+    ...final,
+    repairedHooksPath: repair.changed === true,
+    repairError: repair.error || "",
+  };
 }
 
 /**
@@ -189,6 +219,42 @@ function checkToolVersion(label, command, args, hint) {
   return { label, ok: true, version };
 }
 
+function checkHookShell(repoRoot) {
+  if (!isWindows || !existsSync(resolve(repoRoot, ".githooks"))) {
+    return { ok: true, issue: null, resolvedPath: null, allPaths: [] };
+  }
+
+  const res = runCommand("where", ["bash"]);
+  if (res.error || res.status !== 0) {
+    return {
+      ok: false,
+      issue: "missing_bash",
+      resolvedPath: null,
+      allPaths: [],
+      message: "bash is not on PATH; Git hook execution may fail on Windows.",
+    };
+  }
+
+  const allPaths = readOutput(res)
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const resolvedPath = allPaths[0] || null;
+  const normalizedPath = String(resolvedPath || "").replace(/\\/g, "/").toLowerCase();
+  if (normalizedPath.includes("/windows/system32/bash.exe")) {
+    return {
+      ok: false,
+      issue: "wsl_bash_first",
+      resolvedPath,
+      allPaths,
+      message:
+        "PATH resolves bash to WSL first. Git hooks in Windows worktrees should use Git for Windows bash (for example C:/Program Files/Git/bin/bash.exe).",
+    };
+  }
+
+  return { ok: true, issue: null, resolvedPath, allPaths };
+}
+
 function parseEnvBool(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   const raw = String(value).trim().toLowerCase();
@@ -213,6 +279,8 @@ function checkToolchain() {
     "git",
     "gh",
     "node",
+    "npm",
+    "rg",
     shellMode ? "shell" : "pwsh",
   ]);
   const pwshRuntime = resolvePwshRuntime({ preferBundled: true });
@@ -237,10 +305,22 @@ function checkToolchain() {
       "Install Node.js 18+ and ensure it is on PATH.",
     ),
     checkToolVersion(
+      "npm",
+      "npm",
+      ["--version"],
+      "Install npm and ensure it is on PATH. On Windows, verify npm commands can be spawned from PowerShell.",
+    ),
+    checkToolVersion(
       "pnpm",
       "pnpm",
       ["--version"],
       "Install pnpm (npm install -g pnpm) and ensure it is on PATH.",
+    ),
+    checkToolVersion(
+      "rg",
+      "rg",
+      ["--version"],
+      "Install ripgrep (rg) and ensure it is on PATH.",
     ),
     checkToolVersion(
       "go",
@@ -328,7 +408,7 @@ export function runPreflightChecks(options = {}) {
       title: "Interactive git editor detected",
       message:
         `${interactiveEditor.source} is set to "${interactiveEditor.editor}" which blocks automated commits. ` +
-        `Fix: node git-editor-fix.mjs`,
+        `Run ${GIT_EDITOR_FIX_COMMAND} to switch this repo to a non-interactive editor.`,
     });
   }
 
@@ -347,14 +427,31 @@ export function runPreflightChecks(options = {}) {
   }
 
   const runtimeSetup = checkWorktreeRuntimeSetup(repoRoot);
+  if (runtimeSetup.repairedHooksPath) {
+    warnings.push({
+      title: "Git hooks path auto-repaired",
+      message: 'Reset git core.hooksPath to ".githooks" during preflight.',
+    });
+  }
   if (!runtimeSetup.ok) {
     errors.push({
       title: "Worktree runtime setup is incomplete",
       message:
         runtimeSetup.issues.join(os.EOL) +
+        (runtimeSetup.repairError
+          ? `${os.EOL}Repair attempt failed: ${runtimeSetup.repairError}`
+          : "") +
         (runtimeSetup.missingFiles.length > 0
           ? `${os.EOL}Run Bosun setup or bootstrap the repo so worktrees include the required hook/config files.`
           : ""),
+    });
+  }
+
+  const hookShell = checkHookShell(repoRoot);
+  if (!hookShell.ok) {
+    warnings.push({
+      title: "Windows hook shell may be misconfigured",
+      message: hookShell.message,
     });
   }
 
@@ -385,8 +482,10 @@ export function runPreflightChecks(options = {}) {
       toolchain,
       gitConfig,
       worktree,
+      hookShell,
       ghAuth,
       disk,
+      runtimeSetup,
       minFreeBytes: MIN_FREE_BYTES,
     },
   };
@@ -433,6 +532,11 @@ export function formatPreflightReport(result, options = {}) {
     );
   }
 
+  const hookShell = result.details?.hookShell;
+  if (hookShell?.resolvedPath) {
+    lines.push(`Hook shell: ${hookShell.resolvedPath}`);
+  }
+
   if (result.errors.length) {
     lines.push("Errors:");
     for (const err of result.errors) {
@@ -449,7 +553,12 @@ export function formatPreflightReport(result, options = {}) {
   if (result.warnings.length) {
     lines.push("Warnings:");
     for (const warn of result.warnings) {
-      lines.push(`  - ${warn.title}`);
+      const isPriorityWarning = /interactive git editor/i.test(
+        `${warn.title}\n${warn.message || ""}`,
+      );
+      lines.push(
+        `  - ${isPriorityWarning ? "[action recommended] " : ""}${warn.title}`,
+      );
       if (warn.message) {
         const messageLines = String(warn.message).split(/\r?\n/);
         for (const msgLine of messageLines) {
@@ -459,9 +568,17 @@ export function formatPreflightReport(result, options = {}) {
     }
   }
 
+  const interactiveEditorWarning = result.warnings.find((warn) =>
+    /interactive git editor/i.test(`${warn.title}\n${warn.message || ""}`),
+  );
+  if (interactiveEditorWarning) {
+    lines.push(`Suggested fix: ${GIT_EDITOR_FIX_COMMAND}`);
+  }
+
   if (!result.ok && options.retryMs) {
     lines.push(`Next check in ${formatDuration(options.retryMs)}.`);
   }
 
   return lines.join(os.EOL);
 }
+

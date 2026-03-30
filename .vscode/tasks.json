@@ -2,6 +2,109 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Serve Bosun Site",
+      "type": "shell",
+      "command": "npm run site:serve",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": {
+          "regexp": "."
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^> bosun@.* site:serve$",
+          "endsPattern": "^Bosun site server listening on http://"
+        }
+      }
+    },
+    {
+      "label": "Bosun: Start CLI with Inspector (9229)",
+      "type": "shell",
+      "command": "node --inspect-brk=9229 cli.mjs --config-dir .bosun --repo-root . --no-update-check --no-auto-update",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": {
+          "regexp": ".+"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "^Debugger listening on ws://127\\.0\\.0\\.1:9229/"
+        }
+      }
+    },
+    {
+      "label": "Bosun: Start Monitor with Inspector (9230)",
+      "type": "shell",
+      "command": "node --inspect-brk=9230 infra/monitor.mjs",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": {
+          "regexp": ".+"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "^Debugger listening on ws://127\\.0\\.0\\.1:9230/"
+        }
+      }
+    },
+    {
+      "label": "Bosun: Terminate Runtime",
+      "type": "shell",
+      "command": "node cli.mjs --terminate",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Bosun: Daemon Status",
+      "type": "shell",
+      "command": "node cli.mjs --daemon-status",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Bump Patch Version",
       "type": "shell",
       "command": "npm version patch --no-git-tag-version && npm install",

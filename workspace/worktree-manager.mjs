@@ -17,6 +17,7 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   writeFileSync,
   rmSync,
   statSync,
@@ -24,7 +25,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/config.mjs";
 import { sanitizeGitEnv } from "../git/git-safety.mjs";
@@ -107,6 +108,8 @@ function ensureWorktreeRuntimeReady(repoRoot, worktreePath) {
  */
 function fixGitConfigCorruption(repoRoot) {
   try {
+    repairMainRepoGitMetadata(repoRoot);
+    repairBrokenCoreWorktreeConfig(repoRoot);
     const bareResult = spawnSync("git", ["config", "--bool", "--get", "core.bare"], {
       cwd: repoRoot,
       encoding: "utf8",
@@ -133,6 +136,163 @@ function fixGitConfigCorruption(repoRoot) {
   } catch {
     /* best-effort — don't crash on config repair */
   }
+}
+
+function resolveRecoveredHeadRef(repoRoot) {
+  const gitDir = resolve(repoRoot, ".git");
+  const directCandidates = [
+    "main",
+    "master",
+    "guardrails",
+  ];
+  for (const branchName of directCandidates) {
+    if (existsSync(resolve(gitDir, "refs", "heads", branchName))) {
+      return `refs/heads/${branchName}`;
+    }
+  }
+
+  const originHeadPath = resolve(gitDir, "refs", "remotes", "origin", "HEAD");
+  if (existsSync(originHeadPath)) {
+    try {
+      const raw = readFileSync(originHeadPath, "utf8").trim();
+      const match = raw.match(/^ref:\s*refs\/remotes\/[^/]+\/(.+)$/i);
+      if (match?.[1]) return `refs/heads/${match[1].trim()}`;
+    } catch {
+      // Fall through to packed refs.
+    }
+  }
+
+  const packedRefsPath = resolve(gitDir, "packed-refs");
+  if (existsSync(packedRefsPath)) {
+    try {
+      const lines = String(readFileSync(packedRefsPath, "utf8") || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((line) => !line.startsWith("#") && !line.startsWith("^"));
+      const localBranches = [];
+      for (const line of lines) {
+        const match = line.match(/^[0-9a-f]{40}\s+refs\/heads\/(.+)$/i);
+        if (match?.[1]) localBranches.push(match[1].trim());
+      }
+      for (const preferred of directCandidates) {
+        if (localBranches.includes(preferred)) return `refs/heads/${preferred}`;
+      }
+      if (localBranches.length > 0) return `refs/heads/${localBranches[0]}`;
+    } catch {
+      // Fall through to default.
+    }
+  }
+
+  return "refs/heads/main";
+}
+
+function resolveRecoveredOriginUrl(repoRoot) {
+  const packageJsonPath = resolve(repoRoot, "package.json");
+  if (existsSync(packageJsonPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+      const rawUrl = String(pkg?.repository?.url || "").trim();
+      if (rawUrl) return rawUrl.replace(/^git\+/, "");
+    } catch {
+      // Fall back to inferred URL.
+    }
+  }
+  return `https://github.com/virtengine/${basename(resolve(repoRoot))}.git`;
+}
+
+function buildRecoveredGitConfig(repoRoot) {
+  const originUrl = resolveRecoveredOriginUrl(repoRoot);
+  return [
+    "[core]",
+    "\trepositoryformatversion = 0",
+    "\tfilemode = false",
+    "\tbare = false",
+    "\tlogallrefupdates = true",
+    "\tsymlinks = false",
+    "\tignorecase = true",
+    "\tlongpaths = true",
+    "[extensions]",
+    "\tworktreeConfig = true",
+    "[remote \"origin\"]",
+    `\turl = ${originUrl}`,
+    "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+    "[branch \"main\"]",
+    "\tremote = origin",
+    "\tmerge = refs/heads/main",
+    "",
+  ].join("\n");
+}
+
+function repairBrokenCoreWorktreeConfig(repoRoot) {
+  const configPath = resolve(repoRoot, ".git", "config");
+  if (!existsSync(configPath)) return false;
+
+  try {
+    const raw = String(readFileSync(configPath, "utf8") || "");
+    if (!raw) return false;
+
+    let inCore = false;
+    let changed = false;
+    const rewritten = [];
+
+    for (const line of raw.split(/\r?\n/)) {
+      const sectionMatch = line.match(/^\s*\[(.+?)\]\s*$/);
+      if (sectionMatch) {
+        const sectionName = String(sectionMatch[1] || "").trim().replace(/^"|"$/g, "");
+        inCore = /^core$/i.test(sectionName);
+        rewritten.push(line);
+        continue;
+      }
+
+      if (inCore && /^\s*bare\s*=\s*true\s*$/i.test(line)) {
+        rewritten.push("\tbare = false");
+        changed = true;
+        continue;
+      }
+
+      if (inCore && /^\s*worktree\s*=.+$/i.test(line)) {
+        changed = true;
+        continue;
+      }
+
+      rewritten.push(line);
+    }
+
+    if (!changed) return false;
+    writeFileSync(configPath, `${rewritten.join("\n").replace(/\n+$/, "")}\n`, "utf8");
+    console.warn(`${TAG} :alert: Repaired invalid core.bare/core.worktree settings in ${configPath}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function repairMainRepoGitMetadata(repoRoot) {
+  const gitDir = resolve(repoRoot, ".git");
+  try {
+    if (!existsSync(gitDir) || !statSync(gitDir).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+
+  let repaired = false;
+  const headPath = resolve(gitDir, "HEAD");
+  if (!existsSync(headPath)) {
+    writeFileSync(headPath, `ref: ${resolveRecoveredHeadRef(repoRoot)}\n`, "utf8");
+    repaired = true;
+  }
+
+  const configPath = resolve(gitDir, "config");
+  if (!existsSync(configPath)) {
+    writeFileSync(configPath, buildRecoveredGitConfig(repoRoot), "utf8");
+    repaired = true;
+  }
+
+  if (repaired) {
+    console.warn(`${TAG} :alert: Repaired missing main-repo git metadata in ${gitDir}`);
+  }
+  return repaired;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -224,6 +384,31 @@ function readWorktreeBootstrapConfig(repoRoot) {
   return DEFAULT_WORKTREE_BOOTSTRAP;
 }
 
+function readRepoEnvironmentConfig(repoRoot) {
+  try {
+    const config = withIsolatedEnv(() =>
+      loadConfig(["node", "bosun", "--repo-root", repoRoot]),
+    );
+    const repos = Array.isArray(config?.repositories)
+      ? config.repositories
+      : Array.isArray(config?.repositories?.items)
+        ? config.repositories.items
+        : [];
+    // Match by path/repoRoot or by primary flag
+    const match = repos.find(
+      (r) => {
+        if (r.path && r.path === repoRoot) return true;
+        if (r.repoRoot && r.repoRoot === repoRoot) return true;
+        return false;
+      },
+    ) || repos.find((r) => r.primary === true);
+    if (match?.environment && typeof match.environment === "object") {
+      return match.environment;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 function resolveWorktreeSharedPaths(policy, stackId) {
   const override = policy?.sharedPathsByStack?.[stackId];
   if (Array.isArray(override) && override.length > 0) return override;
@@ -271,13 +456,34 @@ function resolveDefaultBootstrapCommand(stack, worktreePath) {
   }
 }
 
-function buildBootstrapPlan(worktreePath, policy, detection, repoRoot) {
+function buildBootstrapPlan(worktreePath, policy, detection, repoRoot, repoEnvironment) {
   const sharedPaths = [];
   const commands = [];
-  const setupScript = String(policy?.setupScript || "").trim();
+
+  // Per-repo environment worktreeSetupScript takes precedence over global setupScript
+  const setupScript = String(repoEnvironment?.worktreeSetupScript || policy?.setupScript || "").trim();
   if (setupScript) {
     commands.push(setupScript);
   }
+
+  // Per-repo environment installCommands override stack detection
+  if (repoEnvironment?.installCommands?.length) {
+    for (const cmd of repoEnvironment.installCommands) {
+      const c = String(cmd || "").trim();
+      if (c && !commands.includes(c)) commands.push(c);
+    }
+    // Per-repo shared paths
+    const envSharedPaths = Array.isArray(repoEnvironment.sharedPaths) ? repoEnvironment.sharedPaths : [];
+    for (const p of envSharedPaths) {
+      if (p && !sharedPaths.includes(p)) sharedPaths.push(p);
+    }
+    return {
+      sharedPaths,
+      commands,
+      stacks: (detection?.stacks || []).map((stack) => stack.id),
+    };
+  }
+
   for (const stack of detection?.stacks || []) {
     const stackSharedPaths = policy?.linkSharedPaths
       ? resolveWorktreeSharedPaths(policy, stack.id)
@@ -418,6 +624,81 @@ function gitSync(args, cwd, opts = {}) {
     // concatenation risks.
     shell: false,
   });
+}
+
+function isLocalFilesystemGitRemote(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return false;
+  const normalized = raw.replace(/\\/g, "/");
+  if (/^(https?|ssh|git):\/\//i.test(normalized)) return false;
+  if (/^[^@]+@[^:]+:/i.test(normalized)) return false;
+  return /^[a-z]:\//i.test(normalized)
+    || normalized.startsWith("//")
+    || normalized.startsWith("../")
+    || normalized.startsWith("./")
+    || normalized.startsWith("/");
+}
+
+function listGitRemotes(repoPath) {
+  const remoteNames = gitSync(["remote"], repoPath, { timeout: 5_000 });
+  if (remoteNames.status !== 0) return [];
+  return String(remoteNames.stdout || "")
+    .split(/\r?\n/)
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .map((name) => {
+      const urlResult = gitSync(["remote", "get-url", name], repoPath, { timeout: 5_000 });
+      if (urlResult.status !== 0) return null;
+      return { name, url: String(urlResult.stdout || "").trim() };
+    })
+    .filter(Boolean);
+}
+
+function pickPreferredNetworkRemote(remotes) {
+  const remoteList = Array.isArray(remotes) ? remotes : [];
+  return remoteList.find((remote) => /github\.com[:/]/i.test(remote.url))
+    || remoteList.find((remote) => !isLocalFilesystemGitRemote(remote.url))
+    || null;
+}
+
+function alignManagedWorktreePushRemote(repoRoot, worktreePath) {
+  const mainRemotes = listGitRemotes(repoRoot);
+  const worktreeRemotes = listGitRemotes(worktreePath);
+  const preferredRemote = pickPreferredNetworkRemote(worktreeRemotes)
+    || pickPreferredNetworkRemote(mainRemotes);
+  if (!preferredRemote?.url) return;
+
+  const originRemote = worktreeRemotes.find((remote) => remote.name === "origin");
+  if (!originRemote) return;
+  if (!isLocalFilesystemGitRemote(originRemote.url)) return;
+  if (originRemote.url === preferredRemote.url) return;
+
+  const setUrlResult = gitSync(
+    ["remote", "set-url", "origin", preferredRemote.url],
+    worktreePath,
+    { timeout: 10_000 },
+  );
+  if (setUrlResult.status !== 0) {
+    throw new Error((setUrlResult.stderr || setUrlResult.stdout || "failed to set origin").trim());
+  }
+
+  const hasPreferredNamedRemote = worktreeRemotes.some(
+    (remote) => remote.name === preferredRemote.name && remote.url === preferredRemote.url,
+  );
+  if (!hasPreferredNamedRemote && preferredRemote.name !== "origin") {
+    const addRemoteResult = gitSync(
+      ["remote", "add", preferredRemote.name, preferredRemote.url],
+      worktreePath,
+      { timeout: 10_000 },
+    );
+    if (addRemoteResult.status !== 0 && !String(addRemoteResult.stderr || "").includes("already exists")) {
+      throw new Error((addRemoteResult.stderr || addRemoteResult.stdout || "failed to add remote").trim());
+    }
+  }
+
+  console.log(
+    `${TAG} aligned worktree origin remote for ${worktreePath} -> ${preferredRemote.name} (${preferredRemote.url})`,
+  );
 }
 
 /**
@@ -638,7 +919,7 @@ class WorktreeManager {
     const detection = detectProjectStack(worktreePath);
     if (!detection?.primary) return;
 
-    const plan = buildBootstrapPlan(worktreePath, policy, detection, this.repoRoot);
+    const plan = buildBootstrapPlan(worktreePath, policy, detection, this.repoRoot, readRepoEnvironmentConfig(this.repoRoot));
     ensureWorktreeSharedPaths(this.repoRoot, worktreePath, plan.sharedPaths);
 
     const signature = buildBootstrapSignature(plan);
@@ -717,6 +998,7 @@ class WorktreeManager {
           recordForBootstrap = record;
         }
       }
+      alignManagedWorktreePushRemote(this.repoRoot, existingPath);
       ensureWorktreeNodeModules(this.repoRoot, existingPath);
       this.bootstrapWorktree(existingPath, recordForBootstrap);
       await this.saveRegistry();
@@ -858,6 +1140,7 @@ class WorktreeManager {
     // Some git versions on Windows set core.bare=true on the main repo
     // when adding worktrees, which conflicts with core.worktree and breaks git.
     fixGitConfigCorruption(this.repoRoot);
+    alignManagedWorktreePushRemote(this.repoRoot, worktreePath);
     ensureWorktreeNodeModules(this.repoRoot, worktreePath);
 
     // 3. Register the new worktree
@@ -1596,6 +1879,7 @@ function bootstrapWorktreeForPath(repoRoot, worktreePath) {
     policy,
     detection,
     resolvedRepoRoot,
+    readRepoEnvironmentConfig(resolvedRepoRoot),
   );
   ensureWorktreeSharedPaths(resolvedRepoRoot, resolvedWorktreePath, plan.sharedPaths);
   for (const command of plan.commands) {

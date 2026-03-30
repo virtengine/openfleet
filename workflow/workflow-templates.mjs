@@ -12,7 +12,7 @@
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
  *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine
  *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
- *   workflow-templates/code-quality.mjs — Code Quality Striker
+ *   workflow-templates/code-quality.mjs — Code Quality Striker, PR Review Quality Striker, SonarQube PR Striker
  *
  * To add a new template:
  *   1. Choose the appropriate category file (or create a new one)
@@ -48,8 +48,12 @@ import {
   RELEASE_DRAFTER_TEMPLATE,
   BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
+  PR_FIX_SINGLE_TEMPLATE,
+  PR_SECURITY_FIX_SINGLE_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
+  GITHUB_PR_EVENT_HANDLER_TEMPLATE,
+  GITHUB_CHECK_FAILURE_TEMPLATE,
 } from "../workflow-templates/github.mjs";
 
 // Agents
@@ -92,6 +96,8 @@ import {
   INCIDENT_RESPONSE_TEMPLATE,
   TASK_ARCHIVER_TEMPLATE,
   SYNC_ENGINE_TEMPLATE,
+  RECOVER_BLOCKED_TASK_TEMPLATE,
+  RECOVER_BLOCKED_WORKTREES_TEMPLATE,
 } from "../workflow-templates/reliability.mjs";
 
 // Security
@@ -103,6 +109,8 @@ import {
 // Code Quality (structural refactor, agentic maintenance)
 import {
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
 } from "../workflow-templates/code-quality.mjs";
 
 // Task Execution (task-type-specific workflows)
@@ -143,6 +151,7 @@ import {
 // Continuation Loop (issue-state continuation polling)
 import {
   CONTINUATION_LOOP_TEMPLATE,
+  CONTINUATION_LOOP_MANUAL_TEMPLATE,
 } from "../workflow-templates/continuation-loop.mjs";
 
 // MCP Integration (MCP tool → workflow data piping)
@@ -172,8 +181,12 @@ export {
   RELEASE_DRAFTER_TEMPLATE,
   BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
+  PR_FIX_SINGLE_TEMPLATE,
+  PR_SECURITY_FIX_SINGLE_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
+  GITHUB_PR_EVENT_HANDLER_TEMPLATE,
+  GITHUB_CHECK_FAILURE_TEMPLATE,
   FRONTEND_AGENT_TEMPLATE,
   REVIEW_AGENT_TEMPLATE,
   CUSTOM_AGENT_TEMPLATE,
@@ -200,9 +213,13 @@ export {
   INCIDENT_RESPONSE_TEMPLATE,
   TASK_ARCHIVER_TEMPLATE,
   SYNC_ENGINE_TEMPLATE,
+  RECOVER_BLOCKED_TASK_TEMPLATE,
+  RECOVER_BLOCKED_WORKTREES_TEMPLATE,
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
   FULLSTACK_TASK_TEMPLATE,
   BACKEND_TASK_TEMPLATE,
   FRONTEND_TASK_TEMPLATE,
@@ -219,7 +236,7 @@ export {
   AGENT_EXECUTION_PIPELINE_TEMPLATE,
   FLOW_CONTROL_SUITE_TEMPLATE,
   CONTINUATION_LOOP_TEMPLATE,
-  MCP_TOOL_CHAIN_TEMPLATE,
+  CONTINUATION_LOOP_MANUAL_TEMPLATE,
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
   MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
   MCP_ITERATIVE_RESEARCH_TEMPLATE,
@@ -260,9 +277,12 @@ const BUILTIN_WORKFLOW_TEMPLATES = [
   RELEASE_DRAFTER_TEMPLATE,
   BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
+  PR_FIX_SINGLE_TEMPLATE,
+  PR_SECURITY_FIX_SINGLE_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
-  // ── Agents ──
+  GITHUB_PR_EVENT_HANDLER_TEMPLATE,
+  GITHUB_CHECK_FAILURE_TEMPLATE,
   REVIEW_AGENT_TEMPLATE,
   FRONTEND_AGENT_TEMPLATE,
   CUSTOM_AGENT_TEMPLATE,
@@ -292,11 +312,15 @@ const BUILTIN_WORKFLOW_TEMPLATES = [
   INCIDENT_RESPONSE_TEMPLATE,
   TASK_ARCHIVER_TEMPLATE,
   SYNC_ENGINE_TEMPLATE,
+  RECOVER_BLOCKED_TASK_TEMPLATE,
+  RECOVER_BLOCKED_WORKTREES_TEMPLATE,
   // ── Security ──
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
   // ── Maintenance (structural quality, agentic dev) ──
   CODE_QUALITY_STRIKER_TEMPLATE,
+  PR_REVIEW_QUALITY_STRIKER_TEMPLATE,
+  SONARQUBE_PR_STRIKER_TEMPLATE,
   // ── Task Execution (task-type workflows + core lifecycle) ──
   FULLSTACK_TASK_TEMPLATE,
   BACKEND_TASK_TEMPLATE,
@@ -319,6 +343,7 @@ const BUILTIN_WORKFLOW_TEMPLATES = [
   FLOW_CONTROL_SUITE_TEMPLATE,
   // ── Continuation Loop ──
   CONTINUATION_LOOP_TEMPLATE,
+  CONTINUATION_LOOP_MANUAL_TEMPLATE,
   // ── MCP Integration (MCP tool → workflow data piping) ──
   MCP_TOOL_CHAIN_TEMPLATE,
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
@@ -1415,10 +1440,13 @@ export function installTemplate(templateId, engine, overrides = {}) {
   const template = getTemplate(templateId);
   if (!template) throw new Error(`Template "${templateId}" not found`);
 
-  // Dedup check: prevent installing a template that's already installed
+  // Dedup check: match by templateId or by name only when the existing
+  // workflow was itself installed from a template (not user-created).
   const existing = engine.list();
   const alreadyInstalled = existing.some(
-    (wf) => wf.metadata?.installedFrom === templateId || wf.name === template.name
+    (wf) =>
+      wf.metadata?.installedFrom === templateId ||
+      (wf.metadata?.installedFrom != null && wf.name === template.name),
   );
   if (alreadyInstalled) {
     throw new Error(`Template "${template.name}" is already installed`);
@@ -1482,8 +1510,17 @@ export function installTemplateSet(engine, templateIds = [], overridesById = {})
   const expanded = expandTemplateGroups(requested);
 
   const existing = engine.list();
+  // Only include a workflow's name in the lookup when it was installed from a
+  // template — user-created workflows with matching names must not block installs.
   const installedLookup = new Set(
-    existing.flatMap((wf) => [wf.metadata?.installedFrom, wf.name]).filter(Boolean),
+    existing.flatMap((wf) => {
+      const entries = [];
+      if (wf.metadata?.installedFrom) {
+        entries.push(wf.metadata.installedFrom);
+        if (wf.name) entries.push(wf.name);
+      }
+      return entries;
+    }).filter(Boolean),
   );
   const results = { installed: [], skipped: [], errors: [] };
 
@@ -1505,9 +1542,11 @@ export function installTemplateSet(engine, templateIds = [], overridesById = {})
       installedLookup.add(template.name);
       // Auto-install may have added sibling templates; refresh the lookup
       // so they are correctly skipped rather than triggering errors.
-      for (const existing of engine.list()) {
-        if (existing.metadata?.installedFrom) installedLookup.add(existing.metadata.installedFrom);
-        if (existing.name) installedLookup.add(existing.name);
+      for (const installed of engine.list()) {
+        if (installed.metadata?.installedFrom) {
+          installedLookup.add(installed.metadata.installedFrom);
+          if (installed.name) installedLookup.add(installed.name);
+        }
       }
     } catch (err) {
       results.errors.push({ id: template.id, error: err.message });
@@ -1529,5 +1568,4 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
 

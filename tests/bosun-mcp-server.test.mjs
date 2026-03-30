@@ -10,8 +10,32 @@ function createFrameReader(stream) {
   const pending = [];
   const queue = [];
 
+  const enqueue = (parsed) => {
+    if (pending.length > 0) {
+      pending.shift().resolve(parsed);
+    } else {
+      queue.push(parsed);
+    }
+  };
+
   const flush = () => {
     while (true) {
+      const headerMatch = buffer.match(/^Content-Length:\s*(\d+)\r?\n/i);
+      if (headerMatch) {
+        const headerEnd = buffer.indexOf("\r\n\r\n") >= 0
+          ? buffer.indexOf("\r\n\r\n") + 4
+          : buffer.indexOf("\n\n") >= 0
+            ? buffer.indexOf("\n\n") + 2
+            : -1;
+        if (headerEnd === -1) return;
+        const contentLength = Number.parseInt(headerMatch[1], 10);
+        if (!Number.isFinite(contentLength) || buffer.length < headerEnd + contentLength) return;
+        const body = buffer.slice(headerEnd, headerEnd + contentLength);
+        buffer = buffer.slice(headerEnd + contentLength);
+        enqueue(JSON.parse(body));
+        continue;
+      }
+
       const separator = buffer.indexOf("\n");
       if (separator === -1) return;
       const line = buffer.slice(0, separator).replace(/\r$/, "");
@@ -19,12 +43,7 @@ function createFrameReader(stream) {
       if (!line.trim()) {
         continue;
       }
-      const parsed = JSON.parse(line);
-      if (pending.length > 0) {
-        pending.shift().resolve(parsed);
-      } else {
-        queue.push(parsed);
-      }
+      enqueue(JSON.parse(line));
     }
   };
 
