@@ -28,6 +28,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, execSync, spawn } from "node:child_process";
 import os from "node:os";
 import { Worker } from "node:worker_threads";
+import "./infra/windows-hidden-child-processes.mjs";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
 import {
@@ -109,6 +110,7 @@ function showHelp() {
     --no-auto-update            Disable background auto-update polling
     --daemon, -d                Run as a background daemon (detached, with PID file)
     --stop-daemon               Stop a running daemon process
+    --restart                   Request a code reload from the running bosun instance
     --terminate                 Hard-stop all bosun processes (daemon + monitor + companions)
     --daemon-status             Check if daemon is running
 
@@ -328,6 +330,7 @@ const LEGACY_MONITOR_PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
 const DAEMON_PID_FILE = resolve(runtimeCacheDir, "bosun-daemon.pid");
 const LEGACY_DAEMON_PID_FILE = resolve(__dirname, ".cache", "bosun-daemon.pid");
 const DAEMON_LOG = resolve(__dirname, "logs", "daemon.log");
+const RESTART_REQUEST_FILE_NAME = "bosun-restart-request.json";
 const SENTINEL_PID_FILE = resolve(
   runtimeCacheDir,
   "telegram-sentinel.pid",
@@ -427,8 +430,11 @@ async function getConfiguredRuntimeCacheDirs() {
   try {
     const { loadConfig } = await import("./config/config.mjs");
     const config = loadConfig();
-    return getRuntimeCacheDirCandidates([
-      String(config?.cacheDir || "").trim() || null,
+    const configuredCacheDir = String(config?.cacheDir || "").trim() || null;
+    return uniqueResolvedPaths([
+      runtimeCacheDir,
+      configuredCacheDir,
+      ...getRuntimeCacheDirCandidates(),
     ]);
   } catch {
     return getRuntimeCacheDirCandidates();
@@ -496,6 +502,22 @@ function isProcessAlive(pid) {
     return true;
   } catch (err) {
     if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+      if (process.platform === "win32") {
+        try {
+          const output = execFileSync(
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              `Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(pid)}" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessId`,
+            ],
+            { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000, windowsHide: true },
+          ).trim();
+          return output === String(Number(pid));
+        } catch {
+          return false;
+        }
+      }
       return true;
     }
     return false;
@@ -926,7 +948,7 @@ function stopDaemon() {
   }
 }
 
-function daemonStatus() {
+async function daemonStatus() {
   const pid = getDaemonPid();
   if (pid) {
     console.log(`  bosun daemon is running (PID ${pid})`);
@@ -942,7 +964,8 @@ function daemonStatus() {
       }
       console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
-      const existingMonitorOwner = detectExistingMonitorLockOwner();
+      const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+      const existingMonitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
       if (existingMonitorOwner) {
         console.log(
           `  bosun daemon is not running in daemon mode, but bosun monitor is active (PID ${existingMonitorOwner.pid}).`,
@@ -985,7 +1008,12 @@ function findAllBosunProcessPids() {
   ];
   const joined = patterns.join("|");
   if (process.platform === "win32") {
+    let cmdPids = [];
     try {
+      // Primary: CommandLine-based scan.
+      // NOTE: Win32_Process.CommandLine can be null/empty under WMI race conditions
+      // for long-running processes. We re-verify null-CommandLine node.exe PIDs by
+      // querying them individually below to work around the WMI race.
       const out = execFileSync(
         "powershell",
         [
@@ -1004,14 +1032,51 @@ function findAllBosunProcessPids() {
         ],
         { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 4000 },
       ).trim();
-      if (!out) return [];
-      return out
-        .split(/\r?\n/)
-        .map((s) => Number.parseInt(String(s).trim(), 10))
-        .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+      if (out) {
+        cmdPids = out
+          .split(/\r?\n/)
+          .map((s) => Number.parseInt(String(s).trim(), 10))
+          .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+      }
     } catch {
-      return [];
+      // fall through to port-based fallback
     }
+
+    // Fallback: find node.exe PIDs listening on known Bosun ports (4400, 3080).
+    // This catches processes whose CommandLine was null in the WMI general scan.
+    let portPids = [];
+    try {
+      const netOut = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `$bosunPorts = @(4400,3080,4401,3081)
+           $listeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+             Where-Object { $bosunPorts -contains $_.LocalPort } |
+             Select-Object -ExpandProperty OwningProcess -Unique
+           $listeners | Where-Object {
+             $pid = [int]$_
+             if ($pid -le 0 -or $pid -eq ${process.pid}) { return $false }
+             $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue
+             $name = [string]$proc.Name
+             $name -match '^(node|electron|bosun)(\\.exe)?$'
+           }`,
+        ],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
+      ).trim();
+      if (netOut) {
+        portPids = netOut
+          .split(/\r?\n/)
+          .map((s) => Number.parseInt(String(s).trim(), 10))
+          .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+      }
+    } catch {
+      // port scan unavailable — cmdPids is still used
+    }
+
+    // Merge both sets, deduplicating
+    return Array.from(new Set([...cmdPids, ...portPids]));
   }
   try {
     const out = execFileSync("pgrep", ["-f", joined], {
@@ -1136,7 +1201,7 @@ function taskkillPidsElevated(pids, { force = false } = {}) {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 30000,
-        windowsHide: false,
+        windowsHide: true,
       },
     );
   } catch {
@@ -1404,6 +1469,8 @@ async function main() {
       console.error(`  Error: ${err.message}`);
       process.exit(1);
     }
+
+
     process.exit(0);
   }
 
@@ -1678,7 +1745,26 @@ async function main() {
     return;
   }
   if (args.includes("--daemon-status")) {
-    daemonStatus();
+    await daemonStatus();
+    return;
+  }
+  if (args.includes("--restart")) {
+    try {
+      const result = await requestRunningBosunRestart("cli-restart");
+      const modeLabel = result.daemon ? "daemon" : "monitor";
+      console.log(
+        `  Requested Bosun code reload from the running ${modeLabel} instance (PID ${result.targetPid}).`,
+      );
+      console.log(
+        "  The live instance will restart itself with fresh modules using its current launch path.",
+      );
+      console.log(
+        "  If internal agent slots are busy, the reload stays queued until restart protection clears.\n",
+      );
+    } catch (err) {
+      console.error(`  --restart failed: ${err?.message || err}`);
+      process.exit(1);
+    }
     return;
   }
 
@@ -2092,9 +2178,12 @@ async function main() {
   // Handle --workspace-status
   if (args.includes("--workspace-status") || args.includes("workspace-status")) {
     const { getWorkspaceStateSummary } = await import("./workspace/workspace-manager.mjs");
+    const { getToolOverheadReport } = await import("./agent/agent-tool-config.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
     const summary = getWorkspaceStateSummary(configDir);
+    const toolOverhead = getToolOverheadReport(configDir, "primary");
+    const overheadSources = Object.entries(toolOverhead.bySource || {});
     if (summary.length === 0) {
       console.log("\n  No workspaces configured.\n");
     } else {
@@ -2112,8 +2201,16 @@ async function main() {
           console.log(`      enabled workflows: ${ws.enabledWorkflows.join(", ")}`);
         }
       }
-      console.log("");
     }
+    if (toolOverhead.total > 0 || overheadSources.length > 0) {
+      console.log("  Tool Overhead:");
+      console.log(`    Total tool chars: ${toolOverhead.total.toLocaleString("en-US")}`);
+      for (const [source, chars] of overheadSources) {
+        const warning = Number(chars) > 10000 ? "  WARNING: high overhead" : "";
+        console.log(`    ${source}: ${Number(chars).toLocaleString("en-US")} chars${warning}`);
+      }
+    }
+    console.log("");
     process.exit(0);
   }
 
@@ -2314,7 +2411,8 @@ async function main() {
     process.exit(0);
   }
 
-  const existingOwner = detectExistingMonitorLockOwner();
+  const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+  const existingOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
   if (existingOwner) {
     console.log(
       `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,
@@ -2410,13 +2508,19 @@ async function sendCrashNotification(exitCode, signal, options = {}) {
 
 // ── Self-restart exit code (must match monitor.mjs SELF_RESTART_EXIT_CODE) ───
 const SELF_RESTART_EXIT_CODE = 75;
-let monitorChild = null;
 
 function getMonitorPidFileCandidates(extraCacheDirs = []) {
-  return uniqueResolvedPaths([
-    ...getPidFileCandidates("bosun.pid", extraCacheDirs),
-    resolve(__dirname, "..", ".cache", "bosun.pid"),
-  ]);
+  return getPidFileCandidates("bosun.pid", extraCacheDirs);
+}
+
+function getRestartRequestFileCandidates(extraCacheDirs = []) {
+  const cacheDirs =
+    Array.isArray(extraCacheDirs) && extraCacheDirs.length > 0
+      ? uniqueResolvedPaths(extraCacheDirs)
+      : getRuntimeCacheDirCandidates();
+  return cacheDirs.map((cacheDir) =>
+    resolve(cacheDir, RESTART_REQUEST_FILE_NAME),
+  );
 }
 
 function tailLinesFromFile(filePath, maxLines = 200) {
@@ -2490,9 +2594,9 @@ function shouldPauseDaemonRestartStorm(options) {
   return { pause: true, reasons: signals.reasons };
 }
 
-function detectExistingMonitorLockOwner(excludePid = null) {
+function detectExistingMonitorLockOwner(excludePid = null, extraCacheDirs = []) {
   try {
-    for (const pidFile of getMonitorPidFileCandidates()) {
+    for (const pidFile of getMonitorPidFileCandidates(extraCacheDirs)) {
       let ownerPid = null;
       try {
         ownerPid = readAlivePid(pidFile);
@@ -2515,6 +2619,56 @@ function detectExistingMonitorLockOwner(excludePid = null) {
     );
   }
   return null;
+}
+
+async function requestRunningBosunRestart(reason = "cli-restart") {
+  const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+  const monitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
+  const daemonPid = getDaemonPid();
+  const targetPid = Number(monitorOwner?.pid || daemonPid || 0);
+  if (!targetPid) {
+    throw new Error("no running bosun instance found");
+  }
+
+  const targetCacheDirs = monitorOwner?.pidFile
+    ? [dirname(monitorOwner.pidFile)]
+    : configuredCacheDirs;
+  const requestPaths = getRestartRequestFileCandidates(targetCacheDirs);
+  const payload = {
+    id: `restart-${Date.now()}-${process.pid}`,
+    type: "code-reload",
+    reason: String(reason || "cli-restart"),
+    requestedAt: new Date().toISOString(),
+    requesterPid: process.pid,
+    targetPid,
+    argv: process.argv.slice(1),
+  };
+
+  let primaryPath = "";
+  const failures = [];
+  for (const requestPath of requestPaths) {
+    try {
+      mkdirSync(dirname(requestPath), { recursive: true });
+      writeFileSync(requestPath, JSON.stringify(payload, null, 2), "utf8");
+      if (!primaryPath) primaryPath = requestPath;
+    } catch (err) {
+      failures.push(`${requestPath}: ${err?.message || err}`);
+    }
+  }
+
+  if (!primaryPath) {
+    throw new Error(
+      `failed to write restart request (${failures.join("; ") || "unknown error"})`,
+    );
+  }
+
+  return {
+    targetPid,
+    requestPath: primaryPath,
+    requestPaths,
+    monitorOwner,
+    daemon: Boolean(daemonPid),
+  };
 }
 
 function getRequiredMonitorRuntimeFiles(monitorPath) {
@@ -2621,7 +2775,7 @@ function runMonitor({ restartReason = "" } = {}) {
             const exitCode = code ?? (signal ? 1 : 0);
             const existingOwner =
               !gracefulShutdown && exitCode === 1
-                ? detectExistingMonitorLockOwner(childPid)
+                ? detectExistingMonitorLockOwner(childPid, [runtimeCacheDir])
                 : null;
             if (existingOwner) {
               console.log(
@@ -2741,6 +2895,7 @@ function runMonitor({ restartReason = "" } = {}) {
 }
 
 // Let forked monitor handle signal cleanup — prevent parent from dying first
+let monitorChild = null;
 let gracefulShutdown = false;
 process.on("SIGINT", () => {
   gracefulShutdown = true;

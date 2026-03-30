@@ -20,6 +20,9 @@ import {
   installTemplateSet,
 } from "../workflow/workflow-templates.mjs";
 import {
+  validateTaskBatchPayload,
+} from "../workflow-templates/task-batch.mjs";
+import {
   WorkflowEngine,
   getNodeType,
   registerNodeType,
@@ -539,6 +542,22 @@ describe("workflow-templates", () => {
     expect(triggerNode?.config?.filter).toBeUndefined();
   });
 
+  it("backend agent template requires descriptive commit guidance", () => {
+    const template = getTemplate("template-backend-agent");
+    expect(template).toBeDefined();
+
+    const writeTests = template.nodes.find((n) => n.id === "write-tests");
+    const implement = template.nodes.find((n) => n.id === "implement");
+    const autoFix = template.nodes.find((n) => n.id === "auto-fix");
+
+    expect(String(writeTests?.config?.prompt || "")).toContain("descriptive test commit message");
+    expect(String(writeTests?.config?.prompt || "")).not.toContain("Commit with message \"test: add tests for [feature]\"");
+    expect(String(implement?.config?.prompt || "")).toContain("descriptive feat/fix commit message");
+    expect(String(implement?.config?.prompt || "")).not.toContain("Commit with message \"feat: implement [feature]\"");
+    expect(String(autoFix?.config?.prompt || "")).toContain("descriptive fix commit message");
+    expect(String(autoFix?.config?.prompt || "")).not.toContain("Commit with message \"fix: address validation failures\"");
+  });
+
   it("agent templates only advance to inreview after a real PR is linked", () => {
     const backendTemplate = getTemplate("template-backend-agent");
     expect(backendTemplate).toBeDefined();
@@ -568,7 +587,7 @@ describe("workflow-templates", () => {
   it("continuation loop template exposes configurable turn/stuck controls", () => {
     const template = getTemplate("template-continuation-loop");
     expect(template).toBeDefined();
-    expect(template?.trigger).toBe("trigger.manual");
+    expect(template?.trigger).toBe("trigger.task_available");
 
     expect(template?.variables?.maxTurns).toBe(8);
     expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
@@ -595,7 +614,7 @@ describe("workflow-templates", () => {
     expect(retryBudget?.config?.expression).toContain("maxStuckAutoRetries");
   });
 
-  it("pr merge strategy template listens to review, approval, and opened aliases", () => {
+  it("pr merge strategy template listens to review and approval aliases", () => {
     const template = getTemplate("template-pr-merge-strategy");
     expect(template).toBeDefined();
 
@@ -605,10 +624,69 @@ describe("workflow-templates", () => {
     expect(triggerNode?.config?.events).toEqual(["review_requested", "approved", "opened"]);
   });
 
+  it("pr review quality striker supports reactive review events plus scheduled fallback", () => {
+    const template = getTemplate("template-pr-review-quality-striker");
+    expect(template).toBeDefined();
+    expect(template.trigger).toBe("trigger.pr_event");
+
+    const triggerNode = template.nodes.find((n) => n.id === "trigger");
+    const reviewCommentTriggerNode = template.nodes.find((n) => n.id === "trigger-review-comment");
+    const fallbackTriggerNode = template.nodes.find((n) => n.id === "trigger-fallback");
+    const fetchNode = template.nodes.find((n) => n.id === "fetch-review-signals");
+    const runNode = template.nodes.find((n) => n.id === "run-review-striker");
+    const command = getNodeCommandCode(fetchNode);
+
+    expect(triggerNode?.type).toBe("trigger.pr_event");
+    expect(triggerNode?.config?.event).toBe("review_requested");
+    expect(triggerNode?.config?.events).toEqual(["review_requested", "changes_requested", "approved", "opened"]);
+    expect(reviewCommentTriggerNode?.type).toBe("trigger.event");
+    expect(reviewCommentTriggerNode?.config?.eventType).toBe("github:pull_request_review_comment");
+    expect(fallbackTriggerNode?.type).toBe("trigger.schedule");
+    expect(fallbackTriggerNode?.config?.intervalMs).toBe("{{intervalMs}}");
+
+    expect(command).toContain("DIRECT_PR_NUMBER");
+    expect(command).toContain("DIRECT_REPO");
+    expect(command).toContain("DIRECT_PR_URL");
+    expect(command).toContain("DIRECT_EVENT");
+    expect(command).toContain("appendActionable");
+    expect(command).toContain("collectPrDigest");
+    expect(command).toContain("collectActionableReviewSignals");
+    expect(command).toContain("commentFindings");
+    expect(command).toContain("qualityChecks");
+    expect(command).toContain("sourceKind");
+    expect(command).toContain("mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'");
+    expect(runNode?.config?.prompt).toContain("commentFindings and qualityChecks");
+    expect(runNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments, and checks");
+
+    expect(template.edges.find((e) => e.source === "trigger" && e.target === "fetch-review-signals")).toBeDefined();
+    expect(template.edges.find((e) => e.source === "trigger-review-comment" && e.target === "fetch-review-signals")).toBeDefined();
+    expect(template.edges.find((e) => e.source === "trigger-fallback" && e.target === "fetch-review-signals")).toBeDefined();
+  });
+
+  it("sonarqube striker keeps GitHub-native Sonar classification and shared PR digest", () => {
+    const template = getTemplate("template-sonarqube-pr-striker");
+    expect(template).toBeDefined();
+    expect(template.trigger).toBe("trigger.schedule");
+
+    const fetchNode = template.nodes.find((n) => n.id === "fetch-sonar-signals");
+    const runNode = template.nodes.find((n) => n.id === "run-sonar-striker");
+    const command = getNodeCommandCode(fetchNode);
+
+    expect(command).toContain("SONAR_CHECK_RE");
+    expect(command).toContain("collectPrDigest");
+    expect(command).toContain("collectActionableReviewSignals");
+    expect(command).toContain("hasSonarFailure");
+    expect(command).toContain("signals.sonarChecks.length===0");
+    expect(command).toContain("sonarChecks");
+    expect(runNode?.config?.prompt).toContain("GitHub-native Sonar checks as the source of truth");
+    expect(runNode?.config?.prompt).toContain("sonarChecks plus prDigest");
+    expect(runNode?.config?.prompt).not.toContain("SonarQube API");
+  });
+
   it("continuation loop template includes stuck handling and terminal-state exits", () => {
     const template = getTemplate("template-continuation-loop");
     expect(template).toBeDefined();
-    expect(template?.trigger).toBe("trigger.manual");
+    expect(template?.trigger).toBe("trigger.task_available");
     expect(template?.variables?.onStuck).toBe("escalate");
     expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
 
@@ -767,9 +845,6 @@ describe("template API functions", () => {
       "template-task-repair-worktree",
       "template-task-orphan-worktree-recovery",
       "template-task-status-transition-manager",
-      // template-pr-conflict-resolver deliberately excluded — superseded by
-      // template-bosun-pr-watchdog which owns conflict detection, CI checks,
-      // diff-safety review, and merge in one consolidated workflow.
       "template-agent-session-monitor",
       "template-release-pipeline",
       "template-backend-agent",
@@ -977,7 +1052,7 @@ describe("template drift + update behavior", () => {
     engine.save(wf);
 
     const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
-    expect(result.metadataUpdated).toBeGreaterThanOrEqual(1);
+    expect(result.portMetadataRepaired).toBeGreaterThanOrEqual(0);
 
     const refreshed = engine.get(installed.id);
     const refreshedClaimOk = refreshed.nodes.find((node) => node.id === "claim-ok");
@@ -1340,8 +1415,7 @@ describe("github template CLI compatibility", () => {
 
     const gateNode = mergeTemplate.nodes.find((n) => n.id === "automation-eligible");
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
-    expect(gateNode?.config?.expression).toContain("bosun-pr-bosun-created");
-    expect(gateNode?.config?.expression).toContain("requireBosunCreatedPr");
+    expect(gateNode?.config?.expression).toContain("labels.includes('bosun-pr-bosun-created')");
     expect(getNodeCommandCode(checkCi)).toContain("gh pr checks");
     expect(getNodeCommandCode(checkCi)).toContain("--json name,state");
     expect(getNodeCommandCode(checkCi)).not.toContain("conclusion");
@@ -1449,7 +1523,10 @@ describe("github template CLI compatibility", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
     const securityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
-    const securityAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agent");
+    const securityDispatchNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agents");
+    const securityTemplate = getTemplate("template-pr-security-fix-single");
+    const securityPromptNode = securityTemplate?.nodes.find((n) => n.id === "setup-prompt");
+    const securityFixAgentNode = securityTemplate?.nodes.find((n) => n.id === "fix-agent");
 
     expect(getNodeCommandCode(fetchNode)).toContain("SECURITY_CHECK_RE");
     expect(getNodeCommandCode(fetchNode)).toContain("securityFailures");
@@ -1463,28 +1540,30 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(securityNode)).toContain("reviewComments");
     expect(getNodeCommandCode(securityNode)).toContain("digestSummary");
     expect(getNodeCommandCode(securityNode)).toContain("reason:'security_code_scanning_failure'");
-    expect(securityAgentNode?.config?.prompt).toContain("CodeQL or GitHub code scanning");
-    expect(securityAgentNode?.config?.prompt).toContain("Only fix the listed code-scanning or CodeQL findings");
-    expect(securityAgentNode?.config?.prompt).toContain("prDigest.body");
-    expect(securityAgentNode?.config?.prompt).toContain("prDigest.reviewComments");
+    expect(securityDispatchNode?.type).toBe("loop.for_each");
+    expect(securityDispatchNode?.config?.workflowId).toBe("template-pr-security-fix-single");
+    expect(securityPromptNode?.config?.value).toContain("security remediation");
+    expect(securityPromptNode?.config?.value).toContain("Fix ONLY the security/CodeQL findings");
+    expect(securityPromptNode?.config?.value).toContain("prDigest.reviewComments");
+    expect(securityFixAgentNode?.config?.prompt).toContain("Fix ONLY the listed security/CodeQL findings");
+    expect(securityFixAgentNode?.config?.prompt).toContain("code-scanning/alerts");
 
     expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "security-fix-needed")).toBeDefined();
-    expect(watchdogTemplate.edges.find((e) => e.source === "security-agent-needed" && e.target === "dispatch-security-fix-agent")).toBeDefined();
-    expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agent" && e.target === "generic-fix-needed")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "has-unclaimed-security-fixes" && e.target === "dispatch-security-fix-agents")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agents" && e.target === "generic-fix-needed")).toBeDefined();
   });
 
   it("PR watchdog enriches generic CI fallback with run diagnostics and bounded reruns", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
-    const fixAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
+    const claimNode = watchdogTemplate.nodes.find((n) => n.id === "claim-unclaimed-prs");
+    const dispatchNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agents");
+    const singleFixTemplate = getTemplate("template-pr-fix-single");
     const command = getNodeCommandCode(fixNode);
-
     expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
-    expect(command).toContain("['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']");
-    expect(command).toContain("/actions/runs/'+runId+'/jobs?per_page=100");
-    expect(command).toContain("/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page");
-    expect(command).toContain("['run','view',String(runId),'--repo',repo,'--log-failed']");
+    expect(command).toContain("collectCiDiagnostics(repo,failedRun,runGh)");
+    expect(command).toContain("runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8'])");
     expect(command).toContain("reason:'auto_rerun_limit_reached'");
     expect(command).toContain("failedLogExcerpt");
     expect(command).toContain("failedJobs");
@@ -1493,10 +1572,15 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reviewComments");
     expect(command).toContain("digestSummary");
 
-    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt");
-    expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
+    expect(getNodeCommandCode(claimNode)).toContain("BOSUN_PROGRAMMATIC_FIX");
+    expect(getNodeCommandCode(claimNode)).toContain("pr-fix-claims.json");
+    expect(getNodeCommandCode(claimNode)).toContain("unclaimedCount");
+    expect(dispatchNode?.type).toBe("loop.for_each");
+    expect(dispatchNode?.config?.items).toContain("d.unclaimed");
+    expect(dispatchNode?.config?.maxConcurrent).toBe("{{maxConcurrentFixes}}");
+    expect(dispatchNode?.config?.workflowId).toBe("template-pr-fix-single");
+    expect(singleFixTemplate?.trigger).toBe("trigger.manual");
   });
-
   it("PR progressor is registered as the immediate single-PR handoff workflow", () => {
     const progressorTemplate = getTemplate("template-bosun-pr-progressor");
     expect(progressorTemplate).toBeDefined();
@@ -1515,10 +1599,14 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(inspectNode)).toContain("prDigest");
     expect(getNodeCommandCode(inspectNode)).toContain("digestSummary");
     expect(getNodeCommandCode(inspectNode)).toContain("failedCheckNames");
+    expect(getNodeCommandCode(inspectNode)).toContain("const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']);");
+    expect(getNodeCommandCode(inspectNode)).toContain("classification='conflict';reason='merge_conflict';");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
-    expect(getNodeCommandCode(fixNode)).toContain("/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
+    expect(getNodeCommandCode(fixNode)).toContain("classification==='conflict'");
+    expect(getNodeCommandCode(fixNode)).toContain("mergeable==='BEHIND'");
+    expect(getNodeCommandCode(fixNode)).toContain("reason:'branch_updated_from_base'");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs=['pr','merge'");
     expect(fixAgentNode?.config?.prompt).toContain("Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks");
   });
@@ -1545,8 +1633,20 @@ describe("github template CLI compatibility", () => {
     expect(lifecycleTemplate.edges.find((e) => e.source === "handoff-pr-progressor" && e.target === "log-success")).toBeDefined();
     expect(lifecycleTemplate.edges.find((e) => e.source === "set-inreview-stolen" && e.target === "handoff-pr-progressor-stolen")).toBeDefined();
     expect(finalizationTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
-    expect(repairTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(repairTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "clear-repair-blocked-success")).toBeDefined();
+    expect(repairTemplate.edges.find((e) => e.source === "clear-repair-blocked-success" && e.target === "handoff-pr-progressor")).toBeDefined();
     expect(batchPrTemplate.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+  });
+
+  it("task lifecycle dispatches repair workflow for blocked non-retryable worktree failures", () => {
+    const lifecycleTemplate = getTemplate("template-task-lifecycle");
+    const repairDispatch = lifecycleTemplate.nodes.find((n) => n.id === "dispatch-wt-repair");
+
+    expect(repairDispatch?.type).toBe("action.execute_workflow");
+    expect(repairDispatch?.config?.workflowId).toBe("template-task-repair-worktree");
+    expect(repairDispatch?.config?.mode).toBe("dispatch");
+    expect(lifecycleTemplate.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "dispatch-wt-repair")).toBeDefined();
+    expect(lifecycleTemplate.edges.find((e) => e.source === "dispatch-wt-repair" && e.target === "release-slot-wt-failed")).toBeDefined();
   });
 
   it("PR watchdog and GitHub sync pass node outputs via template interpolation env vars", () => {
@@ -1672,10 +1772,57 @@ describe("template category coverage", () => {
   });
 
   it("categories have valid structure", () => {
-    for (const [key, val] of Object.entries(TEMPLATE_CATEGORIES)) {
+    for (const [, val] of Object.entries(TEMPLATE_CATEGORIES)) {
       expect(typeof val.label).toBe("string");
       expect(typeof val.icon).toBe("string");
       expect(typeof val.order).toBe("number");
     }
+  });
+});
+describe("task batch payload validation", () => {
+  it("accepts a valid minimal batch item", () => {
+    const payload = [
+      {
+        taskId: "task-123",
+        taskTitle: "Ship validation",
+        status: "todo",
+        repository: "virtengine/bosun",
+        workspace: "virtengine-gh",
+        branch: "task/123",
+        scope: "workflow",
+      },
+    ];
+
+    expect(validateTaskBatchPayload(payload)).toEqual(payload);
+  });
+
+  it("rejects malformed batch items with deterministic errors", () => {
+    expect(() => validateTaskBatchPayload([
+      {
+        taskId: "",
+        taskTitle: "Bad payload",
+        status: "todo",
+        repository: "virtengine/bosun",
+        workspace: "virtengine-gh",
+      },
+    ])).toThrow("Invalid task-batch payload: item[0].taskId must be a non-empty string");
+  });
+
+  it("trims oversized optional fields per contract", () => {
+    const payload = [
+      {
+        taskId: "task-oversized",
+        taskTitle: "Trim optional fields",
+        status: "todo",
+        repository: "virtengine/bosun",
+        workspace: "virtengine-gh",
+        branch: "b".repeat(200),
+        scope: "s".repeat(200),
+      },
+    ];
+
+    const [item] = validateTaskBatchPayload(payload);
+    expect(item.branch).toBe("b".repeat(128));
+    expect(item.scope).toBe("s".repeat(128));
   });
 });

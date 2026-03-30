@@ -13,6 +13,14 @@
   <!-- es-module-shims: only load when native import maps are unavailable -->
   <script>
     (function () {
+      var params = new URLSearchParams(window.location.search || "");
+      var requestedLayout = String(params.get("layout") || "").trim().toLowerCase();
+      if (requestedLayout === "desktop" || requestedLayout === "tablet" || requestedLayout === "mobile" || requestedLayout === "auto") {
+        window.__bosunForcedLayoutMode = requestedLayout;
+      } else {
+        window.__bosunForcedLayoutMode = "desktop";
+      }
+
       var supportsImportMaps = !!(
         window.HTMLScriptElement &&
         typeof HTMLScriptElement.supports === "function" &&
@@ -104,6 +112,12 @@
   </script>
 
   <!-- Load the real MiniApp styles -->
+  <link rel="stylesheet" href="styles/variables.css" />
+  <link rel="stylesheet" href="styles/base.css" />
+  <link rel="stylesheet" href="styles/layout.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <link rel="stylesheet" href="styles/animations.css" />
+  <link rel="stylesheet" href="styles/workspace-switcher.css" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="styles/kanban.css" />
   <link rel="stylesheet" href="styles/sessions.css" />
@@ -3420,6 +3434,275 @@
         return `Understood: ${clean}. In demo mode I am returning a simulated voice response with real playback.`;
       }
 
+      const DEMO_GITHUB_REPOS = [
+        {
+          name: 'bosun',
+          fullName: 'virtengine/bosun',
+          defaultBranch: 'main',
+          fallbackCommits: [
+            {
+              hash: 'f464d9a',
+              message: 'fix(ui): stretch chat to bottom, remove bot-fab, fix Bot Controls',
+              author: 'bosun-agent',
+              date: new Date(Date.now() - 1 * hr).toISOString(),
+            },
+            {
+              hash: 'e39aa3c',
+              message: 'feat(ui): VS Code-style collapsible sidebar and session rail',
+              author: 'bosun-agent',
+              date: new Date(Date.now() - 4 * hr).toISOString(),
+            },
+            {
+              hash: 'c2d8f7b',
+              message: 'fix(api): stabilize shared state sync retries',
+              author: 'bosun-agent',
+              date: new Date(Date.now() - 8 * hr).toISOString(),
+            },
+          ],
+        },
+        {
+          name: 'virtengine',
+          fullName: 'virtengine/virtengine',
+          defaultBranch: 'main',
+          fallbackCommits: [
+            {
+              hash: 'd2e8f3a',
+              message: 'feat(market): order expiry and auto-settlement',
+              author: 'codex-default',
+              date: new Date(Date.now() - 30 * min).toISOString(),
+            },
+            {
+              hash: 'a4b9c12',
+              message: 'refactor(escrow): batch settlement pipeline with retry guard',
+              author: 'copilot-claude',
+              date: new Date(Date.now() - 45 * min).toISOString(),
+            },
+            {
+              hash: 'e5f1d23',
+              message: 'test(hpc): GPU resource metering unit tests',
+              author: 'codex-default',
+              date: new Date(Date.now() - 6 * hr).toISOString(),
+            },
+          ],
+        },
+      ];
+      const DEMO_GITHUB_REPO_BY_NAME = new Map(
+        DEMO_GITHUB_REPOS.flatMap((repo) => ([
+          [repo.name, repo],
+          [repo.fullName, repo],
+        ])),
+      );
+      const DEMO_GITHUB_CACHE_TTL_MS = 5 * 60 * 1000;
+      const demoGithubResponseCache = new Map();
+
+      function normalizeDemoRepoName(value) {
+        const raw = String(value || '').trim().toLowerCase();
+        if (!raw) return 'bosun';
+        if (raw === 'virtengine/bosun') return 'bosun';
+        if (raw === 'virtengine/virtengine') return 'virtengine';
+        return DEMO_GITHUB_REPO_BY_NAME.has(raw) ? DEMO_GITHUB_REPO_BY_NAME.get(raw).name : raw;
+      }
+
+      function getDemoGithubRepo(repoName) {
+        const normalized = normalizeDemoRepoName(repoName);
+        return DEMO_GITHUB_REPO_BY_NAME.get(normalized) || DEMO_GITHUB_REPOS[0];
+      }
+
+      async function fetchDemoGithubJson(url) {
+        const cached = demoGithubResponseCache.get(url);
+        if (cached?.data && (Date.now() - cached.ts) < DEMO_GITHUB_CACHE_TTL_MS) {
+          return cached.data;
+        }
+        if (cached?.promise) {
+          return cached.promise;
+        }
+        const request = _realFetch(url, {
+          headers: {
+            Accept: 'application/vnd.github+json',
+          },
+        }).then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`GitHub API ${response.status}`);
+          }
+          return response.json();
+        }).then((data) => {
+          demoGithubResponseCache.set(url, {
+            ts: Date.now(),
+            data,
+          });
+          return data;
+        }).catch((error) => {
+          demoGithubResponseCache.delete(url);
+          throw error;
+        });
+        demoGithubResponseCache.set(url, {
+          ts: Date.now(),
+          promise: request,
+        });
+        return request;
+      }
+
+      function extractGithubCommitSubject(message) {
+        return String(message || '').split(/\r?\n/, 1)[0].trim();
+      }
+
+      function parseGithubPatchHunks(patchText) {
+        if (!patchText) return [];
+        const lines = String(patchText || '').split('\n');
+        const hunks = [];
+        let currentHunk = null;
+        let oldLine = 0;
+        let newLine = 0;
+
+        for (const rawLine of lines) {
+          if (rawLine.startsWith('@@')) {
+            const match = rawLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            oldLine = match ? Number(match[1]) : 0;
+            newLine = match ? Number(match[2]) : 0;
+            currentHunk = { header: rawLine, lines: [] };
+            hunks.push(currentHunk);
+            continue;
+          }
+          if (!currentHunk) continue;
+
+          const prefix = rawLine[0] || ' ';
+          const content = rawLine.slice(1);
+          if (prefix === '+') {
+            currentHunk.lines.push({
+              type: 'addition',
+              marker: '+',
+              content,
+              oldNumber: null,
+              newNumber: newLine,
+            });
+            newLine += 1;
+            continue;
+          }
+          if (prefix === '-') {
+            currentHunk.lines.push({
+              type: 'deletion',
+              marker: '-',
+              content,
+              oldNumber: oldLine,
+              newNumber: null,
+            });
+            oldLine += 1;
+            continue;
+          }
+          currentHunk.lines.push({
+            type: 'context',
+            marker: ' ',
+            content: prefix === ' ' ? content : rawLine,
+            oldNumber: oldLine || null,
+            newNumber: newLine || null,
+          });
+          oldLine += 1;
+          newLine += 1;
+        }
+
+        return hunks;
+      }
+
+      function buildDemoCommitSummary(repo, item, index) {
+        const refs = [];
+        if (index === 0) {
+          refs.push(`HEAD -> ${repo.defaultBranch}`, `origin/${repo.defaultBranch}`);
+        }
+        return {
+          hash: String(item?.sha || '').trim(),
+          shortHash: String(item?.sha || '').trim().slice(0, 7),
+          parents: Array.isArray(item?.parents) ? item.parents.map((parent) => String(parent?.sha || '').trim()).filter(Boolean) : [],
+          message: extractGithubCommitSubject(item?.commit?.message || ''),
+          author: item?.author?.login || item?.commit?.author?.name || '',
+          email: item?.commit?.author?.email || '',
+          date: item?.commit?.author?.date || '',
+          refs,
+        };
+      }
+
+      function buildDemoCommitDetail(repo, payload) {
+        const files = Array.isArray(payload?.files)
+          ? payload.files.map((file) => ({
+            filename: file?.filename || '',
+            status: file?.status || 'modified',
+            additions: Number(file?.additions || 0),
+            deletions: Number(file?.deletions || 0),
+            hunks: parseGithubPatchHunks(file?.patch || ''),
+          }))
+          : [];
+        const stats = payload?.stats || {};
+        return {
+          hash: String(payload?.sha || '').trim(),
+          shortHash: String(payload?.sha || '').trim().slice(0, 7),
+          parents: Array.isArray(payload?.parents) ? payload.parents.map((parent) => String(parent?.sha || '').trim()).filter(Boolean) : [],
+          subject: extractGithubCommitSubject(payload?.commit?.message || ''),
+          body: String(payload?.commit?.message || '').split(/\r?\n/).slice(1).join('\n').trim(),
+          author: payload?.author?.login || payload?.commit?.author?.name || '',
+          email: payload?.commit?.author?.email || '',
+          date: payload?.commit?.author?.date || '',
+          refs: [payload?.sha ? `origin/${repo.defaultBranch}` : ''].filter(Boolean),
+          files,
+          totalAdditions: Number(stats?.additions || files.reduce((sum, file) => sum + Number(file.additions || 0), 0)),
+          totalDeletions: Number(stats?.deletions || files.reduce((sum, file) => sum + Number(file.deletions || 0), 0)),
+        };
+      }
+
+      function buildFallbackCommitSummaries(repoName, maxCount) {
+        const repo = getDemoGithubRepo(repoName);
+        return repo.fallbackCommits
+          .slice(0, Math.max(1, maxCount))
+          .map((commit, index) => ({
+            hash: commit.hash,
+            shortHash: commit.hash.slice(0, 7),
+            parents: [],
+            message: commit.message,
+            author: commit.author,
+            email: '',
+            date: commit.date,
+            refs: index === 0 ? [`HEAD -> ${repo.defaultBranch}`, `origin/${repo.defaultBranch}`] : [],
+          }));
+      }
+
+      function buildFallbackCommitDetail(repoName, commitHash) {
+        const repo = getDemoGithubRepo(repoName);
+        const commit = buildFallbackCommitSummaries(repo.name, repo.fallbackCommits.length)
+          .find((entry) => entry.hash === commitHash || entry.shortHash === String(commitHash || '').slice(0, 7));
+        if (!commit) return null;
+        return {
+          hash: commit.hash,
+          shortHash: commit.shortHash,
+          parents: [],
+          subject: commit.message,
+          body: '',
+          author: commit.author,
+          email: '',
+          date: commit.date,
+          refs: commit.refs || [],
+          files: [],
+          totalAdditions: 0,
+          totalDeletions: 0,
+        };
+      }
+
+      async function loadDemoRepoCommits(repoName, maxCount) {
+        const repo = getDemoGithubRepo(repoName);
+        const count = Math.min(100, Math.max(6, Number(maxCount || 40)));
+        const items = await fetchDemoGithubJson(
+          `https://api.github.com/repos/${repo.fullName}/commits?sha=${encodeURIComponent(repo.defaultBranch)}&per_page=${count}`,
+        );
+        return Array.isArray(items)
+          ? items.map((item, index) => buildDemoCommitSummary(repo, item, index))
+          : [];
+      }
+
+      async function loadDemoCommitDetail(repoName, commitHash) {
+        const repo = getDemoGithubRepo(repoName);
+        const payload = await fetchDemoGithubJson(
+          `https://api.github.com/repos/${repo.fullName}/commits/${encodeURIComponent(commitHash)}`,
+        );
+        return buildDemoCommitDetail(repo, payload);
+      }
+
       /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
       async function handleApi(path, method, body) {
         // Normalize: strip query string for route matching
@@ -5043,20 +5326,54 @@
         if (route === '/api/git/repos')
           return {
             ok: true,
-            data: (STATE.sharedWorkspaces.find(w => w.id === STATE.activeWorkspaceId)?.repos || []).map((repo) => ({
+            data: DEMO_GITHUB_REPOS.map((repo) => ({
               name: repo.name,
               path: `/home/demo/repos/${repo.name}`,
+              fullName: repo.fullName,
+              defaultBranch: repo.defaultBranch,
             })),
           };
-        if (route === '/api/recent-commits')
-          return {
-            ok: true,
-            data: [
-              { hash: 'f464d9a', message: 'fix(ui): stretch chat to bottom, remove bot-fab, fix Bot Controls', author: 'bosun-agent', date: new Date(Date.now() - 1 * hr).toISOString() },
-              { hash: 'e39aa3c', message: 'feat(ui): VS Code-style collapsible sidebar and session rail', author: 'bosun-agent', date: new Date(Date.now() - 4 * hr).toISOString() },
-              { hash: 'c2d8f7b', message: 'fix(api): stabilize shared state sync retries', author: 'bosun-agent', date: new Date(Date.now() - 8 * hr).toISOString() },
-            ],
-          };
+        if (route === '/api/recent-commits') {
+          const repoName = normalizeDemoRepoName(params.get('repo') || params.get('name') || 'bosun');
+          const count = Math.min(100, Math.max(6, Number(params.get('count') || '40')));
+          try {
+            return {
+              ok: true,
+              data: await loadDemoRepoCommits(repoName, count),
+            };
+          } catch (error) {
+            addLog('warn', 'github', `Live commit sync failed for ${repoName}: ${error?.message || error}`);
+            return {
+              ok: true,
+              data: buildFallbackCommitSummaries(repoName, count),
+              error: String(error?.message || error || 'Failed to fetch live commits'),
+            };
+          }
+        }
+        if (route.match(/^\/api\/commit-detail\/[^/]+$/)) {
+          const commitHash = route.split('/').pop() || '';
+          const repoName = normalizeDemoRepoName(params.get('repo') || 'bosun');
+          try {
+            return {
+              ok: true,
+              data: await loadDemoCommitDetail(repoName, commitHash),
+            };
+          } catch (error) {
+            addLog('warn', 'github', `Live commit detail sync failed for ${repoName}:${commitHash.slice(0, 7)}: ${error?.message || error}`);
+            const fallback = buildFallbackCommitDetail(repoName, commitHash);
+            if (fallback) {
+              return {
+                ok: true,
+                data: fallback,
+                error: String(error?.message || error || 'Failed to fetch commit detail'),
+              };
+            }
+            return {
+              ok: false,
+              error: String(error?.message || error || 'Failed to fetch commit detail'),
+            };
+          }
+        }
 
         // ── Sessions ──
         if (route === '/api/sessions' && method === 'GET') {
@@ -5657,7 +5974,7 @@
   </div>
 
   <!-- Load the real app.js immediately -->
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js" id="app-module"></script>
 
   <!-- ═══ BOT MENU ENGINE (multi-layer screen navigation) ═══════════ -->
   <script type="module">
@@ -6305,11 +6622,36 @@
         if (e.key === 'Escape' && panelOpen) closePanel();
       });
 
-      // Fallback: if ES modules fail to load within 12s, show an error
-      setTimeout(function () {
+      function showBootFailure(message) {
         var el = document.getElementById('boot-loader');
-        if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">:alert: Failed to load</div><div style="font-size:12px;color:#64748b">Try refreshing. If this persists, run npm install in the bosun directory.</div></div>';
-      }, 12000);
+        if (!el) return;
+        el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">:alert: Failed to load</div><div style="font-size:12px;color:#64748b">' + message + '</div></div>';
+      }
+
+      var bootReady = false;
+      var bootTimeoutId = setTimeout(function () {
+        if (!bootReady) {
+          showBootFailure('Try refreshing. If this persists, run npm install in the bosun directory.');
+        }
+      }, 20000);
+
+      globalThis.addEventListener('bosun:app-mounted', function handleMounted() {
+        bootReady = true;
+        clearTimeout(bootTimeoutId);
+        globalThis.removeEventListener('bosun:app-mounted', handleMounted);
+      });
+
+      // If app.js already mounted before this listener was registered, clear the timeout now
+      if (globalThis.__bosunAppMounted) {
+        bootReady = true;
+        clearTimeout(bootTimeoutId);
+      }
+
+      var appModuleScript = document.getElementById('app-module');
+      appModuleScript?.addEventListener('error', function () {
+        clearTimeout(bootTimeoutId);
+        showBootFailure('The demo app bundle failed to load.');
+      });
 
     })();
   </script>

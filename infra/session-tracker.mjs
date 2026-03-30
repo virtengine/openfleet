@@ -11,7 +11,7 @@
  * @module session-tracker
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -52,7 +52,71 @@ const MAX_MESSAGE_CHARS = 100_000;
 
 /** Maximum total sessions to keep in memory. */
 const MAX_SESSIONS = 100;
-const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "idle", "archived"]);
+const TERMINAL_SESSION_STATUSES = new Set([
+  "completed",
+  "failed",
+  "idle",
+  "archived",
+  "stalled",
+  "blocked_by_repo",
+  "blocked_by_env",
+  "no_output",
+  "implementation_done_commit_blocked",
+]);
+
+const SESSION_PLACEHOLDER_OUTPUTS = new Set([
+  "continued",
+  "model response continued",
+  "turn completed",
+  "session completed",
+  "agent is composing a response...",
+  "agent is composing a response…",
+]);
+
+const REPO_BLOCK_PATTERNS = [
+  /merge conflict/i,
+  /unmerged files/i,
+  /protected branch/i,
+  /non-fast-forward/i,
+  /failed to push/i,
+  /push rejected/i,
+  /cannot rebase/i,
+  /pre-push hook/i,
+  /hook declined/i,
+  /working tree has changes/i,
+  /index contains uncommitted changes/i,
+];
+
+const ENV_BLOCK_PATTERNS = [
+  /prompt quality/i,
+  /missing task (description|url)/i,
+  /missing tool/i,
+  /not recognized as an internal or external command/i,
+  /command not found/i,
+  /spawn .*enoent/i,
+  /enoent/i,
+  /permission denied/i,
+  /access is denied/i,
+  /authentication failed/i,
+  /not authenticated/i,
+  /missing credentials/i,
+  /token/i,
+  /connection refused/i,
+  /connection reset/i,
+  /network/i,
+  /timeout/i,
+  /sdk unavailable/i,
+  /failed to list models/i,
+];
+
+const COMMIT_BLOCK_PATTERNS = [
+  /commit blocked/i,
+  /implementation_done_commit_blocked/i,
+  /git commit/i,
+  /git push/i,
+  /pre-push hook/i,
+  /hook/i,
+];
 
 function isTerminalSessionStatus(status) {
   return TERMINAL_SESSION_STATUSES.has(String(status || "").trim().toLowerCase());
@@ -72,7 +136,84 @@ function resolveSessionTrackerPersistDir(options = {}) {
 export const _test = Object.freeze({
   resolveSessionTrackerSourceRepoRoot,
   resolveSessionTrackerPersistDir,
+  deriveTerminalSessionStatus,
 });
+
+function normalizeSessionStatus(status, fallback = "completed") {
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized || fallback;
+}
+
+function getSessionMessageText(message) {
+  return String(message?.content || message?.summary || "").trim();
+}
+
+function hasMeaningfulSessionOutput(session) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  return messages.some((message) => {
+    const text = getSessionMessageText(message);
+    if (!text) return false;
+    const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!normalized || SESSION_PLACEHOLDER_OUTPUTS.has(normalized)) return false;
+    const messageType = String(message?.type || "").trim().toLowerCase();
+    const messageRole = String(message?.role || "").trim().toLowerCase();
+    if (messageType === "agent_message" || messageType === "assistant" || messageRole === "assistant") {
+      return true;
+    }
+    if (message?.type === "tool_call" || message?.type === "tool_result") return true;
+    if (message?.type === "error") return true;
+    return /edit|write|create|patch|commit|push|search|diff|test/i.test(text);
+  });
+}
+
+function classifyBlockedSessionText(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (COMMIT_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "implementation_done_commit_blocked";
+  }
+  if (REPO_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "blocked_by_repo";
+  }
+  if (ENV_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "blocked_by_env";
+  }
+  return null;
+}
+
+function deriveIdleTerminalSessionStatus(session) {
+  return hasMeaningfulSessionOutput(session) ? "stalled" : "no_output";
+}
+
+function deriveTerminalSessionStatus(session, requestedStatus = "completed") {
+  const normalizedRequested = normalizeSessionStatus(requestedStatus);
+  if (
+    normalizedRequested !== "completed" &&
+    normalizedRequested !== "idle" &&
+    normalizedRequested !== "active"
+  ) {
+    return normalizedRequested;
+  }
+
+  if (normalizedRequested === "idle" || normalizedRequested === "active") {
+    return deriveIdleTerminalSessionStatus(session);
+  }
+
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  if (!messages.length || !hasMeaningfulSessionOutput(session)) {
+    return "no_output";
+  }
+
+  const recentText = messages
+    .slice(-8)
+    .map((message) => getSessionMessageText(message))
+    .filter(Boolean)
+    .join("\n");
+  const blockedStatus = classifyBlockedSessionText(recentText);
+  if (blockedStatus) return blockedStatus;
+
+  return "completed";
+}
 
 function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
   if (Number.isFinite(explicitMax)) {
@@ -86,6 +227,52 @@ function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
     return DEFAULT_CHAT_MAX_MESSAGES;
   }
   return fallbackMax;
+}
+
+function buildSessionRecordFromPersistedData(data, idleThresholdMs) {
+  if (!data || typeof data !== "object") return null;
+  const id = String(data.id || data.taskId || "").trim();
+  if (!id) return null;
+
+  const createdAt = String(data.createdAt || "").trim() || new Date().toISOString();
+  const lastActiveAt = String(data.lastActiveAt || data.updatedAt || "").trim() || createdAt;
+  const lastActiveMs = Date.parse(lastActiveAt) || Date.parse(createdAt) || Date.now();
+
+  let status = normalizeSessionStatus(data.status || "completed");
+  let endedAt = data.endedAt || null;
+  if (status === "active" && lastActiveMs > 0) {
+    const ageMs = Date.now() - lastActiveMs;
+    if (ageMs > idleThresholdMs) {
+      status = deriveIdleTerminalSessionStatus(data);
+      endedAt = endedAt || lastActiveMs;
+    }
+  }
+
+  const messages = Array.isArray(data.messages) ? data.messages : [];
+  return {
+    id,
+    taskId: data.taskId || id,
+    taskTitle: data.taskTitle || data.title || data.metadata?.title || id,
+    sessionKey:
+      String(data.sessionKey || "").trim() ||
+      `${data.taskId || id}:${data.startedAt || lastActiveMs}:${endedAt || data.startedAt || lastActiveMs}`,
+    type: data.type || "task",
+    status,
+    createdAt,
+    lastActiveAt,
+    startedAt: data.startedAt || (createdAt ? new Date(createdAt).getTime() : lastActiveMs),
+    endedAt,
+    messages,
+    totalEvents: messages.length,
+    turnCount: data.turnCount || 0,
+    turns: Array.isArray(data.turns) ? data.turns : [],
+    accumulatedAt: data.accumulatedAt || null,
+    lastActivityAt: lastActiveMs,
+    metadata: data.metadata || {},
+    insights: data.insights || buildSessionInsights({ messages }),
+    trajectory: data.trajectory || { version: 1, replayable: true, steps: [] },
+    summary: data.summary || null,
+  };
 }
 
 // ── Message Types ───────────────────────────────────────────────────────────
@@ -106,12 +293,114 @@ function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
  * @property {number|null} endedAt
  * @property {SessionMessage[]} messages
  * @property {number} totalEvents     - Total events received (before truncation)
+ * @property {Array<Object>} [turns]   - Per-turn rollup timeline
  * @property {string} status          - "active"|"completed"|"idle"|"failed"
  * @property {number} lastActivityAt  - Timestamp of last event
  */
 
+function parseTimestampMs(value, fallback = Date.now()) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeTokenNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? Math.round(num) : 0;
+}
+
+function extractUsageFromMeta(meta) {
+  if (!meta || typeof meta !== "object") return null;
+  const usage = meta.usage && typeof meta.usage === "object" ? meta.usage : meta;
+  const inputTokens = normalizeTokenNumber(
+    usage.inputTokens ?? usage.prompt_tokens ?? usage.promptTokens ?? usage.input_tokens,
+  );
+  const outputTokens = normalizeTokenNumber(
+    usage.outputTokens ?? usage.completion_tokens ?? usage.completionTokens ?? usage.output_tokens,
+  );
+  const totalTokens = normalizeTokenNumber(
+    usage.totalTokens ?? usage.total_tokens ?? (inputTokens + outputTokens),
+  );
+  if (inputTokens <= 0 && outputTokens <= 0 && totalTokens <= 0) return null;
+  return { inputTokens, outputTokens, totalTokens };
+}
+
+function ensureSessionTurns(session) {
+  if (!Array.isArray(session.turns)) session.turns = [];
+  return session.turns;
+}
+
+function getOrCreateTurnEntry(session, turnIndex, timestamp) {
+  const turns = ensureSessionTurns(session);
+  const safeTurnIndex = Number.isFinite(Number(turnIndex)) ? Number(turnIndex) : Math.max(0, turns.length);
+  let entry = turns.find((turn) => turn?.turnIndex === safeTurnIndex);
+  if (!entry) {
+    entry = {
+      turnIndex: safeTurnIndex,
+      startedAt: timestamp,
+      endedAt: timestamp,
+      durationMs: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      userMessageId: null,
+      assistantMessageId: null,
+      status: "pending",
+    };
+    turns.push(entry);
+    turns.sort((a, b) => Number(a?.turnIndex || 0) - Number(b?.turnIndex || 0));
+  }
+  return entry;
+}
+
+function updateTurnTimeline(session, msg) {
+  if (!session || !msg) return;
+  const timestampMs = parseTimestampMs(msg.timestamp, session.lastActivityAt || Date.now());
+  const derivedTurnIndex = Number.isFinite(Number(msg.turnIndex))
+    ? Number(msg.turnIndex)
+    : Math.max(0, Number(session.turnCount || 0) - (String(msg.role || "").toLowerCase() === "assistant" ? 1 : 0));
+  const turnIndex = derivedTurnIndex;
+  const turn = getOrCreateTurnEntry(session, turnIndex, timestampMs);
+  turn.startedAt = Math.min(Number(turn.startedAt || timestampMs), timestampMs);
+  turn.endedAt = Math.max(Number(turn.endedAt || timestampMs), timestampMs);
+
+  const role = String(msg.role || "").toLowerCase();
+  if (role === "user") {
+    turn.userMessageId = msg.id || turn.userMessageId;
+    turn.startedAt = timestampMs;
+    if (turn.status === "pending") turn.status = "in_progress";
+  }
+  if (role === "assistant") {
+    turn.assistantMessageId = msg.id || turn.assistantMessageId;
+    turn.endedAt = timestampMs;
+    turn.status = "completed";
+  }
+
+  const usage = extractUsageFromMeta(msg.meta);
+  if (usage) {
+    turn.inputTokens = Math.max(turn.inputTokens || 0, usage.inputTokens || 0);
+    turn.outputTokens = Math.max(turn.outputTokens || 0, usage.outputTokens || 0);
+    turn.totalTokens = Math.max(turn.totalTokens || 0, usage.totalTokens || 0);
+    if (!session.insights || typeof session.insights !== "object") {
+      session.insights = {};
+    }
+    const priorUsage = extractUsageFromMeta(session.insights.tokenUsage) || {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    };
+    session.insights.tokenUsage = {
+      inputTokens: Math.max(priorUsage.inputTokens, usage.inputTokens || 0),
+      outputTokens: Math.max(priorUsage.outputTokens, usage.outputTokens || 0),
+      totalTokens: Math.max(priorUsage.totalTokens, usage.totalTokens || 0),
+    };
+  }
+  turn.durationMs = Math.max(0, Number(turn.endedAt || timestampMs) - Number(turn.startedAt || timestampMs));
+}
+
 /** Debounce interval for disk writes (ms). */
 const FLUSH_INTERVAL_MS = 2000;
+const DERIVED_STATE_REFRESH_MS = 250;
+const PERSISTED_SESSION_LIST_CACHE_TTL_MS = 5000;
 
 const SESSION_EVENT_LISTENERS = new Set();
 const SESSION_STATE_LISTENERS = new Set();
@@ -141,6 +430,9 @@ function emitSessionEvent(session, message) {
       status: session.status || "active",
       lastActiveAt: session.lastActiveAt || new Date().toISOString(),
       turnCount: session.turnCount || 0,
+      turns: Array.isArray(session.turns)
+        ? session.turns.map((turn) => ({ ...turn }))
+        : [],
     },
   };
   for (const listener of SESSION_EVENT_LISTENERS) {
@@ -166,6 +458,9 @@ function emitSessionStateEvent(session, reason, extra = {}) {
       status: session.status || "active",
       lastActiveAt: session.lastActiveAt || new Date().toISOString(),
       turnCount: session.turnCount || 0,
+      turns: Array.isArray(session.turns)
+        ? session.turns.map((turn) => ({ ...turn }))
+        : [],
       title: session.taskTitle || session.title || null,
     },
     event: {
@@ -201,11 +496,17 @@ export class SessionTracker {
   /** @type {Set<string>} session IDs with pending disk writes */
   #dirty = new Set();
 
+  /** @type {{ loadedAt: number, sessions: Array<Object> }} */
+  #persistedSummaryCache = { loadedAt: 0, sessions: [] };
+
   /** @type {ReturnType<typeof setInterval>|null} */
   #flushTimer = null;
 
   /** @type {ReturnType<typeof setInterval>|null} */
   #reaperTimer = null;
+
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  #derivedRefreshTimers = new Map();
 
   /**
    * @param {Object} [options]
@@ -221,7 +522,6 @@ export class SessionTracker {
     if (this.#persistDir) {
       this.#ensureDir();
       this.#loadFromDisk();
-      this.#purgeExcessFiles();
       this.#flushTimer = setInterval(() => this.#flushDirty(), FLUSH_INTERVAL_MS);
       if (this.#flushTimer.unref) this.#flushTimer.unref();
     }
@@ -259,6 +559,7 @@ export class SessionTracker {
       messages: [],
       totalEvents: 0,
       turnCount: 0,
+      turns: [],
       status: "active",
       accumulatedAt: null,
       lastActivityAt: Date.now(),
@@ -318,11 +619,12 @@ export class SessionTracker {
         timestamp: new Date().toISOString(),
       };
       session.messages.push(msg);
+      updateTurnTimeline(session, msg);
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
       this.#appendTrajectoryStep(session, event);
-      this.#refreshDerivedState(session);
+      this.#scheduleDerivedStateRefresh(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
       return;
@@ -331,6 +633,8 @@ export class SessionTracker {
     // Direct message format (role/content)
     if (event && event.role && event.content !== undefined) {
       markActivity();
+      const role = String(event.role || "").toLowerCase();
+      const isAssistantTurn = role === "assistant";
       const msg = {
         id: event.id || `msg-${Date.now()}-${randomToken(6)}`,
         type: event.type || undefined,
@@ -350,19 +654,25 @@ export class SessionTracker {
             : undefined,
         _cachedLogId: event._cachedLogId || undefined,
       };
-      session.turnCount++;
+      if (isAssistantTurn) {
+        session.turnCount += 1;
+      }
       session.messages.push(msg);
+      updateTurnTimeline(session, msg);
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
       this.#appendTrajectoryStep(session, event);
-      this.#refreshDerivedState(session);
+      this.#scheduleDerivedStateRefresh(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
       return;
     }
 
     const msg = this.#normalizeEvent(event);
+    if (msg && !Number.isFinite(Number(msg.turnIndex))) {
+      msg.turnIndex = session.turnCount || 0;
+    }
     if (!msg) {
       return; // Ignore low-signal events that should not mask idle/stalled sessions
     }
@@ -370,11 +680,12 @@ export class SessionTracker {
     markActivity();
     // Push to ring buffer (keep only last N)
     session.messages.push(msg);
+    updateTurnTimeline(session, msg);
     if (Number.isFinite(maxMessages) && maxMessages > 0) {
       while (session.messages.length > maxMessages) session.messages.shift();
     }
     this.#appendTrajectoryStep(session, event);
-    this.#refreshDerivedState(session);
+    this.#scheduleDerivedStateRefresh(session);
     this.#markDirty(taskId);
     emitSessionEvent(session, msg);
   }
@@ -382,18 +693,18 @@ export class SessionTracker {
   /**
    * Mark a session as completed.
    * @param {string} taskId
-   * @param {"completed"|"failed"|"idle"} [status="completed"]
+   * @param {string} [status="completed"]
    */
   endSession(taskId, status = "completed") {
     const session = this.#sessions.get(taskId);
     if (!session) return;
 
     session.endedAt = Date.now();
-    session.status = status;
-    this.#refreshDerivedState(session);
+    session.status = deriveTerminalSessionStatus(session, status);
+    this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
-    emitSessionStateEvent(session, "session-ended", { status });
+    emitSessionStateEvent(session, "session-ended", { status: session.status });
   }
 
   /**
@@ -561,6 +872,7 @@ export class SessionTracker {
     this.#accumulateCompletedSession(session, taskId);
     this.#sessions.delete(taskId);
     this.#dirty.delete(taskId);
+    this.#invalidatePersistedSummaryCache();
     // Remove persisted session file if it exists
     if (this.#persistDir) {
       try {
@@ -619,6 +931,7 @@ export class SessionTracker {
       messages: [],
       totalEvents: 0,
       turnCount: 0,
+      turns: [],
       lastActivityAt: Date.now(),
       accumulatedAt: null,
       metadata,
@@ -637,20 +950,44 @@ export class SessionTracker {
   /**
    * List all sessions (metadata only, no full messages).
    * Sorted by lastActiveAt descending.
+   * @param {{ includePersisted?: boolean }} [options]
    * @returns {Array<Object>}
    */
-  listAllSessions() {
-    const list = [];
-    for (const s of this.#sessions.values()) {
-      const progress = s.status === "active"
-        ? this.getProgressStatus(s.id || s.taskId)
+  listAllSessions(options = {}) {
+    const includePersisted = options.includePersisted !== false;
+    const byId = new Map();
+    const addSummary = (s, options = {}) => {
+      if (!s) return;
+      const sessionId = s.id || s.taskId;
+      const includeRuntimeProgress = options.includeRuntimeProgress !== false;
+      const progress = includeRuntimeProgress && s.status === "active"
+        ? this.getProgressStatus(sessionId)
         : null;
       const derivedStatus = progress?.status === "ended"
         ? "completed"
         : (progress?.status || s.status);
       const lastActiveAt = s.lastActiveAt || new Date(s.lastActivityAt).toISOString();
-      list.push({
-        id: s.id || s.taskId,
+      const turns = Array.isArray(s.turns)
+        ? s.turns.map((turn) => ({ ...turn }))
+        : (Array.isArray(s.insights?.turnTimeline)
+          ? s.insights.turnTimeline.map((turn) => ({ ...turn }))
+          : []);
+      const turnTokenUsage = turns.reduce((acc, turn) => ({
+        inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
+        outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
+        totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
+      }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+      const tokenUsage = s.insights?.tokenUsage
+        || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
+          ? turnTokenUsage
+          : null);
+      const effectiveTokenUsage = extractUsageFromMeta(tokenUsage) || {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      };
+      byId.set(sessionId, {
+        id: sessionId,
         taskId: s.taskId,
         title: s.taskTitle || s.title || null,
         type: s.type || "task",
@@ -663,6 +1000,11 @@ export class SessionTracker {
         workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
         branch: String(s?.metadata?.branch || "").trim() || null,
         turnCount: s.turnCount || 0,
+        turns,
+        tokenCount: effectiveTokenUsage?.totalTokens || 0,
+        inputTokens: effectiveTokenUsage?.inputTokens || 0,
+        outputTokens: effectiveTokenUsage?.outputTokens || 0,
+        tokenUsage: effectiveTokenUsage,
         createdAt: s.createdAt || new Date(s.startedAt).toISOString(),
         lastActiveAt,
         idleMs: progress?.idleMs ?? 0,
@@ -672,7 +1014,27 @@ export class SessionTracker {
         lastMessage: this.#lastMessagePreview(s),
         insights: s.insights || null,
       });
+    };
+
+    for (const s of this.#sessions.values()) {
+      addSummary(s);
     }
+
+    if (includePersisted) {
+      for (const persisted of this.#readPersistedSessionSummaries()) {
+        if (!persisted) continue;
+        const sessionId = persisted.id || persisted.taskId;
+        if (!sessionId || byId.has(sessionId)) continue;
+        byId.set(sessionId, {
+          ...persisted,
+          turns: Array.isArray(persisted.turns)
+            ? persisted.turns.map((turn) => ({ ...turn }))
+            : [],
+        });
+      }
+    }
+
+    const list = [...byId.values()];
     list.sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
     return list;
   }
@@ -683,7 +1045,25 @@ export class SessionTracker {
    * @returns {Object|null}
    */
   getSessionMessages(sessionId) {
-    const session = this.#sessions.get(sessionId);
+    let session = this.#sessions.get(sessionId);
+    if (!session && this.#persistDir) {
+      try {
+        const filePath = this.#sessionFilePath(sessionId);
+        if (existsSync(filePath)) {
+          const raw = readFileSync(filePath, "utf8");
+          const restored = buildSessionRecordFromPersistedData(JSON.parse(raw || "{}"), this.#idleThresholdMs);
+          if (restored) {
+            if (this.#sessions.size >= MAX_SESSIONS && !this.#sessions.has(restored.id)) {
+              this.#evictOldest();
+            }
+            this.#sessions.set(restored.id, restored);
+            session = restored;
+          }
+        }
+      } catch {
+        session = null;
+      }
+    }
     if (!session) return null;
     return { ...session };
   }
@@ -705,14 +1085,16 @@ export class SessionTracker {
   updateSessionStatus(sessionId, status) {
     const session = this.#sessions.get(sessionId);
     if (!session) return;
-    session.status = status;
-    if (status === "completed" || status === "archived" || status === "failed" || status === "idle") {
+    session.status = isTerminalSessionStatus(status)
+      ? deriveTerminalSessionStatus(session, status)
+      : normalizeSessionStatus(status, "active");
+    if (isTerminalSessionStatus(session.status)) {
       session.endedAt = Date.now();
     }
-    this.#refreshDerivedState(session);
+    this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#accumulateCompletedSession(session, sessionId);
     this.#markDirty(sessionId);
-    emitSessionStateEvent(session, "session-status", { status });
+    emitSessionStateEvent(session, "session-status", { status: session.status });
   }
 
   /**
@@ -791,7 +1173,7 @@ export class SessionTracker {
     target.editedAt = new Date().toISOString();
     session.lastActivityAt = Date.now();
     session.lastActiveAt = new Date().toISOString();
-    this.#refreshDerivedState(session);
+    this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#markDirty(sessionId);
 
     return { ok: true, message: { ...target }, index: idx };
@@ -823,6 +1205,12 @@ export class SessionTracker {
       clearInterval(this.#reaperTimer);
       this.#reaperTimer = null;
     }
+    for (const [sessionId, timer] of this.#derivedRefreshTimers.entries()) {
+      clearTimeout(timer);
+      this.#derivedRefreshTimers.delete(sessionId);
+      const session = this.#sessions.get(sessionId);
+      if (session) this.#refreshDerivedState(session);
+    }
     this.#flushDirty();
   }
 
@@ -834,6 +1222,7 @@ export class SessionTracker {
   refreshFromDisk() {
     if (!this.#persistDir) return;
     this.#ensureDir();
+    this.#invalidatePersistedSummaryCache();
     let files = [];
     try {
       files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
@@ -873,35 +1262,10 @@ export class SessionTracker {
     const available = MAX_SESSIONS - this.#sessions.size;
     const toLoad = parsed.slice(0, Math.max(0, available));
 
-    for (const { data, lastActive } of toLoad) {
-      const sessionId = String(data.id || data.taskId || "").trim();
-      // Heal stale "active" sessions
-      let status = data.status || "completed";
-      let endedAt = data.endedAt || null;
-      if (status === "active" && lastActive > 0) {
-        const ageMs = Date.now() - lastActive;
-        if (ageMs > this.#idleThresholdMs) {
-          status = "completed";
-          endedAt = endedAt || lastActive;
-        }
-      }
-      this.#sessions.set(sessionId, {
-        taskId: data.taskId || sessionId,
-        taskTitle: data.title || data.taskTitle || null,
-        id: sessionId,
-        type: data.type || "task",
-        startedAt: Date.parse(data.createdAt || "") || Date.now(),
-        createdAt: data.createdAt || new Date().toISOString(),
-        lastActiveAt: data.lastActiveAt || data.updatedAt || new Date().toISOString(),
-        endedAt,
-        messages: Array.isArray(data.messages) ? data.messages : [],
-        totalEvents: Array.isArray(data.messages) ? data.messages.length : 0,
-        turnCount: data.turnCount || 0,
-        status,
-        lastActivityAt: lastActive || Date.now(),
-        metadata: data.metadata || {},
-        insights: data.insights || buildSessionInsights({ messages: data.messages || [] }),
-      });
+    for (const { data } of toLoad) {
+      const restored = buildSessionRecordFromPersistedData(data, this.#idleThresholdMs);
+      if (!restored) continue;
+      this.#sessions.set(restored.id, restored);
     }
   }
 
@@ -952,7 +1316,7 @@ export class SessionTracker {
       if (session.status !== "active") continue;
       const idleMs = now - (session.lastActivityAt || session.startedAt || now);
       if (idleMs > this.#idleThresholdMs) {
-        session.status = "completed";
+        session.status = deriveIdleTerminalSessionStatus(session);
         session.endedAt = now;
         this.#refreshDerivedState(session);
         this.#accumulateCompletedSession(session, id);
@@ -993,7 +1357,16 @@ export class SessionTracker {
     const startedAt = Number.isFinite(Number(session.startedAt))
       ? Number(session.startedAt)
       : endedAt;
-    const tokenUsage = session.insights?.tokenUsage || null;
+    const turns = Array.isArray(session.turns) ? session.turns : [];
+    const turnTokenUsage = turns.reduce((acc, turn) => ({
+      inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
+      outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
+      totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
+    }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    const tokenUsage = session.insights?.tokenUsage
+      || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
+        ? turnTokenUsage
+        : null);
 
     addCompletedSession({
       id: session.id || taskId,
@@ -1102,6 +1475,37 @@ export class SessionTracker {
         ...session,
         insights: null,
       });
+      const priorTurns = Array.isArray(session.turns) ? session.turns : [];
+      const priorTurnsByIndex = new Map(
+        priorTurns.map((turn) => [Number(turn?.turnIndex || 0), turn]),
+      );
+      session.turns = Array.isArray(session.insights?.turnTimeline)
+        ? session.insights.turnTimeline.map((turn) => {
+            const turnIndex = Number(turn?.turnIndex || 0);
+            const priorTurn = priorTurnsByIndex.get(turnIndex) || {};
+            return {
+              turnIndex,
+              startedAt: turn?.startedAt ? parseTimestampMs(turn.startedAt) : (priorTurn.startedAt ?? null),
+              endedAt: turn?.endedAt ? parseTimestampMs(turn.endedAt) : (priorTurn.endedAt ?? null),
+              durationMs: Math.max(0, Number(turn?.durationMs || priorTurn.durationMs || 0)),
+              inputTokens: Math.max(
+                normalizeTokenNumber(turn?.inputTokens),
+                normalizeTokenNumber(priorTurn.inputTokens),
+              ),
+              outputTokens: Math.max(
+                normalizeTokenNumber(turn?.outputTokens),
+                normalizeTokenNumber(priorTurn.outputTokens),
+              ),
+              totalTokens: Math.max(
+                normalizeTokenNumber(turn?.totalTokens),
+                normalizeTokenNumber(priorTurn.totalTokens),
+              ),
+              userMessageId: priorTurn.userMessageId || null,
+              assistantMessageId: priorTurn.assistantMessageId || null,
+              status: priorTurn.status || (turn?.endedAt ? "completed" : "in_progress"),
+            };
+          })
+        : priorTurns;
     } catch {
       // Inspector insights are best-effort only.
     }
@@ -1123,9 +1527,55 @@ export class SessionTracker {
     }
   }
 
+  #scheduleDerivedStateRefresh(session, options = {}) {
+    if (!session) return;
+    const sessionId = String(session.id || session.taskId || "").trim();
+    if (!sessionId) {
+      this.#refreshDerivedState(session);
+      return;
+    }
+    const force = options.force === true;
+    const existingTimer = this.#derivedRefreshTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.#derivedRefreshTimers.delete(sessionId);
+    }
+    if (force) {
+      this.#refreshDerivedState(session);
+      session._derivedStateRefreshedAt = Date.now();
+      return;
+    }
+    const now = Date.now();
+    const lastRefreshedAt = Number(session._derivedStateRefreshedAt || 0);
+    const elapsedMs = now - lastRefreshedAt;
+    if (elapsedMs >= DERIVED_STATE_REFRESH_MS) {
+      this.#refreshDerivedState(session);
+      session._derivedStateRefreshedAt = now;
+      return;
+    }
+    const delayMs = Math.max(0, DERIVED_STATE_REFRESH_MS - elapsedMs);
+    const timer = setTimeout(() => {
+      this.#derivedRefreshTimers.delete(sessionId);
+      const currentSession = this.#sessions.get(sessionId);
+      if (!currentSession) return;
+      this.#refreshDerivedState(currentSession);
+      currentSession._derivedStateRefreshedAt = Date.now();
+    }, delayMs);
+    if (timer.unref) timer.unref();
+    this.#derivedRefreshTimers.set(sessionId, timer);
+  }
+
   #ensureDir() {
     if (this.#persistDir && !existsSync(this.#persistDir)) {
       mkdirSync(this.#persistDir, { recursive: true });
+    }
+  }
+
+  #safeSessionFileMtime(file) {
+    try {
+      return statSync(resolve(this.#persistDir, file)).mtimeMs;
+    } catch {
+      return 0;
     }
   }
 
@@ -1142,6 +1592,8 @@ export class SessionTracker {
       const session = this.#sessions.get(sessionId);
       if (!session) continue;
       try {
+        this.#refreshDerivedState(session);
+        session._derivedStateRefreshedAt = Date.now();
         const filePath = this.#sessionFilePath(sessionId);
         const data = {
           id: session.id || session.taskId,
@@ -1157,6 +1609,7 @@ export class SessionTracker {
           endedAt: session.endedAt || null,
           accumulatedAt: session.accumulatedAt || null,
           turnCount: session.turnCount || 0,
+          turns: Array.isArray(session.turns) ? session.turns : [],
           messages: session.messages || [],
           metadata: session.metadata || {},
           insights: session.insights || null,
@@ -1169,6 +1622,7 @@ export class SessionTracker {
       }
     }
     this.#dirty.clear();
+    this.#invalidatePersistedSummaryCache();
   }
 
   /** @type {Set<string>} filenames loaded during #loadFromDisk (for purge) */
@@ -1179,81 +1633,129 @@ export class SessionTracker {
     try {
       const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
 
-      // Pre-parse all session files with their timestamps for sorting
-      /** @type {Array<{file: string, data: Object, lastActive: number}>} */
-      const parsed = [];
-      for (const file of files) {
+      // Keep startup bounded by loading only the newest session files into memory.
+      // Older sessions remain on disk and are listed/lazy-loaded on demand.
+      const recentFiles = files
+        .map((file) => ({ file, mtimeMs: Number(this.#safeSessionFileMtime(file)) || 0 }))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .slice(0, MAX_SESSIONS);
+
+      for (const { file } of recentFiles) {
         try {
           const raw = readFileSync(resolve(this.#persistDir, file), "utf8");
           const data = JSON.parse(raw);
           if (!data.id && !data.taskId) continue;
-          const id = data.id || data.taskId;
-          if (this.#sessions.has(id)) continue; // don't overwrite in-memory
-          const lastActive = data.lastActiveAt
-            ? new Date(data.lastActiveAt).getTime()
-            : data.createdAt
-              ? new Date(data.createdAt).getTime()
-              : 0;
-          parsed.push({ file, data, lastActive });
+          const restored = buildSessionRecordFromPersistedData(data, this.#idleThresholdMs);
+          if (!restored) continue;
+          const id = restored.id;
+          if (this.#sessions.has(id)) continue;
+          this.#sessions.set(id, restored);
+          // Skip completed-session accumulation during startup hydration to keep disk-backed reloads fast.
+          // Sessions are still available for listing and lazy message reads from disk.
         } catch {
           // Skip corrupt files
-        }
-      }
-
-      // Sort by lastActive descending (newest first) and keep only MAX_SESSIONS
-      parsed.sort((a, b) => b.lastActive - a.lastActive);
-      const toLoad = parsed.slice(0, MAX_SESSIONS);
-
-      // Track which files were loaded so #purgeExcessFiles can remove the rest
-      this.#loadedFiles = new Set(toLoad.map((p) => p.file));
-
-      for (const { data, lastActive } of toLoad) {
-        const id = data.id || data.taskId;
-        // Heal stale "active" sessions — if restored from disk and the last
-        // activity was more than idleThresholdMs ago, mark as completed.
-        let status = data.status || "completed";
-        let endedAt = data.endedAt || null;
-        if (status === "active" && lastActive > 0) {
-          const ageMs = Date.now() - lastActive;
-          if (ageMs > this.#idleThresholdMs) {
-            status = "completed";
-            endedAt = endedAt || lastActive;
-          }
-        }
-
-        this.#sessions.set(id, {
-          id,
-          taskId: data.taskId || id,
-          taskTitle: data.taskTitle || data.title || data.metadata?.title || id,
-          sessionKey:
-            String(data.sessionKey || "").trim() ||
-            `${data.taskId || id}:${data.startedAt || Date.now()}:${endedAt || data.startedAt || Date.now()}`,
-          type: data.type || "task",
-          status,
-          createdAt: data.createdAt || new Date().toISOString(),
-          lastActiveAt: data.lastActiveAt || new Date().toISOString(),
-          startedAt: data.startedAt || (data.createdAt ? new Date(data.createdAt).getTime() : Date.now()),
-          endedAt,
-          messages: data.messages || [],
-          totalEvents: (data.messages || []).length,
-          turnCount: data.turnCount || 0,
-          accumulatedAt: data.accumulatedAt || null,
-          lastActivityAt: lastActive || Date.now(),
-          metadata: data.metadata || {},
-          insights: data.insights || buildSessionInsights({ messages: data.messages || [] }),
-          trajectory: data.trajectory || { version: 1, replayable: true, steps: [] },
-          summary: data.summary || null,
-        });
-        const restored = this.#sessions.get(id);
-        if (restored && isTerminalSessionStatus(restored.status) && !restored.accumulatedAt) {
-          if (this.#accumulateCompletedSession(restored, id)) {
-            this.#markDirty(id);
-          }
         }
       }
     } catch {
       // Directory read failed — proceed without disk data
     }
+    this.#invalidatePersistedSummaryCache();
+  }
+
+  #invalidatePersistedSummaryCache() {
+    this.#persistedSummaryCache = { loadedAt: 0, sessions: [] };
+  }
+
+  #readPersistedSessionSummaries() {
+    if (!this.#persistDir || !existsSync(this.#persistDir)) {
+      return [];
+    }
+
+    const now = Date.now();
+    if (
+      Array.isArray(this.#persistedSummaryCache.sessions) &&
+      now - Number(this.#persistedSummaryCache.loadedAt || 0) <
+        PERSISTED_SESSION_LIST_CACHE_TTL_MS
+    ) {
+      return this.#persistedSummaryCache.sessions;
+    }
+
+    const sessions = [];
+    try {
+      const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
+      for (const file of files) {
+        try {
+          const raw = readFileSync(resolve(this.#persistDir, file), "utf8");
+          const restored = buildSessionRecordFromPersistedData(
+            JSON.parse(raw || "{}"),
+            this.#idleThresholdMs,
+          );
+          if (!restored) continue;
+          const sessionId = restored.id || restored.taskId;
+          const lastActiveAt =
+            restored.lastActiveAt || new Date(restored.lastActivityAt).toISOString();
+          const turns = Array.isArray(restored.turns)
+            ? restored.turns.map((turn) => ({ ...turn }))
+            : [];
+          const turnTokenUsage = turns.reduce((acc, turn) => ({
+            inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
+            outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
+            totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
+          }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+          const tokenUsage = restored.insights?.tokenUsage
+            || (turnTokenUsage.totalTokens > 0 || turnTokenUsage.inputTokens > 0 || turnTokenUsage.outputTokens > 0
+              ? turnTokenUsage
+              : null);
+          const effectiveTokenUsage = extractUsageFromMeta(tokenUsage) || {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          };
+          sessions.push({
+            id: sessionId,
+            taskId: restored.taskId,
+            title: restored.taskTitle || restored.title || null,
+            type: restored.type || "task",
+            status: restored.status || "completed",
+            lifecycleStatus: restored.status || "completed",
+            runtimeState: null,
+            runtimeUpdatedAt: lastActiveAt,
+            runtimeIsLive: false,
+            workspaceId: String(restored?.metadata?.workspaceId || "").trim() || null,
+            workspaceDir: String(restored?.metadata?.workspaceDir || "").trim() || null,
+            branch: String(restored?.metadata?.branch || "").trim() || null,
+            turnCount: restored.turnCount || 0,
+            turns,
+            tokenCount: effectiveTokenUsage.totalTokens || 0,
+            inputTokens: effectiveTokenUsage.inputTokens || 0,
+            outputTokens: effectiveTokenUsage.outputTokens || 0,
+            tokenUsage: effectiveTokenUsage,
+            createdAt: restored.createdAt || new Date(restored.startedAt).toISOString(),
+            lastActiveAt,
+            idleMs: 0,
+            elapsedMs: Math.max(
+              0,
+              Number(restored.endedAt || Date.now()) - Number(restored.startedAt || Date.now()),
+            ),
+            recommendation: "none",
+            preview: this.#lastMessagePreview(restored),
+            lastMessage: this.#lastMessagePreview(restored),
+            insights: restored.insights || null,
+          });
+        } catch {
+          // Ignore corrupt session files in summary listing
+        }
+      }
+    } catch {
+      // Best-effort disk-backed listing only
+    }
+
+    sessions.sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
+    this.#persistedSummaryCache = {
+      loadedAt: now,
+      sessions,
+    };
+    return sessions;
   }
 
   /**
@@ -1261,28 +1763,7 @@ export class SessionTracker {
    * This runs once at startup to clean up historical bloat.
    */
   #purgeExcessFiles() {
-    if (!this.#persistDir || !existsSync(this.#persistDir)) return;
-    try {
-      const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
-      let purged = 0;
-      for (const file of files) {
-        if (!this.#loadedFiles.has(file)) {
-          try {
-            unlinkSync(resolve(this.#persistDir, file));
-            purged++;
-          } catch {
-            // best-effort cleanup
-          }
-        }
-      }
-      if (purged > 0) {
-        console.log(`${TAG} purged ${purged} excess session file(s) from disk`);
-      }
-      // Free the reference — only needed once at startup
-      this.#loadedFiles.clear();
-    } catch {
-      // best-effort
-    }
+    this.#loadedFiles.clear();
   }
 
   /**
@@ -1728,10 +2209,11 @@ ${items.join("\n")}` : "todo updated";
 
 /**
  * List all sessions (metadata only).
+ * @param {{ includePersisted?: boolean }} [options]
  * @returns {Array<Object>}
  */
-export function listAllSessions() {
-  return getSessionTracker().listAllSessions();
+export function listAllSessions(options) {
+  return getSessionTracker().listAllSessions(options);
 }
 
 /**
@@ -1820,3 +2302,5 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
+
+

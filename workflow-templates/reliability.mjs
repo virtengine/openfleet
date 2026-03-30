@@ -13,6 +13,8 @@
  *   - Incident Response (recommended)
  *   - Task Archiver (recommended)
  *   - Sync Engine (recommended)
+ *   - Recover Blocked Task (Worktree) (recommended) — sub-workflow
+ *   - Recover Blocked Worktree Tasks (recommended) — orchestrator
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -273,12 +275,12 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     }, { x: 400, y: 200 }),
 
     node("rotate-logs", "action.run_command", "Rotate Agent Logs", {
-      command: "find .bosun/logs -name '*.log' -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Rotated'",
+      command: "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','logs');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()&&entry.name.endsWith('.log')){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Rotated '+removed+'\\n');\"",
       continueOnError: true,
     }, { x: 650, y: 200 }),
 
     node("clean-evidence", "action.run_command", "Clean Old Evidence", {
-      command: "find .bosun/evidence -type f -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Cleaned'",
+      command: "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','evidence');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Cleaned '+removed+'\\n');\"",
       continueOnError: true,
     }, { x: 150, y: 380 }),
 
@@ -626,6 +628,8 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
   variables: {
     repairTimeoutMs: 5400000,
     verificationTimeoutMs: 3600000,
+    repoRoot: "",
+    defaultTargetBranch: "main",
     baseBranch: "main",
     verificationCommand:
       "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
@@ -641,32 +645,55 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       eventType: "task.finalization_failed",
     }, { x: 550, y: 50 }),
 
-    node("has-worktree", "condition.expression", "Worktree Context Available?", {
+    node("has-branch-context", "condition.expression", "Branch Context Available?", {
+      expression: "Boolean($data?.repoRoot) && Boolean($data?.branch) && Boolean($data?.taskId)",
+    }, { x: 400, y: 180, outputs: ["yes", "no"] }),
+
+    node("recover-repair-worktree", "action.recover_worktree", "Reset Broken Worktree", {
+      worktreePath: "{{worktreePath}}",
+      branch: "{{branch}}",
+      repoRoot: "{{repoRoot}}",
+      taskId: "{{taskId}}",
+    }, { x: 220, y: 320 }),
+
+    node("acquire-repair-worktree", "action.acquire_worktree", "Acquire Clean Worktree", {
+      repoRoot: "{{repoRoot}}",
+      branch: "{{branch}}",
+      taskId: "{{taskId}}",
+      baseBranch: "{{baseBranch}}",
+      defaultTargetBranch: "{{defaultTargetBranch}}",
+    }, { x: 220, y: 460 }),
+
+    node("acquired-repair-worktree", "condition.expression", "Clean Worktree Ready?", {
+      expression: "$ctx.getNodeOutput('acquire-repair-worktree')?.success === true",
+    }, { x: 220, y: 600, outputs: ["yes", "no"] }),
+
+    node("has-worktree", "condition.expression", "Fallback Worktree Context Available?", {
       expression: "Boolean($data?.worktreePath)",
-    }, { x: 400, y: 180 }),
+    }, { x: 560, y: 320, outputs: ["yes", "no"] }),
 
     node("refresh-worktree", "action.refresh_worktree", "Refresh Worktree", {
       operation: "fetch",
-      cwd: "{{worktreePath}}",
+      cwd: "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
       continueOnError: true,
-    }, { x: 400, y: 320 }),
+    }, { x: 400, y: 740 }),
 
     node("repair-agent", "action.run_agent", "Repair Task", {
       prompt: "{{repairPrompt}}",
-      cwd: "{{worktreePath}}",
+      cwd: "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
       timeoutMs: "{{repairTimeoutMs}}",
-    }, { x: 400, y: 460 }),
+    }, { x: 400, y: 880 }),
 
     node("verify", "action.run_command", "Re-run Quality Gates", {
       command: "{{verificationCommand}}",
-      cwd: "{{worktreePath}}",
+      cwd: "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
       timeoutMs: "{{verificationTimeoutMs}}",
       continueOnError: true,
-    }, { x: 400, y: 600 }),
+    }, { x: 400, y: 1020 }),
 
     node("verify-passed", "condition.expression", "Repair Passed?", {
       expression: "$ctx.getNodeOutput('verify')?.success === true",
-    }, { x: 400, y: 740 }),
+    }, { x: 400, y: 1160 }),
 
     node("create-pr", "action.create_pr", "Handoff/Refresh Lifecycle", {
       title: "{{taskTitle}}",
@@ -677,11 +704,11 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       maxRetries: 3,
       retryDelayMs: 15000,
       continueOnError: true,
-    }, { x: 250, y: 880 }),
+    }, { x: 250, y: 1300 }),
 
     node("create-pr-success", "condition.expression", "Lifecycle Handoff Ready?", {
       expression: "$ctx.getNodeOutput('create-pr')?.success === true",
-    }, { x: 250, y: 950, outputs: ["yes", "no"] }),
+    }, { x: 250, y: 1370, outputs: ["yes", "no"] }),
 
     node("mark-inreview", "action.update_task_status", "Set In Review", {
       taskId: "{{taskId}}",
@@ -694,7 +721,19 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
         branch: "{{branch}}",
         worktreePath: "{{worktreePath}}",
       },
-    }, { x: 250, y: 1020 }),
+    }, { x: 250, y: 1440 }),
+
+    node("clear-repair-blocked-success", "action.bosun_function", "Clear Repair Blocked State", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{taskId}}",
+        fields: {
+          cooldownUntil: null,
+          blockedReason: null,
+          meta: "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}",
+        },
+      },
+    }, { x: 250, y: 1510 }),
 
     node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
       workflowId: "template-bosun-pr-progressor",
@@ -708,7 +747,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
         prUrl: "{{$data?.prUrl || $ctx.getNodeOutput('create-pr')?.prUrl || ''}}",
         repo: "{{$data?.repo || $data?.repoSlug || $data?.repository || $ctx.getNodeOutput('create-pr')?.repoSlug || ''}}",
       },
-    }, { x: 250, y: 1160 }),
+    }, { x: 250, y: 1650 }),
 
     node("mark-todo", "action.update_task_status", "Mark Todo (Repair Failed)", {
       taskId: "{{taskId}}",
@@ -722,27 +761,45 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
         worktreePath: "{{worktreePath}}",
         baseBranch: "{{baseBranch}}",
       },
-    }, { x: 560, y: 880 }),
+    }, { x: 560, y: 1300 }),
+
+    node("clear-repair-blocked-failure", "action.bosun_function", "Clear Failed Repair Blocked State", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{taskId}}",
+        fields: {
+          cooldownUntil: null,
+          blockedReason: null,
+          meta: "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}",
+        },
+      },
+    }, { x: 560, y: 1440 }),
 
     node("notify-success", "notify.telegram", "Notify Repair Success", {
       message: ":check: Repair workflow recovered **{{taskTitle}}** ({{taskId}}) and moved it to inreview.",
       silent: true,
-    }, { x: 250, y: 1300 }),
+    }, { x: 250, y: 1790 }),
 
     node("notify-escalate", "notify.telegram", "Escalate Repair Failure", {
       message: ":alert: Repair workflow could not recover **{{taskTitle}}** ({{taskId}}). Manual intervention required.",
-    }, { x: 560, y: 1020 }),
+    }, { x: 560, y: 1580 }),
 
     node("no-worktree", "notify.log", "Missing Worktree Context", {
       message: "Task repair skipped for {{taskId}} — missing worktreePath in event payload",
       level: "warn",
-    }, { x: 700, y: 320 }),
+    }, { x: 720, y: 460 }),
   ],
   edges: [
-    edge("trigger-failed", "has-worktree"),
-    edge("trigger-finalization", "has-worktree"),
-    edge("has-worktree", "refresh-worktree", { condition: "$output?.result === true" }),
-    edge("has-worktree", "no-worktree", { condition: "$output?.result !== true" }),
+    edge("trigger-failed", "has-branch-context"),
+    edge("trigger-finalization", "has-branch-context"),
+    edge("has-branch-context", "recover-repair-worktree", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-branch-context", "has-worktree", { condition: "$output?.result !== true", port: "no" }),
+    edge("recover-repair-worktree", "acquire-repair-worktree"),
+    edge("acquire-repair-worktree", "acquired-repair-worktree"),
+    edge("acquired-repair-worktree", "refresh-worktree", { condition: "$output?.result === true", port: "yes" }),
+    edge("acquired-repair-worktree", "no-worktree", { condition: "$output?.result !== true", port: "no" }),
+    edge("has-worktree", "refresh-worktree", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-worktree", "no-worktree", { condition: "$output?.result !== true", port: "no" }),
     edge("refresh-worktree", "repair-agent"),
     edge("repair-agent", "verify"),
     edge("verify", "verify-passed"),
@@ -751,9 +808,11 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     edge("create-pr", "create-pr-success"),
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo", { condition: "$output?.result !== true", port: "no" }),
-    edge("mark-inreview", "handoff-pr-progressor"),
+    edge("mark-inreview", "clear-repair-blocked-success"),
+    edge("clear-repair-blocked-success", "handoff-pr-progressor"),
     edge("handoff-pr-progressor", "notify-success"),
-    edge("mark-todo", "notify-escalate"),
+    edge("mark-todo", "clear-repair-blocked-failure"),
+    edge("clear-repair-blocked-failure", "notify-escalate"),
     edge("no-worktree", "notify-escalate"),
   ],
   metadata: {
@@ -1394,5 +1453,258 @@ export const SYNC_ENGINE_TEMPLATE = {
         "Event-driven triggers replace the fixed-interval timer, and " +
         "failure alerting is built into the flow.",
     },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Recover Blocked Task (Worktree) — sub-workflow
+//  Invoked by template-recover-blocked-worktrees via loop.for_each dispatch.
+//  Each item arrives as $data.item; falls back to $data.* for standalone use.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const RECOVER_BLOCKED_TASK_TEMPLATE = {
+  id: "template-recover-blocked-task",
+  name: "Recover Blocked Task (Worktree)",
+  description:
+    "Sub-workflow invoked once per blocked task by template-recover-blocked-worktrees. " +
+    "Sweeps stale worktrees for the task, acquires a clean one, and unblocks the task " +
+    "so it re-enters the normal task lifecycle. Works across all workspace repos — " +
+    "repo context is sourced entirely from the task's own stored metadata.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    baseBranch: "main",
+    defaultTargetBranch: "origin/main",
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Recovery Requested", {
+      eventType: "task.blocked.recovery_requested",
+    }, { x: 400, y: 50 }),
+
+    node("check-context", "condition.expression", "Has Task Context?", {
+      expression:
+        "Boolean($data?.item?.taskId || $data?.taskId) && " +
+        "Boolean($data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch) && " +
+        "Boolean($data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot)",
+    }, { x: 400, y: 190, outputs: ["yes", "no"] }),
+
+    node("recover-wt", "action.recover_worktree", "Reset Broken Worktree", {
+      taskId:       "{{$data?.item?.taskId || $data?.taskId || ''}}",
+      branch:       "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+      repoRoot:     "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
+      worktreePath: "{{$data?.item?.worktreePath || $data?.worktreePath || $data?.item?.meta?.worktreeFailure?.worktreePath || $data?.meta?.worktreeFailure?.worktreePath || ''}}",
+    }, { x: 250, y: 340 }),
+
+    node("acquire-wt", "action.acquire_worktree", "Acquire Clean Worktree", {
+      taskId:               "{{$data?.item?.taskId || $data?.taskId || ''}}",
+      branch:               "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+      repoRoot:             "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
+      baseBranch:           "{{$data?.item?.baseBranch || $data?.baseBranch || $data?.item?.meta?.worktreeFailure?.baseBranch || $data?.meta?.worktreeFailure?.baseBranch || baseBranch}}",
+      defaultTargetBranch:  "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || $data?.item?.meta?.worktreeFailure?.defaultTargetBranch || $data?.meta?.worktreeFailure?.defaultTargetBranch || defaultTargetBranch}}",
+    }, { x: 250, y: 490 }),
+
+    node("check-acquired", "condition.expression", "Worktree Acquired?", {
+      expression: "$ctx.getNodeOutput('acquire-wt')?.success === true",
+    }, { x: 250, y: 640, outputs: ["yes", "no"] }),
+
+    node("unblock-task", "action.update_task_status", "Unblock Task", {
+      taskId:        "{{$data?.item?.taskId || $data?.taskId || ''}}",
+      status:        "todo",
+      taskTitle:     "{{$data?.item?.taskTitle || $data?.taskTitle || $data?.item?.taskId || $data?.taskId || ''}}",
+      workflowEvent: "task.blocked.recovery_succeeded",
+      workflowData: {
+        stage:  "worktree_recovery",
+        result: "recovered",
+        branch: "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+        worktreePath: "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}",
+      },
+    }, { x: 250, y: 790 }),
+
+    node("clear-blocked-meta", "action.bosun_function", "Clear Blocked Metadata", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{$data?.item?.taskId || $data?.taskId || ''}}",
+        fields: {
+          blockedReason: null,
+          meta: "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.autoRecovery; delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}",
+        },
+      },
+    }, { x: 250, y: 940 }),
+
+    node("log-success", "notify.log", "Log Recovery Success", {
+      message:
+        ":check: Worktree recovery succeeded for task " +
+        "{{$data?.item?.taskId || $data?.taskId}} " +
+        "({{$data?.item?.taskTitle || $data?.taskTitle || 'unknown'}}). " +
+        "Task unblocked and returned to todo.",
+      level: "info",
+    }, { x: 250, y: 1090 }),
+
+    node("log-no-context", "notify.log", "Log Missing Context", {
+      message:
+        "Blocked task recovery skipped — missing taskId or branch in dispatch payload. " +
+        "Item: {{JSON.stringify($data?.item || {})}}",
+      level: "warn",
+    }, { x: 620, y: 340 }),
+
+    node("log-acquire-failed", "notify.log", "Log Acquire Failure", {
+      message:
+        ":warning: Worktree recovery failed for task " +
+        "{{$data?.item?.taskId || $data?.taskId}} — could not acquire a clean worktree. " +
+        "Branch: {{$data?.item?.branch || $data?.branch || 'unknown'}}. Manual intervention may be required.",
+      level: "warn",
+    }, { x: 620, y: 790 }),
+  ],
+  edges: [
+    edge("trigger", "check-context"),
+    edge("check-context", "recover-wt",       { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-context", "log-no-context",   { condition: "$output?.result !== true",  port: "no" }),
+    edge("recover-wt",    "acquire-wt"),
+    edge("acquire-wt",    "check-acquired"),
+    edge("check-acquired", "unblock-task",        { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-acquired", "log-acquire-failed",  { condition: "$output?.result !== true",  port: "no" }),
+    edge("unblock-task",      "clear-blocked-meta"),
+    edge("clear-blocked-meta", "log-success"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["recovery", "worktree", "blocked", "resilience", "sub-workflow"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Recover Blocked Worktree Tasks — orchestrator
+//  Scheduled sweep that finds all blocked tasks and dispatches the sub-workflow
+//  for each one. Completely repo-agnostic — no repoRoot template variable.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const RECOVER_BLOCKED_WORKTREES_TEMPLATE = {
+  id: "template-recover-blocked-worktrees",
+  name: "Recover Blocked Worktree Tasks",
+  description:
+    "Scheduled operator-assist workflow that finds all tasks blocked due to worktree " +
+    "failures, sweeps their stale worktrees, and re-queues each as todo. Works across " +
+    "every repo in the workspace — repo context is read from each task's own metadata, " +
+    "so no repo configuration is needed here.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    scheduleIntervalMs: 1800000,
+    maxPerSweep: 20,
+    maxConcurrent: 2,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Scheduled Worktree Recovery Sweep", {
+      intervalMs: "{{scheduleIntervalMs}}",
+      cron: "*/30 * * * *",
+    }, { x: 400, y: 50 }),
+
+    node("query-blocked", "action.run_command", "Query Blocked Tasks", {
+      command: "node",
+      args: ["-e", `
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const { pathToFileURL } = require("node:url");
+        let repoRoot = process.cwd();
+        const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
+        if (repoRoot.toLowerCase().includes(mirrorMarker)) {
+          const r = path.resolve(repoRoot, "..", "..", "..", "..");
+          if (fs.existsSync(path.join(r, "kanban", "kanban-adapter.mjs"))) repoRoot = r;
+        }
+        const kanbanUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
+        import(kanbanUrl)
+          .then(k => k.listTasks(undefined, { status: "blocked" }))
+          .then(tasks => {
+            const limit = parseInt(process.env.MAX_PER_SWEEP || "20");
+            const blocked = (tasks || [])
+              .map(t => {
+                const meta = t && typeof t.meta === "object" ? t.meta : {};
+                const worktreeFailure = meta && typeof meta.worktreeFailure === "object" ? meta.worktreeFailure : {};
+                const branch = t?.branch || t?.branchName || t?.metadata?.branch || meta?.branch || worktreeFailure?.branch || null;
+                const repoRoot = t?.repoRoot || t?.workspace || t?.metadata?.repoRoot || t?.metadata?.workspace || meta?.repoRoot || meta?.workspace || worktreeFailure?.repoRoot || null;
+                const worktreePath = t?.worktreePath || t?.metadata?.worktreePath || meta?.worktreePath || worktreeFailure?.worktreePath || null;
+                const baseBranch = t?.baseBranch || t?.metadata?.baseBranch || meta?.baseBranch || worktreeFailure?.baseBranch || null;
+                const defaultTargetBranch = t?.defaultTargetBranch || t?.metadata?.defaultTargetBranch || meta?.defaultTargetBranch || worktreeFailure?.defaultTargetBranch || null;
+                return {
+                  taskId:       t?.id,
+                  taskTitle:    t?.title || t?.id,
+                  branch,
+                  repoRoot,
+                  worktreePath,
+                  repository:   t?.repository || t?.metadata?.repository || meta?.repository || null,
+                  baseBranch,
+                  defaultTargetBranch,
+                  meta,
+                };
+              })
+              .filter(t => t && t.taskId && t.branch && t.repoRoot)
+              .slice(0, limit)
+              ;
+            console.log(JSON.stringify(blocked));
+          })
+          .catch(e => { console.error(e.message); process.exit(1); });
+      `],
+      env: { MAX_PER_SWEEP: "{{maxPerSweep}}" },
+      parseJson: true,
+    }, { x: 400, y: 190 }),
+
+    node("check-has-tasks", "condition.expression", "Any Blocked Tasks?", {
+      expression: "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0",
+    }, { x: 400, y: 360, outputs: ["yes", "no"] }),
+
+    node("recover-each", "loop.for_each", "Recover Each Blocked Task", {
+      items:         "$ctx.getNodeOutput('query-blocked')?.output || []",
+      variable:      "item",
+      indexVariable: "recoveryIndex",
+      maxConcurrent: "{{maxConcurrent}}",
+      workflowId:    "template-recover-blocked-task",
+      mode:          "dispatch",
+    }, { x: 400, y: 510 }),
+
+    node("prune-worktrees", "action.run_command", "Prune Stale Worktree Refs", {
+      command: "git",
+      args: ["worktree", "prune", "--verbose"],
+      continueOnError: true,
+    }, { x: 400, y: 650 }),
+
+    node("log-summary", "notify.log", "Log Recovery Summary", {
+      message:
+        ":broom: Blocked worktree recovery sweep dispatched for " +
+        "{{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). " +
+        "maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
+      level: "info",
+    }, { x: 250, y: 790 }),
+
+    node("log-idle", "notify.log", "Log No Blocked Tasks", {
+      message: "Blocked worktree recovery sweep: no blocked tasks with branch context found.",
+      level: "debug",
+    }, { x: 620, y: 510 }),
+  ],
+  edges: [
+    edge("trigger",         "query-blocked"),
+    edge("query-blocked",   "check-has-tasks"),
+    edge("check-has-tasks", "recover-each",  { condition: "$output?.result === true",  port: "yes" }),
+    edge("check-has-tasks", "log-idle",      { condition: "$output?.result !== true",  port: "no" }),
+    edge("recover-each",    "prune-worktrees"),
+    edge("prune-worktrees", "log-summary"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["recovery", "worktree", "blocked", "resilience", "automation", "scheduled"],
+    requiredTemplates: ["template-recover-blocked-task"],
   },
 };

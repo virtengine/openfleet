@@ -10,7 +10,7 @@ import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs
 import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
-import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
+import { getAgentToolConfig, getEffectiveTools, refreshToolOverheadReport } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { buildContextEnvelope } from "../workspace/context-cache.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
@@ -234,6 +234,12 @@ function buildPrimaryToolCapabilityContract(options = {}) {
   const enabledMcpServers = Array.isArray(rawCfg?.enabledMcpServers)
     ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
     : [];
+  if (agentProfileId) {
+    void refreshToolOverheadReport(rootDir, agentProfileId, { serverIds: enabledMcpServers })
+      .catch((error) => {
+        console.warn("[primary-agent] failed to refresh tool overhead report:", error?.message || error);
+      });
+  }
   const manifest = {
     agentProfileId: agentProfileId || null,
     enabledBuiltinTools,
@@ -1018,6 +1024,17 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     : userMessage;
   const architectEditorFrame = buildArchitectEditorFrame(options, effectiveMode);
   const toolContract = buildPrimaryToolCapabilityContract(options);
+  const selectedAgentToolConfig = options.agentProfileId
+    ? getAgentToolConfig(rootDir, options.agentProfileId)
+    : null;
+  const selectedMcpServers = Array.isArray(selectedAgentToolConfig?.enabledMcpServers)
+    ? selectedAgentToolConfig.enabledMcpServers
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    : [];
+  const selectedMcpServerSelection = selectedAgentToolConfig
+    ? selectedMcpServers
+    : undefined;
   const messageWithToolContract = [selectedProfile.block, architectEditorFrame, toolContract, messageWithAttachments]
     .filter(Boolean)
     .join("\n\n");
@@ -1041,6 +1058,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       cwd: options.cwd,
       model: effectiveModel,
       sdk: mapAdapterToPoolSdk(activeAdapter.name),
+      mcpServers: selectedMcpServerSelection,
       sessionType,
     });
     const pooledText =
@@ -1129,7 +1147,13 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         }
       }
       const result = await withTimeout(
-        adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
+        adapter.exec(framedMessage, {
+          ...options,
+          sessionId,
+          model: effectiveModel,
+          abortController: timeoutAbort,
+          mcpServers: selectedMcpServerSelection,
+        }),
         timeoutMs,
         `${adapterName}.exec`,
         timeoutAbort,
@@ -1198,7 +1222,13 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               }
             }
             const retryResult = await withTimeout(
-              adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
+              adapter.exec(framedMessage, {
+                ...options,
+                sessionId,
+                model: effectiveModel,
+                abortController: timeoutAbort,
+                mcpServers: selectedMcpServerSelection,
+              }),
               timeoutMs,
               `${adapterName}.exec.retry`,
               timeoutAbort,
@@ -1505,7 +1535,6 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
-
 
 
 
