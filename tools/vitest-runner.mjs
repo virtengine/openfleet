@@ -55,10 +55,15 @@ export function resolveVitestArgs(
 ) {
   const normalizedArgs = [...args];
   const filteredArgs = [];
+  let skipNextReporterValue = false;
   for (let index = 0; index < normalizedArgs.length; index += 1) {
     const arg = normalizedArgs[index];
+    if (skipNextReporterValue) {
+      skipNextReporterValue = false;
+      continue;
+    }
     if ((arg === '--reporter' || arg === '-r') && normalizedArgs[index + 1] === 'basic') {
-      index += 1;
+      skipNextReporterValue = true;
       continue;
     }
     if (arg === '--reporter=basic') {

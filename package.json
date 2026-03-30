@@ -224,6 +224,7 @@
     "infra/desktop-shortcut.mjs",
     "infra/error-detector.mjs",
     "infra/fetch-runtime.mjs",
+    "infra/guardrails.mjs",
     "infra/health-status.mjs",
     "infra/heartbeat-monitor.mjs",
     "infra/library-manager-utils.mjs",
