@@ -1,6 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import * as ReactModule from "react";
 import htm from "htm";
-import { Box, Text, useInput, useStdout } from "ink";
+import * as ink from "ink";
+
+const React = ReactModule.default ?? ReactModule;
+const useEffect = ReactModule.useEffect ?? React.useEffect;
+const useMemo = ReactModule.useMemo ?? React.useMemo;
+const useState = ReactModule.useState ?? React.useState;
+const Box = ink.Box ?? ink.default?.Box;
+const Text = ink.Text ?? ink.default?.Text;
+const useInput = ink.useInput ?? ink.default?.useInput;
+const useStdout = ink.useStdout ?? ink.default?.useStdout;
 import { getFooterHints } from "./HelpScreen.js";
 
 import {

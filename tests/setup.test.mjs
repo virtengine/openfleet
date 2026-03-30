@@ -7,7 +7,14 @@ import {
   writeSetupSnapshot,
   buildWorkspaceChoices,
   getGitHubAuthScopes,
+  buildTelegramAllowedChatIds,
+  generateTelegramPairingCode,
+  applyTelegramChatPairing,
 } from "../setup.mjs";
+import {
+  discoverTelegramPairingChat,
+  normalizeTelegramPairingCode,
+} from "../telegram/get-telegram-chat-id.mjs";
 
 describe("setup.mjs new exports", () => {
   let tempDir;
@@ -204,6 +211,62 @@ describe("setup.mjs new exports", () => {
         expect(typeof scope).toBe("string");
         expect(scope.length).toBeGreaterThan(0);
       }
+    });
+  });
+
+  describe("telegram pairing helpers", () => {
+    it("generates a six-character pairing code from the safe alphabet", () => {
+      const code = generateTelegramPairingCode(() => 0);
+      expect(code).toBe("AAAAAA");
+      expect(code).toMatch(/^[A-Z2-9]{6}$/);
+    });
+
+    it("builds allowed chat IDs with the paired chat first and no duplicates", () => {
+      expect(
+        buildTelegramAllowedChatIds("123", "456, 123", "", "789"),
+      ).toBe("123,456,789");
+    });
+
+    it("applies pairing by setting primary and allowed chat IDs", () => {
+      const env = { TELEGRAM_ALLOWED_CHAT_IDS: "456,789" };
+      applyTelegramChatPairing(env, "123", { TELEGRAM_CHAT_ID: "999" });
+      expect(env.TELEGRAM_CHAT_ID).toBe("123");
+      expect(env.TELEGRAM_ALLOWED_CHAT_IDS).toBe("123,456,789,999");
+    });
+
+    it("normalizes pairing codes for Telegram matching", () => {
+      expect(normalizeTelegramPairingCode("ab-12 cd")).toBe("AB12CD");
+    });
+
+    it("finds a paired chat from matching Telegram updates", async () => {
+      const fetchImpl = async () => ({
+        ok: true,
+        async json() {
+          return {
+            result: [
+              {
+                message: {
+                  text: "hello world",
+                  chat: { id: 101, type: "private", username: "wrongchat" },
+                },
+              },
+              {
+                message: {
+                  text: "/pair ab12cd",
+                  chat: { id: 202, type: "private", username: "pairedchat" },
+                },
+              },
+            ],
+          };
+        },
+      });
+
+      const result = await discoverTelegramPairingChat("123:test", "AB12CD", {
+        fetchImpl,
+      });
+
+      expect(result.chat?.id).toBe(202);
+      expect(result.chat?.username).toBe("pairedchat");
     });
   });
 });

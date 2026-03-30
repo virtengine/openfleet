@@ -53,8 +53,10 @@ import {
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import {
   claimTelegramPollOwner,
+  configureTelegramPollOwnerScope,
   getActiveTelegramPollOwner,
   releaseTelegramPollOwner,
+  resolveTelegramPollPaths,
 } from "./telegram-poll-owner.mjs";
 
 // ── Paths ────────────────────────────────────────────────────────────────────
@@ -167,6 +169,12 @@ const SENTINEL_MONITOR_RECOVERY_FILE = resolve(
 );
 const MONITOR_POLL_LOCK_FILE = resolve(cacheDir, "telegram-getupdates.lock");
 const STATUS_FILE = resolve(cacheDir, "orchestrator-status.json");
+
+function getMonitorPollLockFile() {
+  return resolveTelegramPollPaths({
+    token: telegramToken || process.env.TELEGRAM_BOT_TOKEN || "",
+  }).pollLockFile;
+}
 
 const TAG = "[sentinel]";
 const POLL_TIMEOUT_S = 30;
@@ -317,6 +325,9 @@ function initEnv() {
   telegramToken = getEnvValue(fileVars, "TELEGRAM_BOT_TOKEN", "");
   telegramChatId = getEnvValue(fileVars, "TELEGRAM_CHAT_ID", "");
   projectName = getEnvValue(fileVars, "PROJECT_NAME", "bosun");
+  configureTelegramPollOwnerScope({
+    token: telegramToken || "",
+  });
 
   sentinelConfig.autoRestartMonitor = parseBool(
     getEnvValue(fileVars, "SENTINEL_AUTO_RESTART_MONITOR", "1"),
@@ -1870,9 +1881,10 @@ async function transitionToCompanion(monitorPid) {
  * @returns {Promise<boolean>}
  */
 async function isMainBotPolling() {
+  const monitorPollLockFile = getMonitorPollLockFile();
   try {
-    if (!existsSync(MONITOR_POLL_LOCK_FILE)) return false;
-    const raw = await readFile(MONITOR_POLL_LOCK_FILE, "utf8");
+    if (!existsSync(monitorPollLockFile)) return false;
+    const raw = await readFile(monitorPollLockFile, "utf8");
     if (!raw || !raw.trim()) return false;
     const data = JSON.parse(raw);
     const pid = Number(data?.pid);

@@ -46,12 +46,12 @@ function createHarness() {
       return fn();
     },
     setTimeout: (cb, ms) => {
-      calls.push({ kind: "timeout", ms });
+      calls.push({ kind: "timeout", ms, cb });
       cb();
       return Symbol("timeout");
     },
     setInterval: (cb, ms) => {
-      calls.push({ kind: "interval", ms });
+      calls.push({ kind: "interval", ms, cb });
       cb();
       return Symbol("interval");
     },
@@ -91,4 +91,32 @@ test("safe timer wrappers clamp invalid and oversized delays", () => {
   assert.ok(h.warnings.some((line) => line.includes("timeout:bad")));
   assert.ok(h.warnings.some((line) => line.includes("timeout:overflow")));
   assert.ok(h.warnings.some((line) => line.includes("interval:zero")));
+});
+
+test("safeSetInterval skips overlapping runs until the prior run settles", async () => {
+  const h = createHarness();
+  let resolveRun;
+  let runs = 0;
+  const pending = new Promise((resolve) => {
+    resolveRun = resolve;
+  });
+
+  h.safeSetInterval("overlap", () => {
+    runs += 1;
+    return pending;
+  }, 1000);
+
+  const intervalCall = h.calls.find((entry) => entry.kind === "interval");
+  assert.ok(intervalCall, "expected interval callback to be registered");
+
+  intervalCall.cb();
+  assert.equal(runs, 1);
+
+  resolveRun();
+  await pending;
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  intervalCall.cb();
+  assert.equal(runs, 2);
 });
