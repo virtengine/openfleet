@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { dirname, resolve } from "node:path";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import * as ReactModule from "react";
+
+const React = ReactModule.default ?? ReactModule;
+const useCallback = ReactModule.useCallback ?? React.useCallback;
+const useEffect = ReactModule.useEffect ?? React.useEffect;
+const useState = ReactModule.useState ?? React.useState;
 
 import { loadConfig } from "../../config/config.mjs";
 import { CONFIG_FILES } from "../../config/config-file-names.mjs";

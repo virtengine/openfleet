@@ -1,6 +1,14 @@
-import React, { useMemo, useState } from "react";
+import * as ReactModule from "react";
 import htm from "htm";
-import { Box, Text, useApp, useInput } from "ink";
+import * as ink from "ink";
+
+const React = ReactModule.default ?? ReactModule;
+const useMemo = ReactModule.useMemo ?? React.useMemo;
+const useState = ReactModule.useState ?? React.useState;
+const Box = ink.Box ?? ink.default?.Box;
+const Text = ink.Text ?? ink.default?.Text;
+const useApp = ink.useApp ?? ink.default?.useApp;
+const useInput = ink.useInput ?? ink.default?.useInput;
 
 import {
   ANSI_COLORS,
@@ -10,6 +18,8 @@ import {
   MIN_TERMINAL_SIZE,
   TAB_ORDER,
 } from "./constants.js";
+import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "./HelpScreen.js";
+import { useWebSocket } from "./useWebSocket.js";
 import { useWorkflows } from "./useWorkflows.js";
 import WorkflowsScreen from "./WorkflowsScreen.js";
 import { useTasks } from "./useTasks.js";
@@ -135,9 +145,25 @@ function ScreenFrame({ title, subtitle, children }) {
   `;
 }
 
+function FooterHints({ hints, width }) {
+  const text = (Array.isArray(hints) ? hints : [])
+    .map(([keysLabel, description]) => `${keysLabel} ${description}`.trim())
+    .join("  |  ");
+  const clipped = text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text;
+
+  return html`
+    <${Box} marginTop=${1}>
+      <${Text} color=${ANSI_COLORS.accent}>${clipped}<//>
+    <//>
+  `;
+}
+
 export default function App({ config, configDir, host, port, protocol = "ws", initialScreen = "agents", terminalSize }) {
   const { exit } = useApp();
   const [activeTab, setActiveTab] = useState(initialScreen);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpScrollOffset, setHelpScrollOffset] = useState(0);
+  const [footerHints, setFooterHints] = useState(() => getFooterHints(initialScreen));
   const wsState = useWebSocket({ host, port, configDir, protocol });
   const taskState = useTasks();
   const workflowState = useWorkflows(config);
@@ -147,7 +173,46 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     [taskState.tasks, wsState.tasks],
   );
 
+  useEffect(() => {
+    if (!helpOpen) {
+      setFooterHints(getFooterHints(activeTab));
+    }
+  }, [activeTab, helpOpen]);
+
+  const helpMaxRows = Math.max(3, terminalSize.rows - 8);
+  const helpRowCount = SHORTCUT_GROUPS.reduce((totalRows, group, index, groups) => {
+    if (index % 2 === 1) return totalRows;
+    const right = groups[index + 1];
+    const pairHeight = 1 + Math.max(group.items.length, right?.items?.length || 0);
+    return totalRows + pairHeight;
+  }, 0);
+  const maxHelpScrollOffset = Math.max(0, helpRowCount - helpMaxRows);
+
   useInput((input, key) => {
+    if (helpOpen) {
+      if (input === "?" || key.escape) {
+        setHelpOpen(false);
+        setHelpScrollOffset(0);
+        return;
+      }
+      if (key.upArrow) {
+        setHelpScrollOffset((current) => Math.max(0, current - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setHelpScrollOffset((current) => Math.min(maxHelpScrollOffset, current + 1));
+        return;
+      }
+      return;
+    }
+
+    if (input === "?") {
+      setHelpOpen(true);
+      setHelpScrollOffset(0);
+      setFooterHints(getFooterHints(activeTab, { helpOpen: true }));
+      return;
+    }
+
     if (input === KEY_BINDINGS.q) {
       exit();
       return;
@@ -287,7 +352,17 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
         stats=${wsState.stats}
         terminalSize=${terminalSize}
       />
-      ${body}
+      <${Box} flexDirection="column" flexGrow=${1}>
+        ${body}
+      <//>
+      ${helpOpen
+        ? html`
+            <${Box} marginTop=${1} flexGrow=${1}>
+              <${HelpScreen} scrollOffset=${helpScrollOffset} maxRows=${helpMaxRows} />
+            <//>
+          `
+        : null}
+      <${FooterHints} hints=${helpOpen ? getFooterHints(activeTab, { helpOpen: true }) : footerHints} width=${terminalSize.columns} />
     <//>
   `;
 }

@@ -1,4 +1,4 @@
-import { execSync, spawn, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync, exec } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -34,6 +34,33 @@ import { isMainThread } from "node:worker_threads";
 if (typeof net.setDefaultAutoSelectFamilyAttemptTimeout === "function") {
   net.setDefaultAutoSelectFamilyAttemptTimeout(2000);
 }
+
+const heartbeatRuntimeState = {
+  current: null,
+};
+
+/**
+ * Non-blocking async shell exec — avoids blocking the HTTP server event loop.
+ * Use instead of execSync/spawnSync in timer callbacks and request handlers.
+ * @param {string} cmd - Shell command string
+ * @param {{ cwd?: string, timeout?: number, encoding?: string }} [opts]
+ * @returns {Promise<string>} stdout on success, rejects with Error on non-zero exit
+ */
+function execAsync(cmd, { cwd, timeout = 30_000, encoding = "utf8" } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = exec(cmd, { cwd, timeout, encoding, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+    child.on("close", (code) => {
+      if (code === 0 || code === null) resolve(stdout);
+      else reject(Object.assign(new Error(`exec failed (${code}): ${cmd}`), { stdout, stderr, exitCode: code }));
+    });
+    child.on("error", reject);
+  });
+}
+
 
 import { acquireMonitorLock } from "./maintenance.mjs";
 
@@ -85,6 +112,7 @@ import {
 import { loadConfig } from "../config/config.mjs";
 import { formatPreflightReport, runPreflightChecks } from "./preflight.mjs";
 import { startAutoUpdateLoop, stopAutoUpdateLoop } from "./update-check.mjs";
+import { createHeartbeatMonitor } from "./heartbeat-monitor.mjs";
 import {
   isWhatsAppEnabled,
   startWhatsAppChannel,
@@ -250,6 +278,7 @@ import {
 import { resolvePromptTemplate } from "../agent/agent-prompts.mjs";
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
 import { sanitizeMonitorTailForPrompt as sanitizeMonitorTailForPromptShared } from "../monitor-tail-sanitizer.mjs";
+import { webhookEvents as _githubWebhookEvents } from "../github/github-oauth-portal.mjs";
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 // ── Anomaly signal file path (shared with orchestrator) ──────────────────────
@@ -981,7 +1010,11 @@ async function ensureWorkflowAutomationEngine() {
             "template-task-lifecycle",
             "template-task-finalization-guard",
             "template-agent-session-monitor",
+            "template-bosun-pr-watchdog",
+            "template-bosun-pr-progressor",
             "template-github-kanban-sync",
+            "template-recover-blocked-task",
+            "template-recover-blocked-worktrees",
           ],
         });
         if (Number(reconcile?.autoUpdated || 0) > 0) {
@@ -1053,12 +1086,6 @@ async function ensureWorkflowAutomationEngine() {
         }
       }
 
-      // Resume runs paused by a previous monitor shutdown after services are wired.
-      if (typeof engine.resumeInterruptedRuns === "function") {
-        engine.resumeInterruptedRuns().catch((err) => {
-          console.warn(`[workflows] Failed to resume interrupted runs: ${err?.message || err}`);
-        });
-      }
       workflowAutomationInitDone = true;
       return engine;
     } catch (err) {
@@ -1080,13 +1107,13 @@ async function ensureWorkflowAutomationEngine() {
 
 async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
   try {
-  if (!workflowAutomationEnabled) return false;
+  if (!workflowAutomationEnabled && !opts?.engine) return false;
   const dedupKey = String(opts?.dedupKey || "").trim();
   if (dedupKey && !allowWorkflowEvent(dedupKey)) {
     return false;
   }
 
-  const engine = await ensureWorkflowAutomationEngine();
+  const engine = opts?.engine || await ensureWorkflowAutomationEngine();
   if (!engine?.evaluateTriggers || !engine?.execute) return false;
 
   const payload = buildWorkflowEventPayload(eventType, eventData);
@@ -1103,7 +1130,8 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
   if (!Array.isArray(triggered) || triggered.length === 0) {
     return false;
   }
-
+  const awaitRuns = opts?.awaitRuns === true;
+  const runPromises = [];
   for (const match of triggered) {
     const workflowId = String(match?.workflowId || "").trim();
     if (!workflowId) continue;
@@ -1111,7 +1139,7 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
       ...payload,
       _triggeredBy: match?.triggeredBy || null,
     };
-    void engine
+    const runPromise = engine
       .execute(workflowId, runPayload)
       .then((ctx) => {
         const runId = ctx?.id || "unknown";
@@ -1122,17 +1150,34 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
         console.log(
           `[workflows] auto-run ${runStatus} workflow=${workflowId} runId=${runId} event=${eventType}`,
         );
+        return { workflowId, runId, runStatus, ctx };
       })
       .catch((err) => {
         console.warn(
           `[workflows] auto-run failed workflow=${workflowId} event=${eventType}: ${err?.message || err}`,
         );
+        if (awaitRuns) {
+          throw err;
+        }
+        return null;
       });
+    if (awaitRuns) {
+      runPromises.push(runPromise);
+    } else {
+      void runPromise;
+    }
   }
 
   console.log(
     `[workflows] event "${eventType}" triggered ${triggered.length} workflow run(s)`,
   );
+  if (awaitRuns) {
+    return {
+      triggered: true,
+      triggeredCount: triggered.length,
+      runs: (await Promise.all(runPromises)).filter(Boolean),
+    };
+  }
   return true;
   } catch (err) {
     console.warn(`[workflows] dispatchWorkflowEvent error for ${eventType}: ${err?.message || err}`);
@@ -1142,6 +1187,67 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
 
 function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
+}
+
+// ── GitHub webhook → workflow-engine bridge ──────────────────────────────────
+// Forwards GitHub App webhook events from the OAuth portal's EventEmitter into
+// the workflow trigger engine so that trigger.event nodes with
+// eventType: "github:*" fire in real-time instead of requiring polling.
+
+const _GITHUB_BRIDGE_EVENTS = [
+  "github:pull_request",
+  "github:pull_request_review",
+  "github:pull_request_review_comment",
+  "github:check_run",
+  "github:check_suite",
+  "github:push",
+  "github:issue_comment",
+  "github:status",
+  "github:workflow_run",
+  "github:workflow_job",
+  "github:installation",
+  "github:installation_repositories",
+];
+
+let _githubWebhookBridgeSetup = false;
+
+function setupGitHubWebhookBridge() {
+  if (_githubWebhookBridgeSetup) return;
+  _githubWebhookBridgeSetup = true;
+  try {
+    for (const eventType of _GITHUB_BRIDGE_EVENTS) {
+      _githubWebhookEvents.on(eventType, ({ action, payload } = {}) => {
+        const pr = payload?.pull_request;
+        const cr = payload?.check_run;
+        queueWorkflowEvent(eventType, {
+          eventType,
+          action:          action ?? null,
+          repo:            payload?.repository?.full_name ?? null,
+          // PR fields (available in pull_request, review, and review_comment events)
+          prNumber:        pr?.number ?? payload?.number ?? cr?.pull_requests?.[0]?.number ?? null,
+          prTitle:         pr?.title ?? null,
+          prBranch:        pr?.head?.ref ?? cr?.head_branch ?? null,
+          prBaseBranch:    pr?.base?.ref ?? null,
+          prAuthor:        pr?.user?.login ?? null,
+          prUrl:           pr?.html_url ?? null,
+          // Check run fields
+          checkName:       cr?.name ?? null,
+          checkConclusion: cr?.conclusion ?? null,
+          checkStatus:     cr?.status ?? null,
+          // Review fields
+          reviewState:     payload?.review?.state ?? null,
+          // Push / ref fields
+          ref:             payload?.ref ?? null,
+          commitSha:       payload?.after ?? payload?.head_commit?.id ?? null,
+          // Full payload available for complex filter expressions
+          payload,
+        });
+      });
+    }
+    console.log("[workflows] GitHub webhook bridge active — forwarding " + _GITHUB_BRIDGE_EVENTS.length + " event type(s)");
+  } catch (err) {
+    console.warn(`[workflows] GitHub webhook bridge setup failed: ${err?.message || err}`);
+  }
 }
 
 function normalizePromptBody(value) {
@@ -2106,6 +2212,10 @@ workflowAutomationEnabled = parseEnvBoolean(
     ? dedupMs
     : 15_000;
 }
+// Wire real-time GitHub webhook events into the workflow trigger engine.
+// queueWorkflowEvent is a no-op when automation is disabled, so this is safe
+// to call unconditionally at module init time.
+if (!process.env.VITEST) setupGitHubWebhookBridge();
 
 // Initialize runtime accumulator for persistent stats across restarts
 const runtimeStats = initRuntimeAccumulator();
@@ -3143,6 +3253,10 @@ const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
       String(SELF_RESTART_MAX_DEFER_MS),
   ) || SELF_RESTART_MAX_DEFER_MS,
 );
+const RUNTIME_RESTART_REQUEST_POLL_MS = Math.max(
+  1_000,
+  Number(process.env.BOSUN_RESTART_REQUEST_POLL_MS || "2000") || 2000,
+);
 let selfWatcher = null;
 let selfWatcherLib = null;
 let selfWatcherExtra = []; // watchers for sibling source dirs (task/, workspace/, etc.)
@@ -3217,10 +3331,15 @@ function buildCodexSdkOptionsForMonitor() {
 }
 
 // ── Self-restart marker: detect if this process was spawned by a code-change restart
+const runtimeRestartRequestPath = resolve(
+  config.cacheDir || resolve(config.repoRoot, ".cache"),
+  "bosun-restart-request.json",
+);
 const selfRestartMarkerPath = resolve(
   config.cacheDir || resolve(config.repoRoot, ".cache"),
   "ve-self-restart.marker",
 );
+let lastHandledRuntimeRestartRequestId = "";
 let isSelfRestart = false;
 try {
   if (existsSync(selfRestartMarkerPath)) {
@@ -3260,9 +3379,13 @@ function getTelegramBotStartOptions() {
   const restartReason = isSelfRestart
     ? "self-restart"
     : monitorRestartReason;
+  const allowDaemonPortalAutoOpen = isTruthyFlag(
+    process.env.BOSUN_UI_AUTO_OPEN_ON_DAEMON,
+  );
   return {
     restartReason,
-    suppressPortalAutoOpen: restartReason.length > 0,
+    suppressPortalAutoOpen:
+      restartReason.length > 0 || !allowDaemonPortalAutoOpen,
   };
 }
 
@@ -3466,6 +3589,83 @@ async function ensurePreflightReady(reason) {
   return true;
 }
 
+function maybeHandleQueuedRuntimeRestartRequest(trigger = "interval") {
+  if (shuttingDown) return false;
+  if (!existsSync(runtimeRestartRequestPath)) return false;
+
+  let payload = null;
+  try {
+    payload = JSON.parse(readFileSync(runtimeRestartRequestPath, "utf8"));
+  } catch (err) {
+    console.warn(
+      `[monitor] invalid runtime restart request at ${runtimeRestartRequestPath}: ${err?.message || err}`,
+    );
+    try {
+      unlinkSync(runtimeRestartRequestPath);
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+
+  const requestId = String(
+    payload?.id ||
+      `${payload?.requestedAt || ""}:${payload?.requesterPid || ""}:${payload?.reason || ""}:${payload?.targetPid || ""}`,
+  ).trim();
+  const requestType = String(payload?.type || "code-reload").trim().toLowerCase();
+  const targetPid = Number(payload?.targetPid || 0);
+
+  if (requestId && requestId === lastHandledRuntimeRestartRequestId) {
+    try {
+      unlinkSync(runtimeRestartRequestPath);
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+
+  if (requestType !== "code-reload") {
+    console.warn(
+      `[monitor] ignoring runtime restart request with unsupported type "${requestType}"`,
+    );
+    try {
+      unlinkSync(runtimeRestartRequestPath);
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+
+  if (targetPid > 0 && targetPid !== process.pid) {
+    console.warn(
+      `[monitor] ignoring runtime restart request for pid ${targetPid} (current pid ${process.pid})`,
+    );
+    try {
+      unlinkSync(runtimeRestartRequestPath);
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+
+  try {
+    unlinkSync(runtimeRestartRequestPath);
+  } catch {
+    /* best effort */
+  }
+  lastHandledRuntimeRestartRequestId = requestId || `restart-${Date.now()}`;
+
+  const reason = String(payload?.reason || "external-restart-request").trim() ||
+    "external-restart-request";
+  const requesterPid = Number(payload?.requesterPid || 0);
+  const requesterLabel = requesterPid > 0 ? ` from pid ${requesterPid}` : "";
+  console.warn(
+    `[monitor] queued runtime reload requested (${reason})${requesterLabel} via ${trigger}; preserving current launch provenance.`,
+  );
+  restartSelf(`queued-runtime-restart:${reason}`);
+  return true;
+}
+
 function restartSelf(reason) {
   if (shuttingDown) return;
   const protection = getRuntimeRestartProtection();
@@ -3509,6 +3709,7 @@ function restartSelf(reason) {
       ),
     );
   }
+  stopHeartbeatMonitor();
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -3912,7 +4113,27 @@ function safeSetInterval(reason, fn, ms) {
       `[monitor] timer delay clamped for interval:${reason} (${normalized}ms -> ${clamped}ms)`,
     );
   }
-  return setInterval(() => runGuarded(`interval:${reason}`, fn), clamped);
+  let inFlight = false;
+  return setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    runGuarded(`interval:${reason}`, () => {
+      let result;
+      try {
+        result = fn();
+      } catch (err) {
+        inFlight = false;
+        throw err;
+      }
+      if (result && typeof result.then === "function") {
+        return Promise.resolve(result).finally(() => {
+          inFlight = false;
+        });
+      }
+      inFlight = false;
+      return result;
+    });
+  }, clamped);
 }
 
 function safeSetTimeout(reason, fn, ms) {
@@ -5900,9 +6121,21 @@ async function checkMergedPRsAndUpdateTasks() {
       const taskStatus = String(task?.status || "").trim().toLowerCase();
       const allowsMergedRecovery =
         taskStatus === "todo" || taskStatus === "inprogress";
+      const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
+      const nowMs = Date.now();
+      const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
+      const ageMs = Number.isFinite(updatedAt) ? nowMs - updatedAt : Infinity;
+      const reviewVerdictCurrent = hasCurrentReviewVerdict(task);
+      const shouldRedispatchRejectedReview =
+        taskStatus === "inreview" &&
+        reviewStatus === "changes_requested" &&
+        reviewVerdictCurrent &&
+        ageMs > 2 * 60 * 1000 &&
+        !hasActiveSession(taskId) &&
+        !isReviewRedispatchCoolingDown(taskId, nowMs);
 
       const approved =
-        String(task?.reviewStatus || "").trim().toLowerCase() === "approved" ||
+        reviewStatus === "approved" ||
         isTaskReviewApprovedForFlow(taskId);
       // inreview tasks must always be checked — their PR may have merged even if
       // the review-approval flag was never set (e.g. FLOW_REQUIRE_REVIEW=false or
@@ -5944,9 +6177,19 @@ async function checkMergedPRsAndUpdateTasks() {
         // bouncing them back to todo. Allow a grace period to avoid racing a
         // freshly created PR that is not discoverable yet.
         if (allowsInreviewMergeCheck) {
-          const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
-          const ageMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Infinity;
-          if (ageMs > 2 * 60 * 1000) {
+          if (shouldRedispatchRejectedReview) {
+            console.warn(
+              `[monitor] review reconcile: inreview task ${taskId} still has current changes_requested findings — re-dispatching remediation`,
+            );
+            redispatchInReviewTask(task, "review-reconcile-changes-requested", {
+              workflowEvent: "task.review_fix_requested",
+            });
+            summary.redispatchedReviewFix = (summary.redispatchedReviewFix || 0) + 1;
+          } else if (
+            ageMs > 2 * 60 * 1000 &&
+            !reviewVerdictCurrent &&
+            !isReviewRedispatchCoolingDown(taskId, nowMs)
+          ) {
             console.warn(
               `[monitor] review reconcile: inreview task ${taskId} has no discoverable PR — re-dispatching inreview repair`,
             );
@@ -5965,7 +6208,20 @@ async function checkMergedPRsAndUpdateTasks() {
       const prState = String(prInfo?.state || "").trim().toUpperCase();
       const mergedAt = String(prInfo?.mergedAt || prInfo?.merged_at || "").trim();
       const isMerged = prState === "MERGED" || Boolean(mergedAt);
-      if (!isMerged) continue;
+      if (!isMerged) {
+        if (shouldRedispatchRejectedReview) {
+          console.warn(
+            `[monitor] review reconcile: inreview task ${taskId} still has current changes_requested findings — re-dispatching remediation`,
+          );
+          redispatchInReviewTask(task, "review-reconcile-changes-requested", {
+            prNumber,
+            prUrl,
+            workflowEvent: "task.review_fix_requested",
+          });
+          summary.redispatchedReviewFix = (summary.redispatchedReviewFix || 0) + 1;
+        }
+        continue;
+      }
 
       const recoverySuffix = allowsMergedRecovery
         ? ` (status=${taskStatus || "unknown"})`
@@ -6166,30 +6422,26 @@ function parseGhJsonResult(raw, fallback = []) {
   }
 }
 
-function readEpicPrInfo(headBranch, baseBranch) {
+async function readEpicPrInfo(headBranch, baseBranch) {
   const slug = getRepoSlugForEpic();
   if (!slug || !ghAvailable()) return null;
   const { headInfo, baseInfo } = summarizeEpicBranch(headBranch, baseBranch);
   try {
     const listCmd = `gh pr list --repo ${slug} --head "${headInfo.name}" --base "${baseInfo.name}" --state all --json number,state,url,mergedAt`;
-    const listResult = execSync(listCmd, {
+    const listResult = (await execAsync(listCmd, {
       cwd: repoRoot,
-      encoding: "utf8",
       timeout: 20_000,
-      stdio: ["pipe", "pipe", "ignore"],
-    }).trim();
+    })).trim();
     const entries = parseGhJsonResult(listResult, []);
     if (!entries.length) return null;
     const pr = entries[0];
     let detail = {};
     try {
       const viewCmd = `gh pr view ${pr.number} --repo ${slug} --json number,state,url,mergeable,mergeable_state,mergeStateStatus,baseRefName,headRefName`;
-      const viewResult = execSync(viewCmd, {
+      const viewResult = (await execAsync(viewCmd, {
         cwd: repoRoot,
-        encoding: "utf8",
         timeout: 20_000,
-        stdio: ["pipe", "pipe", "ignore"],
-      }).trim();
+      })).trim();
       detail = parseGhJsonResult(viewResult, {});
     } catch {
       /* best-effort */
@@ -6231,12 +6483,10 @@ async function readRequiredChecks(prNumber) {
   if (!slug || !ghAvailable() || !prNumber) return [];
   try {
     const checksCmd = `gh pr checks ${prNumber} --repo ${slug} --json name,state --required`;
-    const checksResult = execSync(checksCmd, {
+    const checksResult = (await execAsync(checksCmd, {
       cwd: repoRoot,
-      encoding: "utf8",
       timeout: 20_000,
-      stdio: ["pipe", "pipe", "ignore"],
-    }).trim();
+    })).trim();
     return parseGhJsonResult(checksResult, []);
   } catch {
     return [];
@@ -6628,7 +6878,7 @@ async function checkEpicBranches(reason = "interval") {
       continue;
     }
 
-    let prInfo = readEpicPrInfo(epicBranch, DEFAULT_TARGET_BRANCH);
+    let prInfo = await readEpicPrInfo(epicBranch, DEFAULT_TARGET_BRANCH);
     if (!prInfo || prInfo.state === "CLOSED") {
       const created = await createEpicMergePr(
         epicBranch,
@@ -6943,6 +7193,15 @@ function getReviewGateSnapshot(taskId) {
   }
 }
 
+function hasCurrentReviewVerdict(task) {
+  const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
+  if (!["approved", "changes_requested"].includes(reviewStatus)) {
+    return false;
+  }
+  const reviewedAtMs = Date.parse(String(task?.reviewedAt || ""));
+  return Number.isFinite(reviewedAtMs);
+}
+
 function isTaskReviewApprovedForFlow(taskId) {
   const snapshot = getReviewGateSnapshot(taskId);
   return snapshot?.approved === true;
@@ -7008,6 +7267,17 @@ async function queueFlowReview(taskId, ctx, reason = "") {
 function redispatchInReviewTask(task, reason, extra = {}) {
   const taskId = String(task?.id || "").trim();
   if (!taskId) return false;
+  const normalizedReason = String(reason || "inreview_redispatch").trim() || "inreview_redispatch";
+  const eventType = String(extra.workflowEvent || "task.assigned").trim() || "task.assigned";
+  const now = Date.now();
+  const existing = reviewRedispatchCooldownByTask.get(taskId);
+  if (existing && now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS) {
+    return false;
+  }
+  reviewRedispatchCooldownByTask.set(taskId, {
+    at: now,
+    reason: normalizedReason,
+  });
   const taskTitle = String(task?.title || taskId).trim() || taskId;
   const branch = String(task?.branchName || task?.branch || extra.branch || "").trim() || null;
   const worktreePath = String(task?.worktreePath || task?.meta?.worktreePath || extra.worktreePath || "").trim() || null;
@@ -7017,8 +7287,11 @@ function redispatchInReviewTask(task, reason, extra = {}) {
     parsePositivePrNumber(task?.pr_number) ||
     null;
   const prUrl = String(extra.prUrl || task?.prUrl || task?.pr_url || "").trim() || null;
+  const reviewIssues = Array.isArray(extra.reviewIssues)
+    ? extra.reviewIssues
+    : (Array.isArray(task?.reviewIssues) ? task.reviewIssues : []);
   queueWorkflowEvent(
-    "task.assigned",
+    eventType,
     {
       taskId,
       taskTitle,
@@ -7027,12 +7300,26 @@ function redispatchInReviewTask(task, reason, extra = {}) {
       worktreePath,
       prNumber,
       prUrl,
-      reviewRedispatchReason: String(reason || "inreview_redispatch").trim() || "inreview_redispatch",
+      reviewStatus: String(task?.reviewStatus || "").trim() || null,
+      reviewIssues,
+      reviewIssueCount: reviewIssues.length,
+      reviewRedispatchReason: normalizedReason,
       ...extra,
     },
-    { dedupKey: `workflow-event:task.assigned:${taskId}:inreview:${String(reason || "inreview_redispatch").trim() || "inreview_redispatch"}` },
+    { dedupKey: `workflow-event:${eventType}:${taskId}:inreview:${normalizedReason}` },
   );
   return true;
+}
+
+function isReviewRedispatchCoolingDown(taskId, now = Date.now()) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return false;
+  const existing = reviewRedispatchCooldownByTask.get(normalizedTaskId);
+  return Boolean(
+    existing &&
+    Number.isFinite(existing.at) &&
+    now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS
+  );
 }
 
 function parsePositivePrNumber(value) {
@@ -10462,7 +10749,7 @@ async function loadCodexSdk() {
 
 async function tryImportCodex() {
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await import("@openai/" + "codex-sdk");
     return mod.Codex;
   } catch (err) {
     return null;
@@ -10486,7 +10773,8 @@ function installDependencies() {
     return res.status === 0;
   }
 
-  const npm = spawnSync("npm", ["install"], { cwd, stdio: "inherit" });
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  const npm = spawnSync(npmCommand, ["install"], { cwd, stdio: "inherit" });
   return npm.status === 0;
 }
 
@@ -12100,6 +12388,42 @@ function stopMonitorMonitorSupervisor({ preserveRunning = false } = {}) {
   }
 }
 
+function isHeartbeatMonitorEnabled() {
+  if (isMonitorTestRuntime) return false;
+  const raw = String(process.env.BOSUN_HEARTBEAT_MONITOR_ENABLED || "true")
+    .trim()
+    .toLowerCase();
+  return !["0", "false", "no", "off"].includes(raw);
+}
+
+function restartHeartbeatMonitor() {
+  heartbeatRuntimeState.current?.stop?.();
+  heartbeatRuntimeState.current = null;
+
+  if (!isHeartbeatMonitorEnabled()) return;
+  const configDir = String(config?.configDir || "").trim();
+  if (!configDir) return;
+
+  heartbeatRuntimeState.current = createHeartbeatMonitor({
+    configDir,
+    logDir,
+    intervalMs: Number(process.env.BOSUN_HEARTBEAT_INTERVAL_MS || 30_000),
+    timeoutMs: Number(process.env.BOSUN_HEARTBEAT_TIMEOUT_MS || 5_000),
+    successLogIntervalMs: Number(
+      process.env.BOSUN_HEARTBEAT_SUCCESS_LOG_INTERVAL_MS || 10 * 60_000,
+    ),
+    eventLoopWarnMs: Number(process.env.BOSUN_HEARTBEAT_LAG_WARN_MS || 1000),
+    logger: console,
+  });
+  heartbeatRuntimeState.current.start();
+  console.log("[monitor] heartbeat monitor started");
+}
+
+function stopHeartbeatMonitor() {
+  heartbeatRuntimeState.current?.stop?.();
+  heartbeatRuntimeState.current = null;
+}
+
 /**
  * Called when a Live Digest window is sealed.
  * This provides fresh high-priority context and triggers an immediate run.
@@ -12309,6 +12633,7 @@ async function startProcess() {
 
   const child = spawn(orchestratorCmd, orchestratorArgs, {
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
   currentChild = child;
 
@@ -13267,6 +13592,7 @@ function applyConfig(nextConfig, options = {}) {
   } else {
     stopMonitorMonitorSupervisor();
   }
+  restartHeartbeatMonitor();
   restartGitHubReconciler();
 
   const nextArgs = scriptArgs?.join(" ") || "";
@@ -13300,6 +13626,7 @@ async function reloadConfig(reason) {
 process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
+  stopHeartbeatMonitor();
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -13347,6 +13674,7 @@ process.on("SIGINT", async () => {
 process.on("exit", () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
+  stopHeartbeatMonitor();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
   runDetachedDuringShutdown("workspace-monitor-shutdown:exit", () =>
@@ -13360,6 +13688,7 @@ process.on("exit", () => {
 process.on("SIGTERM", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
+  stopHeartbeatMonitor();
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -13504,6 +13833,22 @@ process.on("exit", (code) => {
   appendMonitorCrashBreadcrumb(line);
 });
 
+const workflowStartupRecoveryGraceMs = Math.max(
+  0,
+  Number(configWorkflowRecovery?.startupGraceMs || 0),
+);
+const workflowStartupRecoveryStepDelayMs = Math.max(
+  0,
+  Number(configWorkflowRecovery?.startupStepDelayMs || 0),
+);
+
+function scheduleStartupWorkflowRecovery(name, handler, step = 0) {
+  const delayMs =
+    workflowStartupRecoveryGraceMs +
+    Math.max(0, step) * workflowStartupRecoveryStepDelayMs;
+  safeSetTimeout(name, handler, delayMs);
+}
+
 if (!isMonitorTestRuntime) {
   const DUPLICATE_START_EXIT_STATE_FILE =
     "monitor-duplicate-start-exit-state.json";
@@ -13645,6 +13990,10 @@ console.log("[monitor] legacy maintenance sweep removed — use workflow schedul
 
 safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 
+safeSetInterval("queued-runtime-restart-request", () => {
+  maybeHandleQueuedRuntimeRestartRequest("interval");
+}, RUNTIME_RESTART_REQUEST_POLL_MS);
+
 // Legacy periodic maintenance sweep removed (workflow-only control).
 
 // ── Workflow schedule trigger polling ───────────────────────────────────────
@@ -13666,6 +14015,7 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
       return;
     }
     const includeTaskPoll = opts?.includeTaskPoll !== false;
+    const includeScheduled = opts?.includeScheduled !== false;
 
     const triggered = engine.evaluateScheduleTriggers({ configDir: repoRoot });
     if (!Array.isArray(triggered) || triggered.length === 0) return;
@@ -13673,14 +14023,18 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
     for (const match of triggered) {
       const workflowId = String(match?.workflowId || "").trim();
       if (!workflowId) continue;
-      if (!includeTaskPoll) {
-        const workflow = typeof engine.get === "function" ? engine.get(workflowId) : null;
-        const triggerNode = Array.isArray(workflow?.nodes)
-          ? workflow.nodes.find((node) => node?.id === match?.triggeredBy)
-          : null;
-        if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {
-          continue;
-        }
+      const workflow = typeof engine.get === "function" ? engine.get(workflowId) : null;
+      const triggerNode = Array.isArray(workflow?.nodes)
+        ? workflow.nodes.find((node) => node?.id === match?.triggeredBy)
+        : null;
+      const isTaskPollTrigger =
+        triggerNode?.type === "trigger.task_available" ||
+        triggerNode?.type === "trigger.task_low";
+      if (!includeTaskPoll && isTaskPollTrigger) {
+        continue;
+      }
+      if (!includeScheduled && !isTaskPollTrigger) {
+        continue;
       }
       void engine
         .execute(workflowId, {
@@ -13725,6 +14079,22 @@ safeSetInterval("workflow-schedule-check", async () => {
   await pollWorkflowSchedulesOnce();
 }, scheduleCheckIntervalMs);
 
+// ── Periodic workflow run file pruning: once per day ─────────────────────
+// Deletes run detail files beyond MAX_PERSISTED_RUNS to keep the workflow-runs
+// directory bounded and prevent O(n) dir-scan slowdown on history API calls.
+safeSetInterval("workflow-run-file-prune", async () => {
+  try {
+    const engine = await ensureWorkflowAutomationEngine();
+    if (typeof engine?.pruneOldRunFiles !== "function") return;
+    const result = engine.pruneOldRunFiles();
+    if (result.deleted > 0) {
+      console.log(`[workflows] pruned ${result.deleted} old run file(s), kept ${result.kept}`);
+    }
+  } catch (err) {
+    console.warn(`[workflows] run-file prune error: ${err?.message || err}`);
+  }
+}, 24 * 60 * 60 * 1000);
+
 safeSetInterval("workflow-review-merge-reconcile", async () => {
   const result = await checkMergedPRsAndUpdateTasks();
   if ((result?.movedDone || 0) > 0) {
@@ -13753,16 +14123,16 @@ async function syncDivergedWorktrees() {
 
     try {
       // Fetch remote to update tracking refs
-      execSync("git fetch origin --no-tags", {
-        cwd: wtPath, timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+      await execAsync("git fetch origin --no-tags", {
+        cwd: wtPath, timeout: 30_000,
       });
 
       // Check ahead/behind vs remote tracking ref
       const remoteRef = `origin/${branch}`;
       let remoteExists = false;
       try {
-        execSync(`git rev-parse --verify ${remoteRef}`, {
-          cwd: wtPath, timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
+        await execAsync(`git rev-parse --verify ${remoteRef}`, {
+          cwd: wtPath, timeout: 5_000,
         });
         remoteExists = true;
       } catch { /* branch not yet pushed — nothing to sync */ }
@@ -13770,13 +14140,13 @@ async function syncDivergedWorktrees() {
       if (!remoteExists) continue;
 
       const ahead = parseInt(
-        execSync(`git rev-list --count ${remoteRef}..HEAD`, {
-          cwd: wtPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
-        }).trim(), 10);
+        (await execAsync(`git rev-list --count ${remoteRef}..HEAD`, {
+          cwd: wtPath, timeout: 10_000,
+        })).trim(), 10);
       const behind = parseInt(
-        execSync(`git rev-list --count HEAD..${remoteRef}`, {
-          cwd: wtPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
-        }).trim(), 10);
+        (await execAsync(`git rev-list --count HEAD..${remoteRef}`, {
+          cwd: wtPath, timeout: 10_000,
+        })).trim(), 10);
 
       // Only act on diverged worktrees (behind > 0 AND ahead > 0)
       if (ahead === 0 || behind === 0) continue;
@@ -13788,12 +14158,12 @@ async function syncDivergedWorktrees() {
       // Rebase local onto remote tracking ref to incorporate remote commits
       let rebased = false;
       try {
-        execSync(`git rebase ${remoteRef}`, {
-          cwd: wtPath, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"],
+        await execAsync(`git rebase ${remoteRef}`, {
+          cwd: wtPath, timeout: 60_000,
         });
         rebased = true;
       } catch (rebaseErr) {
-        try { execSync("git rebase --abort", { cwd: wtPath, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
+        try { await execAsync("git rebase --abort", { cwd: wtPath, timeout: 10_000 }); } catch { /* ok */ }
         console.warn(
           `[monitor:worktree-sync] ${branch} rebase conflict — skipping push: ${rebaseErr.message?.slice(0, 200)}`,
         );
@@ -13803,8 +14173,8 @@ async function syncDivergedWorktrees() {
 
       // Safety: refuse to push if HEAD now equals origin/main (would wipe PR changes)
       try {
-        const headSha = execSync("git rev-parse HEAD", { cwd: wtPath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
-        const mainSha = execSync("git rev-parse origin/main", { cwd: wtPath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+        const headSha = (await execAsync("git rev-parse HEAD", { cwd: wtPath, timeout: 5_000 })).trim();
+        const mainSha = (await execAsync("git rev-parse origin/main", { cwd: wtPath, timeout: 5_000 })).trim();
         if (headSha === mainSha) {
           console.warn(`[monitor:worktree-sync] ${branch} HEAD matches origin/main after rebase — aborting push to prevent PR wipe`);
           failed++;
@@ -13814,8 +14184,8 @@ async function syncDivergedWorktrees() {
 
       // Push with --force-with-lease (safe: we just fetched fresh remote refs)
       try {
-        execSync(`git push --force-with-lease --set-upstream origin HEAD`, {
-          cwd: wtPath, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+        await execAsync(`git push --force-with-lease --set-upstream origin HEAD`, {
+          cwd: wtPath, timeout: 30_000,
         });
         console.log(`[monitor:worktree-sync] ${branch} sync-pushed successfully`);
         synced++;
@@ -13860,11 +14230,21 @@ if (logMaxSizeMb > 0) {
   }
 }
 
-// Run once immediately after startup (delayed by 30s to let things settle)
-safeSetTimeout("startup-health-checks", () => {
-  checkEpicBranches("startup");
-  return checkAndMergeDependabotPRs();
-}, 30 * 1000);
+const STARTUP_EPIC_CHECK_DELAY_MS = parseEnvInteger(
+  process.env.BOSUN_STARTUP_EPIC_CHECK_DELAY_MS,
+  2 * 60 * 1000,
+  { min: 30 * 1000, max: 30 * 60 * 1000 },
+);
+const STARTUP_DEPENDABOT_CHECK_DELAY_MS = parseEnvInteger(
+  process.env.BOSUN_STARTUP_DEPENDABOT_CHECK_DELAY_MS,
+  STARTUP_EPIC_CHECK_DELAY_MS + 30 * 1000,
+  { min: STARTUP_EPIC_CHECK_DELAY_MS, max: 30 * 60 * 1000 },
+);
+
+// Stagger the heaviest git/gh maintenance away from initial startup so the UI
+// server can answer readiness probes before long-running repo checks begin.
+safeSetTimeout("startup-epic-check", () => checkEpicBranches("startup"), STARTUP_EPIC_CHECK_DELAY_MS);
+safeSetTimeout("startup-dependabot-auto-merge", () => checkAndMergeDependabotPRs(), STARTUP_DEPENDABOT_CHECK_DELAY_MS);
 
 // ── Fleet Coordination ───────────────────────────────────────────────────────
 if (fleetConfig?.enabled) {
@@ -14061,6 +14441,8 @@ let reviewAgent = null;
 /** @type {Map<string, { approved: boolean, reviewedAt: string }>} */
 const reviewGateResults = new Map();
 const pendingMergeStrategyByTask = new Map();
+const reviewRedispatchCooldownByTask = new Map();
+const REVIEW_REDISPATCH_COOLDOWN_MS = 5 * 60 * 1000;
 /** @type {null} Sync engine lifecycle now managed by workflow template */
 let syncEngine = null;
 /** @type {import("./error-detector.mjs").ErrorDetector|null} */
@@ -14071,33 +14453,43 @@ let agentSupervisor = null;
 if (!isMonitorTestRuntime) {
   if (workflowAutomationEnabled) {
     await ensureWorkflowAutomationEngine().catch(() => {});
-    runWorkflowRecoveryWithPolicy(
-      "stale-dispatch-unstick",
+    scheduleStartupWorkflowRecovery(
+      "startup-stale-dispatch-unstick",
       () =>
-        pollWorkflowSchedulesOnce("startup", {
-          includeTaskPoll: false,
-          requireEngine: true,
-          throwOnError: true,
-        }),
-      {
-        trigger: "startup",
-        operationType: "stale-dispatch-unstick",
-        includeTaskPoll: false,
-      },
+        void runWorkflowRecoveryWithPolicy(
+          "stale-dispatch-unstick",
+          () =>
+            pollWorkflowSchedulesOnce("startup", {
+              includeTaskPoll: false,
+              requireEngine: true,
+              throwOnError: true,
+            }),
+          {
+            trigger: "startup",
+            operationType: "stale-dispatch-unstick",
+            includeTaskPoll: false,
+          },
+        ),
+      0,
     );
-    runWorkflowRecoveryWithPolicy(
-      "workflow-history-unstick",
-      async () => {
-        const engine = await ensureWorkflowAutomationEngine();
-        if (!engine?.resumeInterruptedRuns) {
-          throw new Error("workflow engine resumeInterruptedRuns unavailable");
-        }
-        await engine.resumeInterruptedRuns();
-      },
-      {
-        trigger: "startup",
-        operationType: "workflow-history-unstick",
-      },
+    scheduleStartupWorkflowRecovery(
+      "startup-workflow-history-unstick",
+      () =>
+        void runWorkflowRecoveryWithPolicy(
+          "workflow-history-unstick",
+          async () => {
+            const engine = await ensureWorkflowAutomationEngine();
+            if (!engine?.resumeInterruptedRuns) {
+              throw new Error("workflow engine resumeInterruptedRuns unavailable");
+            }
+            await engine.resumeInterruptedRuns();
+          },
+          {
+            trigger: "startup",
+            operationType: "workflow-history-unstick",
+          },
+        ),
+      1,
     );
   } else {
     console.log(
@@ -14354,18 +14746,24 @@ if (isExecutorDisabled()) {
     internalTaskExecutor = getTaskExecutor(execOpts);
     internalTaskExecutor.start();
     if (workflowOwnsTaskExecutorLifecycle) {
-      runWorkflowRecoveryWithPolicy(
-        "stale-dispatch-task-poll-unstick",
+      scheduleStartupWorkflowRecovery(
+        "startup-stale-dispatch-task-poll-unstick",
         () =>
-          pollWorkflowSchedulesOnce("startup", {
-            requireEngine: true,
-            throwOnError: true,
-          }),
-        {
-          trigger: "startup",
-          operationType: "stale-dispatch-task-poll-unstick",
-          includeTaskPoll: true,
-        },
+          void runWorkflowRecoveryWithPolicy(
+            "stale-dispatch-task-poll-unstick",
+            () =>
+              pollWorkflowSchedulesOnce("startup", {
+                includeScheduled: false,
+                requireEngine: true,
+                throwOnError: true,
+              }),
+            {
+              trigger: "startup",
+              operationType: "stale-dispatch-task-poll-unstick",
+              includeTaskPoll: true,
+            },
+          ),
+        2,
       );
     }
 
@@ -14506,13 +14904,24 @@ if (isExecutorDisabled()) {
         errorDetector: errorDetector || undefined,
         sendTelegram:
           telegramToken && telegramChatId
-            ? (msg) => void sendTelegramMessage(msg)
+            ? (msg, options) => void sendTelegramMessage(msg, options)
             : null,
         getTask: (taskId) => getInternalTask(taskId),
         setTaskStatus: (taskId, status, source) =>
           setInternalTaskStatus(taskId, status, source),
         updateTask: (taskId, updates) =>
           updateInternalTask(taskId, updates),
+        retryReviewThreshold: Number(internalExecutorConfig?.retryReviewThreshold || 0),
+        retryDelayMs: Number(internalExecutorConfig?.retryDelayMs || 15_000),
+        onRetryThresholdExceeded: ({ taskId }) => {
+          const normalizedTaskId = String(taskId || "").trim();
+          if (!normalizedTaskId) return;
+          const task = getInternalTask(normalizedTaskId);
+          if (!task) return;
+          redispatchInReviewTask(task, "retry-threshold-review-fix", {
+            workflowEvent: "task.review_fix_requested",
+          });
+        },
         // broadcastUiEvent is wired later when UI server starts via
         // injectUiDependencies → setBroadcastFn pattern
       });
@@ -14533,7 +14942,7 @@ if (isExecutorDisabled()) {
         eventBus: agentEventBus || undefined,
         sendTelegram:
           telegramToken && telegramChatId
-            ? (msg) => void sendTelegramMessage(msg)
+            ? (msg, options) => void sendTelegramMessage(msg, options)
             : null,
         getTask: (taskId) => getInternalTask(taskId),
         setTaskStatus: (taskId, status, source) =>
@@ -14564,7 +14973,12 @@ if (isExecutorDisabled()) {
         },
         dispatchFixTask: (taskId, issues) => {
           const normalizedTaskId = String(taskId || "").trim();
-          if (!normalizedTaskId) return;
+          if (!normalizedTaskId) {
+            return {
+              dispatched: false,
+              reason: "missing_task_id",
+            };
+          }
           const task = getInternalTask(normalizedTaskId);
           const issueList = Array.isArray(issues) ? issues : [];
           const issueCount = issueList.length;
@@ -14574,7 +14988,14 @@ if (isExecutorDisabled()) {
             console.warn(
               `[monitor] supervisor dispatch-fix skipped for ${normalizedTaskId}: status=${status}`,
             );
-            return;
+            return {
+              dispatched: false,
+              reason: "status_not_inreview",
+              status,
+              issueCount,
+              taskId: normalizedTaskId,
+              taskTitle: task?.title || normalizedTaskId,
+            };
           }
 
           if (hasActiveSession(normalizedTaskId)) {
@@ -14602,7 +15023,13 @@ if (isExecutorDisabled()) {
               `[monitor] supervisor dispatch-fix steering active session for ${normalizedTaskId}`,
             );
             steerActiveThread(normalizedTaskId, prompt);
-            return;
+            return {
+              dispatched: true,
+              mode: "active_session",
+              issueCount,
+              taskId: normalizedTaskId,
+              taskTitle: task?.title || normalizedTaskId,
+            };
           }
 
           console.warn(
@@ -14610,8 +15037,16 @@ if (isExecutorDisabled()) {
           );
           redispatchInReviewTask(task || { id: normalizedTaskId, title: normalizedTaskId }, "review-fix-redispatch", {
             reviewIssueCount: issueCount,
+            reviewIssues: issueList,
             workflowEvent: "task.review_fix_requested",
           });
+          return {
+            dispatched: true,
+            mode: "redispatch",
+            issueCount,
+            taskId: normalizedTaskId,
+            taskTitle: task?.title || normalizedTaskId,
+          };
         },
       });
       agentSupervisor.start();
@@ -14641,7 +15076,7 @@ if (isExecutorDisabled()) {
           ),
           sendTelegram:
             telegramToken && telegramChatId
-              ? (msg) => void sendTelegramMessage(msg)
+              ? (msg, options) => void sendTelegramMessage(msg, options)
               : null,
           promptTemplate: agentPrompts?.reviewer,
           onReviewComplete: (taskId, result) => {
@@ -14726,9 +15161,26 @@ if (isExecutorDisabled()) {
           if (Array.isArray(pending) && pending.length > 0) {
             let requeued = 0;
             let redispatchedMissingRefs = 0;
+            let skippedReviewed = 0;
             for (const task of pending) {
               const taskId = String(task?.id || "").trim();
               if (!taskId) continue;
+              const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
+              if (hasCurrentReviewVerdict(task)) {
+                if (
+                  reviewStatus === "changes_requested" &&
+                  !hasActiveSession(taskId) &&
+                  !isReviewRedispatchCoolingDown(taskId)
+                ) {
+                  redispatchInReviewTask(task, "review-agent-rehydrate-review-fix", {
+                    workflowEvent: "task.review_fix_requested",
+                  });
+                  redispatchedMissingRefs += 1;
+                  continue;
+                }
+                skippedReviewed += 1;
+                continue;
+              }
               const branchName = String(task?.branchName || "").trim();
               let prUrl = String(task?.prUrl || "").trim();
               let prNumber = String(task?.prNumber || "").trim();
@@ -14799,6 +15251,11 @@ if (isExecutorDisabled()) {
             if (redispatchedMissingRefs > 0) {
               console.warn(
                 `[monitor] review agent redispatched ${redispatchedMissingRefs} inreview task(s) with missing review references`,
+              );
+            }
+            if (skippedReviewed > 0) {
+              console.log(
+                `[monitor] review agent skipped ${skippedReviewed} already-reviewed inreview task(s) during rehydrate`,
               );
             }
           }
@@ -15043,9 +15500,7 @@ export {
   // Container runner re-exports
   getContainerStatus,
   isContainerEnabled,
+  dispatchWorkflowEvent,
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
-
-
