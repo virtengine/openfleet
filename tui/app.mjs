@@ -1,24 +1,45 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import * as ReactModule from "react";
 import htm from "htm";
-import { Box, Text, useApp, useInput } from "ink";
+import * as ink from "ink";
+
+const React = ReactModule.default ?? ReactModule;
+const useCallback = ReactModule.useCallback ?? React.useCallback;
+const useEffect = ReactModule.useEffect ?? React.useEffect;
+const useMemo = ReactModule.useMemo ?? React.useMemo;
+const useState = ReactModule.useState ?? React.useState;
+const Box = ink.Box ?? ink.default?.Box;
+const Text = ink.Text ?? ink.default?.Text;
+const useApp = ink.useApp ?? ink.default?.useApp;
+const useInput = ink.useInput ?? ink.default?.useInput;
+const useStdout = ink.useStdout ?? ink.default?.useStdout;
 
 import wsBridgeFactory from "./lib/ws-bridge.mjs";
 import { getNextScreenForInput } from "./lib/navigation.mjs";
 import StatusHeader from "./components/status-header.mjs";
 import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
+import LogsScreen from "./screens/logs.mjs";
 import StatusScreen from "./screens/status.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
 import CommandPalette from "./CommandPalette.js";
 import { buildCommandPaletteActions, createCommandPaletteHistoryAdapter } from "./lib/command-palette.mjs";
+import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "../ui/tui/HelpScreen.js";
+import {
+  appendLogEntry,
+  createDefaultLogsFilterState,
+  ensureLogSource,
+} from "../ui/tui/logs-screen-helpers.js";
 
+const CLI_SHORTCUT_TITLES = new Set(["Global", "Tasks screen", "Agents screen", "Modals"]);
+const CLI_SHORTCUT_GROUPS = SHORTCUT_GROUPS.filter((group) => CLI_SHORTCUT_TITLES.has(group.title));
 const html = htm.bind(React.createElement);
 
 const SCREENS = {
   status: StatusScreen,
   tasks: TasksScreen,
   agents: AgentsScreen,
+  logs: LogsScreen,
 };
 
 function ScreenTabs({ screen }) {
@@ -26,6 +47,7 @@ function ScreenTabs({ screen }) {
     { key: "status", num: "1", label: "Status" },
     { key: "tasks", num: "2", label: "Tasks" },
     { key: "agents", num: "3", label: "Agents" },
+    { key: "logs", num: "4", label: "Logs" },
   ];
 
   return html`
@@ -38,7 +60,7 @@ function ScreenTabs({ screen }) {
           ${index < navItems.length - 1 ? html`<${Text} dimColor>  <//>` : null}
         <//>
       `)}
-      <${Text} dimColor>  [Ctrl+P] Palette  [:] Command  [q] Quit<//>
+      <${Text} dimColor>  [Ctrl+P] Palette  [:] Command  [?] Help  [q] Quit<//>
     <//>
   `;
 }
@@ -52,17 +74,41 @@ function upsertById(items = [], nextItem) {
   return next;
 }
 
-async function fetchJson(url, init = {}) {
-  const response = await fetch(url, init);
+function toRefreshSeconds(value) {
+  return Math.max(0, Math.ceil(Number(value || 2000) / 1000));
+}
+
+function isCtrlPaletteShortcut(input, key) {
+  if (!key?.ctrl) return false;
+  const name = String(key?.name || "").toLowerCase();
+  return name === "p" || key?.sequence === "\u0010" || input === "\u0010";
+}
+
+function isPaletteShortcut(input, key) {
+  return input === ":" || isCtrlPaletteShortcut(input, key);
+}
+
+async function fallbackRequestJson(host, port, path, options = {}) {
+  const headers = {
+    Accept: "application/json",
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(options.headers || {}),
+  };
+  const response = await fetch(new URL(path, `http://${host}:${port}`).toString(), {
+    method: options.method || (options.body ? "POST" : "GET"),
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok === false) {
-    throw new Error(payload?.error || `Request failed: ${response.status}`);
+    throw new Error(payload?.error || payload?.message || `Request failed: ${response.status}`);
   }
   return payload;
 }
 
 export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient, historyAdapter }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const [screen, setScreen] = useState(initialScreen || "status");
   const [connected, setConnected] = useState(false);
   const [connectionState, setConnectionState] = useState("offline");
@@ -70,11 +116,15 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [workflows, setWorkflows] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [logsFilterState, setLogsFilterState] = useState(createDefaultLogsFilterState());
   const [error, setError] = useState(null);
   const [screenInputLocked, setScreenInputLocked] = useState(false);
-  const [refreshCountdownSec, setRefreshCountdownSec] = useState(
-    Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)),
-  );
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpScrollOffset, setHelpScrollOffset] = useState(0);
+  const [footerHints, setFooterHints] = useState(() => getFooterHints(initialScreen || "status"));
+  const [effectiveRefreshMs, setEffectiveRefreshMs] = useState(Number(refreshMs || 2000));
+  const [refreshCountdownSec, setRefreshCountdownSec] = useState(toRefreshSeconds(refreshMs));
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [recentActionIds, setRecentActionIds] = useState([]);
 
@@ -90,6 +140,18 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     () => historyAdapter || createCommandPaletteHistoryAdapter(),
     [historyAdapter],
   );
+  const requestJson = useCallback((path, options = {}) => {
+    if (typeof bridge?.requestJson === "function") {
+      return bridge.requestJson(path, options);
+    }
+    return fallbackRequestJson(host, port, path, options);
+  }, [bridge, host, port]);
+
+  useEffect(() => {
+    const nextRefreshMs = Number(refreshMs || 2000);
+    setEffectiveRefreshMs(nextRefreshMs);
+    setRefreshCountdownSec(toRefreshSeconds(nextRefreshMs));
+  }, [refreshMs]);
 
   useEffect(() => {
     void resolvedHistory.load().then(setRecentActionIds).catch(() => {});
@@ -100,7 +162,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     const unsubscribes = [];
 
     const resetRefreshCountdown = () => {
-      setRefreshCountdownSec(Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)));
+      setRefreshCountdownSec(toRefreshSeconds(effectiveRefreshMs));
     };
     const on = (eventName, handler) => {
       const unsubscribe = bridge.on(eventName, handler);
@@ -116,7 +178,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     };
     const refreshWorkflows = async () => {
       try {
-        const payload = await fetchJson(`http://${host}:${port}/api/workflows/templates`);
+        const payload = await requestJson("/api/workflows/templates");
         const nextWorkflows = Array.isArray(payload) ? payload : Array.isArray(payload?.templates) ? payload.templates : [];
         if (active) setWorkflows(nextWorkflows);
       } catch {
@@ -189,6 +251,23 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     on("task:delete", (taskId) => {
       setTasks((previous) => previous.filter((task) => task.id !== taskId));
     });
+    on("logs:stream", (entry) => {
+      const logEntry = {
+        ...entry,
+        source: entry?.source ?? entry?.logType,
+        ts: entry?.ts ?? entry?.timestamp,
+        message: entry?.message ?? entry?.line ?? entry?.raw,
+      };
+
+      setLogs((previous) => appendLogEntry(previous, logEntry));
+      setLogsFilterState((previous) => {
+        let next = ensureLogSource(previous, logEntry.source, true);
+        if (logEntry.sessionId) {
+          next = ensureLogSource(next, `session:${logEntry.sessionId}`, true);
+        }
+        return next;
+      });
+    });
     on("retry:update", (retryQueue) => {
       setStats((previous) => ({ ...(previous || {}), retryQueue }));
     });
@@ -211,7 +290,15 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         bridge.disconnect();
       }
     };
-  }, [bridge, host, port, refreshMs]);
+  }, [bridge, effectiveRefreshMs, requestJson]);
+
+  useEffect(() => {
+    if (helpOpen) {
+      setFooterHints(getFooterHints(screen, { helpOpen: true }));
+      return;
+    }
+    setFooterHints(getFooterHints(screen));
+  }, [screen, helpOpen]);
 
   useEffect(() => {
     const intervalId = setInterval(() => {
@@ -236,35 +323,33 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       if (action.type === "navigation") {
         setScreen(action.payload.screen);
       } else if (action.type === "session") {
-        await fetchJson(`http://${host}:${port}/api/sessions/${encodeURIComponent(action.payload.sessionId)}/${action.command}?workspace=all`, {
+        await requestJson(`/api/sessions/${encodeURIComponent(action.payload.sessionId)}/${action.command}?workspace=all`, {
           method: "POST",
         });
       } else if (action.type === "task") {
         if (action.command === "create") {
-          await fetchJson(`http://${host}:${port}/api/tasks/create`, {
+          await requestJson("/api/tasks/create", {
             method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ title: "New task from palette" }),
+            body: { title: "New task from palette" },
           });
         } else if (action.command === "update") {
-          await fetchJson(`http://${host}:${port}/api/tasks/update`, {
+          await requestJson("/api/tasks/update", {
             method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ id: action.payload.taskId, status: "inprogress" }),
+            body: { id: action.payload.taskId, status: "inprogress" },
           });
         } else if (action.command === "delete") {
-          await fetchJson(`http://${host}:${port}/api/tasks/${encodeURIComponent(action.payload.taskId)}`, { method: "DELETE" });
+          await requestJson(`/api/tasks/${encodeURIComponent(action.payload.taskId)}`, { method: "DELETE" });
         }
       } else if (action.type === "workflow") {
-        await fetchJson(`http://${host}:${port}/api/workflows/${encodeURIComponent(action.payload.workflowId)}/execute`, {
+        await requestJson(`/api/workflows/${encodeURIComponent(action.payload.workflowId)}/execute`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
+          body: {},
         });
-      } else if (action.type === "config") {
-        if (action.id.startsWith("config:refresh:")) {
-          setRefreshCountdownSec(Number(action.id.split(":").at(-1) || 2));
-        }
+      } else if (action.type === "config" && action.id.startsWith("config:refresh:")) {
+        const nextSeconds = Number(action.id.split(":").at(-1) || 2);
+        const nextRefreshMs = nextSeconds * 1000;
+        setEffectiveRefreshMs(nextRefreshMs);
+        setRefreshCountdownSec(nextSeconds);
       }
       const nextRecent = await resolvedHistory.save({ actionId: action.id, recentActionIds });
       setRecentActionIds(nextRecent);
@@ -274,15 +359,50 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       setError(String(err?.message || err || "Command failed"));
       setPaletteOpen(false);
     }
-  }, [host, port, recentActionIds, resolvedHistory]);
+  }, [recentActionIds, requestJson, resolvedHistory]);
+
+  const helpRows = Math.max(6, (stdout?.rows || 24) - 5);
+  const helpRowCount = CLI_SHORTCUT_GROUPS.reduce((totalRows, group, index, groups) => {
+    if (index % 2 === 1) return totalRows;
+    const right = groups[index + 1];
+    const pairHeight = 1 + Math.max(group.items.length, right?.items?.length || 0);
+    return totalRows + pairHeight;
+  }, 0);
+  const maxHelpScrollOffset = Math.max(0, helpRowCount - helpRows);
 
   const handleInput = useCallback((input, key) => {
-    if (key?.ctrl && String(input || "") === "p") {
+    if (isPaletteShortcut(input, key)) {
       setPaletteOpen(true);
       return;
     }
-    if (input === ":") {
-      setPaletteOpen(true);
+    if (input === "?") {
+      setHelpOpen((current) => {
+        const opening = !current;
+        if (opening) {
+          setHelpScrollOffset(0);
+          setFooterHints(getFooterHints(screen, { helpOpen: true }));
+        } else {
+          setFooterHints(getFooterHints(screen));
+        }
+        return opening;
+      });
+      return;
+    }
+    if (helpOpen) {
+      if (key?.escape) {
+        setHelpOpen(false);
+        setHelpScrollOffset(0);
+        setFooterHints(getFooterHints(screen));
+        return;
+      }
+      if (key?.upArrow) {
+        setHelpScrollOffset((current) => Math.max(0, current - 1));
+        return;
+      }
+      if (key?.downArrow) {
+        setHelpScrollOffset((current) => Math.min(maxHelpScrollOffset, current + 1));
+        return;
+      }
       return;
     }
     if (input === "q") {
@@ -290,21 +410,23 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       return;
     }
     setScreen((current) => getNextScreenForInput(current, input));
-  }, [exit]);
+  }, [exit, helpOpen, maxHelpScrollOffset, screen]);
 
   useInput((input, key) => {
     if (paletteOpen) return;
-    if (screenInputLocked) {
-      if (key?.ctrl && String(input || "") === "p") {
+    if (screenInputLocked && !helpOpen) {
+      if (isCtrlPaletteShortcut(input, key)) {
         setPaletteOpen(true);
+        return;
       }
-      return;
+      if (input !== "?") return;
     }
     handleInput(input, key);
   });
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
   const screenStats = screen === "status" ? stats : undefined;
+  const footerText = (footerHints || []).map(([keysLabel, description]) => `${keysLabel} ${description}`).join("  |  ");
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
@@ -337,14 +459,32 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           stats=${screenStats}
           sessions=${sessions}
           tasks=${tasks}
+          logs=${logs}
+          logsFilterState=${logsFilterState}
           wsBridge=${bridge}
           host=${host}
           port=${port}
           connectOnly=${connectOnly}
-          refreshMs=${refreshMs}
+          refreshMs=${effectiveRefreshMs}
           onTasksChange=${setTasks}
+          onLogsFilterStateChange=${setLogsFilterState}
           onInputCaptureChange=${setScreenInputLocked}
+          onFooterHintsChange=${setFooterHints}
         />
+        ${helpOpen
+          ? html`
+              <${Box} flexDirection="column" marginTop=${1}>
+                <${HelpScreen}
+                  scrollOffset=${helpScrollOffset}
+                  maxRows=${helpRows}
+                  groups=${CLI_SHORTCUT_GROUPS}
+                />
+              <//>
+            `
+          : null}
+      <//>
+      <${Box} paddingX=${1}>
+        <${Text} dimColor>${footerText}<//>
       <//>
     <//>
   `;

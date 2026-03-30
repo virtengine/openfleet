@@ -1,3 +1,8 @@
+// CLAUDE:SUMMARY — agent-pool
+// Resolves SDK selection and fallback order for ephemeral agent threads,
+// including env/config-driven failover and launch orchestration across Codex,
+// Copilot, Claude, and compatible adapters.
+
 /**
  * agent-pool.mjs — Universal SDK-Aware Ephemeral Agent Pool
  *
@@ -39,12 +44,15 @@
  *   getAvailableSdks()   → returns list of non-disabled SDKs
  */
 
+import { randomUUID } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import "../infra/windows-hidden-child-processes.mjs";
 import { loadConfig } from "../config/config.mjs";
+import { resolveAgentSdkModuleEntry, resolveCodexSdkInstall } from "./agent-sdk.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime, readCodexConfigRuntimeDefaults } from "../shell/codex-model-profiles.mjs";
 import { buildTaskWritableRoots } from "../shell/codex-config.mjs";
@@ -98,35 +106,390 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 
 /** Tag for console logging */
 const TAG = "[agent-pool]";
+const DEFAULT_AGENT_EXECUTION_MAX_PARALLEL = 3;
 const require = createRequire(import.meta.url);
+const CODEX_SDK_SPECIFIER = "@openai/codex-sdk";
 const MODULE_PRESENCE_CACHE = new Map();
+const activeAgentExecutionSlots = new Map();
+const queuedAgentExecutionSlots = [];
+
+function resolveCodexWindowsRuntime() {
+  if (process.platform !== "win32") {
+    return { supported: false, packageName: null, binaryPath: null };
+  }
+
+  const runtimeMap = {
+    x64: {
+      packageName: "@openai/codex-win32-x64",
+      binaryParts: ["vendor", "x86_64-pc-windows-msvc", "codex", "codex.exe"],
+    },
+    arm64: {
+      packageName: "@openai/codex-win32-arm64",
+      binaryParts: ["vendor", "aarch64-pc-windows-msvc", "codex", "codex.exe"],
+    },
+  };
+
+  const runtimeInfo = runtimeMap[process.arch];
+  if (!runtimeInfo) {
+    return { supported: false, packageName: null, binaryPath: null };
+  }
+
+  try {
+    const runtimePkgJson = require.resolve(`${runtimeInfo.packageName}/package.json`);
+    return {
+      supported: true,
+      packageName: runtimeInfo.packageName,
+      binaryPath: resolve(dirname(runtimePkgJson), ...runtimeInfo.binaryParts),
+    };
+  } catch {
+    return {
+      supported: true,
+      packageName: runtimeInfo.packageName,
+      binaryPath: null,
+    };
+  }
+}
+
+function getCodexRuntimePrerequisiteFailure() {
+  const runtime = resolveCodexWindowsRuntime();
+  if (!runtime.supported) return null;
+  if (!runtime.binaryPath) {
+    return `${runtime.packageName} not installed`;
+  }
+  if (!existsSync(runtime.binaryPath)) {
+    return `Codex SDK runtime missing at ${runtime.binaryPath}`;
+  }
+  return null;
+}
+
+function isDeterministicSdkFailure(errorValue) {
+  const message = String(errorValue || "").toLowerCase();
+  if (!message) return false;
+  if (message.includes("failed to list models") && message.includes("400")) {
+    return true;
+  }
+  if (message.includes("enoent")) return true;
+  if (message.includes("sdk runtime missing")) return true;
+  if (message.includes("sdk not available")) return true;
+  if (message.includes("not installed")) return true;
+  return false;
+}
+
+function parsePositiveInt(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(1, Math.trunc(parsed));
+}
+
+function resolveAgentExecutionMaxParallel(explicit = null) {
+  const direct = parsePositiveInt(explicit);
+  if (direct) return direct;
+  const envValue =
+    parsePositiveInt(process.env.AGENT_POOL_MAX_PARALLEL) ||
+    parsePositiveInt(process.env.WORKFLOW_AGENT_MAX_PARALLEL);
+  if (envValue) return envValue;
+  try {
+    const cfg = loadConfig();
+    const configValue =
+      parsePositiveInt(cfg?.agentPool?.maxParallel) ||
+      parsePositiveInt(cfg?.internalExecutor?.maxParallel);
+    if (configValue) return configValue;
+  } catch {
+    // Best-effort only; fall back to a safe default.
+  }
+  return DEFAULT_AGENT_EXECUTION_MAX_PARALLEL;
+}
+
+function summarizeAgentSlotMeta(meta = {}) {
+  if (!meta || typeof meta !== "object") return {};
+  const summary = {};
+  const scalarKeys = [
+    "taskKey",
+    "taskId",
+    "taskTitle",
+    "workflowRunId",
+    "workflowId",
+    "workflowName",
+    "workflowNodeId",
+    "workflowNodeLabel",
+    "cwd",
+    "sdk",
+    "model",
+    "sessionType",
+  ];
+  for (const key of scalarKeys) {
+    const value = meta[key];
+    if (value == null) continue;
+    const normalized = String(value).trim();
+    if (normalized) summary[key] = normalized;
+  }
+  return summary;
+}
+
+function emitAgentSlotHook(hook, payload) {
+  if (typeof hook !== "function") return;
+  try {
+    hook(payload);
+  } catch {
+    // Slot telemetry must never break agent execution.
+  }
+}
+
+function buildAgentSlotSnapshot(overrides = {}) {
+  const maxParallel = resolveAgentExecutionMaxParallel(overrides.maxParallel);
+  return {
+    maxParallel,
+    activeSlots: activeAgentExecutionSlots.size,
+    queuedSlots: queuedAgentExecutionSlots.length,
+    ...overrides,
+  };
+}
+
+function grantQueuedAgentExecutionSlot(request) {
+  const grantedAt = Date.now();
+  const lease = {
+    slotId: request.slotId,
+    ownerKey: request.ownerKey,
+    requestedAt: request.requestedAt,
+    queuedAt: request.queuedAt,
+    acquiredAt: grantedAt,
+    waitedMs: Math.max(0, grantedAt - request.requestedAt),
+    maxParallel: request.maxParallel,
+    meta: request.meta,
+    onReleased: request.onReleased,
+  };
+  activeAgentExecutionSlots.set(lease.slotId, lease);
+  const payload = buildAgentSlotSnapshot({
+    slotId: lease.slotId,
+    ownerKey: lease.ownerKey,
+    queuedAt: lease.queuedAt,
+    acquiredAt: lease.acquiredAt,
+    requestedAt: lease.requestedAt,
+    waitedMs: lease.waitedMs,
+    maxParallel: lease.maxParallel,
+    meta: lease.meta,
+  });
+  emitAgentSlotHook(request.onAcquired, payload);
+  request.resolve(lease);
+}
+
+function pumpQueuedAgentExecutionSlots() {
+  while (queuedAgentExecutionSlots.length > 0) {
+    const next = queuedAgentExecutionSlots[0];
+    const maxParallel = resolveAgentExecutionMaxParallel(next.maxParallel);
+    if (activeAgentExecutionSlots.size >= maxParallel) break;
+    queuedAgentExecutionSlots.shift();
+    grantQueuedAgentExecutionSlot(next);
+  }
+}
+
+export function getAvailableSlots(maxParallel = null) {
+  return Math.max(
+    0,
+    resolveAgentExecutionMaxParallel(maxParallel) - activeAgentExecutionSlots.size,
+  );
+}
+
+export function getAgentExecutionSlotStatus() {
+  return {
+    maxParallel: resolveAgentExecutionMaxParallel(),
+    activeSlots: activeAgentExecutionSlots.size,
+    queuedSlots: queuedAgentExecutionSlots.length,
+    active: Array.from(activeAgentExecutionSlots.values()).map((lease) => ({
+      slotId: lease.slotId,
+      ownerKey: lease.ownerKey,
+      requestedAt: lease.requestedAt,
+      queuedAt: lease.queuedAt,
+      acquiredAt: lease.acquiredAt,
+      waitedMs: lease.waitedMs,
+      maxParallel: lease.maxParallel,
+      meta: { ...lease.meta },
+    })),
+    queued: queuedAgentExecutionSlots.map((request) => ({
+      slotId: request.slotId,
+      ownerKey: request.ownerKey,
+      requestedAt: request.requestedAt,
+      queuedAt: request.queuedAt,
+      maxParallel: request.maxParallel,
+      meta: { ...request.meta },
+    })),
+  };
+}
+
+export async function allocateSlot(ownerKey = "", options = {}) {
+  const normalizedOwnerKey =
+    String(
+      ownerKey ||
+      options.taskKey ||
+      options.taskId ||
+      options.workflowRunId ||
+      options.workflowId ||
+      "",
+    ).trim() || `agent-slot:${randomUUID()}`;
+  const slotId = `agent-slot-${randomUUID().slice(0, 8)}`;
+  const requestedAt = Date.now();
+  const maxParallel = resolveAgentExecutionMaxParallel(options.maxParallel);
+  const meta = summarizeAgentSlotMeta({
+    ...options.meta,
+    taskKey: options.taskKey,
+    taskId: options.taskId,
+    taskTitle: options.taskTitle,
+    workflowRunId: options.workflowRunId,
+    workflowId: options.workflowId,
+    workflowName: options.workflowName,
+    workflowNodeId: options.workflowNodeId,
+    workflowNodeLabel: options.workflowNodeLabel,
+    cwd: options.cwd,
+    sdk: options.sdk,
+    model: options.model,
+    sessionType: options.sessionType,
+  });
+  const request = {
+    slotId,
+    ownerKey: normalizedOwnerKey,
+    requestedAt,
+    queuedAt: null,
+    maxParallel,
+    meta,
+    onAcquired: options.onAcquired,
+    onReleased: options.onReleased,
+    resolve: null,
+    reject: null,
+  };
+
+  if (activeAgentExecutionSlots.size < maxParallel) {
+    return await new Promise((resolve) => {
+      request.resolve = resolve;
+      grantQueuedAgentExecutionSlot(request);
+    });
+  }
+
+  request.queuedAt = Date.now();
+  emitAgentSlotHook(
+    options.onQueued,
+    buildAgentSlotSnapshot({
+      slotId,
+      ownerKey: normalizedOwnerKey,
+      requestedAt,
+      queuedAt: request.queuedAt,
+      maxParallel,
+      queuedSlots: queuedAgentExecutionSlots.length + 1,
+      meta,
+      queueDepth: queuedAgentExecutionSlots.length + 1,
+    }),
+  );
+  return await new Promise((resolve, reject) => {
+    request.resolve = resolve;
+    request.reject = reject;
+    queuedAgentExecutionSlots.push(request);
+  });
+}
+
+export async function releaseSlot(slotRef = null) {
+  const slotId =
+    typeof slotRef === "string"
+      ? slotRef
+      : String(slotRef?.slotId || "").trim();
+  if (!slotId) {
+    return buildAgentSlotSnapshot({ released: false, reason: "missing_slot_id" });
+  }
+  const lease = activeAgentExecutionSlots.get(slotId);
+  if (!lease) {
+    return buildAgentSlotSnapshot({ released: false, slotId, reason: "slot_not_found" });
+  }
+  activeAgentExecutionSlots.delete(slotId);
+  const releasedAt = Date.now();
+  const payload = buildAgentSlotSnapshot({
+    slotId,
+    ownerKey: lease.ownerKey,
+    requestedAt: lease.requestedAt,
+    queuedAt: lease.queuedAt,
+    acquiredAt: lease.acquiredAt,
+    releasedAt,
+    waitedMs: lease.waitedMs,
+    runDurationMs: Math.max(0, releasedAt - lease.acquiredAt),
+    maxParallel: lease.maxParallel,
+    meta: lease.meta,
+    released: true,
+  });
+  emitAgentSlotHook(lease.onReleased, payload);
+  pumpQueuedAgentExecutionSlots();
+  return payload;
+}
+
+async function withAgentExecutionSlot(cwd, extra = {}, runner) {
+  if (extra?.slotLease) {
+    return await runner(extra.slotLease);
+  }
+  const slotOwnerKey =
+    String(
+      extra?.slotOwnerKey ||
+      extra?.taskKey ||
+      extra?.taskId ||
+      extra?.workflowRunId ||
+      extra?.workflowId ||
+      "",
+    ).trim() || `agent-slot:${randomUUID()}`;
+  let slotLease = null;
+  try {
+    slotLease = await allocateSlot(slotOwnerKey, {
+      taskKey: extra?.taskKey,
+      taskId: extra?.taskId,
+      taskTitle: extra?.taskTitle,
+      workflowRunId: extra?.workflowRunId,
+      workflowId: extra?.workflowId,
+      workflowName: extra?.workflowName,
+      workflowNodeId: extra?.workflowNodeId,
+      workflowNodeLabel: extra?.workflowNodeLabel,
+      cwd,
+      sdk: extra?.sdk,
+      model: extra?.model,
+      sessionType: extra?.sessionType,
+      meta: extra?.slotMeta,
+      maxParallel: extra?.slotMaxParallel,
+      onQueued: extra?.onSlotQueued,
+      onAcquired: extra?.onSlotAcquired,
+      onReleased: extra?.onSlotReleased,
+    });
+    return await runner(slotLease);
+  } finally {
+    if (slotLease?.slotId) {
+      await releaseSlot(slotLease);
+    }
+  }
+}
 
 function hasOptionalModule(specifier) {
   if (MODULE_PRESENCE_CACHE.has(specifier)) {
     return MODULE_PRESENCE_CACHE.get(specifier);
   }
   let ok = false;
-  try {
-    require.resolve(specifier);
-    ok = true;
-  } catch {
-    // ESM-only packages have no CJS "require" export so require.resolve
-    // throws even when the package is installed.  Fall back to checking
-    // whether the package directory exists on disk.
+  if (specifier === CODEX_SDK_SPECIFIER) {
+    ok = Boolean(resolveCodexSdkInstall({ extraRoots: [getAgentRepoRoot(), process.cwd()] }));
+  } else {
     try {
-      const pkgDir = resolve(__dirname, "..", "node_modules", ...specifier.split("/"));
-      ok = existsSync(resolve(pkgDir, "package.json"));
+      require.resolve(specifier);
+      ok = true;
     } catch {
-      ok = false;
+      ok = Boolean(
+        resolveAgentSdkModuleEntry(specifier, { extraRoots: [getAgentRepoRoot(), process.cwd()] }),
+      );
     }
   }
   MODULE_PRESENCE_CACHE.set(specifier, ok);
   return ok;
 }
+
+async function importCodexSdkModule() {
+  return import(CODEX_SDK_SPECIFIER);
+}
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
 let timeoutClampWarningKey = "";
+const MIN_SILENT_STREAM_FRACTION = 0.25;
+const MAX_SILENT_STREAM_GRACE_MS = 30_000;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
+const COPILOT_IDLE_TIMEOUT_GRACE_MS = 1_000;
 const DEFAULT_MAX_ITEMS_PER_TURN = 600;
 const DEFAULT_MAX_ITEM_CHARS = 12_000;
 const TOOL_OUTPUT_GUARDRAIL = String.raw`
@@ -261,6 +624,14 @@ async function maybeCompressResultItems(
 }
 
 function resolveCodexStreamSafety(totalTimeoutMs) {
+  const minSilentStreamFraction =
+    typeof MIN_SILENT_STREAM_FRACTION === "number" && Number.isFinite(MIN_SILENT_STREAM_FRACTION)
+      ? MIN_SILENT_STREAM_FRACTION
+      : 0.25;
+  const maxSilentStreamGraceMs =
+    typeof MAX_SILENT_STREAM_GRACE_MS === "number" && Number.isFinite(MAX_SILENT_STREAM_GRACE_MS)
+      ? MAX_SILENT_STREAM_GRACE_MS
+      : 30_000;
   const streamCfg = getInternalExecutorStreamConfig();
   const firstEventRaw =
     process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
@@ -286,10 +657,17 @@ function resolveCodexStreamSafety(totalTimeoutMs) {
   let firstEventTimeoutMs = null;
   if (Number.isFinite(budgetMs) && budgetMs > 2_000) {
     const maxAllowed = Math.max(1_000, budgetMs - 1_000);
-    firstEventTimeoutMs = clampTimerDelayMs(
-      Math.min(configuredFirstEventMs, maxAllowed),
-      "first-event-timeout",
+    const silentBudgetFloor = Math.min(
+      maxAllowed,
+      Math.max(
+        configuredFirstEventMs,
+        Math.min(
+          Math.trunc(budgetMs * minSilentStreamFraction),
+          maxSilentStreamGraceMs,
+        ),
+      ),
     );
+    firstEventTimeoutMs = clampTimerDelayMs(silentBudgetFloor, "first-event-timeout");
   }
 
   return {
@@ -342,6 +720,11 @@ function envFlagEnabled(value) {
     .trim()
     .toLowerCase();
   return ["1", "true", "yes", "on", "y"].includes(raw);
+}
+
+function normalizeRequestedMcpServerIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
 }
 
 function applyNodeWarningSuppressionEnv(runtimeEnv) {
@@ -527,6 +910,9 @@ function shouldFallbackForSdkError(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (message.includes("failed to list models") && (message.includes("400") || message.includes("bad request"))) {
+    return true;
+  }
   if (message.includes("protocol version mismatch")) return true;
   if (message.includes("sdk expects version") && message.includes("server reports version")) {
     return true;
@@ -567,6 +953,7 @@ function shouldFallbackForSdkError(error) {
   if (message.includes("connection refused")) return true;
   if (message.includes("connection reset")) return true;
   if (message.includes("etimedout")) return true;
+  if (message.includes("failed to list models")) return true;
   // Runtime/provider instability: fail over to next SDK immediately.
   if (message.includes("timeout")) return true;
   if (message.includes("rate limit") || message.includes("429")) return true;
@@ -605,6 +992,10 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   if (name === "codex") {
     if (!hasOptionalModule("@openai/codex-sdk")) {
       return { ok: false, reason: "@openai/codex-sdk not installed" };
+    }
+    const runtimeFailure = getCodexRuntimePrerequisiteFailure();
+    if (runtimeFailure) {
+      return { ok: false, reason: runtimeFailure };
     }
     // Codex auth can come from env vars, config env_key mappings, or persisted
     // CLI login state (for example ~/.codex/auth.json). Because login-based
@@ -799,6 +1190,22 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
       return false;
     }
   };
+  const getAzureProviderEndpointEnvKeys = (sectionName) => {
+    const normalizedName = String(sectionName || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+    const keys = ["AZURE_OPENAI_ENDPOINT"];
+    if (normalizedName) {
+      keys.push(`${normalizedName}_ENDPOINT`);
+      keys.push(`${normalizedName}_BASE_URL`);
+      if (normalizedName.startsWith("AZURE_")) {
+        const suffix = normalizedName.slice("AZURE_".length);
+        if (suffix) {
+          keys.push(`AZURE_${suffix}_ENDPOINT`);
+          keys.push(`AZURE_${suffix}_BASE_URL`);
+        }
+      }
+    }
+    return [...new Set(keys)];
+  };
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
   const unsetEnvKeys = [];
@@ -842,9 +1249,20 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
         if (!otherEnvKey || otherEnvKey === providerEnvKey) continue;
         delete env[otherEnvKey];
         if (!unsetEnvKeys.includes(otherEnvKey)) unsetEnvKeys.push(otherEnvKey);
+        for (const endpointKey of getAzureProviderEndpointEnvKeys(sectionName)) {
+          if (endpointKey === "AZURE_OPENAI_ENDPOINT") continue;
+          delete env[endpointKey];
+          if (!unsetEnvKeys.includes(endpointKey)) unsetEnvKeys.push(endpointKey);
+        }
       }
     } catch {
       // best effort — if config reading fails, don't block execution
+    }
+
+    for (const key of Object.keys(env)) {
+      if (!key.startsWith("AZURE_OPENAI_API_KEY") || key === providerEnvKey) continue;
+      delete env[key];
+      if (!unsetEnvKeys.includes(key)) unsetEnvKeys.push(key);
     }
 
     return {
@@ -915,6 +1333,18 @@ const SDK_ADAPTERS = {
  */
 let SDK_FALLBACK_ORDER = ["codex", "copilot", "claude"];
 
+function getSdkFallbackOrder() {
+  const envOrder = String(process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER || "").trim();
+  if (envOrder) {
+    const parsed = envOrder
+      .split(",")
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter((value, index, arr) => SDK_ADAPTERS[value] && arr.indexOf(value) === index);
+    if (parsed.length > 0) return parsed;
+  }
+  return SDK_FALLBACK_ORDER;
+}
+
 // Attempt to load custom fallback order from config
 try {
   const cfg = loadConfig();
@@ -975,6 +1405,21 @@ function shouldApplySdkCooldown(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+
+  if (
+    message.includes("failed to list models")
+    && (
+      message.includes("400")
+      ||
+      message.includes("bad request")
+      || message.includes("invalid url")
+      || message.includes("deployment")
+      || message.includes("api version")
+      || message.includes("/models")
+    )
+  ) {
+    return false;
+  }
   if (message.includes("failed to list models")) return true;
   if (message.includes("protocol version mismatch")) return true;
   if (message.includes("sdk expects version") && message.includes("server reports version")) {
@@ -1144,7 +1589,7 @@ function resolvePoolSdkName() {
   }
 
   // 4. Fallback chain: first non-disabled SDK
-  for (const name of SDK_FALLBACK_ORDER) {
+  for (const name of getSdkFallbackOrder()) {
     if (!isDisabled(name)) {
       resolvedSdkName = name;
       logResolution(name, "fallback chain");
@@ -1260,7 +1705,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
   let CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await importCodexSdkModule();
     CodexClass = mod.Codex;
     if (!CodexClass) throw new Error("Codex export not found in SDK module");
   } catch (err) {
@@ -1371,9 +1816,17 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       ? `${String(systemPrompt).trim()}\n\n---\n\n${prompt}`
       : prompt;
     const safePrompt = sanitizeAndBoundPrompt(`${anchoredPrompt}${TOOL_OUTPUT_GUARDRAIL}`);
-    const turn = await thread.runStreamed(safePrompt, {
-      signal: controller.signal,
-    });
+    const turn = await Promise.race([
+      thread.runStreamed(safePrompt, {
+        signal: controller.signal,
+      }),
+      new Promise((_, reject) => {
+        hardTimer = setTimeout(
+          () => reject(new Error("hard_timeout")),
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
+        );
+      }),
+    ]);
 
     let finalResponse = "";
     const allItems = [];
@@ -1382,6 +1835,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     // The soft timeout fires controller.abort() which the SDK should honor.
     // The hard timeout is a safety net in case the SDK iterator ignores the abort.
     const hardTimeoutPromise = new Promise((_, reject) => {
+      if (hardTimer) return;
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
         clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
@@ -2475,6 +2929,7 @@ export async function launchEphemeralThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  return await withAgentExecutionSlot(cwd, extra, async (slotLease) => {
   const resolvedGithubToken = await resolveGithubSessionToken();
   const baseRuntimeEnv =
     extra?.envOverrides && typeof extra.envOverrides === "object"
@@ -2484,6 +2939,7 @@ export async function launchEphemeralThread(
   const launchExtra = {
     ...extra,
     envOverrides: sessionEnv,
+    slotLease,
   };
 
   // ── Resolve MCP servers for this launch ──────────────────────────────────
@@ -2492,19 +2948,26 @@ export async function launchEphemeralThread(
       const cfg = loadConfig();
       const mcpCfg = cfg.mcpServers || {};
       if (mcpCfg.enabled !== false) {
-        const requestedIds = launchExtra.mcpServers || [];
-        const defaultIds = mcpCfg.defaultServers || [];
+        const hasExplicitMcpSelection = Array.isArray(launchExtra.mcpServers);
+        const requestedIds = normalizeRequestedMcpServerIds(launchExtra.mcpServers);
+        const defaultIds = !hasExplicitMcpSelection && mcpCfg.allowDefaultServers === true
+          ? mcpCfg.defaultServers || []
+          : [];
         const registry = await getMcpRegistry();
         let resolved = [];
         if (requestedIds.length || defaultIds.length) {
           resolved = await registry.resolveMcpServersForAgent(
             cwd,
             requestedIds,
-            { defaultServers: defaultIds, catalogOverrides: mcpCfg.catalogOverrides || {} },
+            {
+              defaultServers: defaultIds,
+              catalogOverrides: mcpCfg.catalogOverrides || {},
+              requireAuth: mcpCfg.requireAuth !== false,
+            },
           );
         }
-        if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
-          resolved = registry.wrapServersWithDiscoveryProxy(cwd, resolved, {
+        if (resolved.length && typeof registry.wrapServersWithDiscoveryProxy === "function") {
+          resolved = await registry.wrapServersWithDiscoveryProxy(cwd, resolved, {
             enabled: mcpCfg.useDiscoveryProxy !== false,
             includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
             cacheTtlMs: mcpCfg.discoveryProxyCacheTtlMs,
@@ -2518,7 +2981,8 @@ export async function launchEphemeralThread(
       launchExtra._mcpResolved = true;
     }
   } catch (mcpErr) {
-    console.warn(`${TAG} MCP server resolution failed (non-fatal): ${mcpErr.message}`);
+    launchExtra._resolvedMcpServers = [];
+    console.warn(`${TAG} MCP server resolution failed (servers skipped): ${mcpErr.message}`);
   }
 
   // Determine the primary SDK to try
@@ -2535,7 +2999,7 @@ export async function launchEphemeralThread(
     ? [primaryName]
     : [
         primaryName,
-        ...SDK_FALLBACK_ORDER.filter((name) => name !== primaryName),
+        ...getSdkFallbackOrder().filter((name) => name !== primaryName),
       ];
 
   let lastAttemptResult = null;
@@ -2809,6 +3273,7 @@ export async function launchEphemeralThread(
     sdk: primaryName,
     threadId: null,
   };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2847,6 +3312,7 @@ export async function execPooledPrompt(userMessage, options = {}) {
     cwd = REPO_ROOT,
     sdk,
     model,
+    mcpServers,
     sessionType = "ephemeral",
     forceContextShredding = false,
     skipContextShredding = false,
@@ -2860,6 +3326,7 @@ export async function execPooledPrompt(userMessage, options = {}) {
     abortController,
     sdk,
     model,
+    mcpServers,
   });
 
   if (!result.success) {
@@ -3214,7 +3681,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
 
   let CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await importCodexSdkModule();
     CodexClass = mod.Codex;
     if (!CodexClass) throw new Error("Codex export not found");
   } catch (err) {
@@ -3301,14 +3768,23 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
 
   try {
     const safePrompt = sanitizeAndBoundPrompt(prompt);
-    const turn = await thread.runStreamed(safePrompt, {
-      signal: controller.signal,
-    });
+    const turn = await Promise.race([
+      thread.runStreamed(safePrompt, {
+        signal: controller.signal,
+      }),
+      new Promise((_, reject) => {
+        hardTimer = setTimeout(
+          () => reject(new Error("hard_timeout")),
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
+        );
+      }),
+    ]);
     let finalResponse = "";
     const allItems = [];
 
     // Hard timeout safety net (same as launchCodexThread)
     const hardTimeoutPromise = new Promise((_, reject) => {
+      if (hardTimer) return;
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
         clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
@@ -3454,6 +3930,7 @@ export async function launchOrResumeThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  return await withAgentExecutionSlot(cwd, extra, async (slotLease) => {
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
   const resolvedGithubToken = await resolveGithubSessionToken();
@@ -3466,6 +3943,7 @@ export async function launchOrResumeThread(
     resolvedGithubToken,
   );
   restExtra.envOverrides = applyNodeWarningSuppressionEnv(restExtra.envOverrides);
+  restExtra.slotLease = slotLease;
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
   if (restExtra.sdk && restExtra.pinSdk === true) {
@@ -3772,11 +4250,104 @@ export async function launchOrResumeThread(
   }
 
   return { ...result, threadId: finalThreadId, resumed: false };
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Error Recovery Wrapper
 // ---------------------------------------------------------------------------
+
+const RETRY_OUTPUT_PLACEHOLDERS = new Set([
+  "",
+  "(agent completed with no text output)",
+  "continued",
+  "model response continued",
+]);
+
+const RETRY_RECONNECT_PATTERNS = [
+  /session\.idle/i,
+  /no events received/i,
+  /first_event_timeout/i,
+  /timeout_no_events/i,
+  /stream disconnection/i,
+  /transient stream error/i,
+  /transport/i,
+  /network/i,
+  /econnreset/i,
+  /socket hang up/i,
+  /connection.*closed/i,
+  /connection.*reset/i,
+  /reconnect/i,
+];
+
+function hasMeaningfulRetryResult(result = {}) {
+  const output = String(result?.output || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!RETRY_OUTPUT_PLACEHOLDERS.has(output)) return true;
+  if (Array.isArray(result?.items) && result.items.length > 0) return true;
+  return false;
+}
+
+function normalizeRetryFailureFingerprint(result = {}) {
+  const errorText = String(result?.error || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!errorText) return "";
+  if (RETRY_RECONNECT_PATTERNS.some((pattern) => pattern.test(errorText))) {
+    return errorText
+      .replace(/\bafter \d+ms\b/g, "after <ms>")
+      .replace(/attempt \d+\/\d+/g, "attempt <n>/<n>")
+      .replace(/[a-f0-9]{8,}/g, "<id>")
+      .slice(0, 160);
+  }
+  return "";
+}
+
+function classifyRetryCircuitBreak(result = {}, state = {}) {
+  if (result?.success) {
+    return {
+      fingerprint: "",
+      repeatedFingerprint: false,
+      noOutputFailure: false,
+      shouldBreak: false,
+      blockedReason: null,
+      error: null,
+    };
+  }
+
+  const fingerprint = normalizeRetryFailureFingerprint(result);
+  const repeatedFingerprint = Boolean(fingerprint) && Number(state.failureFingerprints?.get(fingerprint) || 0) >= 1;
+  const noOutputFailure = !hasMeaningfulRetryResult(result);
+  const repeatedNoOutput = noOutputFailure && Number(state.consecutiveNoOutputFailures || 0) >= 1;
+
+  if (repeatedFingerprint) {
+    return {
+      fingerprint,
+      repeatedFingerprint: true,
+      noOutputFailure,
+      shouldBreak: true,
+      blockedReason: "blocked_by_env",
+      error: `Repeated reconnect fingerprint detected: ${fingerprint}`,
+    };
+  }
+
+  if (repeatedNoOutput) {
+    return {
+      fingerprint,
+      repeatedFingerprint: false,
+      noOutputFailure: true,
+      shouldBreak: true,
+      blockedReason: "no_output",
+      error: "Repeated no-output agent starts detected; stopping retries",
+    };
+  }
+
+  return {
+    fingerprint,
+    repeatedFingerprint: false,
+    noOutputFailure,
+    shouldBreak: false,
+    blockedReason: null,
+    error: null,
+  };
+}
 
 /**
  * Execute a prompt with automatic error recovery via thread resume.
@@ -3820,9 +4391,16 @@ export async function execWithRetry(prompt, options = {}) {
     buildContinuePrompt,
     sdk,
     model,
+    mcpServers,
     sessionType = "task",
     onEvent,
     onAbortControllerReplaced,
+    slotOwnerKey,
+    slotMeta,
+    slotMaxParallel,
+    onSlotQueued,
+    onSlotAcquired,
+    onSlotReleased,
   } = options;
 
   // AbortController can be replaced on idle_continue, so track it mutably
@@ -3838,6 +4416,8 @@ export async function execWithRetry(prompt, options = {}) {
   const totalAttempts = 1 + maxRetries;
   let continuesUsed = 0;
   let attempt = 0;
+  const failureFingerprints = new Map();
+  let consecutiveNoOutputFailures = 0;
 
   while (attempt < totalAttempts + continuesUsed) {
     attempt++;
@@ -3907,10 +4487,17 @@ export async function execWithRetry(prompt, options = {}) {
       taskKey,
       sdk,
       model,
+      mcpServers,
       sessionType,
       onEvent,
       abortController,
       ignoreSdkCooldown: attempt > 1,
+      slotOwnerKey,
+      slotMeta,
+      slotMaxParallel,
+      onSlotQueued,
+      onSlotAcquired,
+      onSlotReleased,
     });
 
     // Check post-launch if aborted with idle_continue (race: abort fired during execution)
@@ -3938,6 +4525,33 @@ export async function execWithRetry(prompt, options = {}) {
       continue;
     }
 
+    const retryCircuit = classifyRetryCircuitBreak(lastResult, {
+      failureFingerprints,
+      consecutiveNoOutputFailures,
+    });
+    if (retryCircuit.fingerprint) {
+      failureFingerprints.set(
+        retryCircuit.fingerprint,
+        Number(failureFingerprints.get(retryCircuit.fingerprint) || 0) + 1,
+      );
+    }
+    consecutiveNoOutputFailures = retryCircuit.noOutputFailure
+      ? consecutiveNoOutputFailures + 1
+      : 0;
+
+    if (retryCircuit.shouldBreak) {
+      console.warn(`${TAG} execWithRetry circuit breaker tripped for "${taskKey}": ${retryCircuit.error}`);
+      return {
+        ...lastResult,
+        error: retryCircuit.error,
+        blockedReason: retryCircuit.blockedReason,
+        retryCircuitBroken: true,
+        failureFingerprint: retryCircuit.fingerprint || null,
+        attempts: attempt,
+        continues: continuesUsed,
+      };
+    }
+
     // Check if we should retry
     if (lastResult.success) {
       // If caller has custom shouldRetry (e.g. "output must contain 'PASS'"), check it
@@ -3952,6 +4566,12 @@ export async function execWithRetry(prompt, options = {}) {
 
     // Failed — should we retry?
     const retriesLeft = totalAttempts + continuesUsed - attempt;
+    if (isDeterministicSdkFailure(lastResult.error)) {
+      console.warn(
+        `${TAG} attempt ${attempt} hit deterministic SDK failure; retry suppressed: ${lastResult.error}`,
+      );
+      return { ...lastResult, attempts: attempt, continues: continuesUsed };
+    }
     if (retriesLeft > 0) {
       if (typeof shouldRetry === "function" && !shouldRetry(lastResult)) {
         // Custom predicate says don't retry
@@ -4101,4 +4721,18 @@ export function getActiveThreads() {
   }
   return result;
 }
+
+
+
+export const __testables = {
+  shouldApplySdkCooldown,
+  shouldFallbackForSdkError,
+  hasMeaningfulRetryResult,
+  normalizeRetryFailureFingerprint,
+  classifyRetryCircuitBreak,
+};
+
+
+
+
 

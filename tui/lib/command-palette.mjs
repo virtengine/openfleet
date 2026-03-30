@@ -14,7 +14,6 @@ const SESSION_ACTIONS = [
   { key: "steer", label: "Steer", icon: "→", shortcut: null },
 ];
 const TASK_ACTIONS = [
-  { key: "create", label: "Create task", icon: "+", shortcut: "N" },
   { key: "update", label: "Update", icon: "✎", shortcut: "E" },
   { key: "delete", label: "Delete", icon: "×", shortcut: "X" },
 ];
@@ -22,8 +21,6 @@ const CONFIG_ACTIONS = [
   { key: "config:refresh:1", label: "Set refresh to 1s", icon: "⚙", context: "Config" },
   { key: "config:refresh:2", label: "Set refresh to 2s", icon: "⚙", context: "Config" },
   { key: "config:refresh:5", label: "Set refresh to 5s", icon: "⚙", context: "Config" },
-  { key: "config:connectOnly:on", label: "Enable connect-only mode", icon: "⚙", context: "Config" },
-  { key: "config:connectOnly:off", label: "Disable connect-only mode", icon: "⚙", context: "Config" },
 ];
 
 function normalizeRecentIds(recentActionIds = []) {
@@ -76,9 +73,9 @@ export function buildCommandPaletteActions({ sessions = [], tasks = [], workflow
         type: "task",
         command: action.key,
         icon: action.icon,
-        label: action.key === "create" ? `${action.label}` : `${action.label} ${task.title || taskId}`,
+        label: `${action.label} ${task.title || taskId}`,
         shortcut: action.shortcut,
-        context: action.key === "create" ? "Tasks" : `Task ${taskId}`,
+        context: `Task ${taskId}`,
         payload: { taskId, task },
         keywords: [task.title, task.status, taskId],
       }));

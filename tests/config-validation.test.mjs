@@ -106,6 +106,8 @@ describe("loadConfig validation and edge cases", () => {
       baseBackoffMs: 5000,
       maxBackoffMs: 60_000,
       jitterRatio: 0.2,
+      startupGraceMs: 30_000,
+      startupStepDelayMs: 15_000,
     });
   });
 
@@ -145,6 +147,8 @@ describe("loadConfig validation and edge cases", () => {
       baseBackoffMs: 1500,
       maxBackoffMs: 45_000,
       jitterRatio: 0.35,
+      startupGraceMs: 30_000,
+      startupStepDelayMs: 15_000,
     });
   });
 
@@ -311,6 +315,8 @@ describe("loadConfig validation and edge cases", () => {
       baseBackoffMs: 5000,
       maxBackoffMs: 60_000,
       jitterRatio: 0.2,
+      startupGraceMs: 30_000,
+      startupStepDelayMs: 15_000,
     });
   });
 

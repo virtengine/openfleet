@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "sessionStart": [
+    {
+      "type": "command",
+      "command": [
+        "node",
+        "agent/agent-hook-bridge.mjs",
+        "--agent",
+        "copilot",
+        "--event",
+        "sessionStart"
+      ],
+      "timeout": 60
+    }
+  ],
+  "sessionEnd": [
+    {
+      "type": "command",
+      "command": [
+        "node",
+        "agent/agent-hook-bridge.mjs",
+        "--agent",
+        "copilot",
+        "--event",
+        "sessionEnd"
+      ],
+      "timeout": 60
+    }
+  ],
+  "preToolUse": {
+    "*": [
+      {
+        "type": "command",
+        "command": [
+          "node",
+          "agent/agent-hook-bridge.mjs",
+          "--agent",
+          "copilot",
+          "--event",
+          "preToolUse"
+        ],
+        "timeout": 300
+      }
+    ]
+  },
+  "postToolUse": {
+    "*": [
+      {
+        "type": "command",
+        "command": [
+          "node",
+          "agent/agent-hook-bridge.mjs",
+          "--agent",
+          "copilot",
+          "--event",
+          "postToolUse"
+        ],
+        "timeout": 120
+      }
+    ]
+  }
+}

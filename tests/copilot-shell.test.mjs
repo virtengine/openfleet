@@ -1,8 +1,15 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { resolveCopilotCliLaunchConfig } from "../shell/copilot-shell.mjs";
 
 describe("resolveCopilotCliLaunchConfig", () => {
+  const copilotShellSource = readFileSync(
+    resolve(process.cwd(), "shell/copilot-shell.mjs"),
+    "utf8",
+  );
+
   it("prefers an explicit CLI path from the environment", () => {
     const config = resolveCopilotCliLaunchConfig({
       env: { COPILOT_CLI_PATH: "C:/custom/copilot.exe" },
@@ -52,5 +59,13 @@ describe("resolveCopilotCliLaunchConfig", () => {
       cliArgs: ["--allow-all"],
       source: "path",
     });
+  });
+
+  it("defaults to Bosun-managed MCP servers only", () => {
+    expect(copilotShellSource).toContain("function shouldAllowExternalMcpSources");
+    expect(copilotShellSource).toContain("if (!shouldAllowExternalMcpSources()) {");
+    expect(copilotShellSource).toContain("Bosun-managed per-agent MCP selection is injected by the agent pool.");
+    expect(copilotShellSource).not.toContain("listInstalledMcpServers(REPO_ROOT)");
+    expect(copilotShellSource).not.toContain("library MCP server(s) via CLI args");
   });
 });

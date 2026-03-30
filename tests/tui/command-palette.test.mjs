@@ -56,6 +56,18 @@ describe("command palette helpers", () => {
     expect(actions.some((action) => action.id === "config:refresh:1")).toBe(true);
   });
 
+  it("adds only one create-task action and excludes unsupported config toggles", () => {
+    const actions = buildCommandPaletteActions({
+      tasks: [
+        { id: "task-1", title: "Fix CI failure", status: "todo" },
+        { id: "task-2", title: "Review PR #404", status: "inprogress" },
+      ],
+    });
+
+    expect(actions.filter((action) => action.id.startsWith("task:create:"))).toHaveLength(1);
+    expect(actions.some((action) => action.id.startsWith("config:connectOnly:"))).toBe(false);
+  });
+
   it("keeps only known recent actions at the top when the query is empty", () => {
     const actions = buildCommandPaletteActions({
       sessions: [{ id: "MT-734", title: "Investigate flakes", status: "active" }],

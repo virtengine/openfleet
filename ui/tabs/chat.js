@@ -5,6 +5,7 @@
  * ────────────────────────────────────────────────────────────── */
 import { h, Component } from "preact";
 import { useEffect, useState, useCallback, useRef, useMemo } from "preact/hooks";
+import { memo } from "preact/compat";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -337,6 +338,276 @@ function SessionRenameInput({ value, onSave, onCancel }) {
   `;
 }
 
+/* ─── Chat input area ─────────────────────────────────────────────
+ *  Isolated from ChatTab so keystrokes only re-render this small
+ *  component — not SessionList (67+ items), ChatView, etc.
+ * ───────────────────────────────────────────────────────────────── */
+function ChatInputArea({
+  inputAreaRef,
+  textareaRef,
+  fileInputRef,
+  sessionId,
+  sending,
+  stoppingAgent,
+  pendingAttachments,
+  uploadingAttachments,
+  dragActive,
+  queueCount,
+  allCommands,
+  onSend,
+  onAddToQueue,
+  onPaste,
+  onStop,
+  onStopAndSend,
+  onSteerWithMessage,
+  onAttachFile,
+  removeAttachment,
+}) {
+  const [inputValue, setInputValue] = useState(
+    () => pendingDraftTextBySessionId.get(String(sessionId || DRAFT_SESSION_KEY)) || ""
+  );
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [slashFilter, setSlashFilter] = useState("");
+  const [slashActiveIdx, setSlashActiveIdx] = useState(0);
+  const [showSendMenu, setShowSendMenu] = useState(false);
+  const sendMenuRef = useRef(null);
+
+  const filteredSlash = useMemo(
+    () => (allCommands || []).filter((c) =>
+      c.cmd.toLowerCase().startsWith((slashFilter || "").toLowerCase())
+    ),
+    [allCommands, slashFilter],
+  );
+
+  // Expose imperative API to ChatTab (getValue, clear, focus).
+  // No deps — runs every render so getValue always returns latest value.
+  useEffect(() => {
+    if (!inputAreaRef) return;
+    inputAreaRef.current = {
+      getValue: () => inputValue,
+      clear() {
+        setInputValue("");
+        if (textareaRef?.current) textareaRef.current.style.height = "auto";
+      },
+      focus() {
+        if (textareaRef?.current) textareaRef.current.focus();
+      },
+    };
+  });
+
+  // Debounced draft persistence — avoids localStorage write on every keystroke.
+  const persistTimerRef = useRef(null);
+  const saveDraft = useCallback((key, text) => {
+    clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      if (text.trim()) {
+        pendingDraftTextBySessionId.set(key, text);
+      } else {
+        pendingDraftTextBySessionId.delete(key);
+      }
+      persistDraftTextCache();
+    }, 300);
+  }, []);
+
+  useEffect(() => {
+    saveDraft(String(sessionId || DRAFT_SESSION_KEY), inputValue);
+  }, [sessionId, inputValue, saveDraft]);
+
+  // Close send menu when clicking outside.
+  useEffect(() => {
+    if (!showSendMenu) return;
+    function handleOutside(e) {
+      if (sendMenuRef.current && !sendMenuRef.current.contains(e.target)) {
+        setShowSendMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [showSendMenu]);
+
+  function handleInputChange(e) {
+    const val = e.target.value;
+    setInputValue(val);
+    const el = e.target;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 120) + "px";
+    if (val.startsWith("/")) {
+      setShowSlashMenu(true);
+      setSlashFilter(val.split(/\s/)[0]);
+      setSlashActiveIdx(0);
+    } else {
+      setShowSlashMenu(false);
+      setSlashFilter("");
+    }
+  }
+
+  function selectSlashCommand(cmd) {
+    setInputValue(cmd + " ");
+    setShowSlashMenu(false);
+    setSlashFilter("");
+    if (textareaRef?.current) textareaRef.current.focus();
+  }
+
+  function handleKeyDown(e) {
+    if (showSlashMenu && filteredSlash.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashActiveIdx((p) => p < filteredSlash.length - 1 ? p + 1 : 0);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashActiveIdx((p) => p > 0 ? p - 1 : filteredSlash.length - 1);
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        selectSlashCommand(filteredSlash[slashActiveIdx].cmd);
+        return;
+      }
+      if (e.key === "Escape") { setShowSlashMenu(false); return; }
+    }
+    if (e.key === "Enter" && e.altKey) { e.preventDefault(); handleAddToQueueLocal(); return; }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(inputValue); }
+  }
+
+  function handleAddToQueueLocal() {
+    const content = inputValue.trim();
+    if (!content) return;
+    onAddToQueue(content);
+    setInputValue("");
+  }
+
+  const isEmpty = !inputValue.trim() && pendingAttachments.length === 0;
+  const agentBusy = activeAgentInfo.value?.busy;
+
+  return html`
+    <${Box} className="chat-input-area">
+      ${showSlashMenu && html`
+        <${SlashMenu}
+          filter=${slashFilter}
+          onSelect=${selectSlashCommand}
+          activeIndex=${slashActiveIdx}
+          commands=${allCommands}
+        />
+      `}
+      <${ChatSafeBoundary} label="Agent Toolbar">
+        <${ChatInputToolbar} />
+      <//>
+      ${pendingAttachments.length > 0 && html`
+        <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" className="chat-attachments-pending" sx=${{ px: 1, py: 0.5 }}>
+          ${pendingAttachments.map((att, index) => html`
+            <${Chip}
+              key=${att.id || `${att.name}-${index}`}
+              label=${`${att.name || "attachment"}${att.size ? ` (${formatAttachmentSize(att.size)})` : ""}`}
+              onDelete=${() => removeAttachment(index)}
+              size="small"
+              variant="outlined"
+            />
+          `)}
+          ${uploadingAttachments && html`
+            <${Chip} label="Uploading..." size="small" icon=${html`<${CircularProgress} size=${14} />`} />
+          `}
+        <//>
+      `}
+      <${Box} className="chat-input-wrapper" sx=${{ display: "flex", alignItems: "flex-end", gap: 0.5, px: 1, py: 0.5 }}>
+        <${TextField}
+          inputRef=${fileInputRef}
+          type="file"
+          size="small"
+          variant="outlined"
+          inputProps=${{ multiple: true }}
+          sx=${{ display: "none" }}
+          onChange=${onAttachFile}
+        />
+        <${IconButton}
+          size="small"
+          disabled=${uploadingAttachments}
+          onClick=${() => fileInputRef.current?.click?.()}
+          title="Attach file"
+        >
+          ${resolveIcon(":link:")}
+        <//>
+        <${TextField}
+          inputRef=${textareaRef}
+          className=${dragActive ? "chat-input-drag" : ""}
+          placeholder=${sessionId
+            ? 'Send a message… (type "/" for commands)'
+            : 'Start a new chat or type "/" for commands'}
+          multiline
+          maxRows=${4}
+          fullWidth
+          size="small"
+          variant="outlined"
+          value=${inputValue}
+          onInput=${handleInputChange}
+          onKeyDown=${handleKeyDown}
+          onPaste=${onPaste}
+          sx=${{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
+        />
+        <${VoiceMicButton}
+          disabled=${sending}
+          title="Live voice mode"
+        />
+        ${agentBusy && !stoppingAgent && html`
+          <${IconButton}
+            onClick=${onStop}
+            title="Stop agent"
+            aria-label="Stop agent"
+            size="small"
+            color="error"
+          >⏹<//>
+        `}
+        <${Box} className="chat-send-group" ref=${sendMenuRef} sx=${{ display: "flex", position: "relative" }}>
+          <${IconButton}
+            color="primary"
+            disabled=${isEmpty || uploadingAttachments}
+            onClick=${agentBusy ? () => onSteerWithMessage(inputValue) : () => onSend(inputValue)}
+            title=${agentBusy ? "Steer with Message (Enter)" : "Send (Enter)"}
+            size="small"
+          >➤<//>
+          <${IconButton}
+            size="small"
+            disabled=${isEmpty || uploadingAttachments}
+            onClick=${(e) => { e.stopPropagation(); setShowSendMenu(v => !v); }}
+            aria-label="Send options"
+            title="Send options"
+          >▾<//>
+          ${showSendMenu && html`
+            <${Paper} elevation=${4} className="chat-send-menu" sx=${{ position: "absolute", bottom: "100%", right: 0, minWidth: 200, borderRadius: 2, overflow: "hidden", zIndex: 10 }}>
+              <${List} dense disablePadding>
+                <${ListItemButton} onClick=${() => { setShowSendMenu(false); onStopAndSend(inputValue); }}>
+                  <${ListItemIcon} sx=${{ minWidth: 28 }}>⊳<//>
+                  <${ListItemText} primary="Stop and Send" />
+                <//>
+                <${ListItemButton} onClick=${handleAddToQueueLocal}>
+                  <${ListItemIcon} sx=${{ minWidth: 28 }}>+<//>
+                  <${ListItemText} primary="Add to Queue" secondary="Alt+Enter" />
+                <//>
+                <${ListItemButton} selected onClick=${() => { setShowSendMenu(false); onSteerWithMessage(inputValue); }}>
+                  <${ListItemIcon} sx=${{ minWidth: 28 }}>→<//>
+                  <${ListItemText} primary="Steer with Message" secondary="Enter" />
+                <//>
+              <//>
+            <//>
+          `}
+        <//>
+      <//>
+      <${Stack} direction="row" spacing=${1} className="chat-input-hint" sx=${{ px: 1.5, py: 0.5 }}>
+        <${Typography} variant="caption" color="text.secondary">Shift+Enter for new line<//>
+        <${Typography} variant="caption" color="text.secondary">Type / for commands<//>
+        ${offlineQueueSize.peek() > 0 && html`
+          <${Chip} label=${`${offlineQueueSize.peek()} queued`} size="small" color="warning" variant="outlined" />
+        `}
+        ${queueCount > 0 && html`
+          <${Chip} label=${`⏳ ${queueCount} pending`} size="small" color="info" variant="outlined" />
+        `}
+      <//>
+    <//>
+  `;
+}
+const ChatInputAreaMemo = memo(ChatInputArea);
+
 /* ─── Main Chat Tab ─── */
 export function ChatTab() {
   const [chatError, setChatError] = useState(null);
@@ -352,13 +623,9 @@ export function ChatTab() {
 
   const [showArchived, setShowArchived] = useState(false);
   const [sessionView, setSessionView] = useState(SESSION_VIEW_FILTER.all);
-  const [inputValue, setInputValue] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [showSlashMenu, setShowSlashMenu] = useState(false);
-  const [slashFilter, setSlashFilter] = useState("");
-  const [slashActiveIdx, setSlashActiveIdx] = useState(0);
   const [renamingSessionId, setRenamingSessionId] = useState(null);
   const [sending, setSending] = useState(false);
   const [isMobile, setIsMobile] = useState(() => {
@@ -387,10 +654,9 @@ export function ChatTab() {
   });
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
-  const sendMenuRef = useRef(null);
+  const inputAreaRef = useRef(null);
   const messageQueueRef = useRef([]);
   const chatDropDepthRef = useRef(0);
-  const [showSendMenu, setShowSendMenu] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [stoppingAgent, setStoppingAgent] = useState(false);
   const routeSessionId = String(routeParams.value?.sessionId || "").trim();
@@ -605,9 +871,8 @@ export function ChatTab() {
   /* ── Auto-focus textarea when switching sessions (desktop only) ── */
   useEffect(() => {
     if (!sessionId || isMobile) return;
-    // Delay focus to let the ChatView mount first
     const timer = setTimeout(() => {
-      if (textareaRef.current) textareaRef.current.focus();
+      if (inputAreaRef.current) inputAreaRef.current.focus();
     }, 150);
     return () => clearTimeout(timer);
   }, [sessionId, isMobile]);
@@ -617,9 +882,6 @@ export function ChatTab() {
      activeAgentInfo. The commands list only matters when the user is
      actively typing, and the input handler re-renders anyway. */
   const allCommands = useMemo(() => getSlashCommands(), []);
-  const filteredSlash = allCommands.filter((c) =>
-    c.cmd.toLowerCase().startsWith((slashFilter || "").toLowerCase()),
-  );
 
   /* ── Determine if a command is an SDK command ── */
   function isSdkCommand(cmdBase) {
@@ -628,55 +890,24 @@ export function ChatTab() {
     return sdkCmds.includes(cmdBase);
   }
 
-  /* ── Input handling with slash command detection ── */
-  function handleInputChange(e) {
-    const val = e.target.value;
-    setInputValue(val);
-
-    // Auto-grow textarea
-    const el = e.target;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 120) + "px";
-
-    if (val.startsWith("/")) {
-      setShowSlashMenu(true);
-      setSlashFilter(val.split(/\s/)[0]); // filter on first word only
-      setSlashActiveIdx(0);
-    } else {
-      setShowSlashMenu(false);
-      setSlashFilter("");
-    }
-  }
-
-  /* ── Select a slash command from popup ── */
-  function selectSlashCommand(cmd) {
-    setInputValue(cmd + " ");
-    setShowSlashMenu(false);
-    setSlashFilter("");
-    if (textareaRef.current) textareaRef.current.focus();
-  }
-
   /* ── Send message or command ── */
-  async function handleSend(explicitContent) {
-    const content = (typeof explicitContent === "string" ? explicitContent : inputValue).trim();
-    const attachments = Array.isArray(pendingAttachments)
-      ? pendingAttachments.filter(Boolean)
-      : [];
-    if ((!content && attachments.length === 0) || sending || uploadingAttachments) return;
+  async function handleSend(content) {
+    const attachments = Array.isArray(pendingAttachments) ? pendingAttachments.filter(Boolean) : [];
+    const textContent = String(content || "").trim();
+    if ((!textContent && attachments.length === 0) || sending || uploadingAttachments) return;
 
-    setShowSlashMenu(false);
     setSending(true);
 
-    const cmdBase = content.startsWith("/") ? content.split(/\s/)[0].toLowerCase() : "";
-    const cmdArgs = cmdBase ? content.slice(cmdBase.length).trim() : "";
+    const cmdBase = textContent.startsWith("/") ? textContent.split(/\s/)[0].toLowerCase() : "";
+    const cmdArgs = cmdBase ? textContent.slice(cmdBase.length).trim() : "";
     const modeOverride = MESSAGE_MODE_COMMANDS[cmdBase] || null;
     const asModeMessage = Boolean(modeOverride && cmdArgs);
-    const outboundContent = asModeMessage ? cmdArgs : content;
+    const outboundContent = asModeMessage ? cmdArgs : textContent;
     const outboundMode = modeOverride || agentMode.value;
     let createdSessionId = "";
 
     try {
-      if (content.startsWith("/") && !asModeMessage) {
+      if (textContent.startsWith("/") && !asModeMessage) {
         if (isSdkCommand(cmdBase)) {
           // Forward to agent SDK
           const resp = await apiFetch("/api/agents/sdk-command", {
@@ -692,7 +923,7 @@ export function ChatTab() {
             const { sessionMessages } = await import("../components/session-list.js");
             const now = new Date().toISOString();
             const msgs = sessionMessages.value || [];
-            const userMsg = { id: `sdk-${Date.now()}`, role: "user", content, timestamp: now };
+            const userMsg = { id: `sdk-${Date.now()}`, role: "user", content: textContent, timestamp: now };
             const sysMsg = { id: `sdk-r-${Date.now()}`, role: "system", content: typeof resultText === "string" ? resultText : JSON.stringify(resultText), timestamp: now };
             sessionMessages.value = [...msgs, userMsg, sysMsg];
           } else {
@@ -702,14 +933,14 @@ export function ChatTab() {
           // Bosun command
           const resp = await apiFetch("/api/command", {
             method: "POST",
-            body: JSON.stringify({ command: content }),
+            body: JSON.stringify({ command: textContent }),
           });
           const data = resp?.data;
           if (sessionId) {
             const { sessionMessages } = await import("../components/session-list.js");
             const now = new Date().toISOString();
             const msgs = sessionMessages.value || [];
-            const userMsg = { id: `cmd-${Date.now()}`, role: "user", content, timestamp: now };
+            const userMsg = { id: `cmd-${Date.now()}`, role: "user", content: textContent, timestamp: now };
             const resultText = data?.content || data?.error
               || (data?.readOnly ? `:check: ${cmdBase} — see the relevant tab for details.` : `:check: Command executed: ${cmdBase}`);
             const sysMsg = { id: `cmd-r-${Date.now()}`, role: "system", content: resultText, timestamp: now };
@@ -794,7 +1025,7 @@ export function ChatTab() {
     } catch (err) {
       showToast("Failed to send: " + (err.message || "Unknown error"), "error");
     } finally {
-      if (typeof explicitContent !== "string") setInputValue("");
+      inputAreaRef.current?.clear();
       setPendingAttachments([]);
       const currentCacheKey = String(sessionId || DRAFT_SESSION_KEY);
       pendingDraftTextBySessionId.delete(currentCacheKey);
@@ -808,9 +1039,6 @@ export function ChatTab() {
       setDragActive(false);
       chatDropDepthRef.current = 0;
       setSending(false);
-      if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
-      }
     }
   }
 
@@ -867,27 +1095,23 @@ export function ChatTab() {
   }
 
   /* ── Stop then send ── */
-  async function handleStopAndSend() {
-    setShowSendMenu(false);
+  async function handleStopAndSend(content) {
     await handleStop();
-    await handleSend();
+    await handleSend(content);
   }
 
   /* ── Add message to queue for delivery after current task ── */
-  function handleAddToQueue() {
-    const content = inputValue.trim();
-    if (!content) return;
-    setShowSendMenu(false);
-    messageQueueRef.current.push(content);
+  function handleAddToQueue(content) {
+    const text = String(content || "").trim();
+    if (!text) return;
+    messageQueueRef.current.push(text);
     setQueueCount(messageQueueRef.current.length);
-    setInputValue("");
     showToast(`Message queued (${messageQueueRef.current.length} pending)`, "success");
   }
 
   /* ── Steer with message (send to running session) ── */
-  async function handleSteerWithMessage() {
-    setShowSendMenu(false);
-    await handleSend();
+  async function handleSteerWithMessage(content) {
+    await handleSend(content);
   }
 
   /* ── Auto-send queued messages when agent becomes free ── */
@@ -899,18 +1123,6 @@ export function ChatTab() {
     }
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* ── Close send menu when clicking outside ── */
-  useEffect(() => {
-    if (!showSendMenu) return;
-    function handleOutside(e) {
-      if (sendMenuRef.current && !sendMenuRef.current.contains(e.target)) {
-        setShowSendMenu(false);
-      }
-    }
-    document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
-  }, [showSendMenu]);
-
   // Clear one-shot stop UI lock as soon as the selected agent reports idle.
   useEffect(() => {
     if (!stoppingAgent) return;
@@ -918,49 +1130,6 @@ export function ChatTab() {
       setStoppingAgent(false);
     }
   }, [stoppingAgent, activeAgentInfo.value?.busy]);
-
-  /* ── Keyboard handling ── */
-  function handleKeyDown(e) {
-    // Slash menu navigation
-    if (showSlashMenu && filteredSlash.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSlashActiveIdx((prev) =>
-          prev < filteredSlash.length - 1 ? prev + 1 : 0,
-        );
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSlashActiveIdx((prev) =>
-          prev > 0 ? prev - 1 : filteredSlash.length - 1,
-        );
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        e.preventDefault();
-        selectSlashCommand(filteredSlash[slashActiveIdx].cmd);
-        return;
-      }
-      if (e.key === "Escape") {
-        setShowSlashMenu(false);
-        return;
-      }
-    }
-
-    // Alt+Enter = Add to Queue
-    if (e.key === "Enter" && e.altKey) {
-      e.preventDefault();
-      handleAddToQueue();
-      return;
-    }
-
-    // Send on Enter (shift+enter = newline)
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  }
 
   /* ── Session rename ── */
   async function saveRename(sid, newTitle) {
@@ -1083,24 +1252,11 @@ export function ChatTab() {
   useEffect(() => {
     const key = String(sessionId || DRAFT_SESSION_KEY);
     const cachedAttachments = pendingAttachmentsBySessionId.get(key);
-    const cachedDraft = pendingDraftTextBySessionId.get(key);
     setPendingAttachments(Array.isArray(cachedAttachments) ? [...cachedAttachments] : []);
-    setInputValue(typeof cachedDraft === "string" ? cachedDraft : "");
     setUploadingAttachments(false);
     setDragActive(false);
     chatDropDepthRef.current = 0;
   }, [sessionId]);
-
-  useEffect(() => {
-    const key = String(sessionId || DRAFT_SESSION_KEY);
-    const text = String(inputValue || "");
-    if (text.trim()) {
-      pendingDraftTextBySessionId.set(key, text);
-    } else {
-      pendingDraftTextBySessionId.delete(key);
-    }
-    persistDraftTextCache();
-  }, [sessionId, inputValue]);
 
   useEffect(() => {
     const key = String(sessionId || DRAFT_SESSION_KEY);
@@ -1366,129 +1522,28 @@ export function ChatTab() {
               `}
 
           <!-- Bottom input area (always visible) -->
-          <${Box} className="chat-input-area">
-            ${showSlashMenu &&
-            html`
-              <${SlashMenu}
-                filter=${slashFilter}
-                onSelect=${selectSlashCommand}
-                activeIndex=${slashActiveIdx}
-                commands=${allCommands}
-              />
-            `}
-            <${ChatSafeBoundary} label="Agent Toolbar">
-              <${ChatInputToolbar} />
-            <//>
-            ${pendingAttachments.length > 0 && html`
-              <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" className="chat-attachments-pending" sx=${{ px: 1, py: 0.5 }}>
-                ${pendingAttachments.map((att, index) => html`
-                  <${Chip}
-                    key=${att.id || `${att.name}-${index}`}
-                    label=${`${att.name || "attachment"}${att.size ? ` (${formatAttachmentSize(att.size)})` : ""}`}
-                    onDelete=${() => removeAttachment(index)}
-                    size="small"
-                    variant="outlined"
-                  />
-                `)}
-                ${uploadingAttachments && html`
-                  <${Chip} label="Uploading..." size="small" icon=${html`<${CircularProgress} size=${14} />`} />
-                `}
-              <//>
-            `}
-            <${Box} className="chat-input-wrapper" sx=${{ display: "flex", alignItems: "flex-end", gap: 0.5, px: 1, py: 0.5 }}>
-              <${TextField}
-                inputRef=${fileInputRef}
-                type="file"
-                size="small"
-                variant="outlined"
-                inputProps=${{ multiple: true }}
-                sx=${{ display: "none" }}
-                onChange=${handleAttachmentInput}
-              />
-              <${IconButton}
-                size="small"
-                disabled=${uploadingAttachments}
-                onClick=${() => fileInputRef.current?.click?.()}
-                title="Attach file"
-              >
-                ${resolveIcon(":link:")}
-              <//>
-              <${TextField}
-                inputRef=${textareaRef}
-                className=${dragActive ? "chat-input-drag" : ""}
-                placeholder=${sessionId
-                  ? 'Send a message… (type "/" for commands)'
-                  : 'Start a new chat or type "/" for commands'}
-                multiline
-                maxRows=${4}
-                fullWidth
-                size="small"
-                variant="outlined"
-                value=${inputValue}
-                onInput=${handleInputChange}
-                onKeyDown=${handleKeyDown}
-                onPaste=${handleInputPaste}
-                sx=${{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
-              />
-              <${VoiceMicButton}
-                disabled=${sending}
-                title="Live voice mode"
-              />
-              ${activeAgentInfo.value?.busy && !stoppingAgent && html`
-                <${IconButton}
-                  onClick=${handleStop}
-                  title="Stop agent"
-                  aria-label="Stop agent"
-                  size="small"
-                  color="error"
-                >⏹<//>
-              `}
-              <${Box} className="chat-send-group" ref=${sendMenuRef} sx=${{ display: "flex", position: "relative" }}>
-                <${IconButton}
-                  color="primary"
-                  disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
-                  onClick=${activeAgentInfo.value?.busy ? handleSteerWithMessage : handleSend}
-                  title=${activeAgentInfo.value?.busy ? "Steer with Message (Enter)" : "Send (Enter)"}
-                  size="small"
-                >➤<//>
-                <${IconButton}
-                  size="small"
-                  disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
-                  onClick=${(e) => { e.stopPropagation(); setShowSendMenu(v => !v); }}
-                  aria-label="Send options"
-                  title="Send options"
-                >▾<//>
-                ${showSendMenu && html`
-                  <${Paper} elevation=${4} className="chat-send-menu" sx=${{ position: "absolute", bottom: "100%", right: 0, minWidth: 200, borderRadius: 2, overflow: "hidden", zIndex: 10 }}>
-                    <${List} dense disablePadding>
-                      <${ListItemButton} onClick=${handleStopAndSend}>
-                        <${ListItemIcon} sx=${{ minWidth: 28 }}>⊳<//>
-                        <${ListItemText} primary="Stop and Send" />
-                      <//>
-                      <${ListItemButton} onClick=${handleAddToQueue}>
-                        <${ListItemIcon} sx=${{ minWidth: 28 }}>+<//>
-                        <${ListItemText} primary="Add to Queue" secondary="Alt+Enter" />
-                      <//>
-                      <${ListItemButton} selected onClick=${handleSteerWithMessage}>
-                        <${ListItemIcon} sx=${{ minWidth: 28 }}>→<//>
-                        <${ListItemText} primary="Steer with Message" secondary="Enter" />
-                      <//>
-                    <//>
-                  <//>
-                `}
-              <//>
-            <//>
-            <${Stack} direction="row" spacing=${1} className="chat-input-hint" sx=${{ px: 1.5, py: 0.5 }}>
-              <${Typography} variant="caption" color="text.secondary">Shift+Enter for new line<//>
-              <${Typography} variant="caption" color="text.secondary">Type / for commands<//>
-              ${offlineQueueSize.peek() > 0 && html`
-                <${Chip} label=${`${offlineQueueSize.peek()} queued`} size="small" color="warning" variant="outlined" />
-              `}
-              ${queueCount > 0 && html`
-                <${Chip} label=${`⏳ ${queueCount} pending`} size="small" color="info" variant="outlined" />
-              `}
-            <//>
-          <//>
+          <${ChatInputAreaMemo}
+            key=${sessionId || "__no_session__"}
+            inputAreaRef=${inputAreaRef}
+            textareaRef=${textareaRef}
+            fileInputRef=${fileInputRef}
+            sessionId=${sessionId}
+            sending=${sending}
+            stoppingAgent=${stoppingAgent}
+            pendingAttachments=${pendingAttachments}
+            uploadingAttachments=${uploadingAttachments}
+            dragActive=${dragActive}
+            queueCount=${queueCount}
+            allCommands=${allCommands}
+            onSend=${handleSend}
+            onAddToQueue=${handleAddToQueue}
+            onPaste=${handleInputPaste}
+            onStop=${handleStop}
+            onStopAndSend=${handleStopAndSend}
+            onSteerWithMessage=${handleSteerWithMessage}
+            onAttachFile=${handleAttachmentInput}
+            removeAttachment=${removeAttachment}
+          />
           ${dragActive && html`
             <${Box}
               className="chat-drop-overlay"

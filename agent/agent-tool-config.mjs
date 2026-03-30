@@ -17,6 +17,16 @@
  *     "defaults": {
  *       "builtinTools": [...],          // default tool list for all agents
  *       "updatedAt": "..."
+ *     },
+ *     "toolOverhead": {
+ *       "<agentId>": {
+ *         "total": 12345,               // total serialized chars across tool defs
+ *         "bySource": {
+ *           "builtin": 3456,
+ *           "github": 8889
+ *         },
+ *         "updatedAt": "2026-01-01T00:00:00.000Z"
+ *       }
  *     }
  *   }
  *
@@ -28,10 +38,12 @@
  *   setAgentToolConfig(rootDir, agentId, config) — update config for one agent
  *   getEffectiveTools(rootDir, agentId)  — compute final enabled tools list
  *   listAvailableTools(rootDir)   — list all available tools (builtin + MCP)
+ *   measureToolDefinitionChars(toolDefs) — char counts for serialized tool defs
+ *   getToolOverheadReport(rootDir, agentId) — persisted/runtime overhead summary
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { homedir } from "node:os";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -51,6 +63,36 @@ function getBosunHome() {
  * Default built-in tools available to all voice agents and executors.
  * Maps to common capabilities that voice/agent sessions can invoke.
  */
+function measureToolDefinitionCharsInternal(toolDefs = []) {
+  const tools = Array.isArray(toolDefs)
+    ? toolDefs.map((toolDef, index) => {
+      const serialized = JSON.stringify(toolDef ?? null);
+      const fallbackId = `tool-${index + 1}`;
+      return {
+        id: String(toolDef?.id || toolDef?.name || toolDef?.tool_name || fallbackId),
+        chars: serialized.length,
+      };
+    })
+    : [];
+
+  return {
+    total: tools.reduce((sum, tool) => sum + tool.chars, 0),
+    tools,
+  };
+}
+
+export function measureToolDefinitionChars(toolDefs = []) {
+  return measureToolDefinitionCharsInternal(toolDefs);
+}
+
+function normalizeSourceCharMap(bySource = {}) {
+  return Object.fromEntries(
+    Object.entries(bySource)
+      .map(([source, chars]) => [String(source), Math.max(0, Number(chars) || 0)])
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])),
+  );
+}
+
 export const DEFAULT_BUILTIN_TOOLS = Object.freeze([
   {
     id: "search-files",
@@ -177,7 +219,11 @@ export const DEFAULT_BUILTIN_TOOLS = Object.freeze([
 // ── Config File I/O ───────────────────────────────────────────────────────────
 
 function getConfigPath(rootDir) {
-  return resolve(rootDir || getBosunHome(), ".bosun", CONFIG_FILE);
+  const baseDir = rootDir || getBosunHome();
+  const configDir = basename(resolve(baseDir)) === ".bosun"
+    ? resolve(baseDir)
+    : resolve(baseDir, ".bosun");
+  return resolve(configDir, CONFIG_FILE);
 }
 
 /**
@@ -194,6 +240,7 @@ export function loadToolConfig(rootDir) {
         builtinTools: DEFAULT_BUILTIN_TOOLS.filter((t) => t.default).map((t) => t.id),
         updatedAt: new Date().toISOString(),
       },
+      toolOverhead: {},
     };
   }
   try {
@@ -205,6 +252,7 @@ export function loadToolConfig(rootDir) {
         builtinTools: DEFAULT_BUILTIN_TOOLS.filter((t) => t.default).map((t) => t.id),
         updatedAt: new Date().toISOString(),
       },
+      toolOverhead: parsed.toolOverhead || {},
     };
   } catch {
     return {
@@ -213,6 +261,7 @@ export function loadToolConfig(rootDir) {
         builtinTools: DEFAULT_BUILTIN_TOOLS.filter((t) => t.default).map((t) => t.id),
         updatedAt: new Date().toISOString(),
       },
+      toolOverhead: {},
     };
   }
 }
@@ -220,7 +269,7 @@ export function loadToolConfig(rootDir) {
 /**
  * Save the full tool configuration.
  * @param {string} rootDir
- * @param {{ agents: Object, defaults: Object }} config
+ * @param {{ agents: Object, defaults: Object, toolOverhead?: Object }} config
  */
 export function saveToolConfig(rootDir, config) {
   const configPath = getConfigPath(rootDir);
@@ -335,4 +384,67 @@ export async function listAvailableTools(rootDir) {
       transport: s.meta?.transport || "stdio",
     })),
   };
+}
+
+function persistToolOverheadReport(rootDir, agentId, report) {
+  if (!rootDir || !agentId || !report) return report;
+  const cfg = loadToolConfig(rootDir);
+  cfg.toolOverhead ||= {};
+  cfg.toolOverhead[agentId] = {
+    total: Math.max(0, Number(report.total) || 0),
+    bySource: normalizeSourceCharMap(report.bySource),
+    updatedAt: new Date().toISOString(),
+  };
+  saveToolConfig(rootDir, cfg);
+  return cfg.toolOverhead[agentId];
+}
+
+export function getToolOverheadReport(rootDir, agentId) {
+  const cfg = loadToolConfig(rootDir);
+  const stored = cfg.toolOverhead?.[agentId] || null;
+  if (!stored) return { total: 0, bySource: {} };
+  return {
+    total: Math.max(0, Number(stored.total) || 0),
+    bySource: normalizeSourceCharMap(stored.bySource),
+  };
+}
+
+export async function refreshToolOverheadReport(rootDir, agentId, options = {}) {
+  const builtinMeasurement = measureToolDefinitionChars(DEFAULT_BUILTIN_TOOLS);
+  const report = {
+    total: builtinMeasurement.total,
+    bySource: { builtin: builtinMeasurement.total },
+  };
+
+  const agentConfig = agentId ? getAgentToolConfig(rootDir, agentId) : { enabledMcpServers: [] };
+  const enabledServerIds = Array.isArray(options.serverIds)
+    ? options.serverIds
+    : Array.isArray(agentConfig.enabledMcpServers)
+      ? agentConfig.enabledMcpServers
+      : [];
+
+  if (enabledServerIds.length > 0) {
+    try {
+      const { resolveMcpServersForAgent } = await import("../workflow/mcp-registry.mjs");
+      const servers = await resolveMcpServersForAgent(rootDir, enabledServerIds);
+      for (const server of servers) {
+        const serverDefs = Array.isArray(server?.tools) ? server.tools : [];
+        const measurement = measureToolDefinitionChars(serverDefs);
+        report.bySource[server.id || server.name || "unknown-mcp"] = measurement.total;
+        report.total += measurement.total;
+      }
+    } catch {
+      for (const serverId of enabledServerIds) report.bySource[serverId] ||= 0;
+    }
+  }
+
+  const persisted = persistToolOverheadReport(rootDir, agentId, report);
+  if (process.env.BOSUN_LOG_TOOL_OVERHEAD === "1") {
+    console.log(TAG + " tool definition overhead for " + (agentId || "agent") + ":");
+    for (const [source, chars] of Object.entries(persisted.bySource)) {
+      console.log(TAG + "   " + source + ": " + chars + " chars");
+    }
+    console.log(TAG + "   total: " + persisted.total + " chars");
+  }
+  return persisted;
 }

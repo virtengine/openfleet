@@ -195,8 +195,38 @@ registerNodeType("trigger.event", {
   schema: {
     type: "object",
     properties: {
-      eventType: { type: "string", description: "Event type to listen for" },
-      filter: { type: "string", description: "Optional filter expression" },
+      eventType: {
+        type: "string",
+        description: "Event type to listen for",
+        enum: [
+          // ── GitHub webhook events ───────────────────────────────────────────
+          { value: "github:pull_request",                label: "PR Opened / Updated" },
+          { value: "github:pull_request_review",         label: "PR Review Submitted" },
+          { value: "github:pull_request_review_comment", label: "PR Review Comment" },
+          { value: "github:check_run",                   label: "Check Run Completed" },
+          { value: "github:check_suite",                 label: "Check Suite Completed" },
+          { value: "github:push",                        label: "Push" },
+          { value: "github:issue_comment",               label: "Issue Comment" },
+          { value: "github:workflow_run",                label: "GitHub Workflow Run" },
+          { value: "github:status",                      label: "Commit Status" },
+          // ── Bosun task lifecycle events ─────────────────────────────────────
+          { value: "task.assigned",                      label: "Task Assigned" },
+          { value: "task.completed",                     label: "Task Completed" },
+          { value: "task.in_review",                     label: "Task In Review" },
+          { value: "task.status_changed",                label: "Task Status Changed" },
+          { value: "task.failed",                        label: "Task Failed" },
+          { value: "task.blocked.recovery_requested",    label: "Task Blocked (Recovery Requested)" },
+          // ── PR / merge events ───────────────────────────────────────────────
+          { value: "pr.merged",                          label: "PR Merged (internal)" },
+          // ── Meeting events ──────────────────────────────────────────────────
+          { value: "meeting.wake_phrase",                label: "Meeting Wake Phrase" },
+          { value: "meeting.transcript",                 label: "Meeting Transcript" },
+        ],
+      },
+      filter: {
+        type: "string",
+        description: "Optional JS filter expression. $event = event payload. Return truthy to allow.",
+      },
     },
   },
   async execute(node, ctx) {
