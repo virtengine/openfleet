@@ -602,3 +602,26 @@ describe("task-cli taskStats repo area lock state", () => {
     logSpy.mockRestore();
   });
 });
+describe("task-cli task batch payload validation", () => {
+  it("rejects malformed task-batch payload files with deterministic errors", () => {
+    const storePath = makeTempStorePath();
+    const payloadPath = resolve(tempDirs[tempDirs.length - 1], "task-batch-invalid.json");
+    writeFileSync(payloadPath, JSON.stringify([{ taskId: "", repository: "virtengine/bosun", workspace: "virtengine-gh" }]), "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      ["task/task-cli.mjs", "create-batch", "--payload-file", payloadPath],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "Invalid task-batch payload: item[0].taskId must be a non-empty string",
+    );
+    expect(result.stderr).toContain('summary={"type":"array","count":1,"taskIds":[]}');
+  });
+});
