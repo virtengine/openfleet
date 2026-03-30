@@ -319,6 +319,24 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     });
   }, []);
 
+  React.useEffect(() => {
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      setClockMs(now);
+      setEntries((previous) => {
+        const nextEntries = reconcileSessionEntries(previous, liveSessionsRef.current, now);
+        setSelectedId((current) => {
+          if (current && nextEntries.some((entry) => entry.id === current)) return current;
+          return nextEntries[0]?.id || "";
+        });
+        return nextEntries;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, []);
   const clearDetailPoll = React.useCallback(() => {
     if (detailPollRef.current) {
       clearInterval(detailPollRef.current);
