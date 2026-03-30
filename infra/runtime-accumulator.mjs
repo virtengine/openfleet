@@ -363,6 +363,7 @@ export function getRuntimeStats() {
 		runtimeMs: _state.runtimeMs,
 		totalCostUsd: _state.totalCostUsd,
 		sessionCount: _state.completedSessions.length,
+		completedSessions: _state.completedSessions.map((entry) => ({ ...entry })),
 		startedAt: _state.startedAt,
 		lastUpdated: _state.lastUpdated,
 	};
