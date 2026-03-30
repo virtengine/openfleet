@@ -110,6 +110,7 @@ function showHelp() {
     --no-auto-update            Disable background auto-update polling
     --daemon, -d                Run as a background daemon (detached, with PID file)
     --stop-daemon               Stop a running daemon process
+    --restart                   Request a code reload from the running bosun instance
     --terminate                 Hard-stop all bosun processes (daemon + monitor + companions)
     --daemon-status             Check if daemon is running
 
@@ -329,6 +330,7 @@ const LEGACY_MONITOR_PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
 const DAEMON_PID_FILE = resolve(runtimeCacheDir, "bosun-daemon.pid");
 const LEGACY_DAEMON_PID_FILE = resolve(__dirname, ".cache", "bosun-daemon.pid");
 const DAEMON_LOG = resolve(__dirname, "logs", "daemon.log");
+const RESTART_REQUEST_FILE_NAME = "bosun-restart-request.json";
 const SENTINEL_PID_FILE = resolve(
   runtimeCacheDir,
   "telegram-sentinel.pid",
@@ -1746,6 +1748,25 @@ async function main() {
     await daemonStatus();
     return;
   }
+  if (args.includes("--restart")) {
+    try {
+      const result = await requestRunningBosunRestart("cli-restart");
+      const modeLabel = result.daemon ? "daemon" : "monitor";
+      console.log(
+        `  Requested Bosun code reload from the running ${modeLabel} instance (PID ${result.targetPid}).`,
+      );
+      console.log(
+        "  The live instance will restart itself with fresh modules using its current launch path.",
+      );
+      console.log(
+        "  If internal agent slots are busy, the reload stays queued until restart protection clears.\n",
+      );
+    } catch (err) {
+      console.error(`  --restart failed: ${err?.message || err}`);
+      process.exit(1);
+    }
+    return;
+  }
 
   // Write PID file if running as daemon child
   if (
@@ -2492,6 +2513,16 @@ function getMonitorPidFileCandidates(extraCacheDirs = []) {
   return getPidFileCandidates("bosun.pid", extraCacheDirs);
 }
 
+function getRestartRequestFileCandidates(extraCacheDirs = []) {
+  const cacheDirs =
+    Array.isArray(extraCacheDirs) && extraCacheDirs.length > 0
+      ? uniqueResolvedPaths(extraCacheDirs)
+      : getRuntimeCacheDirCandidates();
+  return cacheDirs.map((cacheDir) =>
+    resolve(cacheDir, RESTART_REQUEST_FILE_NAME),
+  );
+}
+
 function tailLinesFromFile(filePath, maxLines = 200) {
   try {
     if (!existsSync(filePath)) return [];
@@ -2588,6 +2619,56 @@ function detectExistingMonitorLockOwner(excludePid = null, extraCacheDirs = []) 
     );
   }
   return null;
+}
+
+async function requestRunningBosunRestart(reason = "cli-restart") {
+  const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+  const monitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
+  const daemonPid = getDaemonPid();
+  const targetPid = Number(monitorOwner?.pid || daemonPid || 0);
+  if (!targetPid) {
+    throw new Error("no running bosun instance found");
+  }
+
+  const targetCacheDirs = monitorOwner?.pidFile
+    ? [dirname(monitorOwner.pidFile)]
+    : configuredCacheDirs;
+  const requestPaths = getRestartRequestFileCandidates(targetCacheDirs);
+  const payload = {
+    id: `restart-${Date.now()}-${process.pid}`,
+    type: "code-reload",
+    reason: String(reason || "cli-restart"),
+    requestedAt: new Date().toISOString(),
+    requesterPid: process.pid,
+    targetPid,
+    argv: process.argv.slice(1),
+  };
+
+  let primaryPath = "";
+  const failures = [];
+  for (const requestPath of requestPaths) {
+    try {
+      mkdirSync(dirname(requestPath), { recursive: true });
+      writeFileSync(requestPath, JSON.stringify(payload, null, 2), "utf8");
+      if (!primaryPath) primaryPath = requestPath;
+    } catch (err) {
+      failures.push(`${requestPath}: ${err?.message || err}`);
+    }
+  }
+
+  if (!primaryPath) {
+    throw new Error(
+      `failed to write restart request (${failures.join("; ") || "unknown error"})`,
+    );
+  }
+
+  return {
+    targetPid,
+    requestPath: primaryPath,
+    requestPaths,
+    monitorOwner,
+    daemon: Boolean(daemonPid),
+  };
 }
 
 function getRequiredMonitorRuntimeFiles(monitorPath) {

@@ -1021,6 +1021,17 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     : userMessage;
   const architectEditorFrame = buildArchitectEditorFrame(options, effectiveMode);
   const toolContract = buildPrimaryToolCapabilityContract(options);
+  const selectedAgentToolConfig = options.agentProfileId
+    ? getAgentToolConfig(rootDir, options.agentProfileId)
+    : null;
+  const selectedMcpServers = Array.isArray(selectedAgentToolConfig?.enabledMcpServers)
+    ? selectedAgentToolConfig.enabledMcpServers
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    : [];
+  const selectedMcpServerSelection = selectedAgentToolConfig
+    ? selectedMcpServers
+    : undefined;
   const messageWithToolContract = [selectedProfile.block, architectEditorFrame, toolContract, messageWithAttachments]
     .filter(Boolean)
     .join("\n\n");
@@ -1044,6 +1055,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       cwd: options.cwd,
       model: effectiveModel,
       sdk: mapAdapterToPoolSdk(activeAdapter.name),
+      mcpServers: selectedMcpServerSelection,
       sessionType,
     });
     const pooledText =
@@ -1132,7 +1144,13 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         }
       }
       const result = await withTimeout(
-        adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
+        adapter.exec(framedMessage, {
+          ...options,
+          sessionId,
+          model: effectiveModel,
+          abortController: timeoutAbort,
+          mcpServers: selectedMcpServerSelection,
+        }),
         timeoutMs,
         `${adapterName}.exec`,
         timeoutAbort,
@@ -1201,7 +1219,13 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               }
             }
             const retryResult = await withTimeout(
-              adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
+              adapter.exec(framedMessage, {
+                ...options,
+                sessionId,
+                model: effectiveModel,
+                abortController: timeoutAbort,
+                mcpServers: selectedMcpServerSelection,
+              }),
               timeoutMs,
               `${adapterName}.exec.retry`,
               timeoutAbort,

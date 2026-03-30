@@ -183,6 +183,27 @@ function fallbackBuildCommonMcpBlocks() {
   ].join("\n");
 }
 
+function shouldIncludeInstalledMcpRepoBlocks(env = process.env) {
+  const raw = String(env?.BOSUN_MCP_INCLUDE_INSTALLED_REPO_CONFIG || "")
+    .trim()
+    .toLowerCase();
+  return ["1", "true", "yes", "on", "y"].includes(raw);
+}
+
+function listInstalledMcpServerIds(repoRoot) {
+  try {
+    const manifestPath = resolve(repoRoot, ".bosun", "library.json");
+    if (!existsSync(manifestPath)) return [];
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    return (manifest.entries || [])
+      .filter((entry) => entry?.type === "mcp")
+      .map((entry) => String(entry?.id || "").replace(/[^a-zA-Z0-9_-]/g, "_"))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Build TOML blocks for all installed MCP servers in the library.
  * Falls back to empty string if the library is not initialized or has no MCP entries.
@@ -241,6 +262,49 @@ function buildInstalledMcpBlocks(repoRoot, options = {}) {
   } catch {
     return "";
   }
+}
+
+function stripTomlSectionByName(toml, name) {
+  const header = `[mcp_servers.${name}]`;
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) {
+    return { toml, changed: false };
+  }
+  const removeFrom = (() => {
+    const lineStart = toml.lastIndexOf("\n", headerIdx);
+    return lineStart === -1 ? 0 : lineStart + 1;
+  })();
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection + 1;
+  const nextToml = `${toml.slice(0, removeFrom)}${toml.slice(sectionEnd)}`.replace(/\n{3,}/g, "\n\n");
+  return { toml: nextToml, changed: nextToml !== toml };
+}
+
+function stripManagedRepoCodexMcpSections(toml, repoRoot, env = process.env) {
+  let nextToml = String(toml || "");
+  if (typeof codexConfig?.stripCommonMcpServerBlocks === "function") {
+    nextToml = codexConfig.stripCommonMcpServerBlocks(nextToml).toml;
+  }
+  if (shouldIncludeInstalledMcpRepoBlocks(env) || !repoRoot) {
+    return nextToml;
+  }
+  for (const id of listInstalledMcpServerIds(repoRoot)) {
+    while (true) {
+      const stripped = stripTomlSectionByName(nextToml, id);
+      if (!stripped.changed) break;
+      nextToml = stripped.toml;
+    }
+  }
+  return nextToml;
+}
+
+function stripManagedVsCodeMcpServers(existingServers = {}) {
+  const next = { ...(existingServers || {}) };
+  for (const id of COMMON_DEFAULT_MCP_SERVER_IDS) {
+    delete next[id];
+  }
+  return next;
 }
 
 function fallbackBuildAgentSdkBlock({ primary = "codex" } = {}) {
@@ -544,7 +608,7 @@ export function buildRepoCodexConfig(options = {}) {
   }
 
   // ── Installed library MCP servers ──
-  if (repoRoot) {
+  if (repoRoot && shouldIncludeInstalledMcpRepoBlocks(env)) {
     const installedBlocks = buildInstalledMcpBlocks(repoRoot, {
       skipServerIds: commonMcpBlocks ? COMMON_DEFAULT_MCP_SERVER_IDS : new Set(),
     }).trim();
@@ -569,7 +633,8 @@ export function buildRepoCodexConfig(options = {}) {
  * @param {string} generated Full generated content
  * @returns {string}  Merged content
  */
-function mergeCodexToml(existing, generated) {
+function mergeCodexToml(existing, generated, options = {}) {
+  const { repoRoot = "", env = process.env } = options;
   // Extract sections from generated content
   // A section starts with a line matching /^\[.+\]/ and runs until the next
   // section header or EOF.
@@ -591,8 +656,12 @@ function mergeCodexToml(existing, generated) {
     if (keyMatch) topLevelKeys.push(keyMatch[1]);
   }
 
-  let result = stripUnsupportedMicrosoftDocsToolsConfig(
-    stripDeprecatedSandboxPermissions(existing.trimEnd()),
+  let result = stripManagedRepoCodexMcpSections(
+    stripUnsupportedMicrosoftDocsToolsConfig(
+      stripDeprecatedSandboxPermissions(existing.trimEnd()),
+    ),
+    repoRoot,
+    env,
   );
 
   // Add missing top-level keys
@@ -789,7 +858,11 @@ export function buildRepoVsCodeSettings(options = {}) {
  *
  * @returns {object}  JSON-serializable MCP config
  */
-export function buildRepoVsCodeMcpConfig() {
+export function buildRepoVsCodeMcpConfig(options = {}) {
+  const { env = process.env } = options;
+  if (!buildCommonMcpBlocks(env).trim()) {
+    return { mcpServers: {} };
+  }
   return {
     mcpServers: {
       context7: {
@@ -877,7 +950,7 @@ export function ensureRepoConfigs(repoRoot, options = {}) {
 
     if (existsSync(configPath)) {
       const existing = readFileSync(configPath, "utf8");
-      const merged = mergeCodexToml(existing, generated);
+      const merged = mergeCodexToml(existing, generated, { repoRoot: root, env });
       if (merged.trimEnd() === existing.trimEnd()) {
         result.codexConfig.skipped = true;
       } else if (!dryRun) {
@@ -976,7 +1049,7 @@ export function ensureRepoConfigs(repoRoot, options = {}) {
     const mcpPath = resolve(root, ".vscode", "mcp.json");
     result.vsCodeMcp.path = mcpPath;
 
-    const generated = buildRepoVsCodeMcpConfig();
+    const generated = buildRepoVsCodeMcpConfig({ env });
 
     if (existsSync(mcpPath)) {
       let existing = {};
@@ -990,11 +1063,14 @@ export function ensureRepoConfigs(repoRoot, options = {}) {
         existing.mcpServers ||
         existing["github.copilot.mcpServers"] ||
         (typeof existing === "object" && !existing.mcpServers ? existing : {});
+      const normalizedExistingServers = buildCommonMcpBlocks(env).trim()
+        ? existingServers
+        : stripManagedVsCodeMcpServers(existingServers);
 
       // Existing servers take priority; add missing from generated
       const mergedServers = {
         ...generated.mcpServers,
-        ...(typeof existingServers === "object" ? existingServers : {}),
+        ...(typeof normalizedExistingServers === "object" ? normalizedExistingServers : {}),
       };
 
       const next = { mcpServers: mergedServers };

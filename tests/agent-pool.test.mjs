@@ -10,6 +10,9 @@ let mockCopilotStart;
 let mockCopilotCreateSession;
 let mockCopilotResumeSession;
 let mockClaudeQuery;
+let mockLoadConfig;
+let mockMcpResolve;
+let mockMcpWrap;
 let isolatedHomeDir;
 let setSdkFailureCooldownForTest;
 function ensureMock(name) {
@@ -33,6 +36,9 @@ const callMockCopilotStart = ensureMock("__agentPoolMockCopilotStart");
 const callMockCopilotCreateSession = ensureMock("__agentPoolMockCopilotCreateSession");
 const callMockCopilotResumeSession = ensureMock("__agentPoolMockCopilotResumeSession");
 const callMockClaudeQuery = ensureMock("__agentPoolMockClaudeQuery");
+const callMockLoadConfig = ensureMock("__agentPoolMockLoadConfig");
+const callMockMcpResolve = ensureMock("__agentPoolMockMcpResolve");
+const callMockMcpWrap = ensureMock("__agentPoolMockMcpWrap");
 
 function makeCodexMockThread(
   threadId = "mock-codex-thread",
@@ -78,6 +84,9 @@ mockCopilotStart = vi.fn();
 mockCopilotCreateSession = vi.fn();
 mockCopilotResumeSession = vi.fn();
 mockClaudeQuery = vi.fn();
+mockLoadConfig = vi.fn();
+mockMcpResolve = vi.fn();
+mockMcpWrap = vi.fn();
 globalThis.__agentPoolMockCodexStartThread = mockCodexStartThread;
 globalThis.__agentPoolMockCodexResumeThread = mockCodexResumeThread;
 globalThis.__agentPoolMockCodexCtor = mockCodexCtor;
@@ -85,6 +94,9 @@ globalThis.__agentPoolMockCopilotStart = mockCopilotStart;
 globalThis.__agentPoolMockCopilotCreateSession = mockCopilotCreateSession;
 globalThis.__agentPoolMockCopilotResumeSession = mockCopilotResumeSession;
 globalThis.__agentPoolMockClaudeQuery = mockClaudeQuery;
+globalThis.__agentPoolMockLoadConfig = mockLoadConfig;
+globalThis.__agentPoolMockMcpResolve = mockMcpResolve;
+globalThis.__agentPoolMockMcpWrap = mockMcpWrap;
 
 vi.mock("@openai/codex-sdk", () => {
   return {
@@ -225,7 +237,14 @@ vi.mock("../agent/agent-sdk.mjs", () => ({
 
 // Mock config.mjs so tests don't read the real bosun.config.json
 vi.mock("../config/config.mjs", () => ({
-  loadConfig: () => ({}),
+  loadConfig: (...args) => callMockLoadConfig(...args),
+}));
+
+vi.mock("../workflow/mcp-registry.mjs", () => ({
+  resolveMcpServersForAgent: (...args) => callMockMcpResolve(...args),
+  wrapServersWithDiscoveryProxy: (...args) => callMockMcpWrap(...args),
+  writeTempCopilotMcpConfig: () => join(process.cwd(), ".tmp-mcp-config.json"),
+  buildClaudeMcpEnv: () => ({ envVar: "", fileContent: { mcpServers: {} } }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -378,6 +397,12 @@ beforeEach(async () => {
   mockCopilotCreateSession.mockReset();
   mockCopilotResumeSession.mockReset();
   mockClaudeQuery.mockReset();
+  mockLoadConfig.mockReset();
+  mockLoadConfig.mockReturnValue({});
+  mockMcpResolve.mockReset();
+  mockMcpResolve.mockResolvedValue([]);
+  mockMcpWrap.mockReset();
+  mockMcpWrap.mockImplementation((_cwd, servers) => servers);
   await ensureThreadRegistryLoaded();
   clearThreadRegistry();
 });
@@ -596,6 +621,50 @@ describe("launchEphemeralThread", () => {
     expect(result).toHaveProperty("error");
     expect(typeof result.success).toBe("boolean");
     expect(Array.isArray(result.items)).toBe(true);
+  });
+
+  it("treats an explicit empty MCP selection as opt-out from default server fallback", async () => {
+    mockLoadConfig.mockReturnValue({
+      mcpServers: {
+        allowDefaultServers: true,
+        defaultServers: ["context7"],
+      },
+    });
+
+    await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      5000,
+      { mcpServers: [] },
+    );
+
+    expect(mockMcpResolve).not.toHaveBeenCalled();
+    expect(mockMcpWrap).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn a discovery proxy when no MCP servers resolved", async () => {
+    mockLoadConfig.mockReturnValue({
+      mcpServers: {
+        useDiscoveryProxy: true,
+      },
+    });
+    mockMcpResolve.mockResolvedValue([]);
+
+    await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      5000,
+      { mcpServers: ["context7"] },
+    );
+
+    expect(mockMcpResolve).toHaveBeenCalledWith(
+      process.cwd(),
+      ["context7"],
+      expect.objectContaining({
+        defaultServers: [],
+      }),
+    );
+    expect(mockMcpWrap).not.toHaveBeenCalled();
   });
 
   it("uses extra.sdk override when provided", async () => {
@@ -2154,8 +2223,6 @@ describe("resolution and launch integration", () => {
   });
 });
 }
-
-
 
 
 

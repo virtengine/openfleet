@@ -672,6 +672,19 @@ export class ReviewAgent {
         /* best effort */
       }
     }
+
+    // Send Telegram for approved reviews
+    if (result.approved && typeof this.#sendTelegram === "function") {
+      const message = `:check: Review: approved\nTask: ${taskId}\nSummary: ${result.summary || "No critical issues found"}`;
+      try {
+        this.#sendTelegram(message, {
+          dedupKey: buildReviewNotificationDedupKey(taskId, result),
+          exactDedup: true,
+        });
+      } catch {
+        /* best effort */
+      }
+    }
   }
 }
 
