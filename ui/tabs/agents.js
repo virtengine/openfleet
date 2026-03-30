@@ -86,6 +86,57 @@ function formatDuration(startedAt) {
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
 }
 
+function formatMsDuration(ms) {
+  const safeMs = Math.max(0, Number(ms || 0));
+  if (safeMs < 1000) return String(safeMs) + "ms";
+  const sec = Math.round(safeMs / 1000);
+  if (sec < 60) return String(sec) + "s";
+  if (sec < 3600) return String(Math.floor(sec / 60)) + "m " + String(sec % 60) + "s";
+  return String(Math.floor(sec / 3600)) + "h " + String(Math.floor((sec % 3600) / 60)) + "m";
+}
+
+function formatTurnTokens(turn) {
+  const total = Number(turn?.totalTokens || 0);
+  const input = Number(turn?.inputTokens || 0);
+  const output = Number(turn?.outputTokens || 0);
+  if (total > 0 || input > 0 || output > 0) {
+    return String(total || input + output) + " tok" + ((input || output) ? (" · in " + input + " / out " + output) : "");
+  }
+  return "—";
+}
+
+function buildTurnTimeline(messages, turns) {
+  const turnEntries = Array.isArray(turns) ? turns : [];
+  const byIndex = new Map(turnEntries.map((turn) => [Number(turn?.turnIndex || 0), turn]));
+  const grouped = new Map();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const turnIndex = Number.isFinite(Number(message?.turnIndex)) ? Number(message.turnIndex) : null;
+    if (turnIndex == null) continue;
+    const bucket = grouped.get(turnIndex) || { user: null, assistant: null };
+    const role = String(message?.role || "").toLowerCase();
+    if (role === "user" && !bucket.user) bucket.user = message;
+    if (role === "assistant") bucket.assistant = message;
+    grouped.set(turnIndex, bucket);
+  }
+  const allIndexes = Array.from(new Set([...byIndex.keys(), ...grouped.keys()])).sort((a, b) => a - b);
+  return allIndexes.map((turnIndex) => {
+    const turn = byIndex.get(turnIndex) || {};
+    const pair = grouped.get(turnIndex) || { user: null, assistant: null };
+    return {
+      turnIndex,
+      user: pair.user,
+      assistant: pair.assistant,
+      startedAt: turn.startedAt || pair.user?.timestamp || pair.assistant?.timestamp || null,
+      endedAt: turn.endedAt || pair.assistant?.timestamp || pair.user?.timestamp || null,
+      durationMs: Number(turn.durationMs || 0),
+      inputTokens: Number(turn.inputTokens || 0),
+      outputTokens: Number(turn.outputTokens || 0),
+      totalTokens: Number(turn.totalTokens || 0),
+      status: turn.status || (pair.assistant ? "completed" : pair.user ? "in_progress" : "pending"),
+    };
+  });
+}
+
 function taskSortScore(task) {
   const rawId = String(task?.id || "");
   const digits = rawId.match(/\d+/g);
@@ -125,6 +176,11 @@ function fleetSlotKey(index, slot) {
   const taskId = String(slot?.taskId || "").trim() || "na";
   const sessionId = String(slot?.sessionId || "").trim() || "na";
   return `slot-${index}:${taskId}:${sessionId}`;
+}
+
+function resolveFleetSlotIndex(slot, fallbackIndex = 0) {
+  const slotIndex = Number(slot?.slotIndex);
+  return Number.isFinite(slotIndex) && slotIndex >= 0 ? slotIndex : fallbackIndex;
 }
 
 function fleetThreadKey(thread, index) {
@@ -288,6 +344,33 @@ function getFleetEntryRelativeTime(entry) {
     || entry?.session?.createdAt
     || entry?.session?.startedAt;
   return raw ? formatRelative(raw) : "";
+}
+
+function isActiveSessionRecord(session) {
+  if (!session || typeof session !== "object") return false;
+  if (session.active === true) return true;
+  const status = String(session.status || session.state || "").trim().toLowerCase();
+  return ["active", "running", "busy", "working", "inprogress", "streaming"].includes(status);
+}
+
+function getFleetEntryOriginLabel(entry) {
+  if (entry?.isTaskFallback) return "Task only";
+  if (entry?.slot && !entry?.slot?.synthetic) {
+    return `Dedicated slot ${(entry.index ?? 0) + 1}`;
+  }
+  if (entry?.session && !entry?.slot) {
+    return isFleetEntryActive(entry) ? "Session only" : "Session history";
+  }
+  return entry?.slot ? "Dedicated slot" : "Session";
+}
+
+function getFleetEntryMetaLabel(entry) {
+  const identifier =
+    entry?.slot?.taskId
+    || entry?.session?.taskId
+    || entry?.session?.id
+    || "unknown";
+  return `${getFleetEntryOriginLabel(entry)} · ${identifier}`;
 }
 /* ─── Workspace Viewer Modal ─── */
 function WorkspaceViewer({ agent, onClose }) {
@@ -1282,13 +1365,23 @@ export function AgentsTab() {
   const executor = executorData.value;
   const agents = agentsData?.value || [];
   const execData = executor?.data;
-  const slots = execData?.slots || [];
-  const maxParallel = execData?.maxParallel || (slots.length || 0);
+  const workspaceSummary = execData?.workspaceSummary || null;
+  const globalSlots = execData?.slots || [];
+  const slots = workspaceSummary?.slots || globalSlots;
+  const globalMaxParallel = execData?.maxParallel || (globalSlots.length || 0);
+  const maxParallel = Number(
+    workspaceSummary?.maxParallel
+    || globalMaxParallel
+    || slots.length
+    || 0,
+  ) || 0;
+  const configuredSlots = Math.max(0, Number(workspaceSummary?.configuredSlots || 0) || 0);
+  const activeWorkflowRuns = Math.max(0, Number(execData?.activeWorkflowRuns || 0) || 0);
   const derivedActiveSlots = slots.filter((slot) => {
     const status = String(slot?.status || "").toLowerCase();
     return status === "running" || status === "busy";
   }).length;
-  const activeSlots = slots.length ? derivedActiveSlots : (execData?.activeSlots || 0);
+  const activeSlots = slots.length ? derivedActiveSlots : (workspaceSummary?.activeSlots || 0);
 
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
@@ -1315,13 +1408,24 @@ export function AgentsTab() {
   }, [slots, fleetSearch]);
 
   const allSessions = sessionsData.value || [];
-  const activeSessionCount = allSessions.filter((session) => {
-    if (!session || typeof session !== "object") return false;
-    if (session.active === true) return true;
-    const status = String(session.status || session.state || "").trim().toLowerCase();
-    return ["active", "running", "busy", "working", "inprogress", "streaming"].includes(status);
+  const slotTaskIds = new Set(
+    slots.map((slot) => String(slot?.taskId || "").trim()).filter(Boolean),
+  );
+  const slotSessionIds = new Set(
+    slots.flatMap((slot) => [
+      String(slot?.sessionId || "").trim(),
+      String(slot?.taskId || "").trim(),
+    ].filter(Boolean)),
+  );
+  const activeSessions = allSessions.filter((session) => isActiveSessionRecord(session));
+  const activeSessionCount = activeSessions.length;
+  const activeSessionOnlyCount = activeSessions.filter((session) => {
+    const sessionId = String(session?.id || "").trim();
+    const taskId = String(session?.taskId || "").trim();
+    if (sessionId && slotSessionIds.has(sessionId)) return false;
+    if (taskId && (slotTaskIds.has(taskId) || slotSessionIds.has(taskId))) return false;
+    return true;
   }).length;
-  const workloadActiveCount = Math.max(activeSlots, activeSessionCount);
   const filteredSessions = useMemo(() => {
     const q = sessionSearch.trim().toLowerCase();
     if (!q) return allSessions;
@@ -1349,7 +1453,7 @@ export function AgentsTab() {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task", workspace: "all" });
+      loadSessions({ type: "task" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
@@ -1370,7 +1474,10 @@ export function AgentsTab() {
       );
     });
     if (slotIndex >= 0) {
-      setSelectedAgent({ ...slots[slotIndex], index: slotIndex });
+      setSelectedAgent({
+        ...slots[slotIndex],
+        index: resolveFleetSlotIndex(slots[slotIndex], slotIndex),
+      });
     } else {
       setSelectedAgent({
         taskId: workspaceTarget.taskId || null,
@@ -1447,12 +1554,6 @@ export function AgentsTab() {
     maxParallel > 0 ? Math.round((activeSlots / maxParallel) * 100) : 0;
 
   /* Aggregate stats */
-  const totalCompleted = slots.reduce((n, s) => n + (s.completedCount || 0), 0);
-  const avgTimeMs = slots.length
-    ? slots.reduce((n, s) => n + (s.avgDurationMs || 0), 0) / slots.length
-    : 0;
-  const avgTimeStr = avgTimeMs > 0 ? `${Math.round(avgTimeMs / 1000)}s` : "—";
-
   /* Status counts and health summary */
   const statusCounts = slots.reduce(
     (acc, slot) => {
@@ -1467,39 +1568,62 @@ export function AgentsTab() {
     { running: 0, error: 0, done: 0, idle: 0, other: 0 },
   );
   const idleSlots = Math.max(0, maxParallel - activeSlots);
+  const hasActiveWorkload =
+    activeSlots > 0
+    || activeSessionCount > 0
+    || activeWorkflowRuns > 0;
   const healthLabel =
     statusCounts.error > 0
       ? "Needs Attention"
-      : workloadActiveCount > 0
+      : hasActiveWorkload
         ? "Healthy"
         : "Idle";
   const healthColor =
     statusCounts.error > 0
       ? "var(--color-error)"
-      : workloadActiveCount > 0
+      : hasActiveWorkload
         ? "var(--color-done)"
         : "var(--text-secondary)";
+  const healthParts = [];
+  if (activeSlots > 0) {
+    healthParts.push(`${activeSlots} dedicated slot${activeSlots === 1 ? "" : "s"} active`);
+    healthParts.push(`${idleSlots} idle`);
+  }
+  if (activeSessionOnlyCount > 0) {
+    healthParts.push(`${activeSessionOnlyCount} session-only agent${activeSessionOnlyCount === 1 ? "" : "s"} active`);
+  } else if (activeSessionCount > 0 && activeSlots === 0) {
+    healthParts.push(`${activeSessionCount} active session${activeSessionCount === 1 ? "" : "s"} tracked`);
+  }
+  if (activeWorkflowRuns > 0) {
+    healthParts.push(`${activeWorkflowRuns} workflow run${activeWorkflowRuns === 1 ? "" : "s"} active`);
+  }
   const healthSubtext =
     statusCounts.error > 0
       ? `${statusCounts.error} slot${statusCounts.error === 1 ? "" : "s"} reporting errors`
-      : activeSlots > 0
-        ? `${statusCounts.running || activeSlots} active · ${idleSlots} idle`
-        : activeSessionCount > 0
-          ? `${activeSessionCount} active session${activeSessionCount === 1 ? "" : "s"} · awaiting slot telemetry`
+      : healthParts.length
+        ? healthParts.join(" · ")
         : "No active workloads";
   const lastErrorSlot = slots.find((slot) => slot.lastError);
   const workspaceHeader = activeWorkspace
     ? `${activeWorkspace.name || activeWorkspace.id} · ${String(activeWorkspaceExecutors?.pool || "shared")} pool`
     : "All workspaces · shared pool";
-  const workspaceHeaderDetail = activeWorkspace
-    ? `${Number(activeWorkspaceExecutors?.maxConcurrent || maxParallel || 0) || maxParallel || 0} configured slots`
-    : `${maxParallel || 0} runtime slots visible`;
+  const workspaceHeaderDetailParts = [];
+  if (configuredSlots > 0) {
+    workspaceHeaderDetailParts.push(`${configuredSlots} configured slots`);
+  } else {
+    workspaceHeaderDetailParts.push(`${maxParallel || 0} runtime slots visible`);
+  }
+  if (globalMaxParallel > 0 && globalMaxParallel !== maxParallel) {
+    workspaceHeaderDetailParts.push(`${globalMaxParallel} global runtime slots visible`);
+  }
+  const workspaceHeaderDetail = workspaceHeaderDetailParts.join(" · ");
   const fleetMetrics = [
-    { label: "Active", value: workloadActiveCount },
-    { label: "Idle", value: idleSlots },
+    { label: "Dedicated Slots", value: activeSlots },
+    { label: "Session Only", value: activeSessionOnlyCount },
+    { label: "Active Sessions", value: activeSessionCount },
+    { label: "Workflows", value: activeWorkflowRuns },
+    { label: "Idle Slots", value: idleSlots },
     { label: "Errors", value: statusCounts.error },
-    { label: "Completed", value: totalCompleted },
-    { label: "Avg Time", value: avgTimeStr },
   ];
 
   const handleFleetRefresh = () => {
@@ -1613,7 +1737,7 @@ export function AgentsTab() {
                       title=${slot
                         ? `${slot.taskTitle || slot.taskId} (${st})`
                         : `Slot ${i + 1} idle`}
-                      onClick=${() => slot && openWorkspace(slot, i)}
+                      onClick=${() => slot && openWorkspace(slot, resolveFleetSlotIndex(slot, i))}
                     >
                       <${StatusDot} status=${st} />
                       <span class="slot-label">${i + 1}</span>
@@ -1738,12 +1862,12 @@ export function AgentsTab() {
                         ${iconText(":target: Steer")}
                       <//>
                       <${Button} variant="text" size="small"
-                        onClick=${() => openWorkspace(slot, i)}
+                        onClick=${() => openWorkspace(slot, resolveFleetSlotIndex(slot, i))}
                       >
                         ${iconText(":search: View")}
                       <//>
                       <${Button} variant="contained" color="error" size="small"
-                        onClick=${() => handleForceStop({ ...slot, index: i })}
+                        onClick=${() => handleForceStop({ ...slot, index: resolveFleetSlotIndex(slot, i) })}
                       >
                         ${iconText(":ban: Stop")}
                       <//>
@@ -1795,6 +1919,10 @@ export function AgentsTab() {
                         ${s.id || "?"}
                         ${s.taskId ? ` · ${s.taskId}` : ""}
                         ${s.branch ? ` · ${s.branch}` : ""}
+                      </div>
+                      <div class="task-card-meta">
+                        ${`Turns ${Number(s.turnCount || 0)}`}
+                        ${Number(s.elapsedMs || 0) > 0 ? ` · ${formatMsDuration(s.elapsedMs || 0)}` : ""}
                       </div>
                     </div>
                     <${Badge} status=${s.status || "idle"} text=${s.status || "idle"} />
@@ -2087,9 +2215,32 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
   const [sessionScope, setSessionScope] = useState(FLEET_SESSION_SCOPE.all);
   const [sessionSearch, setSessionSearch] = useState("");
   const [selectedEntryKey, setSelectedEntryKey] = useState(null);
+  const [copiedSessionId, setCopiedSessionId] = useState("");
   const [logText, setLogText] = useState("(no logs yet)");
   const logRef = useRef(null);
   const allSessions = sessionsData.value || [];
+
+  const copySessionId = (sessionId) => {
+    if (!sessionId) return;
+    if (!navigator?.clipboard?.writeText) {
+      setCopiedSessionId("");
+      showToast("Copy failed", "error");
+      return;
+    }
+    setCopiedSessionId(sessionId);
+    try {
+      navigator.clipboard
+        .writeText(sessionId)
+        .then(() => showToast("Session ID copied", "success"))
+        .catch(() => {
+          setCopiedSessionId("");
+          showToast("Copy failed", "error");
+        });
+    } catch (_err) {
+      setCopiedSessionId("");
+      showToast("Copy failed", "error");
+    }
+  };
 
   /* Stabilise entries with useMemo so the reference only changes when the
      underlying data actually changes – prevents infinite render loops that
@@ -2104,8 +2255,9 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
             return s?.taskId === slot.taskId || s?.id === slot.taskId;
           }) ||
           null;
-        const key = fleetSlotKey(index, slot);
-        return { key, slot, index, session };
+        const resolvedIndex = resolveFleetSlotIndex(slot, index);
+        const key = fleetSlotKey(resolvedIndex, slot);
+        return { key, slot, index: resolvedIndex, session };
       })
       .sort((a, b) => {
         const aScore = new Date(a.slot?.startedAt || 0).getTime() || 0;
@@ -2294,7 +2446,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
   return html`
     <${Card}
       title="Fleet Session View"
-      subtitle="Slots and agent sessions with full execution detail"
+      subtitle="Dedicated slots and session-tracked agents with full execution detail"
       className="fleet-fullview-card"
     >
       <div class="fleet-fullview">
@@ -2355,8 +2507,9 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
               : html`${visibleEntries.map((entry) => {
                   const entryStatus = getFleetEntryStatus(entry);
                   const relativeTime = getFleetEntryRelativeTime(entry);
+                  const sessionId = resolveFleetEntrySessionId(entry);
                   return html`
-                    <${Button} variant="text" size="small"
+                    <${Button} variant="text" size="small" component="div"
                       key=${entry.key}
                       className=${`fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""} ${entry.isHistory ? "history" : ""}`}
                       onClick=${() => {
@@ -2375,16 +2528,30 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                           : null}
                       </div>
                       <div class="fleet-slot-item-meta fleet-slot-item-meta-primary">
-                        ${entry.isHistory
-                          ? `Session ${entry.session?.id || "unknown"}`
-                          : entry.isTaskFallback
-                            ? `Task only · ${entry.slot?.taskId || "no-task-id"}`
-                            : `Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}`}
+                        ${getFleetEntryMetaLabel(entry)}
                       </div>
                       <div class="fleet-slot-item-meta fleet-slot-item-meta-secondary">
+                        <span class="fleet-slot-meta-turns">Turns ${Number(entry.session?.turnCount || 0)}</span>
                         <span class=${`fleet-slot-state-badge ${isFleetEntryActive(entry) ? "active" : "historic"}`}>
                           ${entryStatus || "unknown"}
                         </span>
+                        ${sessionId
+                          ? html`<button
+                              type="button"
+                              class="fleet-session-id-pill"
+                              data-session-id=${sessionId}
+                              data-copied=${copiedSessionId === sessionId ? "true" : "false"}
+                              aria-label=${`Copy session ID ${sessionId}`}
+                              onClick=${() => copySessionId(sessionId)}
+                              onAnimationEnd=${(event) => {
+                                if (event?.target !== event?.currentTarget) return;
+                                if (copiedSessionId === sessionId) setCopiedSessionId("");
+                              }}
+                            >
+                              <span class="fleet-session-id-pill-text mono">${sessionId.slice(0, 8)}</span>
+                              <span class="fleet-session-id-pill-icon" aria-hidden="true">${copiedSessionId === sessionId ? "✓" : ICONS.copy}</span>
+                            </button>`
+                          : null}
                         ${entry.slot?.branch
                           ? html`<span class="fleet-slot-meta-branch">${entry.slot.branch}</span>`
                           : entry.session?.branch
@@ -2411,11 +2578,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                     </div>
                     <div class="task-card-meta">
                       ${selectedEntry.slot?.taskId || selectedEntry.session?.taskId || selectedEntry.session?.id || "?"}
-                      ${selectedEntry.isTaskFallback
-                        ? ` · ${selectedEntry.slot?.status || "task"}`
-                        : selectedEntry.slot
-                          ? ` · Slot ${(selectedEntry.index ?? 0) + 1}`
-                          : ` · ${selectedEntry.session?.status || "history"}`}
+                      ${` · ${getFleetEntryOriginLabel(selectedEntry)}`}
                       ${selectedEntry.slot?.branch
                         ? ` · ${selectedEntry.slot.branch}`
                         : selectedEntry.session?.branch
@@ -2451,6 +2614,10 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                     className=${`session-detail-tab ${detailTab === "logs" ? "active" : ""}`}
                     onClick=${() => setDetailTab("logs")}
                   >${iconText(":file: Logs")}<//>
+                  <${Button} variant="text" size="small"
+                    className=${`session-detail-tab ${detailTab === "turns" ? "active" : ""}`}
+                    onClick=${() => setDetailTab("turns")}
+                  >${iconText(":repeat: Turns")}<//>
                 </div>
                 <div class="fleet-session-body">
                   ${detailTab === "stream"
@@ -2491,7 +2658,33 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                             `
                         : detailTab === "logs"
                           ? html`<div class="workspace-log fleet-session-log" ref=${logRef}>${focusedLogText}</div>`
-                          : null}
+                          : detailTab === "turns"
+                            ? (() => {
+                                const timeline = buildTurnTimeline(streamSessionId
+                                  && String(sessionMessagesSessionId.value || "") === String(streamSessionId)
+                                  ? (sessionMessages.value || [])
+                                  : [], selectedEntry?.session?.turns || []);
+                                return timeline.length
+                                  ? html`<div class="fleet-turn-timeline">
+                                      ${timeline.map((turn) => html`
+                                        <div class="task-card fleet-turn-card" key=${"turn-" + turn.turnIndex}>
+                                          <div class="task-card-header">
+                                            <div>
+                                              <div class="task-card-title">Turn ${Number(turn.turnIndex || 0) + 1}</div>
+                                              <div class="task-card-meta">${formatTurnTokens(turn)} · ${formatMsDuration(turn.durationMs || 0)} · ${turn.status || "unknown"}</div>
+                                            </div>
+                                          </div>
+                                          <div class="meta-text">${turn.user?.content ? "User: " + truncate(String(turn.user.content), 180) : "User: —"}</div>
+                                          <div class="meta-text">${turn.assistant?.content ? "Assistant: " + truncate(String(turn.assistant.content), 220) : "Assistant: pending"}</div>
+                                        </div>
+                                      `)}
+                                    </div>`
+                                  : html`<div class="chat-view chat-empty-state">
+                                      <div class="session-empty-icon">${resolveIcon(":repeat:")}</div>
+                                      <div class="session-empty-text">No turn timeline available yet</div>
+                                    </div>`;
+                              })()
+                            : null}
                 </div>
               `
             : html`
@@ -2510,14 +2703,14 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
 export function FleetSessionsTab() {
   const executor = executorData.value;
   const execData = executor?.data;
-  const slots = execData?.slots || [];
+  const slots = execData?.workspaceSummary?.slots || execData?.slots || [];
   const [taskFallbackEntries, setTaskFallbackEntries] = useState([]);
 
   useEffect(() => {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task", workspace: "all" });
+      loadSessions({ type: "task" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
@@ -2598,3 +2791,6 @@ export function FleetSessionsTab() {
     `}
   `;
 }
+
+
+

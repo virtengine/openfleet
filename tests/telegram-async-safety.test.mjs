@@ -37,6 +37,15 @@ describe("telegram async safety", () => {
     );
   });
 
+  it("enables curl fallback unless explicitly disabled", () => {
+    expect(botSource).toContain(
+      'process.env.TELEGRAM_CURL_FALLBACK || "true"',
+    );
+    expect(botSource).not.toContain(
+      'process.platform === "win32" ? "false" : "true"',
+    );
+  });
+
   it("removes bare void async invocations", () => {
     expect(botSource).not.toMatch(/\bvoid\s+handleFreeText/);
     expect(botSource).not.toMatch(/\bvoid\s+refreshMenuButton/);

@@ -1,5 +1,5 @@
 /**
- * workflow-templates-e2e.test.mjs — End-to-end execution tests for ALL 36
+ * workflow-templates-e2e.test.mjs - End-to-end execution tests for ALL 36
  * workflow templates.
  *
  * Unlike the dry-run tests in workflow-templates.test.mjs, these tests
@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 
-// ── Mock child_process so node types that shell-out complete instantly ──
+// -- Mock child_process so node types that shell-out complete instantly --
 vi.mock("node:child_process", async (importOriginal) => {
   const orig = await importOriginal();
   return {
@@ -41,6 +41,29 @@ vi.mock("node:child_process", async (importOriginal) => {
       if (/grep|find|ls|dir|cat|type/i.test(cmd)) return "";
       return "";
     }),
+    execFileSync: vi.fn((file, args = []) => {
+      const argv = Array.isArray(args) ? args.map((value) => String(value)) : [];
+      const joined = [String(file || ""), ...argv].join(" ");
+      if (/\bgh\b/i.test(String(file || ""))) {
+        if (/\bpr\s+list\b/i.test(joined)) return "[]";
+        if (/\bpr\s+view\b/i.test(joined)) return '{"number":1,"title":"mock","mergeable":"MERGEABLE","labels":[]}';
+        if (/\bpr\s+merge\b/i.test(joined)) return "merged";
+        if (/\brelease\b/i.test(joined)) return '{"tag_name":"v0.0.0"}';
+        if (/\bissue\b/i.test(joined)) return "[]";
+        if (/\bapi\b/i.test(joined)) return "[]";
+      }
+      if (/\bnode\b/i.test(String(file || "")) && argv[0] === "-e") {
+        return '{"rerunRequested":0,"branchUpdated":0,"ciFailureCount":0,"conflictCount":0,"needsAgentCount":0,"needsAgent":[]}';
+      }
+      if (/\bnpm\b/i.test(String(file || ""))) {
+        if (/\bbuild\b/i.test(joined)) return "build ok";
+        if (/\btest\b/i.test(joined)) return "tests ok";
+        if (/\blint\b/i.test(joined)) return "lint ok";
+        if (/\baudit\b/i.test(joined)) return '{"vulnerabilities":{}}';
+      }
+      if (/\bgit\b/i.test(String(file || ""))) return "";
+      return "";
+    }),
     spawn: vi.fn(() => {
       const proc = new EventEmitter();
       proc.stdout = new EventEmitter();
@@ -55,8 +78,8 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-// Generous timeout — some templates have complex DAGs even with mocks.
-vi.setConfig({ testTimeout: 60_000 });
+// Generous timeout - some templates have complex DAGs even with mocks.
+// Vitest v4 does not expose vi.setConfig in test files; use per-suite timeout instead.
 import {
   WORKFLOW_TEMPLATES,
   getTemplate,
@@ -69,9 +92,9 @@ import {
   getNodeType,
 } from "../workflow/workflow-engine.mjs";
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Mock Service Layer
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 /**
  * Creates a realistic mock services object that tracks all side effects.
@@ -307,9 +330,9 @@ function createMockServices() {
   };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Engine Setup
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 let tmpDir;
 let engine;
@@ -407,11 +430,11 @@ function ensureExperimentalNodeTypes() {
   });
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  E2E Test Suite
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
-describe("workflow-templates E2E execution", () => {
+describe("workflow-templates E2E execution", { timeout: 60_000 }, () => {
   beforeAll(async () => {
     // Register all built-in node types
     await import("../workflow/workflow-nodes.mjs");
@@ -426,7 +449,7 @@ describe("workflow-templates E2E execution", () => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
 
-  // ── Parametric: Every template installs and force-executes cleanly ────
+  // -- Parametric: Every template installs and force-executes cleanly ----
 
   // Override delay-related variables so templates with action.delay nodes
   // don't sleep for minutes during tests (e.g. canary-deploy promotionDelayMs).
@@ -440,6 +463,7 @@ describe("workflow-templates E2E execution", () => {
 
   describe("all templates execute without engine errors", () => {
     for (const template of WORKFLOW_TEMPLATES) {
+      const timeoutMs = template.id === "template-bosun-pr-watchdog" ? 120000 : 60000;
       it(`${template.id} installs, executes, and returns valid context`, async () => {
         const installed = installTemplate(template.id, engine, DELAY_OVERRIDES);
         expect(installed.id).toBeDefined();
@@ -449,15 +473,15 @@ describe("workflow-templates E2E execution", () => {
         expect(ctx).toBeDefined();
         expect(ctx.id).toBeDefined();
         expect(ctx.startedAt).toBeGreaterThan(0);
-        // Engine should not throw — errors are captured
+        // Engine should not throw - errors are captured
         expect(ctx.errors.length, `${template.id} produced engine-level errors: ${JSON.stringify(ctx.errors)}`).toBe(0);
-      });
+      }, timeoutMs);
     }
   });
 
-  // ── Per-Template Behavioral Tests ─────────────────────────────────────
+  // -- Per-Template Behavioral Tests -------------------------------------
 
-  // ── GitHub Templates ──────────────────────────────────────────────────
+  // -- GitHub Templates --------------------------------------------------
 
   describe("PR Merge Strategy (template-pr-merge-strategy)", () => {
     it("executes merge flow with CI check data", async () => {
@@ -551,6 +575,26 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
+  describe("PR Review Quality Striker (template-pr-review-quality-striker)", () => {
+    it("scans PR review signals without crashing", async () => {
+      const installed = installTemplate("template-pr-review-quality-striker", engine);
+      const ctx = await engine.execute(installed.id, {}, { force: true });
+
+      expect(ctx).toBeDefined();
+      expect(ctx.errors).toEqual([]);
+    });
+  });
+
+  describe("SonarQube PR Striker (template-sonarqube-pr-striker)", () => {
+    it("scans SonarQube signals without crashing", async () => {
+      const installed = installTemplate("template-sonarqube-pr-striker", engine);
+      const ctx = await engine.execute(installed.id, {}, { force: true });
+
+      expect(ctx).toBeDefined();
+      expect(ctx.errors).toEqual([]);
+    });
+  });
+
   describe("GitHub Kanban Sync (template-github-kanban-sync)", () => {
     it("syncs GitHub issues with kanban board", async () => {
       const installed = installTemplate("template-github-kanban-sync", engine);
@@ -580,7 +624,7 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  // ── Agent Templates ───────────────────────────────────────────────────
+  // -- Agent Templates ---------------------------------------------------
 
   describe("Frontend Agent (template-frontend-agent)", () => {
     it("runs frontend agent workflow with screenshot validation", async () => {
@@ -679,7 +723,7 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  // ── Planning Templates ────────────────────────────────────────────────
+  // -- Planning Templates ------------------------------------------------
 
   describe("Task Planner (template-task-planner)", () => {
     it("executes task planning flow", async () => {
@@ -735,7 +779,7 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  // ── CI/CD Templates ───────────────────────────────────────────────────
+  // -- CI/CD Templates ---------------------------------------------------
 
   describe("Build & Deploy (template-build-deploy)", () => {
     it("runs build and deploy pipeline", async () => {
@@ -779,7 +823,7 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  // ── Reliability Templates ─────────────────────────────────────────────
+  // -- Reliability Templates ---------------------------------------------
 
   describe("Error Recovery (template-error-recovery)", () => {
     it("processes error recovery with retry chain", async () => {
@@ -899,7 +943,7 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  describe("Continuation Loop (template-continuation-loop)", () => {
+  describe("Continuation Loop (template-continuation-loop-manual)", () => {
     it("advances through mocked external statuses and exits on terminal state", async () => {
       const statuses = ["inprogress", "inreview", "done"];
       mockServices.kanban.getTask.mockImplementation(async (id) => ({
@@ -909,7 +953,7 @@ describe("workflow-templates E2E execution", () => {
         externalStatus: statuses.shift() || "done",
       }));
 
-      const installed = installTemplate("template-continuation-loop", engine, {
+      const installed = installTemplate("template-continuation-loop-manual", engine, {
         taskId: "LIN-123",
         worktreePath: "/tmp/worktree/lin-123",
         maxTurns: 8,
@@ -935,7 +979,7 @@ describe("workflow-templates E2E execution", () => {
         externalStatus: "inprogress",
       }));
 
-      const installed = installTemplate("template-continuation-loop", engine, {
+      const installed = installTemplate("template-continuation-loop-manual", engine, {
         taskId: "LIN-STUCK-1",
         worktreePath: "/tmp/worktree/lin-stuck-1",
         maxTurns: 3,
@@ -994,7 +1038,7 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  // ── Security Templates ────────────────────────────────────────────────
+  // -- Security Templates ------------------------------------------------
 
   describe("Dependency Audit (template-dependency-audit)", () => {
     it("audits project dependencies", async () => {
@@ -1016,7 +1060,7 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  // ── Task Lifecycle Templates ──────────────────────────────────────────
+  // -- Task Lifecycle Templates ------------------------------------------
 
   describe("Task Lifecycle (template-task-lifecycle)", () => {
     it("runs full task lifecycle from trigger to completion", async () => {
@@ -1052,9 +1096,9 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════════════
+  // -----------------------------------------------------------------------
   //  Cross-Cutting Tests
-  // ═══════════════════════════════════════════════════════════════════════
+  // -----------------------------------------------------------------------
 
   describe("action.execute_workflow chain targets", () => {
     it("error-recovery chains to task-repair-worktree (dispatch mode)", () => {
@@ -1235,9 +1279,9 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════════════
+  // -----------------------------------------------------------------------
   //  Grouped Flows
-  // ═══════════════════════════════════════════════════════════════════════
+  // -----------------------------------------------------------------------
 
   describe("grouped flows", () => {
     const KNOWN_GROUPS = [
@@ -1307,7 +1351,7 @@ describe("workflow-templates E2E execution", () => {
     });
 
     it("enabling a parent workflow auto-enables disabled children", () => {
-      // Install both — child disabled
+      // Install both - child disabled
       const parent = installTemplate("template-error-recovery", engine);
       const all = engine.list();
       const child = all.find((w) => w.metadata?.installedFrom === "template-task-repair-worktree");

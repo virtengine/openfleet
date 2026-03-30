@@ -51,6 +51,9 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 /** Whether we're running on Windows */
 const IS_WINDOWS = process.platform === "win32";
 
+/** Preferred Windows shell for hook execution. */
+const WINDOWS_SHELL = process.env.ComSpec || "cmd.exe";
+
 /** Default max retries for retryable hooks */
 const DEFAULT_MAX_RETRIES = 2;
 
@@ -841,6 +844,42 @@ function _buildEnv(ctx) {
   return env;
 }
 
+function _getSpawnCommand(command) {
+  const trimmed = String(command ?? "").trim();
+
+  if (IS_WINDOWS) {
+    const lower = trimmed.toLowerCase();
+    if (lower.startsWith("powershell ") || lower.startsWith("powershell.exe ")) {
+      const inlineCommand = trimmed
+        .replace(/^powershell(?:\.exe)?\s+-NoProfile\s+-Command\s+/i, "")
+        .replace(/^powershell(?:\.exe)?\s+-Command\s+/i, "")
+        .replace(/^"|"$/g, "");
+      return {
+        file: "powershell.exe",
+        args: ["-NoProfile", "-Command", inlineCommand],
+      };
+    }
+    if (lower.startsWith("cmd ") || lower.startsWith("cmd.exe ")) {
+      const inlineCommand = trimmed
+        .replace(/^cmd(?:\.exe)?\s+\/d\s+\/s\s+\/c\s+/i, "")
+        .replace(/^cmd(?:\.exe)?\s+\/c\s+/i, "");
+      return {
+        file: WINDOWS_SHELL,
+        args: ["/d", "/s", "/c", inlineCommand],
+      };
+    }
+    return {
+      file: WINDOWS_SHELL,
+      args: ["/d", "/s", "/c", trimmed],
+    };
+  }
+
+  return {
+    file: "/bin/sh",
+    args: ["-c", trimmed],
+  };
+}
+
 // ── Internal: Synchronous Hook Execution ────────────────────────────────────
 
 /**
@@ -892,12 +931,13 @@ function _executeHookSync(hook, ctx, env) {
     };
 
     try {
-      const result = spawnSync(hook.command, {
+      const spawnTarget = _getSpawnCommand(hook.command);
+      const result = spawnSync(spawnTarget.file, spawnTarget.args, {
         cwd,
         env: hookEnv,
         encoding: "utf8",
         timeout,
-        shell: true,
+        shell: false,
         windowsHide: true,
         maxBuffer: MAX_OUTPUT_BYTES,
       });
@@ -999,10 +1039,11 @@ function _executeHookAsyncOnce(hook, ctx, env, attempt) {
 
     let child;
     try {
-      child = spawn(hook.command, {
+      const spawnTarget = _getSpawnCommand(hook.command);
+      child = spawn(spawnTarget.file, spawnTarget.args, {
         cwd,
         env: hookEnv,
-        shell: true,
+        shell: false,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -1253,3 +1294,10 @@ export function registerLibraryHooks(hooksByEvent) {
   }
   return { registered, skipped };
 }
+
+
+
+
+
+
+
