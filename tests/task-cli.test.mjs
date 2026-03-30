@@ -604,7 +604,8 @@ describe("task-cli taskStats repo area lock state", () => {
 });
 describe("task-cli task batch payload validation", () => {
   it("rejects malformed task-batch payload files with deterministic errors", () => {
-    const payloadPath = resolve(tempDirs[tempDirs.length - 1] ?? mkdtempSync(resolve(tmpdir(), "bosun-task-cli-")), "task-batch-invalid.json");
+    const storePath = makeTempStorePath();
+    const payloadPath = resolve(tempDirs[tempDirs.length - 1], "task-batch-invalid.json");
     writeFileSync(payloadPath, JSON.stringify([{ taskId: "", repository: "virtengine/bosun", workspace: "virtengine-gh" }]), "utf8");
 
     const result = spawnSync(
@@ -612,7 +613,7 @@ describe("task-cli task batch payload validation", () => {
       ["task/task-cli.mjs", "create-batch", "--payload-file", payloadPath],
       {
         cwd: process.cwd(),
-        env: { ...process.env },
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
         encoding: "utf8",
       },
     );

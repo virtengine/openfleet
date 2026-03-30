@@ -18,7 +18,10 @@ import {
   relayoutInstalledTemplateWorkflows,
   installTemplate,
   installTemplateSet,
-} from \
+} from "../workflow/workflow-templates.mjs";
+import {
+  validateTaskBatchPayload,
+} from "../workflow-templates/task-batch.mjs";
 import {
   WorkflowEngine,
   getNodeType,

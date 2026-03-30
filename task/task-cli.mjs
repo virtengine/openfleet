@@ -30,11 +30,15 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { getTaskLifetimeTotals } from "./task-stats.mjs";
+import { getTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 import {
   normalizeWorkspaceStorageKey,
   normalizeWorkspaceStorageKeys,
 } from "./task-store.mjs";
+import {
+  validateTaskBatchPayload,
+  summarizeTaskBatchPayloadForLog,
+} from "../workflow-templates/task-batch.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1208,6 +1212,8 @@ export async function runTaskCli(args) {
       return await cliStats(subArgs);
     case "import":
       return await cliImport(subArgs);
+    case "create-batch":
+      return await cliCreateBatch(subArgs);
     default:
       showTaskHelp();
       process.exit(subcommand ? 1 : 0);
@@ -1695,6 +1701,46 @@ async function cliImport(args) {
 }
 
 // ── Help ──────────────────────────────────────────────────────────────────────
+
+async function cliCreateBatch(args) {
+  if (hasFlag(args, "--help") || hasFlag(args, "-h")) {
+    console.log(`
+  bosun task create-batch — Validate and import a task-batch payload file
+
+  USAGE
+    bosun task create-batch --payload-file <path.json>
+
+  FILE FORMAT
+    JSON array of task-batch items. Each item requires:
+      taskId, taskTitle, status, repository, workspace
+
+  EXAMPLES
+    bosun task create-batch --payload-file ./batch.json
+`);
+    return;
+  }
+  const payloadFile =
+    getArgValue(args, "--payload-file") || args.find((a) => !a.startsWith("--"));
+  if (!payloadFile) {
+    console.error(
+      "  Error: payload file required. Usage: bosun task create-batch --payload-file <path.json>",
+    );
+    process.exit(1);
+  }
+
+  if (!existsSync(resolve(payloadFile))) {
+    console.error(`  Error: file not found: ${payloadFile}`);
+    process.exit(1);
+  }
+
+  try {
+    const result = await taskImport(payloadFile);
+    console.log(JSON.stringify(result, null, 2));
+  } catch (err) {
+    console.error(`  Error: ${err.message}`);
+    process.exit(1);
+  }
+}
 
 function showCreateHelp() {
   console.log(`
