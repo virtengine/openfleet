@@ -3598,7 +3598,13 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "auto-fix-validation" && e.target === "retry-pre-pr-validation")).toBeDefined();
     expect(t.edges.find((e) => e.source === "retry-pre-pr-validation" && e.target === "retry-validation-ok")).toBeDefined();
     expect(t.edges.find((e) => e.source === "retry-validation-ok" && e.target === "push-branch")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "retry-validation-ok" && e.target === "log-validation-failed")).toBeDefined();
+    // Pass 1 failed → escalated pass 2
+    expect(t.edges.find((e) => e.source === "retry-validation-ok" && e.target === "set-fix2-summary")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-fix2-summary" && e.target === "auto-fix-validation-2")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "auto-fix-validation-2" && e.target === "retry2-pre-pr-validation")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "retry2-pre-pr-validation" && e.target === "retry2-validation-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "retry2-validation-ok" && e.target === "push-branch")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "retry2-validation-ok" && e.target === "log-validation-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "log-validation-failed" && e.target === "set-blocked-validation-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-blocked-validation-failed" && e.target === "notify-validation-blocked")).toBeDefined();
     expect(t.edges.find((e) => e.source === "notify-validation-blocked" && e.target === "join-outcomes")).toBeDefined();

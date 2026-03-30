@@ -722,6 +722,11 @@ function envFlagEnabled(value) {
   return ["1", "true", "yes", "on", "y"].includes(raw);
 }
 
+function normalizeRequestedMcpServerIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
 function applyNodeWarningSuppressionEnv(runtimeEnv) {
   const nextEnv = { ...(runtimeEnv || {}) };
   if (String(process.env.BOSUN_SUPPRESS_NODE_WARNINGS ?? "").trim() === "0") {
@@ -2943,8 +2948,9 @@ export async function launchEphemeralThread(
       const cfg = loadConfig();
       const mcpCfg = cfg.mcpServers || {};
       if (mcpCfg.enabled !== false) {
-        const requestedIds = launchExtra.mcpServers || [];
-        const defaultIds = mcpCfg.allowDefaultServers === true
+        const hasExplicitMcpSelection = Array.isArray(launchExtra.mcpServers);
+        const requestedIds = normalizeRequestedMcpServerIds(launchExtra.mcpServers);
+        const defaultIds = !hasExplicitMcpSelection && mcpCfg.allowDefaultServers === true
           ? mcpCfg.defaultServers || []
           : [];
         const registry = await getMcpRegistry();
@@ -2960,8 +2966,8 @@ export async function launchEphemeralThread(
             },
           );
         }
-        if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
-          resolved = registry.wrapServersWithDiscoveryProxy(cwd, resolved, {
+        if (resolved.length && typeof registry.wrapServersWithDiscoveryProxy === "function") {
+          resolved = await registry.wrapServersWithDiscoveryProxy(cwd, resolved, {
             enabled: mcpCfg.useDiscoveryProxy !== false,
             includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
             cacheTtlMs: mcpCfg.discoveryProxyCacheTtlMs,
@@ -3306,6 +3312,7 @@ export async function execPooledPrompt(userMessage, options = {}) {
     cwd = REPO_ROOT,
     sdk,
     model,
+    mcpServers,
     sessionType = "ephemeral",
     forceContextShredding = false,
     skipContextShredding = false,
@@ -3319,6 +3326,7 @@ export async function execPooledPrompt(userMessage, options = {}) {
     abortController,
     sdk,
     model,
+    mcpServers,
   });
 
   if (!result.success) {
@@ -4383,6 +4391,7 @@ export async function execWithRetry(prompt, options = {}) {
     buildContinuePrompt,
     sdk,
     model,
+    mcpServers,
     sessionType = "task",
     onEvent,
     onAbortControllerReplaced,
@@ -4478,6 +4487,7 @@ export async function execWithRetry(prompt, options = {}) {
       taskKey,
       sdk,
       model,
+      mcpServers,
       sessionType,
       onEvent,
       abortController,
@@ -4721,8 +4731,6 @@ export const __testables = {
   normalizeRetryFailureFingerprint,
   classifyRetryCircuitBreak,
 };
-
-
 
 
 

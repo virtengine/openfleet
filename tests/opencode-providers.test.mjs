@@ -1,10 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { discoverProviders, invalidateCache } from "../shell/opencode-providers.mjs";
+import * as providersModule from "../shell/opencode-providers.mjs";
+
+const { discoverProviders, invalidateCache } = providersModule;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  invalidateCache();
+});
 
 describe("opencode-providers", () => {
   it("keeps provider discovery resilient", async () => {
-    invalidateCache();
+    vi.spyOn(process, "cwd").mockReturnValue("");
+
     const snapshot = await discoverProviders({ force: true });
     expect(Array.isArray(snapshot.providers)).toBe(true);
     expect(Array.isArray(snapshot.connectedIds)).toBe(true);

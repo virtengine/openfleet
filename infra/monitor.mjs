@@ -3242,6 +3242,10 @@ const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
       String(SELF_RESTART_MAX_DEFER_MS),
   ) || SELF_RESTART_MAX_DEFER_MS,
 );
+const RUNTIME_RESTART_REQUEST_POLL_MS = Math.max(
+  1_000,
+  Number(process.env.BOSUN_RESTART_REQUEST_POLL_MS || "2000") || 2000,
+);
 let selfWatcher = null;
 let selfWatcherLib = null;
 let selfWatcherExtra = []; // watchers for sibling source dirs (task/, workspace/, etc.)
@@ -3316,10 +3320,15 @@ function buildCodexSdkOptionsForMonitor() {
 }
 
 // ── Self-restart marker: detect if this process was spawned by a code-change restart
+const runtimeRestartRequestPath = resolve(
+  config.cacheDir || resolve(config.repoRoot, ".cache"),
+  "bosun-restart-request.json",
+);
 const selfRestartMarkerPath = resolve(
   config.cacheDir || resolve(config.repoRoot, ".cache"),
   "ve-self-restart.marker",
 );
+let lastHandledRuntimeRestartRequestId = "";
 let isSelfRestart = false;
 try {
   if (existsSync(selfRestartMarkerPath)) {
@@ -3566,6 +3575,83 @@ async function ensurePreflightReady(reason) {
     return false;
   }
   console.log(report);
+  return true;
+}
+
+function maybeHandleQueuedRuntimeRestartRequest(trigger = "interval") {
+  if (shuttingDown) return false;
+  if (!existsSync(runtimeRestartRequestPath)) return false;
+
+  let payload = null;
+  try {
+    payload = JSON.parse(readFileSync(runtimeRestartRequestPath, "utf8"));
+  } catch (err) {
+    console.warn(
+      `[monitor] invalid runtime restart request at ${runtimeRestartRequestPath}: ${err?.message || err}`,
+    );
+    try {
+      unlinkSync(runtimeRestartRequestPath);
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+
+  const requestId = String(
+    payload?.id ||
+      `${payload?.requestedAt || ""}:${payload?.requesterPid || ""}:${payload?.reason || ""}:${payload?.targetPid || ""}`,
+  ).trim();
+  const requestType = String(payload?.type || "code-reload").trim().toLowerCase();
+  const targetPid = Number(payload?.targetPid || 0);
+
+  if (requestId && requestId === lastHandledRuntimeRestartRequestId) {
+    try {
+      unlinkSync(runtimeRestartRequestPath);
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+
+  if (requestType !== "code-reload") {
+    console.warn(
+      `[monitor] ignoring runtime restart request with unsupported type "${requestType}"`,
+    );
+    try {
+      unlinkSync(runtimeRestartRequestPath);
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+
+  if (targetPid > 0 && targetPid !== process.pid) {
+    console.warn(
+      `[monitor] ignoring runtime restart request for pid ${targetPid} (current pid ${process.pid})`,
+    );
+    try {
+      unlinkSync(runtimeRestartRequestPath);
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+
+  try {
+    unlinkSync(runtimeRestartRequestPath);
+  } catch {
+    /* best effort */
+  }
+  lastHandledRuntimeRestartRequestId = requestId || `restart-${Date.now()}`;
+
+  const reason = String(payload?.reason || "external-restart-request").trim() ||
+    "external-restart-request";
+  const requesterPid = Number(payload?.requesterPid || 0);
+  const requesterLabel = requesterPid > 0 ? ` from pid ${requesterPid}` : "";
+  console.warn(
+    `[monitor] queued runtime reload requested (${reason})${requesterLabel} via ${trigger}; preserving current launch provenance.`,
+  );
+  restartSelf(`queued-runtime-restart:${reason}`);
   return true;
 }
 
@@ -13893,6 +13979,10 @@ console.log("[monitor] legacy maintenance sweep removed — use workflow schedul
 
 safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 
+safeSetInterval("queued-runtime-restart-request", () => {
+  maybeHandleQueuedRuntimeRestartRequest("interval");
+}, RUNTIME_RESTART_REQUEST_POLL_MS);
+
 // Legacy periodic maintenance sweep removed (workflow-only control).
 
 // ── Workflow schedule trigger polling ───────────────────────────────────────
@@ -14803,7 +14893,7 @@ if (isExecutorDisabled()) {
         errorDetector: errorDetector || undefined,
         sendTelegram:
           telegramToken && telegramChatId
-            ? (msg) => void sendTelegramMessage(msg)
+            ? (msg, options) => void sendTelegramMessage(msg, options)
             : null,
         getTask: (taskId) => getInternalTask(taskId),
         setTaskStatus: (taskId, status, source) =>
@@ -14841,7 +14931,7 @@ if (isExecutorDisabled()) {
         eventBus: agentEventBus || undefined,
         sendTelegram:
           telegramToken && telegramChatId
-            ? (msg) => void sendTelegramMessage(msg)
+            ? (msg, options) => void sendTelegramMessage(msg, options)
             : null,
         getTask: (taskId) => getInternalTask(taskId),
         setTaskStatus: (taskId, status, source) =>
@@ -14872,7 +14962,12 @@ if (isExecutorDisabled()) {
         },
         dispatchFixTask: (taskId, issues) => {
           const normalizedTaskId = String(taskId || "").trim();
-          if (!normalizedTaskId) return;
+          if (!normalizedTaskId) {
+            return {
+              dispatched: false,
+              reason: "missing_task_id",
+            };
+          }
           const task = getInternalTask(normalizedTaskId);
           const issueList = Array.isArray(issues) ? issues : [];
           const issueCount = issueList.length;
@@ -14882,7 +14977,14 @@ if (isExecutorDisabled()) {
             console.warn(
               `[monitor] supervisor dispatch-fix skipped for ${normalizedTaskId}: status=${status}`,
             );
-            return;
+            return {
+              dispatched: false,
+              reason: "status_not_inreview",
+              status,
+              issueCount,
+              taskId: normalizedTaskId,
+              taskTitle: task?.title || normalizedTaskId,
+            };
           }
 
           if (hasActiveSession(normalizedTaskId)) {
@@ -14910,7 +15012,13 @@ if (isExecutorDisabled()) {
               `[monitor] supervisor dispatch-fix steering active session for ${normalizedTaskId}`,
             );
             steerActiveThread(normalizedTaskId, prompt);
-            return;
+            return {
+              dispatched: true,
+              mode: "active_session",
+              issueCount,
+              taskId: normalizedTaskId,
+              taskTitle: task?.title || normalizedTaskId,
+            };
           }
 
           console.warn(
@@ -14921,6 +15029,13 @@ if (isExecutorDisabled()) {
             reviewIssues: issueList,
             workflowEvent: "task.review_fix_requested",
           });
+          return {
+            dispatched: true,
+            mode: "redispatch",
+            issueCount,
+            taskId: normalizedTaskId,
+            taskTitle: task?.title || normalizedTaskId,
+          };
         },
       });
       agentSupervisor.start();
@@ -14950,7 +15065,7 @@ if (isExecutorDisabled()) {
           ),
           sendTelegram:
             telegramToken && telegramChatId
-              ? (msg) => void sendTelegramMessage(msg)
+              ? (msg, options) => void sendTelegramMessage(msg, options)
               : null,
           promptTemplate: agentPrompts?.reviewer,
           onReviewComplete: (taskId, result) => {

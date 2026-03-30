@@ -625,29 +625,64 @@ Example: "feat: add portal login rate limiting"`,
       // ── Retry path (validation failed → auto-fix → re-validate) ───────
       node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
         key: "validationSummary",
-        value:
-          "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+        value: [
+          "(() => {",
+          "function fmtGate(label, out) {",
+          "  if (!out || !Object.keys(out).length) return label + ': (not run)';",
+          "  const diag = out.outputDiagnostics || {};",
+          "  const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];",
+          "  if (diag.summary) lines.push('  Summary: ' + diag.summary);",
+          "  const targets = diag.failedTargets || [];",
+          "  if (targets.length) {",
+          "    lines.push('  Failed targets (' + targets.length + '):');",
+          "    targets.slice(0, 20).forEach(t => lines.push('    - ' + t));",
+          "    if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');",
+          "  }",
+          "  const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';",
+          "  if (rerun) lines.push('  Rerun: `' + rerun + '`');",
+          "  const hint = out.outputHint || diag.hint || '';",
+          "  if (hint) lines.push('  Hint: ' + hint);",
+          "  if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 5000));",
+          "  return lines.join('\\n');",
+          "}",
+          "const build = $ctx.getNodeOutput('main-build') || {};",
+          "const test = $ctx.getNodeOutput('main-test') || {};",
+          "const lint = $ctx.getNodeOutput('main-lint') || {};",
+          "return [",
+          "  '## Validation Results',",
+          "  '',",
+          "  fmtGate('Build', build),",
+          "  '',",
+          "  fmtGate('Test', test),",
+          "  '',",
+          "  fmtGate('Lint', lint),",
+          "].join('\\n');",
+          "})()",
+        ].join(" "),
         isExpression: true,
       }, { x: 620, y: 1090 }),
 
       node("auto-fix", "action.run_agent", "Auto-Fix Validation Failures", {
-        prompt: `# Fix Validation Failures
+        prompt: `# Fix Validation Failures — Pass 1
 
 The first validation pass failed for task **{{taskTitle}}**.
 
 Plan:
 {{plan}}
 
-Current validation outputs:
 {{validationSummary}}
 
-Fix the code so build/tests/lint pass.
-Do NOT weaken, remove, or bypass tests.
-Keep the original task scope.
+STRATEGY:
+1. Look at which gates failed (Build / Test / Lint) and focus on those.
+2. Check the **Failed Targets** — these are the exact tests/files/packages that broke.
+3. Fix compilation errors first, then test failures, then lint issues.
+4. Use the **Suggested Rerun Command** (if shown) to iterate on just the failing targets.
+5. Once targeted failures pass, run all three gates to confirm everything is green.
 
-Run build + tests + lint locally before finishing.
-Create a descriptive fix commit message that names the concrete failure resolved.
-Example: "fix: handle empty workflow assignee validation"`,
+RULES:
+- Do NOT weaken, remove, or bypass tests.
+- Keep the original task scope.
+- Create a descriptive fix commit message that names the concrete failure resolved.`,
         sdk: "{{agentSdk}}",
         timeoutMs: "{{autoFixTimeoutMs}}",
       }, { x: 620, y: 1170 }),
@@ -698,8 +733,42 @@ Example: "fix: handle empty workflow assignee validation"`,
       // ── Retry-2 path (2nd remediation: escalated context) ─────────────
       node("set-retry2-summary", "action.set_variable", "Summarize Retry-1 Output", {
         key: "retry2Summary",
-        value:
-          "(() => { const build1 = $ctx.getNodeOutput('main-build') || {}; const test1 = $ctx.getNodeOutput('main-test') || {}; const lint1 = $ctx.getNodeOutput('main-lint') || {}; const build2 = $ctx.getNodeOutput('retry-build') || {}; const test2 = $ctx.getNodeOutput('retry-test') || {}; const lint2 = $ctx.getNodeOutput('retry-lint') || {}; return ['=== ORIGINAL validation (failed) ===', '- build.passed: ' + (build1.passed === true), '- test.passed: ' + (test1.passed === true), '- lint.passed: ' + (lint1.passed === true), '', 'Build output:', String(build1.output || '').slice(0, 4000), 'Test output:', String(test1.output || '').slice(0, 4000), 'Lint output:', String(lint1.output || '').slice(0, 4000), '', '=== RETRY-1 validation (also failed) ===', '- build.passed: ' + (build2.passed === true), '- test.passed: ' + (test2.passed === true), '- lint.passed: ' + (lint2.passed === true), '', 'Build output:', String(build2.output || '').slice(0, 4000), 'Test output:', String(test2.output || '').slice(0, 4000), 'Lint output:', String(lint2.output || '').slice(0, 4000)].join('\\n'); })()",
+        value: [
+          "(() => {",
+          "function fmtGate(label, out) {",
+          "  if (!out || !Object.keys(out).length) return label + ': (not run)';",
+          "  const diag = out.outputDiagnostics || {};",
+          "  const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];",
+          "  if (diag.summary) lines.push('  Summary: ' + diag.summary);",
+          "  const targets = diag.failedTargets || [];",
+          "  if (targets.length) {",
+          "    lines.push('  Failed (' + targets.length + '):');",
+          "    targets.slice(0, 15).forEach(t => lines.push('    - ' + t));",
+          "    if (targets.length > 15) lines.push('    ... +' + (targets.length - 15) + ' more');",
+          "  }",
+          "  const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';",
+          "  if (rerun) lines.push('  Rerun: `' + rerun + '`');",
+          "  if (diag.deltaSummary) lines.push('  Delta: ' + diag.deltaSummary);",
+          "  if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 3500));",
+          "  return lines.join('\\n');",
+          "}",
+          "const b1 = $ctx.getNodeOutput('main-build') || {};",
+          "const t1 = $ctx.getNodeOutput('main-test') || {};",
+          "const l1 = $ctx.getNodeOutput('main-lint') || {};",
+          "const b2 = $ctx.getNodeOutput('retry-build') || {};",
+          "const t2 = $ctx.getNodeOutput('retry-test') || {};",
+          "const l2 = $ctx.getNodeOutput('retry-lint') || {};",
+          "return [",
+          "  '## Validation History (both passes failed)',",
+          "  '',",
+          "  '### Pass 1 \u2014 Original',",
+          "  fmtGate('Build', b1), fmtGate('Test', t1), fmtGate('Lint', l1),",
+          "  '',",
+          "  '### Pass 2 \u2014 After First Auto-Fix',",
+          "  fmtGate('Build', b2), fmtGate('Test', t2), fmtGate('Lint', l2),",
+          "].join('\\n');",
+          "})()",
+        ].join(" "),
         isExpression: true,
       }, { x: 820, y: 1820 }),
 
@@ -712,13 +781,20 @@ The first auto-fix attempt DID NOT resolve all issues. You MUST take a different
 Plan:
 {{plan}}
 
-FULL history of both failed validation passes:
 {{retry2Summary}}
 
+ANALYSIS STEPS:
+1. Compare **Failed Targets** between Pass 1 and Pass 2.
+   - Same targets still failing → previous fix was wrong, try a different approach.
+   - New targets appearing → previous fix broke something else, fix both.
+   - Some resolved → partially right, focus on remaining.
+2. Check the **Delta** field to see what changed between runs.
+3. Use the **Rerun** command to iterate on just the failing targets.
+
 CRITICAL RULES:
-- Study the SPECIFIC errors above — do NOT repeat the same fix that already failed.
+- Do NOT repeat the same fix that already failed.
 - If a test is genuinely wrong or testing stale behavior, fix the test AND the code.
-- If the build/lint/test commands themselves are misconfigured, fix the config.
+- If build/lint/test configs are misconfigured, fix the config.
 - Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.
 - Keep the original task scope — do not revert the feature.
 

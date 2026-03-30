@@ -607,11 +607,52 @@ export class AgentSupervisor {
 
         case INTERVENTION.DISPATCH_FIX: {
           const state = this._getTaskState(taskId);
+          const issueCount = Array.isArray(state?.reviewIssues)
+            ? state.reviewIssues.length
+            : 0;
+          let dispatchResult = null;
           if (this._dispatchFixTask && state?.reviewIssues?.length) {
-            this._dispatchFixTask(taskId, state.reviewIssues);
+            dispatchResult = this._dispatchFixTask(taskId, state.reviewIssues);
+            if (!dispatchResult || typeof dispatchResult !== "object") {
+              dispatchResult = {
+                dispatched: true,
+                mode: "dispatch_fix_task",
+                issueCount,
+              };
+            }
           } else if (this._injectPrompt && prompt) {
             // Fallback: inject fix prompt into current session
             this._injectPrompt(taskId, prompt);
+            dispatchResult = {
+              dispatched: true,
+              mode: "inject_prompt",
+              issueCount,
+            };
+          }
+          if (dispatchResult?.dispatched && this._sendTelegram) {
+            const task = this._resolveTask(taskId);
+            const title = task?.title || taskId;
+            const modeLabel =
+              dispatchResult.mode === "active_session"
+                ? "active session"
+                : dispatchResult.mode === "redispatch"
+                  ? "new remediation session"
+                  : dispatchResult.mode === "inject_prompt"
+                    ? "prompt injection"
+                    : "review remediation";
+            const message = [
+              ":construction: Review follow-up started",
+              `Task: ${title}`,
+              "Summary: Bosun is implementing the requested review changes.",
+              issueCount ? `Issues: ${issueCount}` : "",
+              `Mode: ${modeLabel}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            this._sendTelegram(message, {
+              dedupKey: `review-fix-start|${taskId}|${dispatchResult.mode || "unknown"}|${issueCount}`,
+              exactDedup: true,
+            });
           }
           break;
         }

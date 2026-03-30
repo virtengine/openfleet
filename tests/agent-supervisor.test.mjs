@@ -508,6 +508,33 @@ describe("agent-supervisor", () => {
       ]);
     });
 
+    it("sends a notification when review remediation starts", async () => {
+      mockDispatchFix.mockReturnValue({
+        dispatched: true,
+        mode: "redispatch",
+        issueCount: 1,
+      });
+      supervisor.onReviewComplete("task-1", {
+        approved: false,
+        issues: [{ severity: "critical", description: "bug" }],
+      });
+
+      await supervisor.intervene("task-1", {
+        intervention: INTERVENTION.DISPATCH_FIX,
+        prompt: "Fix review issues",
+        reason: "review rejected",
+        situation: SITUATION.POOR_QUALITY,
+      });
+
+      expect(mockSendTelegram).toHaveBeenCalledWith(
+        expect.stringContaining("Review follow-up started"),
+        expect.objectContaining({
+          dedupKey: "review-fix-start|task-1|redispatch|1",
+          exactDedup: true,
+        }),
+      );
+    });
+
     it("NONE does nothing", async () => {
       await supervisor.intervene("task-1", {
         intervention: INTERVENTION.NONE,

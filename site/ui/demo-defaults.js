@@ -6440,7 +6440,7 @@
           "label": "Summarize Validation Output",
           "config": {
             "key": "validationSummary",
-            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+            "value": "(() => { function fmtGate(label, out) {   if (!out || !Object.keys(out).length) return label + ': (not run)';   const diag = out.outputDiagnostics || {};   const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];   if (diag.summary) lines.push('  Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('  Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('  Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('  Hint: ' + hint);   if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 5000));   return lines.join('\\n'); } const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return [   '## Validation Results',   '',   fmtGate('Build', build),   '',   fmtGate('Test', test),   '',   fmtGate('Lint', lint), ].join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -6456,7 +6456,7 @@
           "type": "action.run_agent",
           "label": "Auto-Fix Validation Failures",
           "config": {
-            "prompt": "# Fix Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCreate a descriptive fix commit message that names the concrete failure resolved.\nExample: \"fix: handle empty workflow assignee validation\"",
+            "prompt": "# Fix Validation Failures — Pass 1\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\n{{validationSummary}}\n\nSTRATEGY:\n1. Look at which gates failed (Build / Test / Lint) and focus on those.\n2. Check the **Failed Targets** — these are the exact tests/files/packages that broke.\n3. Fix compilation errors first, then test failures, then lint issues.\n4. Use the **Suggested Rerun Command** (if shown) to iterate on just the failing targets.\n5. Once targeted failures pass, run all three gates to confirm everything is green.\n\nRULES:\n- Do NOT weaken, remove, or bypass tests.\n- Keep the original task scope.\n- Create a descriptive fix commit message that names the concrete failure resolved.",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{autoFixTimeoutMs}}"
           },
@@ -6669,7 +6669,7 @@
           "label": "Summarize Retry-1 Output",
           "config": {
             "key": "retry2Summary",
-            "value": "(() => { const build1 = $ctx.getNodeOutput('main-build') || {}; const test1 = $ctx.getNodeOutput('main-test') || {}; const lint1 = $ctx.getNodeOutput('main-lint') || {}; const build2 = $ctx.getNodeOutput('retry-build') || {}; const test2 = $ctx.getNodeOutput('retry-test') || {}; const lint2 = $ctx.getNodeOutput('retry-lint') || {}; return ['=== ORIGINAL validation (failed) ===', '- build.passed: ' + (build1.passed === true), '- test.passed: ' + (test1.passed === true), '- lint.passed: ' + (lint1.passed === true), '', 'Build output:', String(build1.output || '').slice(0, 4000), 'Test output:', String(test1.output || '').slice(0, 4000), 'Lint output:', String(lint1.output || '').slice(0, 4000), '', '=== RETRY-1 validation (also failed) ===', '- build.passed: ' + (build2.passed === true), '- test.passed: ' + (test2.passed === true), '- lint.passed: ' + (lint2.passed === true), '', 'Build output:', String(build2.output || '').slice(0, 4000), 'Test output:', String(test2.output || '').slice(0, 4000), 'Lint output:', String(lint2.output || '').slice(0, 4000)].join('\\n'); })()",
+            "value": "(() => { function fmtGate(label, out) {   if (!out || !Object.keys(out).length) return label + ': (not run)';   const diag = out.outputDiagnostics || {};   const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];   if (diag.summary) lines.push('  Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('  Failed (' + targets.length + '):');     targets.slice(0, 15).forEach(t => lines.push('    - ' + t));     if (targets.length > 15) lines.push('    ... +' + (targets.length - 15) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('  Rerun: `' + rerun + '`');   if (diag.deltaSummary) lines.push('  Delta: ' + diag.deltaSummary);   if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 3500));   return lines.join('\\n'); } const b1 = $ctx.getNodeOutput('main-build') || {}; const t1 = $ctx.getNodeOutput('main-test') || {}; const l1 = $ctx.getNodeOutput('main-lint') || {}; const b2 = $ctx.getNodeOutput('retry-build') || {}; const t2 = $ctx.getNodeOutput('retry-test') || {}; const l2 = $ctx.getNodeOutput('retry-lint') || {}; return [   '## Validation History (both passes failed)',   '',   '### Pass 1 — Original',   fmtGate('Build', b1), fmtGate('Test', t1), fmtGate('Lint', l1),   '',   '### Pass 2 — After First Auto-Fix',   fmtGate('Build', b2), fmtGate('Test', t2), fmtGate('Lint', l2), ].join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -6685,7 +6685,7 @@
           "type": "action.run_agent",
           "label": "Auto-Fix (Escalated, Pass 2)",
           "config": {
-            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\nPlan:\n{{plan}}\n\nFULL history of both failed validation passes:\n{{retry2Summary}}\n\nCRITICAL RULES:\n- Study the SPECIFIC errors above — do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.\n- If the build/lint/test commands themselves are misconfigured, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun build + tests + lint locally and confirm ALL pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
+            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\nPlan:\n{{plan}}\n\n{{retry2Summary}}\n\nANALYSIS STEPS:\n1. Compare **Failed Targets** between Pass 1 and Pass 2.\n   - Same targets still failing → previous fix was wrong, try a different approach.\n   - New targets appearing → previous fix broke something else, fix both.\n   - Some resolved → partially right, focus on remaining.\n2. Check the **Delta** field to see what changed between runs.\n3. Use the **Rerun** command to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.\n- If build/lint/test configs are misconfigured, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun build + tests + lint locally and confirm ALL pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{autoFixTimeoutMs}}"
           },
@@ -22490,10 +22490,10 @@
         "executor",
         "workflow-first",
         "core",
-        "auto-remediation"
+        "multi-remediation"
       ],
-      "nodeCount": 67,
-      "edgeCount": 77,
+      "nodeCount": 71,
+      "edgeCount": 82,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -22521,16 +22521,16 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 3,
+        "version": 4,
         "createdAt": "2026-03-01T00:00:00Z",
-        "templateVersion": "3.0.0",
+        "templateVersion": "4.0.0",
         "tags": [
           "task",
           "lifecycle",
           "executor",
           "workflow-first",
           "core",
-          "auto-remediation"
+          "multi-remediation"
         ],
         "requiredTemplates": [
           "template-bosun-pr-progressor",
@@ -22969,7 +22969,7 @@
           "label": "Summarize Validation Output",
           "config": {
             "key": "fixSummary",
-            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; return ['- exitCode: ' + (out.exitCode ?? 'unknown'), '- success: ' + (out.success === true), '', 'Command output:', String(out.output || out.stdout || '').slice(0, 8000), '', 'Stderr:', String(out.stderr || '').slice(0, 4000)].join('\\n'); })()",
+            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; const diag = out.outputDiagnostics || {}; const sections = []; sections.push('## Validation Result'); sections.push('- Exit code: ' + (out.exitCode ?? 'unknown')); sections.push('- Runner: ' + (diag.family || diag.runner || 'unknown')); if (diag.summary) sections.push('- Summary: ' + diag.summary); const targets = diag.failedTargets || []; if (targets.length) {   sections.push('');   sections.push('## Failed Targets (' + targets.length + ')');   targets.slice(0, 30).forEach(t => sections.push('  - ' + t));   if (targets.length > 30) sections.push('  ... and ' + (targets.length - 30) + ' more'); } const rerun = out.outputSuggestedRerun || diag.suggestedRerun || ''; if (rerun) {   sections.push('');   sections.push('## Suggested Rerun Command');   sections.push('```');   sections.push(rerun);   sections.push('```'); } const hint = out.outputHint || diag.hint || ''; if (hint) sections.push('\\nHint: ' + hint); sections.push(''); sections.push('## Full Command Output'); sections.push(String(out.output || '').slice(0, 12000)); return sections.join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -22983,9 +22983,9 @@
         {
           "id": "auto-fix-validation",
           "type": "action.run_agent",
-          "label": "Auto-Fix Validation",
+          "label": "Auto-Fix Validation (Pass 1)",
           "config": {
-            "prompt": "# Fix Pre-PR Validation Failures\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Fix the code so validation passes.\n\nValidation output:\n{{fixSummary}}\n\nRULES:\n- Study the SPECIFIC errors above.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify.\n- Keep the original task scope — do not revert the feature.\n- Run the validation command locally and confirm it passes before finishing.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
+            "prompt": "# Fix Pre-PR Validation Failures — Pass 1\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Your job is to fix EVERY error so validation passes.\n\n{{fixSummary}}\n\nSTRATEGY:\n1. Start from the **Failed Targets** list above — these are the exact files/tests/packages that broke.\n2. Fix compilation and syntax errors FIRST (missing imports, typos, type errors).\n3. Then fix test failures — open each failing test file, read what it asserts, and fix your code or the test expectation.\n4. If a **Suggested Rerun Command** is shown above, use it to re-run only the failing targets and iterate faster.\n5. Once targeted failures are fixed, run the full validation command to confirm everything passes.\n\nRULES:\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -23040,16 +23040,92 @@
           ]
         },
         {
+          "id": "set-fix2-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Both Validation Outputs",
+          "config": {
+            "key": "fix2Summary",
+            "value": "(() => { function summarizeRun(label, out) {   const diag = out.outputDiagnostics || {};   const lines = ['### ' + label];   lines.push('- Exit code: ' + (out.exitCode ?? 'unknown'));   lines.push('- Runner: ' + (diag.family || diag.runner || 'unknown'));   if (diag.summary) lines.push('- Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('- Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('- Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('- Hint: ' + hint);   if (diag.deltaSummary) lines.push('- Delta: ' + diag.deltaSummary);   lines.push('');   lines.push('Full output:');   lines.push(String(out.output || '').slice(0, 8000));   return lines.join('\\n'); } const v1 = $ctx.getNodeOutput('pre-pr-validation') || {}; const v2 = $ctx.getNodeOutput('retry-pre-pr-validation') || {}; return [   '## Validation History (both passes failed)',   '',   summarizeRun('Pass 1 — Original Validation', v1),   '',   summarizeRun('Pass 2 — After First Auto-Fix', v2), ].join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 500,
+            "y": 2300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix-validation-2",
+          "type": "action.run_agent",
+          "label": "Auto-Fix Validation (Pass 2 — Escalated)",
+          "config": {
+            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\n{{fix2Summary}}\n\nANALYSIS STEPS:\n1. Compare the **Failed Targets** between Pass 1 and Pass 2.\n   - If the SAME targets still fail → your previous fix was wrong. Revert it and try a different approach.\n   - If NEW targets appeared → your fix broke something else. Fix both.\n   - If some targets were RESOLVED → the approach was partially right. Focus on the remaining ones.\n2. Use the **Delta** field (if present) to see exactly what changed between runs.\n3. Use the **Suggested Rerun Command** to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior your change invalidated, fix the test AND the code.\n- If the build/lint/test commands are misconfigured for your changes, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun the full validation command locally and confirm ALL checks pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 500,
+            "y": 2380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Retry-2 Pre-PR Validation",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 500,
+            "y": 2460
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-validation-ok",
+          "type": "condition.expression",
+          "label": "Retry-2 Validation Passed?",
+          "config": {
+            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry2-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
+          },
+          "position": {
+            "x": 500,
+            "y": 2540
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
           "id": "log-validation-failed",
           "type": "notify.log",
           "label": "Log Validation Failed",
           "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after auto-fix remediation, blocking task",
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after 2 auto-fix remediation passes, blocking task",
             "level": "warn"
           },
           "position": {
-            "x": 480,
-            "y": 2300
+            "x": 700,
+            "y": 2600
           },
           "outputs": [
             "default"
@@ -23063,11 +23139,11 @@
             "taskId": "{{taskId}}",
             "status": "blocked",
             "taskTitle": "{{taskTitle}}",
-            "blockedReason": "Pre-PR validation failed after automated remediation attempt"
+            "blockedReason": "Pre-PR validation failed after 2 automated remediation passes"
           },
           "position": {
-            "x": 480,
-            "y": 2380
+            "x": 700,
+            "y": 2680
           },
           "outputs": [
             "default"
@@ -23078,11 +23154,11 @@
           "type": "notify.telegram",
           "label": "Notify Validation Blocked",
           "config": {
-            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after automated remediation. Manual review needed."
+            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after 2 automated remediation attempts. Manual review needed."
           },
           "position": {
-            "x": 480,
-            "y": 2460
+            "x": 700,
+            "y": 2760
           },
           "outputs": [
             "default"
@@ -23942,8 +24018,40 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "retry-validation-ok->log-validation-failed",
+          "id": "retry-validation-ok->set-fix2-summary",
           "source": "retry-validation-ok",
+          "target": "set-fix2-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-fix2-summary->auto-fix-validation-2",
+          "source": "set-fix2-summary",
+          "target": "auto-fix-validation-2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-validation-2->retry2-pre-pr-validation",
+          "source": "auto-fix-validation-2",
+          "target": "retry2-pre-pr-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-pre-pr-validation->retry2-validation-ok",
+          "source": "retry2-pre-pr-validation",
+          "target": "retry2-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-validation-ok->push-branch",
+          "source": "retry2-validation-ok",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry2-validation-ok->log-validation-failed",
+          "source": "retry2-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
@@ -30674,7 +30782,7 @@
           "label": "Summarize Validation Output",
           "config": {
             "key": "validationSummary",
-            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+            "value": "(() => { function fmtGate(label, out) {   if (!out || !Object.keys(out).length) return label + ': (not run)';   const diag = out.outputDiagnostics || {};   const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];   if (diag.summary) lines.push('  Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('  Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('  Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('  Hint: ' + hint);   if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 5000));   return lines.join('\\n'); } const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return [   '## Validation Results',   '',   fmtGate('Build', build),   '',   fmtGate('Test', test),   '',   fmtGate('Lint', lint), ].join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -30690,7 +30798,7 @@
           "type": "action.run_agent",
           "label": "Auto-Fix Validation Failures",
           "config": {
-            "prompt": "# Fix Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCreate a descriptive fix commit message that names the concrete failure resolved.\nExample: \"fix: handle empty workflow assignee validation\"",
+            "prompt": "# Fix Validation Failures — Pass 1\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\n{{validationSummary}}\n\nSTRATEGY:\n1. Look at which gates failed (Build / Test / Lint) and focus on those.\n2. Check the **Failed Targets** — these are the exact tests/files/packages that broke.\n3. Fix compilation errors first, then test failures, then lint issues.\n4. Use the **Suggested Rerun Command** (if shown) to iterate on just the failing targets.\n5. Once targeted failures pass, run all three gates to confirm everything is green.\n\nRULES:\n- Do NOT weaken, remove, or bypass tests.\n- Keep the original task scope.\n- Create a descriptive fix commit message that names the concrete failure resolved.",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{autoFixTimeoutMs}}"
           },
@@ -30903,7 +31011,7 @@
           "label": "Summarize Retry-1 Output",
           "config": {
             "key": "retry2Summary",
-            "value": "(() => { const build1 = $ctx.getNodeOutput('main-build') || {}; const test1 = $ctx.getNodeOutput('main-test') || {}; const lint1 = $ctx.getNodeOutput('main-lint') || {}; const build2 = $ctx.getNodeOutput('retry-build') || {}; const test2 = $ctx.getNodeOutput('retry-test') || {}; const lint2 = $ctx.getNodeOutput('retry-lint') || {}; return ['=== ORIGINAL validation (failed) ===', '- build.passed: ' + (build1.passed === true), '- test.passed: ' + (test1.passed === true), '- lint.passed: ' + (lint1.passed === true), '', 'Build output:', String(build1.output || '').slice(0, 4000), 'Test output:', String(test1.output || '').slice(0, 4000), 'Lint output:', String(lint1.output || '').slice(0, 4000), '', '=== RETRY-1 validation (also failed) ===', '- build.passed: ' + (build2.passed === true), '- test.passed: ' + (test2.passed === true), '- lint.passed: ' + (lint2.passed === true), '', 'Build output:', String(build2.output || '').slice(0, 4000), 'Test output:', String(test2.output || '').slice(0, 4000), 'Lint output:', String(lint2.output || '').slice(0, 4000)].join('\\n'); })()",
+            "value": "(() => { function fmtGate(label, out) {   if (!out || !Object.keys(out).length) return label + ': (not run)';   const diag = out.outputDiagnostics || {};   const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];   if (diag.summary) lines.push('  Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('  Failed (' + targets.length + '):');     targets.slice(0, 15).forEach(t => lines.push('    - ' + t));     if (targets.length > 15) lines.push('    ... +' + (targets.length - 15) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('  Rerun: `' + rerun + '`');   if (diag.deltaSummary) lines.push('  Delta: ' + diag.deltaSummary);   if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 3500));   return lines.join('\\n'); } const b1 = $ctx.getNodeOutput('main-build') || {}; const t1 = $ctx.getNodeOutput('main-test') || {}; const l1 = $ctx.getNodeOutput('main-lint') || {}; const b2 = $ctx.getNodeOutput('retry-build') || {}; const t2 = $ctx.getNodeOutput('retry-test') || {}; const l2 = $ctx.getNodeOutput('retry-lint') || {}; return [   '## Validation History (both passes failed)',   '',   '### Pass 1 — Original',   fmtGate('Build', b1), fmtGate('Test', t1), fmtGate('Lint', l1),   '',   '### Pass 2 — After First Auto-Fix',   fmtGate('Build', b2), fmtGate('Test', t2), fmtGate('Lint', l2), ].join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -30919,7 +31027,7 @@
           "type": "action.run_agent",
           "label": "Auto-Fix (Escalated, Pass 2)",
           "config": {
-            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\nPlan:\n{{plan}}\n\nFULL history of both failed validation passes:\n{{retry2Summary}}\n\nCRITICAL RULES:\n- Study the SPECIFIC errors above — do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.\n- If the build/lint/test commands themselves are misconfigured, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun build + tests + lint locally and confirm ALL pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
+            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\nPlan:\n{{plan}}\n\n{{retry2Summary}}\n\nANALYSIS STEPS:\n1. Compare **Failed Targets** between Pass 1 and Pass 2.\n   - Same targets still failing → previous fix was wrong, try a different approach.\n   - New targets appearing → previous fix broke something else, fix both.\n   - Some resolved → partially right, focus on remaining.\n2. Check the **Delta** field to see what changed between runs.\n3. Use the **Rerun** command to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.\n- If build/lint/test configs are misconfigured, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun build + tests + lint locally and confirm ALL pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{autoFixTimeoutMs}}"
           },
@@ -45941,7 +46049,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 67,
+      "nodeCount": 71,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -46382,7 +46490,7 @@
           "label": "Summarize Validation Output",
           "config": {
             "key": "fixSummary",
-            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; return ['- exitCode: ' + (out.exitCode ?? 'unknown'), '- success: ' + (out.success === true), '', 'Command output:', String(out.output || out.stdout || '').slice(0, 8000), '', 'Stderr:', String(out.stderr || '').slice(0, 4000)].join('\\n'); })()",
+            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; const diag = out.outputDiagnostics || {}; const sections = []; sections.push('## Validation Result'); sections.push('- Exit code: ' + (out.exitCode ?? 'unknown')); sections.push('- Runner: ' + (diag.family || diag.runner || 'unknown')); if (diag.summary) sections.push('- Summary: ' + diag.summary); const targets = diag.failedTargets || []; if (targets.length) {   sections.push('');   sections.push('## Failed Targets (' + targets.length + ')');   targets.slice(0, 30).forEach(t => sections.push('  - ' + t));   if (targets.length > 30) sections.push('  ... and ' + (targets.length - 30) + ' more'); } const rerun = out.outputSuggestedRerun || diag.suggestedRerun || ''; if (rerun) {   sections.push('');   sections.push('## Suggested Rerun Command');   sections.push('```');   sections.push(rerun);   sections.push('```'); } const hint = out.outputHint || diag.hint || ''; if (hint) sections.push('\\nHint: ' + hint); sections.push(''); sections.push('## Full Command Output'); sections.push(String(out.output || '').slice(0, 12000)); return sections.join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -46396,9 +46504,9 @@
         {
           "id": "auto-fix-validation",
           "type": "action.run_agent",
-          "label": "Auto-Fix Validation",
+          "label": "Auto-Fix Validation (Pass 1)",
           "config": {
-            "prompt": "# Fix Pre-PR Validation Failures\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Fix the code so validation passes.\n\nValidation output:\n{{fixSummary}}\n\nRULES:\n- Study the SPECIFIC errors above.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify.\n- Keep the original task scope — do not revert the feature.\n- Run the validation command locally and confirm it passes before finishing.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
+            "prompt": "# Fix Pre-PR Validation Failures — Pass 1\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Your job is to fix EVERY error so validation passes.\n\n{{fixSummary}}\n\nSTRATEGY:\n1. Start from the **Failed Targets** list above — these are the exact files/tests/packages that broke.\n2. Fix compilation and syntax errors FIRST (missing imports, typos, type errors).\n3. Then fix test failures — open each failing test file, read what it asserts, and fix your code or the test expectation.\n4. If a **Suggested Rerun Command** is shown above, use it to re-run only the failing targets and iterate faster.\n5. Once targeted failures are fixed, run the full validation command to confirm everything passes.\n\nRULES:\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -46453,16 +46561,92 @@
           ]
         },
         {
+          "id": "set-fix2-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Both Validation Outputs",
+          "config": {
+            "key": "fix2Summary",
+            "value": "(() => { function summarizeRun(label, out) {   const diag = out.outputDiagnostics || {};   const lines = ['### ' + label];   lines.push('- Exit code: ' + (out.exitCode ?? 'unknown'));   lines.push('- Runner: ' + (diag.family || diag.runner || 'unknown'));   if (diag.summary) lines.push('- Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('- Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('- Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('- Hint: ' + hint);   if (diag.deltaSummary) lines.push('- Delta: ' + diag.deltaSummary);   lines.push('');   lines.push('Full output:');   lines.push(String(out.output || '').slice(0, 8000));   return lines.join('\\n'); } const v1 = $ctx.getNodeOutput('pre-pr-validation') || {}; const v2 = $ctx.getNodeOutput('retry-pre-pr-validation') || {}; return [   '## Validation History (both passes failed)',   '',   summarizeRun('Pass 1 — Original Validation', v1),   '',   summarizeRun('Pass 2 — After First Auto-Fix', v2), ].join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 500,
+            "y": 2300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix-validation-2",
+          "type": "action.run_agent",
+          "label": "Auto-Fix Validation (Pass 2 — Escalated)",
+          "config": {
+            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\n{{fix2Summary}}\n\nANALYSIS STEPS:\n1. Compare the **Failed Targets** between Pass 1 and Pass 2.\n   - If the SAME targets still fail → your previous fix was wrong. Revert it and try a different approach.\n   - If NEW targets appeared → your fix broke something else. Fix both.\n   - If some targets were RESOLVED → the approach was partially right. Focus on the remaining ones.\n2. Use the **Delta** field (if present) to see exactly what changed between runs.\n3. Use the **Suggested Rerun Command** to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior your change invalidated, fix the test AND the code.\n- If the build/lint/test commands are misconfigured for your changes, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun the full validation command locally and confirm ALL checks pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 500,
+            "y": 2380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Retry-2 Pre-PR Validation",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 500,
+            "y": 2460
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-validation-ok",
+          "type": "condition.expression",
+          "label": "Retry-2 Validation Passed?",
+          "config": {
+            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry2-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
+          },
+          "position": {
+            "x": 500,
+            "y": 2540
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
           "id": "log-validation-failed",
           "type": "notify.log",
           "label": "Log Validation Failed",
           "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after auto-fix remediation, blocking task",
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after 2 auto-fix remediation passes, blocking task",
             "level": "warn"
           },
           "position": {
-            "x": 480,
-            "y": 2300
+            "x": 700,
+            "y": 2600
           },
           "outputs": [
             "default"
@@ -46476,11 +46660,11 @@
             "taskId": "{{taskId}}",
             "status": "blocked",
             "taskTitle": "{{taskTitle}}",
-            "blockedReason": "Pre-PR validation failed after automated remediation attempt"
+            "blockedReason": "Pre-PR validation failed after 2 automated remediation passes"
           },
           "position": {
-            "x": 480,
-            "y": 2380
+            "x": 700,
+            "y": 2680
           },
           "outputs": [
             "default"
@@ -46491,11 +46675,11 @@
           "type": "notify.telegram",
           "label": "Notify Validation Blocked",
           "config": {
-            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after automated remediation. Manual review needed."
+            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after 2 automated remediation attempts. Manual review needed."
           },
           "position": {
-            "x": 480,
-            "y": 2460
+            "x": 700,
+            "y": 2760
           },
           "outputs": [
             "default"
@@ -47355,8 +47539,40 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "retry-validation-ok->log-validation-failed",
+          "id": "retry-validation-ok->set-fix2-summary",
           "source": "retry-validation-ok",
+          "target": "set-fix2-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-fix2-summary->auto-fix-validation-2",
+          "source": "set-fix2-summary",
+          "target": "auto-fix-validation-2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-validation-2->retry2-pre-pr-validation",
+          "source": "auto-fix-validation-2",
+          "target": "retry2-pre-pr-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-pre-pr-validation->retry2-validation-ok",
+          "source": "retry2-pre-pr-validation",
+          "target": "retry2-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-validation-ok->push-branch",
+          "source": "retry2-validation-ok",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry2-validation-ok->log-validation-failed",
+          "source": "retry2-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
@@ -47681,8 +47897,8 @@
         "templateState": {
           "templateId": "template-task-lifecycle",
           "templateName": "Task Lifecycle",
-          "templateVersion": "3.0.0",
-          "installedTemplateVersion": "3.0.0",
+          "templateVersion": "4.0.0",
+          "installedTemplateVersion": "4.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
