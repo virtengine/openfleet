@@ -12,7 +12,7 @@
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
  *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine
  *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
- *   workflow-templates/code-quality.mjs — Code Quality Striker
+ *   workflow-templates/code-quality.mjs — Code Quality Striker, PR Review Quality Striker, SonarQube PR Striker
  *
  * To add a new template:
  *   1. Choose the appropriate category file (or create a new one)

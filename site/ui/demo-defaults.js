@@ -99,7 +99,7 @@
           "label": "Normalize PR Context",
           "config": {
             "key": "prProgressContext",
-            "value": "(() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
             "isExpression": true
           },
           "position": {
@@ -255,6 +255,8 @@
             "prompt": "You are a Bosun PR repair fallback agent working one PR only.\n\n## CRITICAL RULES — Read Before Doing Anything\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-pr-worktree.output.branch}}`). The base branch (`{{setup-pr-worktree.output.base}}`) has been fetched.\n\n- Do NOT clone the repo. Do NOT create branches. Do NOT push.\n- Work ONLY in the current directory on the current branch.\n- The workflow will commit and push your changes automatically after you finish.\n\n## PR Context\n\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\n## Repair Attempt Output\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\n\n## Fix Instructions\n\n- Only fix this PR's CI or merge-conflict issue.\n- For merge conflicts: `git merge origin/{{setup-pr-worktree.output.base}}` and resolve.\n- For CI failures: study the error output and apply the MINIMAL code fix.\n- Do not merge, approve, or close the PR.\n- Keep the patch minimal and scoped to the reported failure.\n- After fixing, remove the label:\n  `gh pr edit {{setup-pr-worktree.output.number}} --repo {{setup-pr-worktree.output.repo}} --remove-label bosun-needs-fix`\n",
             "sdk": "auto",
             "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
@@ -1998,7 +2000,7 @@
           "label": "Pick Conflict PR",
           "config": {
             "key": "targetPrNumber",
-            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
             "isExpression": true
           },
           "position": {
@@ -2015,7 +2017,7 @@
           "label": "Capture Conflict Branch",
           "config": {
             "key": "targetPrBranch",
-            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
             "isExpression": true
           },
           "position": {
@@ -2032,7 +2034,7 @@
           "label": "Capture Base Branch",
           "config": {
             "key": "targetPrBase",
-            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
             "isExpression": true
           },
           "position": {
@@ -2633,7 +2635,7 @@
           "type": "condition.expression",
           "label": "Bosun-Created PR?",
           "config": {
-            "expression": "(() => { /* <!-- bosun-created --> */ if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
+            "expression": "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()"
           },
           "position": {
             "x": 400,
@@ -3613,7 +3615,7 @@
           "type": "condition.expression",
           "label": "Detect Breaking Changes",
           "config": {
-            "expression": "(() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
+            "expression": "/* <!-- bosun-created --> */ (() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
           },
           "position": {
             "x": 400,
@@ -4298,6 +4300,8 @@
             "prompt": "# Merge Conflict Resolution\n\nYou are resolving merge conflicts in a git worktree.\n\n## Context\n- **Working directory**: `{{worktreePath}}`\n- **PR branch** (HEAD): `{{branch}}`\n- **Base branch** (incoming): `origin/{{baseBranch}}`\n- **PR**: #{{prNumber}}\n- **Task**: {{taskTitle}}\n\n## Conflicted files needing manual resolution:\n{{manualFiles}}\n\n## Instructions\n1. Read both sides of each conflict carefully\n2. Understand the INTENT of each change (feature vs upstream)\n3. Write a correct resolution that preserves both intents\n4. `git add` each resolved file\n5. Run `git commit --no-edit` to finalize the merge\n6. Do NOT use `--theirs` or `--ours` for code files\n7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
             "sdk": "auto",
             "timeoutMs": "{{timeoutMs}}",
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "failOnError": true,
             "continueOnError": true
           },
@@ -22506,6 +22510,8 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1,
         "prePrValidationEnabled": true,
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
@@ -22805,7 +22811,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -22830,7 +22838,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -22855,7 +22865,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -24798,7 +24810,7 @@
           "label": "Normalize PR Context",
           "config": {
             "key": "prProgressContext",
-            "value": "(() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
             "isExpression": true
           },
           "position": {
@@ -24954,6 +24966,8 @@
             "prompt": "You are a Bosun PR repair fallback agent working one PR only.\n\n## CRITICAL RULES — Read Before Doing Anything\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-pr-worktree.output.branch}}`). The base branch (`{{setup-pr-worktree.output.base}}`) has been fetched.\n\n- Do NOT clone the repo. Do NOT create branches. Do NOT push.\n- Work ONLY in the current directory on the current branch.\n- The workflow will commit and push your changes automatically after you finish.\n\n## PR Context\n\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\n## Repair Attempt Output\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\n\n## Fix Instructions\n\n- Only fix this PR's CI or merge-conflict issue.\n- For merge conflicts: `git merge origin/{{setup-pr-worktree.output.base}}` and resolve.\n- For CI failures: study the error output and apply the MINIMAL code fix.\n- Do not merge, approve, or close the PR.\n- Keep the patch minimal and scoped to the reported failure.\n- After fixing, remove the label:\n  `gh pr edit {{setup-pr-worktree.output.number}} --repo {{setup-pr-worktree.output.repo}} --remove-label bosun-needs-fix`\n",
             "sdk": "auto",
             "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
@@ -26595,7 +26609,7 @@
           "label": "Pick Conflict PR",
           "config": {
             "key": "targetPrNumber",
-            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
             "isExpression": true
           },
           "position": {
@@ -26612,7 +26626,7 @@
           "label": "Capture Conflict Branch",
           "config": {
             "key": "targetPrBranch",
-            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
             "isExpression": true
           },
           "position": {
@@ -26629,7 +26643,7 @@
           "label": "Capture Base Branch",
           "config": {
             "key": "targetPrBase",
-            "value": "(() => {  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
             "isExpression": true
           },
           "position": {
@@ -27189,7 +27203,7 @@
           "type": "condition.expression",
           "label": "Bosun-Created PR?",
           "config": {
-            "expression": "(() => { /* <!-- bosun-created --> */ if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
+            "expression": "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()"
           },
           "position": {
             "x": 400,
@@ -28128,7 +28142,7 @@
           "type": "condition.expression",
           "label": "Detect Breaking Changes",
           "config": {
-            "expression": "(() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
+            "expression": "/* <!-- bosun-created --> */ (() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
           },
           "position": {
             "x": 400,
@@ -28751,6 +28765,8 @@
             "prompt": "# Merge Conflict Resolution\n\nYou are resolving merge conflicts in a git worktree.\n\n## Context\n- **Working directory**: `{{worktreePath}}`\n- **PR branch** (HEAD): `{{branch}}`\n- **Base branch** (incoming): `origin/{{baseBranch}}`\n- **PR**: #{{prNumber}}\n- **Task**: {{taskTitle}}\n\n## Conflicted files needing manual resolution:\n{{manualFiles}}\n\n## Instructions\n1. Read both sides of each conflict carefully\n2. Understand the INTENT of each change (feature vs upstream)\n3. Write a correct resolution that preserves both intents\n4. `git add` each resolved file\n5. Run `git commit --no-edit` to finalize the merge\n6. Do NOT use `--theirs` or `--ours` for code files\n7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
             "sdk": "auto",
             "timeoutMs": "{{timeoutMs}}",
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "failOnError": true,
             "continueOnError": true
           },
@@ -46060,6 +46076,8 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1,
         "prePrValidationEnabled": true,
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
@@ -46326,7 +46344,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -46351,7 +46371,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -46376,7 +46398,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -50015,7 +50039,7 @@
   ],
   "libraryContents": {
     "orchestrator": "# Task Orchestrator Agent\n\nYou are an autonomous task orchestrator agent. You receive implementation tasks and execute them end-to-end.\n\n## Prime Directives\n\n1. Never ask for human input for normal engineering decisions.\n2. Complete the assigned scope fully before stopping.\n3. Keep changes minimal, correct, and production-safe.\n4. Run relevant verification (tests/lint/build) before finalizing.\n5. Use conventional commit messages.\n\n## Code Quality — Hard Rules\n\nThese rules are non-negotiable. Violations cause real production crashes.\n\n- **Module-scope caching:** Variables that cache state (lazy singletons, loaded\n  flags, memoization maps) MUST be at module scope, never inside a function body\n  that runs repeatedly.\n- **Async safety:** NEVER use bare `void asyncFn()`. Every async call must be\n  `await`-ed or have a `.catch()` handler. Unhandled rejections crash Node.js.\n- **Error boundaries:** HTTP handlers, timers, and event callbacks MUST wrap async\n  work in try/catch so one failure doesn't kill the process.\n- **No over-mocking in tests:** Mock only external boundaries (network, disk, clock).\n  Never mock the module under test. If a test needs > 3 mocks, refactor the code.\n- **Deterministic tests:** No `Math.random()`, real network calls, or `setTimeout`\n  for synchronization. Tests must be reproducible and order-independent.\n- **Dynamic `import()` must be cached:** Never place `import()` inside a\n  frequently-called function without caching the result at module scope.\n\n## Completion Criteria\n\n- Implementation matches requested behavior.\n- Existing functionality is preserved.\n- Relevant checks pass.\n- Branch is pushed and ready for PR/review flow.\n\n## Skills & Knowledge Base\n\nBefore starting any task, load relevant skills to avoid known pitfalls and\napply patterns discovered by previous agents:\n\n1. Check if `.bosun/skills/index.json` exists in the workspace or bosun home.\n2. Read the index to find skills whose tags match your task's module or domain.\n3. Load and apply any matching skill files from `.bosun/skills/`.\n\nAfter completing a task, if you discovered a non-obvious pattern, workaround, or\ndomain-specific fact, write or update a skill file at `.bosun/skills/<module>.md`\nso the next agent benefits from your investigation.\n",
-    "taskexecutor": "# {{TASK_ID}} — {{TASK_TITLE}}\n\n## Description\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n\n## Environment\n- Working Directory: {{WORKTREE_PATH}}\n- Branch: {{BRANCH}}\n- Repository: {{REPO_SLUG}}\n\n## Skills — Load Before Starting\n\nCheck for relevant skills before implementing:\n1. Look for `.bosun/skills/index.json` (in workspace root or BOSUN_HOME).\n2. Read the index; load skills whose tags match this task's module/domain.\n3. Apply the patterns — especially `background-task-execution`, `error-recovery`,\n   and `pr-workflow` which apply to almost every task.\n\n## Instructions\n1. Load relevant skills as described above.\n2. Read task requirements carefully.\n3. Implement required code changes.\n4. Run relevant tests/lint/build checks.\n5. Commit with conventional commit format.\n6. Push branch updates.\n7. After completing: if you discovered non-obvious patterns, write a skill file\n   at `.bosun/skills/<module>.md` for future agents.\n\n## Critical Rules\n- Do not ask for manual confirmation.\n- No placeholders/stubs/TODO-only output.\n- Keep behavior stable and production-safe.\n\n## Code Quality — Mandatory Checks\n\nThese patterns have caused real production crashes. Treat them as hard rules:\n\n1. **Module-scope caching:** If you declare variables that cache state (lazy\n   singletons, init flags, memoization), place them at **module scope** — never\n   inside a function body that runs per-request or per-event.\n2. **Async fire-and-forget:** Never use bare `void asyncFn()`. Always `await`\n   or append `.catch()`. Unhandled promise rejections crash Node.js (exit 1).\n3. **Error boundaries:** Wrap HTTP handlers, timers, and event callbacks in\n   top-level try/catch. One unguarded throw must not kill the process.\n4. **Dynamic imports:** Cache `import()` results at module scope. Never call\n   `import()` inside a hot path without caching — it causes repeated I/O.\n5. **Test quality:** Mock only external boundaries (network, disk, clock). Never\n   mock the module under test. No `setTimeout`/`sleep` for synchronization.\n   Tests must be deterministic and order-independent. Assert on behavior, not\n   implementation details.\n6. **No architectural shortcuts:** Don't force-enable feature flags inline. Don't\n   add config overrides that bypass safety checks. If a feature is behind a flag,\n   respect it.\n\n## Bosun Task Agent — Git & Bosun Lifecycle Workflow\n\nYou are running as a **Bosun-managed task agent**.  Environment variables\n`BOSUN_TASK_TITLE`, `BOSUN_BRANCH_NAME`, `BOSUN_TASK_ID`, and their\n`VE_*` / `VK_*` aliases are available in your environment.\n\n**Before committing:**\n- Run auto-formatting tools (gofmt, prettier, etc.) relevant to changed files.\n- Fix any lint or vet warnings introduced by your changes.\n\n**After committing:**\n- If a precommit hook auto-applies additional formatting changes, add those\n  to a follow-up commit before pushing.\n- Merge any upstream changes — BOTH from the base (module) branch AND from main:\n  `git fetch origin && git merge origin/<base-branch> --no-edit && git merge origin/main --no-edit`\n  Resolve any conflicts that arise before pushing.\n- Push: `git push --set-upstream origin {{BRANCH}}`\n- After a successful push, hand off PR lifecycle to Bosun management.\n- Do not run direct PR commands.\n{{COAUTHOR_INSTRUCTION}}\n**Do NOT:**\n- Bypass pre-push hooks (`git push --no-verify` is forbidden).\n- Use `git add .` — stage files individually.\n- Wait for user confirmation before pushing or handing off lifecycle state.\n\n## Agent Status Endpoint\n- URL: http://127.0.0.1:{{ENDPOINT_PORT}}/api/tasks/{{TASK_ID}}\n- POST /status {\"status\":\"inreview\"} after push + Bosun lifecycle handoff readiness\n- POST /heartbeat {} while running\n- POST /error {\"error\":\"...\"} on fatal failure\n- POST /complete {\"hasCommits\":true} when done\n\n## Task Reference\n{{TASK_URL_LINE}}\n\n## Repository Context\n{{REPO_CONTEXT}}\n",
+    "taskexecutor": "# {{TASK_ID}} — {{TASK_TITLE}}\n\n## Description\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n\n## Environment\n- Working Directory: {{WORKTREE_PATH}}\n- Branch: {{BRANCH}}\n- Repository: {{REPO_SLUG}}\n\n## Skills — Load Before Starting\n\nCheck for relevant skills before implementing:\n1. Look for `.bosun/skills/index.json` (in workspace root or BOSUN_HOME).\n2. Read the index; load skills whose tags match this task's module/domain.\n3. Apply the patterns — especially `background-task-execution`, `error-recovery`,\n   and `pr-workflow` which apply to almost every task.\n\n## Instructions\n1. Load relevant skills as described above.\n2. Read task requirements carefully.\n3. Implement required code changes.\n4. Run relevant tests/lint/build checks.\n5. Commit with conventional commit format.\n6. Push branch updates.\n7. After completing: if you discovered non-obvious patterns, write a skill file\n   at `.bosun/skills/<module>.md` for future agents.\n\n## Critical Rules\n- Do not ask for manual confirmation.\n- No placeholders/stubs/TODO-only output.\n- Keep behavior stable and production-safe.\n\n## Code Quality — Mandatory Checks\n\nThese patterns have caused real production crashes. Treat them as hard rules:\n\n1. **Module-scope caching:** If you declare variables that cache state (lazy\n   singletons, init flags, memoization), place them at **module scope** — never\n   inside a function body that runs per-request or per-event.\n2. **Async fire-and-forget:** Never use bare `void asyncFn()`. Always `await`\n   or append `.catch()`. Unhandled promise rejections crash Node.js (exit 1).\n3. **Error boundaries:** Wrap HTTP handlers, timers, and event callbacks in\n   top-level try/catch. One unguarded throw must not kill the process.\n4. **Dynamic imports:** Cache `import()` results at module scope. Never call\n   `import()` inside a hot path without caching — it causes repeated I/O.\n5. **Test quality:** Mock only external boundaries (network, disk, clock). Never\n   mock the module under test. No `setTimeout`/`sleep` for synchronization.\n   Tests must be deterministic and order-independent. Assert on behavior, not\n   implementation details.\n6. **No architectural shortcuts:** Don't force-enable feature flags inline. Don't\n   add config overrides that bypass safety checks. If a feature is behind a flag,\n   respect it.\n\n## Bosun Task Agent — Git & Bosun Lifecycle Workflow\n\nYou are running as a **Bosun-managed task agent**.  Environment variables\n`BOSUN_TASK_TITLE`, `BOSUN_BRANCH_NAME`, `BOSUN_TASK_ID`, and their\n`VE_*` / `VK_*` aliases are available in your environment.\n\n**Before committing:**\n- Run auto-formatting tools (gofmt, prettier, etc.) relevant to changed files.\n- Fix any lint or vet warnings introduced by your changes.\n\n**After committing:**\n- If a precommit hook auto-applies additional formatting changes, add those\n  to a follow-up commit before finishing.\n- Merge any upstream changes — BOTH from the base (module) branch AND from main:\n  `git fetch origin && git merge origin/<base-branch> --no-edit && git merge origin/main --no-edit`\n  Resolve any conflicts that arise before handing off.\n- Run local validation, including the repository pre-push quality gate, before handing off.\n- Do not push directly. Bosun workflow automation will perform the validated push and PR lifecycle handoff.\n- Do not run direct PR commands.\n{{COAUTHOR_INSTRUCTION}}\n**Do NOT:**\n- Push branches directly from the agent session.\n- Bypass pre-push hooks (`git push --no-verify` is forbidden).\n- Use `git add .` — stage files individually.\n- Wait for user confirmation before handing off lifecycle state.\n\n## Agent Status Endpoint\n- URL: http://127.0.0.1:{{ENDPOINT_PORT}}/api/tasks/{{TASK_ID}}\n- POST /status {\"status\":\"inreview\"} after push + Bosun lifecycle handoff readiness\n- POST /heartbeat {} while running\n- POST /error {\"error\":\"...\"} on fatal failure\n- POST /complete {\"hasCommits\":true} when done\n\n## Task Reference\n{{TASK_URL_LINE}}\n\n## Repository Context\n{{REPO_CONTEXT}}\n",
     "taskexecutorretry": "# {{TASK_ID}} — ERROR RECOVERY (Attempt {{ATTEMPT_NUMBER}})\n\nYour previous attempt on task \"{{TASK_TITLE}}\" encountered an issue:\n\n```\n{{LAST_ERROR}}\n```\n\nError classification: {{CLASSIFICATION_PATTERN}} (confidence: {{CLASSIFICATION_CONFIDENCE}})\n\nPlease:\n1. Diagnose the failure root cause.\n2. Fix the issue with minimal safe changes.\n3. Re-run verification checks.\n4. Commit and push the fix.\n\nOriginal task description:\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n",
     "taskexecutorcontinuehascommits": "# {{TASK_ID}} — CONTINUE (Verify and Push)\n\nYou were working on \"{{TASK_TITLE}}\" and appear to have stopped.\nYou already made commits.\n\n1. Run tests to verify changes.\n2. If passing, push: git push origin HEAD\n3. If failing, fix issues, commit, and push.\n4. Task is not complete until push succeeds.\n{{TASK_CONTEXT}}\n",
     "taskexecutorcontinuehasedits": "# {{TASK_ID}} — CONTINUE (Commit and Push)\n\nYou were working on \"{{TASK_TITLE}}\" and appear to have stopped.\nYou made file edits but no commit yet.\n\n1. Review edits for correctness.\n2. Run relevant tests.\n3. Commit with conventional format.\n4. Push: git push origin HEAD\n{{TASK_CONTEXT}}\n",

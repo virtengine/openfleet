@@ -74,7 +74,7 @@ function getGitConfigValue(worktreePath, key) {
   return String(result.stdout || "").trim();
 }
 
-function ensureGitHooksPath(worktreePath) {
+export function ensureGitHooksPath(worktreePath) {
   const current = getGitConfigValue(worktreePath, "core.hooksPath");
   if (current.replace(/\\/g, "/") === ".githooks") {
     return { changed: false, hooksPath: current || ".githooks" };

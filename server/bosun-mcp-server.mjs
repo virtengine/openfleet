@@ -27,6 +27,8 @@ const ListToolsRequestSchema =
   mcpTypes.default?.ListToolsRequestSchema;
 
 const TAG = "[bosun-mcp]";
+const ResolvedCallToolRequestSchema = CallToolRequestSchema;
+const ResolvedListToolsRequestSchema = ListToolsRequestSchema;
 const DEFAULT_DISCOVERY_PORTS = [3080, 4400];
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const ENV_KEYS_FOR_EMBEDDED = [
@@ -1191,8 +1193,8 @@ export async function startBosunMcpServer(options = {}) {
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => handlers.listTools());
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(ResolvedListToolsRequestSchema, async () => handlers.listTools());
+  server.setRequestHandler(ResolvedCallToolRequestSchema, async (request) => {
     const name = String(request.params?.name || "").trim();
     return handlers.callTool(name, request.params?.arguments || {});
   });

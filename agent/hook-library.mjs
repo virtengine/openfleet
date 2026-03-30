@@ -363,6 +363,25 @@ const BUILTIN_HOOKS = [
   },
 
   {
+    id: "safety-block-agent-direct-push",
+    name: "Block Agent Direct Push",
+    description: "Prevents agents from running git push directly when Bosun guardrails require workflow-owned push handoff.",
+    category: "safety",
+    events: "PreToolUse",
+    command: shellCmd(
+      `bash -c 'CMD="$VE_HOOK_COMMAND"; if echo "$CMD" | grep -qiE "git\\s+push\\b"; then node -e "const fs=require(\"fs\");const path=require(\"path\");let block=true;try{const policyPath=path.join(process.cwd(),\".bosun\",\"guardrails.json\");if(fs.existsSync(policyPath)){const policy=JSON.parse(fs.readFileSync(policyPath,\"utf8\"));block=policy?.push?.blockAgentPushes!==false;}}catch{} if(block){console.error(\"BLOCKED: Direct agent pushes are disabled. Commit your changes and let Bosun workflow automation perform the validated push.\");process.exit(1);}"; fi'`,
+      `powershell -NoProfile -Command "if ($env:VE_HOOK_COMMAND -match 'git\\s+push\\b') { node -e 'const fs=require(\"fs\");const path=require(\"path\");let block=true;try{const policyPath=path.join(process.cwd(),\".bosun\",\"guardrails.json\");if(fs.existsSync(policyPath)){const policy=JSON.parse(fs.readFileSync(policyPath,\"utf8\"));block=policy?.push?.blockAgentPushes!==false;}}catch{} if(block){console.error(\"BLOCKED: Direct agent pushes are disabled. Commit your changes and let Bosun workflow automation perform the validated push.\");process.exit(1);}' ; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }"`,
+    ),
+    blocking: true,
+    timeout: 5_000,
+    sdks: ["*"],
+    core: false,
+    defaultEnabled: true,
+    retryable: false,
+    tags: ["safety", "git", "push", "workflow-only", "blocking"],
+  },
+
+  {
     id: "safety-block-destructive-commands",
     name: "Block Destructive Commands",
     description: "Blocks highly dangerous shell commands like rm -rf /, DROP DATABASE, format, del /f /s, and similar destructive operations that could cause irreversible damage.",

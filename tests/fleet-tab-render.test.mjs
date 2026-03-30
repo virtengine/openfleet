@@ -31,6 +31,16 @@ const sessionListSourceFiles = [
 
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
+    it("renders a keyboard-accessible session id pill with copy feedback state", () => {
+      expect(source).toContain("fleet-session-id-pill");
+      expect(source).toContain("type=\"button\"");
+      expect(source).toContain("aria-label=${`Copy session ID ${sessionId}`}");
+      expect(source).toContain("data-copied=${copiedSessionId === sessionId ? \"true\" : \"false\"}");
+      expect(source).toContain("sessionId.slice(0, 8)");
+      expect(source).toContain("copySessionId(sessionId)");
+      expect(source).toContain("fleet-session-id-pill-icon");
+      expect(source).toContain('copiedSessionId === sessionId ? "✓" : ICONS.copy');
+    });
     it("never fabricates session ids for task-only fallback entries", () => {
       expect(source).toContain("function resolveFleetEntrySessionId(entry)");
       expect(source).toContain("if (entry?.isTaskFallback || entry?.slot?.synthetic) return \"\";");

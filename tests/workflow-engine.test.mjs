@@ -1790,6 +1790,161 @@ describe("WorkflowEngine - run history details", () => {
     expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
 
+  it("retries a stalled non-task delegation run exactly once during interrupted-run recovery", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-stalled-delegation", name: "Stalled Delegation Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-stalled-delegation";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          delegationTarget: "template-bosun-pr-progressor",
+          _delegationWatchdog: {
+            nodeId: "handoff",
+            state: "delegated",
+            delegationType: "workflow",
+            taskScoped: false,
+            startedAt: 1000,
+            timeoutMs: 50,
+          },
+        },
+        nodeStatuses: {
+          trigger: NodeStatus.COMPLETED,
+          handoff: NodeStatus.RUNNING,
+        },
+        nodeStatusEvents: [{ nodeId: "handoff", status: NodeStatus.RUNNING, timestamp: 1000 }],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retryRunSpy = vi.spyOn(engine, "retryRun").mockResolvedValue({
+      retryRunId: "retry-stalled-delegation",
+      mode: "from_failed",
+      originalRunId: interruptedRunId,
+      ctx: { id: "retry-stalled-delegation" },
+    });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retryRunSpy).toHaveBeenCalledTimes(1);
+    expect(retryRunSpy).toHaveBeenCalledWith(interruptedRunId, expect.objectContaining({
+      mode: "from_failed",
+      _decisionReason: expect.stringContaining("delegation_watchdog"),
+    }));
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
+    expect(interrupted?.resumable).toBe(false);
+    expect(interrupted?.resumeResult).toBe("resumed");
+  });
+
+  it("marks a repeatedly stalled non-task delegation run unresumable without looping", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-stalled-delegation-loop", name: "Stalled Delegation Loop Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-stalled-delegation-loop";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          _delegationWatchdog: {
+            nodeId: "handoff",
+            state: "delegated",
+            delegationType: "workflow",
+            taskScoped: false,
+            startedAt: 1000,
+            timeoutMs: 50,
+            recoveryAttempted: true,
+          },
+        },
+        nodeStatuses: {
+          trigger: NodeStatus.COMPLETED,
+          handoff: NodeStatus.RUNNING,
+        },
+        nodeStatusEvents: [{ nodeId: "handoff", status: NodeStatus.RUNNING, timestamp: 1000 }],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retryRunSpy = vi.spyOn(engine, "retryRun").mockResolvedValue({
+      retryRunId: "retry-stalled-delegation-loop",
+      mode: "from_scratch",
+      originalRunId: interruptedRunId,
+      ctx: { id: "retry-stalled-delegation-loop" },
+    });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retryRunSpy).not.toHaveBeenCalled();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
+    expect(interrupted?.resumable).toBe(false);
+    expect(interrupted?.resumeResult).toContain("delegation_watchdog_exhausted");
+  });
+
   it("resumes interrupted runs from_scratch when issue-advisor requests replanning", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -4724,7 +4879,7 @@ describe("Session chaining - action.run_agent", () => {
     const node = {
       id: "delegated-session-node",
       type: "action.run_agent",
-      config: { prompt: "Handle task via delegated workflow" },
+      config: { prompt: "Handle task via delegated workflow", failOnError: true },
     };
 
     const result = await handler.execute(node, ctx, mockEngine);
@@ -4733,6 +4888,181 @@ describe("Session chaining - action.run_agent", () => {
 
     const tracker = getSessionTracker();
     const session = tracker.getSessionById("TASK-DELEGATE-SESSION");
+    expect(session).toBeTruthy();
+    expect(session.type).toBe("task");
+    expect(session.status).toBe("completed");
+    expect(session.metadata.branch).toBe("feat/backend-migration");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+  });
+
+  it("marks stalled delegated workflows retryable and recovers only once", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-WATCHDOG-1",
+      taskTitle: "Backend watchdog test",
+      workspaceId: "virtengine-gh",
+      task: { id: "TASK-WATCHDOG-1", title: "Backend watchdog test", tags: ["backend"] },
+      delegationWatchdogTimeoutMs: 25,
+    });
+
+    const stalledRun = {
+      runId: "delegated-stalled-run",
+      status: WorkflowStatus.RUNNING,
+      isStuck: true,
+      stuckMs: 50,
+    };
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-non-task-delegate",
+          name: "Generic Delegate",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [{ id: "trigger", type: "trigger.task_assigned", config: { taskPattern: "backend" } }],
+        },
+      ]),
+      execute: vi.fn()
+        .mockResolvedValueOnce({ runId: stalledRun.runId, status: WorkflowStatus.RUNNING, delegated: true })
+        .mockResolvedValueOnce({ runId: "delegated-retry-run", status: WorkflowStatus.COMPLETED, delegated: true, outputs: { ok: true } }),
+      getRunHistory: vi.fn().mockReturnValue([stalledRun]),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-watchdog-node",
+      type: "action.run_agent",
+      config: {
+        prompt: "Handle generic delegated workflow",
+        failOnError: false,
+        delegationWatchdogTimeoutMs: 25,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.delegated).toBe(true);
+    expect(result.recoveredFromStall).toBe(true);
+    expect(result.watchdogRecovered).toBe(true);
+    expect(result.watchdogRetryCount).toBe(1);
+    expect(mockEngine.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry delegated workflows more than once after watchdog recovery", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-WATCHDOG-2",
+      taskTitle: "Backend watchdog loop test",
+      task: { id: "TASK-WATCHDOG-2", title: "Backend watchdog loop test", tags: ["backend"] },
+      workspaceId: "virtengine-gh",
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-non-task-delegate-loop",
+          name: "Generic Delegate",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [{ id: "trigger", type: "trigger.task_assigned", config: { taskPattern: "backend" } }],
+        },
+      ]),
+      execute: vi.fn()
+        .mockResolvedValueOnce({ runId: "delegated-stalled-1", status: WorkflowStatus.RUNNING, delegated: true })
+        .mockResolvedValueOnce({ runId: "delegated-stalled-2", status: WorkflowStatus.RUNNING, delegated: true }),
+      getRunHistory: vi.fn()
+        .mockReturnValueOnce([{ runId: "delegated-stalled-1", status: WorkflowStatus.RUNNING, isStuck: true, stuckMs: 75 }])
+        .mockReturnValueOnce([{ runId: "delegated-stalled-2", status: WorkflowStatus.RUNNING, isStuck: true, stuckMs: 75 }]),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-watchdog-node-once",
+      type: "action.run_agent",
+      config: {
+        prompt: "Handle generic delegated workflow",
+        failOnError: false,
+        delegationWatchdogTimeoutMs: 25,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(true);
+    expect(result.failureKind).toBe("stalled_delegation");
+    expect(result.watchdogRetryCount).toBe(1);
+    expect(mockEngine.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("records delegated session as completed when child workflow succeeds", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-COMPLETED",
+      taskTitle: "Backend migration completed",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-COMPLETED",
+        title: "Backend migration completed",
+        tags: ["backend"],
+        branchName: "feat/backend-migration",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend-completed",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({ errors: [] }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-node-completed",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-COMPLETED");
     expect(session).toBeTruthy();
     expect(session.type).toBe("task");
     expect(session.status).toBe("completed");
@@ -5427,6 +5757,46 @@ it("agent.run_planner appends planner feedback context from workflow data", asyn
   const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
   expect(sentPrompt).toContain("Planner feedback context:");
   expect(sentPrompt).toContain("Previous run skipped high-risk tasks in workflow area.");
+});
+
+it("agent.run_planner avoids duplicating planner feedback already present in the prompt context", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const feedback = "Previous run skipped high-risk tasks in workflow area.";
+  const ctx = new WorkflowContext({
+    _plannerFeedback: feedback,
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-feedback-dedupe",
+  });
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: `Planner prompt\n\nPlanner feedback context:\n${feedback}`,
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-feedback-dedupe",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 2,
+    },
+  };
+
+  await handler.execute(node, ctx, mockEngine);
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt.split("Planner feedback context:").length - 1).toBe(1);
+  expect(sentPrompt.split(feedback).length - 1).toBe(1);
 });
 it("agent.run_planner injects compact repo topology when enabled", async () => {
   const handler = getNodeType("agent.run_planner");

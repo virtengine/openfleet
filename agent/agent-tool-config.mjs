@@ -33,7 +33,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { homedir } from "node:os";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -209,7 +209,11 @@ export const DEFAULT_BUILTIN_TOOLS = Object.freeze([
 // ── Config File I/O ───────────────────────────────────────────────────────────
 
 function getConfigPath(rootDir) {
-  return resolve(rootDir || getBosunHome(), ".bosun", CONFIG_FILE);
+  const baseDir = rootDir || getBosunHome();
+  const configDir = basename(resolve(baseDir)) === ".bosun"
+    ? resolve(baseDir)
+    : resolve(baseDir, ".bosun");
+  return resolve(configDir, CONFIG_FILE);
 }
 
 /**
@@ -238,6 +242,7 @@ export function loadToolConfig(rootDir) {
         builtinTools: DEFAULT_BUILTIN_TOOLS.filter((t) => t.default).map((t) => t.id),
         updatedAt: new Date().toISOString(),
       },
+      toolOverhead: parsed.toolOverhead || {},
     };
   } catch {
     return {
@@ -246,6 +251,7 @@ export function loadToolConfig(rootDir) {
         builtinTools: DEFAULT_BUILTIN_TOOLS.filter((t) => t.default).map((t) => t.id),
         updatedAt: new Date().toISOString(),
       },
+      toolOverhead: {},
     };
   }
 }

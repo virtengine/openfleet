@@ -174,6 +174,7 @@ import {
   recordMarkdownSafetyAuditEvent,
   resolveMarkdownSafetyPolicy,
 } from "../lib/skill-markdown-safety.mjs";
+import { shouldRequireManagedPrePush } from "../infra/guardrails.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   getBuiltinNodeDefinition,
@@ -1194,6 +1195,7 @@ function ensureManagedTaskWorktreeReady(repoRoot, worktreePath) {
 
 function shouldEnforceManagedPushHook(repoRoot, worktreePath) {
   if (!isManagedBosunWorktree(worktreePath, repoRoot)) return false;
+  if (!shouldRequireManagedPrePush(repoRoot)) return false;
   const gatePolicy = resolveManagedWorktreeGatePolicy(repoRoot);
   if (!gatePolicy) return true;
   return gatePolicy.enforcePushHook !== false;
@@ -3962,13 +3964,74 @@ registerBuiltinNodeType("action.run_agent", {
             },
             candidate.id,
           );
-          const subRun = await engine.execute(
-            candidate.id,
-            delegatedInput,
-            childRunOpts,
+          const resolveDelegatedWatchdogTimeoutMs = () => {
+            const candidates = [
+              ctx.resolve(node.config?.delegationWatchdogTimeoutMs),
+              ctx.data?.delegationWatchdogTimeoutMs,
+              ctx.data?.task?.delegationWatchdogTimeoutMs,
+            ];
+            for (const value of candidates) {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed > 0) return parsed;
+            }
+            return 300000;
+          };
+          const resolveDelegatedWatchdogMaxRecoveries = () => {
+            const candidates = [
+              ctx.resolve(node.config?.delegationWatchdogMaxRecoveries),
+              ctx.data?.delegationWatchdogMaxRecoveries,
+              ctx.data?.task?.delegationWatchdogMaxRecoveries,
+            ];
+            for (const value of candidates) {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed >= 0) return Math.min(5, Math.trunc(parsed));
+            }
+            return 1;
+          };
+          const delegatedWatchdogTimeoutMs = resolveDelegatedWatchdogTimeoutMs();
+          const delegatedWatchdogMaxRecoveries = resolveDelegatedWatchdogMaxRecoveries();
+          let watchdogRetryCount = 0;
+          let subRun = null;
+          let watchdogRecovered = false;
+          let watchdogState = null;
+
+          while (true) {
+            subRun = await engine.execute(
+              candidate.id,
+              delegatedInput,
+              childRunOpts,
+            );
+
+            const delegatedRunId = String(subRun?.runId || subRun?.id || "").trim();
+            watchdogState = null;
+            if (delegatedRunId) {
+              if (typeof engine.getRunDetail === "function") {
+                // Prefer a lightweight, per-run lookup when available to avoid hydrating full history.
+                watchdogState = await engine.getRunDetail(delegatedRunId);
+              } else if (typeof engine.getRunHistory === "function") {
+                const delegatedHistory = engine.getRunHistory(candidate.id, 10);
+                watchdogState = Array.isArray(delegatedHistory)
+                  ? delegatedHistory.find((entry) => String(entry?.runId || "") === delegatedRunId) || null
+                  : null;
+              }
+            }
+            const stalledDelegationInner = Boolean(
+              subRun?.status === "running" &&
+              watchdogState?.status === "running" &&
+              (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
+            );
+
+            if (!stalledDelegationInner) break;
+            if (watchdogRetryCount >= delegatedWatchdogMaxRecoveries) break;
+            watchdogRetryCount += 1;
+            watchdogRecovered = true;
+          }
+
+          const stalledDelegation = Boolean(
+            subRun?.status === "running" &&
+            watchdogState?.status === "running" &&
+            (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
           );
-          const subStatus = deriveWorkflowExecutionSessionStatus(subRun);
-          const subFailed = subStatus !== "completed";
           const subTerminalOutput = subRun?.data?._workflowTerminalOutput;
           const subBlockedReason =
             subTerminalOutput && typeof subTerminalOutput === "object"
@@ -3978,6 +4041,8 @@ registerBuiltinNodeType("action.run_agent", {
             subTerminalOutput && typeof subTerminalOutput === "object"
               ? String(subTerminalOutput.implementationState || "").trim() || null
               : null;
+          const subStatus = stalledDelegation ? "stalled" : deriveWorkflowExecutionSessionStatus(subRun);
+          const subFailed = stalledDelegation || subStatus !== "completed";
 
           recordDelegationAuditEvent(ctx, {
             type: subFailed ? "owner-mismatch" : "handoff-complete",
@@ -4014,6 +4079,11 @@ registerBuiltinNodeType("action.run_agent", {
             implementationState: subImplementationState,
             terminalOutput: subTerminalOutput,
             subRun,
+            watchdogRecovered,
+            recoveredFromStall: watchdogRecovered && !stalledDelegation,
+            watchdogRetryCount,
+            failureKind: stalledDelegation ? "stalled_delegation" : undefined,
+            retryable: stalledDelegation ? true : undefined,
             runId: subRun?.id || null,
           };
           setDelegationTransitionResult(ctx, assignTransitionKey, {
@@ -8230,7 +8300,7 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
     : 5;
   const dedup = new Set();
   const tasks = [];
-  for (let i = 0; i < parsed.tasks.length && tasks.length < max; i += 1) {
+  for (let i = 0; i < parsed.tasks.length; i += 1) {
     const normalized = normalizePlannerTaskForCreation(parsed.tasks[i], i);
     if (!normalized) continue;
     const key = normalized.title.toLowerCase();
@@ -8238,7 +8308,7 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
     dedup.add(key);
     tasks.push(normalized);
   }
-  return tasks;
+  return tasks.slice(0, max);
 }
 
 function validateStrictPlannerTaskPayload(output, expectedTaskCount = 5, opts = {}) {
@@ -8428,6 +8498,16 @@ function resolvePlannerFeedbackContext(value) {
     }
   }
   return String(value).trim();
+}
+
+function appendPlannerFeedbackContext(baseContext, plannerFeedback, promptText = "") {
+  const contextText = String(baseContext || "").trim();
+  const feedbackText = String(plannerFeedback || "").trim();
+  const promptBase = String(promptText || "").trim();
+  if (!feedbackText) return contextText;
+  const feedbackSummary = feedbackText.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || feedbackText;
+  if (contextText.includes(feedbackText) || contextText.includes(feedbackSummary) || promptBase.includes(feedbackText) || promptBase.includes(feedbackSummary)) return contextText;
+  return [contextText, `Planner feedback context:\n${feedbackText}`].filter(Boolean).join("\n\n");
 }
 
 function resolvePlannerFeedbackObject(value) {
@@ -9368,14 +9448,16 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
     );
 
-    if (failOnZero && createdCount < Math.max(1, minCreated)) {
+    const requiredCreated = Math.min(Math.max(1, minCreated), Math.max(1, maxTasks));
+
+    if (failOnZero && createdCount < requiredCreated) {
       throw new Error(
-        `Planner materialization created ${createdCount} tasks (required: ${Math.max(1, minCreated)})`,
+        `Planner materialization created ${createdCount} tasks (required: ${requiredCreated})`,
       );
     }
 
     return {
-      success: createdCount >= Math.max(1, minCreated),
+      success: createdCount >= requiredCreated,
       parsedCount: parsedTasks.length,
       createdCount,
       skippedCount,
@@ -9468,13 +9550,13 @@ registerBuiltinNodeType("agent.run_planner", {
     // Enforce strict output instructions to ensure the downstream materialize node
     // can parse the planner output. The planner prompt already defines the contract,
     // but we reinforce it here to prevent agents from wrapping output in prose.
+    const effectiveContext = appendPlannerFeedbackContext(context, plannerFeedback, basePrompt);
     const outputEnforcement =
       `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
       `Generate exactly ${count} new tasks.\n` +
-      ((context || plannerFeedback || repoTopologyContext)
+      ((effectiveContext || repoTopologyContext)
         ? `${[
-          context,
-          plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : "",
+          effectiveContext,
           repoTopologyContext,
         ].filter(Boolean).join("\n\n")}\n\n`
         : "\n") +
@@ -16944,7 +17026,7 @@ registerBuiltinNodeType("action.push_branch", {
       baseBranch: { type: "string", description: "Base branch to rebase onto" },
       remote: { type: "string", default: "origin", description: "Remote name" },
       forceWithLease: { type: "boolean", default: true, description: "Use --force-with-lease" },
-      skipHooks: { type: "boolean", default: true, description: "Skip git pre-push hooks (--no-verify)" },
+      skipHooks: { type: "boolean", default: false, description: "Skip git pre-push hooks (--no-verify) for non-managed repos only" },
       rebaseBeforePush: { type: "boolean", default: true, description: "Rebase onto base before push" },
       mergeBaseBeforePush: { type: "boolean", default: false, description: "Merge the base branch into the worktree before push so PR conflicts surface locally" },
       autoResolveMergeConflicts: { type: "boolean", default: false, description: "When merge-base validation conflicts, run an agent to resolve them before pushing" },
@@ -16978,9 +17060,10 @@ registerBuiltinNodeType("action.push_branch", {
     );
     const remote = resolvePreferredPushRemote(worktreePath, configuredRemote, repoHint);
     const forceWithLease = node.config?.forceWithLease !== false;
+    const managedPushHooksRequired = shouldEnforceManagedPushHook(repoRoot, worktreePath);
     const skipHooks = typeof node.config?.skipHooks === "boolean"
       ? node.config.skipHooks
-      : !shouldEnforceManagedPushHook(repoRoot, worktreePath);
+      : false;
     const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
     const mergeBaseBeforePush = node.config?.mergeBaseBeforePush === true;
     const autoResolveMergeConflicts = node.config?.autoResolveMergeConflicts === true;
@@ -17014,7 +17097,16 @@ registerBuiltinNodeType("action.push_branch", {
       ctx.log(node.id, `Remapped push remote ${configuredRemote} -> ${remote} for ${repoHint || branch || "worktree"}`);
     }
 
-    if (shouldEnforceManagedPushHook(repoRoot, worktreePath)) {
+    if (managedPushHooksRequired && skipHooks) {
+      ctx.log(node.id, "Managed worktree push blocked: skipHooks is forbidden by guardrails");
+      return {
+        success: false,
+        pushed: false,
+        error: "Managed Bosun worktrees must run local pre-push validation before push",
+      };
+    }
+
+    if (managedPushHooksRequired) {
       bootstrapWorktreeForPath(repoRoot, worktreePath);
     }
 

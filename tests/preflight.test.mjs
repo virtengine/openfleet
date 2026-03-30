@@ -5,6 +5,9 @@ const existsSyncMock = vi.hoisted(() => vi.fn(() => true));
 const resolvePwshRuntimeMock = vi.hoisted(() =>
   vi.fn(() => ({ command: "pwsh" })),
 );
+const ensureGitHooksPathMock = vi.hoisted(() =>
+  vi.fn(() => ({ changed: false, hooksPath: ".githooks", error: "" })),
+);
 const inspectWorktreeRuntimeSetupMock = vi.hoisted(() =>
   vi.fn(() => ({ ok: true, issues: [], missingFiles: [], hooksPath: ".githooks" })),
 );
@@ -22,6 +25,7 @@ vi.mock("../shell/pwsh-runtime.mjs", () => ({
 }));
 
 vi.mock("../workspace/worktree-setup.mjs", () => ({
+  ensureGitHooksPath: ensureGitHooksPathMock,
   inspectWorktreeRuntimeSetup: inspectWorktreeRuntimeSetupMock,
 }));
 
@@ -129,6 +133,8 @@ describe("preflight interactive git editor warnings", () => {
     existsSyncMock.mockReset();
     existsSyncMock.mockReturnValue(true);
     inspectWorktreeRuntimeSetupMock.mockReset();
+    ensureGitHooksPathMock.mockReset();
+    ensureGitHooksPathMock.mockReturnValue({ changed: false, hooksPath: ".githooks", error: "" });
     inspectWorktreeRuntimeSetupMock.mockReturnValue({
       ok: true,
       issues: [],

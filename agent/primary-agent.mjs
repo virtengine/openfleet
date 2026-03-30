@@ -235,7 +235,10 @@ function buildPrimaryToolCapabilityContract(options = {}) {
     ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
     : [];
   if (agentProfileId) {
-    void refreshToolOverheadReport(rootDir, agentProfileId, { serverIds: enabledMcpServers });
+    void refreshToolOverheadReport(rootDir, agentProfileId, { serverIds: enabledMcpServers })
+      .catch((error) => {
+        console.warn("[primary-agent] failed to refresh tool overhead report:", error?.message || error);
+      });
   }
   const manifest = {
     agentProfileId: agentProfileId || null,
@@ -1532,7 +1535,6 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
-
 
 
 

@@ -1,3 +1,5 @@
+import { bootstrapWorktreeForPath, fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
+import { shouldRequireManagedPrePush } from "../../infra/guardrails.mjs";
 /**
  * workflow-nodes.mjs — Built-in Workflow Node Types for Bosun
  *
@@ -1024,6 +1026,8 @@ registerNodeType("action.run_agent", {
         description:
           "Optional prompt suffix template for candidate mode. Supports {{candidateIndex}} and {{candidateCount}}",
       },
+      delegationWatchdogTimeoutMs: { type: "number", default: 300000, description: "Stall threshold for delegated non-task workflows in ms" },
+      delegationWatchdogMaxRecoveries: { type: "number", default: 1, description: "Maximum watchdog recovery retries for delegated workflows" },
     },
     required: ["prompt"],
   },
@@ -1143,7 +1147,10 @@ registerNodeType("action.run_agent", {
         (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
         [],
       cwd,
-      repoRoot: ctx.data?.repoRoot || cwd,
+      repoRoot:
+        String(ctx.data?.repoRoot || "").trim() && !isUnresolvedTemplateToken(ctx.data?.repoRoot)
+          ? ctx.data.repoRoot
+          : cwd,
     }, effectiveMode);
     if (
       architectEditorFrame &&
@@ -1323,16 +1330,77 @@ registerNodeType("action.run_agent", {
             });
           }
 
-          const subRun = await engine.execute(
-            candidate.id,
-            {
-              ...eventPayload,
-              _agentWorkflowActive: true,
-            },
-            childRunOpts,
+          const resolveDelegatedWatchdogTimeoutMs = () => {
+            const candidates = [
+              ctx.resolve(node.config?.delegationWatchdogTimeoutMs),
+              ctx.data?.delegationWatchdogTimeoutMs,
+              ctx.data?.task?.delegationWatchdogTimeoutMs,
+            ];
+            for (const value of candidates) {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed > 0) return parsed;
+            }
+            return 300000;
+          };
+          const resolveDelegatedWatchdogMaxRecoveries = () => {
+            const candidates = [
+              ctx.resolve(node.config?.delegationWatchdogMaxRecoveries),
+              ctx.data?.delegationWatchdogMaxRecoveries,
+              ctx.data?.task?.delegationWatchdogMaxRecoveries,
+            ];
+            for (const value of candidates) {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed >= 0) return Math.min(5, Math.trunc(parsed));
+            }
+            return 1;
+          };
+          const delegatedWatchdogTimeoutMs = resolveDelegatedWatchdogTimeoutMs();
+          const delegatedWatchdogMaxRecoveries = resolveDelegatedWatchdogMaxRecoveries();
+          let watchdogRetryCount = 0;
+          let subRun = null;
+          let watchdogRecovered = false;
+          let watchdogState = null;
+
+          while (true) {
+            subRun = await engine.execute(
+              candidate.id,
+              {
+                ...eventPayload,
+                _agentWorkflowActive: true,
+              },
+              childRunOpts,
+            );
+
+            const delegatedRunId = String(subRun?.runId || subRun?.id || "").trim();
+            watchdogState = null;
+            if (delegatedRunId) {
+              if (typeof engine.getRunDetail === "function") {
+                // Prefer a lightweight, per-run lookup when available to avoid hydrating full history.
+                watchdogState = await engine.getRunDetail(delegatedRunId);
+              } else if (typeof engine.getRunHistory === "function") {
+                const delegatedHistory = engine.getRunHistory(candidate.id, 10);
+                watchdogState = Array.isArray(delegatedHistory)
+                  ? delegatedHistory.find((entry) => String(entry?.runId || "") === delegatedRunId) || null
+                  : null;
+              }
+            }
+            const stalledDelegation = Boolean(
+              subRun?.status === "running" &&
+              watchdogState?.status === "running" &&
+              (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
+            );
+
+            if (!stalledDelegation) break;
+            if (watchdogRetryCount >= delegatedWatchdogMaxRecoveries) break;
+            watchdogRetryCount += 1;
+            watchdogRecovered = true;
+          }
+
+          const stalledDelegation = Boolean(
+            subRun?.status === "running" &&
+            watchdogState?.status === "running" &&
+            (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
           );
-          const subStatus = deriveWorkflowExecutionSessionStatus(subRun);
-          const subFailed = subStatus !== "completed";
           const subTerminalOutput = subRun?.data?._workflowTerminalOutput;
           const subBlockedReason =
             subTerminalOutput && typeof subTerminalOutput === "object"
@@ -1342,6 +1410,9 @@ registerNodeType("action.run_agent", {
             subTerminalOutput && typeof subTerminalOutput === "object"
               ? String(subTerminalOutput.implementationState || "").trim() || null
               : null;
+          const subStatus = stalledDelegation ? "stalled" : deriveWorkflowExecutionSessionStatus(subRun);
+          const subFailed = stalledDelegation || subStatus !== "completed";
+
 
           recordDelegationAuditEvent(ctx, {
             type: subFailed ? "owner-mismatch" : "handoff-complete",
@@ -1378,7 +1449,13 @@ registerNodeType("action.run_agent", {
             implementationState: subImplementationState,
             terminalOutput: subTerminalOutput,
             subRun,
+            watchdogRecovered,
+            recoveredFromStall: watchdogRecovered && !stalledDelegation,
+            watchdogRetryCount,
+            failureKind: stalledDelegation ? "stalled_delegation" : undefined,
+            retryable: stalledDelegation ? true : undefined,
             runId: subRun?.id || null,
+
           };
           setDelegationTransitionResult(ctx, assignTransitionKey, {
             type: "run_agent_delegate",
@@ -8115,7 +8192,3 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
-
-
-
-

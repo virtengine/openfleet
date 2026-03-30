@@ -50,8 +50,8 @@ describe("workflow run history UI pagination", () => {
     it(`${label} exposes DAG revision history in run details`, () => {
       if (label !== "ui") return;
       expect(source).toContain("DAG Revisions");
-      expect(source).toContain("graphBefore");
-      expect(source).toContain("graphAfter");
+      expect(source).toContain("Graph Before:");
+      expect(source).toContain("Graph After:");
     });
 
     it(`${label} exposes explicit edge port mapping controls`, () => {
@@ -60,8 +60,8 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("Source Port");
       expect(source).toContain("Target Port");
       expect(source).toContain("updateEdgePortMapping");
-      expect(source).toContain("Unknown output port");
-      expect(source).toContain("Unknown input port");
+      expect(source).toContain("Select source port");
+      expect(source).toContain("Select target port");
     });
   }
 
