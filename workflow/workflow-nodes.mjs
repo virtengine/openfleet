@@ -174,6 +174,7 @@ import {
   recordMarkdownSafetyAuditEvent,
   resolveMarkdownSafetyPolicy,
 } from "../lib/skill-markdown-safety.mjs";
+import { shouldRequireManagedPrePush } from "../infra/guardrails.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   getBuiltinNodeDefinition,
@@ -1194,6 +1195,7 @@ function ensureManagedTaskWorktreeReady(repoRoot, worktreePath) {
 
 function shouldEnforceManagedPushHook(repoRoot, worktreePath) {
   if (!isManagedBosunWorktree(worktreePath, repoRoot)) return false;
+  if (!shouldRequireManagedPrePush(repoRoot)) return false;
   const gatePolicy = resolveManagedWorktreeGatePolicy(repoRoot);
   if (!gatePolicy) return true;
   return gatePolicy.enforcePushHook !== false;
@@ -8230,7 +8232,7 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
     : 5;
   const dedup = new Set();
   const tasks = [];
-  for (let i = 0; i < parsed.tasks.length && tasks.length < max; i += 1) {
+  for (let i = 0; i < parsed.tasks.length; i += 1) {
     const normalized = normalizePlannerTaskForCreation(parsed.tasks[i], i);
     if (!normalized) continue;
     const key = normalized.title.toLowerCase();
@@ -8238,7 +8240,7 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
     dedup.add(key);
     tasks.push(normalized);
   }
-  return tasks;
+  return tasks.slice(0, max);
 }
 
 function validateStrictPlannerTaskPayload(output, expectedTaskCount = 5, opts = {}) {
@@ -8428,6 +8430,16 @@ function resolvePlannerFeedbackContext(value) {
     }
   }
   return String(value).trim();
+}
+
+function appendPlannerFeedbackContext(baseContext, plannerFeedback, promptText = "") {
+  const contextText = String(baseContext || "").trim();
+  const feedbackText = String(plannerFeedback || "").trim();
+  const promptBase = String(promptText || "").trim();
+  if (!feedbackText) return contextText;
+  const feedbackSummary = feedbackText.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || feedbackText;
+  if (contextText.includes(feedbackText) || contextText.includes(feedbackSummary) || promptBase.includes(feedbackText) || promptBase.includes(feedbackSummary)) return contextText;
+  return [contextText, `Planner feedback context:\n${feedbackText}`].filter(Boolean).join("\n\n");
 }
 
 function resolvePlannerFeedbackObject(value) {
@@ -9368,14 +9380,16 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
     );
 
-    if (failOnZero && createdCount < Math.max(1, minCreated)) {
+    const requiredCreated = Math.min(Math.max(1, minCreated), Math.max(1, maxTasks));
+
+    if (failOnZero && createdCount < requiredCreated) {
       throw new Error(
-        `Planner materialization created ${createdCount} tasks (required: ${Math.max(1, minCreated)})`,
+        `Planner materialization created ${createdCount} tasks (required: ${requiredCreated})`,
       );
     }
 
     return {
-      success: createdCount >= Math.max(1, minCreated),
+      success: createdCount >= requiredCreated,
       parsedCount: parsedTasks.length,
       createdCount,
       skippedCount,
@@ -9468,13 +9482,13 @@ registerBuiltinNodeType("agent.run_planner", {
     // Enforce strict output instructions to ensure the downstream materialize node
     // can parse the planner output. The planner prompt already defines the contract,
     // but we reinforce it here to prevent agents from wrapping output in prose.
+    const effectiveContext = appendPlannerFeedbackContext(context, plannerFeedback, basePrompt);
     const outputEnforcement =
       `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
       `Generate exactly ${count} new tasks.\n` +
-      ((context || plannerFeedback || repoTopologyContext)
+      ((effectiveContext || repoTopologyContext)
         ? `${[
-          context,
-          plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : "",
+          effectiveContext,
           repoTopologyContext,
         ].filter(Boolean).join("\n\n")}\n\n`
         : "\n") +
@@ -16944,7 +16958,7 @@ registerBuiltinNodeType("action.push_branch", {
       baseBranch: { type: "string", description: "Base branch to rebase onto" },
       remote: { type: "string", default: "origin", description: "Remote name" },
       forceWithLease: { type: "boolean", default: true, description: "Use --force-with-lease" },
-      skipHooks: { type: "boolean", default: true, description: "Skip git pre-push hooks (--no-verify)" },
+      skipHooks: { type: "boolean", default: false, description: "Skip git pre-push hooks (--no-verify) for non-managed repos only" },
       rebaseBeforePush: { type: "boolean", default: true, description: "Rebase onto base before push" },
       mergeBaseBeforePush: { type: "boolean", default: false, description: "Merge the base branch into the worktree before push so PR conflicts surface locally" },
       autoResolveMergeConflicts: { type: "boolean", default: false, description: "When merge-base validation conflicts, run an agent to resolve them before pushing" },
@@ -16978,9 +16992,10 @@ registerBuiltinNodeType("action.push_branch", {
     );
     const remote = resolvePreferredPushRemote(worktreePath, configuredRemote, repoHint);
     const forceWithLease = node.config?.forceWithLease !== false;
+    const managedPushHooksRequired = shouldEnforceManagedPushHook(repoRoot, worktreePath);
     const skipHooks = typeof node.config?.skipHooks === "boolean"
       ? node.config.skipHooks
-      : !shouldEnforceManagedPushHook(repoRoot, worktreePath);
+      : false;
     const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
     const mergeBaseBeforePush = node.config?.mergeBaseBeforePush === true;
     const autoResolveMergeConflicts = node.config?.autoResolveMergeConflicts === true;
@@ -17014,7 +17029,16 @@ registerBuiltinNodeType("action.push_branch", {
       ctx.log(node.id, `Remapped push remote ${configuredRemote} -> ${remote} for ${repoHint || branch || "worktree"}`);
     }
 
-    if (shouldEnforceManagedPushHook(repoRoot, worktreePath)) {
+    if (managedPushHooksRequired && skipHooks) {
+      ctx.log(node.id, "Managed worktree push blocked: skipHooks is forbidden by guardrails");
+      return {
+        success: false,
+        pushed: false,
+        error: "Managed Bosun worktrees must run local pre-push validation before push",
+      };
+    }
+
+    if (managedPushHooksRequired) {
       bootstrapWorktreeForPath(repoRoot, worktreePath);
     }
 

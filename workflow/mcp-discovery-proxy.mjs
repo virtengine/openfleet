@@ -63,6 +63,8 @@ const isInitializeRequest =
   mcpTypes.default?.isInitializeRequest;
 
 const TAG = "[mcp-discovery-proxy]";
+const ResolvedCallToolRequestSchema = CallToolRequestSchema ?? CallToolRequest?.schema;
+const ResolvedListToolsRequestSchema = ListToolsRequestSchema ?? ListToolsRequest?.schema;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
 const DEFAULT_EXECUTE_TIMEOUT_MS = 10_000;
@@ -481,7 +483,7 @@ function createDiscoveryProxyServer(runtime, config = {}) {
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler(ResolvedListToolsRequestSchema, async () => ({
     tools: [
       {
         name: "search",
@@ -560,7 +562,7 @@ function createDiscoveryProxyServer(runtime, config = {}) {
     ],
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(ResolvedCallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     if (name === "search" || name === "search_tools") {
       const kind = normalizeString(args?.kind || "all").toLowerCase() || "all";
