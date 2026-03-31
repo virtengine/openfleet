@@ -162,6 +162,7 @@
     "agent/agent-hook-bridge.mjs",
     "agent/agent-hooks.mjs",
     "agent/agent-pool.mjs",
+    "agent/internal-harness-control-plane.mjs",
     "agent/internal-harness-profile.mjs",
     "agent/internal-harness-runtime.mjs",
     "agent/agent-prompt-catalog.mjs",
