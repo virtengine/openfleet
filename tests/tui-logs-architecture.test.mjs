@@ -10,13 +10,13 @@ describe("tui logs architecture scaffold", () => {
   it("registers a logs screen and logs tab in the main app", () => {
     expect(appSource).toContain('import LogsScreen from "./screens/logs.mjs"');
     expect(appSource).toContain("logs: LogsScreen");
-    expect(appSource).toContain('{ key: "logs", num: "5", label: "Logs" }');
+    expect(appSource).toContain('{ key: "logs", num: "4", label: "Logs" }');
     expect(appSource).toContain('on("logs:stream"');
     expect(appSource).toContain("logsFilterState");
   });
 
   it("routes numeric input 4 to the logs screen", () => {
-    expect(navSource).toContain('const SCREEN_ORDER = ["status", "tasks", "agents", "telemetry", "logs"]');
-    expect(navSource).toContain('["5", "logs"]');
+    expect(navSource).toContain('const SCREEN_ORDER = ["status", "tasks", "agents", "logs"]');
+    expect(navSource).toContain('["4", "logs"]');
   });
 });

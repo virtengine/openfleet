@@ -139,6 +139,7 @@ function flattenSchema(node, prefix = "") {
 }
 
 const FLAT_FIELDS = flattenSchema(schema);
+const ORDERED_FIELDS = GROUPS.flatMap((group) => FLAT_FIELDS.filter((field) => getGroup(field.path) === group.label));
 
 function getAtPath(object, path) {
   return String(path || "")
@@ -372,6 +373,8 @@ export default function SettingsScreen({ configDir, config = {}, onConfigReload 
 
 export {
   FLAT_FIELDS,
+  GROUPS,
+  ORDERED_FIELDS,
   atomicWriteJson,
   coerceValue,
   formatValue,

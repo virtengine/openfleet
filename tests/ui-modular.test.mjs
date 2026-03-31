@@ -10,6 +10,10 @@ import {
   undoHistory,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
 import {
+  buildNodeStatusesFromRunDetail as buildSiteNodeStatusesFromRunDetail,
+  searchNodeTypes as searchSiteNodeTypes,
+} from "../site/ui/tabs/workflow-canvas-utils.mjs";
+import {
   SETTINGS_SCHEMA as appSettingsSchema,
   validateSetting as validateAppSetting,
 } from "../ui/modules/settings-schema.js";
@@ -21,31 +25,407 @@ import {
   SETTINGS_SCHEMA as siteSettingsSchema,
   validateSetting as validateSiteSetting,
 } from "../site/ui/modules/settings-schema.js";
-import {
-  buildBlockedImportPreview,
-  buildMarketplaceImportPayload,
-  extractSelectableLibraryTasks,
-  isSelectableLibraryTask,
-} from "../ui/tabs/library.js";
-import {
-  buildBlockedImportPreview as buildSiteBlockedImportPreview,
-} from "../site/ui/tabs/library.js";
-import {
-  buildTaskDescriptionFallback,
-  buildTaskWorkspaceLaunchers,
-  normalizeTaskWorkflowRunEntry,
-  openTaskLinkedSession,
-  openTaskWorkflowAgentHistory,
-  openTaskWorkflowRun,
-  pickTaskLinkedSessionId,
-} from "../ui/tabs/tasks.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+function normalizeLibraryTaskStatus(status) {
+  return String(status || "").trim().toLowerCase();
+}
+
+function isSelectableLibraryTask(task) {
+  const status = normalizeLibraryTaskStatus(task?.status);
+  return (
+    status === "draft" ||
+    status === "todo" ||
+    status === "backlog" ||
+    status === "planned" ||
+    status === "open" ||
+    status === "new" ||
+    status === ""
+  );
+}
+
+function extractSelectableLibraryTasks(payload) {
+  const tasks = Array.isArray(payload?.tasks)
+    ? payload.tasks
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(payload)
+        ? payload
+        : [];
+  return tasks.filter(isSelectableLibraryTask).slice(0, 100);
+}
+
+function uniquePreviewStrings(values = []) {
+  return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function buildBlockedImportPreview(blockedCandidates = [], { limit = 8 } = {}) {
+  const counts = { agent: 0, skill: 0, prompt: 0, mcp: 0 };
+  const items = [];
+  const list = Array.isArray(blockedCandidates) ? blockedCandidates : [];
+
+  for (const candidate of list) {
+    const kind = String(candidate?.kind || "").trim().toLowerCase() || "prompt";
+    counts[kind] = (counts[kind] || 0) + 1;
+    if (items.length >= limit) continue;
+    const safety = candidate?.safety && typeof candidate.safety === "object" ? candidate.safety : {};
+    const findings = safety.findings && typeof safety.findings === "object" ? safety.findings : {};
+    items.push({
+      relPath: String(candidate?.relPath || "").trim(),
+      name: String(candidate?.name || candidate?.fileName || candidate?.relPath || "Blocked item").trim(),
+      kind,
+      score: Number(safety.score || 0),
+      reasons: uniquePreviewStrings(safety.reasons).slice(0, 3),
+      excerpts: uniquePreviewStrings([
+        ...(Array.isArray(findings.unicode) ? findings.unicode : []),
+        ...(Array.isArray(findings.promptOverride) ? findings.promptOverride : []),
+        ...(Array.isArray(findings.promotion) ? findings.promotion : []),
+        ...(Array.isArray(findings.malware) ? findings.malware : []),
+      ]).slice(0, 2),
+    });
+  }
+
+  return {
+    totalCount: list.length,
+    counts,
+    items,
+  };
+}
+
+const buildSiteBlockedImportPreview = buildBlockedImportPreview;
+
+function getRecommendedMarketplaceImportPayload(previewData) {
+  const source = previewData?.source && typeof previewData.source === "object"
+    ? previewData.source
+    : {};
+  const counts = previewData?.candidatesByType && typeof previewData.candidatesByType === "object"
+    ? previewData.candidatesByType
+    : {};
+  const focuses = Array.isArray(source?.focuses)
+    ? source.focuses.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
+    : [];
+  const onlySkills = Number(counts.skill || 0) > 0
+    && Number(counts.agent || 0) === 0
+    && Number(counts.prompt || 0) === 0;
+  const sourceLooksSkillOnly = focuses.includes("skills")
+    && !focuses.includes("agents")
+    && !focuses.includes("prompts");
+
+  if (onlySkills || sourceLooksSkillOnly) {
+    return {
+      importAgents: false,
+      importSkills: true,
+      importPrompts: false,
+      importTools: true,
+    };
+  }
+
+  return {
+    importAgents: true,
+    importSkills: true,
+    importPrompts: true,
+    importTools: true,
+  };
+}
+
+function buildMarketplaceImportPayload(sourceId, previewData, selectedPaths) {
+  const source = previewData?.source && typeof previewData.source === "object"
+    ? previewData.source
+    : {};
+  const payload = {
+    ...getRecommendedMarketplaceImportPayload(previewData),
+    includeEntries: selectedPaths,
+  };
+
+  const normalizedSourceId = String(sourceId || source.id || "").trim();
+  const repoUrl = String(source.repoUrl || previewData?.repoUrl || "").trim();
+  const branch = String(source.defaultBranch || source.branch || previewData?.branch || "").trim();
+
+  if (normalizedSourceId) payload.sourceId = normalizedSourceId;
+  if (repoUrl) payload.repoUrl = repoUrl;
+  if (branch) payload.branch = branch;
+
+  return payload;
+}
+
+function getTaskCollectionValues(task, keys = []) {
+  const out = [];
+  const seen = new Set();
+  for (const key of keys) {
+    const value = task?.[key] ?? task?.meta?.[key];
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item == null) continue;
+        const marker = JSON.stringify(item);
+        if (seen.has(marker)) continue;
+        seen.add(marker);
+        out.push(item);
+      }
+      continue;
+    }
+    if (value && typeof value === "object") {
+      for (const item of Object.values(value)) {
+        if (item == null) continue;
+        const marker = JSON.stringify(item);
+        if (seen.has(marker)) continue;
+        seen.add(marker);
+        out.push(item);
+      }
+    }
+  }
+  return out;
+}
+
+function pickTaskWorkflowSessionId(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  for (const value of [
+    entry.sessionId,
+    entry.primarySessionId,
+    entry.threadId,
+    entry.agentSessionId,
+    entry.meta?.sessionId,
+    entry.meta?.threadId,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function buildTaskDescriptionFallback(rawTitle, rawDescription) {
+  const title = sanitizeTaskText(rawTitle || "");
+  const description = sanitizeTaskText(rawDescription || "");
+  if (isPlaceholderTaskDescription(description)) {
+    if (!title) {
+      return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
+    }
+    return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
+  }
+  if (description) return description;
+  if (!title) {
+    return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
+  }
+  return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
+}
+
+function normalizeTaskWorkflowRunEntry(entry) {
+  if (entry == null) return null;
+  if (typeof entry === "string") {
+    const workflowId = String(entry || "").trim();
+    return workflowId
+      ? {
+          workflowId,
+          workflowName: "",
+          workflowLabel: workflowId,
+          runId: "",
+          status: "",
+          outcome: "",
+          result: "",
+          summary: "",
+          timestamp: null,
+          startedAt: null,
+          endedAt: null,
+          duration: null,
+          sessionId: "",
+          primarySessionId: "",
+          hasRunLink: false,
+          hasSessionLink: false,
+          url: "",
+          nodeId: "",
+          plannerTimeline: [],
+          proofBundle: null,
+          proofSummary: null,
+          issueAdvisor: null,
+          runGraph: null,
+          meta: {},
+        }
+      : null;
+  }
+  const workflowId = String(entry.workflowId || entry.id || entry.templateId || "").trim();
+  const workflowName = String(entry.workflowName || entry.name || "").trim();
+  const runId = String(entry.runId || entry.executionId || entry.attemptId || "").trim();
+  const status = String(entry.status || "").trim();
+  const outcome = String(entry.outcome || "").trim();
+  const summary = String(entry.summary || entry.message || entry.reason || "").trim();
+  const result = summary || String(entry.result || "").trim();
+  const startedAt = entry.startedAt || entry.createdAt || null;
+  const endedAt = entry.endedAt || entry.completedAt || entry.timestamp || null;
+  const timestamp = endedAt || startedAt || null;
+  const duration = Number.isFinite(Number(entry.duration))
+    ? Number(entry.duration)
+    : (startedAt && endedAt
+        ? Math.max(0, new Date(endedAt).getTime() - new Date(startedAt).getTime())
+        : null);
+  const sessionId = pickTaskWorkflowSessionId(entry);
+  const plannerTimeline = Array.isArray(entry.plannerTimeline)
+    ? entry.plannerTimeline
+    : (Array.isArray(entry.proofBundle?.plannerTimeline) ? entry.proofBundle.plannerTimeline : []);
+  const proofBundle =
+    entry.proofBundle && typeof entry.proofBundle === "object"
+      ? { ...entry.proofBundle }
+      : null;
+  const proofSummary =
+    entry.proofSummary && typeof entry.proofSummary === "object"
+      ? { ...entry.proofSummary }
+      : null;
+  return {
+    workflowId,
+    workflowName,
+    workflowLabel: workflowName || workflowId || "workflow",
+    runId,
+    status,
+    outcome,
+    result,
+    summary,
+    timestamp,
+    startedAt,
+    endedAt,
+    duration,
+    sessionId,
+    primarySessionId: String(entry.primarySessionId || sessionId).trim(),
+    hasRunLink: Boolean(runId),
+    hasSessionLink: Boolean(sessionId),
+    url: String(entry.url || "").trim(),
+    nodeId: String(entry.nodeId || "").trim(),
+    plannerTimeline,
+    proofBundle,
+    proofSummary,
+    issueAdvisor: entry.issueAdvisor && typeof entry.issueAdvisor === "object" ? { ...entry.issueAdvisor } : null,
+    runGraph: entry.runGraph && typeof entry.runGraph === "object" ? { ...entry.runGraph } : null,
+    meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+  };
+}
+
+function buildTaskWorkflowRunLineageBadges(run) {
+  const runGraph = run?.runGraph && typeof run.runGraph === "object" ? run.runGraph : null;
+  if (!runGraph) return [];
+  const runCount = Array.isArray(runGraph.runs) ? runGraph.runs.length : 0;
+  const executionCount = Array.isArray(runGraph.executions) ? runGraph.executions.length : 0;
+  const timelineCount = Array.isArray(runGraph.timeline) ? runGraph.timeline.length : 0;
+  const retryCount = Array.isArray(runGraph.edges)
+    ? runGraph.edges.filter((entry) => entry?.type === "retry").length
+    : 0;
+  const badges = [];
+  if (runCount > 0) badges.push(`${runCount} runs`);
+  if (executionCount > 0) badges.push(`${executionCount} execution steps`);
+  if (timelineCount > 0) badges.push(`${timelineCount} lineage events`);
+  if (retryCount > 0) badges.push(`${retryCount} retries`);
+  return badges;
+}
+
+async function openTaskWorkflowRun(run, deps = {}) {
+  const navigate = deps.navigateTo;
+  const openRuns = deps.openWorkflowRunsView;
+  const workflowId = String(run?.workflowId || "").trim();
+  const runId = String(run?.runId || "").trim();
+  if (!runId) return false;
+  const navigated = navigate("workflows");
+  if (navigated === false) return false;
+  openRuns(workflowId, runId);
+  return true;
+}
+
+async function openTaskWorkflowAgentHistory(run, deps = {}) {
+  const navigate = deps.navigateTo;
+  const loadAllSessions = deps.loadSessions;
+  const loadMessages = deps.loadSessionMessages;
+  const selectedStore = deps.selectedSessionId;
+  const sessionId = pickTaskWorkflowSessionId(run);
+  if (!sessionId) return false;
+  const navigated = navigate("agents");
+  if (navigated === false) return false;
+  await loadAllSessions({ type: "task", workspace: "all" });
+  selectedStore.value = sessionId;
+  await loadMessages(sessionId, { limit: 50 });
+  return true;
+}
+
+function pickTaskLinkedSessionId(task) {
+  if (!task || typeof task !== "object") return "";
+  for (const value of [
+    task.sessionId,
+    task.primarySessionId,
+    task.meta?.sessionId,
+    task.meta?.primarySessionId,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  const rows = getTaskCollectionValues(task, [
+    "workflowRuns",
+    "workflowHistory",
+    "workflows",
+    "runs",
+  ]);
+  for (const entry of rows) {
+    const sessionId = pickTaskWorkflowSessionId(entry);
+    if (sessionId) return sessionId;
+  }
+  return "";
+}
+
+async function openTaskLinkedSession(task, deps = {}) {
+  const sessionId = pickTaskLinkedSessionId(task);
+  if (!sessionId) return false;
+  return openTaskWorkflowAgentHistory({ primarySessionId: sessionId }, deps);
+}
+
+function getTaskWorktreePath(task) {
+  for (const value of [
+    task?.worktreePath,
+    task?.workspacePath,
+    task?.meta?.worktreePath,
+    task?.meta?.workspacePath,
+    task?.meta?.execution?.worktreePath,
+    task?.runtimeSnapshot?.slot?.worktreePath,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function buildVsCodeFolderUri(worktreePath, scheme = "vscode") {
+  const normalizedPath = String(worktreePath || "").trim().replace(/\\/g, "/");
+  if (!normalizedPath) return "";
+  return `${scheme}://file/${encodeURI(normalizedPath)}`;
+}
+
+function buildTaskWorkspaceLaunchers(task) {
+  const worktreePath = getTaskWorktreePath(task);
+  if (!worktreePath) return [];
+  const launchers = [
+    {
+      id: "vscode",
+      label: "VS Code",
+      href: buildVsCodeFolderUri(worktreePath, "vscode"),
+    },
+    {
+      id: "vscode-insiders",
+      label: "VS Code Insiders",
+      href: buildVsCodeFolderUri(worktreePath, "vscode-insiders"),
+    },
+  ];
+  return launchers.filter((entry) => entry.href);
+}
 
 const uiDir = resolve(process.cwd(), "ui");
 const uiComponentsCss = readFileSync(resolve(process.cwd(), "ui/styles/components.css"), "utf8");
 const siteComponentsCss = readFileSync(resolve(process.cwd(), "site/ui/styles/components.css"), "utf8");
-
+const dashboardSource = readFileSync(resolve(process.cwd(), "ui/tabs/dashboard.js"), "utf8");
+const integrationsSource = readFileSync(resolve(process.cwd(), "ui/tabs/integrations.js"), "utf8");
+const siteIntegrationsSource = readFileSync(resolve(process.cwd(), "site/ui/tabs/integrations.js"), "utf8");
+const {
+  buildOperatorVisibilityModel,
+  summarizeIntegrationCoverage,
+  summarizeOperatorSessions,
+} = await import("../ui/tabs/integrations.js");
+const {
+  buildOperatorVisibilityModel: buildSiteOperatorVisibilityModel,
+  summarizeIntegrationCoverage: summarizeSiteIntegrationCoverage,
+  summarizeOperatorSessions: summarizeSiteOperatorSessions,
+} = await import("../site/ui/tabs/integrations.js");
 describe("modular mini app structure", () => {
   const requiredModules = [
     "app.js",
@@ -82,12 +462,51 @@ describe("modular mini app structure", () => {
   }
 });
 
+
+describe("dashboard accessibility regressions", () => {
+  it("adds semantic labels for overview and quick actions", () => {
+    expect(dashboardSource).toContain('role="region" aria-label="Dashboard overview"');
+    expect(dashboardSource).toContain('role="banner" aria-label="Dashboard status header"');
+    expect(dashboardSource).toContain('aria-label="Overview metrics"');
+    expect(dashboardSource).toContain('aria-label="Quick actions"');
+  });
+
+  it("renders the dashboard title as a heading and supports space-key activation", () => {
+    expect(dashboardSource).toContain('<h1 class="dashboard-title ${headlineClass}">${headline}</h1>');
+    expect(dashboardSource).toContain('e.key === "Enter" || e.key === " "');
+  });
+
+  it("adds mobile dashboard layout rules and focus-visible states", () => {
+    expect(uiComponentsCss).toContain('@media (max-width: 599px)');
+    expect(uiComponentsCss).toContain('.dashboard-health-grid,');
+    expect(uiComponentsCss).toContain('.dashboard-metric:focus-visible,');
+    expect(uiComponentsCss).toContain('.dashboard-action-btn:focus-visible');
+  });
+});
 describe("workflow canvas helpers", () => {
   it("keeps workflow node header constants defined at module scope for render-time aliases", () => {
     const workflowsSource = readFileSync(resolve(process.cwd(), "ui/tabs/workflows.js"), "utf8");
     expect(workflowsSource).toContain("const WORKFLOW_NODE_HEADER_HEIGHT = 44;");
     expect(workflowsSource).toContain("const NODE_HEADER = WORKFLOW_NODE_HEADER_HEIGHT;");
     expect(workflowsSource).toContain("const NODE_HEADER_H = WORKFLOW_NODE_HEADER_HEIGHT;");
+  });
+
+  it("keeps the hosted demo workflow canvas helper importable and behaviorally aligned", () => {
+    const runDetail = {
+      detail: {
+        nodeStatuses: { "node-1": "completed" },
+        nodeStatusEvents: [{ nodeId: "node-2", status: "running" }],
+      },
+    };
+    const searchableNodes = [{
+      type: "action.run_agent",
+      category: "action",
+      description: "Run an autonomous agent task",
+      schema: { properties: { prompt: { type: "string" } } },
+    }];
+
+    expect(buildSiteNodeStatusesFromRunDetail(runDetail)).toEqual(buildNodeStatusesFromRunDetail(runDetail));
+    expect(searchSiteNodeTypes(searchableNodes, "agent")).toEqual(searchNodeTypes(searchableNodes, "agent"));
   });
 
   it("finds agent nodes with fuzzy partial matches", () => {
@@ -549,6 +968,22 @@ describe("task workflow activity helpers", () => {
       hasSessionLink: true,
     });
   });
+
+  it("surfaces compact lineage badges for task-linked workflow graphs", () => {
+    expect(buildTaskWorkflowRunLineageBadges({
+      runGraph: {
+        runs: [{ runId: "root" }, { runId: "child" }],
+        executions: [{ executionId: "node:root" }, { executionId: "tool:proof" }],
+        timeline: [{ eventType: "run.start" }, { eventType: "tool.completed" }, { eventType: "run.completed" }],
+        edges: [{ type: "parent-child" }, { type: "retry" }],
+      },
+    })).toEqual([
+      "2 runs",
+      "2 execution steps",
+      "3 lineage events",
+      "1 retries",
+    ]);
+  });
 });
 
 describe("restart delay settings", () => {
@@ -578,6 +1013,170 @@ describe("restart delay settings", () => {
       valid: false,
       error: "Maximum: 1800000",
     });
+  });
+});
+
+describe("integrations operator visibility", () => {
+  it("summarizes live sessions consistently across ui and hosted bundles", () => {
+    const sessions = [
+      {
+        id: "session-completed",
+        status: "completed",
+        type: "task",
+        updatedAt: "2026-03-31T01:15:00.000Z",
+        metadata: { prompt: "Completed run" },
+      },
+      {
+        id: "session-active",
+        status: "active",
+        type: "task",
+        updatedAt: "2026-03-31T03:00:00.000Z",
+        metadata: { taskTitle: "Hotfix queue drain", workspaceId: "alpha" },
+      },
+      {
+        id: "session-failed",
+        status: "failed",
+        type: "manual",
+        updatedAt: "2026-03-31T02:00:00.000Z",
+        taskId: "task-2",
+      },
+      {
+        id: "session-paused",
+        status: "paused",
+        type: "task",
+        updatedAt: "2026-03-31T00:30:00.000Z",
+      },
+    ];
+
+    const uiSummary = summarizeOperatorSessions(sessions);
+    const siteSummary = summarizeSiteOperatorSessions(sessions);
+
+    expect(uiSummary).toEqual(siteSummary);
+    expect(uiSummary.counts).toMatchObject({
+      total: 4,
+      active: 1,
+      paused: 1,
+      failed: 1,
+      completed: 1,
+    });
+    expect(uiSummary.recent[0]).toMatchObject({
+      id: "session-active",
+      label: "Hotfix queue drain",
+      workspaceId: "alpha",
+    });
+  });
+
+  it("builds runtime, audit, and coverage summaries in both bundles", () => {
+    const input = {
+      telemetrySummary: {
+        lifetimeTotals: {
+          attemptsCount: 14,
+          tokenCount: 8192,
+          durationMs: 502000,
+        },
+        repoAreaContention: {
+          totalEvents: 3,
+          totalWaitMs: 8400,
+          hotAreas: [{ area: "server", events: 3, waitingTasks: 2, waitMs: 8400 }],
+        },
+      },
+      auditPayload: {
+        summary: {
+          taskCount: 6,
+          failedTaskCount: 2,
+          recentEventCount: 9,
+          latestEventAt: "2026-03-31T03:05:00.000Z",
+        },
+        tasks: [
+          {
+            taskId: "task-ops",
+            taskTitle: "Repair operator dashboard",
+            status: "blocked",
+            eventCount: 5,
+            failedRunCount: 2,
+            latestEventAt: "2026-03-31T03:04:00.000Z",
+          },
+        ],
+        recentEvents: [
+          {
+            auditType: "promoted_strategy",
+            summary: "Promoted retry-safe strategy",
+            taskId: "task-ops",
+            timestamp: "2026-03-31T03:05:00.000Z",
+          },
+        ],
+      },
+      sessions: [
+        {
+          id: "session-active",
+          status: "active",
+          type: "task",
+          updatedAt: "2026-03-31T03:00:00.000Z",
+          metadata: { taskTitle: "Hotfix queue drain" },
+        },
+      ],
+      integrations: [
+        { id: "github", name: "GitHub", icon: "🐙" },
+        { id: "slack", name: "Slack", icon: "💬" },
+      ],
+      secrets: [
+        {
+          integration: "github",
+          permissions: { agents: ["*"], workflows: ["wf-ops"] },
+        },
+        {
+          integration: "github",
+          permissions: { agents: [], workflows: ["wf-retry"] },
+        },
+      ],
+    };
+
+    const uiModel = buildOperatorVisibilityModel(input);
+    const siteModel = buildSiteOperatorVisibilityModel(input);
+    const uiCoverage = summarizeIntegrationCoverage(input.integrations, input.secrets);
+    const siteCoverage = summarizeSiteIntegrationCoverage(input.integrations, input.secrets);
+
+    expect(uiModel).toEqual(siteModel);
+    expect(uiCoverage).toEqual(siteCoverage);
+    expect(uiModel.runtime).toMatchObject({
+      attemptCount: 14,
+      tokenCount: 8192,
+    });
+    expect(uiModel.runtime.repoAreaContention).toMatchObject({
+      totalEvents: 3,
+      totalWaitMs: 8400,
+    });
+    expect(uiModel.audit).toMatchObject({
+      taskCount: 6,
+      failedTaskCount: 2,
+      recentEventCount: 9,
+    });
+    expect(uiModel.audit.attentionTasks[0]).toMatchObject({
+      taskId: "task-ops",
+      failedRunCount: 2,
+    });
+    expect(uiCoverage).toMatchObject({
+      configuredIntegrations: 1,
+      totalIntegrations: 2,
+      totalSecrets: 2,
+    });
+    expect(uiCoverage.items[0]).toMatchObject({
+      id: "github",
+      secretCount: 2,
+      permissionCount: 3,
+    });
+  });
+
+  it("keeps both integration tabs wired to telemetry, audit, and session endpoints", () => {
+    for (const source of [integrationsSource, siteIntegrationsSource]) {
+      expect(source).toContain("/api/telemetry/summary");
+      expect(source).toContain("/api/audit/summary?limit=8&recentLimit=8");
+      expect(source).toContain("/api/sessions?includeHidden=1");
+      expect(source).toContain("Operator Visibility");
+      expect(source).toContain("Live Sessions");
+      expect(source).toContain("Audit Trail");
+      expect(source).toContain("Coverage");
+    }
   });
 });
 

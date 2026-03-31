@@ -16,6 +16,64 @@ Bosun workflows are DAGs (directed acyclic graphs) of nodes that automate orches
 - File-based: drop a workflow JSON file into `.bosun/workflows/`.
 - Templates: `POST /api/workflows/install-template` or use the UI install button.
 
+## Research Evidence Sidecar Workflow
+
+Bosun's scientific research path can run an evidence-backed workflow without changing the native context indexer. The manual `research-agent` flow now supports a sidecar-aware mode that:
+
+- Keeps Bosun as the orchestrator and verification loop owner.
+- Builds a structured evidence bundle through `workflow/research-evidence-sidecar.mjs`.
+- Accepts optional local text corpora via `corpusPaths`.
+- Optionally delegates to an external in-house sidecar command through a JSON stdin/stdout contract.
+- Writes raw evidence artifacts to `.bosun/research-evidence/`.
+- Promotes only reviewed findings into `.bosun/shared-knowledge/REVIEWED_RESEARCH.md` after the verifier returns `VERDICT: CORRECT`.
+
+Important boundary: the Bosun-native `workspace/context-indexer.mjs` remains unchanged and PDFs stay excluded from that index. If PDF-derived evidence is needed, extract text or notes for the sidecar corpus instead of widening the context indexer.
+
+## State Ledger Contract
+
+Bosun now dual-writes workflow, task, and claim state into a SQLite ledger at `.bosun/.cache/state-ledger.sqlite` while keeping the existing JSON and JSONL stores authoritative for runtime continuity.
+
+- `workflow/execution-ledger.mjs` mirrors run metadata and execution events into the ledger.
+- `task/task-claims.mjs` mirrors claim snapshots and claim audit events into the ledger.
+- `task/task-store.mjs` mirrors current task snapshots, including deletes, into the ledger.
+- Read models may hydrate from the SQLite ledger when file-backed state is missing or truncated.
+
+Important boundary: phase 1 ledger adoption is for auditability, replay, analytics, and self-improvement inputs. Bosun must continue to execute correctly if the SQLite mirror is unavailable.
+
+## Planner Proof Contract
+
+Planner-heavy workflows now expose structured proof surfaces in run detail and task-linked workflow summaries.
+
+- `plannerTimeline` captures planner lifecycle events such as initialization, reasoning steps, attachments, completion, and blocked stages.
+- `proofBundle.summary` reports planner, decision, evidence, and artifact counts.
+- `proofBundle.decisions` aggregates planner decisions plus issue-advisor guidance and retry-policy outcomes.
+- `proofBundle.evidence` and `proofBundle.artifacts` capture completion evidence, artifact pointers, and proof attachments for downstream review.
+- `server/ui-server.mjs` includes these proof surfaces in workflow run payloads consumed by the Mini App and hosted UI.
+
+Operators should treat these surfaces as the canonical review payload for planner workflows instead of reconstructing proof from raw logs.
+
+## GNAP Projection Contract
+
+Bosun can project shared kanban state into a GNAP-style repository layout when GNAP is explicitly enabled in Settings.
+
+- `KANBAN_BACKEND=gnap` is valid only when `GNAP_ENABLED=true`, `GNAP_REPO_PATH` is set, and `GNAP_SYNC_MODE=projection`.
+- Projected artifacts are written under `.gnap/`, including task state, run summaries, and collaboration messages.
+- The internal Bosun task store remains authoritative for task creation, status changes, comments, claims, and workflow liveness.
+- GNAP is intended for cross-user visibility and collaboration, not for replacing `task/task-claims.mjs`, shared-state coordination, or fleet heartbeats.
+
+Important boundary: projection mode is the only supported GNAP sync mode in this rollout.
+
+## Self-Improvement Contract
+
+Bosun self-improvement is now workflow-native rather than a separate subsystem.
+
+- `action.evaluate_run` benchmarks a workflow run, records durable evaluation history, and emits promotion candidates.
+- `action.promote_strategy` persists verified strategies and baselines into shared knowledge when the evaluator recommends promotion or a workflow explicitly forces it.
+- The reliability template uses recent-run evaluation and promotion gates to preserve good patterns and surface regressions.
+- Shared knowledge entries must retain provenance back to the evaluated run and workflow before they can influence future planning.
+
+Important boundary: self-improvement recommendations are evidence-gated. Bosun should not automatically mutate production strategy based only on one unreviewed run.
+
 **Workflow Definition (JSON)**
 Minimum example:
 

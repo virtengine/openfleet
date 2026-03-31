@@ -3,6 +3,20 @@
   position: relative;
   display: inline-flex;
   z-index: 100;
+  min-width: 0;
+}
+
+.ws-switcher .ws-switcher-trigger {
+  min-width: 0;
+  max-width: min(180px, 42vw);
+}
+
+.ws-switcher-trigger-label {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ws-native-select {
@@ -216,6 +230,10 @@
 }
 
 @media (max-width: 640px) {
+  .ws-switcher .ws-switcher-trigger {
+    max-width: min(120px, 30vw);
+  }
+
   .ws-switcher-btn {
     padding: 4px 8px;
     max-width: 150px;
@@ -227,6 +245,10 @@
 }
 
 @media (max-width: 420px) {
+  .ws-switcher .ws-switcher-trigger {
+    max-width: 72px;
+  }
+
   .ws-switcher-name {
     display: none;
   }

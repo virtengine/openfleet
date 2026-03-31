@@ -89,12 +89,20 @@ registerNodeType("condition.expression", {
   async execute(node, ctx) {
     const expr = node.config?.expression;
     if (!expr) throw new Error("Expression is required");
+    const normalizedExpr = String(expr).trim();
+    const blockedPatterns = [
+      /(?:^|[^\\w$.])(globalThis|global|window|document|process|require|module|exports)(?:[^\\w$]|$)/,
+      /(?:^|[^\\w$.])(Function|eval)(?:[^\\w$]|$)/,
+    ];
+    if (blockedPatterns.some((pattern) => pattern.test(normalizedExpr))) {
+      throw new Error("Expression contains unsupported syntax");
+    }
     try {
-      const fn = new Function("$data", "$ctx", "$output", `return (${expr});`);
+      const fn = new Function("$data", "$ctx", "$output", `"use strict"; return (${normalizedExpr});`);
       const allOutputs = {};
       for (const [k, v] of ctx.nodeOutputs) allOutputs[k] = v;
       const result = fn(ctx.data, ctx, allOutputs);
-      ctx.log(node.id, `Expression "${expr}" → ${result}`);
+      ctx.log(node.id, `Expression "${normalizedExpr}" → ${result}`);
       return { result: !!result, value: result };
     } catch (err) {
       throw new Error(`Expression error: ${err.message}`);

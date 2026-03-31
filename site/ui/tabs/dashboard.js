@@ -1166,14 +1166,12 @@ export function DashboardTab() {
       ${showCreate &&
       html`<${CreateTaskModal} onClose=${() => setShowCreate(false)} />`}
 
-      ${recentCommits.length > 0 && html`
-        <${Card}
-          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Git Graph</span>`}
-          className="dashboard-card dashboard-commits-card"
-        >
-          <${CommitGraph} maxCommits=${40} compact=${true} />
-        <//>  
-      `}
+      <${Card}
+        title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Git Graph</span>`}
+        className="dashboard-card dashboard-commits-card"
+      >
+        <${CommitGraph} maxCommits=${40} compact=${true} />
+      <//>
 
       ${showStartModal &&
       html`

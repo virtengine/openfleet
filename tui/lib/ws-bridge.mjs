@@ -336,6 +336,17 @@ class TuiWsBridge {
 		});
 		return response?.data || null;
 	}
+
+	async getConfigTree() {
+		return this.requestJson("/api/tui/config");
+	}
+
+	async saveConfigField(path, value) {
+		return this.requestJson("/api/tui/config", {
+			method: "POST",
+			body: { path, value },
+		});
+	}
 }
 
 let _instance = null;

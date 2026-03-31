@@ -129,7 +129,7 @@ registerNodeType("agent.select_profile", {
   },
 });
 
-function parsePlannerJsonFromText(value) {
+export function parsePlannerJsonFromText(value) {
   const text = normalizeLineEndings(String(value || ""))
     .replace(/\u001b\[[0-9;]*m/g, "")
     // Strip common agent prefixes: "Agent: ", "Assistant: ", etc.
@@ -319,6 +319,19 @@ export function normalizePlannerTaskForCreation(task, index) {
     }
     return normalized;
   };
+  const normalizeOptionalStringList = (value) => {
+    if (Array.isArray(value)) return normalizeStringList(value);
+    const entry = String(value || "").trim();
+    return entry ? [entry] : [];
+  };
+  const normalizeTaskGraphKey = (value, fallback = "") => {
+    const normalized = String(value || fallback || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    return normalized || "";
+  };
   const scoreMode = inferPlannerTaskScoreMode(task);
   const preferTenScaleIntegers = scoreMode === PLANNER_SCORE_MODE_TEN;
 
@@ -337,6 +350,41 @@ export function normalizePlannerTaskForCreation(task, index) {
   const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
+  const taskKey = normalizeTaskGraphKey(
+    task.task_key || task.taskKey || task.key || task.id || "",
+    title,
+  );
+  const parentTaskKey = normalizeTaskGraphKey(
+    task.parent_task_key ||
+      task.parentTaskKey ||
+      task.parent_key ||
+      task.parentKey ||
+      task.parent_task_title ||
+      task.parentTaskTitle ||
+      task.parent_title ||
+      task.parentTitle ||
+      "",
+  );
+  const parentTaskId = String(task.parent_task_id || task.parentTaskId || "").trim() || null;
+  const dependencyTaskKeys = Array.from(new Set([
+    ...normalizeOptionalStringList(task.depends_on_task_keys),
+    ...normalizeOptionalStringList(task.dependsOnTaskKeys),
+    ...normalizeOptionalStringList(task.dependency_keys),
+    ...normalizeOptionalStringList(task.dependencyKeys),
+    ...normalizeOptionalStringList(task.depends_on_titles),
+    ...normalizeOptionalStringList(task.dependsOnTitles),
+    ...normalizeOptionalStringList(task.dependency_titles),
+    ...normalizeOptionalStringList(task.dependencyTitles),
+  ].map((entry) => normalizeTaskGraphKey(entry)).filter(Boolean)));
+  const dependencyTaskIds = Array.from(new Set([
+    ...normalizeOptionalStringList(task.depends_on_task_ids),
+    ...normalizeOptionalStringList(task.dependsOnTaskIds),
+    ...normalizeOptionalStringList(task.dependency_task_ids),
+    ...normalizeOptionalStringList(task.dependencyTaskIds),
+  ].map((entry) => String(entry || "").trim()).filter(Boolean)));
+  const decompositionKind = String(task.decomposition_kind || task.decompositionKind || "").trim().toLowerCase() || null;
+  const spawnWhen = String(task.spawn_when || task.spawnWhen || "").trim() || null;
+  const mergeBackPolicy = String(task.merge_back_policy || task.mergeBackPolicy || "").trim() || null;
 
   const appendList = (heading, values) => {
     if (!Array.isArray(values) || values.length === 0) return;
@@ -391,6 +439,14 @@ export function normalizePlannerTaskForCreation(task, index) {
     estimatedEffort: estimatedEffort || null,
     whyNow: whyNow || null,
     killCriteria: killCriteria.length > 0 ? killCriteria : null,
+    taskKey: taskKey || null,
+    parentTaskKey: parentTaskKey || null,
+    parentTaskId,
+    dependencyTaskKeys,
+    dependencyTaskIds,
+    decompositionKind,
+    spawnWhen,
+    mergeBackPolicy,
   };
 }
 export function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
@@ -469,6 +525,578 @@ export function resolveTaskRepoAreas(task) {
     normalized.push(area);
   }
   return normalized;
+}
+
+function normalizePlannerTaskArchetype(task) {
+  const explicitArchetype = String(
+    task?.archetype || task?.taskArchetype || task?.task_archetype || "",
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9()_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (explicitArchetype) return explicitArchetype;
+  const title = String(task?.title || "").trim().toLowerCase();
+  if (!title) return "general";
+  const withoutPrefix = title.replace(/^\[[^\]]+\]\s*/, "").trim();
+  const scoped = withoutPrefix.match(/^([a-z][a-z0-9_-]*)\(([^)]+)\)\s*:/);
+  if (scoped) return scoped[1];
+  const typed = withoutPrefix.match(/^([a-z][a-z0-9_-]*)\s*:/);
+  if (typed) return typed[1];
+  const fallback = withoutPrefix
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .join("_");
+  return fallback || "general";
+}
+
+function resolvePlannerPatternKeys(task) {
+  const archetype = normalizePlannerTaskArchetype(task);
+  const areas = resolveTaskRepoAreas(task);
+  const normalizedAreas = areas.length > 0
+    ? areas.map((area) => normalizePlannerAreaKey(area)).filter(Boolean)
+    : ["global"];
+  return normalizedAreas.map((area) => `${area}::${archetype}`);
+}
+
+function resolvePlannerDebtTrendSignal(task) {
+  const numericCandidates = [
+    task?.debt_trend,
+    task?.debtTrend,
+    task?.meta?.debt_trend,
+    task?.meta?.debtTrend,
+    task?.meta?.planner?.debt_trend,
+    task?.meta?.planner?.debtTrend,
+    task?.meta?.planner?.debt_growth,
+    task?.meta?.planner?.debtGrowth,
+  ];
+  for (const candidate of numericCandidates) {
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) {
+      return Math.max(0, Math.min(5, Math.abs(numeric)));
+    }
+  }
+
+  const textCandidates = [
+    task?.debt_trend,
+    task?.debtTrend,
+    task?.meta?.debt_trend,
+    task?.meta?.debtTrend,
+    task?.meta?.planner?.debt_trend,
+    task?.meta?.planner?.debtTrend,
+    task?.meta?.planner?.why_now,
+    task?.meta?.planner?.whyNow,
+    task?.description,
+  ]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
+  for (const text of textCandidates) {
+    if (/(worsen|worsening|increase|increasing|growth|growing|upward|regress)/.test(text)) {
+      return 2;
+    }
+    if (/(stable|flat|neutral|steady)/.test(text)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+function hasTaskCommitEvidence(task) {
+  const commitCandidates = [
+    task?.hasCommits,
+    task?.meta?.hasCommits,
+    task?.meta?.execution?.hasCommits,
+    task?.meta?.execution?.commitCount,
+    task?.meta?.execution?.commits,
+    task?.commitCount,
+    task?.commits,
+    task?.meta?.commits,
+  ];
+  for (const candidate of commitCandidates) {
+    if (typeof candidate === "boolean") return candidate;
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric) && numeric > 0) return true;
+    if (Array.isArray(candidate) && candidate.length > 0) return true;
+  }
+  return false;
+}
+
+function createEmptyPlannerPatternPrior() {
+  return {
+    failureCount: 0,
+    successCount: 0,
+    failureWeight: 0,
+    successWeight: 0,
+    failureCounter: 0,
+    negativePrior: 0,
+    commitlessFailureCount: 0,
+    commitlessSuccessCount: 0,
+    commitlessFailureCounter: 0,
+    signalTotals: {
+      agentAttempts: 0,
+      consecutiveNoCommits: 0,
+      blockedReason: 0,
+      debtTrend: 0,
+    },
+    lastUpdatedAt: null,
+  };
+}
+
+function normalizePlannerPatternPrior(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return createEmptyPlannerPatternPrior();
+  }
+  const base = createEmptyPlannerPatternPrior();
+  const signalTotals = entry.signalTotals && typeof entry.signalTotals === "object"
+    ? entry.signalTotals
+    : {};
+  return {
+    ...base,
+    ...entry,
+    signalTotals: {
+      agentAttempts: Number(signalTotals.agentAttempts || 0),
+      consecutiveNoCommits: Number(signalTotals.consecutiveNoCommits || 0),
+      blockedReason: Number(signalTotals.blockedReason || 0),
+      debtTrend: Number(signalTotals.debtTrend || 0),
+    },
+  };
+}
+
+export function resolvePlannerPriorFeedbackWeights(weights) {
+  const config = weights && typeof weights === "object" && !Array.isArray(weights)
+    ? weights
+    : {};
+  return {
+    agentAttempts: Math.max(0, Number(config.agentAttempts || 0.6)),
+    consecutiveNoCommits: Math.max(0, Number(config.consecutiveNoCommits || 1.3)),
+    blockedReason: Math.max(0, Number(config.blockedReason || 1.8)),
+    debtTrend: Math.max(0, Number(config.debtTrend || 0.7)),
+    commitSuccess: Math.max(0, Number(config.commitSuccess || 2.2)),
+    completedSuccess: Math.max(0, Number(config.completedSuccess || 0.8)),
+  };
+}
+
+function resolvePlannerOutcomeSignals(task, weights) {
+  const attempts = Math.max(0, Number(task?.agentAttempts || task?.meta?.agentAttempts || 0));
+  const noCommits = Math.max(
+    0,
+    Number(task?.consecutiveNoCommits || task?.meta?.consecutiveNoCommits || 0),
+  );
+  const blockedReason = String(task?.blockedReason || task?.meta?.blockedReason || "").trim();
+  const debtTrendSignal = resolvePlannerDebtTrendSignal(task);
+  const commitEvidence = hasTaskCommitEvidence(task);
+  const status = String(task?.status || "").trim().toLowerCase();
+  const completedStatus = ["done", "completed", "closed", "merged"].includes(status);
+  const agentAttemptsPenalty = commitEvidence ? 0 : (attempts * weights.agentAttempts);
+  const consecutiveNoCommitsPenalty = noCommits * weights.consecutiveNoCommits;
+  const blockedPenalty = blockedReason ? weights.blockedReason : 0;
+  const debtTrendPenalty = debtTrendSignal * weights.debtTrend;
+
+  const failureWeight =
+    agentAttemptsPenalty +
+    consecutiveNoCommitsPenalty +
+    blockedPenalty +
+    debtTrendPenalty;
+  const successWeight =
+    (commitEvidence ? weights.commitSuccess : 0) +
+    ((completedStatus && !blockedReason) ? weights.completedSuccess : 0);
+  const commitlessFailureEvent = attempts > 0 && !commitEvidence;
+
+  return {
+    attempts,
+    noCommits,
+    blockedReason,
+    debtTrendSignal,
+    commitEvidence,
+    commitlessFailureEvent,
+    failureWeight,
+    successWeight,
+    failureComponents: {
+      agentAttemptsPenalty,
+      consecutiveNoCommitsPenalty,
+      blockedPenalty,
+      debtTrendPenalty,
+    },
+  };
+}
+
+export function resolvePlannerPriorStatePath() {
+  const configured = String(process.env.BOSUN_PLANNER_PATTERN_PRIORS_FILE || "").trim();
+  if (configured) return configured;
+  return resolve(process.cwd(), ".bosun", "workflow-runs", "planner-pattern-priors.json");
+}
+
+export function shouldPersistPlannerPriorState() {
+  if (String(process.env.BOSUN_DISABLE_PLANNER_PATTERN_PRIORS || "").trim().toLowerCase() === "true") {
+    return false;
+  }
+  if (process.env.VITEST && process.env.BOSUN_TEST_ENABLE_PLANNER_PRIOR_PERSISTENCE !== "true") {
+    return false;
+  }
+  return true;
+}
+
+export function loadPlannerPriorState(statePath) {
+  const base = { version: 1, patterns: {}, outcomes: {} };
+  if (!statePath || !existsSync(statePath)) return base;
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    if (!parsed || typeof parsed !== "object") return base;
+    return {
+      version: 1,
+      patterns:
+        parsed.patterns && typeof parsed.patterns === "object"
+          ? Object.fromEntries(
+            Object.entries(parsed.patterns).map(([key, value]) => [
+              key,
+              normalizePlannerPatternPrior(value),
+            ]),
+          )
+          : {},
+      outcomes: parsed.outcomes && typeof parsed.outcomes === "object" ? parsed.outcomes : {},
+    };
+  } catch {
+    return base;
+  }
+}
+
+export function savePlannerPriorState(statePath, state) {
+  if (!statePath) return;
+  try {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  } catch {
+    // Best-effort persistence only.
+  }
+}
+
+export function replayPlannerOutcomes(existingTasks, priorState, weights) {
+  if (!Array.isArray(existingTasks) || existingTasks.length === 0) return;
+  const nowIso = new Date().toISOString();
+  const maxOutcomes = 5000;
+
+  for (const task of existingTasks) {
+    const taskId = String(task?.id || task?.task_id || "").trim();
+    if (!taskId) continue;
+    const keys = resolvePlannerPatternKeys(task);
+    if (!keys.length) continue;
+    const signals = resolvePlannerOutcomeSignals(task, weights);
+    const signature = JSON.stringify({
+      status: String(task?.status || "").trim().toLowerCase(),
+      attempts: signals.attempts,
+      noCommits: signals.noCommits,
+      blockedReason: signals.blockedReason.toLowerCase(),
+      debtTrendSignal: signals.debtTrendSignal,
+      hasCommits: hasTaskCommitEvidence(task),
+    });
+    if (priorState.outcomes?.[taskId]?.signature === signature) continue;
+    priorState.outcomes[taskId] = { signature, updatedAt: nowIso };
+
+    for (const key of keys) {
+      const current = normalizePlannerPatternPrior(priorState.patterns[key]);
+      const priorCounter = Math.max(0, Number(current.failureCounter || 0));
+      const priorCommitlessCounter = Math.max(0, Number(current.commitlessFailureCounter || 0));
+      if (signals.failureWeight > 0) {
+        current.failureCount = Number(current.failureCount || 0) + 1;
+        current.failureWeight = Number(current.failureWeight || 0) + signals.failureWeight;
+        current.signalTotals.agentAttempts += signals.failureComponents.agentAttemptsPenalty;
+        current.signalTotals.consecutiveNoCommits += signals.failureComponents.consecutiveNoCommitsPenalty;
+        current.signalTotals.blockedReason += signals.failureComponents.blockedPenalty;
+        current.signalTotals.debtTrend += signals.failureComponents.debtTrendPenalty;
+      }
+      if (signals.successWeight > 0) {
+        current.successCount = Number(current.successCount || 0) + 1;
+        current.successWeight = Number(current.successWeight || 0) + signals.successWeight;
+      }
+      if (signals.commitlessFailureEvent) {
+        current.commitlessFailureCount = Number(current.commitlessFailureCount || 0) + 1;
+      }
+      if (signals.commitEvidence) {
+        current.commitlessSuccessCount = Number(current.commitlessSuccessCount || 0) + 1;
+      }
+      current.failureCounter = Number(
+        Math.max(
+          0,
+          (priorCounter * 0.82) + signals.failureWeight - (signals.successWeight * 0.95),
+        ).toFixed(3),
+      );
+      current.commitlessFailureCounter = Number(
+        Math.max(
+          0,
+          (priorCommitlessCounter * 0.86) +
+            (signals.commitlessFailureEvent ? 1.25 : 0) -
+            (signals.commitEvidence ? 1.1 : 0),
+        ).toFixed(3),
+      );
+      current.lastUpdatedAt = nowIso;
+      priorState.patterns[key] = current;
+    }
+  }
+
+  const outcomeEntries = Object.entries(priorState.outcomes || {});
+  if (outcomeEntries.length > maxOutcomes) {
+    outcomeEntries
+      .sort((a, b) => String(a[1]?.updatedAt || "").localeCompare(String(b[1]?.updatedAt || "")))
+      .slice(0, outcomeEntries.length - maxOutcomes)
+      .forEach(([id]) => {
+        delete priorState.outcomes[id];
+      });
+  }
+}
+
+export function resolvePlannerPriorRankingConfig(config) {
+  const ranking = config && typeof config === "object" && !Array.isArray(config)
+    ? config
+    : {};
+  return {
+    failureThreshold: Math.max(1, Number(ranking.failureThreshold ?? ranking.failurePriorThreshold ?? 2) || 2),
+    failurePriorStep: Math.max(0, Number(ranking.failurePriorStep ?? 1.5) || 1.5),
+    maxNegativePrior: Math.max(0, Number(ranking.maxNegativePrior ?? ranking.maxFailurePriorPenalty ?? 8) || 8),
+    signalPenaltyScale: Math.max(0, Number(ranking.signalPenaltyScale ?? ranking.feedbackSignalScale ?? 0.12) || 0.12),
+  };
+}
+
+export function rankPlannerTaskCandidates(tasks, priorState, rankingConfig) {
+  const config = resolvePlannerPriorRankingConfig(rankingConfig);
+  const scored = (Array.isArray(tasks) ? tasks : []).map((task) => {
+    const impact = Number.isFinite(task?.impact) ? Number(task.impact) : 5;
+    const confidence = Number.isFinite(task?.confidence) ? Number(task.confidence) : 5;
+    const riskLevel = String(task?.risk || "").trim().toLowerCase();
+    const riskPenalty = ({ low: 0, medium: 0.4, high: 0.9, critical: 1.6 })[riskLevel] || 0;
+    const baseScore = (impact * 1.15) + (confidence * 0.85) - riskPenalty;
+
+    const keys = resolvePlannerPatternKeys(task);
+    const penalties = keys.map((key) => {
+      const prior = priorState?.patterns?.[key];
+      if (!prior || typeof prior !== "object") return { key, signalPenalty: 0, negativePrior: 0 };
+      const failureCount = Number(prior.failureCount || 0);
+      const successCount = Number(prior.successCount || 0);
+      const failureWeight = Number(prior.failureWeight || 0);
+      const successWeight = Number(prior.successWeight || 0);
+      const configuredNegativePrior = Math.max(0, Number(prior.negativePrior || 0));
+      const failureCounter = Number(prior.failureCounter || 0);
+      const commitlessFailureCounter = Number(prior.commitlessFailureCounter || 0);
+      const commitlessFailureCount = Number(prior.commitlessFailureCount || 0);
+      const commitlessSuccessCount = Number(prior.commitlessSuccessCount || 0);
+      const netFailureEvents = Math.max(0, failureCount - successCount);
+      const netFailureWeight = Math.max(0, failureWeight - successWeight);
+      const netCommitlessEvents = Math.max(0, commitlessFailureCount - commitlessSuccessCount);
+      const recoveredFailureCounter = Math.min(
+        Math.max(0, failureCounter - (Math.min(successCount, failureCount) * 0.9)),
+        Math.max(0, failureCount - successCount + 1),
+      );
+      const recoveredCommitlessCounter = Math.max(
+        0,
+        commitlessFailureCounter - (Math.min(commitlessSuccessCount, commitlessFailureCount) * 0.85),
+      );
+      const repeatedFailureSignal = Math.max(
+        netFailureEvents,
+        recoveredFailureCounter,
+        netCommitlessEvents,
+        recoveredCommitlessCounter,
+      );
+      const recoveryDiscount = successCount >= failureCount && successCount > 0 ? 0.05 : 1;
+      const signalPenalty = Math.max(
+        netFailureWeight * config.signalPenaltyScale * 0.45 * recoveryDiscount,
+        recoveredFailureCounter * config.signalPenaltyScale * 0.35 * recoveryDiscount,
+      );
+      const stronglyRecovered = successCount > 0 && successCount >= failureCount;
+      const unrecoveredFailureSignal = Math.max(
+        netFailureEvents,
+        Math.max(0, repeatedFailureSignal - Math.max(0, successCount * 0.75)),
+      );
+      const positiveRecoveryBalance = Math.max(0, successCount - failureCount);
+      const negativePrior = stronglyRecovered
+        ? 0
+        : (
+          unrecoveredFailureSignal >= config.failureThreshold
+            ? Math.max(
+              configuredNegativePrior,
+              Math.min(
+                config.maxNegativePrior,
+                Math.max(
+                  0,
+                  config.failurePriorStep * (unrecoveredFailureSignal - config.failureThreshold + 1) - (positiveRecoveryBalance * 6),
+                ),
+              ),
+            )
+            : 0
+        );
+      const recoveryBonus = stronglyRecovered
+        ? Math.max(1.25, Math.min(5.5, (successCount - failureCount + 1.5) * 2.8))
+        : (successCount === failureCount && successCount > 0 ? 0.3 : 0);
+      return {
+        key,
+        signalPenalty,
+        negativePrior,
+        recoveryBonus,
+        failureCounter: recoveredFailureCounter,
+        commitlessFailureCounter: recoveredCommitlessCounter,
+        netCommitlessEvents,
+      };
+    });
+    const totalRecoveryBonus = penalties.reduce(
+      (sum, item) => sum + Math.max(0, item.recoveryBonus || 0),
+      0,
+    );
+    const totalPenalty = penalties.reduce(
+      (sum, item) => sum + Math.max(0, item.signalPenalty + item.negativePrior - (item.recoveryBonus || 0)),
+      0,
+    );
+    const averagePenalty = penalties.length > 0 ? totalPenalty / penalties.length : 0;
+    const averageRecoveryBonus = penalties.length > 0 ? totalRecoveryBonus / penalties.length : 0;
+    const rankScore = baseScore - averagePenalty + Math.min(0.35, averageRecoveryBonus * 0.12);
+
+    return {
+      ...task,
+      _ranking: {
+        baseScore: Number(baseScore.toFixed(3)),
+        penalty: Number(averagePenalty.toFixed(3)),
+        score: Number(rankScore.toFixed(3)),
+        patternKeys: keys,
+        penalties,
+      },
+    };
+  });
+
+  scored.sort((a, b) => {
+    if ((b?._ranking?.score || 0) !== (a?._ranking?.score || 0)) {
+      return (b?._ranking?.score || 0) - (a?._ranking?.score || 0);
+    }
+    return Number(a?.index || 0) - Number(b?.index || 0);
+  });
+  return scored;
+}
+
+export function rankPlannerTaskCandidatesForResume(tasks, plannerFeedback) {
+  const resumeFeedback =
+    plannerFeedback && typeof plannerFeedback === "object" && !Array.isArray(plannerFeedback)
+      ? plannerFeedback
+      : null;
+  const taskList = Array.isArray(tasks) ? tasks : [];
+  if (!resumeFeedback) return taskList;
+  const hotTaskTitles = new Set(
+    Array.isArray(resumeFeedback?.taskStore?.hotTasks)
+      ? resumeFeedback.taskStore.hotTasks
+          .map((task) => String(task?.title || "").trim().toLowerCase())
+          .filter(Boolean)
+      : [],
+  );
+
+  const normalizeResumeText = (value) => String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\b(validate|validation|stage|step|task|handoff|planner|resume|handling)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokenizeResumeText = (value) =>
+    normalizeResumeText(value)
+      .split(" ")
+      .map((token) => {
+        if (token.length > 3 && token.endsWith("s")) {
+          return token.slice(0, -1);
+        }
+        return token;
+      })
+      .filter(Boolean);
+  const matchesResumeLabel = (taskTokens, taskText, labelTokens, labelText) => {
+    if (!labelText) return false;
+    if (taskText === labelText) return true;
+    if (taskText.includes(labelText)) return true;
+    return labelTokens.length > 0 && labelTokens.every((token) => taskTokens.includes(token));
+  };
+
+  const nextStepLabel = String(resumeFeedback?.issueAdvisor?.nextStepLabel || "")
+    .trim()
+    .toLowerCase();
+  const normalizedNextStep = normalizeResumeText(nextStepLabel);
+  const dagStateSummary =
+    resumeFeedback?.dagStateSummary && typeof resumeFeedback.dagStateSummary === "object"
+      ? resumeFeedback.dagStateSummary
+      : null;
+
+  const completedLabels = (Array.isArray(dagStateSummary?.completedNodes) ? dagStateSummary.completedNodes : [])
+    .map((node) => {
+      const labelText = normalizeResumeText(node?.label || node?.title || node?.name || "");
+      return {
+        labelText,
+        labelTokens: tokenizeResumeText(labelText),
+      };
+    })
+    .filter((entry) => entry.labelText);
+
+  const pendingNodes = Array.isArray(dagStateSummary?.pendingNodes) ? dagStateSummary.pendingNodes : [];
+  const pendingOrder = pendingNodes
+    .map((pendingNode, index) => {
+      const labelText = normalizeResumeText(
+        pendingNode?.label || pendingNode?.title || pendingNode?.name || pendingNode?.id || "",
+      );
+      return {
+        index,
+        labelText,
+        labelTokens: tokenizeResumeText(labelText),
+      };
+    })
+    .filter((entry) => entry.labelText);
+
+  const rankedEntries = taskList
+    .map((task, originalIndex) => {
+      const title = normalizeResumeText(task?.title || "");
+      const titleTokens = tokenizeResumeText(title);
+      const taskIndex = Number.isFinite(Number(task?.index)) ? Number(task.index) : originalIndex;
+      const exactMatch = normalizedNextStep && title === normalizedNextStep;
+      const containsMatch = normalizedNextStep && !exactMatch && title.includes(normalizedNextStep);
+      const pendingMatch = pendingOrder.find((entry) =>
+        matchesResumeLabel(titleTokens, title, entry.labelTokens, entry.labelText),
+      );
+      const pendingIndex = pendingMatch ? pendingMatch.index : Number.POSITIVE_INFINITY;
+      const completed = completedLabels.some((entry) =>
+        matchesResumeLabel(titleTokens, title, entry.labelTokens, entry.labelText),
+      );
+      return {
+        task,
+        originalIndex,
+        title,
+        titleTokens,
+        taskIndex,
+        exactMatch,
+        containsMatch,
+        pendingIndex,
+        completed,
+      };
+    })
+    .filter((entry) => !entry.completed);
+
+  if (!rankedEntries.length) return [];
+
+  const exactMatchEntry = normalizedNextStep
+    ? rankedEntries.find((entry) => entry.exactMatch) || rankedEntries.find((entry) => entry.containsMatch)
+    : null;
+
+  return rankedEntries
+    .slice()
+    .sort((a, b) => {
+      const aIsResume = exactMatchEntry ? a === exactMatchEntry : false;
+      const bIsResume = exactMatchEntry ? b === exactMatchEntry : false;
+      if (aIsResume !== bIsResume) return aIsResume ? -1 : 1;
+
+      const aHasPending = Number.isFinite(a.pendingIndex);
+      const bHasPending = Number.isFinite(b.pendingIndex);
+      if (aHasPending !== bHasPending) return aHasPending ? -1 : 1;
+      if (aHasPending && bHasPending && a.pendingIndex !== b.pendingIndex) {
+        return a.pendingIndex - b.pendingIndex;
+      }
+
+      const aHot = hotTaskTitles.has(String(a.task?.title || "").trim().toLowerCase());
+      const bHot = hotTaskTitles.has(String(b.task?.title || "").trim().toLowerCase());
+      if (aHot !== bHot) return aHot ? 1 : -1;
+
+      return a.taskIndex - b.taskIndex;
+    })
+    .map(({ task }) => task);
 }
 
 function resolvePlannerFeedbackContext(value) {
@@ -718,7 +1346,5 @@ registerNodeType("agent.evidence_collect", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  FLOW CONTROL — Gates, barriers, and routing
 // ═══════════════════════════════════════════════════════════════════════════
-
-
 
 

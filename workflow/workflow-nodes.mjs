@@ -25,14 +25,121 @@ import {
   unregisterNodeType,
 } from "./workflow-engine.mjs";
 import {
+  expireApprovalRequest,
+  getApprovalRequest,
+  resolveApprovalRequest,
+  upsertWorkflowGateApprovalRequest,
+} from "./approval-queue.mjs";
+import { requireWorkflowActionApproval } from "./action-approval.mjs";
+import {
   _completedWithPR,
   _noCommitCounts,
   _skipUntil,
   MAX_NO_COMMIT_ATTEMPTS,
 } from "./workflow-nodes/transforms.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
+import { resolve, dirname, basename } from "node:path";
+import {
+  execSync as nodeExecSync,
+  execFileSync as nodeExecFileSync,
+  spawn,
+  spawnSync,
+} from "node:child_process";
+
+/**
+ * Non-blocking async replacement for execFileSync / execSync.
+ * Resolves with stdout; rejects with err.stdout / err.stderr / err.status like execFileSync errors.
+ */
+function spawnAsync(command, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const MAX_BUFFER = 10 * 1024 * 1024;
+    const captureOutput = opts.stdio !== "inherit";
+    const child = spawn(command, args || [], {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: captureOutput ? "pipe" : "inherit",
+      shell: opts.shell || false,
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    if (captureOutput) {
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+        if (stdout.length > MAX_BUFFER) stdout = stdout.slice(stdout.length - MAX_BUFFER);
+      });
+      child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    }
+    let timedOut = false;
+    const timer = opts.timeout > 0 ? setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch {}
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
+    }, opts.timeout) : null;
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        const err = new Error(`Command timed out after ${opts.timeout}ms: ${command}`);
+        err.killed = true; err.stdout = stdout; err.stderr = stderr; err.status = null;
+        return reject(err);
+      }
+      if (code !== 0) {
+        const err = new Error(`Command failed with exit code ${code}`);
+        err.stdout = stdout; err.stderr = stderr; err.status = code; err.exitCode = code;
+        return reject(err);
+      }
+      resolve(stdout);
+    });
+    child.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      err.stdout = stdout; err.stderr = stderr;
+      reject(err);
+    });
+  });
+}
+
+function resolveWorkflowCwdValue(rawValue, fallback = process.cwd()) {
+  const fallbackText = String(fallback || process.cwd()).trim() || process.cwd();
+  const text = String(rawValue || "").trim();
+  if (!text || isUnresolvedTemplateToken(text)) return fallbackText;
+  return text;
+}
+
+function applyResolvedWorkflowEnv(baseEnv, resolvedEnvConfig) {
+  const commandEnv = { ...baseEnv };
+  if (!resolvedEnvConfig || typeof resolvedEnvConfig !== "object" || Array.isArray(resolvedEnvConfig)) {
+    return commandEnv;
+  }
+  for (const [key, value] of Object.entries(resolvedEnvConfig)) {
+    const name = String(key || "").trim();
+    if (!name) continue;
+    if (value == null) {
+      delete commandEnv[name];
+      continue;
+    }
+    const normalizedValue = typeof value === "string" ? value : JSON.stringify(value);
+    if (isUnresolvedTemplateToken(normalizedValue)) {
+      delete commandEnv[name];
+      continue;
+    }
+    commandEnv[name] = normalizedValue;
+  }
+  return commandEnv;
+}
+
+function execSync(command, options = {}) {
+  return nodeExecSync(command, {
+    ...options,
+    windowsHide: options.windowsHide ?? true,
+  });
+}
+
+function execFileSync(file, args, options = {}) {
+  return nodeExecFileSync(file, args, {
+    ...options,
+    windowsHide: options.windowsHide ?? true,
+  });
+}
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
@@ -42,6 +149,7 @@ import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { formatTraceparent, traceAgentSession, traceTaskExecution } from "../infra/tracing.mjs";
 import { runInIsolatedRunner } from "../infra/container-runner.mjs";
 import { recordWorktreeRecoveryEvent } from "../infra/worktree-recovery-state.mjs";
+import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 import {
   appendKnowledgeEntry,
   buildKnowledgeEntry,
@@ -50,12 +158,24 @@ import {
   retrieveKnowledgeEntries,
 } from "../workspace/shared-knowledge.mjs";
 import {
+  findReusableSkillbookStrategies,
+  getSkillbookStrategy,
+  upsertSkillbookStrategy,
+} from "../workspace/skillbook-store.mjs";
+import {
+  appendArtifactRecordToStateLedger,
+  appendPromotedStrategyToStateLedger,
+  upsertStateLedgerKeyValue,
+} from "../lib/state-ledger-sqlite.mjs";
+import { RunEvaluator } from "./run-evaluator.mjs";
+import {
   buildWorkflowContractPromptBlock,
   loadWorkflowContract,
   validateWorkflowContract,
 } from "./workflow-contract.mjs";
 import { resolveAutoCommand } from "./project-detection.mjs";
 import { loadConfig, readConfigDocument } from "../config/config.mjs";
+import { resolveRepoRoot as resolveConfiguredRepoRoot } from "../config/repo-root.mjs";
 import { resolveHeavyRunnerPolicy, runCommandInHeavyRunnerLease } from "./heavy-runner-pool.mjs";
 import {
   bootstrapWorktreeForPath,
@@ -65,18 +185,23 @@ import {
 } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
+import { buildConflictResolutionPrompt } from "../git/conflict-resolver.mjs";
 import { buildArchitectEditorFrame, buildRepoTopologyContext, hasRepoMapContext } from "../lib/repo-map.mjs";
 import {
   evaluateMarkdownSafety,
   recordMarkdownSafetyAuditEvent,
   resolveMarkdownSafetyPolicy,
 } from "../lib/skill-markdown-safety.mjs";
+import { shouldRequireManagedPrePush } from "../infra/guardrails.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
+import {
+  getBuiltinNodeDefinition,
+  listBuiltinNodeDefinitions,
+} from "./workflow-nodes/definitions.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
   getCustomNodeDir,
-  inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
@@ -104,6 +229,204 @@ const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
 const BOSUN_CREATED_PR_LABEL = "bosun-pr-bosun-created";
 const BOSUN_CREATED_PR_MARKER = "<!-- bosun-created -->";
 const markdownSafetyPolicyCache = new Map();
+
+function isUsableGitRepoRoot(candidate) {
+  const repoRoot = String(candidate || "").trim();
+  if (!repoRoot) return false;
+  try {
+    const topLevel = execGitArgsSync(["rev-parse", "--show-toplevel"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return Boolean(topLevel);
+  } catch {
+    return false;
+  }
+}
+
+function hasGitMetadata(candidate) {
+  const repoRoot = String(candidate || "").trim();
+  if (!repoRoot) return false;
+  try {
+    return existsSync(resolve(repoRoot, ".git"));
+  } catch {
+    return false;
+  }
+}
+
+function findContainingGitRepoRoot(candidate) {
+  let current = String(candidate || "").trim();
+  if (!current) return "";
+  try {
+    current = resolve(current);
+  } catch {
+    return "";
+  }
+  while (current) {
+    if (hasGitMetadata(current) || isUsableGitRepoRoot(current)) {
+      return current;
+    }
+    const parent = resolve(current, "..");
+    if (!parent || parent === current) break;
+    current = parent;
+  }
+  return "";
+}
+
+function extractGitHubRepoSlug(remoteUrl) {
+  const raw = String(remoteUrl || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\\/g, "/");
+  const match = normalized.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i);
+  return match?.[1] ? String(match[1]).replace(/\.git$/i, "") : "";
+}
+
+function isLocalFilesystemGitRemote(remoteUrl) {
+  const raw = String(remoteUrl || "").trim();
+  if (!raw) return true;
+  const normalized = raw.replace(/\\/g, "/");
+  if (
+    /github\.com[:/]/i.test(normalized) ||
+    /^(?:https?|ssh|git):\/\//i.test(raw) ||
+    /^[^@\s]+@[^:\s]+:.+/.test(raw)
+  ) {
+    return false;
+  }
+  return /^(?:[A-Za-z]:\/|\/|\.{1,2}\/|file:\/\/|\/\/)/.test(normalized);
+}
+
+function resolvePreferredPushRemote(worktreePath, preferredRemote, repoHint = "") {
+  const fallbackRemote = String(preferredRemote || "origin").trim() || "origin";
+  let remoteListRaw = "";
+  try {
+    remoteListRaw = execGitArgsSync(["remote"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return fallbackRemote;
+  }
+  const remoteNames = remoteListRaw.split(/\r?\n/).map((value) => String(value || "").trim()).filter(Boolean);
+  if (remoteNames.length === 0) return fallbackRemote;
+  const normalizedRepoHint = String(repoHint || "").trim().replace(/\.git$/i, "").toLowerCase();
+  const remotes = remoteNames.map((name) => {
+    let url = "";
+    try {
+      url = execGitArgsSync(["remote", "get-url", name], {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    } catch {
+      // ignore unreadable remote
+    }
+    const slug = extractGitHubRepoSlug(url).toLowerCase();
+    return {
+      name,
+      url,
+      slug,
+      isLocal: isLocalFilesystemGitRemote(url),
+    };
+  });
+  const preferred = remotes.find((remote) => remote.name === fallbackRemote);
+  if (
+    preferred &&
+    !preferred.isLocal &&
+    (!normalizedRepoHint || !preferred.slug || preferred.slug === normalizedRepoHint)
+  ) {
+    return preferred.name;
+  }
+  const repoMatched = remotes.find((remote) => !remote.isLocal && normalizedRepoHint && remote.slug === normalizedRepoHint);
+  if (repoMatched) return repoMatched.name;
+  const githubRemote = remotes.find((remote) => !remote.isLocal && remote.slug);
+  if (githubRemote) return githubRemote.name;
+  const networkRemote = remotes.find((remote) => !remote.isLocal);
+  return networkRemote?.name || fallbackRemote;
+}
+
+function resolveWorkflowRepoRoot(node, ctx) {
+  const taskPayload =
+    ctx?.data?.task && typeof ctx.data.task === "object"
+      ? ctx.data.task
+      : null;
+  const taskMeta =
+    taskPayload?.meta && typeof taskPayload.meta === "object"
+      ? taskPayload.meta
+      : null;
+  const repositoryHint = pickTaskString(
+    cfgOrCtx(node, ctx, "repository"),
+    ctx?.data?.repository,
+    taskPayload?.repository,
+    taskPayload?.repo,
+    taskMeta?.repository,
+    taskMeta?.repo,
+  );
+  const workspaceHint = pickTaskString(
+    cfgOrCtx(node, ctx, "workspace"),
+    ctx?.data?.workspace,
+    taskPayload?.workspace,
+    taskPayload?.workspaceId,
+    taskMeta?.workspace,
+    taskMeta?.workspaceId,
+  );
+  const explicitCandidates = [];
+  for (const rawCandidate of [
+    cfgOrCtx(node, ctx, "repoRoot"),
+    ctx?.data?.repoRoot,
+    taskPayload?.repoRoot,
+    taskMeta?.repoRoot,
+  ]) {
+    const candidate = String(rawCandidate || "").trim();
+    if (!candidate) continue;
+    explicitCandidates.push(resolve(candidate));
+  }
+  for (const candidate of explicitCandidates) {
+    if (repositoryHint) {
+      const inferred = resolveTaskRepositoryRoot(repositoryHint, candidate, workspaceHint);
+      if (inferred && hasGitMetadata(inferred)) return resolve(inferred);
+    }
+    if (hasGitMetadata(candidate)) return resolve(candidate);
+  }
+  if (!repositoryHint && explicitCandidates.length > 0) {
+    return explicitCandidates[0];
+  }
+  const cwdCandidate = String(process.cwd() || "").trim();
+  const containingCwdRepo = findContainingGitRepoRoot(cwdCandidate);
+  const candidateSet = new Set();
+  for (const rawCandidate of [
+    cfgOrCtx(node, ctx, "repoRoot"),
+    ctx?.data?.repoRoot,
+    taskPayload?.repoRoot,
+    taskMeta?.repoRoot,
+    containingCwdRepo,
+    resolveConfiguredRepoRoot({ cwd: process.cwd() }),
+    process.cwd(),
+  ]) {
+    const candidate = String(rawCandidate || "").trim();
+    if (!candidate) continue;
+    candidateSet.add(resolve(candidate));
+  }
+  const candidates = [...candidateSet];
+  for (const candidate of candidates) {
+    if (repositoryHint) {
+      const inferred = resolveTaskRepositoryRoot(repositoryHint, candidate, workspaceHint);
+      if (inferred && isUsableGitRepoRoot(inferred)) return resolve(inferred);
+    }
+    if (isUsableGitRepoRoot(candidate)) return resolve(candidate);
+  }
+  if (repositoryHint) {
+    for (const candidate of candidates) {
+      const inferred = resolveTaskRepositoryRoot(repositoryHint, candidate, workspaceHint);
+      if (inferred) return resolve(inferred);
+    }
+  }
+  return candidates[0] || resolve(process.cwd());
+}
 
 function getRepoMarkdownSafetyPolicy(repoRoot) {
   const normalizedRoot = resolve(repoRoot || process.cwd());
@@ -468,6 +791,27 @@ const NODE_PORT_OVERRIDES = Object.freeze({
     inputs: [makePort("default", "SessionRef", "", { accepts: ["TaskDef", "Any"] })],
     outputs: [makePort("default", "AgentResult")],
   },
+  "action.team_task_claim": {
+    outputs: [
+      makePort("default", "JSON", "Team task claim result"),
+      makePort("claimed", "JSON", "Successful claim result"),
+      makePort("unavailable", "JSON", "Claim conflict or missing task"),
+    ],
+  },
+  "action.team_task_complete": {
+    outputs: [
+      makePort("default", "JSON", "Team task completion result"),
+      makePort("completed", "JSON", "Completed task result"),
+      makePort("released", "JSON", "Released task result"),
+    ],
+  },
+  "action.team_message": {
+    outputs: [
+      makePort("default", "JSON", "Team message delivery result"),
+      makePort("direct", "JSON", "Direct teammate message"),
+      makePort("channel", "JSON", "Channel message"),
+    ],
+  },
 });
 
 const NODE_PRIMARY_FIELD_OVERRIDES = Object.freeze({
@@ -480,6 +824,13 @@ const NODE_PRIMARY_FIELD_OVERRIDES = Object.freeze({
   "action.create_pr": ["title", "baseBranch", "headBranch"],
   "action.run_command": ["command", "cwd"],
   "notify.telegram": ["chatId", "message"],
+  "action.team_init": ["teamId", "leadId", "defaultChannel"],
+  "action.team_task_publish": ["title", "createdBy", "channelId"],
+  "action.team_task_claim": ["taskId", "memberId", "actorId"],
+  "action.team_task_complete": ["taskId", "memberId", "release"],
+  "action.team_message": ["fromMemberId", "toMemberId", "channelId"],
+  "action.team_inbox": ["memberId", "channelId", "limit"],
+  "action.team_snapshot": ["includeTasks", "includeMessages", "includeRoster"],
 });
 
 function inferPrimaryFields(schemaProps = {}) {
@@ -568,12 +919,384 @@ function registerBuiltinNodeType(type, handler) {
   registerNodeType(type, handler);
 }
 
+function resolveSelfImprovementScope(ctx, node, overrides = {}) {
+  const normalize = (value) => {
+    const text = String(value ?? "").trim();
+    return text || null;
+  };
+  const fromTask = ctx?.data?.task && typeof ctx.data.task === "object" ? ctx.data.task : null;
+  const taskMeta = fromTask?.meta && typeof fromTask.meta === "object" ? fromTask.meta : null;
+  return {
+    repoRoot: normalize(overrides.repoRoot) || normalize(ctx?.data?.repoRoot) || process.cwd(),
+    teamId: normalize(overrides.teamId) || normalize(taskMeta?.teamId) || normalize(ctx?.data?.teamId),
+    workspaceId:
+      normalize(overrides.workspaceId) ||
+      normalize(taskMeta?.workspaceId) ||
+      normalize(ctx?.data?._workspaceId) ||
+      normalize(ctx?.data?.workspaceId),
+    sessionId:
+      normalize(overrides.sessionId) ||
+      normalize(taskMeta?.sessionId) ||
+      normalize(ctx?.data?.sessionId) ||
+      normalize(ctx?.data?.threadId),
+    runId: normalize(overrides.runId) || normalize(ctx?.data?.runId) || normalize(ctx?.id),
+    workflowId:
+      normalize(overrides.workflowId) ||
+      normalize(ctx?.data?._workflowId) ||
+      normalize(ctx?.data?.workflowId),
+    taskId:
+      normalize(overrides.taskId) ||
+      normalize(ctx?.data?.taskId) ||
+      normalize(fromTask?.id),
+    taskTitle:
+      normalize(overrides.taskTitle) ||
+      normalize(ctx?.data?.taskTitle) ||
+      normalize(fromTask?.title),
+    agentId: normalize(overrides.agentId) || normalize(node?.id) || "workflow",
+    agentType: normalize(overrides.agentType) || "workflow",
+  };
+}
+
+function makeSelfImprovementEvaluator(ctx, options = {}) {
+  const repoRoot = String(options.repoRoot || ctx?.data?.repoRoot || process.cwd()).trim() || process.cwd();
+  return new RunEvaluator({
+    configDir: repoRoot,
+    ...(options.evaluatorConfig && typeof options.evaluatorConfig === "object"
+      ? options.evaluatorConfig
+      : {}),
+  });
+}
+
+function normalizeSelfImprovementTagList(...values) {
+  const out = [];
+  const seen = new Set();
+  const append = (value) => {
+    const text = String(value ?? "").trim();
+    if (!text) return;
+    const key = text.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(text);
+  };
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const item of value) append(item);
+    } else if (typeof value === "string" && value.includes(",")) {
+      for (const item of value.split(",")) append(item);
+    } else {
+      append(value);
+    }
+  }
+  return out;
+}
+
+function resolveSelfImprovementStrategy(evaluation, requestedStrategyId = null, fallbackStrategy = null) {
+  if (requestedStrategyId && Array.isArray(evaluation?.strategies)) {
+    const matched = evaluation.strategies.find((strategy) => strategy?.strategyId === requestedStrategyId);
+    if (matched) return matched;
+  }
+  if (fallbackStrategy && typeof fallbackStrategy === "object") {
+    return fallbackStrategy;
+  }
+  if (evaluation?.ratchet?.targetStrategy && typeof evaluation.ratchet.targetStrategy === "object") {
+    return evaluation.ratchet.targetStrategy;
+  }
+  if (evaluation?.promotion?.selectedStrategy && typeof evaluation.promotion.selectedStrategy === "object") {
+    return evaluation.promotion.selectedStrategy;
+  }
+  return Array.isArray(evaluation?.strategies) ? evaluation.strategies[0] || null : null;
+}
+
+function normalizeSkillbookGuidancePayload(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const strategies = Array.isArray(value.strategies)
+    ? value.strategies.filter((entry) => entry && typeof entry === "object")
+    : [];
+  const guidanceSummary = String(value.guidanceSummary || value.summary || "").trim();
+  if (!guidanceSummary && strategies.length === 0) return null;
+  return {
+    ...value,
+    strategies,
+    guidanceSummary,
+  };
+}
+
+function buildSkillbookPromptContext(guidance) {
+  const normalized = normalizeSkillbookGuidancePayload(guidance);
+  if (!normalized) return "";
+  return String(normalized.guidanceSummary || "").trim();
+}
+
+async function resolveReusableSkillbookGuidance(ctx, options = {}) {
+  const hasExplicitWorkflowId = Object.prototype.hasOwnProperty.call(options, "workflowId");
+  const repoRoot = String(
+    options.repoRoot
+    || ctx?.data?.repoRoot
+    || process.cwd(),
+  ).trim() || process.cwd();
+  const workflowId = String(
+    hasExplicitWorkflowId
+      ? options.workflowId
+      : (
+          ctx?.data?._workflowId
+          || ctx?.data?.workflowId
+          || ""
+        )
+  ).trim();
+  const category = String(options.category || "strategy").trim() || "strategy";
+  const scopeLevel = String(options.scopeLevel || "").trim();
+  const scope = String(options.scope || "").trim();
+  const status = String(options.status || "").trim() || "promoted";
+  const query = String(options.query || "").trim();
+  const tags = Array.isArray(options.tags) ? options.tags : normalizeSelfImprovementTagList(options.tags);
+  const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.trunc(Number(options.limit))) : 5;
+  const result = await findReusableSkillbookStrategies({
+    repoRoot,
+    workflowId: workflowId || undefined,
+    category,
+    scopeLevel: scopeLevel || undefined,
+    scope: scope || undefined,
+    status: status || undefined,
+    query: query || undefined,
+    tags,
+    limit,
+  });
+  return {
+    success: true,
+    repoRoot,
+    workflowId: workflowId || null,
+    category,
+    scopeLevel: scopeLevel || null,
+    scope: scope || null,
+    status: status || null,
+    query: query || null,
+    tags,
+    total: result.total,
+    matched: result.matched,
+    strategies: result.strategies,
+    guidanceSummary: result.guidanceSummary,
+    skillbookPath: result.skillbookPath,
+    strategyIds: result.strategies.map((entry) => entry?.strategyId).filter(Boolean),
+  };
+}
+
+function summarizeRunGraphDiff(diff = null) {
+  if (!diff || typeof diff !== "object") return null;
+  const added = Array.isArray(diff?.executionDelta?.added) ? diff.executionDelta.added.length : 0;
+  const removed = Array.isArray(diff?.executionDelta?.removed) ? diff.executionDelta.removed.length : 0;
+  const changed = Array.isArray(diff?.executionDelta?.changed) ? diff.executionDelta.changed.length : 0;
+  return {
+    added,
+    removed,
+    changed,
+    sample: {
+      added: Array.isArray(diff?.executionDelta?.added) ? diff.executionDelta.added.slice(0, 3) : [],
+      removed: Array.isArray(diff?.executionDelta?.removed) ? diff.executionDelta.removed.slice(0, 3) : [],
+      changed: Array.isArray(diff?.executionDelta?.changed) ? diff.executionDelta.changed.slice(0, 3) : [],
+    },
+  };
+}
+
+async function persistSelfImprovementKnowledgeEntry(ctx, node, {
+  evaluation,
+  selectedStrategy,
+  decision,
+  repoRoot = "",
+  targetFile = "",
+  registryFile = "",
+  scopeLevel = "workspace",
+  scope = "",
+  category = "strategy",
+  status = "",
+  tags = [],
+  agentId = "",
+  agentType = "",
+  contentLines = [],
+}) {
+  if (!selectedStrategy || typeof selectedStrategy !== "object") {
+    return {
+      success: false,
+      persisted: false,
+      reason: "No strategy candidate available for promotion",
+    };
+  }
+
+  const resolvedScope = resolveSelfImprovementScope(ctx, node, { repoRoot, agentId, agentType });
+  const resolvedTargetFile = String(targetFile || "").trim();
+  const resolvedRegistryFile = String(registryFile || "").trim();
+  const resolvedScopeLevel = String(scopeLevel || "workspace").trim().toLowerCase() || "workspace";
+  const resolvedCategory = String(category || "strategy").trim() || "strategy";
+  const resolvedStatus = String(status || "").trim() || "promoted";
+  const tagValues = normalizeSelfImprovementTagList(tags, selectedStrategy.tags || []);
+
+  const initOpts = { repoRoot: resolvedScope.repoRoot };
+  if (resolvedTargetFile) initOpts.targetFile = resolvedTargetFile;
+  if (resolvedRegistryFile) initOpts.registryFile = resolvedRegistryFile;
+  initSharedKnowledge(initOpts);
+
+  const content = contentLines.filter(Boolean).join("\n");
+  const entry = buildKnowledgeEntry({
+    content,
+    scope: String(scope || selectedStrategy.category || "self-improvement").trim(),
+    category: resolvedCategory,
+    scopeLevel: resolvedScopeLevel,
+    teamId: resolvedScope.teamId,
+    workspaceId: resolvedScope.workspaceId,
+    sessionId: resolvedScope.sessionId,
+    runId: resolvedScope.runId,
+    workflowId: resolvedScope.workflowId || evaluation?.workflowId || null,
+    taskRef: resolvedScope.taskId || null,
+    strategyId: selectedStrategy.strategyId || null,
+    confidence: selectedStrategy.confidence,
+    verificationStatus: decision || evaluation?.promotion?.decision || "promote_strategy",
+    verifiedAt: new Date().toISOString(),
+    provenance: [
+      `run:${evaluation?.runId || resolvedScope.runId || "unknown"}`,
+      `workflow:${evaluation?.workflowId || resolvedScope.workflowId || "unknown"}`,
+      ...(Array.isArray(selectedStrategy.evidence) ? selectedStrategy.evidence : []),
+    ],
+    evidence: Array.isArray(selectedStrategy.evidence) ? selectedStrategy.evidence : [],
+    agentId: resolvedScope.agentId,
+    agentType: resolvedScope.agentType,
+    tags: tagValues,
+  });
+
+  const knowledgeResult = await appendKnowledgeEntry(entry, { skipRateLimit: true });
+  const knowledgeNonFatal = !knowledgeResult.success
+    && /duplicate entry|rate limited/i.test(String(knowledgeResult.reason || ""));
+  if (!knowledgeResult.success && !knowledgeNonFatal) {
+    return {
+      success: false,
+      persisted: false,
+      reason: knowledgeResult.reason,
+      strategyId: selectedStrategy.strategyId,
+      entry,
+    };
+  }
+
+  const skillbookResult = await upsertSkillbookStrategy({
+    strategyId: selectedStrategy.strategyId || null,
+    workflowId: resolvedScope.workflowId || evaluation?.workflowId || null,
+    runId: evaluation?.runId || resolvedScope.runId || null,
+    taskId: resolvedScope.taskId || null,
+    sessionId: resolvedScope.sessionId || null,
+    teamId: resolvedScope.teamId || null,
+    workspaceId: resolvedScope.workspaceId || null,
+    scope: entry.scope,
+    scopeLevel: resolvedScopeLevel,
+    category: resolvedCategory,
+    decision: decision || evaluation?.promotion?.decision || "promote_strategy",
+    status: resolvedStatus,
+    verificationStatus: entry.verificationStatus,
+    confidence: selectedStrategy.confidence,
+    recommendation: selectedStrategy.recommendation,
+    rationale: selectedStrategy.rationale,
+    evidence: selectedStrategy.evidence || [],
+    provenance: entry.provenance || [],
+    tags: tagValues,
+    benchmark: evaluation?.benchmark || null,
+    metrics: evaluation?.metrics || null,
+    evaluation: {
+      runId: evaluation?.runId || null,
+      workflowId: evaluation?.workflowId || null,
+      score: evaluation?.score ?? null,
+      grade: evaluation?.grade || null,
+      promotion: evaluation?.promotion || null,
+      ratchet: evaluation?.ratchet || null,
+    },
+    knowledge: {
+      hash: knowledgeResult.hash || entry.hash,
+      registryPath: knowledgeResult.registryPath || null,
+      targetFile: resolvedTargetFile || null,
+      entry,
+      persisted: knowledgeResult.success === true,
+      reason: knowledgeResult.reason || null,
+    },
+    summary: contentLines.find(Boolean) || selectedStrategy.recommendation || null,
+  }, { repoRoot: resolvedScope.repoRoot });
+
+  const ledgerResult = appendPromotedStrategyToStateLedger({
+    strategyId: selectedStrategy.strategyId || null,
+    workflowId: resolvedScope.workflowId || evaluation?.workflowId || null,
+    runId: evaluation?.runId || resolvedScope.runId || null,
+    taskId: resolvedScope.taskId || null,
+    sessionId: resolvedScope.sessionId || null,
+    teamId: resolvedScope.teamId || null,
+    workspaceId: resolvedScope.workspaceId || null,
+    scope: entry.scope,
+    scopeId:
+      resolvedScopeLevel === "team"
+        ? resolvedScope.teamId
+        : resolvedScopeLevel === "workspace"
+          ? resolvedScope.workspaceId
+          : resolvedScopeLevel === "session"
+            ? resolvedScope.sessionId
+            : resolvedScope.runId,
+    scopeLevel: resolvedScopeLevel,
+    category: resolvedCategory,
+    decision: decision || evaluation?.promotion?.decision || "promote_strategy",
+    status: resolvedStatus,
+    verificationStatus: entry.verificationStatus,
+    confidence: selectedStrategy.confidence,
+    recommendation: selectedStrategy.recommendation,
+    rationale: selectedStrategy.rationale,
+    evidence: selectedStrategy.evidence || [],
+    provenance: entry.provenance || [],
+    tags: tagValues,
+    benchmark: evaluation?.benchmark || null,
+    metrics: evaluation?.metrics || null,
+    evaluation: {
+      runId: evaluation?.runId || null,
+      workflowId: evaluation?.workflowId || null,
+      score: evaluation?.score ?? null,
+      grade: evaluation?.grade || null,
+      promotion: evaluation?.promotion || null,
+      ratchet: evaluation?.ratchet || null,
+    },
+    strategy: selectedStrategy,
+    knowledge: {
+      hash: knowledgeResult.hash || entry.hash,
+      registryPath: knowledgeResult.registryPath || null,
+      targetFile: resolvedTargetFile || null,
+      entry,
+      persisted: knowledgeResult.success === true,
+      reason: knowledgeResult.reason || null,
+    },
+    updatedAt: entry.verifiedAt,
+  }, { repoRoot: resolvedScope.repoRoot });
+
+  return {
+    success: true,
+    persisted: true,
+    strategyId: selectedStrategy.strategyId,
+    decision: decision || evaluation?.promotion?.decision || "promote_strategy",
+    status: resolvedStatus,
+    entry,
+    hash: knowledgeResult.hash || entry.hash,
+    registryPath: knowledgeResult.registryPath || null,
+    knowledgePersisted: knowledgeResult.success === true,
+    knowledgeSkipped: knowledgeNonFatal,
+    knowledgeReason: knowledgeResult.reason || null,
+    skillbookPath: skillbookResult.path || null,
+    skillbookEntry: skillbookResult.entry || null,
+    ledgerPath: ledgerResult.path || null,
+    ledgerEventId: ledgerResult.eventId || null,
+  };
+}
+
 function shouldBypassGhPrCreationForTests() {
-  return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GH !== "true";
+  const runningUnderVitest = Boolean(process.env.VITEST);
+  const runningUnderNodeTest = process.argv.includes("--test") || Boolean(process.env.NODE_TEST_CONTEXT);
+  return (runningUnderVitest || runningUnderNodeTest) && process.env.BOSUN_TEST_ALLOW_GH !== "true";
 }
 
 function shouldSkipGitRefreshForTests() {
   return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GIT_REFRESH !== "true";
+}
+
+function getNoopGitEditorCommand() {
+  const nodeBinary = JSON.stringify(process.execPath);
+  return `${nodeBinary} -e ""`;
 }
 
 function makeIsolatedGitEnv(extra = {}) {
@@ -589,6 +1312,12 @@ function makeIsolatedGitEnv(extra = {}) {
   ]) {
     delete env[key];
   }
+  // Force git to stay non-interactive inside Bosun-managed automation paths.
+  env.GIT_TERMINAL_PROMPT = env.GIT_TERMINAL_PROMPT || "0";
+  env.GCM_INTERACTIVE = env.GCM_INTERACTIVE || "never";
+  env.GIT_MERGE_AUTOEDIT = env.GIT_MERGE_AUTOEDIT || "no";
+  env.GIT_EDITOR = env.GIT_EDITOR || getNoopGitEditorCommand();
+  env.GIT_SEQUENCE_EDITOR = env.GIT_SEQUENCE_EDITOR || env.GIT_EDITOR;
   return env;
 }
 
@@ -693,6 +1422,7 @@ function execGitArgsSync(args, options = {}) {
       return execFileSync(gitBinary, gitArgs, {
         ...options,
         env: buildGitExecutionEnv(env, gitBinary),
+        windowsHide: options.windowsHide ?? true,
       });
     } catch (error) {
       if (error?.code === "ENOENT") {
@@ -704,6 +1434,33 @@ function execGitArgsSync(args, options = {}) {
   }
   if (lastEnoent) throw lastEnoent;
   throw new Error("Git executable not found");
+}
+
+function buildPortableCommand(command = "") {
+  const text = String(command || "").trim();
+  if (!text) return { command: text, shell: false };
+  if (process.platform !== "win32") return { command: text, shell: true };
+
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (/^npm(?:\.cmd)?\s+/i.test(normalized) || /^npx(?:\.cmd)?\s+/i.test(normalized)) {
+    return { command: normalized, shell: true };
+  }
+  return { command: normalized, shell: true };
+}
+
+function buildExecSyncOptions(command, { cwd, timeout, encoding = "utf8", stdio = "pipe" } = {}) {
+  const portable = buildPortableCommand(command);
+  return {
+    command: portable.command,
+    options: {
+      cwd,
+      timeout,
+      encoding,
+      stdio,
+      shell: portable.shell,
+      windowsHide: true,
+    },
+  };
 }
 
 function trimLogText(value, max = 180) {
@@ -761,7 +1518,8 @@ function normalizePrEventName(value) {
 }
 
 function evaluateTaskAssignedTriggerConfig(config = {}, eventData = {}) {
-  let triggered = eventData?.eventType === "task.assigned";
+  const evtType = eventData?.eventType;
+  let triggered = evtType === "task.assigned" || evtType === "task.review_fix_requested";
   if (!triggered) return false;
 
   const task = eventData?.task || eventData || {};
@@ -848,6 +1606,7 @@ function ensureManagedTaskWorktreeReady(repoRoot, worktreePath) {
 
 function shouldEnforceManagedPushHook(repoRoot, worktreePath) {
   if (!isManagedBosunWorktree(worktreePath, repoRoot)) return false;
+  if (!shouldRequireManagedPrePush(repoRoot)) return false;
   const gatePolicy = resolveManagedWorktreeGatePolicy(repoRoot);
   if (!gatePolicy) return true;
   return gatePolicy.enforcePushHook !== false;
@@ -1153,7 +1912,7 @@ function summarizeAssistantUsage(data = {}) {
   if (total != null) parts.push(`total=${total}`);
   if (durationMs != null) parts.push(`duration=${Math.round(durationMs)}ms`);
   if (!parts.length) return "";
-  return `Usage: ${parts.join(" · ")}`;
+  return `Usage: ${parts.join(" ┬À ")}`;
 }
 
 function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
@@ -1175,6 +1934,18 @@ function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
 
   if (task && typeof task === "object") {
     ctx.data.task = task;
+    const taskWorktreePath = String(
+      task.worktreePath ||
+      task.workspacePath ||
+      task.meta?.worktreePath ||
+      task.meta?.workspacePath ||
+      task.metadata?.worktreePath ||
+      task.metadata?.workspacePath ||
+      "",
+    ).trim();
+    if (taskWorktreePath && !String(ctx.data.worktreePath || "").trim()) {
+      ctx.data.worktreePath = taskWorktreePath;
+    }
   }
 }
 async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue = "") {
@@ -1218,18 +1989,40 @@ async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue
     return [];
   })();
   const firstParamName = String(createTaskParamNames[0] || "").toLowerCase();
+  const secondParamName = String(createTaskParamNames[1] || "").toLowerCase();
   const payloadOnlyCreateTask =
     createTaskParamNames.length === 1 &&
     /(task|payload|spec|data)/i.test(firstParamName) &&
     !/project/i.test(firstParamName);
+  const projectOnlyCreateTask =
+    createTaskParamNames.length === 1 &&
+    /project/i.test(firstParamName) &&
+    !/(task|payload|spec|data)/i.test(firstParamName);
+  const projectAwareCreateTask =
+    createTaskParamNames.length >= 2 &&
+    /project/i.test(firstParamName) &&
+    /(task|payload|spec|data)/i.test(secondParamName);
 
   if (payloadOnlyCreateTask) {
     return kanban.createTask(payload);
   }
 
+  if (projectOnlyCreateTask && !resolvedProjectId) {
+    throw new Error("Kanban adapter requires a projectId to create planner tasks");
+  }
+
   const taskPayload = { ...payload };
   delete taskPayload.projectId;
-  return kanban.createTask(resolvedProjectId, taskPayload);
+  if (projectAwareCreateTask) {
+    return kanban.createTask(resolvedProjectId, taskPayload);
+  }
+  if (resolvedProjectId) {
+    return kanban.createTask(resolvedProjectId, taskPayload);
+  }
+  if (createTaskParamNames.length === 0) {
+    return kanban.createTask("", taskPayload);
+  }
+  return kanban.createTask(taskPayload);
 }
 
 function summarizeAssistantMessageData(data = {}) {
@@ -1557,6 +2350,277 @@ function buildAgentExecutionDigest(result = {}, streamLines = [], maxEvents = WO
   };
 }
 
+const WORKFLOW_AGENT_PLACEHOLDER_OUTPUTS = new Set([
+  "continued",
+  "model response continued",
+]);
+
+const WORKFLOW_AGENT_REPO_BLOCK_PATTERNS = [
+  /merge conflict/i,
+  /unmerged files/i,
+  /protected branch/i,
+  /non-fast-forward/i,
+  /push rejected/i,
+  /failed to push/i,
+  /pre-push hook/i,
+  /hook declined/i,
+  /cannot rebase/i,
+];
+
+const WORKFLOW_AGENT_ENV_BLOCK_PATTERNS = [
+  /prompt[_ ]quality/i,
+  /missing task (description|url)/i,
+  /infrastructure[_ ]blocked/i,
+  /repeated reconnect/i,
+  /startup-only/i,
+  /connection refused/i,
+  /connection reset/i,
+  /network/i,
+  /timeout/i,
+  /enoent/i,
+  /not authenticated/i,
+  /missing credentials/i,
+  /command not found/i,
+  /not recognized as an internal or external command/i,
+];
+
+const WORKFLOW_AGENT_COMMIT_BLOCK_PATTERNS = [
+  /implementation_done_commit_blocked/i,
+  /commit blocked/i,
+  /pre-push hook/i,
+  /git push/i,
+  /git commit/i,
+];
+
+function pickWorkflowPromptString(...values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text || isUnresolvedTemplateToken(text)) continue;
+    return text;
+  }
+  return "";
+}
+
+function resolveWorkflowTaskUrl(task = {}, ctx = {}) {
+  const taskMeta = task?.meta && typeof task.meta === "object" ? task.meta : {};
+  return pickWorkflowPromptString(
+    ctx?.data?.taskUrl,
+    task?.taskUrl,
+    task?.url,
+    taskMeta?.taskUrl,
+    taskMeta?.task_url,
+    taskMeta?.url,
+  );
+}
+
+async function ensureWorkflowTaskPromptCompleteness(ctx, engine, nodeId, explicitTaskId = "") {
+  const currentTask =
+    ctx.data?.task && typeof ctx.data.task === "object"
+      ? ctx.data.task
+      : ctx.data?.taskDetail && typeof ctx.data.taskDetail === "object"
+        ? ctx.data.taskDetail
+        : ctx.data?.taskInfo && typeof ctx.data.taskInfo === "object"
+          ? ctx.data.taskInfo
+          : null;
+
+  const taskId = pickWorkflowPromptString(
+    explicitTaskId,
+    currentTask?.id,
+    currentTask?.taskId,
+    ctx.data?.taskId,
+  );
+
+  let task = currentTask;
+  let taskDescription = pickWorkflowPromptString(
+    currentTask?.description,
+    currentTask?.body,
+    currentTask?.details,
+    currentTask?.meta?.taskDescription,
+    ctx.data?.taskDescription,
+  );
+  let taskUrl = resolveWorkflowTaskUrl(currentTask || {}, ctx);
+
+  const missingFields = [];
+  if (!taskDescription) missingFields.push("description");
+  if (!taskUrl) missingFields.push("url");
+
+  if (taskId && missingFields.length > 0 && typeof engine?.services?.kanban?.getTask === "function") {
+    try {
+      const fetchedTask = await engine.services.kanban.getTask(taskId);
+      if (fetchedTask && typeof fetchedTask === "object") {
+        task = task && typeof task === "object"
+          ? { ...fetchedTask, ...task, meta: { ...(fetchedTask.meta || {}), ...(task.meta || {}) } }
+          : fetchedTask;
+        ctx.data.task = task;
+        taskDescription = pickWorkflowPromptString(
+          taskDescription,
+          fetchedTask.description,
+          fetchedTask.body,
+          fetchedTask.details,
+          fetchedTask.meta?.taskDescription,
+        );
+        taskUrl = pickWorkflowPromptString(taskUrl, resolveWorkflowTaskUrl(fetchedTask, ctx));
+        if (taskDescription) ctx.data.taskDescription = taskDescription;
+        if (taskUrl) ctx.data.taskUrl = taskUrl;
+      }
+    } catch (error) {
+      ctx.log(
+        nodeId,
+        `Prompt completeness fetch failed for task ${taskId}: ${error?.message || error}`,
+        "warn",
+      );
+    }
+  }
+
+  const remainingMissing = [];
+  if (!taskDescription) remainingMissing.push("description");
+  if (!taskUrl) remainingMissing.push("url");
+  if (remainingMissing.length > 0) {
+    return {
+      ok: false,
+      taskId,
+      taskDescription,
+      taskUrl,
+      error:
+        `prompt_quality_error: missing task ${remainingMissing.join(" and ")}` +
+        `${taskId ? ` for ${taskId}` : ""}`,
+    };
+  }
+
+  return { ok: true, taskId, task, taskDescription, taskUrl };
+}
+
+function appendWorkflowTaskPromptContext(prompt, promptState) {
+  let nextPrompt = String(prompt || "").trim();
+  const taskDescription = String(promptState?.taskDescription || "").trim();
+  const taskUrl = String(promptState?.taskUrl || "").trim();
+  if (taskDescription && !nextPrompt.includes(taskDescription) && !/## Description/i.test(nextPrompt)) {
+    nextPrompt = `${nextPrompt}\n\n## Description\n${taskDescription}`;
+  }
+  if (taskUrl && !nextPrompt.includes(taskUrl)) {
+    nextPrompt = `${nextPrompt}\n\n## Task Reference\n${taskUrl}`;
+  }
+  return nextPrompt;
+}
+
+function classifyWorkflowAgentBlockedStatus(result = {}) {
+  const fragments = [];
+  if (result?.error) fragments.push(String(result.error));
+  if (result?.output) fragments.push(String(result.output));
+  if (Array.isArray(result?.stream)) fragments.push(...result.stream.map((entry) => String(entry || "")));
+  if (Array.isArray(result?.items)) {
+    fragments.push(
+      ...result.items.map((entry) => String(entry?.summary || entry?.content || entry?.type || "")),
+    );
+  }
+  const text = fragments.join("\n");
+  if (WORKFLOW_AGENT_COMMIT_BLOCK_PATTERNS.some((pattern) => pattern.test(text))) {
+    return "implementation_done_commit_blocked";
+  }
+  if (WORKFLOW_AGENT_REPO_BLOCK_PATTERNS.some((pattern) => pattern.test(text))) {
+    return "blocked_by_repo";
+  }
+  if (WORKFLOW_AGENT_ENV_BLOCK_PATTERNS.some((pattern) => pattern.test(text))) {
+    return "blocked_by_env";
+  }
+  return null;
+}
+
+function deriveWorkflowAgentSessionStatus(result = {}, { streamEventCount = 0 } = {}) {
+  const blockedStatus = classifyWorkflowAgentBlockedStatus(result);
+  if (blockedStatus) return blockedStatus;
+  const output = String(result?.output || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const itemCount = Array.isArray(result?.items) ? result.items.length : 0;
+  const noOutput = !output && itemCount === 0 && streamEventCount === 0;
+  if (noOutput) return "no_output";
+  if (WORKFLOW_AGENT_PLACEHOLDER_OUTPUTS.has(output) && itemCount === 0) {
+    return "no_output";
+  }
+  return result?.success === true ? "completed" : "failed";
+}
+
+const SESSION_PLACEHOLDER_OUTPUTS = new Set([
+  "continued",
+  "model response continued",
+  "turn completed",
+  "session completed",
+  "agent is composing a response...",
+  "agent is composing a response…",
+]);
+
+function resolveSuccessfulWorkflowAgentSessionStatus(result = {}) {
+  return classifyWorkflowAgentBlockedStatus(result) || "completed";
+}
+
+function pickLatestMeaningfulSessionMessage(messages = []) {
+  if (!Array.isArray(messages)) return "";
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const content = String(message?.content || "").trim();
+    if (!content) continue;
+    const normalized = content.replace(/\s+/g, " ").trim().toLowerCase();
+    if (SESSION_PLACEHOLDER_OUTPUTS.has(normalized)) continue;
+    return content;
+  }
+  return "";
+}
+
+function deriveWorkflowExecutionSessionStatus(run = {}) {
+  const terminalOutput = run?.data?._workflowTerminalOutput;
+  const terminalMessage = String(run?.data?._workflowTerminalMessage || "").trim();
+  const terminalStatus = String(run?.data?._workflowTerminalStatus || "")
+    .trim()
+    .toLowerCase();
+  const errors = Array.isArray(run?.errors)
+    ? run.errors
+      .map((entry) => String(entry?.error || entry?.message || entry || "").trim())
+      .filter(Boolean)
+    : [];
+
+  const fragments = [];
+  if (terminalOutput && typeof terminalOutput === "object") {
+    const implementationState = String(terminalOutput.implementationState || "").trim();
+    const blockedReason = String(terminalOutput.blockedReason || "").trim();
+    const error = String(terminalOutput.error || "").trim();
+    if (implementationState) fragments.push(implementationState);
+    if (blockedReason) fragments.push(blockedReason);
+    if (error) fragments.push(error);
+  } else if (terminalOutput != null) {
+    const outputText = String(terminalOutput || "").trim();
+    if (outputText) fragments.push(outputText);
+  }
+  if (terminalMessage) fragments.push(terminalMessage);
+
+  if (fragments.length === 0 && errors.length === 0) {
+    return terminalStatus === "failed" ? "failed" : "completed";
+  }
+
+  return deriveWorkflowAgentSessionStatus(
+    {
+      success: errors.length === 0 && terminalStatus !== "failed",
+      output: fragments.join("\n"),
+      error: errors.join("\n"),
+    },
+    { streamEventCount: 1 },
+  );
+}
+
+function classifyPushBlockedReason(errorText = "", hasMergeConflict = false) {
+  if (hasMergeConflict) return "blocked_by_repo";
+  const normalized = String(errorText || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "implementation_done_commit_blocked";
+  if (WORKFLOW_AGENT_COMMIT_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "implementation_done_commit_blocked";
+  }
+  if (WORKFLOW_AGENT_REPO_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "blocked_by_repo";
+  }
+  if (WORKFLOW_AGENT_ENV_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "blocked_by_env";
+  }
+  return "implementation_done_commit_blocked";
+}
+
 function normalizeLegacyWorkflowCommand(command) {
   let normalized = String(command || "");
   if (!normalized) return normalized;
@@ -1607,6 +2671,35 @@ async function compactWorkflowCommandResult({
     },
   );
 
+  const envelopeMeta = compacted.contextEnvelope?.meta && typeof compacted.contextEnvelope.meta === "object"
+    ? compacted.contextEnvelope.meta
+    : null;
+  const synthesizedDiagnostics = compacted.commandDiagnostics || (
+    envelopeMeta && (
+      envelopeMeta.summary ||
+      envelopeMeta.deltaSummary ||
+      envelopeMeta.suggestedRerun ||
+      envelopeMeta.hint ||
+      envelopeMeta.lowSignal === true
+    )
+      ? {
+          family: envelopeMeta.family || compacted.compactionFamily || null,
+          runner: null,
+          commandKey: null,
+          summary: String(envelopeMeta.summary || ""),
+          failedTargets: [],
+          fileAnchors: [],
+          insufficientSignal: envelopeMeta.lowSignal === true,
+          deltaSummary: String(envelopeMeta.deltaSummary || ""),
+          resolvedTargets: [],
+          remainingTargets: [],
+          newTargets: [],
+          suggestedRerun: String(envelopeMeta.suggestedRerun || "") || null,
+          hint: String(envelopeMeta.hint || ""),
+        }
+      : null
+  );
+
   return {
     output: compacted.text || rawOutput || rawStderr,
     outputCompacted: compacted.compacted,
@@ -1619,11 +2712,11 @@ async function compactWorkflowCommandResult({
     outputBudgetPolicy: compacted.budgetPolicy || null,
     outputBudgetReason: compacted.budgetReason || "",
     outputContextEnvelope: compacted.contextEnvelope || null,
-    outputDiagnostics: compacted.commandDiagnostics || null,
-    outputSuggestedRerun: compacted.commandDiagnostics?.suggestedRerun || null,
-    outputDeltaSummary: compacted.commandDiagnostics?.deltaSummary || "",
-    outputHint: compacted.commandDiagnostics?.hint || "",
-    outputInsufficientSignal: compacted.commandDiagnostics?.insufficientSignal === true,
+    outputDiagnostics: synthesizedDiagnostics,
+    outputSuggestedRerun: synthesizedDiagnostics?.suggestedRerun || null,
+    outputDeltaSummary: synthesizedDiagnostics?.deltaSummary || "",
+    outputHint: synthesizedDiagnostics?.hint || "",
+    outputInsufficientSignal: synthesizedDiagnostics?.insufficientSignal === true,
     items: compacted.item ? [compacted.item] : [],
   };
 }
@@ -1884,15 +2977,60 @@ async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }
   const blockedTasks = await kanban.listTasks(projectId, { status: "blocked" });
   const nowMs = Date.now();
   const recoveredTaskIds = [];
+  const isWorkflowPlaceholder = (value) => {
+    if (typeof value !== "string") return false;
+    const trimmed = value.trim();
+    return trimmed.startsWith("{{") && trimmed.endsWith("}}");
+  };
+
+  const resolveRetryAtMs = (task, autoRecovery) => {
+    const candidates = [
+      autoRecovery?.retryAt,
+      task?.cooldownUntil,
+      task?.meta?.worktreeFailure?.retryAt,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate || isWorkflowPlaceholder(candidate)) continue;
+      const parsed = Date.parse(String(candidate));
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
+  const hasStaleWorktreePlaceholders = (task) => [
+    task?.blockedReason,
+    task?.cooldownUntil,
+    task?.meta?.autoRecovery?.retryAt,
+    task?.meta?.worktreeFailure?.retryAt,
+    task?.meta?.worktreeFailure?.blockedReason,
+  ].some((value) => isWorkflowPlaceholder(value));
+
   for (const task of Array.isArray(blockedTasks) ? blockedTasks : []) {
     const autoRecovery = task?.meta?.autoRecovery;
-    if (!autoRecovery || typeof autoRecovery !== "object") continue;
-    if (autoRecovery.active === false) continue;
-    // Accept any auto-recovery reason (worktree_failure, consecutive_errors, etc.)
-    const retryAtMs = Date.parse(String(autoRecovery.retryAt || task?.cooldownUntil || ""));
-    if (!Number.isFinite(retryAtMs) || retryAtMs > nowMs) continue;
+    const worktreeFailure = task?.meta?.worktreeFailure;
+    const hasPlaceholder = hasStaleWorktreePlaceholders(task);
+    const isRecoverableBlockedTask = (
+      autoRecovery &&
+      typeof autoRecovery === "object" &&
+      autoRecovery.active !== false
+    ) || (
+      worktreeFailure &&
+      typeof worktreeFailure === "object"
+    ) || hasPlaceholder;
+    if (!isRecoverableBlockedTask) continue;
+
+    const retryAtMs = resolveRetryAtMs(task, autoRecovery);
+    if (Number.isFinite(retryAtMs) && retryAtMs > nowMs) continue;
+    if (!Number.isFinite(retryAtMs) && !hasPlaceholder) continue;
+
+    // If the task has a linked PR, recover to "inreview" instead of "todo"
+    const hasPr = Boolean(
+      task?.prNumber || task?.pr_number || task?.prUrl || task?.pr_url,
+    );
+    const recoveryStatus = hasPr ? "inreview" : "todo";
+
     await kanban.updateTask(task.id, {
-      status: "todo",
+      status: recoveryStatus,
       cooldownUntil: null,
       blockedReason: null,
       meta: {
@@ -1901,7 +3039,7 @@ async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }
           ...autoRecovery,
           active: false,
           recoveredAt: new Date(nowMs).toISOString(),
-          recoveredStatus: "todo",
+          recoveredStatus: recoveryStatus,
         },
       },
     });
@@ -2080,12 +3218,65 @@ function getChildWorkflowLineage(ctx, childWorkflowId = "", extra = {}) {
 
 function applyChildWorkflowLineage(ctx, inputData = {}, childWorkflowId = "", extra = {}) {
   const lineage = getChildWorkflowLineage(ctx, childWorkflowId, extra);
+  const currentTaskId = String(
+    extra.taskId ??
+      ctx?.data?.taskId ??
+      ctx?.data?.task?.id ??
+      ctx?.data?.taskInfo?.id ??
+      ctx?.data?.taskDetail?.id ??
+      "",
+  ).trim() || null;
+  const rootTaskId = String(
+    extra.rootTaskId ??
+      ctx?.data?._workflowRootTaskId ??
+      currentTaskId ??
+      "",
+  ).trim() || currentTaskId || null;
+  const parentTaskId = String(
+    extra.parentTaskId ??
+      ctx?.data?._workflowParentTaskId ??
+      currentTaskId ??
+      "",
+  ).trim() || currentTaskId || null;
+  const currentSessionId = String(
+    ctx?.data?._workflowSessionId ??
+      "",
+  ).trim() || null;
+  const parentSessionId = String(
+    extra.parentSessionId ??
+      currentSessionId ??
+      ctx?.data?._workflowParentSessionId ??
+      currentTaskId ??
+      "",
+  ).trim() || currentTaskId || null;
+  const rootSessionId = String(
+    extra.rootSessionId ??
+      ctx?.data?._workflowRootSessionId ??
+      currentSessionId ??
+      currentTaskId ??
+      "",
+  ).trim() || currentTaskId || null;
+  const workflowSessionId = String(extra.workflowSessionId ?? "").trim() || null;
+  const rawDelegationDepth = Number(
+    extra.delegationDepth ??
+      ctx?.data?._workflowDelegationDepth ??
+      0,
+  );
+  const delegationDepth = Number.isFinite(rawDelegationDepth)
+    ? Math.max(0, Math.trunc(rawDelegationDepth))
+    : 0;
   return {
     ...(inputData && typeof inputData === "object" ? inputData : {}),
     _parentWorkflowId: lineage.parentWorkflowId || "",
     _workflowParentRunId: lineage.parentRunId,
     _workflowRootRunId: lineage.rootRunId,
     _workflowStack: lineage.workflowStack,
+    _workflowRootTaskId: rootTaskId,
+    _workflowParentTaskId: parentTaskId,
+    _workflowSessionId: workflowSessionId || undefined,
+    _workflowParentSessionId: parentSessionId,
+    _workflowRootSessionId: rootSessionId,
+    _workflowDelegationDepth: delegationDepth,
     ...(lineage.retryOf ? { _retryOf: lineage.retryOf } : {}),
     ...(lineage.retryMode ? { _retryMode: lineage.retryMode } : {}),
   };
@@ -2100,6 +3291,174 @@ function makeChildWorkflowExecuteOptions(ctx, extra = {}) {
     _rootRunId: lineage.rootRunId,
     ...(sourceNodeId ? { _parentExecutionId: `node:${ctx?.id || "run"}:${sourceNodeId}` } : {}),
   };
+}
+
+function normalizeWorkflowDelegationDepth(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : fallback;
+}
+
+function resolveWorkflowDelegationLineage(ctx, extra = {}) {
+  const taskId = String(
+    extra.taskId ??
+      ctx?.data?.taskId ??
+      ctx?.data?.task?.id ??
+      ctx?.data?.taskInfo?.id ??
+      ctx?.data?.taskDetail?.id ??
+      "",
+  ).trim() || null;
+  const currentSessionId = String(
+    extra.currentSessionId ??
+      ctx?.data?._workflowSessionId ??
+      "",
+  ).trim() || null;
+  const rootTaskId = String(
+    extra.rootTaskId ??
+      ctx?.data?._workflowRootTaskId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  const parentTaskId = String(
+    extra.parentTaskId ??
+      ctx?.data?._workflowParentTaskId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  const parentSessionId = String(
+    extra.parentSessionId ??
+      currentSessionId ??
+      ctx?.data?._workflowParentSessionId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  const rootSessionId = String(
+    extra.rootSessionId ??
+      ctx?.data?._workflowRootSessionId ??
+      currentSessionId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  return {
+    taskId,
+    rootTaskId,
+    parentTaskId,
+    currentSessionId,
+    parentSessionId,
+    rootSessionId,
+    parentRunId: String(extra.parentRunId ?? ctx?.id ?? "").trim() || null,
+    rootRunId: String(
+      extra.rootRunId ??
+        ctx?.data?._workflowRootRunId ??
+        ctx?.id ??
+        "",
+    ).trim() || null,
+    delegationDepth: normalizeWorkflowDelegationDepth(
+      extra.delegationDepth ?? ctx?.data?._workflowDelegationDepth,
+      0,
+    ),
+  };
+}
+
+function buildDelegatedSessionId(ctx, nodeId, suffix = "", taskId = "") {
+  return [
+    taskId || "workflow",
+    "delegate",
+    String(ctx?.id || "run").trim() || "run",
+    String(nodeId || "node").trim() || "node",
+    String(suffix || "child").trim() || "child",
+  ].join(":");
+}
+
+function rememberWorkflowDelegationSession(ctx, sessionId) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId || !ctx?.data || typeof ctx.data !== "object") return;
+  const existing = Array.isArray(ctx.data._delegatedSessionIds)
+    ? ctx.data._delegatedSessionIds
+    : [];
+  if (existing.includes(normalizedSessionId)) return;
+  ctx.data._delegatedSessionIds = [...existing, normalizedSessionId];
+}
+
+function buildTrackedSessionMetadata(ctx, cwd, title, lineage = {}, extra = {}) {
+  return {
+    title: title || undefined,
+    workspaceId: String(ctx?.data?.workspaceId || ctx?.data?.activeWorkspace || "").trim() || undefined,
+    workspaceDir: String(cwd || "").trim() || undefined,
+    branch:
+      String(
+        ctx?.data?.branch ||
+        ctx?.data?.task?.branch ||
+        ctx?.data?.task?.branchName ||
+        ctx?.data?.taskDetail?.branch ||
+        ctx?.data?.taskDetail?.branchName ||
+        "",
+      ).trim() || undefined,
+    workflowId: String(extra.workflowId || ctx?.data?._workflowId || "").trim() || undefined,
+    workflowName: String(extra.workflowName || ctx?.data?._workflowName || ctx?.data?._workflowId || "").trim() || undefined,
+    sourceNodeId: String(extra.sourceNodeId || "").trim() || undefined,
+    rootTaskId: String(lineage.rootTaskId || "").trim() || undefined,
+    parentTaskId: String(lineage.parentTaskId || "").trim() || undefined,
+    rootSessionId: String(lineage.rootSessionId || "").trim() || undefined,
+    parentSessionId: String(lineage.parentSessionId || "").trim() || undefined,
+    rootRunId: String(lineage.rootRunId || "").trim() || undefined,
+    parentRunId: String(lineage.parentRunId || "").trim() || undefined,
+    delegationDepth: normalizeWorkflowDelegationDepth(lineage.delegationDepth, 0),
+    taskSessionId: String(extra.taskSessionId || "").trim() || undefined,
+  };
+}
+
+function ensureTrackedSession(tracker, sessionId, options = {}) {
+  if (!tracker || !sessionId) return null;
+  const metadata = buildTrackedSessionMetadata(
+    options.ctx,
+    options.cwd,
+    options.title,
+    options.lineage,
+    options.extra,
+  );
+  const existing = tracker.getSessionById(sessionId);
+  if (!existing) {
+    return tracker.createSession({
+      id: sessionId,
+      type: options.type || "task",
+      taskId: options.taskId || sessionId,
+      metadata,
+    });
+  }
+  tracker.updateSessionStatus(sessionId, "active");
+  if (options.title) {
+    tracker.renameSession(sessionId, options.title);
+  }
+  existing.metadata = {
+    ...(existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}),
+    ...metadata,
+  };
+  return existing;
+}
+
+async function syncTaskDelegationTopology(taskId, topologyPatch = {}, workflowRun = null) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return;
+  try {
+    const taskStoreMod = await ensureTaskStoreMod();
+    if (workflowRun && typeof taskStoreMod.linkTaskWorkflowRun === "function") {
+      taskStoreMod.linkTaskWorkflowRun(normalizedTaskId, workflowRun);
+    }
+    if (typeof taskStoreMod.updateTask !== "function") return;
+    const currentTask =
+      typeof taskStoreMod.getTask === "function"
+        ? taskStoreMod.getTask(normalizedTaskId)
+        : null;
+    if (!currentTask) return;
+    taskStoreMod.updateTask(normalizedTaskId, {
+      topology: {
+        ...(currentTask?.topology && typeof currentTask.topology === "object" ? currentTask.topology : {}),
+        ...(topologyPatch && typeof topologyPatch === "object" ? topologyPatch : {}),
+      },
+    });
+  } catch {
+    // Task-store projection is best-effort during workflow execution.
+  }
 }
 
 function attachWorkflowTaskMetadata(ctx, taskData = {}, extra = {}) {
@@ -2148,6 +3507,18 @@ function buildWorkflowLedgerBase(ctx, extra = {}) {
     workflowName: ctx?.data?._workflowName || null,
     rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
     parentRunId: ctx?.data?._workflowParentRunId || null,
+    taskId:
+      ctx?.data?.taskId ||
+      ctx?.data?.task?.id ||
+      ctx?.data?.taskInfo?.id ||
+      ctx?.data?.taskDetail?.id ||
+      null,
+    rootTaskId: ctx?.data?._workflowRootTaskId || null,
+    parentTaskId: ctx?.data?._workflowParentTaskId || null,
+    sessionId: ctx?.data?._workflowSessionId || null,
+    rootSessionId: ctx?.data?._workflowRootSessionId || null,
+    parentSessionId: ctx?.data?._workflowParentSessionId || null,
+    delegationDepth: normalizeWorkflowDelegationDepth(ctx?.data?._workflowDelegationDepth, 0),
     retryOf: ctx?.data?._retryOf || null,
     retryMode: ctx?.data?._retryMode || null,
     ...extra,
@@ -2173,6 +3544,81 @@ function recordNodeLedgerEvent(engine, event = {}) {
   if (typeof engine?._recordLedgerEvent === "function") {
     engine._recordLedgerEvent(event);
   }
+}
+
+function buildPlannerExecutionLedgerRef(ctx, node, phase, label = null) {
+  return buildNodeExecutionLedgerRef(
+    ctx,
+    node,
+    "planner",
+    [phase],
+    label || node?.label || phase || "planner",
+  );
+}
+
+function recordPlannerLedgerEvent(engine, ctx, node, eventType, {
+  phase = "planner",
+  label = null,
+  status = null,
+  attempt = undefined,
+  error = null,
+  summary = null,
+  reason = null,
+  meta = undefined,
+} = {}) {
+  const nextMeta = meta && typeof meta === "object" ? { ...meta } : {};
+  if (!nextMeta.normalizedEventType) {
+    if (eventType === "planner.plan_reasoning") {
+      nextMeta.normalizedEventType = "plan_reasoning";
+    } else if (
+      eventType === "planner.plan_initialized"
+      || eventType === "planner.plan_completed"
+      || eventType === "planner.plan_failed"
+    ) {
+      nextMeta.normalizedEventType = "plan";
+      nextMeta.plan = {
+        phase,
+        stepLabel: label || null,
+        status: status || null,
+        summary: summary || null,
+        reason: reason || null,
+      };
+    } else if (eventType === "planner.step_started") {
+      nextMeta.normalizedEventType = "current_plan_step";
+      nextMeta.currentPlanStep = {
+        phase,
+        stepLabel: label || null,
+        status: status || null,
+      };
+    } else if (
+      eventType === "planner.step_completed"
+      || eventType === "planner.step_blocked"
+      || eventType === "planner.post_attachment"
+    ) {
+      nextMeta.normalizedEventType = "step_result";
+      nextMeta.stepResult = {
+        phase,
+        stepLabel: label || null,
+        status: status || null,
+        summary: summary || null,
+        reason: reason || null,
+        attachmentKind: nextMeta.attachmentKind || null,
+      };
+    }
+  }
+  recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+    eventType,
+    ...buildPlannerExecutionLedgerRef(ctx, node, phase, label),
+    nodeId: node?.id || null,
+    nodeType: node?.type || null,
+    nodeLabel: node?.label || null,
+    status,
+    attempt,
+    error,
+    summary,
+    reason,
+    meta: nextMeta,
+  }));
 }
 
 function isBosunStateComment(text) {
@@ -2268,8 +3714,18 @@ function buildTaskContextBlock(task) {
   if (!task) return "";
   const comments = normalizeTaskComments(task);
   const attachments = normalizeTaskAttachments(task);
-  if (!comments.length && !attachments.length) return "";
+  const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
+  const reviewIssues = Array.isArray(task?.reviewIssues) ? task.reviewIssues : [];
+  if (!comments.length && !attachments.length && reviewStatus !== "changes_requested") return "";
   const lines = ["## Task Context"];
+  if (reviewStatus === "changes_requested") {
+    lines.push("### Review Findings");
+    if (reviewIssues.length > 0) {
+      for (const issue of reviewIssues) lines.push(formatReviewIssueLine(issue));
+    } else {
+      lines.push("- Review requested changes, but no structured issue list was recorded.");
+    }
+  }
   if (comments.length) {
     lines.push("### Comments");
     for (const comment of comments) lines.push(formatCommentLine(comment));
@@ -2319,9 +3775,9 @@ function buildWorkflowAgentToolContract(rootDir, agentProfileId = "") {
   ].join("\n");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  TRIGGERS — Events that initiate a workflow
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("trigger.manual", {
   describe: () => "Manual trigger — workflow starts on user request",
@@ -2809,9 +4265,9 @@ registerBuiltinNodeType("trigger.workflow_call", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  CONDITIONS — Branching / routing logic
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("condition.expression", {
   describe: () => "Evaluate a JS expression to branch workflow execution",
@@ -2926,9 +4382,9 @@ registerBuiltinNodeType("condition.switch", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  ACTIONS — Side-effect operations
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("action.run_agent", {
   describe: () => "Run a bosun agent with a prompt to perform work",
@@ -2949,6 +4405,11 @@ registerBuiltinNodeType("action.run_agent", {
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
+      requireTaskPromptCompleteness: {
+        type: "boolean",
+        default: false,
+        description: "Require task description and URL metadata before running the agent",
+      },
       failOnError: { type: "boolean", default: false, description: "Throw when agent returns success=false (enables workflow retries)" },
       sessionId: { type: "string", description: "Existing session/thread ID to continue if available" },
       taskKey: { type: "string", description: "Stable key used for session-aware retries/resume" },
@@ -2970,15 +4431,18 @@ registerBuiltinNodeType("action.run_agent", {
         description:
           "Optional prompt suffix template for candidate mode. Supports {{candidateIndex}} and {{candidateCount}}",
       },
-      delegationWatchdogTimeoutMs: { type: "number", default: 300000, description: "Stall threshold for delegated non-task workflows in ms" },
-      delegationWatchdogMaxRecoveries: { type: "number", default: 1, description: "Maximum watchdog recovery retries for delegated workflows" },
     },
     required: ["prompt"],
   },
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
+    const configuredCwd = ctx.resolve(node.config?.cwd || "");
+    const runtimeWorktreePath = String(ctx.data?.worktreePath || "").trim();
+    const cwd = isUnresolvedTemplateToken(configuredCwd)
+      ? runtimeWorktreePath || process.cwd()
+      : configuredCwd || runtimeWorktreePath || process.cwd();
     const trackedTaskId = String(
       ctx.data?.taskId ||
         ctx.data?.task?.id ||
@@ -2997,6 +4461,11 @@ registerBuiltinNodeType("action.run_agent", {
     const agentProfileId = String(
       ctx.resolve(node.config?.agentProfile || ctx.data?.agentProfile || ""),
     ).trim();
+    const agentToolConfig = agentProfileId ? getAgentToolConfig(cwd, agentProfileId) : null;
+    const enabledMcpServerIds = Array.isArray(agentToolConfig?.enabledMcpServers)
+      ? agentToolConfig.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
+      : [];
+    const selectedMcpServers = agentToolConfig ? enabledMcpServerIds : undefined;
     const resolvedTimeoutMs = ctx.resolve(node.config?.timeoutMs ?? ctx.data?.taskTimeoutMs ?? 3600000);
     const timeoutMs = Number.isFinite(Number(resolvedTimeoutMs))
       ? Math.max(1000, Math.trunc(Number(resolvedTimeoutMs)))
@@ -3011,6 +4480,8 @@ registerBuiltinNodeType("action.run_agent", {
     const includeTaskContext =
       node.config?.includeTaskContext !== false &&
       ctx.data?._taskIncludeContext !== false;
+    const requireTaskPromptCompleteness =
+      node.config?.requireTaskPromptCompleteness === true;
     const configuredSystemPrompt =
       ctx.resolve(node.config?.systemPrompt || "") ||
       ctx.data?._taskSystemPrompt ||
@@ -3119,78 +4590,218 @@ registerBuiltinNodeType("action.run_agent", {
       if (contextBlock) finalPrompt = `${finalPrompt}\n\n${contextBlock}`;
     }
 
+    if (requireTaskPromptCompleteness) {
+      const promptCompleteness = await ensureWorkflowTaskPromptCompleteness(
+        ctx,
+        engine,
+        node.id,
+        trackedTaskId,
+      );
+      if (!promptCompleteness.ok) {
+        ctx.log(node.id, promptCompleteness.error, "warn");
+        if (node.config?.failOnError) {
+          throw new Error(promptCompleteness.error);
+        }
+        return {
+          success: false,
+          error: promptCompleteness.error,
+          output: "",
+          sdk,
+          items: [],
+          threadId: null,
+          sessionId: null,
+          failureKind: "prompt_quality_error",
+          blockedReason: "prompt_quality_error",
+        };
+      }
+      finalPrompt = appendWorkflowTaskPromptContext(finalPrompt, promptCompleteness);
+    }
+
     ctx.log(node.id, `Running agent (${sdk}) in ${cwd}`);
 
-    // ── Sub-workflow delegation ─────────────────────────────────────
+    // ==== Sub-workflow delegation ====
     // If an agent-type workflow exists (metadata.replaces.module =
     // "primary-agent.mjs") and its trigger filter matches this task,
     // delegate the full agent execution to that workflow instead of
     // running a single generic agent pass.
     // Guard: skip delegation when already inside an agent sub-workflow
     // to prevent infinite recursion.
-    const hasDelegationTaskContext = Boolean(
-      trackedTaskId ||
-      trackedTaskTitle ||
-      ctx.data?.task?.id ||
-      ctx.data?.taskDetail?.id ||
-      ctx.data?.taskInfo?.id ||
-      ctx.data?.task?.title ||
-      ctx.data?.taskDetail?.title ||
-      ctx.data?.taskInfo?.title,
-    );
-    if (engine?.list && !ctx.data?._agentWorkflowActive && hasDelegationTaskContext) {
-      try {
-        const allWorkflows = engine.list() || [];
-        for (const wf of allWorkflows) {
-          if (wf?.enabled === false) continue;
-          if (wf?.metadata?.replaces?.module !== "primary-agent.mjs") continue;
+    if (
+      !ctx.data?._agentWorkflowActive &&
+      typeof engine?.list === "function" &&
+      typeof engine?.execute === "function"
+    ) {
+      const taskIdForDelegate = String(
+        ctx.data?.taskId ||
+        ctx.data?.task?.id ||
+        "",
+      ).trim();
+      const taskTitleForDelegate = String(
+        ctx.data?.taskTitle ||
+        ctx.data?.task?.title ||
+        "",
+      ).trim();
+      const taskForDelegate =
+        ctx.data?.task && typeof ctx.data.task === "object"
+          ? ctx.data.task
+          : {
+              id: taskIdForDelegate || undefined,
+              title: taskTitleForDelegate || undefined,
+            };
+      const hasTaskContext = Boolean(
+        taskIdForDelegate ||
+        taskTitleForDelegate ||
+        (taskForDelegate?.id && taskForDelegate?.title),
+      );
 
-          const triggerNode = (wf.nodes || []).find((n) => n.type === "trigger.task_assigned");
-          if (!triggerNode) continue;
-          const delegationData = {
-            ...ctx.data,
-            eventType: "task.assigned",
-            taskId: trackedTaskId,
-            taskTitle: trackedTaskTitle,
-          };
-          if (!evaluateTaskAssignedTriggerConfig(triggerNode?.config, delegationData)) continue;
+      if (hasTaskContext) {
+        const eventPayload = {
+          ...(ctx.data && typeof ctx.data === "object" ? ctx.data : {}),
+          eventType: "task.assigned",
+          taskId: taskIdForDelegate || undefined,
+          taskTitle: taskTitleForDelegate || undefined,
+          task: taskForDelegate,
+          agentType: String(
+            ctx.data?.agentType ||
+            ctx.data?.assignedAgentType ||
+            ctx.data?.task?.agentType ||
+            "",
+          ).trim() || undefined,
+        };
+        const workflows = Array.isArray(engine.list?.()) ? engine.list() : [];
+        const candidate = workflows.find((workflow) => {
+          const hydratedWorkflow =
+            workflow?.id &&
+            (!Array.isArray(workflow?.nodes) || workflow.nodes.length === 0) &&
+            typeof engine.get === "function"
+              ? (engine.get(workflow.id) || workflow)
+              : workflow;
+          if (!hydratedWorkflow || hydratedWorkflow.enabled === false) return false;
+          const replacesModule = String(hydratedWorkflow?.metadata?.replaces?.module || "").trim();
+          if (replacesModule !== "primary-agent.mjs") return false;
+          const nodes = Array.isArray(hydratedWorkflow?.nodes) ? hydratedWorkflow.nodes : [];
+          return nodes.some((wfNode) => {
+            if (wfNode?.type !== "trigger.task_assigned") return false;
+            return evaluateTaskAssignedTriggerConfig(wfNode.config || {}, eventPayload);
+          });
+        });
 
-          const tracker = trackedTaskId ? getSessionTracker() : null;
-          if (tracker && trackedTaskId) {
-            const existing = tracker.getSessionById(trackedTaskId);
-            if (!existing) {
-              tracker.createSession({
-                id: trackedTaskId,
-                type: "task",
-                taskId: trackedTaskId,
-                metadata: {
-                  title: trackedTaskTitle || trackedTaskId,
-                  workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
-                  workspaceDir: String(cwd || "").trim() || undefined,
-                  branch:
-                    String(
-                      ctx.data?.branch ||
-                        ctx.data?.task?.branchName ||
-                        ctx.data?.taskDetail?.branchName ||
-                        "",
-                    ).trim() || undefined,
-                },
-              });
-            } else {
-              tracker.updateSessionStatus(trackedTaskId, "active");
-              if (trackedTaskTitle) tracker.renameSession(trackedTaskId, trackedTaskTitle);
-            }
-            tracker.recordEvent(trackedTaskId, {
+        if (candidate?.id) {
+          const delegationLineage = resolveWorkflowDelegationLineage(ctx, {
+            taskId: taskIdForDelegate,
+          });
+          const taskSessionId = delegationLineage.parentSessionId || taskIdForDelegate || null;
+          const childSessionId = buildDelegatedSessionId(
+            ctx,
+            node.id,
+            [candidate.id, "workflow"].join(":"),
+            taskIdForDelegate || delegationLineage.rootTaskId || "",
+          );
+          const childRunOpts = makeChildWorkflowExecuteOptions(ctx, {
+            childWorkflowId: candidate.id,
+            sourceNodeId: node.id,
+          });
+          const assignTransitionKey =
+            String(ctx.data?._delegationTransitionKey || "").trim() ||
+            ["assign", node.id, candidate.id, taskIdForDelegate || "task"].join(":");
+          const existingAssignTransition =
+            getExistingDelegationTransition(ctx, assignTransitionKey) ||
+            (typeof ctx.getDelegationTransitionGuard === "function"
+              ? ctx.getDelegationTransitionGuard(assignTransitionKey)
+              : null);
+          if (existingAssignTransition?.type === "run_agent_delegate") {
+            return { ...existingAssignTransition.result };
+          }
+
+          recordDelegationAuditEvent(ctx, {
+            type: "assign",
+            eventType: "assign",
+            taskId: taskIdForDelegate || null,
+            taskTitle: taskTitleForDelegate || null,
+            sessionId: childSessionId,
+            parentSessionId: taskSessionId,
+            rootSessionId: delegationLineage.rootSessionId,
+            workflowNodeId: node.id,
+            delegatedWorkflowId: candidate.id,
+            delegatedWorkflowName: candidate.name || candidate.id,
+            transitionKey: assignTransitionKey,
+            at: Date.now(),
+            timestamp: new Date().toISOString(),
+          });
+          const tracker = taskIdForDelegate ? getSessionTracker() : null;
+          if (tracker && taskIdForDelegate) {
+            ensureTrackedSession(tracker, taskSessionId, {
+              ctx,
+              cwd,
+              title: taskTitleForDelegate || taskSessionId,
+              taskId: taskIdForDelegate,
+              type: "task",
+              lineage: {
+                ...delegationLineage,
+                parentSessionId: taskSessionId,
+                rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+              },
+              extra: {
+                sourceNodeId: node.id,
+                taskSessionId,
+              },
+            });
+            ensureTrackedSession(tracker, childSessionId, {
+              ctx,
+              cwd,
+              title: `${candidate.name || candidate.id} for ${taskTitleForDelegate || taskIdForDelegate}`,
+              taskId: taskIdForDelegate,
+              type: "delegate",
+              lineage: {
+                ...delegationLineage,
+                parentTaskId: taskIdForDelegate || delegationLineage.parentTaskId,
+                parentSessionId: taskSessionId,
+                rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+                parentRunId: ctx.id,
+                rootRunId: delegationLineage.rootRunId || ctx.id,
+                delegationDepth: delegationLineage.delegationDepth + 1,
+              },
+              extra: {
+                workflowId: candidate.id,
+                workflowName: candidate.name || candidate.id,
+                sourceNodeId: node.id,
+                taskSessionId,
+              },
+            });
+            tracker.recordEvent(taskSessionId, {
               role: "system",
               type: "system",
-              content: `Delegating to agent workflow "${wf.name}" (${wf.id})`,
+              content: `Delegating to agent workflow "${candidate.name || candidate.id}"`,
               timestamp: new Date().toISOString(),
               _sessionType: "task",
             });
+            tracker.recordEvent(childSessionId, {
+              role: "system",
+              type: "system",
+              content: `Delegated workflow "${candidate.name || candidate.id}" started`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "delegate",
+            });
           }
 
-          // Delegate to this agent workflow
-          ctx.log(node.id, `Delegating to agent workflow "${wf.name}" (${wf.id})`);
+          const delegatedInput = applyChildWorkflowLineage(
+            ctx,
+            {
+              ...eventPayload,
+              _agentWorkflowActive: true,
+            },
+            candidate.id,
+            {
+              taskId: taskIdForDelegate,
+              rootTaskId: delegationLineage.rootTaskId || taskIdForDelegate || null,
+              parentTaskId: taskIdForDelegate || delegationLineage.parentTaskId || null,
+              workflowSessionId: childSessionId,
+              parentSessionId: taskSessionId,
+              rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+              delegationDepth: delegationLineage.delegationDepth + 1,
+            },
+          );
+          rememberWorkflowDelegationSession(ctx, childSessionId);
           const resolveDelegatedWatchdogTimeoutMs = () => {
             const candidates = [
               ctx.resolve(node.config?.delegationWatchdogTimeoutMs),
@@ -3215,99 +4826,182 @@ registerBuiltinNodeType("action.run_agent", {
             }
             return 1;
           };
-          const existingWatchdog = ctx.data?._delegationWatchdog && typeof ctx.data._delegationWatchdog === "object"
-            ? { ...ctx.data._delegationWatchdog }
-            : null;
-          const priorAttemptsRaw = Number(existingWatchdog?.recoveryAttempts);
-          const priorRecoveryAttempts = Number.isFinite(priorAttemptsRaw)
-            ? Math.max(0, Math.trunc(priorAttemptsRaw))
-            : (existingWatchdog?.recoveryAttempted === true ? 1 : 0);
-          const delegatedWatchdog = {
-            nodeId: node.id,
-            state: "delegated",
-            delegationType: "workflow",
-            taskScoped: false,
-            startedAt: Date.now(),
-            updatedAt: new Date().toISOString(),
-            workflowId: wf.id,
-            workflowName: wf.name || wf.id,
-            timeoutMs: resolveDelegatedWatchdogTimeoutMs(),
-            delegationWatchdogTimeoutMs: resolveDelegatedWatchdogTimeoutMs(),
-            maxRecoveries: resolveDelegatedWatchdogMaxRecoveries(),
-            delegationWatchdogMaxRecoveries: resolveDelegatedWatchdogMaxRecoveries(),
-            recoveryAttempts: priorRecoveryAttempts,
-            recoveryAttempted: priorRecoveryAttempts > 0,
-          };
-          const checkpointDelegationWatchdog = (watchdogState) => {
-            if (!ctx.data || typeof ctx.data !== "object") return;
-            if (watchdogState && typeof watchdogState === "object") {
-              ctx.data._delegationWatchdog = watchdogState;
-            } else if (existingWatchdog) {
-              ctx.data._delegationWatchdog = existingWatchdog;
-            } else {
-              delete ctx.data._delegationWatchdog;
-            }
-            if (typeof engine?._checkpointRun === "function") {
-              engine._checkpointRun(ctx);
-            }
-          };
-          checkpointDelegationWatchdog(delegatedWatchdog);
-          let subCtx;
-          try {
-            subCtx = await engine.execute(
-              wf.id,
-              applyChildWorkflowLineage(ctx, {
-                ...delegationData,
-                _agentWorkflowActive: true,
-              }, wf.id),
-              makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wf.id, sourceNodeId: node.id }),
+          const delegatedWatchdogTimeoutMs = resolveDelegatedWatchdogTimeoutMs();
+          const delegatedWatchdogMaxRecoveries = resolveDelegatedWatchdogMaxRecoveries();
+          let watchdogRetryCount = 0;
+          let subRun = null;
+          let watchdogRecovered = false;
+          let watchdogState = null;
+
+          while (true) {
+            subRun = await engine.execute(
+              candidate.id,
+              delegatedInput,
+              childRunOpts,
             );
-          } finally {
-            checkpointDelegationWatchdog(null);
+
+            const delegatedRunId = String(subRun?.runId || subRun?.id || "").trim();
+            watchdogState = null;
+            if (delegatedRunId) {
+              if (typeof engine.getRunDetail === "function") {
+                // Prefer a lightweight, per-run lookup when available to avoid hydrating full history.
+                watchdogState = await engine.getRunDetail(delegatedRunId);
+              } else if (typeof engine.getRunHistory === "function") {
+                const delegatedHistory = engine.getRunHistory(candidate.id, 10);
+                watchdogState = Array.isArray(delegatedHistory)
+                  ? delegatedHistory.find((entry) => String(entry?.runId || "") === delegatedRunId) || null
+                  : null;
+              }
+            }
+            const stalledDelegationInner = Boolean(
+              subRun?.status === "running" &&
+              watchdogState?.status === "running" &&
+              (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
+            );
+
+            if (!stalledDelegationInner) break;
+            if (watchdogRetryCount >= delegatedWatchdogMaxRecoveries) break;
+            watchdogRetryCount += 1;
+            watchdogRecovered = true;
           }
-          const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
-          const subStatus = subErrors.length === 0 ? "completed" : "failed";
-          recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
-            eventType: "agent.delegated",
-            ...buildNodeExecutionLedgerRef(ctx, node, "agent", ["delegate", wf.id], wf.name || wf.id),
-            childRunId: subCtx?.id || null,
+
+          const stalledDelegation = Boolean(
+            subRun?.status === "running" &&
+            watchdogState?.status === "running" &&
+            (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
+          );
+          const subTerminalOutput = subRun?.data?._workflowTerminalOutput;
+          const subBlockedReason =
+            subTerminalOutput && typeof subTerminalOutput === "object"
+              ? String(subTerminalOutput.blockedReason || "").trim() || null
+              : null;
+          const subImplementationState =
+            subTerminalOutput && typeof subTerminalOutput === "object"
+              ? String(subTerminalOutput.implementationState || "").trim() || null
+              : null;
+          const subStatus = stalledDelegation ? "stalled" : deriveWorkflowExecutionSessionStatus(subRun);
+          const subFailed = stalledDelegation || subStatus !== "completed";
+
+          recordDelegationAuditEvent(ctx, {
+            type: subFailed ? "owner-mismatch" : "handoff-complete",
+            eventType: subFailed ? "owner-mismatch" : "handoff-complete",
             status: subStatus,
-            summary: `Delegated to ${wf.id}`,
-            meta: {
-              delegatedWorkflowId: wf.id,
-              delegatedWorkflowName: wf.name || null,
-              errorCount: subErrors.length,
-            },
-          }));
-          if (tracker && trackedTaskId) {
-            tracker.updateSessionStatus(trackedTaskId, subStatus);
-            tracker.recordEvent(trackedTaskId, {
-              role: subStatus === "completed" ? "assistant" : "system",
-              type: subStatus === "completed" ? "agent_message" : "error",
-              content: `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`,
+            taskId: taskIdForDelegate || null,
+            taskTitle: taskTitleForDelegate || null,
+            sessionId: childSessionId,
+            parentSessionId: taskSessionId,
+            rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+            workflowNodeId: node.id,
+            delegatedWorkflowId: candidate.id,
+            delegatedWorkflowName: candidate.name || candidate.id,
+            childRunId: subRun?.id || null,
+            transitionKey: [subFailed ? "owner-mismatch" : "handoff-complete", node.id, subRun?.id || candidate.id].join(":"),
+            at: Date.now(),
+            timestamp: new Date().toISOString(),
+          });
+          if (tracker && taskIdForDelegate) {
+            tracker.recordEvent(taskSessionId, {
+              role: "assistant",
+              type: "agent_message",
+              content: `Delegated workflow "${candidate.name || candidate.id}" completed with status=${subStatus}`,
               timestamp: new Date().toISOString(),
               _sessionType: "task",
             });
+            tracker.recordEvent(childSessionId, {
+              role: subFailed ? "system" : "assistant",
+              type: subFailed ? "error" : "agent_message",
+              content: `Agent workflow "${candidate.name || candidate.id}" completed with status=${subStatus}`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "delegate",
+            });
+            tracker.endSession(childSessionId, subStatus);
+            if (taskSessionId === taskIdForDelegate) {
+              tracker.endSession(taskSessionId, subStatus);
+            }
           }
-          ctx.log(node.id, `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`);
-          return {
-            success: subErrors.length === 0,
+          await syncTaskDelegationTopology(
+            taskIdForDelegate,
+            {
+              workflowId: candidate.id,
+              workflowName: candidate.name || candidate.id,
+              latestNodeId: node.id,
+              latestRunId: String(subRun?.id || subRun?.runId || "").trim() || null,
+              rootRunId: delegationLineage.rootRunId || ctx.id || null,
+              parentRunId: ctx.id || null,
+              latestSessionId: childSessionId,
+              sessionId: childSessionId,
+              rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+              parentSessionId: taskSessionId,
+              rootTaskId: delegationLineage.rootTaskId || taskIdForDelegate || null,
+              parentTaskId: taskIdForDelegate || delegationLineage.parentTaskId || null,
+              delegationDepth: delegationLineage.delegationDepth + 1,
+            },
+            subRun?.id || subRun?.runId
+              ? {
+                  runId: String(subRun?.id || subRun?.runId || "").trim(),
+                  workflowId: candidate.id,
+                  workflowName: candidate.name || candidate.id,
+                  nodeId: node.id,
+                  status: subStatus,
+                  outcome: subFailed ? "failed" : "completed",
+                  summary: subTerminalOutput?.summary || null,
+                  rootRunId: delegationLineage.rootRunId || ctx.id || null,
+                  parentRunId: ctx.id || null,
+                  taskId: taskIdForDelegate || null,
+                  rootTaskId: delegationLineage.rootTaskId || taskIdForDelegate || null,
+                  parentTaskId: taskIdForDelegate || delegationLineage.parentTaskId || null,
+                  sessionId: childSessionId,
+                  rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+                  parentSessionId: taskSessionId,
+                  delegationDepth: delegationLineage.delegationDepth + 1,
+                }
+              : null,
+          );
+
+          const delegateResult = {
+            success: !subFailed,
             delegated: true,
-            runId: subCtx?.id || subCtx?.runId || null,
-            subWorkflowId: wf.id,
-            subWorkflowName: wf.name,
+            childSessionId,
+            subWorkflowId: candidate.id,
+            subWorkflowName: candidate.name || candidate.id,
             subStatus,
+            blockedReason: subBlockedReason,
+            implementationState: subImplementationState,
+            terminalOutput: subTerminalOutput,
+            subRun,
+            watchdogRecovered,
+            recoveredFromStall: watchdogRecovered && !stalledDelegation,
+            watchdogRetryCount,
+            failureKind: stalledDelegation ? "stalled_delegation" : undefined,
+            retryable: stalledDelegation ? true : undefined,
+            runId: subRun?.id || null,
           };
+          setDelegationTransitionResult(ctx, assignTransitionKey, {
+            type: "run_agent_delegate",
+            result: { ...delegateResult },
+            childRunId: subRun?.id || null,
+            delegatedWorkflowId: candidate.id,
+          });
+          return delegateResult;
         }
-      } catch (err) {
-        ctx.log(node.id, `Sub-workflow delegation check failed: ${err?.message || err}`);
-        // Fall through to generic agent execution
       }
     }
 
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
     if (agentPool?.launchEphemeralThread) {
+      const delegatedTaskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.task?.id || ctx.data?.taskId || null;
+      const assignTransitionKey = buildDelegationTransitionKey("assign", [delegatedTaskId, node.id, cwd, sdk, model]);
+      recordDelegationAuditEvent(ctx, {
+        type: "assign",
+        taskId: delegatedTaskId,
+        nodeId: node.id,
+        agentProfile: node.config?.agentProfile || null,
+        sdk,
+        model,
+        transitionKey: assignTransitionKey,
+        idempotencyKey: assignTransitionKey,
+      });
       const parseCandidateCount = (value) => {
         const num = Number(value);
         if (!Number.isFinite(num)) return null;
@@ -3396,6 +5090,20 @@ registerBuiltinNodeType("action.run_agent", {
         const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
         const fallbackTaskKey = `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
         const recoveryTaskKey = options.taskKey || explicitTaskKey || fallbackTaskKey;
+        const taskLineage = resolveWorkflowDelegationLineage(ctx, {
+          taskId: trackedTaskId,
+        });
+        const taskSessionId = trackedTaskId
+          ? (taskLineage.parentSessionId || trackedTaskId)
+          : null;
+        const childSessionId = trackedTaskId
+          ? buildDelegatedSessionId(
+              ctx,
+              node.id,
+              recoveryTaskKey || passLabel || "agent",
+              trackedTaskId || taskLineage.rootTaskId || "",
+            )
+          : null;
         const autoRecover = options.autoRecover ?? (node.config?.autoRecover !== false);
         const continueOnSession =
           options.continueOnSession ?? (node.config?.continueOnSession !== false);
@@ -3423,6 +5131,13 @@ registerBuiltinNodeType("action.run_agent", {
           : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
         const tracker = trackedTaskId ? getSessionTracker() : null;
         const trackedSessionType = trackedTaskId ? "task" : "flow";
+        const assignTransitionKey =
+          trackedTaskId
+            ? (
+                String(ctx.data?._delegationTransitionKey || "").trim() ||
+                ["assign", node.id, recoveryTaskKey || "session", trackedTaskId].join(":")
+              )
+            : "";
         const agentExecutionLedgerRef = buildNodeExecutionLedgerRef(
           ctx,
           node,
@@ -3432,37 +5147,72 @@ registerBuiltinNodeType("action.run_agent", {
         );
 
         if (tracker && trackedTaskId) {
-          const existing = tracker.getSessionById(trackedTaskId);
-          if (!existing) {
-            tracker.createSession({
-              id: trackedTaskId,
-              type: "task",
-              taskId: trackedTaskId,
-              metadata: {
-                title: trackedTaskTitle || trackedTaskId,
-                workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
-                workspaceDir: String(cwd || "").trim() || undefined,
-                branch:
-                  String(
-                    ctx.data?.branch ||
-                      ctx.data?.task?.branchName ||
-                      ctx.data?.taskDetail?.branchName ||
-                      "",
-                  ).trim() || undefined,
-              },
-            });
-          } else {
-            tracker.updateSessionStatus(trackedTaskId, "active");
-            if (trackedTaskTitle) {
-              tracker.renameSession(trackedTaskId, trackedTaskTitle);
-            }
-          }
-          tracker.recordEvent(trackedTaskId, {
+          ensureTrackedSession(tracker, taskSessionId, {
+            ctx,
+            cwd,
+            title: trackedTaskTitle || taskSessionId,
+            taskId: trackedTaskId,
+            type: "task",
+            lineage: {
+              ...taskLineage,
+              parentSessionId: taskSessionId,
+              rootSessionId: taskLineage.rootSessionId || taskSessionId,
+            },
+            extra: {
+              sourceNodeId: node.id,
+              taskSessionId,
+            },
+          });
+          ensureTrackedSession(tracker, childSessionId, {
+            ctx,
+            cwd,
+            title: `${node.label || node.id} for ${trackedTaskTitle || trackedTaskId}`,
+            taskId: trackedTaskId,
+            type: "delegate",
+            lineage: {
+              ...taskLineage,
+              parentTaskId: trackedTaskId || taskLineage.parentTaskId,
+              parentSessionId: taskSessionId,
+              rootSessionId: taskLineage.rootSessionId || taskSessionId,
+              parentRunId: ctx.id,
+              rootRunId: taskLineage.rootRunId || ctx.id,
+              delegationDepth: taskLineage.delegationDepth + 1,
+            },
+            extra: {
+              sourceNodeId: node.id,
+              taskSessionId,
+            },
+          });
+          tracker.recordEvent(taskSessionId, {
             role: "system",
             type: "system",
             content: `Workflow agent run started in ${cwd}`,
             timestamp: new Date().toISOString(),
             _sessionType: trackedSessionType,
+          });
+          tracker.recordEvent(childSessionId, {
+            role: "system",
+            type: "system",
+            content: `Delegated agent node "${node.label || node.id}" started`,
+            timestamp: new Date().toISOString(),
+            _sessionType: "delegate",
+          });
+          rememberWorkflowDelegationSession(ctx, childSessionId);
+        }
+        if (trackedTaskId) {
+          recordDelegationAuditEvent(ctx, {
+            type: "assign",
+            eventType: "assign",
+            taskId: trackedTaskId,
+            taskTitle: trackedTaskTitle || null,
+            sessionId: childSessionId,
+            parentSessionId: taskSessionId,
+            rootSessionId: taskLineage.rootSessionId || taskSessionId,
+            workflowNodeId: node.id,
+            threadKey: recoveryTaskKey,
+            transitionKey: assignTransitionKey,
+            at: Date.now(),
+            timestamp: new Date().toISOString(),
           });
         }
 
@@ -3470,12 +5220,59 @@ registerBuiltinNodeType("action.run_agent", {
         if (sessionId) launchExtra.resumeThreadId = sessionId;
         if (sdkOverride) launchExtra.sdk = sdkOverride;
         if (modelOverride) launchExtra.model = modelOverride;
+        if (selectedMcpServers !== undefined) launchExtra.mcpServers = selectedMcpServers;
+        const slotOwnerKey = `${recoveryTaskKey}:${node.id}`;
+        const slotMeta = {
+          taskKey: recoveryTaskKey,
+          taskId: trackedTaskId || null,
+          taskTitle: trackedTaskTitle || null,
+          workflowRunId: String(ctx.id || "").trim() || null,
+          workflowId: String(ctx.data?._workflowId || "").trim() || null,
+          workflowName: String(ctx.data?._workflowName || ctx.data?._workflowId || "").trim() || null,
+          workflowNodeId: node.id,
+          workflowNodeLabel: String(node.label || node.id || "").trim() || null,
+          cwd,
+          sdk: sdkOverride || null,
+          model: modelOverride || null,
+          sessionType: trackedSessionType,
+        };
+        let slotWaitAnnounced = false;
+        launchExtra.slotOwnerKey = slotOwnerKey;
+        launchExtra.slotMeta = slotMeta;
+        launchExtra.onSlotQueued = (slotState) => {
+          slotWaitAnnounced = true;
+          if (typeof ctx.setNodeStatus === "function") {
+            ctx.setNodeStatus(node.id, "waiting");
+          }
+          const queueDepth = Math.max(
+            1,
+            Number(slotState?.queueDepth ?? slotState?.queuedSlots ?? 0),
+          );
+          const maxParallel = Math.max(1, Number(slotState?.maxParallel || 1));
+          const activeSlots = Math.max(0, Number(slotState?.activeSlots || maxParallel));
+          ctx.log(
+            node.id,
+            `${passLabel || "Agent"} waiting for shared agent slot (${activeSlots}/${maxParallel} active, queue=${queueDepth})`,
+          );
+        };
+        launchExtra.onSlotAcquired = (slotState) => {
+          if (typeof ctx.setNodeStatus === "function") {
+            ctx.setNodeStatus(node.id, "running");
+          }
+          const waitedMs = Math.max(0, Number(slotState?.waitedMs || 0));
+          if (slotWaitAnnounced || waitedMs > 0) {
+            ctx.log(
+              node.id,
+              `${passLabel || "Agent"} acquired shared agent slot after ${Math.max(1, Math.round(waitedMs / 1000))}s`,
+            );
+          }
+        };
         launchExtra.onEvent = (event) => {
           try {
-            if (tracker && trackedTaskId) {
-              tracker.recordEvent(trackedTaskId, {
+            if (tracker && childSessionId) {
+              tracker.recordEvent(childSessionId, {
                 ...(event && typeof event === "object" ? event : { content: String(event || "") }),
-                _sessionType: trackedSessionType,
+                _sessionType: "delegate",
               });
             }
             const line = summarizeAgentStreamEvent(event);
@@ -3500,6 +5297,13 @@ registerBuiltinNodeType("action.run_agent", {
         recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
           eventType: "agent.started",
           ...agentExecutionLedgerRef,
+          sessionId: childSessionId,
+          parentSessionId: taskSessionId,
+          rootSessionId: taskLineage.rootSessionId || taskSessionId,
+          taskId: trackedTaskId || null,
+          parentTaskId: trackedTaskId || taskLineage.parentTaskId || null,
+          rootTaskId: taskLineage.rootTaskId || trackedTaskId || null,
+          delegationDepth: trackedTaskId ? taskLineage.delegationDepth + 1 : 0,
           status: "running",
           meta: {
             sdk: sdkOverride || sdk || null,
@@ -3538,12 +5342,16 @@ registerBuiltinNodeType("action.run_agent", {
                     attempt: 1,
                     meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
                   }));
-                  tracedResult = await agentPool.continueSession(sessionId, continuePrompt, {
-                    timeout: timeoutMs,
-                    cwd,
-                    sdk: sdkOverride,
-                    model: modelOverride,
-                  });
+                tracedResult = await agentPool.continueSession(sessionId, continuePrompt, {
+                  timeout: timeoutMs,
+                  cwd,
+                  sdk: sdkOverride,
+                  model: modelOverride,
+                  slotOwnerKey,
+                  slotMeta,
+                  onSlotQueued: launchExtra.onSlotQueued,
+                  onSlotAcquired: launchExtra.onSlotAcquired,
+                });
                   if (tracedResult?.success) {
                     recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
                       eventType: "recovery.succeeded",
@@ -3608,8 +5416,13 @@ registerBuiltinNodeType("action.run_agent", {
                   sessionType: trackedSessionType,
                   sdk: sdkOverride,
                   model: modelOverride,
+                  mcpServers: selectedMcpServers,
                   onEvent: launchExtra.onEvent,
                   systemPrompt: effectiveSystemPrompt,
+                  slotOwnerKey,
+                  slotMeta,
+                  onSlotQueued: launchExtra.onSlotQueued,
+                  onSlotAcquired: launchExtra.onSlotAcquired,
                 });
               }
 
@@ -3627,8 +5440,13 @@ registerBuiltinNodeType("action.run_agent", {
                   sessionType: trackedSessionType,
                   sdk: sdkOverride,
                   model: modelOverride,
+                  mcpServers: selectedMcpServers,
                   onEvent: launchExtra.onEvent,
                   systemPrompt: effectiveSystemPrompt,
+                  slotOwnerKey,
+                  slotMeta,
+                  onSlotQueued: launchExtra.onSlotQueued,
+                  onSlotAcquired: launchExtra.onSlotAcquired,
                 });
               }
 
@@ -3640,13 +5458,33 @@ registerBuiltinNodeType("action.run_agent", {
                   attempt: 1,
                   meta: { strategy: "launch_ephemeral_thread", taskKey: recoveryTaskKey },
                 }));
-                launchExtra.systemPrompt = effectiveSystemPrompt;
-                tracedResult = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
+                tracedResult = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, {
+                  ...launchExtra,
+                  systemPrompt: effectiveSystemPrompt,
+                  slotOwnerKey,
+                  slotMeta,
+                  onSlotQueued: launchExtra.onSlotQueued,
+                  onSlotAcquired: launchExtra.onSlotAcquired,
+                });
               }
               const resolvedThreadId = tracedResult?.threadId || tracedResult?.sessionId || sessionId || null;
               if (resolvedThreadId) {
                 span.attributes["bosun.session.id"] = resolvedThreadId;
                 if (taskSpan) taskSpan.attributes["bosun.session.id"] = resolvedThreadId;
+                const handoffTransitionKey = buildDelegationTransitionKey("handoff-complete", [delegatedTaskId, node.id, resolvedThreadId]);
+                recordDelegationAuditEvent(ctx, {
+                  type: "handoff-complete",
+                  taskId: delegatedTaskId,
+                  nodeId: node.id,
+                  sessionId: childSessionId || resolvedThreadId,
+                  parentSessionId: taskSessionId,
+                  rootSessionId: taskLineage.rootSessionId || taskSessionId,
+                  threadId: resolvedThreadId,
+                  sdk,
+                  model,
+                  transitionKey: handoffTransitionKey,
+                  idempotencyKey: handoffTransitionKey,
+                });
               }
               return tracedResult;
             },
@@ -3712,19 +5550,72 @@ registerBuiltinNodeType("action.run_agent", {
               ? String(result?.output || result?.message || "Agent run completed.").trim()
               : String(result?.error || "Agent run failed.").trim();
             if (fallbackContent) {
-              tracker.recordEvent(trackedTaskId, {
+              tracker.recordEvent(childSessionId, {
                 role: success ? "assistant" : "system",
                 type: success ? "agent_message" : "error",
                 content: fallbackContent,
                 timestamp: new Date().toISOString(),
-                _sessionType: trackedSessionType,
+                _sessionType: "delegate",
               });
             }
           }
-          tracker.endSession(trackedTaskId, success ? "completed" : "failed");
         }
 
         const threadId = result?.threadId || result?.sessionId || sessionId || null;
+        if (trackedTaskId) {
+          const terminalSessionStatus = success
+            ? resolveSuccessfulWorkflowAgentSessionStatus(result)
+            : deriveWorkflowAgentSessionStatus(result, { streamEventCount });
+          const childSessionMessages = tracker?.getSessionById(childSessionId)?.messages || [];
+          const visibleCompletionContent =
+            pickLatestMeaningfulSessionMessage(childSessionMessages) ||
+            String(result?.output || result?.message || "").trim();
+          recordDelegationAuditEvent(ctx, {
+            type: success ? "handoff-complete" : "owner-mismatch",
+            eventType: success ? "handoff-complete" : "owner-mismatch",
+            taskId: trackedTaskId,
+            taskTitle: trackedTaskTitle || null,
+            sessionId: childSessionId,
+            parentSessionId: taskSessionId,
+            rootSessionId: taskLineage.rootSessionId || taskSessionId,
+            workflowNodeId: node.id,
+            threadId,
+            threadKey: recoveryTaskKey,
+            transitionKey: success
+              ? `${assignTransitionKey}:handoff`
+              : `${assignTransitionKey}:failed`,
+            at: Date.now(),
+            timestamp: new Date().toISOString(),
+          });
+          tracker?.recordEvent(taskSessionId, {
+            role: "assistant",
+            type: "agent_message",
+            content:
+              visibleCompletionContent ||
+              `Workflow agent node "${node.label || node.id}" completed with status=${terminalSessionStatus}`,
+            timestamp: new Date().toISOString(),
+            _sessionType: trackedSessionType,
+          });
+          tracker?.endSession(childSessionId, terminalSessionStatus);
+          if (taskSessionId === trackedTaskId) {
+            tracker?.endSession(taskSessionId, terminalSessionStatus);
+          }
+          await syncTaskDelegationTopology(trackedTaskId, {
+            workflowId: ctx.data?._workflowId || null,
+            workflowName: ctx.data?._workflowName || ctx.data?._workflowId || null,
+            latestNodeId: node.id,
+            latestRunId: ctx.id || null,
+            rootRunId: taskLineage.rootRunId || ctx.id || null,
+            parentRunId: taskLineage.parentRunId || null,
+            latestSessionId: childSessionId,
+            sessionId: childSessionId,
+            rootSessionId: taskLineage.rootSessionId || taskSessionId,
+            parentSessionId: taskSessionId,
+            rootTaskId: taskLineage.rootTaskId || trackedTaskId || null,
+            parentTaskId: trackedTaskId || taskLineage.parentTaskId || null,
+            delegationDepth: taskLineage.delegationDepth + 1,
+          });
+        }
         if (persistSession && threadId) {
           ctx.data.sessionId = threadId;
           ctx.data.threadId = threadId;
@@ -3735,6 +5626,13 @@ registerBuiltinNodeType("action.run_agent", {
         recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
           eventType: success ? "agent.completed" : "agent.failed",
           ...agentExecutionLedgerRef,
+          sessionId: childSessionId,
+          parentSessionId: taskSessionId,
+          rootSessionId: taskLineage.rootSessionId || taskSessionId,
+          taskId: trackedTaskId || null,
+          parentTaskId: trackedTaskId || taskLineage.parentTaskId || null,
+          rootTaskId: taskLineage.rootTaskId || trackedTaskId || null,
+          delegationDepth: trackedTaskId ? taskLineage.delegationDepth + 1 : 0,
           status: success ? "completed" : "failed",
           durationMs: Date.now() - startedAt,
           error: success ? null : (result?.error || null),
@@ -3760,6 +5658,7 @@ registerBuiltinNodeType("action.run_agent", {
             items: result?.items,
             threadId,
             sessionId: threadId,
+            childSessionId,
             attempts: result?.attempts,
             continues: result?.continues,
             resumed: result?.resumed,
@@ -3784,6 +5683,7 @@ registerBuiltinNodeType("action.run_agent", {
           omittedItemCount: digest.omittedItemCount,
           threadId,
           sessionId: threadId,
+          childSessionId,
           attempts: result?.attempts,
           continues: result?.continues,
           resumed: result?.resumed,
@@ -4036,31 +5936,28 @@ registerBuiltinNodeType("action.run_command", {
       captureOutput: { type: "boolean", default: true },
       parseJson: { type: "boolean", default: false, description: "Parse JSON output automatically" },
       failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this command even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["command"],
   },
   async execute(node, ctx, engine) {
     const resolvedCommand = ctx.resolve(node.config?.command || "");
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const cwd = resolveWorkflowCwdValue(
+      ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd()),
+      ctx.data?.worktreePath || process.cwd(),
+    );
     const commandType = typeof node.config?.commandType === "string" ? node.config.commandType.trim() : "";
-    const autoCommandRoot = ctx.resolve(ctx.data?.repoRoot || cwd);
+    const autoCommandRoot = resolveWorkflowCwdValue(ctx.resolve(ctx.data?.repoRoot || cwd), cwd);
     const autoResolvedCommand = commandType
       ? resolveAutoCommand(String(resolvedCommand || ""), commandType, autoCommandRoot)
       : resolvedCommand;
     const command = normalizeLegacyWorkflowCommand(autoResolvedCommand);
     const resolvedEnvConfig = resolveWorkflowNodeValue(node.config?.env ?? {}, ctx);
-    const commandEnv = { ...process.env };
-    if (resolvedEnvConfig && typeof resolvedEnvConfig === "object" && !Array.isArray(resolvedEnvConfig)) {
-      for (const [key, value] of Object.entries(resolvedEnvConfig)) {
-        const name = String(key || "").trim();
-        if (!name) continue;
-        if (value == null) {
-          delete commandEnv[name];
-          continue;
-        }
-        commandEnv[name] = typeof value === "string" ? value : JSON.stringify(value);
-      }
-    }
+    const commandEnv = applyResolvedWorkflowEnv(process.env, resolvedEnvConfig);
 
     const timeout = node.config?.timeoutMs || 300000;
     const resolvedArgsConfig = resolveWorkflowNodeValue(node.config?.args ?? [], ctx);
@@ -4107,6 +6004,15 @@ registerBuiltinNodeType("action.run_command", {
     }
     const displayCommand = usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command;
     ctx.log(node.id, `Running: ${displayCommand}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.run_command",
+      repoRoot: cwd,
+      command,
+      args: commandArgs,
+    });
     const isolatedRun = await maybeRunWorkflowCommandInIsolation({
       node,
       ctx,
@@ -4144,23 +6050,13 @@ registerBuiltinNodeType("action.run_command", {
     }
     const startedAt = Date.now();
     try {
-      const output = usedArgv
-        ? execFileSync(command, commandArgs, {
-            cwd,
-            timeout,
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-            env: commandEnv,
-          })
-        : execSync(command, {
-            cwd,
-            timeout,
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-            env: commandEnv,
-          });
+      const output = await spawnAsync(command, usedArgv ? commandArgs : [], {
+        cwd,
+        timeout,
+        stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
+        env: commandEnv,
+        shell: !usedArgv,
+      });
       ctx.log(node.id, `Command succeeded`);
       const parsedOutput = parseOutput(output);
       if (shouldParseJson || typeof parsedOutput !== "string") {
@@ -5165,6 +7061,7 @@ registerBuiltinNodeType("action.update_task_status", {
     properties: {
       taskId: { type: "string", description: "Task ID (supports {{variables}})" },
       status: { type: "string", enum: ["todo", "inprogress", "inreview", "done", "blocked", "archived"] },
+      blockedReason: { type: "string", description: "Optional structured blocked-state reason persisted with the task" },
       taskTitle: { type: "string", description: "Optional task title for downstream event payloads" },
       previousStatus: { type: "string", description: "Optional explicit previous status" },
       workflowEvent: { type: "string", description: "Optional follow-up workflow event to emit after status update" },
@@ -5178,6 +7075,8 @@ registerBuiltinNodeType("action.update_task_status", {
     let status = node.config?.status;
     const kanban = engine.services?.kanban;
     const workflowEvent = ctx.resolve(node.config?.workflowEvent || "");
+    const blockedReasonProvided = Object.prototype.hasOwnProperty.call(node.config || {}, "blockedReason");
+    const blockedReason = blockedReasonProvided ? ctx.resolve(node.config?.blockedReason || "") : undefined;
     const workflowData =
       node.config?.workflowData && typeof node.config.workflowData === "object"
         ? node.config.workflowData
@@ -5288,14 +7187,15 @@ registerBuiltinNodeType("action.update_task_status", {
       // Persist PR linkage/branch metadata so review rehydrate does not reset
       // in-review tasks back to todo due missing references.
       if (
-        (status === "inreview" || status === "inprogress") &&
+        ((status === "inreview" || status === "inprogress") || blockedReasonProvided) &&
         typeof kanban.updateTask === "function" &&
-        (branchForTask || prUrlForTask || prNumberForTask != null)
+        (branchForTask || prUrlForTask || prNumberForTask != null || blockedReasonProvided)
       ) {
         const linkagePatch = {};
         if (branchForTask) linkagePatch.branchName = branchForTask;
         if (prUrlForTask) linkagePatch.prUrl = prUrlForTask;
         if (prNumberForTask != null) linkagePatch.prNumber = prNumberForTask;
+        if (blockedReasonProvided) linkagePatch.blockedReason = String(blockedReason || "").trim() || null;
         try {
           await kanban.updateTask(taskId, linkagePatch);
         } catch (err) {
@@ -5348,6 +7248,11 @@ registerBuiltinNodeType("action.git_operations", {
       message: { type: "string", description: "Commit message (for commit operation)" },
       branch: { type: "string", description: "Branch name" },
       cwd: { type: "string" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this git operation even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: [],
   },
@@ -5419,6 +7324,13 @@ registerBuiltinNodeType("action.git_operations", {
     const operationList = Array.isArray(node.config?.operations)
       ? node.config.operations
       : [];
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.git_operations",
+      repoRoot: cwd,
+    });
     if (operationList.length > 0) {
       const steps = [];
       for (const spec of operationList) {
@@ -5490,35 +7402,75 @@ registerBuiltinNodeType("action.create_pr", {
       },
       cwd: { type: "string" },
       failOnError: { type: "boolean", default: false, description: "If true, throw on gh failure instead of falling back" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before creating a pull request even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["title"],
   },
   async execute(node, ctx, engine) {
-    const title = ctx.resolve(node.config?.title || "");
-    const body = appendBosunCreatedPrFooter(ctx.resolve(node.config?.body || ""));
-    const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    const resolveNodeValue = (value, fallback = "") => {
+      try {
+        const resolved = typeof ctx?.resolve === "function" ? ctx.resolve(value ?? fallback) : (value ?? fallback);
+        return resolved ?? fallback;
+      } catch (err) {
+        ctx.log(node.id, `Failed to resolve PR node value: ${err?.message || err}`);
+        return fallback;
+      }
+    };
+
+    const PR_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const PR_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
+    const normalizePrText = (value) => {
+      if (value == null) return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      if (PR_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      return text
+        .replace(PR_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim();
+    };
+
+    const title = normalizePrText(resolveNodeValue(node.config?.title, ""));
+    const body = appendBosunCreatedPrFooter(String(resolveNodeValue(node.config?.body, "")));
+    const baseInput = resolveNodeValue(node.config?.base ?? node.config?.baseBranch, "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
       base = normalizeBaseBranch(base).branch;
     } catch {
     }
-    const branch = ctx.resolve(node.config?.branch || "");
+    const branch = String(resolveNodeValue(node.config?.branch, "")).trim();
     const repoSlug = String(
-      ctx.resolve(node.config?.repoSlug || ctx.data?.repoSlug || ctx.data?.repository || ""),
+      resolveNodeValue(node.config?.repoSlug ?? ctx.data?.repoSlug ?? ctx.data?.repository, ""),
     ).trim();
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.create_pr",
+      repoRoot: ctx?.data?.repoRoot
+        || ctx?.data?.repoPath
+        || resolveNodeValue(node.config?.cwd ?? ctx.data?.worktreePath ?? process.cwd(), process.cwd()),
+    });
     const enableAutoMerge = parseBooleanSetting(
       resolveWorkflowNodeValue(node.config?.enableAutoMerge ?? node.config?.autoMerge ?? false, ctx),
       false,
     );
     const autoMergeMethodRaw = String(
-      ctx.resolve(node.config?.autoMergeMethod || node.config?.mergeMethod || process.env.BOSUN_MERGE_METHOD || "merge"),
+      resolveNodeValue(
+        node.config?.autoMergeMethod ?? node.config?.mergeMethod ?? process.env.BOSUN_MERGE_METHOD,
+        "merge",
+      ),
     ).trim().toLowerCase();
     const autoMergeMethod = ["merge", "squash", "rebase"].includes(autoMergeMethodRaw)
       ? autoMergeMethodRaw
       : (process.env.BOSUN_MERGE_METHOD || "merge");
-    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const cwd = String(resolveNodeValue(node.config?.cwd ?? ctx.data?.worktreePath, process.cwd())).trim() || process.cwd();
 
     // Normalize labels/reviewers to arrays
     const toList = (v) => {
@@ -5527,11 +7479,17 @@ registerBuiltinNodeType("action.create_pr", {
       return String(v).split(",").map((s) => s.trim()).filter(Boolean);
     };
     const labels = Array.from(new Set([
-      ...toList(ctx.resolve(node.config?.labels || "")),
+      ...toList(resolveNodeValue(node.config?.labels, "")),
       BOSUN_ATTACHED_PR_LABEL,
       BOSUN_CREATED_PR_LABEL,
     ]));
-    const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+    const reviewers = toList(resolveNodeValue(node.config?.reviewers, ""));
+
+    if (!title) {
+      const error = "PR title is required";
+      ctx.log(node.id, error);
+      return { success: false, error, title, base, branch: branch || null, repoSlug: repoSlug || null };
+    }
 
     // Resolve Bosun's best available GitHub token and inject as GH_TOKEN so that
     // `gh pr create` uses a user OAuth / App installation token rather than the
@@ -5799,11 +7757,11 @@ registerBuiltinNodeType("action.create_pr", {
       if (failOnError) {
         return { success: false, error: errorMsg, command: cmd };
       }
-      // Graceful fallback — record handoff for Bosun management, but mark as failed
-      // so the task-lifecycle pr-created gate routes back to todo for retry.
+      // Graceful fallback — preserve the PR payload and hand off lifecycle management
+      // to Bosun without treating the node contract itself as a failure.
       ctx.log(node.id, `Falling back to Bosun-managed PR lifecycle handoff`);
       return {
-        success: false,
+        success: true,
         handedOff: true,
         lifecycle: "bosun_managed",
         action: "pr_handoff",
@@ -5844,7 +7802,8 @@ registerBuiltinNodeType("action.write_file", {
   },
   async execute(node, ctx, engine) {
     const filePath = ctx.resolve(node.config?.path || "");
-    const content = ctx.resolve(node.config?.content || "");
+    const rawContent = ctx.resolve(node.config?.content || "");
+    const content = repairCommonMojibake(rawContent);
     if (node.config?.mkdir) {
       mkdirSync(dirname(filePath), { recursive: true });
     }
@@ -5854,8 +7813,9 @@ registerBuiltinNodeType("action.write_file", {
     } else {
       writeFileSync(filePath, content, "utf8");
     }
-    ctx.log(node.id, `Wrote ${filePath}`);
-    return { success: true, path: filePath };
+    const repairedMojibake = content !== String(rawContent ?? "");
+    ctx.log(node.id, `Wrote ${filePath}${repairedMojibake ? " (encoding repaired)" : ""}`);
+    return { success: true, path: filePath, repairedMojibake };
   },
 });
 
@@ -5903,8 +7863,684 @@ registerBuiltinNodeType("action.set_variable", {
       value = ctx.resolve(value);
     }
     ctx.data[key] = value;
+    try {
+      upsertStateLedgerKeyValue({
+        scope: "run",
+        scopeId: ctx?.id || "run",
+        key,
+        value,
+        source: "workflow.action.set_variable",
+        runId: ctx?.id || null,
+        taskId: ctx?.data?.taskId || ctx?.data?.task?.id || null,
+        sessionId: ctx?.data?.sessionId || null,
+        metadata: {
+          nodeId: node?.id || null,
+          nodeType: node?.type || null,
+          expression: node.config?.isExpression === true,
+        },
+      }, { repoRoot: resolveBosunNativeRootDir(ctx, engine) });
+    } catch (err) {
+      ctx.log(node.id, `State ledger key-value mirror failed: ${err.message}`, "warn");
+    }
     ctx.log(node.id, `Set variable: ${key} = ${JSON.stringify(value)}`);
     return { key, value };
+  },
+});
+
+registerBuiltinNodeType("action.team_init", {
+  describe: () =>
+    "Initialize a workflow-local agent team roster, channels, and leadership state for team workflows.",
+  schema: {
+    type: "object",
+    properties: {
+      teamId: { type: "string", description: "Stable workflow-local team identifier." },
+      name: { type: "string", description: "Optional display name for the team." },
+      leadId: { type: "string", description: "Lead/member id for the team coordinator." },
+      defaultChannel: { type: "string", default: "team", description: "Default shared coordination channel." },
+      reset: { type: "boolean", default: false, description: "When true, replace any existing workflow team state." },
+      members: {
+        type: "array",
+        items: { type: "object" },
+        description: "Initial team roster members.",
+      },
+      channels: {
+        type: "array",
+        items: { type: "object" },
+        description: "Optional extra channels available to the team.",
+      },
+      outputVariable: { type: "string", description: "Optional context key to store the team init result." },
+    },
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const members = Array.isArray(resolveWorkflowNodeValue(node.config?.members ?? [], ctx))
+      ? resolveWorkflowNodeValue(node.config?.members ?? [], ctx)
+      : [];
+    const channels = Array.isArray(resolveWorkflowNodeValue(node.config?.channels ?? [], ctx))
+      ? resolveWorkflowNodeValue(node.config?.channels ?? [], ctx)
+      : [];
+    const reset = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.reset ?? false, ctx), false);
+    const teamId = normalizeTeamId(
+      ctx.resolve(node.config?.teamId || "") ||
+      ctx.data?.coordinationTeamId ||
+      ctx.data?.teamId ||
+      ctx.data?._workflowId ||
+      `workflow-team-${ctx.id.slice(0, 8)}`,
+    );
+    const leadId = normalizeTeamId(
+      ctx.resolve(node.config?.leadId || "") ||
+      ctx.data?.coordinationReportsTo ||
+      ctx.data?.leadId ||
+      ctx.data?.agentId ||
+      ctx.data?.agentProfile,
+    );
+    const defaultChannel = normalizeTeamId(ctx.resolve(node.config?.defaultChannel || "team")) || "team";
+    const teamName = normalizeTeamId(ctx.resolve(node.config?.name || "")) || teamId;
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      const next = reset
+        ? {
+            version: 1,
+            teamId: null,
+            name: null,
+            leadId: null,
+            defaultChannel: "team",
+            initializedAt: null,
+            updatedAt: null,
+            roster: [],
+            channels: [],
+            tasks: [],
+            messages: [],
+            events: [],
+          }
+        : current;
+      next.teamId = teamId;
+      next.name = teamName;
+      next.leadId = leadId || next.leadId || null;
+      next.defaultChannel = defaultChannel;
+      next.initializedAt = next.initializedAt || now;
+      next.updatedAt = now;
+      ensureTeamChannel(next, { channelId: defaultChannel, name: defaultChannel });
+      for (const channel of channels) ensureTeamChannel(next, channel);
+      if (next.leadId) {
+        ensureTeamMember(next, { memberId: next.leadId, name: next.leadId, role: "lead" });
+      }
+      for (const member of members) ensureTeamMember(next, member);
+      appendWorkflowTeamEvent(next, reset ? "team-reset" : "team-init", {
+        actorId: next.leadId,
+        memberId: next.leadId,
+        summary: `${reset ? "Reset" : "Initialized"} workflow team ${teamId}`,
+        status: "ready",
+      });
+      return next;
+    });
+
+    ctx.data.teamId = teamState.teamId;
+    ctx.data.leadId = teamState.leadId;
+    ctx.data._workflowTeamId = teamState.teamId;
+    ctx.data._workflowTeamLeadId = teamState.leadId;
+    ctx.data._workflowTeamChannel = teamState.defaultChannel;
+
+    const result = {
+      success: true,
+      teamId: teamState.teamId,
+      leadId: teamState.leadId,
+      state: teamState,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      reset,
+    };
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(node.id, `Initialized workflow team ${teamState.teamId} (${result.teamSummary.rosterCount} members)`);
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_task_publish", {
+  describe: () =>
+    "Publish one or more workflow-local shared team tasks that teammates can claim inside the current run.",
+  schema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Single team task title." },
+      description: { type: "string", description: "Single team task description." },
+      tasks: {
+        type: "array",
+        items: { type: "object" },
+        description: "Optional batch of team tasks to publish.",
+      },
+      createdBy: { type: "string", description: "Member id publishing the task(s)." },
+      priority: { type: "string" },
+      channelId: { type: "string" },
+      labels: { type: "array", items: { type: "string" } },
+      tags: { type: "array", items: { type: "string" } },
+      availableTo: { type: "array", items: { type: "string" } },
+      metadata: { type: "object" },
+      outputVariable: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const createdBy = resolveTeamActorId(node, ctx, "createdBy");
+    const publishedTasks = [];
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.tasks = Array.isArray(current.tasks) ? current.tasks : [];
+      current.events = Array.isArray(current.events) ? current.events : [];
+      current.updatedAt = now;
+      if (createdBy) ensureTeamMember(current, { memberId: createdBy, name: createdBy });
+      const batch = Array.isArray(resolveWorkflowNodeValue(node.config?.tasks ?? [], ctx))
+        ? resolveWorkflowNodeValue(node.config?.tasks ?? [], ctx)
+        : [];
+      const singleTask = {
+        title: ctx.resolve(node.config?.title || ""),
+        description: ctx.resolve(node.config?.description || ""),
+        priority: ctx.resolve(node.config?.priority || ""),
+        channelId: ctx.resolve(node.config?.channelId || ""),
+        labels: resolveWorkflowNodeValue(node.config?.labels ?? [], ctx),
+        tags: resolveWorkflowNodeValue(node.config?.tags ?? [], ctx),
+        availableTo: resolveWorkflowNodeValue(node.config?.availableTo ?? [], ctx),
+        metadata: resolveWorkflowNodeValue(node.config?.metadata ?? {}, ctx),
+      };
+      const sourceTasks = batch.length > 0
+        ? batch
+        : (singleTask.title || singleTask.description ? [singleTask] : []);
+      for (const entry of sourceTasks) {
+        const taskId = normalizeTeamId(entry.taskId || entry.id) || randomUUID();
+        const existing = current.tasks.find((task) => task.taskId === taskId);
+        const nextTask = {
+          taskId,
+          title: String(entry.title || entry.summary || taskId).trim(),
+          description: typeof entry.description === "string" && entry.description.trim() ? entry.description.trim() : null,
+          status: "open",
+          priority: normalizeTeamId(entry.priority) || null,
+          availableTo: normalizeTeamList(entry.availableTo),
+          labels: normalizeTeamList(entry.labels),
+          tags: normalizeTeamList(entry.tags),
+          channelId: normalizeTeamId(entry.channelId),
+          createdBy,
+          claimedBy: null,
+          completedBy: null,
+          releasedBy: null,
+          createdAt: existing?.createdAt || now,
+          claimedAt: null,
+          completedAt: null,
+          releasedAt: null,
+          claimHistory: Array.isArray(existing?.claimHistory) ? existing.claimHistory : [],
+          metadata:
+            entry.metadata && typeof entry.metadata === "object" && !Array.isArray(entry.metadata)
+              ? cloneWorkflowTeamValue(entry.metadata)
+              : {},
+        };
+        if (existing) {
+          Object.assign(existing, nextTask);
+          publishedTasks.push({ ...existing });
+        } else {
+          current.tasks.push(nextTask);
+          publishedTasks.push({ ...nextTask });
+        }
+        appendWorkflowTeamEvent(current, "team-task-published", {
+          actorId: createdBy,
+          memberId: createdBy,
+          taskId,
+          status: "open",
+          summary: `Published workflow team task ${taskId}`,
+        });
+      }
+      return current;
+    });
+    const result = {
+      success: true,
+      teamId: teamState.teamId,
+      publishedTasks,
+      count: publishedTasks.length,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(node.id, `Published ${publishedTasks.length} workflow team task(s)`);
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_task_claim", {
+  describe: () =>
+    "Claim a workflow-local shared team task for a specific teammate or worker inside the current run.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Specific team task to claim." },
+      memberId: { type: "string", description: "Teammate claiming the task." },
+      actorId: { type: "string", description: "Alias for memberId." },
+      match: { type: "object", description: "Optional matcher for first-available task selection." },
+      failIfUnavailable: { type: "boolean", default: false },
+      routeByOutcome: { type: "boolean", default: false, description: "When true, emit claimed/unavailable output ports." },
+      outputVariable: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const memberId = resolveTeamActorId(node, ctx);
+    const requestedTaskId = normalizeTeamId(ctx.resolve(node.config?.taskId || ""));
+    const failIfUnavailable = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.failIfUnavailable ?? false, ctx),
+      false,
+    );
+    const routeByOutcome = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.routeByOutcome ?? false, ctx),
+      false,
+    );
+    const match = resolveWorkflowNodeValue(node.config?.match ?? {}, ctx);
+    let claimResult = null;
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.tasks = Array.isArray(current.tasks) ? current.tasks : [];
+      current.events = Array.isArray(current.events) ? current.events : [];
+      current.updatedAt = now;
+      if (memberId) ensureTeamMember(current, { memberId, name: memberId });
+      const candidate = requestedTaskId
+        ? current.tasks.find((task) => task.taskId === requestedTaskId)
+        : current.tasks.find((task) => (
+          (task.status === "open" || task.status === "released") &&
+          matchesTeamTask(task, match)
+        ));
+      if (!candidate) {
+        claimResult = {
+          success: !failIfUnavailable,
+          claimed: false,
+          outcome: "unavailable",
+          reason: requestedTaskId ? "task_not_found" : "no_matching_task",
+        };
+        return current;
+      }
+      if (candidate.availableTo.length > 0 && memberId && !candidate.availableTo.includes(memberId)) {
+        claimResult = {
+          success: !failIfUnavailable,
+          claimed: false,
+          outcome: "unavailable",
+          reason: "member_not_eligible",
+          task: { ...candidate },
+        };
+        return current;
+      }
+      if (candidate.status === "claimed" && candidate.claimedBy && candidate.claimedBy !== memberId) {
+        claimResult = {
+          success: !failIfUnavailable,
+          claimed: false,
+          outcome: "unavailable",
+          reason: "already_claimed",
+          claimedBy: candidate.claimedBy,
+          task: { ...candidate },
+        };
+        return current;
+      }
+      candidate.status = "claimed";
+      candidate.claimedBy = memberId;
+      candidate.claimedAt = now;
+      candidate.releasedAt = null;
+      candidate.releasedBy = null;
+      candidate.claimHistory = Array.isArray(candidate.claimHistory) ? candidate.claimHistory : [];
+      candidate.claimHistory.push({
+        action: "claim",
+        memberId,
+        at: now,
+        note: null,
+      });
+      appendWorkflowTeamEvent(current, "team-task-claimed", {
+        actorId: memberId,
+        memberId,
+        taskId: candidate.taskId,
+        status: "claimed",
+        summary: `${memberId || "member"} claimed workflow team task ${candidate.taskId}`,
+      });
+      claimResult = {
+        success: true,
+        claimed: true,
+        outcome: "claimed",
+        task: { ...candidate },
+      };
+      return current;
+    });
+
+    if (!claimResult) {
+      claimResult = {
+        success: !failIfUnavailable,
+        claimed: false,
+        outcome: "unavailable",
+        reason: "unknown",
+      };
+    }
+    const result = {
+      ...claimResult,
+      teamId: teamState.teamId,
+      memberId,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    if (routeByOutcome) result.matchedPort = claimResult.outcome;
+    if (claimResult.success === false && failIfUnavailable) {
+      throw new Error(`action.team_task_claim: ${claimResult.reason}`);
+    }
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(
+      node.id,
+      result.claimed
+        ? `Claimed workflow team task ${result.task?.taskId || requestedTaskId}`
+        : `Workflow team claim unavailable (${result.reason})`,
+      result.claimed ? "info" : "warn",
+    );
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_task_complete", {
+  describe: () =>
+    "Complete or release a claimed workflow-local team task while preserving auditable task history.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Workflow team task to complete or release." },
+      memberId: { type: "string", description: "Member completing or releasing the task." },
+      actorId: { type: "string", description: "Alias for memberId." },
+      release: { type: "boolean", default: false, description: "Release the claim instead of completing the task." },
+      force: { type: "boolean", default: false, description: "Allow completion/release by someone other than the claimant." },
+      note: { type: "string", description: "Optional completion or release note." },
+      routeByOutcome: { type: "boolean", default: false, description: "When true, emit completed/released output ports." },
+      outputVariable: { type: "string" },
+    },
+    required: ["taskId"],
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const taskId = normalizeTeamId(ctx.resolve(node.config?.taskId || ""));
+    const memberId = resolveTeamActorId(node, ctx);
+    const release = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.release ?? false, ctx), false);
+    const force = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.force ?? false, ctx), false);
+    const routeByOutcome = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.routeByOutcome ?? false, ctx), false);
+    const note = typeof ctx.resolve(node.config?.note || "") === "string"
+      ? String(ctx.resolve(node.config?.note || "")).trim() || null
+      : null;
+    let transitionResult = null;
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.tasks = Array.isArray(current.tasks) ? current.tasks : [];
+      current.events = Array.isArray(current.events) ? current.events : [];
+      current.updatedAt = now;
+      const task = current.tasks.find((entry) => entry.taskId === taskId);
+      if (!task) {
+        transitionResult = { success: false, taskId, reason: "task_not_found", outcome: release ? "released" : "completed" };
+        return current;
+      }
+      if (!force && task.claimedBy && memberId && task.claimedBy !== memberId) {
+        transitionResult = {
+          success: false,
+          taskId,
+          reason: "claim_owner_mismatch",
+          claimedBy: task.claimedBy,
+          task: { ...task },
+          outcome: release ? "released" : "completed",
+        };
+        return current;
+      }
+      if (release) {
+        task.status = "released";
+        task.releasedBy = memberId;
+        task.releasedAt = now;
+        task.claimedBy = null;
+        task.claimedAt = null;
+        task.claimHistory = Array.isArray(task.claimHistory) ? task.claimHistory : [];
+        task.claimHistory.push({ action: "release", memberId, at: now, note });
+        appendWorkflowTeamEvent(current, "team-task-released", {
+          actorId: memberId,
+          memberId,
+          taskId,
+          status: "released",
+          summary: `${memberId || "member"} released workflow team task ${taskId}`,
+        });
+      } else {
+        task.status = "completed";
+        task.completedBy = memberId;
+        task.completedAt = now;
+        task.claimHistory = Array.isArray(task.claimHistory) ? task.claimHistory : [];
+        task.claimHistory.push({ action: "complete", memberId, at: now, note });
+        appendWorkflowTeamEvent(current, "team-task-completed", {
+          actorId: memberId,
+          memberId,
+          taskId,
+          status: "completed",
+          summary: `${memberId || "member"} completed workflow team task ${taskId}`,
+        });
+      }
+      transitionResult = {
+        success: true,
+        taskId,
+        released: release,
+        completed: !release,
+        outcome: release ? "released" : "completed",
+        task: { ...task },
+      };
+      return current;
+    });
+
+    const result = {
+      ...transitionResult,
+      teamId: teamState.teamId,
+      memberId,
+      note,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    if (routeByOutcome) result.matchedPort = transitionResult.outcome;
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(
+      node.id,
+      result.success
+        ? `${release ? "Released" : "Completed"} workflow team task ${taskId}`
+        : `Workflow team task transition failed (${result.reason})`,
+      result.success ? "info" : "warn",
+    );
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_message", {
+  describe: () =>
+    "Send a direct or channel message between teammates inside the current workflow run.",
+  schema: {
+    type: "object",
+    properties: {
+      fromMemberId: { type: "string", description: "Sender member id." },
+      toMemberId: { type: "string", description: "Single direct recipient." },
+      toMemberIds: { type: "array", items: { type: "string" }, description: "Multiple direct recipients." },
+      channelId: { type: "string", description: "Channel to publish to when not sending direct." },
+      subject: { type: "string" },
+      content: { type: "string", description: "Message body." },
+      taskId: { type: "string", description: "Optional related workflow team task id." },
+      metadata: { type: "object" },
+      routeByOutcome: { type: "boolean", default: false, description: "When true, emit direct/channel output ports." },
+      outputVariable: { type: "string" },
+    },
+    required: ["content"],
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const fromMemberId = resolveTeamActorId(node, ctx, "fromMemberId");
+    let deliveredMessage = null;
+    const directRecipients = Array.from(new Set([
+      ...normalizeTeamList(resolveWorkflowNodeValue(node.config?.toMemberIds ?? [], ctx)),
+      ...normalizeTeamList(ctx.resolve(node.config?.toMemberId || "")),
+    ]));
+    const channelId = normalizeTeamId(
+      ctx.resolve(node.config?.channelId || "") ||
+      ctx.data?._workflowTeamChannel ||
+      ctx.data?.channelId,
+    );
+    const content = String(ctx.resolve(node.config?.content || "") || "").trim();
+    if (!content) throw new Error("action.team_message: 'content' is required");
+    const subject = typeof ctx.resolve(node.config?.subject || "") === "string"
+      ? String(ctx.resolve(node.config?.subject || "")).trim() || null
+      : null;
+    const taskId = normalizeTeamId(ctx.resolve(node.config?.taskId || ""));
+    const metadata = resolveWorkflowNodeValue(node.config?.metadata ?? {}, ctx);
+    const kind = directRecipients.length > 0 ? "direct" : "channel";
+    const routeByOutcome = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.routeByOutcome ?? false, ctx), false);
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.messages = Array.isArray(current.messages) ? current.messages : [];
+      current.events = Array.isArray(current.events) ? current.events : [];
+      current.updatedAt = now;
+      if (fromMemberId) ensureTeamMember(current, { memberId: fromMemberId, name: fromMemberId });
+      for (const memberId of directRecipients) ensureTeamMember(current, { memberId, name: memberId });
+      const resolvedChannelId = kind === "channel"
+        ? (channelId || current.defaultChannel || "team")
+        : null;
+      if (resolvedChannelId) ensureTeamChannel(current, { channelId: resolvedChannelId, name: resolvedChannelId });
+      const message = {
+        messageId: randomUUID(),
+        kind,
+        fromMemberId,
+        toMemberIds: directRecipients,
+        channelId: resolvedChannelId,
+        subject,
+        content,
+        taskId,
+        metadata:
+          metadata && typeof metadata === "object" && !Array.isArray(metadata)
+            ? cloneWorkflowTeamValue(metadata)
+            : {},
+        readBy: fromMemberId ? [fromMemberId] : [],
+        createdAt: now,
+      };
+      current.messages.push(message);
+      appendWorkflowTeamEvent(current, "team-message", {
+        actorId: fromMemberId,
+        memberId: fromMemberId,
+        taskId,
+        messageId: message.messageId,
+        status: kind,
+        summary: `${fromMemberId || "member"} sent a ${kind} workflow team message`,
+      });
+      deliveredMessage = { ...message };
+      return current;
+    });
+
+    const result = {
+      success: true,
+      kind,
+      outcome: kind,
+      message: deliveredMessage,
+      teamId: teamState.teamId,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    if (routeByOutcome) result.matchedPort = kind;
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(node.id, `Sent ${kind} workflow team message${deliveredMessage?.messageId ? ` (${deliveredMessage.messageId})` : ""}`);
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_inbox", {
+  describe: () =>
+    "Read workflow-local direct and channel messages for a specific teammate inside the current run.",
+  schema: {
+    type: "object",
+    properties: {
+      memberId: { type: "string", description: "Teammate whose inbox should be read." },
+      channelId: { type: "string", description: "Optional channel filter." },
+      limit: { type: "number", default: 50, description: "Maximum number of messages to return." },
+      includeDirect: { type: "boolean", default: true },
+      includeChannels: { type: "boolean", default: true },
+      includeBroadcast: { type: "boolean", default: true },
+      markRead: { type: "boolean", default: false, description: "Mark returned messages as read by the member." },
+      outputVariable: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const memberId = resolveTeamActorId(node, ctx);
+    const channelId = normalizeTeamId(ctx.resolve(node.config?.channelId || ""));
+    const limit = Math.max(1, Math.min(500, Number(resolveWorkflowNodeValue(node.config?.limit ?? 50, ctx)) || 50));
+    const includeDirect = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeDirect ?? true, ctx), true);
+    const includeChannels = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeChannels ?? true, ctx), true);
+    const includeBroadcast = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeBroadcast ?? true, ctx), true);
+    const markRead = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.markRead ?? false, ctx), false);
+    let inboxMessages = [];
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.messages = Array.isArray(current.messages) ? current.messages : [];
+      current.updatedAt = new Date().toISOString();
+      inboxMessages = current.messages.filter((message) => {
+        if (channelId && normalizeTeamId(message.channelId) !== channelId) return false;
+        const directHit = includeDirect && normalizeTeamList(message.toMemberIds).includes(memberId);
+        const channelHit = includeChannels && message.channelId && memberCanSeeChannel(current, memberId, message.channelId);
+        const broadcastHit = includeBroadcast && !message.channelId && normalizeTeamList(message.toMemberIds).length === 0;
+        return directHit || channelHit || broadcastHit;
+      }).slice(-limit);
+      if (markRead) {
+        for (const message of inboxMessages) {
+          message.readBy = Array.isArray(message.readBy) ? message.readBy : [];
+          if (memberId && !message.readBy.includes(memberId)) message.readBy.push(memberId);
+        }
+      }
+      return current;
+    });
+
+    const result = {
+      success: true,
+      teamId: teamState.teamId,
+      memberId,
+      channelId: channelId || null,
+      messages: inboxMessages.map((message) => ({ ...message })),
+      unreadCount: inboxMessages.filter((message) => !normalizeTeamList(message.readBy).includes(memberId)).length,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(node.id, `Read ${result.messages.length} workflow team inbox message(s) for ${memberId || "member"}`);
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_snapshot", {
+  describe: () =>
+    "Return the current workflow team roster, task board, message history, and compact summary for downstream decisions.",
+  schema: {
+    type: "object",
+    properties: {
+      includeRoster: { type: "boolean", default: true },
+      includeTasks: { type: "boolean", default: true },
+      includeMessages: { type: "boolean", default: true },
+      includeEvents: { type: "boolean", default: true },
+      messageLimit: { type: "number", default: 100 },
+      outputVariable: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const state = getWorkflowTeamState(ctx);
+    const includeRoster = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeRoster ?? true, ctx), true);
+    const includeTasks = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeTasks ?? true, ctx), true);
+    const includeMessages = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeMessages ?? true, ctx), true);
+    const includeEvents = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeEvents ?? true, ctx), true);
+    const messageLimit = Math.max(1, Math.min(500, Number(resolveWorkflowNodeValue(node.config?.messageLimit ?? 100, ctx)) || 100));
+    const snapshot = {
+      success: true,
+      teamId: state.teamId || null,
+      leadId: state.leadId || null,
+      teamSummary: summarizeWorkflowTeamState(state),
+      roster: includeRoster ? cloneWorkflowTeamValue(state.roster || []) : [],
+      tasks: includeTasks ? cloneWorkflowTeamValue(state.tasks || []) : [],
+      messages: includeMessages ? cloneWorkflowTeamValue((state.messages || []).slice(-messageLimit)) : [],
+      events: includeEvents ? cloneWorkflowTeamValue(state.events || []) : [],
+      state,
+    };
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = snapshot;
+    ctx.log(node.id, `Captured workflow team snapshot for ${snapshot.teamId || "team"}`);
+    return snapshot;
   },
 });
 
@@ -5957,9 +8593,9 @@ registerBuiltinNodeType("action.delay", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  VALIDATION — Verification gates
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("validation.screenshot", {
   describe: () => "Take a screenshot for visual verification and store in evidence",
@@ -6367,7 +9003,8 @@ registerBuiltinNodeType("validation.tests", {
     }
 
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const execution = buildExecSyncOptions(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const output = execSync(execution.command, execution.options);
       ctx.log(node.id, "Tests passed");
       const compacted = await compactWorkflowCommandResult({
         command,
@@ -6494,7 +9131,8 @@ registerBuiltinNodeType("validation.build", {
     }
 
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const execution = buildExecSyncOptions(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const output = execSync(execution.command, execution.options);
       const hasWarnings = /warning/i.test(output || "");
       const compacted = await compactWorkflowCommandResult({
         command,
@@ -6568,7 +9206,8 @@ registerBuiltinNodeType("validation.lint", {
     }
     const startedAt = Date.now();
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const execution = buildExecSyncOptions(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const output = execSync(execution.command, execution.options);
       const compacted = await compactWorkflowCommandResult({
         command,
         output: output?.trim() || "",
@@ -6602,9 +9241,9 @@ registerBuiltinNodeType("validation.lint", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  TRANSFORM — Data manipulation
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("transform.json_parse", {
   describe: () => "Parse JSON from a previous node's output",
@@ -6768,9 +9407,9 @@ registerBuiltinNodeType("transform.llm_parse", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  NOTIFY — Notifications
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("notify.log", {
   describe: () => "Log a message (to console and workflow run log)",
@@ -6973,9 +9612,9 @@ registerNodeType("action.emit_event", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  AGENT-SPECIFIC — Specialized agent operations
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("agent.select_profile", {
   describe: () => "Select an agent profile based on task characteristics",
@@ -7029,7 +9668,7 @@ registerBuiltinNodeType("agent.select_profile", {
   },
 });
 
-function parsePlannerJsonFromText(value) {
+function parsePlannerJsonFromText(value, { strictFence = false } = {}) {
   const text = normalizeLineEndings(String(value || ""))
     .replace(/\u001b\[[0-9;]*m/g, "")
     // Strip common agent prefixes: "Agent: ", "Assistant: ", etc.
@@ -7037,6 +9676,16 @@ function parsePlannerJsonFromText(value) {
     .trim();
   if (!text) return null;
 
+  if (strictFence) {
+    const strictMatch = text.match(/^```json\s*([\s\S]*?)\s*```$/i);
+    if (!strictMatch) return null;
+    try {
+      const parsed = JSON.parse(String(strictMatch[1] || "").trim());
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
   const candidates = [];
   // Match fenced blocks (```json ... ``` or ``` ... ```)
   const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
@@ -7219,6 +9868,11 @@ function normalizePlannerTaskForCreation(task, index) {
     }
     return normalized;
   };
+  const normalizeOptionalStringList = (value) => {
+    if (Array.isArray(value)) return normalizeStringList(value);
+    const entry = String(value || "").trim();
+    return entry ? [entry] : [];
+  };
   const normalizeScore = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return null;
@@ -7236,6 +9890,14 @@ function normalizePlannerTaskForCreation(task, index) {
   };
   const normalizeArchetype = (value) => {
     const normalized = String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    return normalized || "";
+  };
+  const normalizeTaskGraphKey = (value, fallback = "") => {
+    const normalized = String(value || fallback || "")
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "_")
@@ -7279,6 +9941,41 @@ function normalizePlannerTaskForCreation(task, index) {
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
   const archetype = inferArchetype();
+  const taskKey = normalizeTaskGraphKey(
+    task.task_key || task.taskKey || task.key || task.id || "",
+    title,
+  );
+  const parentTaskKey = normalizeTaskGraphKey(
+    task.parent_task_key ||
+      task.parentTaskKey ||
+      task.parent_key ||
+      task.parentKey ||
+      task.parent_task_title ||
+      task.parentTaskTitle ||
+      task.parent_title ||
+      task.parentTitle ||
+      "",
+  );
+  const parentTaskId = String(task.parent_task_id || task.parentTaskId || "").trim() || null;
+  const dependencyTaskKeys = Array.from(new Set([
+    ...normalizeOptionalStringList(task.depends_on_task_keys),
+    ...normalizeOptionalStringList(task.dependsOnTaskKeys),
+    ...normalizeOptionalStringList(task.dependency_keys),
+    ...normalizeOptionalStringList(task.dependencyKeys),
+    ...normalizeOptionalStringList(task.depends_on_titles),
+    ...normalizeOptionalStringList(task.dependsOnTitles),
+    ...normalizeOptionalStringList(task.dependency_titles),
+    ...normalizeOptionalStringList(task.dependencyTitles),
+  ].map((entry) => normalizeTaskGraphKey(entry)).filter(Boolean)));
+  const dependencyTaskIds = Array.from(new Set([
+    ...normalizeOptionalStringList(task.depends_on_task_ids),
+    ...normalizeOptionalStringList(task.dependsOnTaskIds),
+    ...normalizeOptionalStringList(task.dependency_task_ids),
+    ...normalizeOptionalStringList(task.dependencyTaskIds),
+  ].map((entry) => String(entry || "").trim()).filter(Boolean)));
+  const decompositionKind = String(task.decomposition_kind || task.decompositionKind || "").trim().toLowerCase() || null;
+  const spawnWhen = String(task.spawn_when || task.spawnWhen || "").trim() || null;
+  const mergeBackPolicy = String(task.merge_back_policy || task.mergeBackPolicy || "").trim() || null;
 
   const appendList = (heading, values) => {
     if (!Array.isArray(values) || values.length === 0) return;
@@ -7334,6 +10031,14 @@ function normalizePlannerTaskForCreation(task, index) {
     estimatedEffort: estimatedEffort || null,
     whyNow: whyNow || null,
     killCriteria: killCriteria.length > 0 ? killCriteria : null,
+    taskKey: taskKey || null,
+    parentTaskKey: parentTaskKey || null,
+    parentTaskId,
+    dependencyTaskKeys,
+    dependencyTaskIds,
+    decompositionKind,
+    spawnWhen,
+    mergeBackPolicy,
   };
 }
 function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
@@ -7345,7 +10050,7 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
     : 5;
   const dedup = new Set();
   const tasks = [];
-  for (let i = 0; i < parsed.tasks.length && tasks.length < max; i += 1) {
+  for (let i = 0; i < parsed.tasks.length; i += 1) {
     const normalized = normalizePlannerTaskForCreation(parsed.tasks[i], i);
     if (!normalized) continue;
     const key = normalized.title.toLowerCase();
@@ -7353,9 +10058,215 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
     dedup.add(key);
     tasks.push(normalized);
   }
-  return tasks;
+  return tasks.slice(0, max);
 }
 
+function validateStrictPlannerTaskPayload(output, expectedTaskCount = 5, opts = {}) {
+  const requireExactCount = opts?.requireExactCount === true;
+  const text = normalizeLineEndings(String(output || ""))
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .trim();
+  if (!text) {
+    return {
+      ok: false,
+      reason: "invalid_format",
+      message: "Planner output must be raw JSON or a single fenced JSON block with shape { \"tasks\": [...] }.",
+    };
+  }
+
+  const fencedMatch = text.match(/^```json\s*([\s\S]*?)\s*```$/i);
+  const rawJsonText = fencedMatch ? String(fencedMatch[1] || "").trim() : text;
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(rawJsonText);
+  } catch {
+    return {
+      ok: false,
+      reason: "invalid_format",
+      message: "Planner output must be raw JSON or a single fenced JSON block with no surrounding prose.",
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      reason: "invalid_format",
+      message: "Planner output must parse to an object with shape { \"tasks\": [...] }.",
+    };
+  }
+
+  if (!Array.isArray(parsed.tasks)) {
+    return {
+      ok: false,
+      reason: "missing_tasks",
+      message: "Planner output JSON must include a top-level \"tasks\" array.",
+    };
+  }
+
+  const expected = Number.isFinite(Number(expectedTaskCount))
+    ? Math.max(1, Math.min(100, Math.trunc(Number(expectedTaskCount))))
+    : 5;
+  if (requireExactCount && parsed.tasks.length !== expected) {
+    return {
+      ok: false,
+      reason: "wrong_task_count",
+      message: `Planner output must contain exactly ${expected} task(s); received ${parsed.tasks.length}.`,
+    };
+  }
+
+  return { ok: true, parsed };
+}
+async function applyPlannerTaskGraphLinks({
+  createdTaskRefs = [],
+  graphRootTaskId = null,
+  graphRootTaskKey = "",
+  kanban = null,
+}) {
+  if (!Array.isArray(createdTaskRefs) || createdTaskRefs.length === 0) {
+    return {
+      appliedParentLinks: [],
+      appliedDependencyLinks: [],
+      skippedGraphLinks: [],
+    };
+  }
+
+  let taskStoreMod = null;
+  try {
+    taskStoreMod = await ensureTaskStoreMod();
+  } catch {
+    taskStoreMod = null;
+  }
+
+  const appliedParentLinks = [];
+  const appliedDependencyLinks = [];
+  const skippedGraphLinks = [];
+  const createdTaskIdsByKey = new Map();
+  const fallbackDependencyLists = new Map();
+
+  for (const entry of createdTaskRefs) {
+    const taskKey = String(entry?.task?.taskKey || "").trim();
+    const createdTaskId = String(entry?.createdTaskId || "").trim();
+    if (taskKey && createdTaskId) createdTaskIdsByKey.set(taskKey, createdTaskId);
+  }
+
+  const resolveTaskIdReference = (taskKey = "", explicitTaskId = "") => {
+    const normalizedTaskId = String(explicitTaskId || "").trim();
+    if (normalizedTaskId) return normalizedTaskId;
+    const normalizedTaskKey = String(taskKey || "").trim();
+    if (!normalizedTaskKey) return null;
+    if (createdTaskIdsByKey.has(normalizedTaskKey)) return createdTaskIdsByKey.get(normalizedTaskKey);
+    if (graphRootTaskId && graphRootTaskKey && normalizedTaskKey === graphRootTaskKey) return graphRootTaskId;
+    return null;
+  };
+
+  for (const entry of createdTaskRefs) {
+    const plannerTask = entry?.task && typeof entry.task === "object" ? entry.task : null;
+    const createdTaskId = String(entry?.createdTaskId || "").trim();
+    if (!plannerTask || !createdTaskId) continue;
+
+    const parentTaskId = resolveTaskIdReference(plannerTask.parentTaskKey, plannerTask.parentTaskId)
+      || (!plannerTask.parentTaskKey && !plannerTask.parentTaskId && graphRootTaskId ? graphRootTaskId : null);
+    if (parentTaskId && parentTaskId !== createdTaskId) {
+      let applied = false;
+      if (typeof taskStoreMod?.setTaskParent === "function") {
+        const updated = taskStoreMod.setTaskParent(createdTaskId, parentTaskId, {
+          source: "workflow-planner",
+        });
+        applied = Boolean(updated);
+      }
+      if (!applied && typeof kanban?.updateTask === "function") {
+        await kanban.updateTask(createdTaskId, {
+          parentTaskId,
+          meta: { parentTaskId },
+        });
+        applied = true;
+      }
+      if (applied) {
+        appliedParentLinks.push({
+          childTaskId: createdTaskId,
+          parentTaskId,
+          taskKey: plannerTask.taskKey || null,
+        });
+      } else {
+        skippedGraphLinks.push({
+          type: "parent",
+          childTaskId: createdTaskId,
+          parentTaskId,
+          reason: "parent_task_unavailable",
+          taskKey: plannerTask.taskKey || null,
+        });
+      }
+    }
+
+    const dependencyRefs = [
+      ...(Array.isArray(plannerTask.dependencyTaskIds)
+        ? plannerTask.dependencyTaskIds.map((dependencyTaskId) => ({
+            dependencyTaskId,
+            dependencyTaskKey: "",
+          }))
+        : []),
+      ...(Array.isArray(plannerTask.dependencyTaskKeys)
+        ? plannerTask.dependencyTaskKeys.map((dependencyTaskKey) => ({
+            dependencyTaskId: "",
+            dependencyTaskKey,
+          }))
+        : []),
+    ];
+    for (const dependencyRef of dependencyRefs) {
+      const dependencyTaskId = resolveTaskIdReference(
+        dependencyRef.dependencyTaskKey,
+        dependencyRef.dependencyTaskId,
+      );
+      if (!dependencyTaskId || dependencyTaskId === createdTaskId) continue;
+      let applied = false;
+      if (typeof taskStoreMod?.addTaskDependency === "function") {
+        const updated = taskStoreMod.addTaskDependency(createdTaskId, dependencyTaskId, {
+          source: "workflow-planner",
+        });
+        applied = Boolean(updated);
+      }
+      if (!applied && typeof kanban?.updateTask === "function") {
+        const existing = fallbackDependencyLists.get(createdTaskId) || [];
+        const nextDependencies = Array.from(new Set([...existing, dependencyTaskId]));
+        fallbackDependencyLists.set(createdTaskId, nextDependencies);
+        await kanban.updateTask(createdTaskId, {
+          meta: {
+            dependencyTaskIds: nextDependencies,
+          },
+        });
+        applied = true;
+      }
+      if (applied) {
+        appliedDependencyLinks.push({
+          taskId: createdTaskId,
+          dependencyTaskId,
+          dependencyTaskKey: dependencyRef.dependencyTaskKey || null,
+          taskKey: plannerTask.taskKey || null,
+        });
+      } else {
+        skippedGraphLinks.push({
+          type: "dependency",
+          taskId: createdTaskId,
+          dependencyTaskId,
+          dependencyTaskKey: dependencyRef.dependencyTaskKey || null,
+          reason: "dependency_task_unavailable",
+          taskKey: plannerTask.taskKey || null,
+        });
+      }
+    }
+  }
+
+  if (typeof taskStoreMod?.waitForStoreWrites === "function") {
+    await taskStoreMod.waitForStoreWrites();
+  }
+
+  return {
+    appliedParentLinks,
+    appliedDependencyLinks,
+    skippedGraphLinks,
+  };
+}
 function resolvePlannerMaterializationDefaults(ctx) {
   const data =
     ctx?.data && typeof ctx.data === "object" && !Array.isArray(ctx.data)
@@ -7413,18 +10324,73 @@ function resolveTaskRepoAreas(task) {
   }
   return normalized;
 }
-
 function resolvePlannerFeedbackContext(value) {
   if (value == null) return "";
   if (typeof value === "string") return value.trim();
   if (Array.isArray(value)) {
     return value
-      .map((entry) => String(entry || "").trim())
+      .map((entry) => resolvePlannerFeedbackContext(entry))
       .filter(Boolean)
-      .join("\n")
+      .join("\n\n")
       .trim();
   }
   if (typeof value === "object") {
+    const blocks = [];
+    const seen = new Set();
+    const pushBlock = (label, content) => {
+      const normalized = String(content || "").trim();
+      if (!normalized) return;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const line = label ? `${label}: ${normalized}` : normalized;
+      blocks.push(line);
+    };
+    pushBlock("issueAdvisorSummary", value.issueAdvisorSummary ?? value.issueAdvisor?.summary);
+    pushBlock("recommendedAction", value.recommendedAction ?? value.issueAdvisor?.recommendedAction);
+    const nextStepLabel = String(value.issueAdvisor?.nextStepLabel || "").trim();
+    const nextStepGuidance = String(
+      value.nextStepGuidance ?? value.issueAdvisor?.nextStepGuidance ?? "",
+    ).trim();
+
+    const dagStateSummary = value.dagStateSummary;
+    pushBlock("nextStepGuidance", nextStepGuidance);
+    if (
+      nextStepLabel &&
+      !nextStepGuidance.toLowerCase().includes(nextStepLabel.toLowerCase())
+    ) {
+      pushBlock("nextStepLabel", nextStepLabel);
+    }
+    if (dagStateSummary && typeof dagStateSummary === "object") {
+      const completed = Array.isArray(dagStateSummary.completedNodes) ? dagStateSummary.completedNodes : [];
+      const pending = Array.isArray(dagStateSummary.pendingNodes) ? dagStateSummary.pendingNodes : [];
+      const currentNode = dagStateSummary.currentNode && typeof dagStateSummary.currentNode === "object"
+        ? dagStateSummary.currentNode
+        : null;
+      if (completed.length) {
+        pushBlock(
+          "completedNodes",
+          completed.map((node) => (node.id || "unknown") + " (" + (node.label || node.id || "unlabeled") + ")").join(", "),
+        );
+      }
+      if (currentNode) {
+        pushBlock(
+          "currentNode",
+          (currentNode.id || "unknown") + " (" + (currentNode.label || currentNode.id || "unlabeled") + ")",
+        );
+      }
+      if (pending.length) {
+        const pendingSummary = pending
+          .filter((node) => {
+            const label = String(node?.label || node?.id || "").trim().toLowerCase();
+            return !label || !nextStepGuidance.toLowerCase().includes(label);
+          })
+          .map((node) => (node.id || "unknown") + " (" + (node.label || node.id || "unlabeled") + ")")
+          .join(", ");
+        pushBlock("pendingNodes", pendingSummary);
+      }
+    }
+    if (blocks.length) return blocks.join("\n");
     try {
       return JSON.stringify(value, null, 2).trim();
     } catch {
@@ -7432,6 +10398,16 @@ function resolvePlannerFeedbackContext(value) {
     }
   }
   return String(value).trim();
+}
+
+function appendPlannerFeedbackContext(baseContext, plannerFeedback, promptText = "") {
+  const contextText = String(baseContext || "").trim();
+  const feedbackText = String(plannerFeedback || "").trim();
+  const promptBase = String(promptText || "").trim();
+  if (!feedbackText) return contextText;
+  const feedbackSummary = feedbackText.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || feedbackText;
+  if (contextText.includes(feedbackText) || contextText.includes(feedbackSummary) || promptBase.includes(feedbackText) || promptBase.includes(feedbackSummary)) return contextText;
+  return [contextText, `Planner feedback context:\n${feedbackText}`].filter(Boolean).join("\n\n");
 }
 
 function resolvePlannerFeedbackObject(value) {
@@ -7472,7 +10448,6 @@ function normalizePlannerTaskArchetype(task) {
     .join("_");
   return fallback || "general";
 }
-
 function resolvePlannerPatternKeys(task) {
   const archetype = normalizePlannerTaskArchetype(task);
   const areas = resolveTaskRepoAreas(task);
@@ -7551,6 +10526,7 @@ function createEmptyPlannerPatternPrior() {
     failureWeight: 0,
     successWeight: 0,
     failureCounter: 0,
+    negativePrior: 0,
     commitlessFailureCount: 0,
     commitlessSuccessCount: 0,
     commitlessFailureCounter: 0,
@@ -7768,6 +10744,7 @@ function rankPlannerTaskCandidates(tasks, priorState, rankingConfig) {
       const successCount = Number(prior.successCount || 0);
       const failureWeight = Number(prior.failureWeight || 0);
       const successWeight = Number(prior.successWeight || 0);
+      const configuredNegativePrior = Math.max(0, Number(prior.negativePrior || 0));
       const failureCounter = Number(prior.failureCounter || 0);
       const commitlessFailureCounter = Number(prior.commitlessFailureCounter || 0);
       const commitlessFailureCount = Number(prior.commitlessFailureCount || 0);
@@ -7775,38 +10752,68 @@ function rankPlannerTaskCandidates(tasks, priorState, rankingConfig) {
       const netFailureEvents = Math.max(0, failureCount - successCount);
       const netFailureWeight = Math.max(0, failureWeight - successWeight);
       const netCommitlessEvents = Math.max(0, commitlessFailureCount - commitlessSuccessCount);
+      const recoveredFailureCounter = Math.min(Math.max(0, failureCounter - (Math.min(successCount, failureCount) * 0.9)), Math.max(0, failureCount - successCount + 1));
+      const recoveredCommitlessCounter = Math.max(
+        0,
+        commitlessFailureCounter - (Math.min(commitlessSuccessCount, commitlessFailureCount) * 0.85),
+      );
       const repeatedFailureSignal = Math.max(
         netFailureEvents,
-        Math.max(0, failureCounter),
+        recoveredFailureCounter,
         netCommitlessEvents,
-        Math.max(0, commitlessFailureCounter),
+        recoveredCommitlessCounter,
       );
+      const recoveryDiscount = successCount >= failureCount && successCount > 0 ? 0.05 : 1;
       const signalPenalty = Math.max(
-        netFailureWeight * rankingConfig.signalPenaltyScale,
-        Math.max(0, failureCounter) * rankingConfig.signalPenaltyScale,
+        netFailureWeight * rankingConfig.signalPenaltyScale * 0.45 * recoveryDiscount,
+        recoveredFailureCounter * rankingConfig.signalPenaltyScale * 0.35 * recoveryDiscount,
       );
-      const negativePrior =
-        repeatedFailureSignal >= rankingConfig.failureThreshold
-          ? Math.min(
-            rankingConfig.maxNegativePrior,
-            rankingConfig.failurePriorStep * (repeatedFailureSignal - rankingConfig.failureThreshold + 1),
-          )
-          : 0;
+      const stronglyRecovered = successCount > 0 && successCount >= failureCount;
+      const unrecoveredFailureSignal = Math.max(
+        netFailureEvents,
+        Math.max(0, repeatedFailureSignal - Math.max(0, successCount * 0.75)),
+      );
+      const positiveRecoveryBalance = Math.max(0, successCount - failureCount);
+      const negativePrior = stronglyRecovered
+        ? 0
+        : (
+          unrecoveredFailureSignal >= rankingConfig.failureThreshold
+            ? Math.max(
+              configuredNegativePrior,
+              Math.min(
+                rankingConfig.maxNegativePrior,
+                Math.max(
+                  0,
+                  rankingConfig.failurePriorStep * (unrecoveredFailureSignal - rankingConfig.failureThreshold + 1) - (positiveRecoveryBalance * 6),
+                ),
+              ),
+            )
+            : 0
+        );
+      const recoveryBonus = stronglyRecovered
+        ? Math.max(1.25, Math.min(5.5, (successCount - failureCount + 1.5) * 2.8))
+        : (successCount === failureCount && successCount > 0 ? 0.3 : 0);
       return {
         key,
         signalPenalty,
         negativePrior,
-        failureCounter: Math.max(0, failureCounter),
-        commitlessFailureCounter: Math.max(0, commitlessFailureCounter),
+        recoveryBonus,
+        failureCounter: recoveredFailureCounter,
+        commitlessFailureCounter: recoveredCommitlessCounter,
         netCommitlessEvents,
       };
     });
+    const totalRecoveryBonus = penalties.reduce(
+      (sum, item) => sum + Math.max(0, item.recoveryBonus || 0),
+      0,
+    );
     const totalPenalty = penalties.reduce(
-      (sum, item) => sum + item.signalPenalty + item.negativePrior,
+      (sum, item) => sum + Math.max(0, item.signalPenalty + item.negativePrior - (item.recoveryBonus || 0)),
       0,
     );
     const averagePenalty = penalties.length > 0 ? totalPenalty / penalties.length : 0;
-    const rankScore = baseScore - averagePenalty;
+    const averageRecoveryBonus = penalties.length > 0 ? totalRecoveryBonus / penalties.length : 0;
+    const rankScore = baseScore - averagePenalty + Math.min(0.35, averageRecoveryBonus * 0.12);
 
     return {
       ...task,
@@ -7829,6 +10836,134 @@ function rankPlannerTaskCandidates(tasks, priorState, rankingConfig) {
   return scored;
 }
 
+function rankPlannerTaskCandidatesForResume(tasks, plannerFeedback) {
+  const resumeFeedback =
+    plannerFeedback && typeof plannerFeedback === "object" && !Array.isArray(plannerFeedback)
+      ? plannerFeedback
+      : null;
+  const taskList = Array.isArray(tasks) ? tasks : [];
+  if (!resumeFeedback) return taskList;
+  const hotTaskTitles = new Set(
+    Array.isArray(resumeFeedback?.taskStore?.hotTasks)
+      ? resumeFeedback.taskStore.hotTasks
+          .map((task) => String(task?.title || "").trim().toLowerCase())
+          .filter(Boolean)
+      : [],
+  );
+
+  const normalizeResumeText = (value) => String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\b(validate|validation|stage|step|task|handoff|planner|resume|handling)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokenizeResumeText = (value) =>
+    normalizeResumeText(value)
+      .split(" ")
+      .map((token) => {
+        if (token.length > 3 && token.endsWith("s")) {
+          return token.slice(0, -1);
+        }
+        return token;
+      })
+      .filter(Boolean);
+  const matchesResumeLabel = (taskTokens, taskText, labelTokens, labelText) => {
+    if (!labelText) return false;
+    if (taskText === labelText) return true;
+    if (taskText.includes(labelText)) return true;
+    return labelTokens.length > 0 && labelTokens.every((token) => taskTokens.includes(token));
+  };
+
+  const nextStepLabel = String(resumeFeedback?.issueAdvisor?.nextStepLabel || "")
+    .trim()
+    .toLowerCase();
+  const normalizedNextStep = normalizeResumeText(nextStepLabel);
+  const dagStateSummary =
+    resumeFeedback?.dagStateSummary && typeof resumeFeedback.dagStateSummary === "object"
+      ? resumeFeedback.dagStateSummary
+      : null;
+
+  const completedLabels = (Array.isArray(dagStateSummary?.completedNodes) ? dagStateSummary.completedNodes : [])
+    .map((node) => {
+      const labelText = normalizeResumeText(node?.label || node?.title || node?.name || "");
+      return {
+        labelText,
+        labelTokens: tokenizeResumeText(labelText),
+      };
+    })
+    .filter((entry) => entry.labelText);
+
+  const pendingNodes = Array.isArray(dagStateSummary?.pendingNodes) ? dagStateSummary.pendingNodes : [];
+  const pendingOrder = pendingNodes
+    .map((pendingNode, index) => {
+      const labelText = normalizeResumeText(
+        pendingNode?.label || pendingNode?.title || pendingNode?.name || pendingNode?.id || "",
+      );
+      return {
+        index,
+        labelText,
+        labelTokens: tokenizeResumeText(labelText),
+      };
+    })
+    .filter((entry) => entry.labelText);
+
+  const rankedEntries = taskList
+    .map((task, originalIndex) => {
+      const title = normalizeResumeText(task?.title || "");
+      const titleTokens = tokenizeResumeText(title);
+      const taskIndex = Number.isFinite(Number(task?.index)) ? Number(task.index) : originalIndex;
+      const exactMatch = normalizedNextStep && title === normalizedNextStep;
+      const containsMatch = normalizedNextStep && !exactMatch && title.includes(normalizedNextStep);
+      const pendingMatch = pendingOrder.find((entry) =>
+        matchesResumeLabel(titleTokens, title, entry.labelTokens, entry.labelText),
+      );
+      const pendingIndex = pendingMatch ? pendingMatch.index : Number.POSITIVE_INFINITY;
+      const completed = completedLabels.some((entry) =>
+        matchesResumeLabel(titleTokens, title, entry.labelTokens, entry.labelText),
+      );
+      return {
+        task,
+        originalIndex,
+        title,
+        titleTokens,
+        taskIndex,
+        exactMatch,
+        containsMatch,
+        pendingIndex,
+        completed,
+      };
+    })
+    .filter((entry) => !entry.completed);
+
+  if (!rankedEntries.length) return [];
+
+  const exactMatchEntry = normalizedNextStep
+    ? rankedEntries.find((entry) => entry.exactMatch) || rankedEntries.find((entry) => entry.containsMatch)
+    : null;
+
+  return rankedEntries
+    .slice()
+    .sort((a, b) => {
+      const aIsResume = exactMatchEntry ? a === exactMatchEntry : false;
+      const bIsResume = exactMatchEntry ? b === exactMatchEntry : false;
+      if (aIsResume !== bIsResume) return aIsResume ? -1 : 1;
+
+      const aHasPending = Number.isFinite(a.pendingIndex);
+      const bHasPending = Number.isFinite(b.pendingIndex);
+      if (aHasPending !== bHasPending) return aHasPending ? -1 : 1;
+      if (aHasPending && bHasPending && a.pendingIndex !== b.pendingIndex) {
+        return a.pendingIndex - b.pendingIndex;
+      }
+
+      const aHot = hotTaskTitles.has(String(a.task?.title || "").trim().toLowerCase());
+      const bHot = hotTaskTitles.has(String(b.task?.title || "").trim().toLowerCase());
+      if (aHot !== bHot) return aHot ? 1 : -1;
+
+      return a.taskIndex - b.taskIndex;
+    })
+    .map(({ task }) => task);
+}
 function buildPlannerSkipReasonHistogram(skipped = []) {
   const histogram = {};
   for (const entry of skipped) {
@@ -7857,12 +10992,23 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       failurePriorStep: { type: "number", default: 1.5, description: "Penalty added per repeated failure beyond threshold" },
       maxFailurePriorPenalty: { type: "number", default: 8, description: "Cap for repeated-failure negative prior penalty" },
       feedbackSignalScale: { type: "number", default: 0.12, description: "Scale factor applied to weighted feedback signal penalties" },
+      applyTaskGraph: { type: "boolean", default: true, description: "Apply parent/dependency graph links from planner output when supported" },
+      parentTaskId: { type: "string", description: "Optional existing task ID to use as the parent for top-level planned tasks" },
     },
   },
   async execute(node, ctx, engine) {
+    recordPlannerLedgerEvent(engine, ctx, node, "planner.step_started", {
+      phase: "materialize",
+      label: "materialize-planner-tasks",
+      status: "running",
+      meta: {
+        plannerNodeId: String(ctx.resolve(node.config?.plannerNodeId || "run-planner")).trim() || "run-planner",
+      },
+    });
     const plannerNodeId = String(ctx.resolve(node.config?.plannerNodeId || "run-planner")).trim() || "run-planner";
     const plannerOutput = ctx.getNodeOutput(plannerNodeId) || {};
     const outputText = String(plannerOutput?.output || "").trim();
+    const plannerPayload = parsePlannerJsonFromText(outputText);
     const maxTasks = Number(ctx.resolve(node.config?.maxTasks || ctx.data?.taskCount || 5)) || 5;
     const failOnZero = node.config?.failOnZero !== false;
     const minCreated = Number(ctx.resolve(node.config?.minCreated || 1)) || 1;
@@ -7884,6 +11030,21 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       maxNegativePrior: Math.max(0, Number(ctx.resolve(node.config?.maxFailurePriorPenalty ?? 8)) || 8),
       signalPenaltyScale: Math.max(0, Number(ctx.resolve(node.config?.feedbackSignalScale ?? 0.12)) || 0.12),
     };
+    const applyTaskGraph = node.config?.applyTaskGraph !== false;
+    const graphRootTaskId =
+      String(
+        ctx.resolve(
+          node.config?.parentTaskId ||
+          plannerPayload?.root_task_id ||
+          plannerPayload?.rootTaskId ||
+          "",
+        ) || "",
+      ).trim() || null;
+    const graphRootTaskKey = String(
+      plannerPayload?.root_task_key ||
+      plannerPayload?.rootTaskKey ||
+      "",
+    ).trim().toLowerCase();
     const plannerFeedback = resolvePlannerFeedbackObject(ctx.data?._plannerFeedback);
     const feedbackWeights = {
       agentAttempts: Math.max(
@@ -7909,14 +11070,61 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
     };
     const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
 
-    const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, maxTasks);
+    const enforceStrictPlannerPayload = node.config?.strictPlannerPayload === true;
+    if (enforceStrictPlannerPayload) {
+      const strictPayload = validateStrictPlannerTaskPayload(outputText, 5, { requireExactCount: false });
+      if (!strictPayload.ok) {
+        const outputPreview = outputText.length > 200
+          ? `${outputText.slice(0, 200)}…`
+          : outputText || "(empty)";
+        const message = `Planner output from "${plannerNodeId}" failed validation: ${strictPayload.message} ` +
+          `Output length: ${outputText.length} chars. Preview: ${outputPreview}`;
+        recordPlannerLedgerEvent(engine, ctx, node, "planner.step_blocked", {
+          phase: "materialize",
+          label: "materialize-planner-tasks",
+          status: "failed",
+          error: message,
+          reason: strictPayload.reason,
+          summary: strictPayload.message,
+          meta: {
+            plannerNodeId,
+            outputLength: outputText.length,
+            outputPreview,
+          },
+        });
+        ctx.log(node.id, message, failOnZero ? "error" : "warn");
+        if (failOnZero) throw new Error(message);
+        return {
+          success: false,
+          parsedCount: 0,
+          createdCount: 0,
+          skippedCount: 0,
+          reason: strictPayload.reason,
+          outputPreview,
+        };
+      }
+    }
+
+    const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, Number.MAX_SAFE_INTEGER);
     if (!parsedTasks.length) {
-      // Log diagnostic info to help debug planner output format issues
       const outputPreview = outputText.length > 200
         ? `${outputText.slice(0, 200)}…`
         : outputText || "(empty)";
       const message = `Planner output from "${plannerNodeId}" did not include parseable tasks. ` +
         `Output length: ${outputText.length} chars. Preview: ${outputPreview}`;
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.step_blocked", {
+        phase: "materialize",
+        label: "materialize-planner-tasks",
+        status: "failed",
+        error: message,
+        reason: "no_parseable_tasks",
+        summary: "Planner output did not include parseable tasks.",
+        meta: {
+          plannerNodeId,
+          outputLength: outputText.length,
+          outputPreview,
+        },
+      });
       ctx.log(node.id, message, failOnZero ? "error" : "warn");
       if (failOnZero) throw new Error(message);
       return {
@@ -8006,6 +11214,10 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       entry.failureCounter = Number(
         Math.max(entry.failureCounter || 0, incomingCounter).toFixed(3),
       );
+      entry.negativePrior = Math.max(
+        Math.max(0, Number(entry.negativePrior || 0)),
+        Math.max(0, Number(pattern.negativePrior || 0)),
+      );
       entry.failureCount = Math.max(
         Number(entry.failureCount || 0),
         incomingFailures,
@@ -8031,13 +11243,18 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
     if (priorStatePath) {
       savePlannerPriorState(priorStatePath, priorState);
     }
-    const rankedTasks = rankPlannerTaskCandidates(parsedTasks, priorState, rankingConfig);
+    const rankedTasks = rankPlannerTaskCandidatesForResume(
+      rankPlannerTaskCandidates(parsedTasks, priorState, rankingConfig),
+      plannerFeedback,
+    );
 
     const created = [];
+    const createdTaskRefs = [];
     const skipped = [];
     const materializationOutcomes = [];
     const createdAreaCounts = new Map();
     for (const task of rankedTasks) {
+      if (created.length >= maxTasks) break;
       const baseOutcome = {
         title: task.title,
         impact: task.impact,
@@ -8153,6 +11370,14 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
         kill_criteria: task.killCriteria,
         acceptance_criteria: task.acceptanceCriteria,
         verification: task.verification,
+        task_key: task.taskKey || null,
+        parent_task_key: task.parentTaskKey || null,
+        parent_task_id: task.parentTaskId || null,
+        depends_on_task_keys: Array.isArray(task.dependencyTaskKeys) ? task.dependencyTaskKeys : [],
+        depends_on_task_ids: Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [],
+        decomposition_kind: task.decompositionKind || null,
+        spawn_when: task.spawnWhen || null,
+        merge_back_policy: task.mergeBackPolicy || null,
       };
       payload.meta = existingMeta;
       const createdTask = await createKanbanTaskWithProject(
@@ -8167,6 +11392,10 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
         id: createdTask?.id || null,
         title: task.title,
       });
+      createdTaskRefs.push({
+        task,
+        createdTaskId: createdTask?.id || null,
+      });
       materializationOutcomes.push({ ...baseOutcome, created: true, reason: null });
       for (const area of task.repoAreas) {
         const areaKey = normalizePlannerAreaKey(area);
@@ -8176,22 +11405,110 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       existingTitleSet.add(key);
     }
 
+    const graphMaterialization = applyTaskGraph
+      ? await applyPlannerTaskGraphLinks({
+          createdTaskRefs,
+          graphRootTaskId,
+          graphRootTaskKey,
+          kanban,
+        })
+      : {
+          appliedParentLinks: [],
+          appliedDependencyLinks: [],
+          skippedGraphLinks: [],
+        };
+
     const createdCount = created.length;
     const skippedCount = skipped.length;
+    const graphAppliedCount =
+      graphMaterialization.appliedParentLinks.length +
+      graphMaterialization.appliedDependencyLinks.length;
+    const graphSkippedCount = graphMaterialization.skippedGraphLinks.length;
     const skipReasonHistogram = buildPlannerSkipReasonHistogram(skipped);
     ctx.log(
       node.id,
-      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
+      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} graphApplied=${graphAppliedCount} graphSkipped=${graphSkippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
     );
 
-    if (failOnZero && createdCount < Math.max(1, minCreated)) {
+    const requiredCreated = Math.min(Math.max(1, minCreated), Math.max(1, maxTasks));
+
+    if (failOnZero && createdCount < requiredCreated) {
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.step_blocked", {
+        phase: "materialize",
+        label: "materialize-planner-tasks",
+        status: "failed",
+        error: `Planner materialization created ${createdCount} tasks (required: ${requiredCreated})`,
+        reason: "insufficient_created_tasks",
+        summary: `Created ${createdCount} tasks but required ${requiredCreated}.`,
+        meta: {
+          plannerNodeId,
+          parsedCount: parsedTasks.length,
+          createdCount,
+          skippedCount,
+          graphAppliedCount,
+          graphSkippedCount,
+          skipReasonHistogram,
+        },
+      });
       throw new Error(
-        `Planner materialization created ${createdCount} tasks (required: ${Math.max(1, minCreated)})`,
+        `Planner materialization created ${createdCount} tasks (required: ${requiredCreated})`,
       );
     }
 
+    recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_reasoning", {
+      phase: "ranking",
+      label: "planner-ranking",
+      status: "completed",
+      summary: `Planner candidates ranked: parsed=${parsedTasks.length}, created=${createdCount}, skipped=${skippedCount}`,
+      meta: {
+        plannerNodeId,
+        parsedCount: parsedTasks.length,
+        createdCount,
+        skippedCount,
+        graphAppliedCount,
+        graphSkippedCount,
+        skipReasonHistogram,
+        rankedTasks: rankedTasks.slice(0, maxTasks).map((task) => ({
+          title: task.title,
+          archetype: task.archetype || null,
+          score: task?._ranking?.score,
+          penalty: task?._ranking?.penalty,
+          patternKeys: task?._ranking?.patternKeys || [],
+        })),
+      },
+    });
+    recordPlannerLedgerEvent(engine, ctx, node, "planner.post_attachment", {
+      phase: "materialize-output",
+      label: "materialized-planner-tasks",
+      status: "completed",
+      summary: `Materialized ${createdCount} task(s) from planner output.`,
+      meta: {
+        plannerNodeId,
+        attachmentKind: "materialized_tasks",
+        created,
+        skipped,
+        graphMaterialization,
+        skipReasonHistogram,
+      },
+    });
+    recordPlannerLedgerEvent(engine, ctx, node, "planner.step_completed", {
+      phase: "materialize",
+      label: "materialize-planner-tasks",
+      status: createdCount >= requiredCreated ? "completed" : "failed",
+      summary: `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount}`,
+      meta: {
+        plannerNodeId,
+        parsedCount: parsedTasks.length,
+        createdCount,
+        skippedCount,
+        graphAppliedCount,
+        graphSkippedCount,
+        skipReasonHistogram,
+      },
+    });
+
     return {
-      success: createdCount >= Math.max(1, minCreated),
+      success: createdCount >= requiredCreated,
       parsedCount: parsedTasks.length,
       createdCount,
       skippedCount,
@@ -8199,8 +11516,9 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
       materializationOutcomes,
       created,
       skipped,
+      graphMaterialization,
       tasks: parsedTasks,
-      rankedTasks: rankedTasks.map((task) => ({
+      rankedTasks: rankedTasks.slice(0, maxTasks).map((task) => ({
         title: task.title,
         archetype: task.archetype || null,
         score: task?._ranking?.score,
@@ -8229,6 +11547,9 @@ registerBuiltinNodeType("agent.run_planner", {
       maxRetries: { type: "number", default: 0, description: "Retry attempts for planner node" },
       retryable: { type: "boolean", default: false, description: "Whether planner node should auto-retry on failure" },
       maxRetainedEvents: { type: "number", default: WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT, description: "Maximum planner events retained in run output" },
+      includeSkillbookGuidance: { type: "boolean", default: true, description: "Whether to inject reusable skillbook strategies into planner prompts." },
+      skillbookNodeId: { type: "string", description: "Optional node ID whose output should be used as planner skillbook guidance." },
+      skillbookLimit: { type: "number", default: 5, description: "Maximum reusable strategies to inject when auto-loading guidance." },
     },
   },
   async execute(node, ctx, engine) {
@@ -8238,6 +11559,14 @@ registerBuiltinNodeType("agent.run_planner", {
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
     const repoMapQuery = ctx.resolve(node.config?.repoMapQuery || "");
+    const includeSkillbookGuidance = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.includeSkillbookGuidance ?? true, ctx),
+      true,
+    );
+    const skillbookNodeId = String(ctx.resolve(node.config?.skillbookNodeId || "") || "").trim();
+    const skillbookLimit = Number.isFinite(Number(resolveWorkflowNodeValue(node.config?.skillbookLimit ?? 5, ctx)))
+      ? Math.max(1, Math.trunc(Number(resolveWorkflowNodeValue(node.config?.skillbookLimit ?? 5, ctx))))
+      : 5;
     const configuredNodeTimeout = Number(ctx.resolve(node.config?.timeoutMs || node.config?.timeout || 0));
     const configuredAgentTimeout = Number(ctx.resolve(node.config?.agentTimeoutMs || 0));
 
@@ -8254,7 +11583,30 @@ registerBuiltinNodeType("agent.run_planner", {
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
     const basePrompt = explicitPrompt || plannerPrompt || "";
-    const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback].filter(Boolean).join("\n\n");
+    let skillbookGuidance = normalizeSkillbookGuidancePayload(
+      skillbookNodeId
+        ? ctx.getNodeOutput?.(skillbookNodeId)
+        : null,
+    ) || normalizeSkillbookGuidancePayload(ctx.data?._skillbookGuidance);
+    if (!skillbookGuidance && includeSkillbookGuidance) {
+      skillbookGuidance = await resolveReusableSkillbookGuidance(ctx, {
+        workflowId: ctx.data?._workflowId || "",
+        category: "strategy",
+        status: "promoted",
+        query: [
+          context,
+          ctx.data?.taskTitle,
+          ctx.data?.taskDescription,
+          ctx.data?.prompt,
+        ].filter(Boolean).join(" "),
+        limit: skillbookLimit,
+      });
+      if (skillbookGuidance.matched > 0) {
+        ctx.data._skillbookGuidance = skillbookGuidance;
+      }
+    }
+    const skillbookPromptContext = buildSkillbookPromptContext(skillbookGuidance);
+    const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback, skillbookPromptContext].filter(Boolean).join("\n\n");
     const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
@@ -8284,15 +11636,17 @@ registerBuiltinNodeType("agent.run_planner", {
     // Enforce strict output instructions to ensure the downstream materialize node
     // can parse the planner output. The planner prompt already defines the contract,
     // but we reinforce it here to prevent agents from wrapping output in prose.
+    const effectiveContext = appendPlannerFeedbackContext(context, plannerFeedback, basePrompt);
+    const plannerExecutionContext = [
+      effectiveContext,
+      skillbookPromptContext,
+      repoTopologyContext,
+    ].filter(Boolean).join("\n\n");
     const outputEnforcement =
       `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
       `Generate exactly ${count} new tasks.\n` +
-      ((context || plannerFeedback || repoTopologyContext)
-        ? `${[
-          context,
-          plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : "",
-          repoTopologyContext,
-        ].filter(Boolean).join("\n\n")}\n\n`
+      (plannerExecutionContext
+        ? `${plannerExecutionContext}\n\n`
         : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
@@ -8321,11 +11675,45 @@ registerBuiltinNodeType("agent.run_planner", {
             }
             streamLines.push(line);
             ctx.log(node.id, line);
+            recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_reasoning", {
+              phase: "generation",
+              label: "planner-stream",
+              status: "running",
+              summary: line,
+              meta: {
+                taskCount: count,
+                streamEventCount,
+                rawEventType: String(event?.type || event?.eventType || event?.kind || "").trim() || null,
+              },
+            });
           } catch {
             // Stream callbacks must never crash workflow execution.
           }
         },
       };
+
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_initialized", {
+        phase: "plan",
+        label: "run-planner",
+        status: "running",
+        summary: `Planner initialized for ${count} tasks.`,
+        meta: {
+          taskCount: count,
+          outputVariable: outputVariable || null,
+          repoMapQuery: repoMapQuery || null,
+          plannerFeedbackPresent: Boolean(plannerFeedback),
+          skillbookGuidancePresent: Boolean(skillbookPromptContext),
+        },
+      });
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.step_started", {
+        phase: "generation",
+        label: "generate-planner-output",
+        status: "running",
+        meta: {
+          taskCount: count,
+          outputVariable: outputVariable || null,
+        },
+      });
 
       const heartbeat = setInterval(() => {
         const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
@@ -8343,6 +11731,40 @@ registerBuiltinNodeType("agent.run_planner", {
           agentTimeoutMs,
           launchExtra,
         );
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err || "planner execution failed");
+        recordPlannerLedgerEvent(engine, ctx, node, "planner.step_blocked", {
+          phase: "generation",
+          label: "generate-planner-output",
+          status: "failed",
+          error: errorMessage,
+          reason: "planner_execution_failed",
+          summary: "Planner execution failed before returning output.",
+          meta: {
+            taskCount: count,
+            streamEventCount,
+          },
+        });
+        recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_failed", {
+          phase: "plan",
+          label: "run-planner",
+          status: "failed",
+          error: errorMessage,
+          reason: "planner_execution_failed",
+          meta: {
+            taskCount: count,
+            streamEventCount,
+          },
+        });
+        ctx.log(node.id, `Planner failed: ${errorMessage}`);
+        return {
+          success: false,
+          error: errorMessage,
+          output: "",
+          taskCount: count,
+          stream: streamLines.slice(),
+          streamEventCount,
+        };
       } finally {
         clearInterval(heartbeat);
       }
@@ -8362,9 +11784,78 @@ registerBuiltinNodeType("agent.run_planner", {
         ctx.data[outputVariable] = String(result.output || "").trim();
       }
       const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
+      const plannerOutput = String(result.output || "").trim();
+      const plannerSucceeded = result.success === true;
+      recordPlannerLedgerEvent(engine, ctx, node, "planner.plan_reasoning", {
+        phase: "reasoning",
+        label: "planner-digest",
+        status: plannerSucceeded ? "completed" : "failed",
+        summary: digest.summary || `Planner returned ${digest.itemCount || 0} structured items.`,
+        meta: {
+          taskCount: count,
+          itemCount: digest.itemCount,
+          omittedItemCount: digest.omittedItemCount,
+          threadId,
+          sdk: result.sdk || null,
+          narrative: digest.narrative || null,
+          thoughts: Array.isArray(digest.thoughts) ? digest.thoughts.slice(0, 12) : [],
+          items: Array.isArray(digest.items) ? digest.items.slice(0, 8) : [],
+        },
+      });
+      if (plannerOutput) {
+        recordPlannerLedgerEvent(engine, ctx, node, "planner.post_attachment", {
+          phase: "planner-output",
+          label: "planner-output",
+          status: plannerSucceeded ? "completed" : "failed",
+          summary: "Planner output captured for downstream materialization.",
+          meta: {
+            taskCount: count,
+            attachmentKind: "planner_output",
+            outputVariable: outputVariable || null,
+            threadId,
+            outputPreview: plannerOutput.slice(0, 600),
+          },
+        });
+      }
+      recordPlannerLedgerEvent(engine, ctx, node, plannerSucceeded ? "planner.step_completed" : "planner.step_blocked", {
+        phase: "generation",
+        label: "generate-planner-output",
+        status: plannerSucceeded ? "completed" : "failed",
+        error: plannerSucceeded ? null : (result.error || "planner execution reported failure"),
+        reason: plannerSucceeded ? null : "planner_execution_unsuccessful",
+        summary: plannerSucceeded
+          ? `Planner generated output for ${count} tasks.`
+          : "Planner execution returned an unsuccessful result.",
+        meta: {
+          taskCount: count,
+          itemCount: digest.itemCount,
+          omittedItemCount: digest.omittedItemCount,
+          threadId,
+          streamEventCount,
+        },
+      });
+      recordPlannerLedgerEvent(engine, ctx, node, plannerSucceeded ? "planner.plan_completed" : "planner.plan_failed", {
+        phase: "plan",
+        label: "run-planner",
+        status: plannerSucceeded ? "completed" : "failed",
+        error: plannerSucceeded ? null : (result.error || "planner execution reported failure"),
+        reason: plannerSucceeded ? null : "planner_execution_unsuccessful",
+        summary: plannerSucceeded
+          ? `Planner completed with ${digest.itemCount || 0} items.`
+          : "Planner completed without a successful result.",
+        meta: {
+          taskCount: count,
+          itemCount: digest.itemCount,
+          threadId,
+          sdk: result.sdk || null,
+          streamEventCount,
+        },
+      });
       return {
         success: result.success,
-        output: result.output,
+        output: plannerOutput,
+        text: plannerOutput,
+        result: plannerOutput,
         summary: digest.summary,
         narrative: digest.narrative,
         thoughts: digest.thoughts,
@@ -8420,9 +11911,9 @@ registerBuiltinNodeType("agent.evidence_collect", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  FLOW CONTROL — Gates, barriers, and routing
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("flow.gate", {
   describe: () => "Pause workflow execution until a condition is met or manual approval is given",
@@ -8479,19 +11970,138 @@ registerBuiltinNodeType("flow.gate", {
       return { gateOpened: true, mode, timedOut: true, waited: timeoutMs, reason };
     }
 
-    // Manual mode or fallback: wait for external approval via context variable
+    // Manual mode or fallback: create a durable approval request and keep the
+    // legacy context-variable path working for existing callers.
     const approvalKey = `_gate_${node.id}_approved`;
+    const repoRoot =
+      String(
+        ctx?.data?.repoRoot
+        || ctx?.data?.repoPath
+        || process.env.REPO_ROOT
+        || process.cwd(),
+      ).trim() || process.cwd();
+    const runId = String(ctx?.data?._dagState?.runId || ctx?.id || "").trim() || null;
+    const gateRequest = runId
+      ? upsertWorkflowGateApprovalRequest({
+        runId,
+        rootRunId: ctx?.data?._workflowRootRunId || runId,
+        parentRunId: ctx?.data?._workflowParentRunId || null,
+        workflowId: ctx?.data?._workflowId || ctx?.data?._dagState?.workflowId || null,
+        workflowName: ctx?.data?._workflowName || ctx?.data?._dagState?.workflowName || null,
+        taskId: ctx?.data?.taskId || null,
+        taskTitle: ctx?.data?.taskTitle || null,
+        nodeId: node.id,
+        nodeLabel: node.label || null,
+        reason,
+        timeoutMs,
+        onTimeout,
+        pollIntervalMs: pollInterval,
+        requestedBy: "flow.gate",
+        mode: "manual",
+      }, { repoRoot }).request
+      : null;
+    if (gateRequest) {
+      if (!ctx.data._pendingApprovalRequests || typeof ctx.data._pendingApprovalRequests !== "object") {
+        ctx.data._pendingApprovalRequests = {};
+      }
+      ctx.data._pendingApprovalRequests[gateRequest.requestId] = {
+        requestId: gateRequest.requestId,
+        scopeType: gateRequest.scopeType,
+        scopeId: gateRequest.scopeId,
+        nodeId: gateRequest.nodeId,
+        nodeLabel: gateRequest.nodeLabel,
+        reason: gateRequest.reason,
+        status: gateRequest.status,
+        requestedAt: gateRequest.requestedAt,
+        expiresAt: gateRequest.expiresAt || null,
+      };
+      engine?._checkpointRun?.(ctx);
+    }
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      if (ctx.data[approvalKey] || ctx.variables[approvalKey]) {
-        return { gateOpened: true, mode: "manual", waited: Date.now() - start, reason };
+      const legacyApproved = ctx.data[approvalKey] || ctx.variables[approvalKey];
+      if (legacyApproved) {
+        if (gateRequest && String(gateRequest.requestId || "").trim()) {
+          try {
+            const pending = getApprovalRequest(gateRequest.scopeType, gateRequest.scopeId, { repoRoot });
+            if (pending && pending.status === "pending") {
+              resolveApprovalRequest(gateRequest.requestId, {
+                repoRoot,
+                decision: "approved",
+                actorId: "legacy-context",
+                note: "Approved through legacy workflow context variable.",
+              });
+            }
+          } catch {}
+        }
+        if (gateRequest && ctx.data?._pendingApprovalRequests?.[gateRequest.requestId]) {
+          delete ctx.data._pendingApprovalRequests[gateRequest.requestId];
+          engine?._checkpointRun?.(ctx);
+        }
+        return {
+          gateOpened: true,
+          mode: "manual",
+          waited: Date.now() - start,
+          reason,
+          approvalRequestId: gateRequest?.requestId || null,
+          approvalState: "approved",
+        };
+      }
+      if (gateRequest) {
+        const currentRequest = getApprovalRequest(gateRequest.scopeType, gateRequest.scopeId, { repoRoot });
+        const approvalState = String(currentRequest?.status || "").trim().toLowerCase();
+        if (approvalState === "approved") {
+          if (ctx.data?._pendingApprovalRequests?.[gateRequest.requestId]) {
+            delete ctx.data._pendingApprovalRequests[gateRequest.requestId];
+            engine?._checkpointRun?.(ctx);
+          }
+          return {
+            gateOpened: true,
+            mode: "manual",
+            waited: Date.now() - start,
+            reason,
+            approvalRequestId: gateRequest.requestId,
+            approvalState,
+          };
+        }
+        if (approvalState === "denied") {
+          if (ctx.data?._pendingApprovalRequests?.[gateRequest.requestId]) {
+            delete ctx.data._pendingApprovalRequests[gateRequest.requestId];
+            engine?._checkpointRun?.(ctx);
+          }
+          throw new Error(`Manual gate denied by operator: ${reason}`);
+        }
       }
       await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    if (gateRequest) {
+      try {
+        const pending = getApprovalRequest(gateRequest.scopeType, gateRequest.scopeId, { repoRoot });
+        if (pending && pending.status === "pending") {
+          expireApprovalRequest(gateRequest.requestId, {
+            repoRoot,
+            actorId: "system:timeout",
+            note: `Manual gate timed out after ${timeoutMs}ms.`,
+          });
+        }
+      } catch {}
+      if (ctx.data?._pendingApprovalRequests?.[gateRequest.requestId]) {
+        delete ctx.data._pendingApprovalRequests[gateRequest.requestId];
+        engine?._checkpointRun?.(ctx);
+      }
     }
     if (onTimeout === "fail") {
       throw new Error(`Manual gate timed out after ${timeoutMs}ms: ${reason}`);
     }
-    return { gateOpened: true, mode: "manual", timedOut: true, waited: timeoutMs, reason };
+    return {
+      gateOpened: true,
+      mode: "manual",
+      timedOut: true,
+      waited: timeoutMs,
+      reason,
+      approvalRequestId: gateRequest?.requestId || null,
+      approvalState: "expired",
+    };
   },
 });
 
@@ -8765,7 +12375,6 @@ const UNIVERSAL_FLOW_NODE = {
         .then((childCtx) => {
           const status = childCtx?.errors?.length ? "failed" : "completed";
           if (tracker && trackedTaskId) {
-            tracker.updateSessionStatus(trackedTaskId, status);
             tracker.recordEvent(trackedTaskId, {
               role: status === "completed" ? "assistant" : "system",
               type: status === "completed" ? "agent_message" : "error",
@@ -8773,6 +12382,7 @@ const UNIVERSAL_FLOW_NODE = {
               timestamp: new Date().toISOString(),
               _sessionType: "task",
             });
+            tracker.updateSessionStatus(trackedTaskId, status);
           }
           ctx.log(node.id, `Dispatched universal workflow \"${workflowId}\" finished with status=${status}`);
         })
@@ -8816,7 +12426,6 @@ const UNIVERSAL_FLOW_NODE = {
       errorCount,
     };
     if (tracker && trackedTaskId) {
-      tracker.updateSessionStatus(trackedTaskId, output.status);
       tracker.recordEvent(trackedTaskId, {
         role: output.status === "completed" ? "assistant" : "system",
         type: output.status === "completed" ? "agent_message" : "error",
@@ -8824,6 +12433,7 @@ const UNIVERSAL_FLOW_NODE = {
         timestamp: new Date().toISOString(),
         _sessionType: "task",
       });
+      tracker.updateSessionStatus(trackedTaskId, output.status);
     }
     if (outputVariable) ctx.data[outputVariable] = output;
     return output;
@@ -8833,9 +12443,9 @@ const UNIVERSAL_FLOW_NODE = {
 registerBuiltinNodeType("flow.universal", UNIVERSAL_FLOW_NODE);
 registerBuiltinNodeType("flow.universial", UNIVERSAL_FLOW_NODE);
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  LOOP / ITERATION
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("loop.for_each", {
   describe: () =>
@@ -9118,9 +12728,9 @@ registerBuiltinNodeType("loop.while", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  SESSION / AGENT MANAGEMENT — Direct session control
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("action.continue_session", {
   describe: () => "Re-attach to an existing agent session and send a continuation prompt",
@@ -9268,6 +12878,11 @@ registerBuiltinNodeType("action.bosun_cli", {
       ], description: "Bosun CLI subcommand" },
       args: { type: "string", description: "Additional arguments (e.g., --status todo --json)" },
       parseJson: { type: "boolean", default: true, description: "Parse JSON output automatically" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before running this Bosun CLI command even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["subcommand"],
   },
@@ -9277,6 +12892,15 @@ registerBuiltinNodeType("action.bosun_cli", {
     const cmd = `bosun ${sub} ${args}`.trim();
 
     ctx.log(node.id, `Running: ${cmd}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.bosun_cli",
+      repoRoot: ctx?.data?.repoRoot || process.cwd(),
+      command: "bosun",
+      args: [sub, args].filter(Boolean),
+    });
     try {
       const output = execSync(cmd, { encoding: "utf8", timeout: 60000, stdio: "pipe" });
       let parsed = output?.trim();
@@ -9290,7 +12914,7 @@ registerBuiltinNodeType("action.bosun_cli", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  BOSUN NATIVE TOOLS — Invoke Bosun's built-in/custom tools and workflows
 //  from within workflow nodes. These nodes enable:
 //    1. Programmatic tool invocation with structured I/O (action.bosun_tool)
@@ -9300,7 +12924,7 @@ registerBuiltinNodeType("action.bosun_cli", {
 //  Design: Every node produces structured output that can be piped via
 //  {{nodeId.field}} templates to downstream nodes. Output extraction,
 //  variable storage, and port-based routing are supported across all nodes.
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 /** Module-scope lazy caches for Bosun tool imports (per AGENTS.md rules). */
 let _customToolsMod = null;
@@ -9311,6 +12935,30 @@ async function getCustomToolsMod() {
   return _customToolsMod;
 }
 
+function resolveBosunNativeRootDir(ctx, engine, explicitRoot = "") {
+  const resolvedExplicit = String(explicitRoot || "").trim();
+  if (resolvedExplicit) return resolvedExplicit;
+
+  const ctxRoot = String(ctx?.data?.worktreePath || ctx?.data?.repoRoot || "").trim();
+  if (ctxRoot) return ctxRoot;
+
+  const workflowDir = String(engine?.workflowDir || "").trim();
+  if (workflowDir) {
+    const normalizedWorkflowDir = resolve(workflowDir);
+    const workflowDirName = basename(normalizedWorkflowDir).toLowerCase();
+    if (workflowDirName === "workflows") {
+      const parentDir = dirname(normalizedWorkflowDir);
+      if (basename(parentDir).toLowerCase() === ".bosun") {
+        return dirname(parentDir);
+      }
+      return parentDir;
+    }
+    return dirname(normalizedWorkflowDir);
+  }
+
+  return process.cwd();
+}
+
 let _kanbanMod = null;
 async function getKanbanMod() {
   if (!_kanbanMod) {
@@ -9319,7 +12967,7 @@ async function getKanbanMod() {
   return _kanbanMod;
 }
 
-// ── action.bosun_tool ─────────────────────────────────────────────────────
+// ==== action.bosun_tool ====
 // Invoke any Bosun built-in or custom tool programmatically with structured
 // input/output. Unlike action.bosun_cli (which shells out), this executes
 // the tool script directly in-process and returns parsed, structured data.
@@ -9404,7 +13052,7 @@ registerBuiltinNodeType("action.bosun_tool", {
     const toolId = ctx.resolve(node.config?.toolId || "");
     if (!toolId) throw new Error("action.bosun_tool: 'toolId' is required");
 
-    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const rootDir = resolveBosunNativeRootDir(ctx, engine);
     const cwd = ctx.resolve(node.config?.cwd || "") || rootDir;
     const timeoutMs = node.config?.timeoutMs || 60000;
 
@@ -9522,7 +13170,7 @@ registerBuiltinNodeType("action.bosun_tool", {
       toolCategory: toolInfo.entry?.category || "unknown",
     };
 
-    // ── Structured data extraction (same pattern as MCP tool call) ──
+    // ==== Structured data extraction (same pattern as MCP tool call) ====
     if (node.config?.extract && exitSuccess) {
       const adapter = await getMcpAdapter();
       const sourceData = typeof data === "object" && data !== null ? data : { text: data };
@@ -9531,7 +13179,7 @@ registerBuiltinNodeType("action.bosun_tool", {
       ctx.log(node.id, `Extracted ${Object.keys(extracted).length} field(s)`);
     }
 
-    // ── Output mapping ──
+    // ==== Output mapping ====
     if (node.config?.outputMap && exitSuccess) {
       const adapter = await getMcpAdapter();
       const mapped = adapter.mapOutputFields(output, node.config.outputMap, ctx);
@@ -9539,7 +13187,7 @@ registerBuiltinNodeType("action.bosun_tool", {
       ctx.log(node.id, `Mapped ${Object.keys(mapped).length} field(s)`);
     }
 
-    // ── Port-based routing ──
+    // ==== Port-based routing ====
     if (node.config?.portConfig) {
       const adapter = await getMcpAdapter();
       const port = adapter.resolveOutputPort(output, node.config.portConfig);
@@ -9580,7 +13228,7 @@ registerBuiltinNodeType("action.bosun_tool", {
   },
 });
 
-// ── action.invoke_workflow ────────────────────────────────────────────────
+// ==== action.invoke_workflow ====
 // Lightweight sub-workflow invocation with automatic output forwarding.
 // While action.execute_workflow is comprehensive, this node provides
 // simpler ergonomics for the common case of "run workflow X and pipe
@@ -9681,7 +13329,7 @@ registerBuiltinNodeType("action.invoke_workflow", {
     }, workflowId);
     const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId, sourceNodeId: node.id });
 
-    // ── Dispatch mode ──
+    // ==== Dispatch mode ====
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching workflow "${workflowId}" (fire-and-forget)`);
       let promise;
@@ -9705,7 +13353,7 @@ registerBuiltinNodeType("action.invoke_workflow", {
       return output;
     }
 
-    // ── Sync mode — execute and harvest output ──
+    // ==== Sync mode — execute and harvest output ====
     ctx.log(node.id, `Invoking workflow "${workflowId}" (sync)`);
 
     let childCtx;
@@ -9733,7 +13381,7 @@ registerBuiltinNodeType("action.invoke_workflow", {
     const childErrors = Array.isArray(childCtx?.errors) ? childCtx.errors : [];
     const hasErrors = childErrors.length > 0;
 
-    // ── Extract outputs from child workflow ──
+    // ==== Extract outputs from child workflow ====
     const forwardedData = {};
     const extractFromNodes = Array.isArray(node.config?.extractFromNodes) ? node.config.extractFromNodes : [];
 
@@ -9808,7 +13456,7 @@ registerBuiltinNodeType("action.invoke_workflow", {
   },
 });
 
-// ── action.bosun_function ─────────────────────────────────────────────────
+// ==== action.bosun_function ====
 // Invoke an internal Bosun module function directly. This is the most
 // powerful integration point — it allows workflows to call any registered
 // Bosun capability (task operations, git operations, tool discovery, etc.)
@@ -9820,22 +13468,22 @@ registerBuiltinNodeType("action.invoke_workflow", {
  * Modules are lazy-imported to keep startup lean.
  */
 const BOSUN_FUNCTION_REGISTRY = Object.freeze({
-  // ── Tool operations ──
+  // ==== Tool operations ====
   "tools.list": {
     description: "List all available Bosun tools (built-in + custom + global)",
     params: ["rootDir"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       return mod.listCustomTools(rootDir, { includeBuiltins: true });
     },
   },
   "tools.get": {
     description: "Get details of a specific Bosun tool by ID",
     params: ["rootDir", "toolId"],
-    async invoke(args, ctx) {
+    async invoke(args, ctx, engine) {
       const mod = await getCustomToolsMod();
-      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const rootDir = resolveBosunNativeRootDir(ctx, engine, args.rootDir);
       const result = mod.getCustomTool(rootDir, args.toolId);
       if (!result) return { found: false, toolId: args.toolId };
       return { found: true, ...result.entry };
@@ -9849,7 +13497,7 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
       return mod.listBuiltinTools();
     },
   },
-  // ── Task operations ──
+  // ==== Task operations ====
   "tasks.list": {
     description: "List tasks from the kanban board",
     params: ["status", "limit"],
@@ -9905,7 +13553,7 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
       return kanban.updateTask(args.taskId, update);
     },
   },
-  // ── Git operations ──
+  // ==== Git operations ====
   "git.status": {
     description: "Get git status of the working directory",
     params: ["cwd"],
@@ -9984,7 +13632,7 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
       }
     },
   },
-  // ── Workflow operations ──
+  // ==== Workflow operations ====
   "workflows.list": {
     description: "List all registered workflows",
     params: [],
@@ -10013,7 +13661,7 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
       return engine.get(args.workflowId) || null;
     },
   },
-  // ── Config operations ──
+  // ==== Config operations ====
   "config.show": {
     description: "Show current Bosun configuration",
     params: ["rootDir"],
@@ -10118,7 +13766,7 @@ registerBuiltinNodeType("action.bosun_function", {
       Object.assign(output, result);
     }
 
-    // ── Structured data extraction ──
+    // ==== Structured data extraction ====
     if (node.config?.extract) {
       const adapter = await getMcpAdapter();
       const sourceData = typeof result === "object" && result !== null ? result : { data: result };
@@ -10127,7 +13775,7 @@ registerBuiltinNodeType("action.bosun_function", {
       ctx.log(node.id, `Extracted ${Object.keys(extracted).length} field(s)`);
     }
 
-    // ── Output mapping ──
+    // ==== Output mapping ====
     if (node.config?.outputMap) {
       const adapter = await getMcpAdapter();
       const mapped = adapter.mapOutputFields(output, node.config.outputMap, ctx);
@@ -10306,6 +13954,11 @@ registerBuiltinNodeType("action.refresh_worktree", {
       operation: { type: "string", enum: ["fetch", "pull", "reset_hard", "clean", "checkout_main"], default: "fetch" },
       cwd: { type: "string", description: "Working directory" },
       branch: { type: "string", description: "Branch to operate on" },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before destructive refresh operations even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["operation"],
   },
@@ -10326,6 +13979,13 @@ registerBuiltinNodeType("action.refresh_worktree", {
     if (!cmd) throw new Error(`Unknown worktree operation: ${op}`);
 
     ctx.log(node.id, `Refreshing worktree (${op}): ${cmd}`);
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.refresh_worktree",
+      repoRoot: cwd,
+    });
     try {
       const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000, shell: true });
       return { success: true, output: output?.trim(), operation: op };
@@ -10335,9 +13995,9 @@ registerBuiltinNodeType("action.refresh_worktree", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  MCP Tool Call — execute a tool on an installed MCP server
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 // Lazy-import MCP registry — cached at module scope per AGENTS.md rules.
 let _mcpRegistry = null;
@@ -10509,7 +14169,7 @@ async function mcpUrlRequest(url, method, params, timeoutMs = 30000) {
   }
 }
 
-// ── Lazy-import MCP workflow adapter — cached at module scope per AGENTS.md rules.
+// ==== Lazy-import MCP workflow adapter ====
 let _mcpAdapter = null;
 async function getMcpAdapter() {
   if (!_mcpAdapter) {
@@ -10718,7 +14378,7 @@ registerBuiltinNodeType("action.mcp_tool_call", {
       ctx.log(node.id, `MCP tool call completed (${rawOutput.contentType})`);
     }
 
-    // ── Structured data extraction ──
+    // ==== Structured data extraction ====
     const adapter = await getMcpAdapter();
     let extracted = rawOutput;
 
@@ -10731,7 +14391,7 @@ registerBuiltinNodeType("action.mcp_tool_call", {
       ctx.log(node.id, `Extracted ${Object.keys(extractedFields).length} field(s)`);
     }
 
-    // ── Output mapping ──
+    // ==== Output mapping ====
     if (node.config?.outputMap) {
       const mappedFields = adapter.mapOutputFields(extracted, node.config.outputMap, ctx);
       extracted = { ...extracted, mapped: mappedFields };
@@ -10740,7 +14400,7 @@ registerBuiltinNodeType("action.mcp_tool_call", {
       ctx.log(node.id, `Mapped ${Object.keys(mappedFields).length} field(s)`);
     }
 
-    // ── Port-based routing ──
+    // ==== Port-based routing ====
     const port = adapter.resolveOutputPort(extracted, node.config?.portConfig);
     extracted.matchedPort = port;
     extracted.port = port;
@@ -10854,7 +14514,7 @@ registerBuiltinNodeType("action.mcp_list_tools", {
   },
 });
 
-// ── action.mcp_pipeline — Chain multiple MCP tool calls with data piping ──
+// ==== action.mcp_pipeline — Chain multiple MCP tool calls with data piping ====
 
 registerBuiltinNodeType("action.mcp_pipeline", {
   describe: () =>
@@ -10948,7 +14608,7 @@ registerBuiltinNodeType("action.mcp_pipeline", {
       const step = steps[i];
       const stepTag = `[${step.id}] ${step.server}/${step.tool}`;
 
-      // ── Condition check ──
+      // ==== Condition check ====
       if (step.condition) {
         // Inject previous output into context for condition evaluation
         const condCtx = { ...ctx.data, prev: prevOutput };
@@ -10968,7 +14628,7 @@ registerBuiltinNodeType("action.mcp_pipeline", {
         }
       }
 
-      // ── Build input from pipeline wiring ──
+      // ==== Build input from pipeline wiring ====
       let stepInput = {};
 
       // Start with static input (supports {{variable}} templates)
@@ -10984,7 +14644,7 @@ registerBuiltinNodeType("action.mcp_pipeline", {
         Object.assign(stepInput, pipedInput);
       }
 
-      // ── Execute tool call ──
+      // ==== Execute tool call ====
       ctx.log(node.id, `${stepTag}: executing (step ${i + 1}/${steps.length})`);
       let stepOutput;
 
@@ -11006,7 +14666,7 @@ registerBuiltinNodeType("action.mcp_pipeline", {
         };
       }
 
-      // ── Extract structured fields ──
+      // ==== Extract structured fields ====
       if (step.extract && stepOutput.success) {
         const sourceData = stepOutput.data ?? stepOutput;
         const extractedFields = adapter.extractMcpOutput(sourceData, step.extract);
@@ -11014,7 +14674,7 @@ registerBuiltinNodeType("action.mcp_pipeline", {
         Object.assign(stepOutput, extractedFields);
       }
 
-      // ── Output mapping ──
+      // ==== Output mapping ====
       if (step.outputMap && stepOutput.success) {
         const mappedFields = adapter.mapOutputFields(stepOutput, step.outputMap, ctx);
         stepOutput = { ...stepOutput, mapped: mappedFields };
@@ -11078,7 +14738,7 @@ registerBuiltinNodeType("action.mcp_pipeline", {
   },
 });
 
-// ── transform.mcp_extract — Extract structured data from any MCP output ──
+// ==== transform.mcp_extract — Extract structured data from any MCP output ====
 
 registerBuiltinNodeType("transform.mcp_extract", {
   describe: () =>
@@ -11179,7 +14839,7 @@ registerBuiltinNodeType("transform.mcp_extract", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  TASK LIFECYCLE — Workflow-first task execution primitives
 //
 //  These node types decompose the monolithic TaskExecutor.executeTask() flow
@@ -11196,12 +14856,11 @@ registerBuiltinNodeType("transform.mcp_extract", {
 //    2. Context-first — nodes auto-read ctx.data when config is omitted
 //    3. Rich return values — every return contains enough info for conditions
 //    4. Error boundary — nodes never throw unless config is fatally wrong
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 /** Module-scope lazy caches for task lifecycle imports. */
 let _taskClaimsMod = null;
-let _taskClaimsInitPromise = null;
-let _taskClaimsInitRepoRoot = "";
+const _taskClaimsInitPromises = new Map();
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
@@ -11259,9 +14918,10 @@ function looksLikeFilesystemPath(value) {
   const text = String(value || "").trim();
   return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith("/") || text.startsWith("\\");
 }
-function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
+function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot, workspaceHint = "") {
   const repository = String(taskRepository || "").trim();
   const repoRoot = String(currentRepoRoot || "").trim();
+  const workspaceId = String(workspaceHint || "").trim();
   if (!repoRoot) return "";
   const portableRoot = resolve(repoRoot).replace(/\\/g, "/");
   const marker = "/.bosun/workspaces/";
@@ -11286,7 +14946,7 @@ function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
 
   candidates.push(
     resolve(repoRoot, "..", repoName),
-    resolve(repoRoot, ".bosun", "workspaces", String(process.env.BOSUN_WORKSPACE || "").trim(), repoName),
+    resolve(repoRoot, ".bosun", "workspaces", workspaceId || String(process.env.BOSUN_WORKSPACE || "").trim(), repoName),
   );
 
   for (const candidate of candidates) {
@@ -11294,7 +14954,7 @@ function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
       // keep candidate even when BOSUN_WORKSPACE is empty; resolve() will normalize it.
     }
     try {
-      if (existsSync(resolve(candidate, ".git"))) return candidate;
+      if (hasGitMetadata(candidate) || isUsableGitRepoRoot(candidate)) return candidate;
     } catch {
       // ignore invalid candidate
     }
@@ -11314,22 +14974,25 @@ async function ensureTaskClaimsInitialized(ctx, claims, explicitRepoRoot = "") {
   const requestedRepoRoot = pickTaskString(
     explicitRepoRoot,
     ctx?.data?.repoRoot,
-    ctx?.data?.workspace,
+    resolveConfiguredRepoRoot({ cwd: process.cwd() }),
     process.cwd(),
   );
   const repoRoot =
     resolveTaskRepositoryRoot("", requestedRepoRoot)
     || requestedRepoRoot
     || process.cwd();
-  if (!_taskClaimsInitPromise || !sameResolvedPath(_taskClaimsInitRepoRoot, repoRoot)) {
-    _taskClaimsInitRepoRoot = repoRoot;
-    _taskClaimsInitPromise = claims.initTaskClaims({ repoRoot }).catch((err) => {
-      _taskClaimsInitPromise = null;
-      _taskClaimsInitRepoRoot = "";
+  const repoKey = resolve(repoRoot);
+  const initFn = claims.initTaskClaims;
+  const cachedEntry = _taskClaimsInitPromises.get(repoKey);
+  let initPromise = cachedEntry?.initFn === initFn ? cachedEntry.promise : null;
+  if (!initPromise) {
+    initPromise = initFn({ repoRoot }).catch((err) => {
+      _taskClaimsInitPromises.delete(repoKey);
       throw err;
     });
+    _taskClaimsInitPromises.set(repoKey, { initFn, promise: initPromise });
   }
-  await _taskClaimsInitPromise;
+  await initPromise;
 }
 function isSharedStateOwnershipActive(state, now = Date.now()) {
   if (!state || typeof state !== "object") return false;
@@ -11347,7 +15010,7 @@ async function getPersistedOwnedTaskIds(node, ctx) {
   const requestedRepoRoot = pickTaskString(
     cfgOrCtx(node, ctx, "repoRoot"),
     ctx?.data?.repoRoot,
-    ctx?.data?.workspace,
+    resolveConfiguredRepoRoot({ cwd: process.cwd() }),
     process.cwd(),
   );
   const repoRoot =
@@ -11549,6 +15212,394 @@ function getWorkflowRuntimeState(ctx) {
   return ctx.__workflowRuntimeState;
 }
 
+function getDelegationAuditTrail(ctx) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!Array.isArray(runtimeState.delegationAuditTrail)) {
+    runtimeState.delegationAuditTrail = Array.isArray(ctx?.data?._delegationAuditTrail)
+      ? [...ctx.data._delegationAuditTrail]
+      : [];
+  }
+  if (ctx?.data && !Array.isArray(ctx.data._delegationAuditTrail)) {
+    ctx.data._delegationAuditTrail = runtimeState.delegationAuditTrail;
+  }
+  return runtimeState.delegationAuditTrail;
+}
+
+function appendDelegationAuditEvent(ctx, event) {
+  if (!ctx || !event || typeof event !== "object") return;
+  const trail = getDelegationAuditTrail(ctx);
+  const normalized = {
+    at: new Date().toISOString(),
+    ...event,
+  };
+  const dedupeKey = `${normalized.type || "event"}:${normalized.taskId || ""}:${normalized.claimToken || ""}:${normalized.instanceId || ""}`;
+  if (normalized.type === "owner-mismatch") {
+    const exists = trail.some((entry) => {
+      const entryKey = `${entry?.type || "event"}:${entry?.taskId || ""}:${entry?.claimToken || ""}:${entry?.instanceId || ""}`;
+      return entryKey === dedupeKey;
+    });
+    if (exists) return;
+  }
+  trail.push(normalized);
+  if (ctx?.data) { ctx.data._delegationAuditTrail = trail; ctx.data._workflowDelegationTrail = trail; }
+}
+
+function buildDelegationTransitionKey(type, parts = []) {
+  return [type, ...parts]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean)
+    .join(":");
+}
+
+function recordDelegationAuditEvent(ctx, event = {}) {
+  const result = typeof ctx?.recordDelegationEvent === "function"
+    ? ctx.recordDelegationEvent(event)
+    : null;
+  if (!result) {
+    appendDelegationAuditEvent(ctx, {
+      ...event,
+      transitionKey: event?.transitionKey || event?.idempotencyKey,
+      idempotencyKey: event?.idempotencyKey || event?.transitionKey,
+    });
+  }
+  return result;
+}
+
+function cloneWorkflowTeamValue(value) {
+  if (value == null) return value;
+  if (typeof globalThis.structuredClone === "function") {
+    return globalThis.structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getWorkflowTeamState(ctx) {
+  if (typeof ctx?.getWorkflowTeamState === "function") {
+    return ctx.getWorkflowTeamState();
+  }
+  return cloneWorkflowTeamValue(ctx?.data?._workflowTeamState || ctx?.data?.workflowTeamState || {
+    version: 1,
+    teamId: null,
+    name: null,
+    leadId: null,
+    defaultChannel: "team",
+    initializedAt: null,
+    updatedAt: null,
+    roster: [],
+    channels: [],
+    tasks: [],
+    messages: [],
+    events: [],
+  });
+}
+
+function setWorkflowTeamState(ctx, state) {
+  if (typeof ctx?.setWorkflowTeamState === "function") {
+    return ctx.setWorkflowTeamState(state);
+  }
+  if (!ctx?.data || typeof ctx.data !== "object") ctx.data = {};
+  ctx.data._workflowTeamState = cloneWorkflowTeamValue(state);
+  ctx.data.workflowTeamState = cloneWorkflowTeamValue(state);
+  return cloneWorkflowTeamValue(state);
+}
+
+function updateWorkflowTeamState(ctx, updater) {
+  const current = getWorkflowTeamState(ctx);
+  const next = typeof updater === "function"
+    ? updater(cloneWorkflowTeamValue(current))
+    : { ...current, ...(updater || {}) };
+  return setWorkflowTeamState(ctx, next || current);
+}
+
+function normalizeTeamId(value) {
+  const text = String(value || "").trim();
+  return text || null;
+}
+
+function normalizeTeamList(value) {
+  const items = Array.isArray(value) ? value : [value];
+  return Array.from(new Set(
+    items
+      .map((entry) => normalizeTeamId(entry))
+      .filter(Boolean),
+  ));
+}
+
+function ensureTeamMember(state, memberLike = {}) {
+  const memberId = normalizeTeamId(
+    memberLike.memberId ||
+    memberLike.id ||
+    memberLike.agentId ||
+    memberLike.name,
+  );
+  if (!memberId) return null;
+  state.roster = Array.isArray(state.roster) ? state.roster : [];
+  let member = state.roster.find((entry) => entry.memberId === memberId);
+  if (!member) {
+    member = {
+      memberId,
+      name: normalizeTeamId(memberLike.name) || memberId,
+      role: normalizeTeamId(memberLike.role) || null,
+      reportsTo: normalizeTeamId(memberLike.reportsTo) || null,
+      level: Number.isFinite(Number(memberLike.level)) ? Number(memberLike.level) : null,
+      channels: normalizeTeamList(memberLike.channels),
+      tags: normalizeTeamList(memberLike.tags),
+      skills: normalizeTeamList(memberLike.skills),
+      metadata:
+        memberLike.metadata && typeof memberLike.metadata === "object" && !Array.isArray(memberLike.metadata)
+          ? cloneWorkflowTeamValue(memberLike.metadata)
+          : {},
+      joinedAt: memberLike.joinedAt || new Date().toISOString(),
+      active: memberLike.active !== false,
+    };
+    state.roster.push(member);
+    return member;
+  }
+  member.name = normalizeTeamId(memberLike.name) || member.name || memberId;
+  member.role = normalizeTeamId(memberLike.role) || member.role || null;
+  member.reportsTo = normalizeTeamId(memberLike.reportsTo) || member.reportsTo || null;
+  if (Number.isFinite(Number(memberLike.level))) member.level = Number(memberLike.level);
+  member.channels = Array.from(new Set([
+    ...normalizeTeamList(member.channels),
+    ...normalizeTeamList(memberLike.channels),
+  ]));
+  member.tags = Array.from(new Set([
+    ...normalizeTeamList(member.tags),
+    ...normalizeTeamList(memberLike.tags),
+  ]));
+  member.skills = Array.from(new Set([
+    ...normalizeTeamList(member.skills),
+    ...normalizeTeamList(memberLike.skills),
+  ]));
+  if (memberLike.metadata && typeof memberLike.metadata === "object" && !Array.isArray(memberLike.metadata)) {
+    member.metadata = { ...(member.metadata || {}), ...cloneWorkflowTeamValue(memberLike.metadata) };
+  }
+  if (memberLike.active != null) member.active = memberLike.active !== false;
+  return member;
+}
+
+function ensureTeamChannel(state, channelLike = {}) {
+  const channelId = normalizeTeamId(channelLike.channelId || channelLike.id || channelLike.name);
+  if (!channelId) return null;
+  state.channels = Array.isArray(state.channels) ? state.channels : [];
+  let channel = state.channels.find((entry) => entry.channelId === channelId);
+  if (!channel) {
+    channel = {
+      channelId,
+      name: normalizeTeamId(channelLike.name) || channelId,
+      kind: normalizeTeamId(channelLike.kind) || "channel",
+      members: normalizeTeamList(channelLike.members),
+      topic: typeof channelLike.topic === "string" && channelLike.topic.trim() ? channelLike.topic.trim() : null,
+      metadata:
+        channelLike.metadata && typeof channelLike.metadata === "object" && !Array.isArray(channelLike.metadata)
+          ? cloneWorkflowTeamValue(channelLike.metadata)
+          : {},
+      createdAt: channelLike.createdAt || new Date().toISOString(),
+    };
+    state.channels.push(channel);
+    return channel;
+  }
+  channel.name = normalizeTeamId(channelLike.name) || channel.name || channelId;
+  channel.kind = normalizeTeamId(channelLike.kind) || channel.kind || "channel";
+  channel.members = Array.from(new Set([
+    ...normalizeTeamList(channel.members),
+    ...normalizeTeamList(channelLike.members),
+  ]));
+  if (typeof channelLike.topic === "string" && channelLike.topic.trim()) {
+    channel.topic = channelLike.topic.trim();
+  }
+  if (channelLike.metadata && typeof channelLike.metadata === "object" && !Array.isArray(channelLike.metadata)) {
+    channel.metadata = { ...(channel.metadata || {}), ...cloneWorkflowTeamValue(channelLike.metadata) };
+  }
+  return channel;
+}
+
+function appendWorkflowTeamEvent(state, type, payload = {}) {
+  state.events = Array.isArray(state.events) ? state.events : [];
+  const event = {
+    eventId: randomUUID(),
+    type,
+    at: new Date().toISOString(),
+    ...cloneWorkflowTeamValue(payload),
+  };
+  state.events.push(event);
+  return event;
+}
+
+function resolveTeamActorId(node, ctx, preferredKey = "memberId") {
+  return normalizeTeamId(
+    cfgOrCtx(node, ctx, preferredKey) ||
+    cfgOrCtx(node, ctx, "actorId") ||
+    ctx?.data?.agentId ||
+    ctx?.data?.agentProfile ||
+    ctx?.data?.task?.assignee ||
+    ctx?.data?.leadId ||
+    ctx?.data?._workflowTeamLeadId,
+  );
+}
+
+function memberCanSeeChannel(state, memberId, channelId) {
+  if (!memberId || !channelId) return false;
+  const channel = Array.isArray(state.channels)
+    ? state.channels.find((entry) => entry.channelId === channelId)
+    : null;
+  if (!channel) return true;
+  const members = normalizeTeamList(channel.members);
+  if (members.length === 0) return true;
+  return members.includes(memberId);
+}
+
+function matchesTeamTask(task, match = {}) {
+  if (!task || typeof task !== "object") return false;
+  const normalizedMatch =
+    match && typeof match === "object" && !Array.isArray(match)
+      ? match
+      : {};
+  const titleContains = String(normalizedMatch.titleContains || "").trim().toLowerCase();
+  if (titleContains && !String(task.title || "").toLowerCase().includes(titleContains)) return false;
+  const requiredStatus = normalizeTeamId(normalizedMatch.status);
+  if (requiredStatus && String(task.status || "").trim().toLowerCase() !== requiredStatus.toLowerCase()) return false;
+  const requiredTag = normalizeTeamId(normalizedMatch.tag);
+  if (requiredTag && !normalizeTeamList(task.tags).includes(requiredTag)) return false;
+  const requiredLabel = normalizeTeamId(normalizedMatch.label);
+  if (requiredLabel && !normalizeTeamList(task.labels).includes(requiredLabel)) return false;
+  const requiredChannel = normalizeTeamId(normalizedMatch.channelId);
+  if (requiredChannel && normalizeTeamId(task.channelId) !== requiredChannel) return false;
+  return true;
+}
+
+function summarizeWorkflowTeamState(state) {
+  const roster = Array.isArray(state?.roster) ? state.roster : [];
+  const channels = Array.isArray(state?.channels) ? state.channels : [];
+  const tasks = Array.isArray(state?.tasks) ? state.tasks : [];
+  const messages = Array.isArray(state?.messages) ? state.messages : [];
+  const events = Array.isArray(state?.events) ? state.events : [];
+  return {
+    teamId: normalizeTeamId(state?.teamId),
+    name: normalizeTeamId(state?.name),
+    leadId: normalizeTeamId(state?.leadId),
+    defaultChannel: normalizeTeamId(state?.defaultChannel) || "team",
+    rosterCount: roster.length,
+    channelCount: channels.length,
+    taskCount: tasks.length,
+    openTaskCount: tasks.filter((task) => task.status === "open" || task.status === "released").length,
+    claimedTaskCount: tasks.filter((task) => task.status === "claimed").length,
+    completedTaskCount: tasks.filter((task) => task.status === "completed").length,
+    messageCount: messages.length,
+    eventCount: events.length,
+    lastUpdatedAt: state?.updatedAt || state?.initializedAt || null,
+  };
+}
+
+function getDelegationTransitionStore(ctx) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!runtimeState.delegationTransitionResults || typeof runtimeState.delegationTransitionResults !== "object") {
+    runtimeState.delegationTransitionResults = {};
+  }
+  return runtimeState.delegationTransitionResults;
+}
+
+const delegationTransitionResultCache = new Map();
+
+function getExistingDelegationTransition(ctx, transitionKey) {
+  const key = String(transitionKey || "").trim();
+  if (!key) return null;
+  return getDelegationTransitionStore(ctx)[key] || delegationTransitionResultCache.get(key) || null;
+}
+
+function setDelegationTransitionResult(ctx, transitionKey, value) {
+  const key = String(transitionKey || "").trim();
+  if (!key) return null;
+  getDelegationTransitionStore(ctx)[key] = value;
+  delegationTransitionResultCache.set(key, value);
+  return value;
+}
+
+function getClaimTransitionState(ctx, taskId, idempotencyKey) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!runtimeState.claimTransitions || typeof runtimeState.claimTransitions !== "object") {
+    runtimeState.claimTransitions = Object.create(null);
+  }
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedKey = String(idempotencyKey || normalizedTaskId).trim();
+  const bucketKey = `${normalizedTaskId}::${normalizedKey}`;
+  if (!runtimeState.claimTransitions[bucketKey]) {
+    runtimeState.claimTransitions[bucketKey] = { taskId: normalizedTaskId, idempotencyKey: normalizedKey };
+  }
+  return runtimeState.claimTransitions[bucketKey];
+}
+
+function getReleaseTransitionState(ctx, kind, taskId) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!runtimeState.releaseTransitions || typeof runtimeState.releaseTransitions !== "object") {
+    runtimeState.releaseTransitions = Object.create(null);
+  }
+  const key = `${String(kind || "release").trim()}:${String(taskId || "").trim()}`;
+  if (!runtimeState.releaseTransitions[key]) {
+    runtimeState.releaseTransitions[key] = { kind, taskId: String(taskId || "").trim() };
+  }
+  return runtimeState.releaseTransitions[key];
+}
+
+function getDelegationGuardStore(ctx) {
+  if (!ctx?.data || typeof ctx.data !== "object") return {};
+  if (!ctx.data._delegationTransitionGuards || typeof ctx.data._delegationTransitionGuards !== "object") {
+    ctx.data._delegationTransitionGuards = {};
+  }
+  return ctx.data._delegationTransitionGuards;
+}
+
+function beginDelegationTransition(ctx, key, meta = {}) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return { shouldRun: true, key: null, entry: null };
+  const guards = getDelegationGuardStore(ctx);
+  const existing = guards[normalizedKey];
+  if (existing?.status === "completed") {
+    return { shouldRun: false, key: normalizedKey, entry: existing, completed: true };
+  }
+  if (existing?.status === "in_progress") {
+    return { shouldRun: false, key: normalizedKey, entry: existing, inProgress: true };
+  }
+  const next = {
+    key: normalizedKey,
+    status: "in_progress",
+    startedAt: new Date().toISOString(),
+    ...meta,
+  };
+  guards[normalizedKey] = next;
+  return { shouldRun: true, key: normalizedKey, entry: next };
+}
+
+function completeDelegationTransition(ctx, key, meta = {}) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return null;
+  const guards = getDelegationGuardStore(ctx);
+  const next = {
+    ...(guards[normalizedKey] || {}),
+    ...meta,
+    key: normalizedKey,
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  };
+  guards[normalizedKey] = next;
+  return next;
+}
+
+function failDelegationTransition(ctx, key, meta = {}) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return null;
+  const guards = getDelegationGuardStore(ctx);
+  const next = {
+    ...(guards[normalizedKey] || {}),
+    ...meta,
+    key: normalizedKey,
+    status: "failed",
+    failedAt: new Date().toISOString(),
+  };
+  guards[normalizedKey] = next;
+  return next;
+}
+
 function isUnresolvedTemplateToken(value) {
   return /{{[^{}]+}}/.test(String(value || ""));
 }
@@ -11614,6 +15665,21 @@ function findExistingWorktreePathForBranch(repoRoot, branch) {
     // Best-effort lookup only.
   }
   return "";
+}
+
+function localBranchExists(repoRoot, branch) {
+  const normalizedBranch = String(branch || "").trim().replace(/^refs\/heads\//, "");
+  if (!normalizedBranch) return false;
+  try {
+    execGitArgsSync(["show-ref", "--verify", "--quiet", `refs/heads/${normalizedBranch}`], {
+      cwd: repoRoot,
+      timeout: 5000,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isValidGitWorktreePath(worktreePath) {
@@ -11692,6 +15758,132 @@ function hasUnresolvedGitOperation(worktreePath) {
   }
 }
 
+function listUnmergedFiles(worktreePath) {
+  if (!worktreePath || !existsSync(worktreePath)) return [];
+  try {
+    const raw = execGitArgsSync(["diff", "--name-only", "--diff-filter=U"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return raw
+      ? raw.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function hasGitStateMarker(worktreePath, markerName) {
+  if (!worktreePath || !markerName) return false;
+  try {
+    const gitDir = resolveGitDirForWorktree(worktreePath);
+    return Boolean(gitDir && existsSync(resolve(gitDir, markerName)));
+  } catch {
+    return false;
+  }
+}
+
+function finalizeMergeCommitIfReady(worktreePath) {
+  if (!hasGitStateMarker(worktreePath, "MERGE_HEAD")) {
+    return { finalized: false, mergeInProgress: false, remainingConflicts: listUnmergedFiles(worktreePath) };
+  }
+
+  const remainingConflicts = listUnmergedFiles(worktreePath);
+  if (remainingConflicts.length > 0) {
+    return { finalized: false, mergeInProgress: true, remainingConflicts };
+  }
+
+  try {
+    execGitArgsSync(["commit", "--no-edit"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 120000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { finalized: true, mergeInProgress: false, remainingConflicts: [] };
+  } catch (error) {
+    return {
+      finalized: false,
+      mergeInProgress: hasGitStateMarker(worktreePath, "MERGE_HEAD"),
+      remainingConflicts: listUnmergedFiles(worktreePath),
+      error: formatExecSyncError(error),
+    };
+  }
+}
+
+function abortMergeOperation(worktreePath) {
+  try {
+    execGitArgsSync(["merge", "--abort"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    // best effort
+  }
+}
+
+async function resolvePushMergeConflictWithAgent({
+  node,
+  ctx,
+  engine,
+  worktreePath,
+  baseBranch,
+  conflictFiles,
+  sdk,
+  promptTemplate,
+}) {
+  const runAgentNodeType = getNodeType("action.run_agent");
+  if (!runAgentNodeType?.execute) {
+    return {
+      success: false,
+      remainingConflicts: conflictFiles,
+      error: "action.run_agent is unavailable for merge conflict resolution",
+    };
+  }
+
+  const configuredPrompt = String(ctx.resolve(promptTemplate || "") || "").trim();
+  const prompt = configuredPrompt || buildConflictResolutionPrompt({
+    conflictFiles,
+    upstreamBranch: baseBranch,
+  });
+  const conflictCtx = Object.create(ctx);
+  conflictCtx.data = {
+    ...(ctx.data || {}),
+    worktreePath,
+    _agentWorkflowActive: true,
+    _taskIncludeContext: false,
+  };
+
+  const agentResult = await runAgentNodeType.execute({
+    id: `${node.id}-merge-conflict-resolver`,
+    type: "action.run_agent",
+    config: {
+      prompt,
+      cwd: worktreePath,
+      sdk: sdk || "auto",
+      includeTaskContext: false,
+      continueOnSession: false,
+      failOnError: false,
+    },
+  }, conflictCtx, engine);
+
+  const finalizeResult = finalizeMergeCommitIfReady(worktreePath);
+  const remainingConflicts = finalizeResult.remainingConflicts || listUnmergedFiles(worktreePath);
+  const mergeInProgress = finalizeResult.mergeInProgress || hasGitStateMarker(worktreePath, "MERGE_HEAD");
+  return {
+    success: remainingConflicts.length === 0 && !mergeInProgress,
+    agentResult,
+    finalizedMerge: finalizeResult.finalized === true,
+    remainingConflicts,
+    mergeInProgress,
+    error: finalizeResult.error || null,
+  };
+}
+
 function hasTrackedGitChanges(worktreePath) {
   if (!worktreePath || !existsSync(worktreePath)) return false;
   try {
@@ -11745,6 +15937,24 @@ function refreshManagedWorktreeReuse(
       repairArtifacts: null,
       detectedIssues: [],
     };
+  }
+  // Discard dirty tracked files before rebasing so the pull --rebase
+  // doesn't fail with "your local changes would be overwritten".
+  try {
+    const dirty = execGitArgsSync(["status", "--porcelain", "--untracked-files=no"], {
+      cwd: worktreePath, encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (dirty) {
+      execGitArgsSync(["reset", "--hard", "HEAD"], {
+        cwd: worktreePath, encoding: "utf8",
+        timeout: 10000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+  } catch {
+    /* best-effort */
   }
   let refreshError = "";
   try {
@@ -11831,7 +16041,8 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
     execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
       cwd: repoRoot,
       encoding: "utf8",
-      timeout: 30000,
+      // Best-effort cleanup should fail fast instead of hanging the workflow.
+      timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
@@ -11853,7 +16064,7 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
     execGitArgsSync(["worktree", "prune"], {
       cwd: repoRoot,
       encoding: "utf8",
-      timeout: 15000,
+      timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {
@@ -11871,7 +16082,7 @@ const STRICT_START_GUARD_MISSING_TASK = /^(1|true|yes|on)$/i.test(
   String(process.env.BOSUN_STRICT_START_GUARD_MISSING_TASK || "").trim(),
 );
 
-// ── trigger.task_available ──────────────────────────────────────────────────
+// ==== trigger.task_available ====
 
 registerBuiltinNodeType("trigger.task_available", {
   describe: () =>
@@ -12316,7 +16527,7 @@ registerBuiltinNodeType("trigger.task_available", {
     };
   },
 });
-// ── condition.slot_available ────────────────────────────────────────────────
+// ==== condition.slot_available ====
 
 registerBuiltinNodeType("condition.slot_available", {
   describe: () =>
@@ -12351,7 +16562,40 @@ registerBuiltinNodeType("condition.slot_available", {
   },
 });
 
-// ── action.allocate_slot ────────────────────────────────────────────────────
+// ==== action.allocate_slot ====
+registerBuiltinNodeType("action.release_slot", {
+  describe: () =>
+    "Release a previously allocated execution slot. Restores saved env vars " +
+    "for parallel isolation. Idempotent — safe on double-call.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID whose slot to release" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const slot = ctx.data?._allocatedSlot;
+
+    if (slot && slot.taskId === taskId) {
+      if (slot._envSnapshot && typeof slot._envSnapshot === "object") {
+        for (const [key, val] of Object.entries(slot._envSnapshot)) {
+          if (val === undefined) delete process.env[key];
+          else process.env[key] = val;
+        }
+      }
+      slot.status = "released";
+      slot.releasedAt = Date.now();
+      slot.durationMs = slot.releasedAt - (slot.startedAt || slot.releasedAt);
+      ctx.data._allocatedSlot = null;
+    }
+
+    ctx.log(node.id, `Slot released: ${taskId || "(unknown)"}`);
+    return { success: true, taskId, releasedAt: Date.now() };
+  },
+});
+
+// ==== action.claim_task ====
 
 registerBuiltinNodeType("action.allocate_slot", {
   describe: () =>
@@ -12409,42 +16653,7 @@ registerBuiltinNodeType("action.allocate_slot", {
   },
 });
 
-// ── action.release_slot ─────────────────────────────────────────────────────
-
-registerBuiltinNodeType("action.release_slot", {
-  describe: () =>
-    "Release a previously allocated execution slot. Restores saved env vars " +
-    "for parallel isolation. Idempotent — safe on double-call.",
-  schema: {
-    type: "object",
-    properties: {
-      taskId: { type: "string", description: "Task ID whose slot to release" },
-    },
-  },
-  async execute(node, ctx, engine) {
-    const taskId = cfgOrCtx(node, ctx, "taskId");
-    const slot = ctx.data?._allocatedSlot;
-
-    if (slot && slot.taskId === taskId) {
-      // Restore env vars saved during allocation
-      if (slot._envSnapshot && typeof slot._envSnapshot === "object") {
-        for (const [key, val] of Object.entries(slot._envSnapshot)) {
-          if (val === undefined) delete process.env[key];
-          else process.env[key] = val;
-        }
-      }
-      slot.status = "released";
-      slot.releasedAt = Date.now();
-      slot.durationMs = slot.releasedAt - (slot.startedAt || slot.releasedAt);
-      ctx.data._allocatedSlot = null;
-    }
-
-    ctx.log(node.id, `Slot released: ${taskId || "(unknown)"}`);
-    return { success: true, taskId, releasedAt: Date.now() };
-  },
-});
-
-// ── action.claim_task ───────────────────────────────────────────────────────
+// ==== action.claim_task ====
 
 registerBuiltinNodeType("action.claim_task", {
   describe: () =>
@@ -12474,107 +16683,310 @@ registerBuiltinNodeType("action.claim_task", {
     const branch = cfgOrCtx(node, ctx, "branch");
     const sdk = cfgOrCtx(node, ctx, "resolvedSdk", cfgOrCtx(node, ctx, "sdk"));
     const model = cfgOrCtx(node, ctx, "resolvedModel", cfgOrCtx(node, ctx, "model"));
+    const transitionType = String(
+      cfgOrCtx(node, ctx, "delegationTransitionType", cfgOrCtx(node, ctx, "transitionType")) || "assign",
+    ).trim() || "assign";
+    const transitionKey = String(
+      cfgOrCtx(node, ctx, "delegationTransitionKey", cfgOrCtx(node, ctx, "idempotencyKey")) || "",
+    ).trim();
+    const idempotencyKey = String(
+      cfgOrCtx(node, ctx, "idempotencyKey")
+      || ctx.data?._claimIdempotencyKey
+      || node.config?.delegationKey
+      || taskId
+      || "",
+    ).trim();
+    const effectiveTransitionKey = transitionKey || idempotencyKey;
 
     if (!taskId) throw new Error("action.claim_task: taskId is required");
 
-    const claims = await ensureTaskClaimsMod();
-    try {
-      await ensureTaskClaimsInitialized(ctx, claims);
-    } catch (initErr) {
-      ctx.log(node.id, `Claim init failed: ${initErr.message}`);
-      return { success: false, error: initErr.message, taskId, alreadyClaimed: false };
-    }
-
-    let claimResult;
-    try {
-      claimResult = await claims.claimTask({
+    const replayGuard = effectiveTransitionKey && typeof ctx?.getDelegationTransitionGuard === "function"
+      ? ctx.getDelegationTransitionGuard(effectiveTransitionKey)
+      : null;
+    if (replayGuard?.claimToken) {
+      ctx.data._claimToken = replayGuard.claimToken;
+      ctx.data._claimInstanceId = replayGuard.instanceId || instanceId;
+      return {
+        success: true,
         taskId,
-        instanceId,
-        ttlMinutes,
-        metadata: {
-          task_title: taskTitle,
-          branch,
-          owner: "workflow-engine",
-          sdk,
-          model: model || null,
-          pid: process.pid,
-        },
-      });
-    } catch (err) {
-      ctx.log(node.id, `Claim failed: ${err.message}`);
-      return { success: false, error: err.message, taskId, alreadyClaimed: false };
+        claimToken: replayGuard.claimToken,
+        instanceId: replayGuard.instanceId || instanceId,
+        transitionKey: effectiveTransitionKey,
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
     }
 
-    if (claimResult?.success) {
-      const token = claimResult.token || claimResult.claim?.claim_token || null;
-      ctx.data._claimToken = token;
-      ctx.data._claimInstanceId = instanceId;
+    const transitionGuard = effectiveTransitionKey
+      ? beginDelegationTransition(ctx, effectiveTransitionKey, {
+          type: transitionType,
+          eventType: transitionType,
+          taskId,
+          nodeId: node.id,
+          instanceId,
+        })
+      : null;
+    if (transitionGuard?.completed) {
+      const completedResult = transitionGuard.entry?.result || null;
+      if (completedResult?.claimToken) {
+        ctx.data._claimToken = completedResult.claimToken;
+      } else if (transitionGuard.entry?.claimToken) {
+        ctx.data._claimToken = transitionGuard.entry.claimToken;
+      }
+      ctx.data._claimInstanceId =
+        completedResult?.instanceId || transitionGuard.entry?.instanceId || instanceId;
+      return {
+        ...(completedResult || {
+          success: true,
+          taskId,
+          claimToken: transitionGuard.entry?.claimToken || null,
+          instanceId: transitionGuard.entry?.instanceId || instanceId,
+        }),
+        transitionKey: effectiveTransitionKey,
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+    }
 
-      const runtimeState = getWorkflowRuntimeState(ctx);
-      // Start renewal timer (stored in non-serializable runtime state for cleanup by release_claim)
-      const renewClaimFn =
-        typeof claims.renewTaskClaim === "function"
-          ? claims.renewTaskClaim.bind(claims)
-          : typeof claims.renewClaim === "function"
-            ? claims.renewClaim.bind(claims)
-            : null;
-      if (renewIntervalMs > 0 && renewClaimFn) {
-        const renewTimer = setInterval(async () => {
-          try {
-            const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
-            if (renewalResult && renewalResult.success === false) {
-              const resultError = String(renewalResult.error || "claim_renew_failed");
-              const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
-                "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => resultError.includes(e));
-              if (fatalResult) {
-                ctx.log(node.id, `Claim renewal fatal: ${resultError} — aborting task`);
-                clearInterval(renewTimer);
-                runtimeState.claimRenewTimer = null;
-                ctx.data._claimRenewTimer = null;
-                ctx.data._claimStolen = true;
-              } else {
-                ctx.log(node.id, `Claim renewal warning: ${resultError}`);
-              }
-            }
-          } catch (renewErr) {
-            const msg = renewErr?.message || String(renewErr);
-            const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
-              "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => msg.includes(e));
-            if (fatal) {
-              ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
-              clearInterval(renewTimer);
-              runtimeState.claimRenewTimer = null;
-              ctx.data._claimRenewTimer = null;
-              // Signal abort to downstream nodes via context
-              ctx.data._claimStolen = true;
-            } else {
-              ctx.log(node.id, `Claim renewal warning: ${msg}`);
-            }
-          }
-        }, renewIntervalMs);
-        // Prevent timer from keeping the process alive
-        if (renewTimer.unref) renewTimer.unref();
-        runtimeState.claimRenewTimer = renewTimer;
-        // Keep serialized context JSON-safe.
-        ctx.data._claimRenewTimer = null;
+    const transition = getClaimTransitionState(ctx, taskId, idempotencyKey);
+    if (transition.completed && transition.result?.success) {
+      const replayedResult = {
+        ...transition.result,
+        success: true,
+        taskId,
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+      if (effectiveTransitionKey && typeof ctx?.setDelegationTransitionGuard === "function") {
+        ctx.setDelegationTransitionGuard(effectiveTransitionKey, {
+          ...(ctx.getDelegationTransitionGuard?.(effectiveTransitionKey) || {}),
+          type: transitionType,
+          eventType: transitionType,
+          taskId,
+          claimToken: replayedResult.claimToken || null,
+          instanceId: replayedResult.instanceId || instanceId,
+          nodeId: node.id,
+          transitionKey: effectiveTransitionKey,
+          status: "completed",
+        });
+      }
+      ctx.data._claimToken = replayedResult.claimToken || ctx.data._claimToken || null;
+      ctx.data._claimInstanceId = replayedResult.instanceId || ctx.data._claimInstanceId || instanceId;
+      return replayedResult;
+    }
+
+    if (transition.inFlightPromise) {
+      const inFlightResult = await transition.inFlightPromise;
+      return {
+        ...inFlightResult,
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+    }
+
+    const claims = await ensureTaskClaimsMod();
+    const runtimeState = getWorkflowRuntimeState(ctx);
+    const renewClaimFn =
+      typeof claims.renewTaskClaim === "function"
+        ? claims.renewTaskClaim.bind(claims)
+        : typeof claims.renewClaim === "function"
+          ? claims.renewClaim.bind(claims)
+          : null;
+    const handleFatalRenewal = (message, token) => {
+      ctx.log(node.id, `Claim renewal fatal: ${message} — aborting task`);
+      if (runtimeState.claimRenewTimer) {
+        try { clearInterval(runtimeState.claimRenewTimer); } catch { /* ok */ }
+      }
+      runtimeState.claimRenewTimer = null;
+      ctx.data._claimRenewTimer = null;
+      ctx.data._claimStolen = true;
+      const ownerMismatchKey = buildDelegationTransitionKey("renew", [
+        taskId,
+        token || ctx.data?._claimToken || "none",
+        "owner-mismatch",
+      ]);
+      recordDelegationAuditEvent(ctx, {
+        type: "owner-mismatch",
+        eventType: "owner-mismatch",
+        taskId,
+        claimToken: token || ctx.data?._claimToken || null,
+        instanceId,
+        reason: message,
+        error: message,
+        nodeId: node.id,
+        transitionKey: ownerMismatchKey,
+        idempotencyKey: ownerMismatchKey,
+      });
+    };
+
+    transition.inFlightPromise = (async () => {
+      try {
+        await ensureTaskClaimsInitialized(ctx, claims);
+      } catch (initErr) {
+        ctx.log(node.id, `Claim init failed: ${initErr.message}`);
+        failDelegationTransition(ctx, effectiveTransitionKey || transitionKey || idempotencyKey, {
+          type: transitionType,
+          eventType: transitionType,
+          taskId,
+          nodeId: node.id,
+          error: initErr.message,
+        });
+        return { success: false, error: initErr.message, taskId, alreadyClaimed: false };
       }
 
-      ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
-      return { success: true, taskId, claimToken: token, instanceId };
-    }
+      let claimResult;
+      try {
+        claimResult = await claims.claimTask({
+          taskId,
+          instanceId,
+          ttlMinutes,
+          metadata: {
+            task_title: taskTitle,
+            branch,
+            owner: "workflow-engine",
+            sdk,
+            model: model || null,
+            pid: process.pid,
+            idempotency_key: idempotencyKey || null,
+          },
+        });
+      } catch (err) {
+        ctx.log(node.id, `Claim failed: ${err.message}`);
+        failDelegationTransition(ctx, effectiveTransitionKey || transitionKey || idempotencyKey, {
+          type: transitionType,
+          eventType: transitionType,
+          taskId,
+          nodeId: node.id,
+          error: err.message,
+        });
+        return { success: false, error: err.message, taskId, alreadyClaimed: false };
+      }
 
-    if (claimResult?.error === "task_already_claimed") {
-      const owner = claimResult?.existing_instance || claimResult?.existing_claim?.instance_id || "unknown";
-      ctx.log(node.id, `Task "${taskTitle}" already claimed by ${owner}`);
-      return { success: false, taskId, alreadyClaimed: true, claimedBy: owner, error: "task_already_claimed" };
-    }
+      if (claimResult?.success) {
+        const token = claimResult.token || claimResult.claim?.claim_token || null;
+        ctx.data._claimToken = token;
+        ctx.data._claimInstanceId = instanceId;
+        transition.completed = true;
+        transition.claimToken = token;
+        transition.instanceId = instanceId;
+        transition.result = {
+          success: true,
+          taskId,
+          claimToken: token,
+          instanceId,
+          alreadyClaimed: false,
+          transitionKey: effectiveTransitionKey || `assign:${taskId}:${instanceId}`,
+        };
+        appendDelegationAuditEvent(ctx, {
+          type: transitionType,
+          eventType: transitionType,
+          taskId,
+          idempotencyKey: effectiveTransitionKey || idempotencyKey,
+          claimToken: token,
+          nodeId: node.id,
+          transitionKey: effectiveTransitionKey || `assign:${taskId}:${instanceId}`,
+          instanceId,
+        });
+        if (effectiveTransitionKey && typeof ctx?.setDelegationTransitionGuard === "function") {
+          ctx.setDelegationTransitionGuard(effectiveTransitionKey, {
+            type: transitionType,
+            eventType: transitionType,
+            taskId,
+            claimToken: token,
+            instanceId,
+            nodeId: node.id,
+            transitionKey: effectiveTransitionKey,
+            status: "completed",
+          });
+        }
+        if (effectiveTransitionKey) {
+          completeDelegationTransition(ctx, effectiveTransitionKey, {
+            type: transitionType,
+            eventType: transitionType,
+            taskId,
+            claimToken: token,
+            instanceId,
+            nodeId: node.id,
+            transitionKey: effectiveTransitionKey,
+            result: transition.result,
+          });
+        }
 
-    ctx.log(node.id, `Claim error: ${claimResult?.error || "unknown"}`);
-    return { success: false, taskId, error: claimResult?.error || "unknown", alreadyClaimed: false };
+        if (renewIntervalMs > 0 && renewClaimFn && !runtimeState.claimRenewTimer) {
+          const renewTimer = setInterval(async () => {
+            try {
+              const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+              if (renewalResult && renewalResult.success === false) {
+                const resultError = String(renewalResult.error || "claim_renew_failed");
+                const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
+                  "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => resultError.includes(e));
+                if (fatalResult) {
+                  handleFatalRenewal(resultError, token);
+                } else {
+                  ctx.log(node.id, `Claim renewal warning: ${resultError}`);
+                }
+              } else if (renewalResult?.success) {
+                const claimRenewKey = buildDelegationTransitionKey("renew", [
+                  taskId,
+                  token || ctx.data?._claimToken || "none",
+                  "claim-renew",
+                ]);
+                recordDelegationAuditEvent(ctx, {
+                  type: "claim-renew",
+                  eventType: "claim-renew",
+                  taskId,
+                  claimToken: token || ctx.data?._claimToken || null,
+                  instanceId,
+                  nodeId: node.id,
+                  transitionKey: claimRenewKey,
+                  idempotencyKey: claimRenewKey,
+                });
+              }
+            } catch (renewErr) {
+              const msg = renewErr?.message || String(renewErr);
+              const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
+                "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => msg.includes(e));
+              if (fatal) {
+                handleFatalRenewal(msg, token);
+              } else {
+                ctx.log(node.id, `Claim renewal warning: ${msg}`);
+              }
+            }
+          }, renewIntervalMs);
+          if (renewTimer.unref) renewTimer.unref();
+          runtimeState.claimRenewTimer = renewTimer;
+          ctx.data._claimRenewTimer = renewTimer;
+        }
+
+        ctx.log(node.id, `Task claimed: ${taskId}`);
+        return transition.result;
+      }
+
+      ctx.log(node.id, `Task already claimed: ${taskId}`);
+      failDelegationTransition(ctx, effectiveTransitionKey || transitionKey || idempotencyKey, {
+        type: transitionType,
+        eventType: transitionType,
+        taskId,
+        nodeId: node.id,
+        error: claimResult?.error || "unknown",
+        alreadyClaimed: true,
+      });
+      return { success: false, taskId, error: claimResult?.error || "unknown", alreadyClaimed: true };
+    })();
+
+    try {
+      return await transition.inFlightPromise;
+    } finally {
+      transition.inFlightPromise = null;
+    }
   },
 });
 
-// ── action.release_claim ────────────────────────────────────────────────────
+// ==== action.release_claim ====
 
 registerBuiltinNodeType("action.release_claim", {
   describe: () =>
@@ -12592,7 +17004,6 @@ registerBuiltinNodeType("action.release_claim", {
     const claimToken = cfgOrCtx(node, ctx, "claimToken") || ctx.data?._claimToken || "";
     const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._claimInstanceId || "";
 
-    // Always cancel the renewal timer first.
     const runtimeState = getWorkflowRuntimeState(ctx);
     const renewTimer = runtimeState.claimRenewTimer || ctx.data?._claimRenewTimer;
     if (renewTimer) {
@@ -12606,6 +17017,50 @@ registerBuiltinNodeType("action.release_claim", {
       return { success: true, skipped: true, reason: "no_claim" };
     }
 
+    const transitionKey = String(
+      cfgOrCtx(node, ctx, "transitionKey", cfgOrCtx(node, ctx, "idempotencyKey")) || `release:${taskId}`,
+    ).trim() || `release:${taskId}`;
+    const transitionGuard = beginDelegationTransition(ctx, transitionKey, {
+      type: "release-claim",
+      eventType: "release-claim",
+      taskId,
+      claimToken,
+      instanceId,
+      nodeId: node.id,
+    });
+    if (transitionGuard.completed) {
+      ctx.data._claimToken = null;
+      ctx.data._claimInstanceId = null;
+      return {
+        ...(transitionGuard.entry?.result || { success: true, taskId, claimToken, instanceId }),
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+    }
+
+    const transition = getReleaseTransitionState(ctx, "claim", taskId);
+    if (transition.completed) {
+      ctx.data._claimToken = null;
+      ctx.data._claimInstanceId = null;
+      completeDelegationTransition(ctx, transitionKey, {
+        type: "release-claim",
+        eventType: "release-claim",
+        taskId,
+        claimToken,
+        instanceId,
+        nodeId: node.id,
+        transitionKey,
+        result: transition.result || { success: true, taskId, claimToken, instanceId },
+      });
+      return {
+        ...(transition.result || { success: true, taskId, claimToken, instanceId }),
+        replayed: true,
+        deduped: true,
+        idempotentReplay: true,
+      };
+    }
+
     const claims = await ensureTaskClaimsMod();
     try {
       await ensureTaskClaimsInitialized(ctx, claims);
@@ -12613,7 +17068,19 @@ registerBuiltinNodeType("action.release_claim", {
       ctx.log(node.id, `Claim release init warning: ${initErr.message}`);
       ctx.data._claimToken = null;
       ctx.data._claimInstanceId = null;
-      return { success: true, taskId, warning: initErr.message };
+      transition.completed = true;
+      transition.result = { success: true, taskId, claimToken, instanceId, warning: initErr.message };
+      completeDelegationTransition(ctx, transitionKey, {
+        type: "release-claim",
+        eventType: "release-claim",
+        taskId,
+        claimToken,
+        instanceId,
+        nodeId: node.id,
+        transitionKey,
+        result: transition.result,
+      });
+      return transition.result;
     }
     const releaseClaimFn =
       typeof claims.releaseTaskClaim === "function"
@@ -12624,21 +17091,31 @@ registerBuiltinNodeType("action.release_claim", {
     try {
       if (!releaseClaimFn) throw new Error("no claim release function available");
       await releaseClaimFn({ taskId, claimToken, instanceId });
-      ctx.data._claimToken = null;
-      ctx.data._claimInstanceId = null;
       ctx.log(node.id, `Claim released for ${taskId}`);
-      return { success: true, taskId };
+      transition.result = { success: true, taskId, claimToken, instanceId };
     } catch (err) {
-      // Release is best-effort — log but don't fail
       ctx.log(node.id, `Claim release warning: ${err.message}`);
-      ctx.data._claimToken = null;
-      ctx.data._claimInstanceId = null;
-      return { success: true, taskId, warning: err.message };
+      transition.result = { success: true, taskId, claimToken, instanceId, warning: err.message };
     }
+    transition.completed = true;
+    completeDelegationTransition(ctx, transitionKey, {
+      type: "release-claim",
+      eventType: "release-claim",
+      taskId,
+      claimToken,
+      instanceId,
+      nodeId: node.id,
+      transitionKey,
+      result: transition.result,
+    });
+    ctx.data._claimToken = null;
+    ctx.data._claimInstanceId = null;
+    return transition.result;
   },
 });
 
-// ── action.resolve_executor ─────────────────────────────────────────────────
+
+// ==== action.resolve_executor ====
 
 registerBuiltinNodeType("action.resolve_executor", {
   describe: () =>
@@ -12876,7 +17353,47 @@ registerBuiltinNodeType("action.resolve_executor", {
   },
 });
 
-// ── action.acquire_worktree ─────────────────────────────────────────────────
+// ==== action.acquire_worktree ====
+
+export function classifyAcquireWorktreeFailure(errorInput) {
+  const errorMessage = String(errorInput?.message || errorInput || "worktree_acquisition_failed");
+  const normalized = errorMessage.trim();
+
+  if (/managed worktree was removed after stale refresh state/i.test(normalized)) {
+    return {
+      errorMessage: normalized,
+      retryable: false,
+      failureKind: "branch_refresh_conflict",
+      blockedReason: "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.",
+      detectedIssues: ["refresh_conflict"],
+      phase: "post-pull",
+    };
+  }
+
+  if (
+    /worktree runtime setup incomplete/i.test(normalized) ||
+    /missing worktree setup files/i.test(normalized) ||
+    /git core\.hooksPath/i.test(normalized)
+  ) {
+    return {
+      errorMessage: normalized,
+      retryable: false,
+      failureKind: "worktree_runtime_setup_incomplete",
+      blockedReason: normalized,
+      detectedIssues: ["runtime_setup_incomplete"],
+      phase: "runtime-setup",
+    };
+  }
+
+  return {
+    errorMessage: normalized,
+    retryable: true,
+    failureKind: "worktree_acquisition_failed",
+    blockedReason: normalized,
+    detectedIssues: [],
+    phase: null,
+  };
+}
 
 registerBuiltinNodeType("action.acquire_worktree", {
   describe: () =>
@@ -12902,7 +17419,8 @@ registerBuiltinNodeType("action.acquire_worktree", {
     try {
     taskId = cfgOrCtx(node, ctx, "taskId");
     branch = cfgOrCtx(node, ctx, "branch");
-    repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    repoRoot = findContainingGitRepoRoot(resolveWorkflowRepoRoot(node, ctx))
+      || resolveWorkflowRepoRoot(node, ctx);
     const baseBranchRaw = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
     const defaultTargetBranch = cfgOrCtx(node, ctx, "defaultTargetBranch", "origin/main");
     baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
@@ -12954,7 +17472,26 @@ registerBuiltinNodeType("action.acquire_worktree", {
     ctx.data.baseBranch = baseBranch;
 
     // Non-git directory — agent spawns directly
-    const isGit = existsSync(resolve(repoRoot, ".git"));
+    let isGit = existsSync(resolve(repoRoot, ".git"));
+    if (!isGit) {
+      const parentRepoRoot = resolve(repoRoot, "..");
+      if (
+        basename(String(repoRoot || "").trim()).toLowerCase() === ".bosun"
+        && existsSync(resolve(parentRepoRoot, ".git"))
+      ) {
+        repoRoot = parentRepoRoot;
+        ctx.data.repoRoot = repoRoot;
+        isGit = true;
+      }
+    }
+    if (!isGit) {
+      const containingRepoRoot = findContainingGitRepoRoot(repoRoot);
+      if (containingRepoRoot && containingRepoRoot !== repoRoot) {
+        repoRoot = containingRepoRoot;
+        ctx.data.repoRoot = repoRoot;
+        isGit = existsSync(resolve(repoRoot, ".git"));
+      }
+    }
     if (!isGit) {
       ctx.data.worktreePath = repoRoot;
       ctx.data._worktreeCreated = false;
@@ -12962,6 +17499,9 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.log(node.id, `Non-git directory — using ${repoRoot} directly`);
       return { success: true, worktreePath: repoRoot, created: false, noGit: true };
     }
+
+    // Repair known main-repo git metadata/config corruption before any worktree command runs.
+    fixGitConfigCorruption(repoRoot);
 
     try {
       // Ensure base branch ref is fresh
@@ -13035,6 +17575,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
           recoveryState.repairArtifacts = refreshResult.repairArtifacts;
         }
         if (existsSync(worktreePath)) {
+          fixGitConfigCorruption(repoRoot);
           ctx.data.worktreePath = worktreePath;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
@@ -13052,16 +17593,95 @@ registerBuiltinNodeType("action.acquire_worktree", {
 
       // Create fresh worktree
       let attachedExistingBranch = false;
+      const branchExistsLocally = localBranchExists(repoRoot, branch);
+      let existingBranchWorktree = branchExistsLocally
+        ? findExistingWorktreePathForBranch(repoRoot, branch)
+        : "";
+      if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
+        ctx.log(
+          node.id,
+          `Pruning stale registered worktree for branch ${branch}: ${existingBranchWorktree}`,
+        );
+        notePoisonedWorktree("attached-branch", existingBranchWorktree, ["missing_git_metadata"]);
+        cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+        existingBranchWorktree = "";
+      }
+      if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+        const existingWorktreeIsBroken = (
+          !isValidGitWorktreePath(existingBranchWorktree) ||
+          hasUnresolvedGitOperation(existingBranchWorktree)
+        ) && isManagedBosunWorktree(existingBranchWorktree, repoRoot);
+        if (existingWorktreeIsBroken) {
+          ctx.log(
+            node.id,
+            `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
+          );
+          notePoisonedWorktree("attached-branch", existingBranchWorktree, [
+            !isValidGitWorktreePath(existingBranchWorktree)
+              ? "missing_git_metadata"
+              : "unresolved_git_operation",
+          ]);
+          cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+          existingBranchWorktree = "";
+        }
+      }
+      if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+        isValidGitWorktreePath(existingBranchWorktree) &&
+        !hasUnresolvedGitOperation(existingBranchWorktree)
+      ) {
+        const refreshResult = refreshManagedWorktreeReuse(
+          node.id,
+          ctx,
+          repoRoot,
+          existingBranchWorktree,
+          baseBranch,
+          baseBranchShort,
+          fetchTimeout,
+          { taskId, branch },
+        );
+        if (refreshResult?.repairArtifacts) {
+          recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+        }
+        if (existsSync(existingBranchWorktree) &&
+          isValidGitWorktreePath(existingBranchWorktree) &&
+          !hasUnresolvedGitOperation(existingBranchWorktree)
+        ) {
+          fixGitConfigCorruption(repoRoot);
+          ctx.data.worktreePath = existingBranchWorktree;
+          ctx.data._worktreeCreated = false;
+          ctx.data._worktreeManaged = true;
+          ensureManagedTaskWorktreeReady(repoRoot, existingBranchWorktree);
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath: existingBranchWorktree,
+          });
+          ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+          const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
+          if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
+          return {
+            success: true,
+            worktreePath: existingBranchWorktree,
+            created: false,
+            reused: true,
+            reusedExistingBranch: true,
+            branch,
+            baseBranch,
+          };
+        }
+      }
       try {
         execGitArgsSync(
-          ["worktree", "add", worktreePath, "-b", branch, baseBranch],
+          branchExistsLocally
+            ? ["worktree", "add", worktreePath, branch]
+            : ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
+        attachedExistingBranch = branchExistsLocally;
       } catch (createErr) {
-        if (!isExistingBranchWorktreeError(createErr)) {
+        if (!isExistingBranchWorktreeError(createErr) && !isMissingRegisteredWorktreeError(createErr)) {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
-        const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+        existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
         if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
           ctx.log(
             node.id,
@@ -13110,6 +17730,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
           isValidGitWorktreePath(existingBranchWorktree) &&
           !hasUnresolvedGitOperation(existingBranchWorktree)
         ) {
+          fixGitConfigCorruption(repoRoot);
           ctx.data.worktreePath = existingBranchWorktree;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
@@ -13201,6 +17822,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             isValidGitWorktreePath(existingBranchWorktree) &&
             !hasUnresolvedGitOperation(existingBranchWorktree)
           ) {
+            fixGitConfigCorruption(repoRoot);
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
@@ -13265,19 +17887,23 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
-      const errorMessage = String(err?.message || err || "worktree_acquisition_failed");
-      const retryable = !/managed worktree was removed after stale refresh state/i.test(errorMessage);
+      const classified = classifyAcquireWorktreeFailure(err);
+      const {
+        errorMessage,
+        retryable,
+        failureKind,
+        blockedReason,
+        detectedIssues,
+        phase,
+      } = classified;
       const recordedAt = new Date().toISOString();
       const autoRecoverDelayMs = retryable ? 0 : getNonRetryableWorktreeRecoveryMs();
       const retryAt = retryable ? null : new Date(Date.now() + autoRecoverDelayMs).toISOString();
-      const blockedReason = retryable
-        ? errorMessage
-        : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
       if (!retryable) {
         await recordWorktreeRecoveryEvent(repoRoot, {
           outcome: "recreation_failed",
           reason: "poisoned_worktree",
-          phase: "post-pull",
+          phase,
           branch,
           taskId,
           worktreePath: resolve(
@@ -13286,7 +17912,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             "worktrees",
             deriveManagedWorktreeDirName(taskId, branch)
           ),
-          detectedIssues: ["refresh_conflict"],
+          detectedIssues,
           error: errorMessage,
         });
       }
@@ -13297,7 +17923,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
         branch,
         baseBranch,
         retryable,
-        failureKind: retryable ? "worktree_acquisition_failed" : "branch_refresh_conflict",
+        failureKind,
         recordedAt,
         autoRecoverDelayMs,
         retryAt,
@@ -13328,7 +17954,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
   },
 });
 
-// ── action.recover_worktree ─────────────────────────────────────────────────
+// ==== action.recover_worktree ====
 
 registerBuiltinNodeType("action.recover_worktree", {
   describe: () =>
@@ -13405,7 +18031,7 @@ registerBuiltinNodeType("action.recover_worktree", {
   },
 });
 
-// ── action.sweep_task_worktrees ─────────────────────────────────────────────
+// ==== action.sweep_task_worktrees ====
 
 registerBuiltinNodeType("action.sweep_task_worktrees", {
   describe: () =>
@@ -13474,7 +18100,7 @@ registerBuiltinNodeType("action.sweep_task_worktrees", {
   },
 });
 
-// ── action.release_worktree ─────────────────────────────────────────────────
+// ==== action.release_worktree ====
 
 registerBuiltinNodeType("action.release_worktree", {
   describe: () =>
@@ -13491,7 +18117,7 @@ registerBuiltinNodeType("action.release_worktree", {
   },
   async execute(node, ctx, engine) {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const shouldPrune = node.config?.prune === true;
     const removeTimeout = node.config?.removeTimeout ?? 30000;
@@ -13505,23 +18131,31 @@ registerBuiltinNodeType("action.release_worktree", {
       return { success: true, skipped: true, reason: "no_worktree" };
     }
 
+    const transition = getReleaseTransitionState(ctx, "worktree", taskId || worktreePath);
+    if (transition.completed) {
+      return {
+        ...(transition.result || { success: true, worktreePath, taskId, released: true }),
+        replayed: true,
+      };
+    }
+
     try {
-    if (existsSync(worktreePath)) {
-      try {
-        execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
-          cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+      if (existsSync(worktreePath)) {
+        try {
+          execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
+            cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
         } catch {
           /* best-effort — directory might already be gone */
         }
       }
 
-    if (shouldPrune) {
-      try {
-        execGitArgsSync(["worktree", "prune"], {
-          cwd: repoRoot, encoding: "utf8", timeout: 15000,
-        });
+      if (shouldPrune) {
+        try {
+          execGitArgsSync(["worktree", "prune"], {
+            cwd: repoRoot, encoding: "utf8", timeout: 15000,
+          });
         } catch { /* best-effort */ }
       }
 
@@ -13530,10 +18164,28 @@ registerBuiltinNodeType("action.release_worktree", {
       ctx.data._worktreeCreated = false;
       ctx.data._worktreeManaged = false;
       ctx.log(node.id, `Worktree released: ${worktreePath}`);
-      return { success: true, worktreePath, released: true };
+      transition.completed = true;
+      transition.result = {
+        success: true,
+        worktreePath,
+        taskId,
+        claimToken: ctx.data?._claimToken || null,
+        instanceId: ctx.data?._claimInstanceId || null,
+        released: true,
+      };
+      return transition.result;
     } catch (err) {
       ctx.log(node.id, `Worktree release warning: ${err.message}`);
-      return { success: true, worktreePath, warning: err.message };
+      transition.completed = true;
+      transition.result = {
+        success: true,
+        worktreePath,
+        taskId,
+        claimToken: ctx.data?._claimToken || null,
+        instanceId: ctx.data?._claimInstanceId || null,
+        warning: err.message,
+      };
+      return transition.result;
     }
   },
 });
@@ -13553,7 +18205,7 @@ registerBuiltinNodeType("action.recover_worktree", {
   },
   async execute(node, ctx, engine) {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath") || ctx.data?.worktreePath || "";
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
     const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
     const removeTimeout = Number(node.config?.removeTimeout ?? 30000);
     const shouldPrune = node.config?.prune !== false;
@@ -13618,7 +18270,7 @@ registerBuiltinNodeType("action.sweep_task_worktrees", {
     },
   },
   async execute(node, ctx, engine) {
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
     const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
     const maxAgeMs = Number(node.config?.maxAgeMs ?? 43200000);
     const timeout = Number(node.config?.timeout ?? 15000);
@@ -13835,7 +18487,7 @@ const workflowContractValidationHandler = {
 registerNodeType("workflow-contract-validation", workflowContractValidationHandler);
 registerNodeType("action.workflow_contract_validation", workflowContractValidationHandler);
 
-// ── action.build_task_prompt ────────────────────────────────────────────────
+// ==== action.build_task_prompt ====
 
 registerBuiltinNodeType("action.build_task_prompt", {
   describe: () =>
@@ -13847,6 +18499,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       taskId: { type: "string" },
       taskTitle: { type: "string" },
       taskDescription: { type: "string" },
+      taskUrl: { type: "string" },
       branch: { type: "string" },
       baseBranch: { type: "string" },
       worktreePath: { type: "string" },
@@ -13881,7 +18534,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
     const branch = cfgOrCtx(node, ctx, "branch");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch");
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
     const repoSlug = cfgOrCtx(node, ctx, "repoSlug");
     const retryReason = cfgOrCtx(node, ctx, "retryReason");
     const includeAgentsMd = node.config?.includeAgentsMd !== false;
@@ -13997,6 +18650,15 @@ registerBuiltinNodeType("action.build_task_prompt", {
       taskMeta?.taskDescription,
       taskDescription,
     );
+    const normalizedTaskUrl = pickFirstString(
+      resolvePromptValue("taskUrl"),
+      taskPayload?.taskUrl,
+      taskPayload?.url,
+      taskMeta?.taskUrl,
+      taskMeta?.task_url,
+      taskMeta?.url,
+      ctx.data?.taskUrl,
+    );
     const normalizedBranch = normalizeString(branch);
     const normalizedBaseBranch = normalizeString(baseBranch);
     const normalizedWorktreePath = normalizeString(worktreePath);
@@ -14066,6 +18728,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       taskId: normalizedTaskId,
       taskTitle: normalizedTaskTitle,
       taskDescription: normalizedTaskDescription,
+      taskUrl: normalizedTaskUrl,
       branch: normalizedBranch,
       baseBranch: normalizedBaseBranch,
       worktreePath: normalizedWorktreePath,
@@ -14216,6 +18879,12 @@ registerBuiltinNodeType("action.build_task_prompt", {
     if (normalizedTaskDescription) {
       userParts.push("## Description");
       userParts.push(normalizedTaskDescription);
+      userParts.push("");
+    }
+
+    if (normalizedTaskUrl) {
+      userParts.push("## Task Reference");
+      userParts.push(normalizedTaskUrl);
       userParts.push("");
     }
 
@@ -14703,6 +19372,28 @@ registerBuiltinNodeType("action.persist_memory", {
 
       ctx.data._lastPersistedMemory = entry;
       ctx.data._lastPersistedMemoryResult = result;
+      try {
+        appendArtifactRecordToStateLedger({
+          artifactId: `memory:${entry.hash || result.hash || randomUUID()}`,
+          runId: entry.runId || ctx.id || null,
+          rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
+          taskId: entry.taskRef || taskId || null,
+          sessionId: entry.sessionId || null,
+          nodeId: node?.id || null,
+          kind: "shared_knowledge_entry",
+          path: result.registryPath || initOpts.targetFile || null,
+          summary: entry.content?.slice(0, 240) || "Persisted shared knowledge entry",
+          metadata: {
+            scope: entry.scope,
+            scopeLevel: entry.scopeLevel,
+            category: entry.category,
+            tags: entry.tags || [],
+            hash: result.hash || entry.hash || null,
+          },
+        }, { repoRoot });
+      } catch (ledgerErr) {
+        ctx.log(node.id, `State ledger artifact mirror failed: ${ledgerErr.message}`, "warn");
+      }
       ctx.log(node.id, `Persistent memory stored at ${entry.scopeLevel} scope`);
       return {
         success: true,
@@ -14725,7 +19416,505 @@ registerBuiltinNodeType("action.persist_memory", {
   },
 });
 
-// ── action.auto_commit_dirty ────────────────────────────────────────────────
+registerBuiltinNodeType("action.load_skillbook_strategies", {
+  describe: () =>
+    "Load ranked reusable strategies from the Bosun skillbook for planning, recovery, and self-improvement flows.",
+  schema: {
+    type: "object",
+    properties: {
+      strategyId: { type: "string", description: "Optional specific strategy ID to load directly." },
+      workflowId: { type: "string", description: "Workflow ID filter. Defaults to current workflow." },
+      repoRoot: { type: "string", description: "Repo/config root used to resolve the skillbook path." },
+      category: { type: "string", default: "strategy" },
+      scopeLevel: { type: "string", enum: ["team", "workspace", "session", "run"] },
+      scope: { type: "string", description: "Optional scope value used to narrow strategy selection." },
+      status: { type: "string", default: "promoted" },
+      query: { type: "string", description: "Free-text relevance query used to rank strategies." },
+      tags: {
+        oneOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+        description: "Optional tags used to require or boost matching strategies.",
+      },
+      limit: { type: "number", default: 5 },
+      outputVariable: { type: "string", description: "Optional context key to store the guidance payload." },
+    },
+  },
+  async execute(node, ctx) {
+    const strategyId = String(ctx.resolve(node.config?.strategyId || "") || "").trim();
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    let output;
+    if (strategyId) {
+      const strategy = await getSkillbookStrategy(strategyId, {
+        repoRoot: String(ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd()).trim() || process.cwd(),
+      });
+      output = {
+        success: true,
+        repoRoot: String(ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd()).trim() || process.cwd(),
+        strategyId,
+        total: strategy ? 1 : 0,
+        matched: strategy ? 1 : 0,
+        strategies: strategy ? [strategy] : [],
+        guidanceSummary: strategy
+          ? `Reusable strategy guidance:\n- ${strategy.recommendation || strategy.strategyId}${strategy.rationale ? `\n  rationale: ${strategy.rationale}` : ""}`
+          : "",
+        skillbookPath: null,
+        strategyIds: strategy ? [strategy.strategyId] : [],
+      };
+    } else {
+      output = await resolveReusableSkillbookGuidance(ctx, {
+        repoRoot: ctx.resolve(node.config?.repoRoot || ""),
+        workflowId: ctx.resolve(node.config?.workflowId || ""),
+        category: ctx.resolve(node.config?.category || "strategy"),
+        scopeLevel: ctx.resolve(node.config?.scopeLevel || ""),
+        scope: ctx.resolve(node.config?.scope || ""),
+        status: ctx.resolve(node.config?.status || "promoted"),
+        query:
+          ctx.resolve(node.config?.query || "")
+          || [
+            ctx.data?.taskTitle,
+            ctx.data?.taskDescription,
+            ctx.data?.lastError,
+            ctx.data?.prompt,
+            ctx.data?.context,
+          ].filter(Boolean).join(" "),
+        tags: resolveWorkflowNodeValue(node.config?.tags ?? [], ctx),
+        limit: resolveWorkflowNodeValue(node.config?.limit ?? 5, ctx),
+      });
+    }
+    ctx.data._skillbookGuidance = output;
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+    ctx.log(
+      node.id,
+      output.matched > 0
+        ? `Loaded ${output.matched} reusable skillbook strategie(s)`
+        : "No reusable skillbook strategies matched current context",
+    );
+    return output;
+  },
+});
+
+registerBuiltinNodeType("action.evaluate_run", {
+  describe: () =>
+    "Evaluate a workflow run and emit self-improvement insights, benchmarks, and promotion recommendations.",
+  schema: {
+    type: "object",
+    properties: {
+      runId: { type: "string", description: "Run ID to evaluate. Defaults to the current run." },
+      workflowId: { type: "string", description: "Workflow ID override for trend lookup." },
+      repoRoot: { type: "string", description: "Repo/config root used for evaluation history." },
+      outputVariable: { type: "string", description: "Variable name to store the evaluation result in ctx.data." },
+      includeTrend: { type: "boolean", default: true },
+      recordHistory: {
+        type: "boolean",
+        default: true,
+        description: "Persist the evaluation into durable history for trend-aware self-improvement.",
+      },
+      evaluatorConfig: {
+        type: "object",
+        description: "Optional penalty/threshold overrides for RunEvaluator.",
+        additionalProperties: true,
+      },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const resolvedRunId = String(ctx.resolve(node.config?.runId || "") || ctx.data?.runId || ctx.id || "").trim();
+    if (!resolvedRunId) {
+      throw new Error("action.evaluate_run: runId is required");
+    }
+
+    const repoRoot = String(ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd()).trim() || process.cwd();
+    const includeTrend = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeTrend ?? true, ctx), true);
+    const recordHistory = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.recordHistory ?? true, ctx), true);
+    const evaluator = makeSelfImprovementEvaluator(ctx, {
+      repoRoot,
+      evaluatorConfig: resolveWorkflowNodeValue(node.config?.evaluatorConfig ?? {}, ctx),
+    });
+
+    let runDetail = null;
+    if (engine?.getRunDetail) {
+      runDetail = engine.getRunDetail(resolvedRunId);
+    }
+    if (!runDetail && resolvedRunId === ctx.id) {
+      runDetail = {
+        runId: ctx.id,
+        workflowId: ctx.data?._workflowId || null,
+        detail: engine?._serializeRunContext ? engine._serializeRunContext(ctx, true) : ctx.toJSON(Date.now()),
+      };
+    }
+    if (!runDetail) {
+      throw new Error(`action.evaluate_run: run "${resolvedRunId}" not found`);
+    }
+
+    const workflowId = String(
+      ctx.resolve(node.config?.workflowId || "") ||
+      runDetail.workflowId ||
+      runDetail?.detail?.data?._workflowId ||
+      ctx.data?._workflowId ||
+      "unknown",
+    ).trim() || "unknown";
+    const result = evaluator.evaluate(runDetail, { workflowId, includeTrend, recordHistory });
+    const reusableGuidance = await resolveReusableSkillbookGuidance(ctx, {
+      repoRoot,
+      workflowId,
+      category: "strategy",
+      status: "promoted",
+      query: [
+        runDetail?.detail?.data?.taskTitle,
+        runDetail?.detail?.data?.taskDescription,
+        result?.promotion?.summary,
+        result?.promotion?.rationale,
+      ].filter(Boolean).join(" "),
+      tags: Array.isArray(result?.promotion?.selectedStrategy?.tags)
+        ? result.promotion.selectedStrategy.tags
+        : [],
+      limit: 5,
+    });
+    if (reusableGuidance.matched > 0) {
+      result.skillbookGuidance = reusableGuidance;
+      result.reusableStrategies = reusableGuidance.strategies;
+      result.reusableStrategySummary = reusableGuidance.guidanceSummary;
+      ctx.data._skillbookGuidance = reusableGuidance;
+    }
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    if (outputVariable) {
+      ctx.data[outputVariable] = result;
+    }
+    ctx.data._lastRunEvaluation = result;
+    ctx.data._lastRunEvaluationRunId = resolvedRunId;
+    ctx.data._selfImprovementInsights = result.insights;
+    ctx.log(node.id, `Evaluated run ${resolvedRunId} (score=${result.score}, decision=${result.promotion?.decision || "hold"})`);
+    return {
+      success: true,
+      runId: resolvedRunId,
+      workflowId,
+      ...result,
+    };
+  },
+});
+
+registerBuiltinNodeType("action.promote_strategy", {
+  describe: () =>
+    "Persist a verified self-improvement strategy or benchmark baseline into shared knowledge.",
+  schema: {
+    type: "object",
+    properties: {
+      evaluationNodeId: { type: "string", description: "Node ID that produced action.evaluate_run output." },
+      strategyId: { type: "string", description: "Specific strategy ID to promote. Defaults to the evaluator-selected strategy." },
+      force: { type: "boolean", default: false, description: "Persist even when the evaluator recommends hold." },
+      scopeLevel: {
+        type: "string",
+        enum: ["team", "workspace", "session", "run"],
+        default: "workspace",
+      },
+      scope: { type: "string", description: "Optional topical scope for retrieval." },
+      category: { type: "string", default: "strategy" },
+      repoRoot: { type: "string" },
+      targetFile: { type: "string" },
+      registryFile: { type: "string" },
+      outputVariable: { type: "string" },
+      tags: {
+        anyOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+      },
+      agentId: { type: "string" },
+      agentType: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const evaluationNodeId = String(ctx.resolve(node.config?.evaluationNodeId || "") || "").trim();
+    const evaluation =
+      (evaluationNodeId ? ctx.getNodeOutput?.(evaluationNodeId) : null) ||
+      ctx.data?._lastRunEvaluation ||
+      null;
+    if (!evaluation || typeof evaluation !== "object") {
+      throw new Error("action.promote_strategy: evaluation result not found");
+    }
+
+    const requestedStrategyId = String(ctx.resolve(node.config?.strategyId || "") || "").trim() || null;
+    const selectedStrategy = resolveSelfImprovementStrategy(evaluation, requestedStrategyId);
+    if (!selectedStrategy) {
+      return {
+        success: false,
+        persisted: false,
+        reason: "No strategy candidate available for promotion",
+      };
+    }
+
+    const force = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.force ?? false, ctx), false);
+    if (!force && evaluation?.promotion?.shouldPromote !== true) {
+      return {
+        success: true,
+        persisted: false,
+        skipped: true,
+        reason: evaluation?.promotion?.summary || "Evaluator did not recommend promotion",
+        strategyId: selectedStrategy.strategyId,
+      };
+    }
+
+    const result = await persistSelfImprovementKnowledgeEntry(ctx, node, {
+      evaluation,
+      selectedStrategy,
+      decision: evaluation?.promotion?.decision || "promote_strategy",
+      repoRoot: ctx.resolve(node.config?.repoRoot || ""),
+      targetFile: ctx.resolve(node.config?.targetFile || ""),
+      registryFile: ctx.resolve(node.config?.registryFile || ""),
+      scopeLevel: ctx.resolve(node.config?.scopeLevel || "workspace"),
+      scope: ctx.resolve(node.config?.scope || ""),
+      category: ctx.resolve(node.config?.category || "strategy"),
+      status: "promoted",
+      tags: ctx.resolve(node.config?.tags || ""),
+      agentId: ctx.resolve(node.config?.agentId || ""),
+      agentType: ctx.resolve(node.config?.agentType || ""),
+      contentLines: [
+        `Promoted strategy for workflow ${evaluation?.workflowId || ctx.data?._workflowId || "unknown"}: ${selectedStrategy.recommendation}`,
+        selectedStrategy.rationale ? `Rationale: ${selectedStrategy.rationale}` : "",
+        evaluation?.benchmark
+          ? `Benchmark: score=${evaluation.score}, grade=${evaluation.grade}, throughputPerMinute=${evaluation.benchmark.throughputPerMinute}, retryDensity=${evaluation.benchmark.retryDensity}, traceCoverage=${evaluation.benchmark.traceCoverage}`
+          : "",
+        evaluation?.promotion?.rationale ? `Promotion rationale: ${evaluation.promotion.rationale}` : "",
+      ],
+    });
+    if (!result.success) return result;
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    const output = { ...result };
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+    ctx.data._lastPromotedStrategy = output;
+    ctx.log(node.id, `Promoted strategy ${selectedStrategy.strategyId} into shared knowledge`);
+    return output;
+  },
+});
+
+registerBuiltinNodeType("action.apply_self_improvement_ratchet", {
+  describe: () =>
+    "Persist compare/keep/revert ratchet decisions for self-improvement runs and emit proof metadata into the execution ledger.",
+  schema: {
+    type: "object",
+    properties: {
+      evaluationNodeId: { type: "string", description: "Node ID that produced action.evaluate_run output." },
+      strategyId: { type: "string", description: "Optional strategy override for apply/revert decisions." },
+      repoRoot: { type: "string" },
+      targetFile: { type: "string" },
+      registryFile: { type: "string" },
+      scopeLevel: {
+        type: "string",
+        enum: ["team", "workspace", "session", "run"],
+        default: "workspace",
+      },
+      scope: { type: "string", description: "Optional topical scope for knowledge persistence." },
+      category: { type: "string", default: "strategy" },
+      outputVariable: { type: "string" },
+      tags: {
+        anyOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+      },
+      agentId: { type: "string" },
+      agentType: { type: "string" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const evaluationNodeId = String(ctx.resolve(node.config?.evaluationNodeId || "") || "").trim();
+    const evaluation =
+      (evaluationNodeId ? ctx.getNodeOutput?.(evaluationNodeId) : null) ||
+      ctx.data?._lastRunEvaluation ||
+      null;
+    if (!evaluation || typeof evaluation !== "object") {
+      throw new Error("action.apply_self_improvement_ratchet: evaluation result not found");
+    }
+
+    const workflowId = String(evaluation?.workflowId || ctx.data?._workflowId || "").trim() || "unknown";
+    const repoRoot = String(ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd()).trim() || process.cwd();
+    const evaluator = makeSelfImprovementEvaluator(ctx, { repoRoot });
+    const requestedStrategyId = String(ctx.resolve(node.config?.strategyId || "") || "").trim() || null;
+    const fallbackDecision = evaluation?.promotion?.decision === "capture_baseline"
+      ? "capture_baseline"
+      : (evaluation?.promotion?.decision === "promote_strategy"
+          ? "apply_candidate"
+          : (evaluation?.promotion?.decision === "investigate_regression" ? "keep_baseline" : "hold"));
+    const ratchet = evaluation?.ratchet && typeof evaluation.ratchet === "object"
+      ? JSON.parse(JSON.stringify(evaluation.ratchet))
+      : { decision: fallbackDecision };
+    const decision = String(ratchet?.decision || "hold").trim() || "hold";
+    const selectedStrategy = resolveSelfImprovementStrategy(
+      evaluation,
+      requestedStrategyId,
+      ratchet?.targetStrategy || null,
+    );
+    const candidateSnapshot = ratchet?.candidate && typeof ratchet.candidate === "object"
+      ? JSON.parse(JSON.stringify(ratchet.candidate))
+      : {
+          runId: evaluation?.runId || ctx.data?._lastRunEvaluationRunId || ctx.id,
+          workflowId,
+          score: evaluation?.score ?? 0,
+          grade: evaluation?.grade || "F",
+          timestamp: new Date().toISOString(),
+          strategyId: selectedStrategy?.strategyId || null,
+          strategy: selectedStrategy || null,
+          benchmark: evaluation?.benchmark || null,
+          metrics: evaluation?.metrics || null,
+          promotionDecision: evaluation?.promotion?.decision || null,
+        };
+    const comparison = ratchet?.comparison && typeof ratchet.comparison === "object"
+      ? JSON.parse(JSON.stringify(ratchet.comparison))
+      : null;
+
+    let executionDiff = null;
+    const baselineRunId = String(
+      comparison?.baselineRunId ||
+      ratchet?.baseline?.runId ||
+      ratchet?.stateBefore?.activeBaseline?.runId ||
+      "",
+    ).trim();
+    const candidateRunId = String(candidateSnapshot?.runId || evaluation?.runId || ctx.id || "").trim();
+    if (
+      baselineRunId &&
+      candidateRunId &&
+      baselineRunId !== candidateRunId &&
+      typeof engine?.diffRunGraphs === "function"
+    ) {
+      executionDiff = summarizeRunGraphDiff(engine.diffRunGraphs(baselineRunId, candidateRunId));
+      if (comparison && executionDiff) {
+        comparison.executionDiff = executionDiff;
+      }
+    }
+
+    let knowledge = null;
+    if (["capture_baseline", "apply_candidate", "revert_to_baseline"].includes(decision)) {
+      if (!selectedStrategy) {
+        return {
+          success: false,
+          persisted: false,
+          decision,
+          reason: "Ratchet decision requires a strategy snapshot, but none was available",
+        };
+      }
+      const actionVerb = decision === "revert_to_baseline" ? "Reverted" : "Persisted";
+      const targetRunId = decision === "revert_to_baseline"
+        ? String(ratchet?.previousBaseline?.runId || "").trim() || null
+        : candidateRunId;
+      knowledge = await persistSelfImprovementKnowledgeEntry(ctx, node, {
+        evaluation,
+        selectedStrategy,
+        decision,
+        repoRoot,
+        targetFile: ctx.resolve(node.config?.targetFile || ""),
+        registryFile: ctx.resolve(node.config?.registryFile || ""),
+        scopeLevel: ctx.resolve(node.config?.scopeLevel || "workspace"),
+        scope: ctx.resolve(node.config?.scope || ""),
+        category: ctx.resolve(node.config?.category || "strategy"),
+        status: decision === "revert_to_baseline" ? "reverted" : "promoted",
+        tags: normalizeSelfImprovementTagList(
+          ctx.resolve(node.config?.tags || ""),
+          "ratchet",
+          decision,
+        ),
+        agentId: ctx.resolve(node.config?.agentId || ""),
+        agentType: ctx.resolve(node.config?.agentType || ""),
+        contentLines: [
+          `${actionVerb} ratchet strategy for workflow ${workflowId}: ${selectedStrategy.recommendation}`,
+          decision === "revert_to_baseline"
+            ? `Reverted to baseline run ${targetRunId || "unknown"} after candidate run ${candidateRunId || "unknown"} regressed.`
+            : `Candidate run ${targetRunId || "unknown"} ${decision === "capture_baseline" ? "captured as the initial baseline" : "applied as the new baseline"}.`,
+          selectedStrategy.rationale ? `Rationale: ${selectedStrategy.rationale}` : "",
+          ratchet?.summary ? `Ratchet summary: ${ratchet.summary}` : "",
+          ratchet?.rationale ? `Ratchet rationale: ${ratchet.rationale}` : "",
+          evaluation?.benchmark
+            ? `Benchmark: score=${evaluation.score}, grade=${evaluation.grade}, throughputPerMinute=${evaluation.benchmark.throughputPerMinute}, retryDensity=${evaluation.benchmark.retryDensity}, traceCoverage=${evaluation.benchmark.traceCoverage}`
+            : "",
+        ],
+      });
+      if (!knowledge.success) {
+        return {
+          success: false,
+          persisted: false,
+          decision,
+          reason: knowledge.reason || "Failed to persist ratchet strategy evidence",
+          knowledge,
+        };
+      }
+    }
+
+    const persistence = evaluator.recordRatchetDecision(workflowId, {
+      decisionId: `${workflowId}:${decision}:${candidateRunId || Date.now()}`,
+      timestamp: new Date().toISOString(),
+      runId: candidateRunId || null,
+      decision,
+      summary: ratchet?.summary || evaluation?.promotion?.summary || `Ratchet decision ${decision}`,
+      rationale: ratchet?.rationale || evaluation?.promotion?.rationale || null,
+      candidate: candidateSnapshot,
+      baseline: ratchet?.baseline || ratchet?.stateBefore?.activeBaseline || null,
+      previousBaseline: ratchet?.previousBaseline || ratchet?.stateBefore?.previousBaseline || null,
+      comparison,
+      selectedStrategyId: evaluation?.promotion?.selectedStrategyId || selectedStrategy?.strategyId || null,
+      targetStrategyId: selectedStrategy?.strategyId || null,
+      targetStrategy: selectedStrategy || null,
+      knowledge,
+    });
+
+    const stateAfter = persistence?.stateAfter || evaluator.getRatchetState(workflowId);
+    const output = {
+      success: true,
+      persisted: true,
+      workflowId,
+      runId: candidateRunId || null,
+      decision,
+      summary: ratchet?.summary || persistence?.decision?.summary || null,
+      rationale: ratchet?.rationale || persistence?.decision?.rationale || null,
+      comparison,
+      executionDiff,
+      knowledge,
+      stateBefore: persistence?.stateBefore || ratchet?.stateBefore || null,
+      stateAfter,
+      activeBaselineRunId: stateAfter?.activeBaseline?.runId || null,
+      previousBaselineRunId: stateAfter?.previousBaseline?.runId || null,
+    };
+
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+    ctx.data._selfImprovementRatchet = output;
+
+    recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+      eventType: "proof.emitted",
+      ...buildNodeExecutionLedgerRef(ctx, node, "proof", ["ratchet", decision], node.label || node.id),
+      nodeId: node?.id || null,
+      nodeType: node?.type || null,
+      nodeLabel: node?.label || null,
+      status: "completed",
+      summary: output.summary || `Ratchet decision ${decision}`,
+      meta: {
+        kind: "self_improvement_ratchet",
+        attachmentKind: "self_improvement_ratchet",
+        decision,
+        workflowId,
+        candidateRunId: candidateRunId || null,
+        baselineRunId: baselineRunId || null,
+        activeBaselineRunId: stateAfter?.activeBaseline?.runId || null,
+        previousBaselineRunId: stateAfter?.previousBaseline?.runId || null,
+        strategyId: selectedStrategy?.strategyId || null,
+        comparison,
+        executionDiff,
+        knowledgeHash: knowledge?.hash || null,
+        registryPath: knowledge?.registryPath || null,
+      },
+    }));
+
+    ctx.log(node.id, `Ratchet decision ${decision} recorded for workflow ${workflowId}`);
+    return output;
+  },
+});
+
+// ==== action.auto_commit_dirty ====
 // Safety net: if the agent left uncommitted work in the worktree, stage + commit
 // so that detect_new_commits can see it and the work isn't silently destroyed.
 
@@ -14801,7 +19990,7 @@ registerBuiltinNodeType("action.auto_commit_dirty", {
   },
 });
 
-// ── action.detect_new_commits ───────────────────────────────────────────────
+// ==== action.detect_new_commits ====
 
 registerBuiltinNodeType("action.detect_new_commits", {
   describe: () =>
@@ -14851,15 +20040,31 @@ registerBuiltinNodeType("action.detect_new_commits", {
     // Also check for unpushed commits vs base (three-tier validation)
     let hasUnpushed = false;
     let commitCount = 0;
+    let commitMessages = [];
     try {
       const log = execGitArgsSync(["log", "--oneline", `${baseBranch}..HEAD`], {
         cwd: worktreePath, encoding: "utf8", timeout: 10000,
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
-      commitCount = log ? log.split("\n").filter(Boolean).length : 0;
+      const lines = log ? log.split("\n").filter(Boolean) : [];
+      commitCount = lines.length;
       hasUnpushed = commitCount > 0;
+      // Capture commit subjects (strip leading short-hash) for PR descriptions
+      commitMessages = lines.map(l => l.replace(/^[0-9a-f]+\s+/, "")).slice(0, 50);
     } catch {
       /* best-effort */
+    }
+
+    // Changed files list (for PR descriptions)
+    let changedFiles = [];
+    if (hasNewCommits || hasUnpushed) {
+      try {
+        const nameOnly = execGitArgsSync(["diff", "--name-only", `${baseBranch}..HEAD`], {
+          cwd: worktreePath, encoding: "utf8", timeout: 10000,
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+        changedFiles = nameOnly ? nameOnly.split("\n").filter(Boolean).slice(0, 100) : [];
+      } catch { /* best-effort */ }
     }
 
     // Diff stats
@@ -14887,7 +20092,7 @@ registerBuiltinNodeType("action.detect_new_commits", {
     // Use hasNewCommits OR hasUnpushed — covers resumed worktrees
     const hasCommits = hasNewCommits || hasUnpushed;
 
-    // ── Anti-thrash: record no-commit bounces with exponential cooldown ──
+    // ==== Anti-thrash: record no-commit bounces with exponential cooldown ====
     const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
     if (!hasCommits && taskId) {
       const count = (_noCommitCounts.get(taskId) || 0) + 1;
@@ -14906,6 +20111,8 @@ registerBuiltinNodeType("action.detect_new_commits", {
     ctx.data._postExecHead = postExecHead;
     ctx.data._commitCount = commitCount;
     ctx.data._diffStats = diffStats;
+    ctx.data._commitMessages = commitMessages;
+    ctx.data._changedFiles = changedFiles;
 
     ctx.log(
       node.id,
@@ -14918,6 +20125,8 @@ registerBuiltinNodeType("action.detect_new_commits", {
       hasNewCommits,
       hasUnpushed,
       commitCount,
+      commitMessages,
+      changedFiles,
       preExecHead,
       postExecHead,
       diffStats,
@@ -14925,12 +20134,12 @@ registerBuiltinNodeType("action.detect_new_commits", {
   },
 });
 
-// ── action.push_branch ──────────────────────────────────────────────────────
+// ==== action.push_branch ====
 
 registerBuiltinNodeType("action.push_branch", {
   describe: () =>
-    "Push the current branch to the remote. Includes rebase-before-push, " +
-    "empty-diff guard, protected branch safety, and optional main-branch sync.",
+    "Push the current branch to the remote. Includes remote sync, optional " +
+    "base-merge validation with conflict resolution, empty-diff guard, and protected branch safety.",
   schema: {
     type: "object",
     properties: {
@@ -14939,8 +20148,12 @@ registerBuiltinNodeType("action.push_branch", {
       baseBranch: { type: "string", description: "Base branch to rebase onto" },
       remote: { type: "string", default: "origin", description: "Remote name" },
       forceWithLease: { type: "boolean", default: true, description: "Use --force-with-lease" },
-      skipHooks: { type: "boolean", default: true, description: "Skip git pre-push hooks (--no-verify)" },
+      skipHooks: { type: "boolean", default: false, description: "Skip git pre-push hooks (--no-verify) for non-managed repos only" },
       rebaseBeforePush: { type: "boolean", default: true, description: "Rebase onto base before push" },
+      mergeBaseBeforePush: { type: "boolean", default: false, description: "Merge the base branch into the worktree before push so PR conflicts surface locally" },
+      autoResolveMergeConflicts: { type: "boolean", default: false, description: "When merge-base validation conflicts, run an agent to resolve them before pushing" },
+      conflictResolverSdk: { type: "string", enum: ["auto", "copilot", "codex", "claude"], default: "auto", description: "SDK used for merge conflict resolution agent runs" },
+      conflictResolverPrompt: { type: "string", description: "Optional custom prompt for merge conflict resolution agent runs" },
       emptyDiffGuard: { type: "boolean", default: true, description: "Abort if no files changed vs base" },
       syncMainForModuleBranch: { type: "boolean", default: false, description: "Also sync base with main" },
       pushTimeout: { type: "number", default: 120000, description: "Push timeout (ms)" },
@@ -14949,6 +20162,11 @@ registerBuiltinNodeType("action.push_branch", {
         default: ["main", "master", "develop", "production"],
         description: "Branches that cannot be force-pushed",
       },
+      requireApproval: { type: "boolean", default: false, description: "Force operator approval before pushing even when the global risky-action toggle is off." },
+      approvalReason: { type: "string", description: "Optional extra operator-facing reason shown in the approval queue." },
+      approvalTimeoutMs: { type: "number", default: 900000, description: "Maximum time to wait for operator approval before failing." },
+      approvalPollIntervalMs: { type: "number", default: 5000, description: "Polling interval used while waiting for operator approval." },
+      approvalOnTimeout: { type: "string", enum: ["fail", "proceed"], default: "fail", description: "Behavior when operator approval is not provided before the timeout." },
     },
     required: ["worktreePath"],
   },
@@ -14957,21 +20175,65 @@ registerBuiltinNodeType("action.push_branch", {
     const branch = cfgOrCtx(node, ctx, "branch", "");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || ctx.data.repoRoot || process.cwd();
-    const remote = node.config?.remote || "origin";
+    const configuredRemote = String(node.config?.remote || "origin").trim() || "origin";
+    const repoHint = pickTaskString(
+      ctx?.data?.repo,
+      ctx?.data?.repository,
+      ctx?.data?.repoSlug,
+      ctx?.data?.task?.repo,
+      ctx?.data?.task?.repository,
+      ctx?.data?.task?.meta?.repo,
+      ctx?.data?.task?.meta?.repository,
+    );
+    const remote = resolvePreferredPushRemote(worktreePath, configuredRemote, repoHint);
     const forceWithLease = node.config?.forceWithLease !== false;
+    const managedPushHooksRequired = shouldEnforceManagedPushHook(repoRoot, worktreePath);
     const skipHooks = typeof node.config?.skipHooks === "boolean"
       ? node.config.skipHooks
-      : !shouldEnforceManagedPushHook(repoRoot, worktreePath);
+      : false;
     const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
+    const mergeBaseBeforePush = node.config?.mergeBaseBeforePush === true;
+    const autoResolveMergeConflicts = node.config?.autoResolveMergeConflicts === true;
+    const conflictResolverSdk = String(ctx.resolve(node.config?.conflictResolverSdk || "auto") || "auto").trim() || "auto";
+    const conflictResolverPrompt = String(node.config?.conflictResolverPrompt || "");
     const emptyDiffGuard = node.config?.emptyDiffGuard !== false;
     const syncMain = node.config?.syncMainForModuleBranch === true;
     const pushTimeout = node.config?.pushTimeout || 120000;
     const protectedBranches = node.config?.protectedBranches
       || ["main", "master", "develop", "production"];
 
-    if (!worktreePath) throw new Error("action.push_branch: worktreePath is required");
+    ctx.data._pushMergeConflict = false;
+    ctx.data._pushConflictFiles = [];
+    ctx.data._pushConflictResolved = false;
 
-    if (shouldEnforceManagedPushHook(repoRoot, worktreePath)) {
+    if (!worktreePath) {
+      ctx.log(node.id, "action.push_branch: worktreePath not set - refusing push");
+      return {
+        success: false,
+        pushed: false,
+        branch: branch.replace(/^origin\//, ""),
+        remote,
+        error: "action.push_branch: worktreePath is required",
+        implementationDone: false,
+        blockedReason: "missing_worktree_path",
+        implementationState: null,
+      };
+    }
+
+    if (remote !== configuredRemote) {
+      ctx.log(node.id, `Remapped push remote ${configuredRemote} -> ${remote} for ${repoHint || branch || "worktree"}`);
+    }
+
+    if (managedPushHooksRequired && skipHooks) {
+      ctx.log(node.id, "Managed worktree push blocked: skipHooks is forbidden by guardrails");
+      return {
+        success: false,
+        pushed: false,
+        error: "Managed Bosun worktrees must run local pre-push validation before push",
+      };
+    }
+
+    if (managedPushHooksRequired) {
       bootstrapWorktreeForPath(repoRoot, worktreePath);
     }
 
@@ -14979,77 +20241,169 @@ registerBuiltinNodeType("action.push_branch", {
     const cleanBranch = branch.replace(/^origin\//, "");
     if (protectedBranches.includes(cleanBranch)) {
       ctx.log(node.id, `Refusing to push to protected branch: ${cleanBranch}`);
-      return { success: false, error: `Protected branch: ${cleanBranch}`, pushed: false };
+      return {
+        success: false,
+        error: `Protected branch: ${cleanBranch}`,
+        pushed: false,
+        implementationDone: true,
+        blockedReason: "blocked_by_repo",
+        implementationState: "implementation_done_commit_blocked",
+      };
     }
 
-    // ── Fetch (always, independent of rebase) ──
+    await requireWorkflowActionApproval({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.push_branch",
+      repoRoot,
+    });
+
+    // ==== Fetch (always, independent of rebase) ====
     // Must succeed before push so --force-with-lease has fresh remote tracking refs.
     try {
-      execSync(`git fetch ${remote} --no-tags`, {
+      execGitArgsSync(["fetch", remote, "--no-tags"], {
         cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (fetchErr) {
       ctx.log(node.id, `Fetch failed (will push anyway): ${fetchErr.message?.slice(0, 200)}`);
     }
 
-    // ── Rebase-before-push ──
-    if (rebaseBeforePush) {
+    // ==== Rebase-before-push ====
+    if (rebaseBeforePush || mergeBaseBeforePush) {
       // Step 1: if the remote already has commits on this branch (previous run / partial push),
       // rebase local onto origin/${cleanBranch} first so we incorporate those commits and
       // the subsequent push is a clean fast-forward instead of a diverged force-push.
       const remoteTrackingRef = `${remote}/${cleanBranch}`;
       try {
-        execSync(`git rev-parse --verify ${remoteTrackingRef}`, {
+        execGitArgsSync(["rev-parse", "--verify", remoteTrackingRef], {
           cwd: worktreePath, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
         });
         // Remote branch exists — check if it diverges from local
-        const behindCount = execSync(
-          `git rev-list --count HEAD..${remoteTrackingRef}`,
+        const behindCount = execGitArgsSync(
+          ["rev-list", "--count", `HEAD..${remoteTrackingRef}`],
           { cwd: worktreePath, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }
         ).trim();
         if (parseInt(behindCount, 10) > 0) {
           try {
-            execSync(`git rebase ${remoteTrackingRef}`, {
+            execGitArgsSync(["rebase", remoteTrackingRef], {
               cwd: worktreePath, encoding: "utf8", timeout: 60000,
               stdio: ["ignore", "pipe", "pipe"],
             });
             ctx.log(node.id, `Synced local with ${remoteTrackingRef} (was ${behindCount} behind)`);
           } catch (syncErr) {
-            try { execSync("git rebase --abort", { cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
+            try { execGitArgsSync(["rebase", "--abort"], { cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
             ctx.log(node.id, `Sync with ${remoteTrackingRef} conflicted, skipping: ${syncErr.message?.slice(0, 200)}`);
           }
         }
       } catch { /* remote branch doesn't exist yet — normal for first push */ }
 
-      // Step 2: rebase onto base branch (e.g. origin/main)
-      try {
-        execSync(`git rebase ${baseBranch}`, {
-          cwd: worktreePath, encoding: "utf8", timeout: 60000,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        ctx.log(node.id, `Rebased onto ${baseBranch}`);
-      } catch (rebaseErr) {
-        // Abort rebase on conflict — push what we have
+      // Step 2: integrate the base branch before pushing.
+      if (mergeBaseBeforePush) {
         try {
-          execSync("git rebase --abort", {
-            cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
+          execGitArgsSync(["merge", "--no-edit", baseBranch], {
+            cwd: worktreePath,
+            encoding: "utf8",
+            timeout: 120000,
+            stdio: ["ignore", "pipe", "pipe"],
           });
-        } catch { /* already aborted */ }
-        ctx.log(node.id, `Rebase onto ${baseBranch} conflicted, skipping: ${rebaseErr.message?.slice(0, 200)}`);
+          ctx.log(node.id, `Merged ${baseBranch} into ${cleanBranch || "HEAD"}`);
+        } catch (mergeErr) {
+          const conflictFiles = listUnmergedFiles(worktreePath);
+          if (conflictFiles.length === 0) {
+            const detail = formatExecSyncError(mergeErr);
+            ctx.log(node.id, `Merge of ${baseBranch} failed before push: ${detail}`);
+            return {
+              success: false,
+              pushed: false,
+              branch: cleanBranch,
+              remote,
+              error: detail,
+              implementationDone: true,
+              blockedReason: classifyPushBlockedReason(detail, false),
+              implementationState: "implementation_done_commit_blocked",
+            };
+          }
+
+          ctx.log(node.id, `Merge of ${baseBranch} conflicted in ${conflictFiles.length} file(s)`);
+          let resolution = {
+            success: false,
+            remainingConflicts: conflictFiles,
+            mergeInProgress: true,
+            error: null,
+          };
+          if (autoResolveMergeConflicts) {
+            resolution = await resolvePushMergeConflictWithAgent({
+              node,
+              ctx,
+              engine,
+              worktreePath,
+              baseBranch,
+              conflictFiles,
+              sdk: conflictResolverSdk,
+              promptTemplate: conflictResolverPrompt,
+            });
+          }
+
+          if (!resolution.success) {
+            const remainingConflicts = resolution.remainingConflicts?.length
+              ? resolution.remainingConflicts
+              : conflictFiles;
+            abortMergeOperation(worktreePath);
+            ctx.data._pushMergeConflict = true;
+            ctx.data._pushConflictFiles = remainingConflicts;
+            return {
+              success: false,
+              pushed: false,
+              branch: cleanBranch,
+              remote,
+              mergeConflict: true,
+              conflictFiles: remainingConflicts,
+              conflictResolved: false,
+              agentAttempted: autoResolveMergeConflicts,
+              error: resolution.error || `Merge conflict while integrating ${baseBranch}`,
+              implementationDone: true,
+              blockedReason: classifyPushBlockedReason(
+                resolution.error || `Merge conflict while integrating ${baseBranch}`,
+                true,
+              ),
+              implementationState: "implementation_done_commit_blocked",
+            };
+          }
+
+          ctx.data._pushConflictResolved = true;
+          ctx.log(node.id, `Resolved merge conflict against ${baseBranch}; continuing with push`);
+        }
+      } else {
+        try {
+          execGitArgsSync(["rebase", baseBranch], {
+            cwd: worktreePath, encoding: "utf8", timeout: 60000,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          ctx.log(node.id, `Rebased onto ${baseBranch}`);
+        } catch (rebaseErr) {
+          // Abort rebase on conflict — push what we have
+          try {
+            execGitArgsSync(["rebase", "--abort"], {
+              cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
+            });
+          } catch { /* already aborted */ }
+          ctx.log(node.id, `Rebase onto ${baseBranch} conflicted, skipping: ${rebaseErr.message?.slice(0, 200)}`);
+        }
       }
     }
 
-    // ── Optional: sync base branch with main (for module branches) ──
+    // ==== Optional: sync base branch with main (for module branches) ====
     if (syncMain && baseBranch !== "origin/main" && baseBranch !== "main") {
       try {
-        execSync(`git merge origin/main --no-edit`, {
+        execGitArgsSync(["merge", `${remote}/main`, "--no-edit"], {
           cwd: worktreePath, timeout: 30000,
           stdio: ["ignore", "pipe", "pipe"],
         });
-        ctx.log(node.id, "Synced with origin/main for module branch");
+        ctx.log(node.id, `Synced with ${remote}/main for module branch`);
       } catch (mergeErr) {
         try {
-          execSync("git merge --abort", {
+          execGitArgsSync(["merge", "--abort"], {
             cwd: worktreePath, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
           });
         } catch { /* already aborted */ }
@@ -15057,10 +20411,10 @@ registerBuiltinNodeType("action.push_branch", {
       }
     }
 
-    // ── Empty diff guard ──
+    // ==== Empty diff guard ====
     if (emptyDiffGuard) {
       try {
-        const diffOutput = execSync(`git diff --name-only ${baseBranch}..HEAD`, {
+        const diffOutput = execGitArgsSync(["diff", "--name-only", `${baseBranch}..HEAD`], {
           cwd: worktreePath, encoding: "utf8", timeout: 10000,
           stdio: ["ignore", "pipe", "pipe"],
         }).trim();
@@ -15068,7 +20422,15 @@ registerBuiltinNodeType("action.push_branch", {
         if (changedFiles === 0) {
           ctx.log(node.id, "No files changed vs base — aborting push");
           ctx.data._pushSkipped = true;
-          return { success: false, error: "No files changed vs base", pushed: false, changedFiles: 0 };
+          return {
+            success: false,
+            error: "No files changed vs base",
+            pushed: false,
+            changedFiles: 0,
+            implementationDone: false,
+            blockedReason: null,
+            implementationState: null,
+          };
         }
         ctx.data._changedFileCount = changedFiles;
       } catch {
@@ -15076,29 +20438,36 @@ registerBuiltinNodeType("action.push_branch", {
       }
     }
 
-    // ── Hard zero-diff guard (always active) ──
+    // ==== Hard zero-diff guard (always active) ====
     try {
-      const headSha = execSync("git rev-parse HEAD", {
+      const headSha = execGitArgsSync(["rev-parse", "HEAD"], {
         cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
       }).trim();
-      const mainSha = execSync("git rev-parse origin/main", {
+      const mainSha = execGitArgsSync(["rev-parse", `${remote}/main`], {
         cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
       }).trim();
       if (headSha && mainSha && headSha === mainSha) {
-        ctx.log(node.id, "HEAD is identical to origin/main — aborting push to prevent PR wipe");
+        ctx.log(node.id, `HEAD is identical to ${remote}/main — aborting push to prevent PR wipe`);
         ctx.data._pushSkipped = true;
-        return { success: false, error: "HEAD matches origin/main — refusing push", pushed: false };
+        return {
+          success: false,
+          error: `HEAD matches ${remote}/main — refusing push`,
+          pushed: false,
+          implementationDone: false,
+          blockedReason: null,
+          implementationState: null,
+        };
       }
     } catch { /* best-effort */ }
 
-    // ── Push ──
-    const pushFlags = [];
-    if (forceWithLease) pushFlags.push("--force-with-lease");
-    if (skipHooks) pushFlags.push("--no-verify");
-    const cmd = `git push ${pushFlags.join(" ")} --set-upstream ${remote} HEAD`.trim();
+    // ==== Push ====
+    const pushArgs = ["push"];
+    if (forceWithLease) pushArgs.push("--force-with-lease");
+    if (skipHooks) pushArgs.push("--no-verify");
+    pushArgs.push("--set-upstream", remote, "HEAD");
 
     try {
-      const output = execSync(cmd, {
+      const output = execGitArgsSync(pushArgs, {
         cwd: worktreePath, encoding: "utf8", timeout: pushTimeout,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -15108,24 +20477,33 @@ registerBuiltinNodeType("action.push_branch", {
         pushed: true,
         branch: cleanBranch,
         remote,
+        mergeBaseBeforePush,
+        conflictResolved: ctx.data._pushConflictResolved === true,
+        implementationDone: true,
+        blockedReason: null,
+        implementationState: null,
         output: output?.trim()?.slice(0, 500) || "",
       };
     } catch (err) {
       ctx.log(node.id, `Push failed: ${err.message?.slice(0, 300)}`);
+      const blockedReason = classifyPushBlockedReason(err.message || "", false);
       return {
         success: false,
         pushed: false,
         branch: cleanBranch,
         remote,
         error: err.message?.slice(0, 500),
+        implementationDone: true,
+        blockedReason,
+        implementationState: "implementation_done_commit_blocked",
       };
     }
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  WEB SEARCH — Structured web search for research workflows
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("action.web_search", {
   describe: () =>
@@ -15168,7 +20546,7 @@ registerBuiltinNodeType("action.web_search", {
 
     ctx.log(node.id, `Web search (${searchEngine}): "${query}" (max ${maxResults})`);
 
-    // ── MCP-based search ────────────────────────────────────────────────
+    // ==== MCP-based search ====
     if (searchEngine === "mcp") {
       try {
         const { getMcpRegistry } = await import("./mcp-registry.mjs");
@@ -15189,7 +20567,7 @@ registerBuiltinNodeType("action.web_search", {
       }
     }
 
-    // ── Agent-based search ──────────────────────────────────────────────
+    // ==== Agent-based search ====
     if (searchEngine === "agent") {
       const agentPool = engine?.services?.agentPool;
       if (agentPool?.launchEphemeralThread) {
@@ -15216,7 +20594,7 @@ registerBuiltinNodeType("action.web_search", {
       }
     }
 
-    // ── Fetch-based search (default) ────────────────────────────────────
+    // ==== Fetch-based search (default) ====
     try {
       const { default: fetchFn } = await import("../infra/fetch-runtime.mjs");
       const fetch = fetchFn || globalThis.fetch;
@@ -15305,9 +20683,9 @@ registerBuiltinNodeType("action.web_search", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  CONTROL FLOW — Try/Catch Error Boundary
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("flow.try_catch", {
   describe: () => "Error boundary — execute a sub-workflow and catch failures gracefully",
@@ -15368,7 +20746,7 @@ registerBuiltinNodeType("flow.try_catch", {
     let finallyResult = null;
     let attempts = 0;
 
-    // ── TRY ───────────────────────────────────────────────────────────
+    // ==== TRY ====
     if (tryWfId && engine?.execute) {
       const attemptLimit = 1 + maxRetries;
       while (attempts < attemptLimit) {
@@ -15403,7 +20781,7 @@ registerBuiltinNodeType("flow.try_catch", {
       tryResult = { success: true, noEngine: true };
     }
 
-    // ── CATCH ─────────────────────────────────────────────────────────
+    // ==== CATCH ====
     if (caughtError) {
       ctx.log(node.id, `catch: error from try block — ${caughtError.message}`);
       const errorObj = {
@@ -15431,7 +20809,7 @@ registerBuiltinNodeType("flow.try_catch", {
       }
     }
 
-    // ── FINALLY ───────────────────────────────────────────────────────
+    // ==== FINALLY ====
     if (finallyWfId && engine?.execute) {
       try {
         ctx.log(node.id, `finally: executing workflow "${finallyWfId}"`);
@@ -15447,7 +20825,7 @@ registerBuiltinNodeType("flow.try_catch", {
       }
     }
 
-    // ── Propagate ─────────────────────────────────────────────────────
+    // ==== Propagate ====
     if (caughtError && propagate) {
       throw caughtError;
     }
@@ -15463,9 +20841,9 @@ registerBuiltinNodeType("flow.try_catch", {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 //  CONTROL FLOW — Parallel Execution
-// ═══════════════════════════════════════════════════════════════════════════
+// ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ
 
 registerBuiltinNodeType("flow.parallel", {
   describe: () => "Execute multiple named branches (sub-workflows) simultaneously and collect all results",
@@ -15607,23 +20985,26 @@ registerBuiltinNodeType("flow.parallel", {
     };
   },
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  Export all registered types for introspection
-// ═══════════════════════════════════════════════════════════════════════════
-
-export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-export { evaluateTaskAssignedTriggerConfig };
+export { registerNodeType, getNodeType, listNodeTypes, unregisterNodeType } from "./workflow-engine.mjs";
+export {
+  buildTaskContextBlock,
+  evaluateTaskAssignedTriggerConfig,
+  getBuiltinNodeDefinition,
+  listBuiltinNodeDefinitions,
+};
+export {
+  CALIBRATED_MAX_RISK_WITHOUT_HUMAN,
+  normalizePlannerAreaKey,
+};
 export {
   CUSTOM_NODE_DIR_NAME,
+  ensureCustomWorkflowNodesLoaded,
   getCustomNodeDir,
   inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
-  unregisterNodeType,
-};
-
+} from "./workflow-nodes/custom-loader.mjs";
 export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   if (!customLoadPromise || options.forceReload) {
     customLoadPromise = ensureCustomWorkflowNodesLoaded(options);
@@ -15635,7 +21016,3 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
-
-
-
-

@@ -5,11 +5,20 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import SettingsScreen from "../../ui/tui/SettingsScreen.js";
+import { ORDERED_FIELDS } from "../../ui/tui/SettingsScreen.js";
 import { renderInk } from "./render-ink.mjs";
 
 // Snapshot the env once at module load time so mutations in any test don't leak.
 const originalEnv = { ...process.env };
 let configDirs = [];
+
+function findFieldIndex(path) {
+  const index = ORDERED_FIELDS.findIndex((field) => field.path === path);
+  if (index === -1) {
+    throw new Error(`Field not found in ORDERED_FIELDS: ${path}`);
+  }
+  return index;
+}
 
 function makeConfigDir(config) {
   const dir = mkdtempSync(join(tmpdir(), "bosun-settings-"));
@@ -62,19 +71,18 @@ describe("tui settings screen", () => {
   });
 
   it("writes enum changes to bosun.config.json and emits reload", async () => {
-    // Use `mode` (index 2 in FLAT_FIELDS: $schema=0, projectName=1, mode=2)
-    // so only 2 `j` presses are needed to reach it.
     const configDir = makeConfigDir({ mode: "virtengine" });
     const emitReload = vi.fn();
+    const targetIndex = findFieldIndex("mode");
 
     const view = await renderInk(
       React.createElement(SettingsScreen, { configDir, config: {}, onConfigReload: emitReload }),
       { columns: 220, waitMs: 120 },
     );
 
-    // Navigate from index 0 ($schema) down 2 positions to `mode`
-    await view.press("j", 40);
-    await view.press("j", 40);
+    for (let index = 0; index < targetIndex; index += 1) {
+      await view.press("j", 40);
+    }
     // Cycle the enum right: "virtengine" → "generic"
     await view.press("\u001b[C", 120);
 
@@ -90,17 +98,15 @@ describe("tui settings screen", () => {
   });
 
   it("prevents invalid JSON saves and leaves file unchanged", async () => {
-    // Use `workflowDefaults.templateOverridesById` (type "object", orderedFields index 19).
-    // Typing invalid JSON causes coerceValue to throw inside saveField's try/catch.
     const configDir = makeConfigDir({ projectName: "test" });
     const before = readFileSync(join(configDir, "bosun.config.json"), "utf8");
+    const targetIndex = findFieldIndex("workflowDefaults.templateOverridesById");
     const view = await renderInk(
       React.createElement(SettingsScreen, { configDir, config: {} }),
       { columns: 220, waitMs: 120 },
     );
 
-    // Navigate 19 positions down to `workflowDefaults.templateOverridesById`
-    for (let index = 0; index < 19; index += 1) {
+    for (let index = 0; index < targetIndex; index += 1) {
       await view.press("j", 40);
     }
     await view.press("\r", 60);

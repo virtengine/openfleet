@@ -330,7 +330,7 @@ describe("guaranteed: behavioral contracts", () => {
     const { harness, fixtures } = setupHarness("template-custom-agent");
     const { ctx } = await harness.run(fixtures.inputVars);
     harness.assertions.noEngineErrors(ctx);
-  });
+  }, 15000);
 
   it("template-agent-session-monitor: monitors session without errors", async () => {
     const { harness, fixtures } = setupHarness("template-agent-session-monitor");
@@ -659,7 +659,7 @@ describe("guaranteed: behavioral contracts", () => {
     const { harness, fixtures } = setupHarness("template-incident-response");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);
-  });
+  }, 15000);
 
   it("template-task-archiver: archives completed tasks without error", async () => {
     const { harness } = setupHarness("template-task-archiver");
@@ -705,7 +705,7 @@ describe("guaranteed: behavioral contracts", () => {
     const { harness, fixtures } = setupHarness("template-task-batch-pr");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);
-  });
+  }, 15000);
 
   // ── Agent chain templates ─────────────────────────────────────────────
 

@@ -57,8 +57,15 @@ function paletteColor(palette, index) {
 
 function formatCount(value) {
   if (value == null) return "–";
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
-  return String(value);
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "–";
+  const abs = Math.abs(numeric);
+  const formatCompact = (scaled, suffix) => `${Number(scaled.toFixed(1)).toString()}${suffix}`;
+  if (abs >= 1_000_000_000_000) return formatCompact(numeric / 1_000_000_000_000, "T");
+  if (abs >= 1_000_000_000) return formatCompact(numeric / 1_000_000_000, "B");
+  if (abs >= 1_000_000) return formatCompact(numeric / 1_000_000, "M");
+  if (abs >= 1_000) return formatCompact(numeric / 1_000, "K");
+  return String(numeric);
 }
 
 function formatRelative(isoStr) {

@@ -30,6 +30,7 @@ import os from "node:os";
 import { Worker } from "node:worker_threads";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
+import { safeBanner, BOX } from "./lib/safe-box.mjs";
 import {
   applyAllCompatibility,
   detectLegacySetup,
@@ -842,9 +843,7 @@ function startDaemon() {
   writePidFile(child.pid);
 
   console.log(`
-  ╭──────────────────────────────────────────────────────────╮
-  │ bosun daemon started (PID ${String(child.pid).padEnd(24)}│
-  ╰──────────────────────────────────────────────────────────╯
+${safeBanner([`bosun daemon started (PID ${child.pid})`])}
 
   Logs: ${DAEMON_LOG}
   PID:  ${DAEMON_PID_FILE}
@@ -1570,11 +1569,11 @@ async function main() {
 
     // Print the full original tool output
     const entry = result.entry;
-    console.log(`\n── Tool Log ${entry.id} ──`);
+    console.log(`\n${BOX.h.repeat(2)} Tool Log ${entry.id} ${BOX.h.repeat(2)}`);
     console.log(`Tool:  ${entry.toolName}`);
     console.log(`Args:  ${entry.argsPreview || "(none)"}`);
     console.log(`Time:  ${new Date(entry.ts).toISOString()}`);
-    console.log(`${"─".repeat(60)}\n`);
+    console.log(`${BOX.h.repeat(60)}\n`);
 
     const item = entry.item;
     const output =
@@ -1897,11 +1896,7 @@ async function main() {
 
   // ── Startup banner with update check ──────────────────────────────────────
   console.log("");
-  console.log("  ╭──────────────────────────────────────────────────────────╮");
-  console.log(
-    `  │ >_ bosun (v${VERSION})${" ".repeat(Math.max(0, 39 - VERSION.length))}│`,
-  );
-  console.log("  ╰──────────────────────────────────────────────────────────╯");
+  console.log(safeBanner([`>_ bosun (v${VERSION})`]));
 
   // Non-blocking update check (don't delay startup)
   if (!args.includes("--no-update-check")) {

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 function getParentDir(dir) {
   const parent = dirname(dir);
@@ -30,6 +31,18 @@ export function findPackageRoot({ startDir = process.cwd() } = {}) {
   return null;
 }
 
+function resolveWindowsEsbuildBinary({ startDir = process.cwd() } = {}) {
+  if (process.platform !== "win32") return null;
+  const packageRoot = findPackageRoot({ startDir });
+  if (!packageRoot) return null;
+  const candidates = [
+    resolve(packageRoot, "node_modules", "@esbuild", "win32-x64", "esbuild.exe"),
+    resolve(packageRoot, "node_modules", "@esbuild", "win32-ia32", "esbuild.exe"),
+    resolve(packageRoot, "node_modules", "@esbuild", "win32-arm64", "esbuild.exe"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) || null;
+}
+
 function resolveCliPathArg(value, { startDir, packageRoot }) {
   if (!value || isAbsolute(value)) {
     return value;
@@ -48,16 +61,33 @@ function resolveCliPathArg(value, { startDir, packageRoot }) {
   return value;
 }
 
+function detectChildSpawnBlocked() {
+  try {
+    const result = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: "ignore",
+    });
+    return result?.error?.code === "EPERM";
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
 export function resolveVitestArgs(
   args = process.argv.slice(2),
   { startDir = process.cwd(), packageRoot = findPackageRoot({ startDir }) } = {},
 ) {
   const normalizedArgs = [...args];
   const filteredArgs = [];
+  let hasConfigLoaderArg = false;
+  let skipNextReporterValue = false;
   for (let index = 0; index < normalizedArgs.length; index += 1) {
     const arg = normalizedArgs[index];
+    if (skipNextReporterValue) {
+      skipNextReporterValue = false;
+      continue;
+    }
     if ((arg === '--reporter' || arg === '-r') && normalizedArgs[index + 1] === 'basic') {
-      index += 1;
+      skipNextReporterValue = true;
       continue;
     }
     if (arg === '--reporter=basic') {
@@ -77,7 +107,24 @@ export function resolveVitestArgs(
       filteredArgs.push(`--config=${resolveCliPathArg(value, { startDir, packageRoot })}`);
       continue;
     }
+    if (arg === "--configLoader" || arg === "--config-loader") {
+      hasConfigLoaderArg = true;
+      filteredArgs.push(arg);
+      if (typeof normalizedArgs[index + 1] === "string") {
+        filteredArgs.push(normalizedArgs[index + 1]);
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--configLoader=") || arg.startsWith("--config-loader=")) {
+      hasConfigLoaderArg = true;
+      filteredArgs.push(arg);
+      continue;
+    }
     filteredArgs.push(arg);
+  }
+  if (process.platform === "win32" && !hasConfigLoaderArg) {
+    filteredArgs.push("--configLoader", "runner");
   }
   return filteredArgs;
 }
@@ -92,11 +139,30 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
   }
 
   const vitestArgs = resolveVitestArgs(args, { startDir });
+  const nodeArgs = [];
+  if (process.platform === "win32") {
+    const packageRoot = findPackageRoot({ startDir });
+    const realpathShimPath = packageRoot
+      ? resolve(packageRoot, "tools", "vite-windows-realpath-shim.mjs")
+      : "";
+    if (realpathShimPath && existsSync(realpathShimPath)) {
+      nodeArgs.push("--import", pathToFileURL(realpathShimPath).href);
+    }
+  }
 
-  const result = spawnSync(process.execPath, [vitestEntry, ...vitestArgs], {
+  const esbuildBinaryPath = resolveWindowsEsbuildBinary({ startDir });
+  const env = {
+    ...process.env,
+    BOSUN_TEST_CHILD_SPAWN_BLOCKED: detectChildSpawnBlocked() ? "1" : "0",
+    ...(esbuildBinaryPath && !process.env.ESBUILD_BINARY_PATH
+      ? { ESBUILD_BINARY_PATH: esbuildBinaryPath }
+      : {}),
+  };
+
+  const result = spawnSync(process.execPath, [...nodeArgs, vitestEntry, ...vitestArgs], {
     cwd: startDir,
     stdio: "inherit",
-    env: process.env,
+    env,
   });
 
   if (typeof result.status === "number") {
@@ -108,7 +174,22 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
   return 1;
 }
 
-if (import.meta.url === new URL(process.argv[1], "file:").href) {
+export function isDirectExecution(argv = process.argv) {
+  const scriptPath = argv?.[1];
+  if (!scriptPath) return false;
+
+  try {
+    return fileURLToPath(import.meta.url) === resolve(scriptPath);
+  } catch {
+    try {
+      return import.meta.url === pathToFileURL(resolve(scriptPath)).href;
+    } catch {
+      return false;
+    }
+  }
+}
+
+if (isDirectExecution()) {
   try {
     process.exit(runVitest());
   } catch (error) {

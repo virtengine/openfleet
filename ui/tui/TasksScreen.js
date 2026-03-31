@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import htm from "htm";
 import { Box, Text, useInput, useStdout } from "ink";
+import { getFooterHints } from "./HelpScreen.js";
 
 import {
   buildBoardColumns,
@@ -127,7 +128,7 @@ function TaskForm({ mode, formState, activeFieldIndex, validationErrors, busy })
   `;
 }
 
-export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureChange }) {
+export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureChange, onFooterHintsChange }) {
   const { stdout } = useStdout();
   const terminalWidth = stdout?.columns || process.stdout.columns || 120;
   const [preferredView, setPreferredView] = useState("kanban");
@@ -166,6 +167,15 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
       }
     };
   }, [busy, deletePrompt, filterOpen, formMode, onInputCaptureChange]);
+
+  useEffect(() => {
+    if (typeof onFooterHintsChange !== "function") return;
+    onFooterHintsChange(getFooterHints("tasks", {
+      deletePrompt,
+      filterOpen,
+      formMode: Boolean(formMode),
+    }));
+  }, [deletePrompt, filterOpen, formMode, onFooterHintsChange]);
 
   useEffect(() => {
     if (viewMode === "kanban") {

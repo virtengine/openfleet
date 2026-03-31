@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
 import {
+  getSessionActivityFromStateLedger,
+  resetStateLedgerCache,
+} from "../lib/state-ledger-sqlite.mjs";
+import {
   _test,
   addSessionStateListener,
   createSessionTracker,
@@ -345,6 +349,132 @@ describe("session-tracker", () => {
       );
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("persists delegated session lineage metadata and exposes it in summaries", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-lineage-"));
+      try {
+        const persisted = new SessionTracker({ persistDir: tempDir, flushIntervalMs: 5 });
+        persisted.createSession({
+          id: "TASK-42:delegate:run-1:handoff",
+          type: "delegate",
+          taskId: "TASK-42",
+          metadata: {
+            title: "Child delegate session",
+            workspaceId: "virtengine-gh",
+            rootTaskId: "TASK-42",
+            parentTaskId: "TASK-42",
+            rootSessionId: "TASK-42",
+            parentSessionId: "TASK-42",
+            rootRunId: "run-root-1",
+            parentRunId: "run-parent-1",
+            delegationDepth: 2,
+          },
+        });
+        persisted.recordEvent("TASK-42:delegate:run-1:handoff", {
+          role: "assistant",
+          content: "Delegated workflow finished successfully.",
+        });
+        persisted.endSession("TASK-42:delegate:run-1:handoff", "completed");
+        persisted.flushNow();
+        persisted.destroy();
+
+        const restored = new SessionTracker({ persistDir: tempDir, flushIntervalMs: 5 });
+        const session = restored.getSession("TASK-42:delegate:run-1:handoff");
+        const summary = restored.listAllSessions().find((entry) => entry.id === "TASK-42:delegate:run-1:handoff");
+        expect(session?.metadata).toEqual(expect.objectContaining({
+          rootTaskId: "TASK-42",
+          parentTaskId: "TASK-42",
+          rootSessionId: "TASK-42",
+          parentSessionId: "TASK-42",
+          rootRunId: "run-root-1",
+          parentRunId: "run-parent-1",
+          delegationDepth: 2,
+        }));
+        expect(summary).toEqual(expect.objectContaining({
+          taskId: "TASK-42",
+          rootTaskId: "TASK-42",
+          parentTaskId: "TASK-42",
+          rootSessionId: "TASK-42",
+          parentSessionId: "TASK-42",
+          rootRunId: "run-root-1",
+          parentRunId: "run-parent-1",
+          delegationDepth: 2,
+        }));
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("backfills persisted sessions into the sqlite session_activity index on reload", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-backfill-"));
+      const repoRoot = mkdtempSync(join(tmpdir(), "bosun-session-tracker-ledger-"));
+      const sandboxLedgerDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-sandbox-ledger-"));
+      const sandboxLedgerPath = join(sandboxLedgerDir, "state-ledger.sqlite");
+      const previousRepoRoot = process.env.REPO_ROOT;
+      const previousLedgerPath = process.env.BOSUN_STATE_LEDGER_PATH;
+      process.env.REPO_ROOT = repoRoot;
+      process.env.BOSUN_STATE_LEDGER_PATH = sandboxLedgerPath;
+      try {
+        writeFileSync(join(tempDir, "persisted-session-1.json"), JSON.stringify({
+          id: "persisted-session-1",
+          taskId: "persisted-session-1",
+          taskTitle: "Persisted session",
+          type: "primary",
+          status: "completed",
+          createdAt: "2026-03-31T09:00:00.000Z",
+          lastActiveAt: "2026-03-31T09:10:00.000Z",
+          startedAt: Date.parse("2026-03-31T09:00:00.000Z"),
+          endedAt: Date.parse("2026-03-31T09:10:00.000Z"),
+          turnCount: 1,
+          messages: [
+            {
+              role: "assistant",
+              content: "Recovered from disk",
+              timestamp: "2026-03-31T09:10:00.000Z",
+            },
+          ],
+          metadata: {
+            title: "Persisted session",
+            workspaceId: "workspace-reload",
+            workspaceDir: join(repoRoot, "workspace-reload"),
+            workspaceRoot: repoRoot,
+            workflowId: "wf-reload",
+            workflowName: "Reload Workflow",
+          },
+        }, null, 2));
+
+        const restored = new SessionTracker({ persistDir: tempDir, flushIntervalMs: 5 });
+        const session = restored.getSessionMessages("persisted-session-1");
+        expect(session?.id).toBe("persisted-session-1");
+
+        const ledgerSession = getSessionActivityFromStateLedger("persisted-session-1", { repoRoot });
+        expect(ledgerSession).toEqual(expect.objectContaining({
+          sessionId: "persisted-session-1",
+          workspaceId: "workspace-reload",
+          latestWorkflowId: "wf-reload",
+          latestWorkflowName: "Reload Workflow",
+          document: expect.objectContaining({
+            workspaceDir: join(repoRoot, "workspace-reload"),
+            workspaceRoot: repoRoot,
+            metadata: expect.objectContaining({
+              workspaceId: "workspace-reload",
+              workspaceDir: join(repoRoot, "workspace-reload"),
+              workspaceRoot: repoRoot,
+            }),
+          }),
+        }));
+        restored.destroy();
+      } finally {
+        resetStateLedgerCache();
+        if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+        else process.env.REPO_ROOT = previousRepoRoot;
+        if (previousLedgerPath === undefined) delete process.env.BOSUN_STATE_LEDGER_PATH;
+        else process.env.BOSUN_STATE_LEDGER_PATH = previousLedgerPath;
+        rmSync(tempDir, { recursive: true, force: true });
+        rmSync(repoRoot, { recursive: true, force: true });
+        rmSync(sandboxLedgerDir, { recursive: true, force: true });
       }
     });
 

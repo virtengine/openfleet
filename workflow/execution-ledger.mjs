@@ -1,13 +1,25 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { resolve, basename, extname } from "node:path";
+import { resolve, basename, dirname, extname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import {
+  getWorkflowRunFromStateLedger,
+  listWorkflowRunsFromStateLedger,
+  writeWorkflowStateLedger,
+} from "../lib/state-ledger-sqlite.mjs";
 
 const TAG = "[execution-ledger]";
+const STATE_LEDGER_TAG = "[state-ledger]";
 const LEDGER_DIR_NAME = "execution-ledger";
+const STATE_LEDGER_FILENAME = "state-ledger.sqlite";
+const STATE_LEDGER_SCHEMA_VERSION = 1;
+const STATE_LEDGER_BUSY_TIMEOUT_MS = 5_000;
+const _stateLedgerCache = new Map();
 
 function normalizeLedgerDocument(runId, doc = {}) {
+  const governanceState = extractGovernanceState(doc);
   return {
-    version: 2,
+    version: 3,
     runId,
     workflowId: doc.workflowId || null,
     workflowName: doc.workflowName || null,
@@ -20,6 +32,16 @@ function normalizeLedgerDocument(runId, doc = {}) {
     endedAt: doc.endedAt || null,
     status: doc.status || null,
     updatedAt: doc.updatedAt || null,
+    goalAncestry: governanceState.goalAncestry || [],
+    primaryGoalId: governanceState.primaryGoalId || null,
+    primaryGoalTitle: governanceState.primaryGoalTitle || null,
+    goalDepth: governanceState.goalDepth ?? null,
+    heartbeatRun: governanceState.heartbeatRun || null,
+    wakeupRequest: governanceState.wakeupRequest || null,
+    budgetPolicy: governanceState.budgetPolicy || null,
+    executionPolicy: governanceState.executionPolicy || null,
+    budgetOutcome: governanceState.budgetOutcome || null,
+    policyOutcome: governanceState.policyOutcome || null,
     events: Array.isArray(doc.events) ? doc.events : [],
   };
 }
@@ -28,6 +50,308 @@ function cleanObject(value = {}) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
   );
+}
+
+function inferRepoRoot(startDir) {
+  let current = resolve(String(startDir || process.cwd()));
+  while (true) {
+    if (existsSync(resolve(current, ".git"))) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+function resolveBosunHomeDir() {
+  const explicit = String(
+    process.env.BOSUN_HOME || process.env.BOSUN_DIR || "",
+  ).trim();
+  if (explicit) return resolve(explicit);
+
+  const base = String(
+    process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || "",
+  ).trim();
+  if (!base) return null;
+  if (/[/\\]bosun$/i.test(base)) return resolve(base);
+  return resolve(base, "bosun");
+}
+
+function findBosunDir(startPath) {
+  if (!startPath) return null;
+  let current = resolve(String(startPath));
+  while (true) {
+    if (basename(current).toLowerCase() === ".bosun") {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+function asText(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function asInteger(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+}
+
+function normalizeTimestamp(value) {
+  return asText(value) || new Date().toISOString();
+}
+
+function toJsonText(value) {
+  return JSON.stringify(value ?? null);
+}
+
+function parseJsonText(value) {
+  if (value == null) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeGoalAncestry(raw, fallbackGoal = null) {
+  const source = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.goalAncestry)
+      ? raw.goalAncestry
+      : Array.isArray(raw?.ancestry)
+        ? raw.ancestry
+        : [];
+  const normalized = source
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry, index) => {
+      const goalId = asText(entry.goalId || entry.id || entry.goal?.id || entry.goal?.goalId);
+      const title = asText(entry.title || entry.goalTitle || entry.name || entry.goal?.title || entry.goal?.name);
+      if (!goalId && !title) return null;
+      return cleanObject({
+        goalId: goalId || null,
+        title: title || null,
+        parentGoalId: asText(entry.parentGoalId || entry.parentId) || null,
+        kind: asText(entry.kind || entry.type) || null,
+        status: asText(entry.status) || null,
+        source: asText(entry.source) || null,
+        depth: asInteger(entry.depth ?? index),
+      });
+    })
+    .filter(Boolean);
+  if (normalized.length > 0) return normalized;
+
+  if (!fallbackGoal || typeof fallbackGoal !== "object") return [];
+  const goalId = asText(fallbackGoal.goalId || fallbackGoal.id);
+  const title = asText(fallbackGoal.title || fallbackGoal.name);
+  if (!goalId && !title) return [];
+  return [cleanObject({
+    goalId: goalId || null,
+    title: title || null,
+    kind: asText(fallbackGoal.kind || fallbackGoal.type) || null,
+    status: asText(fallbackGoal.status) || null,
+    source: asText(fallbackGoal.source) || null,
+    depth: 0,
+  })];
+}
+
+function buildGoalState(raw = {}) {
+  const primaryGoalSource = raw?.primaryGoal || raw?._primaryGoal || raw?.goal || raw?._goal || null;
+  const goalAncestry = normalizeGoalAncestry(
+    raw?.goalAncestry || raw?._goalAncestry || raw?.workflowGoalAncestry || raw?._workflowGoalAncestry,
+    primaryGoalSource,
+  );
+  const primaryGoal = goalAncestry.at(-1) || null;
+  return {
+    goalAncestry,
+    primaryGoalId: primaryGoal?.goalId || asText(raw?.primaryGoalId || raw?._primaryGoalId) || null,
+    primaryGoalTitle: primaryGoal?.title || asText(raw?.primaryGoalTitle || raw?._primaryGoalTitle) || null,
+    goalDepth: primaryGoal ? (asInteger(primaryGoal.depth) ?? Math.max(goalAncestry.length - 1, 0)) : null,
+  };
+}
+
+function normalizeHeartbeatRun(raw = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const runId = asText(raw.runId || raw.heartbeatRunId || raw.id);
+  const status = asText(raw.status || raw.state);
+  const sourceRunId = asText(raw.sourceRunId || raw.parentRunId || raw.originRunId);
+  const wakeAt = asText(raw.wakeAt || raw.resumeAt || raw.nextWakeAt);
+  const lastHeartbeatAt = asText(raw.lastHeartbeatAt || raw.heartbeatAt || raw.lastSeenAt);
+  const attempt = asInteger(raw.attempt ?? raw.retryCount);
+  if (!runId && !status && !sourceRunId && !wakeAt && !lastHeartbeatAt && attempt == null) return null;
+  return cleanObject({
+    runId: runId || null,
+    status: status || null,
+    sourceRunId: sourceRunId || null,
+    wakeAt: wakeAt || null,
+    lastHeartbeatAt: lastHeartbeatAt || null,
+    trigger: asText(raw.trigger || raw.reason) || null,
+    attempt,
+  });
+}
+
+function normalizeWakeupRequest(raw = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const requestId = asText(raw.requestId || raw.id || raw.wakeupRequestId);
+  const source = asText(raw.source || raw.reason || raw.trigger);
+  const requestedAt = asText(raw.requestedAt || raw.createdAt);
+  const wakeAt = asText(raw.wakeAt || raw.resumeAt || raw.scheduledFor);
+  if (!requestId && !source && !requestedAt && !wakeAt) return null;
+  return cleanObject({
+    requestId: requestId || null,
+    source: source || null,
+    requestedAt: requestedAt || null,
+    wakeAt: wakeAt || null,
+    taskId: asText(raw.taskId) || null,
+    sessionId: asText(raw.sessionId || raw.threadId) || null,
+  });
+}
+
+function normalizeBudgetPolicy(raw = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const budgetWindow = asText(raw.budgetWindow || raw.window || raw.period);
+  const budgetCents = asInteger(raw.budgetCents ?? raw.limitCents ?? raw.limit);
+  const spentCents = asInteger(raw.spentCents ?? raw.usedCents ?? raw.actualCents ?? raw.spent);
+  const reservedCents = asInteger(raw.reservedCents ?? raw.pendingCents);
+  const remainingCents = asInteger(
+    raw.remainingCents ?? (budgetCents != null ? budgetCents - (spentCents || 0) - (reservedCents || 0) : null),
+  );
+  if (budgetWindow == null && budgetCents == null && spentCents == null && reservedCents == null && remainingCents == null) return null;
+  return cleanObject({
+    budgetWindow: budgetWindow || null,
+    budgetCents,
+    spentCents: spentCents ?? 0,
+    reservedCents: reservedCents ?? 0,
+    remainingCents,
+    nearLimitThresholdCents: asInteger(raw.nearLimitThresholdCents ?? raw.warningCents),
+    currency: asText(raw.currency || "USD") || "USD",
+    approvalRequired: raw.approvalRequired === true,
+    owner: asText(raw.owner || raw.team) || null,
+  });
+}
+
+function buildBudgetOutcome(policy = null) {
+  if (!policy || typeof policy !== "object") return null;
+  const budgetCents = asInteger(policy.budgetCents);
+  const spentCents = asInteger(policy.spentCents) ?? 0;
+  const reservedCents = asInteger(policy.reservedCents) ?? 0;
+  const effectiveSpend = spentCents + reservedCents;
+  const remainingCents = asInteger(policy.remainingCents ?? (budgetCents != null ? budgetCents - effectiveSpend : null));
+  const utilizationRatio = budgetCents && budgetCents > 0
+    ? Math.max(0, Number((effectiveSpend / budgetCents).toFixed(3)))
+    : 0;
+  const nearLimitThreshold = asInteger(policy.nearLimitThresholdCents);
+  const exceeded = budgetCents != null ? effectiveSpend > budgetCents : false;
+  const nearLimit = !exceeded && budgetCents != null
+    ? ((nearLimitThreshold != null && remainingCents != null && remainingCents <= nearLimitThreshold) || utilizationRatio >= 0.9)
+    : false;
+  return cleanObject({
+    status: exceeded ? "exceeded" : (nearLimit ? "near_limit" : "ok"),
+    budgetCents,
+    spentCents,
+    reservedCents,
+    remainingCents,
+    utilizationRatio,
+    exceeded,
+    nearLimit,
+    approvalRequired: policy.approvalRequired === true,
+  });
+}
+
+function normalizePolicyViolation(entry = {}, index = 0) {
+  const ruleId = asText(entry.ruleId || entry.id || `${index}`);
+  const message = asText(entry.message || entry.reason || entry.summary);
+  if (!ruleId && !message) return null;
+  return cleanObject({
+    ruleId: ruleId || null,
+    message: message || null,
+    severity: asText(entry.severity || "warning") || "warning",
+    blocking: entry.blocking === true || entry.blocked === true,
+    nodeId: asText(entry.nodeId) || null,
+  });
+}
+
+function normalizeExecutionPolicy(raw = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const violations = Array.isArray(raw.violations)
+    ? raw.violations.map((entry, index) => normalizePolicyViolation(entry, index)).filter(Boolean)
+    : [];
+  const blocked = raw.blocked === true || (raw.requiresApproval === true && raw.approvalState === "pending");
+  if (violations.length === 0 && !blocked && !raw.approvalRequired && !raw.approvalState && !raw.mode) return null;
+  return cleanObject({
+    mode: asText(raw.mode || raw.policyMode) || null,
+    blocked,
+    approvalRequired: raw.approvalRequired === true || raw.requiresApproval === true,
+    approvalState: asText(raw.approvalState || raw.state) || null,
+    violations,
+  });
+}
+
+function buildPolicyOutcome(policy = null) {
+  if (!policy || typeof policy !== "object") return null;
+  const violations = Array.isArray(policy.violations) ? policy.violations : [];
+  const blockingViolationCount = violations.filter((entry) => entry?.blocking === true).length;
+  const violationCount = violations.length;
+  const blocked = policy.blocked === true || blockingViolationCount > 0;
+  return cleanObject({
+    status: blocked ? "blocked" : (violationCount > 0 ? "warning" : "ok"),
+    blocked,
+    approvalRequired: policy.approvalRequired === true,
+    approvalState: policy.approvalState || null,
+    violationCount,
+    blockingViolationCount,
+  });
+}
+
+function extractGovernanceState(raw = {}) {
+  const goalState = buildGoalState(raw);
+  const heartbeatRun = normalizeHeartbeatRun(raw?.heartbeatRun || raw?._heartbeatRun);
+  const wakeupRequest = normalizeWakeupRequest(raw?.wakeupRequest || raw?._wakeupRequest);
+  const budgetPolicy = normalizeBudgetPolicy(raw?.budgetPolicy || raw?._budgetPolicy);
+  const executionPolicy = normalizeExecutionPolicy(raw?.executionPolicy || raw?._executionPolicy);
+  return cleanObject({
+    ...goalState,
+    heartbeatRun,
+    wakeupRequest,
+    budgetPolicy,
+    executionPolicy,
+    budgetOutcome: buildBudgetOutcome(budgetPolicy),
+    policyOutcome: buildPolicyOutcome(executionPolicy),
+  });
+}
+
+function resolveOwnedStateLedgerPath(runsDir) {
+  const normalizedRunsDir = resolve(String(runsDir || process.cwd()));
+  const repoRoot = inferRepoRoot(normalizedRunsDir);
+  const bosunHomeDir = resolveBosunHomeDir();
+  const isWithinBosunHome = bosunHomeDir
+    ? normalizedRunsDir.toLowerCase().startsWith(resolve(bosunHomeDir).toLowerCase())
+    : false;
+  const bosunDir = findBosunDir(normalizedRunsDir)
+    || (repoRoot ? resolve(repoRoot, ".bosun") : null)
+    || (isWithinBosunHome ? resolve(bosunHomeDir) : null);
+  if (bosunDir) {
+    return resolve(bosunDir, ".cache", STATE_LEDGER_FILENAME);
+  }
+  const explicit = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
+  if (explicit) {
+    return explicit === ":memory:" ? explicit : resolve(explicit);
+  }
+  return null;
 }
 
 function toTimestamp(value) {
@@ -69,7 +393,7 @@ function collectTaskIdentityFromLedger(ledger) {
   for (const event of events) {
     const meta = event?.meta && typeof event.meta === "object" ? event.meta : null;
     const taskId = String(
-      meta?.taskId || meta?.task?.id || meta?.taskInfo?.id || meta?.taskDetail?.id || "",
+      event?.taskId || meta?.taskId || meta?.task?.id || meta?.taskInfo?.id || meta?.taskDetail?.id || "",
     ).trim();
     if (taskId) {
       return {
@@ -77,6 +401,11 @@ function collectTaskIdentityFromLedger(ledger) {
         taskTitle: String(
           meta?.taskTitle || meta?.task?.title || meta?.taskInfo?.title || meta?.taskDetail?.title || "",
         ).trim() || null,
+        rootTaskId: String(event?.rootTaskId || meta?.rootTaskId || taskId || "").trim() || taskId,
+        parentTaskId: String(event?.parentTaskId || meta?.parentTaskId || "").trim() || null,
+        delegationDepth: Number.isFinite(Number(event?.delegationDepth ?? meta?.delegationDepth))
+          ? Math.max(0, Math.trunc(Number(event?.delegationDepth ?? meta?.delegationDepth)))
+          : 0,
         source: "ledger",
       };
     }
@@ -89,12 +418,17 @@ function collectSessionIdentityFromLedger(ledger) {
   for (const event of events) {
     const meta = event?.meta && typeof event.meta === "object" ? event.meta : null;
     const sessionId = String(
-      meta?.sessionId || meta?.threadId || meta?.chatSessionId || event?.sessionId || event?.threadId || "",
+      event?.sessionId || meta?.sessionId || meta?.threadId || meta?.chatSessionId || event?.threadId || "",
     ).trim();
     if (!sessionId) continue;
     return {
       sessionId,
+      rootSessionId: String(event?.rootSessionId || meta?.rootSessionId || sessionId || "").trim() || sessionId,
+      parentSessionId: String(event?.parentSessionId || meta?.parentSessionId || "").trim() || null,
       sessionType: String(meta?.sessionType || meta?.runKind || "").trim() || null,
+      delegationDepth: Number.isFinite(Number(event?.delegationDepth ?? meta?.delegationDepth))
+        ? Math.max(0, Math.trunc(Number(event?.delegationDepth ?? meta?.delegationDepth)))
+        : 0,
       source: "ledger",
     };
   }
@@ -116,6 +450,9 @@ function inferExecutionShape(runId, event = {}) {
     if (eventType.startsWith("node.")) executionKind = "node";
     else if (eventType.startsWith("tool.")) executionKind = "tool";
     else if (eventType.startsWith("agent.")) executionKind = "agent";
+    else if (eventType.startsWith("planner.")) executionKind = "planner";
+    else if (eventType.startsWith("proof.")) executionKind = "proof";
+    else if (eventType.startsWith("artifact.")) executionKind = "artifact";
     else if (eventType.startsWith("recovery.")) executionKind = "recovery";
     else executionKind = "run";
   }
@@ -160,6 +497,39 @@ function inferExecutionShape(runId, event = {}) {
         parentExecutionId = parentExecutionId || (nodeId ? `agent:${runId}:${nodeId}:${stableKeyPart(event?.sdk || nodeId || "agent")}` : `run:${runId}`);
         break;
       }
+      case "planner": {
+        const stepKey = stableKeyPart(
+          event?.meta?.stepKey
+          || event?.meta?.attachmentKind
+          || event?.reason
+          || eventType
+          || "planner",
+          "planner",
+        );
+        const attemptKey = Number.isFinite(attempt) && attempt > 0 ? `:${attempt}` : "";
+        executionId = `planner:${runId}:${nodeId || "run"}:${stepKey}${attemptKey}`;
+        executionKey = executionKey || `planner:${nodeId || "run"}:${stepKey}`;
+        executionLabel = executionLabel || event?.meta?.stepLabel || event?.summary || eventType;
+        parentExecutionId = parentExecutionId || (nodeId ? `node:${runId}:${nodeId}` : `run:${runId}`);
+        break;
+      }
+      case "proof":
+      case "artifact": {
+        const proofKey = stableKeyPart(
+          event?.meta?.attachmentKind
+          || event?.meta?.kind
+          || event?.meta?.path
+          || event?.summary
+          || eventType
+          || executionKind,
+          executionKind,
+        );
+        executionId = `${executionKind}:${runId}:${nodeId || "run"}:${proofKey}`;
+        executionKey = executionKey || `${executionKind}:${nodeId || "run"}:${proofKey}`;
+        executionLabel = executionLabel || event?.meta?.stepLabel || event?.summary || eventType;
+        parentExecutionId = parentExecutionId || (nodeId ? `node:${runId}:${nodeId}` : `run:${runId}`);
+        break;
+      }
       case "run":
       default:
         executionId = `run:${runId}`;
@@ -187,6 +557,8 @@ function shouldMarkStarted(eventType) {
     "node.started",
     "tool.started",
     "agent.started",
+    "planner.plan_initialized",
+    "planner.step_started",
     "recovery.attempted",
   ].includes(String(eventType || ""));
 }
@@ -205,6 +577,13 @@ function shouldMarkEnded(eventType) {
     "agent.completed",
     "agent.failed",
     "agent.cancelled",
+    "planner.plan_completed",
+    "planner.plan_failed",
+    "planner.step_completed",
+    "planner.step_blocked",
+    "planner.post_attachment",
+    "proof.emitted",
+    "artifact.emitted",
     "recovery.succeeded",
     "recovery.failed",
   ].includes(normalized);
@@ -224,6 +603,20 @@ export class WorkflowExecutionLedger {
     this.ledgerDir = resolve(this.runsDir, LEDGER_DIR_NAME);
   }
 
+  _stateLedgerPath() {
+    return resolveOwnedStateLedgerPath(this.runsDir);
+  }
+
+  _canReadStateLedger() {
+    const stateLedgerPath = this._stateLedgerPath();
+    if (!stateLedgerPath) return false;
+    return stateLedgerPath === ":memory:" || existsSync(stateLedgerPath);
+  }
+
+  _shouldWriteStateLedger() {
+    return Boolean(this._stateLedgerPath());
+  }
+
   _ensureDir() {
     mkdirSync(this.ledgerDir, { recursive: true });
   }
@@ -236,24 +629,46 @@ export class WorkflowExecutionLedger {
     const normalizedRunId = String(runId || "").trim();
     if (!normalizedRunId) return null;
     const filePath = this._ledgerPath(normalizedRunId);
-    if (!existsSync(filePath)) return null;
+    if (existsSync(filePath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+        return normalizeLedgerDocument(normalizedRunId, parsed);
+      } catch {
+        /* sqlite fallback below */
+      }
+    }
+    if (!this._canReadStateLedger()) return null;
     try {
-      const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-      return normalizeLedgerDocument(normalizedRunId, parsed);
+      return getWorkflowRunFromStateLedger(normalizedRunId, { anchorPath: this.runsDir });
     } catch {
       return null;
     }
   }
 
   listRunLedgers() {
-    if (!existsSync(this.ledgerDir)) return [];
+    const byRunId = new Map();
+    if (this._canReadStateLedger()) {
+      try {
+        for (const ledger of listWorkflowRunsFromStateLedger({ anchorPath: this.runsDir })) {
+          if (ledger?.runId) {
+            byRunId.set(ledger.runId, ledger);
+          }
+        }
+      } catch {
+        /* best effort */
+      }
+    }
+    if (!existsSync(this.ledgerDir)) return Array.from(byRunId.values());
     try {
-      return readdirSync(this.ledgerDir)
+      for (const ledger of readdirSync(this.ledgerDir)
         .filter((file) => extname(file).toLowerCase() === ".json")
         .map((file) => this.getRunLedger(basename(file, ".json")))
-        .filter(Boolean);
+        .filter(Boolean)) {
+        byRunId.set(ledger.runId, ledger);
+      }
+      return Array.from(byRunId.values());
     } catch {
-      return [];
+      return Array.from(byRunId.values());
     }
   }
 
@@ -324,19 +739,50 @@ export class WorkflowExecutionLedger {
         status: ledger.status || null,
         taskId: taskIdentity?.taskId || null,
         taskTitle: taskIdentity?.taskTitle || null,
+        rootTaskId: taskIdentity?.rootTaskId || taskIdentity?.taskId || null,
+        parentTaskId: taskIdentity?.parentTaskId || null,
         sessionId: sessionIdentity?.sessionId || null,
+        rootSessionId: sessionIdentity?.rootSessionId || sessionIdentity?.sessionId || null,
+        parentSessionId: sessionIdentity?.parentSessionId || null,
         sessionType: sessionIdentity?.sessionType || null,
+        delegationDepth: Math.max(
+          Number(taskIdentity?.delegationDepth || 0),
+          Number(sessionIdentity?.delegationDepth || 0),
+        ),
       };
     });
 
+    const seenTimelineKeys = new Set();
     const timeline = family
       .flatMap((ledger) =>
-        (Array.isArray(ledger?.events) ? ledger.events : []).map((event) => ({
-          ...event,
-          runId: event?.runId || ledger.runId,
-          rootRunId: event?.rootRunId || ledger.rootRunId || ledger.runId,
-          parentRunId: event?.parentRunId || ledger.parentRunId || null,
-        })),
+        (Array.isArray(ledger?.events) ? ledger.events : [])
+          .map((event) => ({
+            ...event,
+            runId: event?.runId || ledger.runId,
+            rootRunId: event?.rootRunId || ledger.rootRunId || ledger.runId,
+            parentRunId: event?.parentRunId || ledger.parentRunId || null,
+          }))
+          .filter((event) => {
+            const normalizedSeq = Number.isFinite(Number(event?.seq)) ? Number(event.seq) : null;
+            const dedupeKey = normalizedSeq != null
+              ? JSON.stringify([
+                  event?.runId || null,
+                  normalizedSeq,
+                  event?.eventType || null,
+                  event?.executionKey || event?.executionId || event?.nodeId || null,
+                ])
+              : JSON.stringify([
+                  event?.id || null,
+                  event?.runId || null,
+                  event?.timestamp || null,
+                  event?.eventType || null,
+                  event?.executionId || null,
+                  event?.executionKey || null,
+                ]);
+            if (seenTimelineKeys.has(dedupeKey)) return false;
+            seenTimelineKeys.add(dedupeKey);
+            return true;
+          }),
       )
       .sort((left, right) => {
         const delta = toTimestamp(left?.timestamp) - toTimestamp(right?.timestamp);
@@ -581,13 +1027,25 @@ export class WorkflowExecutionLedger {
 
     this._ensureDir();
     const existing = this.getRunLedger(runId);
+    const governanceState = extractGovernanceState(meta);
     const merged = normalizeLedgerDocument(runId, {
       ...existing,
       ...cleanObject(meta),
+      ...governanceState,
       rootRunId: meta.rootRunId || existing?.rootRunId || runId,
       events: existing?.events || [],
     });
     writeFileSync(this._ledgerPath(runId), `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+    if (this._shouldWriteStateLedger()) {
+      try {
+        writeWorkflowStateLedger(
+          { runDocument: merged },
+          { anchorPath: this.runsDir },
+        );
+      } catch (err) {
+        console.warn(`${STATE_LEDGER_TAG} workflow run sync failed: ${String(err?.message || err)}`);
+      }
+    }
     return merged;
   }
 
@@ -599,21 +1057,34 @@ export class WorkflowExecutionLedger {
 
     const timestamp = String(event.timestamp || new Date().toISOString()).trim() || new Date().toISOString();
     const shape = inferExecutionShape(runId, event);
-    const ledger = this.ensureRun({
+    this._ensureDir();
+    const existing = this.getRunLedger(runId);
+    const eventMeta = event.meta && typeof event.meta === "object" ? event.meta : {};
+    const governanceState = extractGovernanceState({
+      ...existing,
+      ...event,
+      ...eventMeta,
+    });
+    const ledger = normalizeLedgerDocument(runId, {
+      ...existing,
       runId,
       workflowId: event.workflowId || null,
       workflowName: event.workflowName || null,
-      rootRunId: event.rootRunId || runId,
-      parentRunId: event.parentRunId || null,
-      retryOf: event.retryOf || null,
-      retryMode: event.retryMode || null,
-      runKind: event.runKind || event.meta?.runKind || undefined,
-      startedAt: event.eventType === "run.start" ? timestamp : undefined,
+      rootRunId: event.rootRunId || existing?.rootRunId || runId,
+      parentRunId: event.parentRunId || existing?.parentRunId || null,
+      retryOf: event.retryOf || existing?.retryOf || null,
+      retryMode: event.retryMode || existing?.retryMode || null,
+      runKind: event.runKind || event.meta?.runKind || existing?.runKind || undefined,
+      startedAt: event.eventType === "run.start"
+        ? timestamp
+        : (existing?.startedAt || undefined),
       endedAt: event.eventType === "run.end" || event.eventType === "run.error" || event.eventType === "run.cancelled"
         ? timestamp
-        : undefined,
-      status: event.status || undefined,
+        : (existing?.endedAt || undefined),
+      status: event.status || existing?.status || undefined,
       updatedAt: timestamp,
+      ...governanceState,
+      events: Array.isArray(existing?.events) ? existing.events : [],
     });
 
     const nextSeq = (ledger.events.at(-1)?.seq || 0) + 1;
@@ -649,7 +1120,25 @@ export class WorkflowExecutionLedger {
       error: event.error ? String(event.error) : null,
       summary: event.summary ? String(event.summary) : null,
       reason: event.reason ? String(event.reason) : null,
-      meta: event.meta && typeof event.meta === "object" ? event.meta : undefined,
+      primaryGoalId: governanceState.primaryGoalId || ledger.primaryGoalId || undefined,
+      primaryGoalTitle: governanceState.primaryGoalTitle || ledger.primaryGoalTitle || undefined,
+      goalDepth: governanceState.goalDepth ?? ledger.goalDepth ?? undefined,
+      heartbeatRunId: governanceState.heartbeatRun?.runId || ledger.heartbeatRun?.runId || undefined,
+      wakeupRequestId: governanceState.wakeupRequest?.requestId || ledger.wakeupRequest?.requestId || undefined,
+      budgetStatus: governanceState.budgetOutcome?.status || ledger.budgetOutcome?.status || undefined,
+      policyStatus: governanceState.policyOutcome?.status || ledger.policyOutcome?.status || undefined,
+      meta: Object.keys(eventMeta).length > 0
+        ? {
+            ...eventMeta,
+            ...(governanceState.goalAncestry?.length ? { goalAncestry: governanceState.goalAncestry } : {}),
+            ...(governanceState.heartbeatRun ? { heartbeatRun: governanceState.heartbeatRun } : {}),
+            ...(governanceState.wakeupRequest ? { wakeupRequest: governanceState.wakeupRequest } : {}),
+            ...(governanceState.budgetPolicy ? { budgetPolicy: governanceState.budgetPolicy } : {}),
+            ...(governanceState.executionPolicy ? { executionPolicy: governanceState.executionPolicy } : {}),
+            ...(governanceState.budgetOutcome ? { budgetOutcome: governanceState.budgetOutcome } : {}),
+            ...(governanceState.policyOutcome ? { policyOutcome: governanceState.policyOutcome } : {}),
+          }
+        : undefined,
     });
 
     ledger.events.push(payload);
@@ -666,6 +1155,19 @@ export class WorkflowExecutionLedger {
     }
 
     writeFileSync(this._ledgerPath(runId), `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+    if (this._shouldWriteStateLedger()) {
+      try {
+        writeWorkflowStateLedger(
+          {
+            runDocument: ledger,
+            appendedEvent: payload,
+          },
+          { anchorPath: this.runsDir },
+        );
+      } catch (err) {
+        console.warn(`${STATE_LEDGER_TAG} workflow event sync failed: ${String(err?.message || err)}`);
+      }
+    }
     return payload;
   }
 }

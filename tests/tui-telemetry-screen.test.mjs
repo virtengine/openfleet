@@ -9,7 +9,7 @@ import {
   normalizeTelemetryRateMap,
   renderTelemetrySparkline,
 } from "../tui/screens/telemetry-screen-helpers.mjs";
-import { getNextScreenForInput, SCREEN_ORDER } from "../tui/lib/navigation.mjs";
+import { EXTENDED_SCREEN_ORDER, getNextScreenForInput } from "../tui/lib/navigation.mjs";
 
 describe("tui telemetry screen helpers", () => {
   it("renders block-only sparklines capped to the latest 60 samples", () => {
@@ -130,8 +130,16 @@ describe("tui telemetry screen helpers", () => {
 });
 
 describe("tui navigation telemetry tab", () => {
-  it("adds telemetry as the fourth screen", () => {
-    expect(SCREEN_ORDER).toEqual(["status", "tasks", "agents", "telemetry", "logs"]);
-    expect(getNextScreenForInput("status", "4")).toBe("telemetry");
+  it("adds telemetry to the extended TUI navigation", () => {
+    expect(EXTENDED_SCREEN_ORDER).toEqual([
+      "status",
+      "tasks",
+      "agents",
+      "logs",
+      "workflows",
+      "telemetry",
+      "settings",
+    ]);
+    expect(getNextScreenForInput("status", "6")).toBe("telemetry");
   });
 });

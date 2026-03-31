@@ -18,7 +18,7 @@
       if (requestedLayout === "desktop" || requestedLayout === "tablet" || requestedLayout === "mobile" || requestedLayout === "auto") {
         window.__bosunForcedLayoutMode = requestedLayout;
       } else {
-        window.__bosunForcedLayoutMode = "desktop";
+        window.__bosunForcedLayoutMode = "auto";
       }
 
       var supportsImportMaps = !!(
@@ -3721,6 +3721,231 @@
         if (route === '/api/auth/fallback/reset')
           return { ok: true, data: { enabled: false, hasSecret: false } };
 
+        if (!STATE.harness) {
+          const compiledAt = '2026-03-31T05:30:00.000Z';
+          const artifactPath = '/demo/.bosun/harness/internal-harness-profile.json';
+          const compiledProfile = {
+            id: 'demo-internal-harness',
+            name: 'Bosun Demo Harness',
+            description: 'Deterministic internal harness profile for the Bosun demo control plane.',
+            entryStageId: 'plan',
+            stages: [
+              { id: 'plan', type: 'prompt', prompt: 'Plan the next deterministic verification pass.' },
+              { id: 'validate', type: 'gate', prompt: 'Validate the patch and emit the final report.' },
+            ],
+          };
+          STATE.harness = {
+            harnessConfig: {
+              enabled: true,
+              source: '/demo/config/internal-harness-profile.json',
+              validationMode: 'report',
+            },
+            artifact: {
+              artifactId: 'demo-harness-artifact',
+              artifactPath,
+              isValid: true,
+              sourceOrigin: 'config-file',
+              sourcePath: '/demo/config/internal-harness-profile.json',
+              compiledProfile,
+              validationReport: {
+                ok: true,
+                mode: 'report',
+                errors: [],
+                warnings: [],
+                normalizedAt: compiledAt,
+              },
+              compiledProfileJson: '{\n  "id": "demo-internal-harness",\n  "entryStageId": "plan"\n}',
+            },
+            activeState: {
+              artifactPath,
+              activatedAt: compiledAt,
+              actor: 'demo',
+              compiledProfile: {
+                id: compiledProfile.id,
+                name: compiledProfile.name,
+                entryStageId: compiledProfile.entryStageId,
+              },
+            },
+            runs: [
+              {
+                runId: 'demo-harness-run-1',
+                runPath: '/demo/.bosun/harness/runs/demo-harness-run-1.json',
+                mode: 'dry-run',
+                dryRun: true,
+                startedAt: compiledAt,
+                finishedAt: compiledAt,
+                sourceOrigin: 'config-file',
+                sourcePath: '/demo/config/internal-harness-profile.json',
+                artifactId: 'demo-harness-artifact',
+                artifactPath,
+                compiledProfile,
+                events: [
+                  { type: 'stage:start', stageId: 'plan', at: compiledAt, message: 'Planning verification pass' },
+                  { type: 'stage:end', stageId: 'validate', at: compiledAt, message: 'Validation report emitted' },
+                ],
+                result: {
+                  success: true,
+                  status: 'completed',
+                  summary: 'Demo harness completed deterministically.',
+                  outputs: { report: 'Harness demo run completed.' },
+                },
+              },
+            ],
+          };
+        }
+
+        if (route === '/api/harness/active') {
+          return {
+            ok: true,
+            harnessConfig: { ...STATE.harness.harnessConfig },
+            activeState: { ...STATE.harness.activeState, compiledProfile: { ...STATE.harness.activeState.compiledProfile } },
+            artifact: {
+              artifactId: STATE.harness.artifact.artifactId,
+              artifactPath: STATE.harness.artifact.artifactPath,
+              isValid: STATE.harness.artifact.isValid,
+              sourceOrigin: STATE.harness.artifact.sourceOrigin,
+              sourcePath: STATE.harness.artifact.sourcePath,
+              compiledProfile: { ...STATE.harness.artifact.compiledProfile },
+              validationReport: { ...STATE.harness.artifact.validationReport },
+            },
+          };
+        }
+        if (route === '/api/harness/runs') {
+          const limit = Math.max(1, Number(params.get('limit') || 25));
+          return {
+            ok: true,
+            items: (STATE.harness.runs || []).slice(0, limit).map((run) => ({ ...run, compiledProfile: { ...run.compiledProfile } })),
+          };
+        }
+        const harnessRunMatch = route.match(/^\/api\/harness\/runs\/([^/]+)$/);
+        if (harnessRunMatch) {
+          const runId = decodeURIComponent(harnessRunMatch[1]);
+          const run = (STATE.harness.runs || []).find((entry) => entry.runId === runId);
+          if (!run) {
+            return { ok: false, error: `Harness run not found: ${runId}` };
+          }
+          return {
+            ok: true,
+            run: { ...run, compiledProfile: { ...run.compiledProfile } },
+          };
+        }
+        if (route === '/api/harness/compile' && method === 'POST') {
+          const nextSourcePath = String(body?.sourcePath || STATE.harness.harnessConfig.source || '').trim()
+            || '/demo/config/internal-harness-profile.json';
+          const nextValidationMode = String(body?.validationMode || STATE.harness.harnessConfig.validationMode || 'report').trim().toLowerCase() || 'report';
+          const compiledAt = new Date().toISOString();
+          STATE.harness.harnessConfig = {
+            ...STATE.harness.harnessConfig,
+            source: nextSourcePath,
+            validationMode: nextValidationMode,
+          };
+          STATE.harness.artifact = {
+            ...STATE.harness.artifact,
+            artifactId: `demo-harness-${Date.now()}`,
+            artifactPath: `/demo/.bosun/harness/${Date.now()}-internal-harness-profile.json`,
+            sourceOrigin: body?.sourceProfile ? 'request-body' : 'config-file',
+            sourcePath: nextSourcePath,
+            validationReport: {
+              ok: true,
+              mode: nextValidationMode,
+              errors: [],
+              warnings: [],
+              normalizedAt: compiledAt,
+            },
+            compiledProfileJson: JSON.stringify(
+              body?.sourceProfile || STATE.harness.artifact.compiledProfile,
+              null,
+              2,
+            ),
+          };
+          return {
+            ok: true,
+            isValid: true,
+            artifactId: STATE.harness.artifact.artifactId,
+            artifactPath: STATE.harness.artifact.artifactPath,
+            sourceOrigin: STATE.harness.artifact.sourceOrigin,
+            sourcePath: STATE.harness.artifact.sourcePath,
+            validationMode: nextValidationMode,
+            harnessConfig: { ...STATE.harness.harnessConfig },
+            compiledProfile: { ...STATE.harness.artifact.compiledProfile },
+            validationReport: { ...STATE.harness.artifact.validationReport },
+            compiledProfileJson: STATE.harness.artifact.compiledProfileJson,
+          };
+        }
+        if (route === '/api/harness/activate' && method === 'POST') {
+          const activatedAt = new Date().toISOString();
+          if (typeof body?.artifactPath === 'string' && body.artifactPath.trim()) {
+            STATE.harness.artifact = {
+              ...STATE.harness.artifact,
+              artifactPath: body.artifactPath.trim(),
+            };
+          }
+          STATE.harness.activeState = {
+            artifactPath: STATE.harness.artifact.artifactPath,
+            activatedAt,
+            actor: 'demo',
+            compiledProfile: {
+              id: STATE.harness.artifact.compiledProfile.id,
+              name: STATE.harness.artifact.compiledProfile.name,
+              entryStageId: STATE.harness.artifact.compiledProfile.entryStageId,
+            },
+          };
+          return {
+            ok: true,
+            harnessConfig: { ...STATE.harness.harnessConfig },
+            artifactPath: STATE.harness.artifact.artifactPath,
+            artifactId: STATE.harness.artifact.artifactId,
+            activeState: { ...STATE.harness.activeState, compiledProfile: { ...STATE.harness.activeState.compiledProfile } },
+            compiledProfile: { ...STATE.harness.artifact.compiledProfile },
+            validationReport: { ...STATE.harness.artifact.validationReport },
+            compiledProfileJson: STATE.harness.artifact.compiledProfileJson,
+          };
+        }
+        if (route === '/api/harness/run' && method === 'POST') {
+          const startedAt = new Date().toISOString();
+          const dryRun = body?.dryRun === true || String(body?.mode || '').trim().toLowerCase() === 'dry-run';
+          const runId = String(body?.runId || '').trim() || `demo-harness-run-${Date.now()}`;
+          const runRecord = {
+            runId,
+            runPath: `/demo/.bosun/harness/runs/${runId}.json`,
+            mode: dryRun ? 'dry-run' : 'run',
+            dryRun,
+            startedAt,
+            finishedAt: startedAt,
+            sourceOrigin: STATE.harness.artifact.sourceOrigin,
+            sourcePath: STATE.harness.artifact.sourcePath,
+            artifactId: STATE.harness.artifact.artifactId,
+            artifactPath: STATE.harness.artifact.artifactPath,
+            compiledProfile: { ...STATE.harness.artifact.compiledProfile },
+            events: [
+              { type: 'run:start', at: startedAt, message: dryRun ? 'Dry run started' : 'Harness run started' },
+              { type: 'run:end', at: startedAt, message: dryRun ? 'Dry run completed' : 'Harness run completed' },
+            ],
+            result: {
+              success: true,
+              status: 'completed',
+              summary: dryRun ? 'Demo dry-run completed.' : 'Demo harness run completed.',
+              outputs: { report: 'Harness demo run completed.' },
+            },
+          };
+          STATE.harness.runs = [runRecord, ...(STATE.harness.runs || [])].slice(0, 25);
+          return {
+            ok: true,
+            status: runRecord.result.status,
+            success: true,
+            dryRun,
+            runId,
+            runPath: runRecord.runPath,
+            artifactId: runRecord.artifactId,
+            artifactPath: runRecord.artifactPath,
+            sourceOrigin: runRecord.sourceOrigin,
+            sourcePath: runRecord.sourcePath,
+            harnessConfig: { ...STATE.harness.harnessConfig },
+            result: { ...runRecord.result },
+            runRecord: { ...runRecord, compiledProfile: { ...runRecord.compiledProfile } },
+          };
+        }
+
         // ── Status & Executor ──
         if (route === '/api/status')
           return { data: buildStatusSnapshot() };
@@ -3969,6 +4194,87 @@
           }
           addLog('info', 'config', 'Trigger templates updated');
           return { ok: true, data: STATE.triggerTemplates };
+        }
+        if (route === '/api/hooks/override') {
+          const hookId = String(body?.hookId || params.get('id') || 'demo-hook').trim() || 'demo-hook';
+          const workspace = getActiveDemoWorkspace();
+          const workspaceDir = getActiveDemoWorkspaceDir();
+          if (method === 'GET') {
+            if (params.get('id')) {
+              return {
+                ok: true,
+                data: {
+                  hookId,
+                  enabled: true,
+                  mode: 'allow',
+                  updatedAt: new Date().toISOString(),
+                  repoRoot: workspaceDir,
+                  workspaceId: workspace?.id || 'demo',
+                  filters: { repos: ['virtengine-gh/bosun'], branches: ['main'] },
+                },
+              };
+            }
+            return {
+              ok: true,
+              data: [
+                {
+                  hookId: 'demo-hook',
+                  enabled: true,
+                  mode: 'allow',
+                  updatedAt: new Date().toISOString(),
+                },
+              ],
+            };
+          }
+          if (method === 'DELETE') {
+            return { ok: true, success: true, hookId, deleted: true };
+          }
+          return {
+            ok: true,
+            success: true,
+            hookId,
+            override: {
+              ...body,
+              hookId,
+              updatedAt: new Date().toISOString(),
+              workspaceId: workspace?.id || 'demo',
+              repoRoot: workspaceDir,
+            },
+          };
+        }
+        if (route === '/api/guardrails/repos') {
+          const workspace = getActiveDemoWorkspace();
+          const workspaceDir = getActiveDemoWorkspaceDir();
+          return {
+            ok: true,
+            repos: [
+              {
+                name: workspace?.name || 'Bosun Demo',
+                path: workspaceDir,
+                primary: true,
+                snapshot: {
+                  workspace: {
+                    workspaceId: workspace?.id || 'demo',
+                    workspaceDir,
+                  },
+                  policy: {
+                    mode: 'advisory',
+                    blockPushOnCritical: true,
+                    reviewRequired: true,
+                  },
+                  hooks: {
+                    total: 4,
+                    enabled: 3,
+                    overrides: 1,
+                  },
+                  status: {
+                    healthy: true,
+                    summary: 'Demo guardrails policy active',
+                  },
+                },
+              },
+            ],
+          };
         }
         if (route === '/api/telemetry/summary')
           return { data: { status: 'ok', updatedAt: Date.now(), totals: { tasks: STATE.tasks.length, executors: STATE.executors.length } } };
@@ -4910,6 +5216,22 @@
           const q = params.get('query') || '';
           return { data: buildContextForQuery(q) };
         }
+        if (route === '/api/harness/approvals') {
+          return {
+            ok: true,
+            approvals: [
+              {
+                requestId: 'demo-approval-1',
+                stageId: 'review',
+                stageType: 'approval',
+                taskId: 'bosun-42',
+                title: 'Approve harness patch application',
+                status: 'pending',
+                createdAt: new Date(Date.now() - 600000).toISOString(),
+              },
+            ],
+          };
+        }
         if (route === '/api/agent-runs') {
           return {
             ok: true, data: [
@@ -5527,6 +5849,151 @@
           const updates = body && typeof body === 'object' ? body : {};
           Object.assign(STATE.settings, updates);
           return { ok: true, data: { ...STATE.settings } };
+        }
+        if (route === '/api/server-state') {
+          return {
+            ok: true,
+            data: {
+              status: 'running',
+              workspace: 'demo-workspace',
+              activeSessions: STATE.sessions.filter(s => s.status === 'active').length,
+              activeTasks: TASKS.filter(t => t.status === 'running').length,
+              pendingTasks: TASKS.filter(t => t.status === 'queued').length,
+              logCount: LOGS.length,
+            },
+          };
+        }
+        if (route === '/api/audit/summary') {
+          return {
+            ok: true,
+            data: {
+              totalTasks: TASKS.length,
+              activeSessions: STATE.sessions.filter(s => s.status === 'active').length,
+              recentEvents: LOGS.slice(-10).length,
+            },
+            tasks: TASKS.slice(0, 10).map((task) => ({
+              taskId: task.id,
+              title: task.title,
+              status: task.status,
+              branch: task.branch || null,
+            })),
+          };
+        }
+        if (route === '/api/audit/events') {
+          return {
+            ok: true,
+            data: LOGS.slice(-25).map((entry, index) => ({
+              id: entry.id || `audit-${index + 1}`,
+              level: entry.level || 'info',
+              source: entry.source || 'demo',
+              message: entry.msg || entry.message || '',
+              timestamp: entry.ts || entry.timestamp || new Date().toISOString(),
+            })),
+          };
+        }
+        if (route === '/api/audit/tasks') {
+          return {
+            ok: true,
+            data: TASKS.map((task) => ({
+              taskId: task.id,
+              title: task.title,
+              status: task.status,
+              priority: task.priority || 'normal',
+              issueNumber: task.issueNumber || null,
+            })),
+          };
+        }
+        if (route === '/api/tasks/decompose' || route === '/api/tasks/decompose/propose') {
+          const taskId = String(body?.taskId || body?.id || TASKS[0]?.id || '').trim();
+          const task = TASKS.find((entry) => entry.id === taskId) || TASKS[0] || null;
+          return {
+            ok: true,
+            mode: 'propose',
+            taskId,
+            task,
+            proposal: {
+              summary: `Break ${task?.title || 'the selected task'} into three focused steps.`,
+              steps: [
+                { id: `${taskId || 'task'}-step-1`, title: 'Confirm inputs and acceptance criteria' },
+                { id: `${taskId || 'task'}-step-2`, title: 'Implement the primary code path' },
+                { id: `${taskId || 'task'}-step-3`, title: 'Add verification and cleanup' },
+              ],
+            },
+          };
+        }
+        if (route === '/api/tasks/decompose/apply') {
+          const taskId = String(body?.taskId || body?.id || TASKS[0]?.id || '').trim();
+          return {
+            ok: true,
+            applied: true,
+            taskId,
+            createdTaskIds: [`${taskId || 'task'}-step-1`, `${taskId || 'task'}-step-2`, `${taskId || 'task'}-step-3`],
+          };
+        }
+        if (route === '/api/tasks/replan/propose') {
+          const taskId = String(body?.taskId || body?.id || TASKS[0]?.id || '').trim();
+          const task = TASKS.find((entry) => entry.id === taskId) || TASKS[0] || null;
+          return {
+            ok: true,
+            taskId,
+            proposal: {
+              summary: `Replan ${task?.title || 'the selected task'} with a narrower first milestone.`,
+              updates: [
+                { field: 'priority', value: task?.priority || 'high' },
+                { field: 'nextStep', value: 'Implement the highest-signal slice first' },
+              ],
+            },
+          };
+        }
+        if (route === '/api/tasks/replan/apply') {
+          const taskId = String(body?.taskId || body?.id || TASKS[0]?.id || '').trim();
+          const task = TASKS.find((entry) => entry.id === taskId) || null;
+          return {
+            ok: true,
+            applied: true,
+            task: task ? { ...task, nextStep: 'Implement the highest-signal slice first' } : null,
+          };
+        }
+        if (route === '/api/tui/config') {
+          if (method === 'POST') {
+            return {
+              ok: true,
+              saved: true,
+              path: String(body?.path || '').trim() || 'display.refreshMs',
+              value: body?.value ?? 2000,
+            };
+          }
+          return {
+            ok: true,
+            sections: [
+              {
+                id: 'display',
+                label: 'Display',
+                entries: [
+                  { path: 'display.refreshMs', label: 'Refresh interval', value: 2000, type: 'number' },
+                  { path: 'display.compactMode', label: 'Compact mode', value: false, type: 'boolean' },
+                ],
+              },
+            ],
+            meta: {
+              configPath: 'bosun.config.json',
+              writable: true,
+            },
+          };
+        }
+        if (route === '/api/workflows/approvals') {
+          return {
+            ok: true,
+            approvals: [
+              {
+                id: 'approval-demo-1',
+                workflowId: 'wf-demo',
+                workflowName: 'Demo Workflow',
+                status: 'pending',
+                requestedAt: new Date(now - 5 * min).toISOString(),
+              },
+            ],
+          };
         }
 
         // ── Command ──

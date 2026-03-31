@@ -256,6 +256,173 @@ describe("task-store concurrent save consistency", () => {
   });
 });
 
+describe("task-store delegation topology", () => {
+  it("normalizes task graph topology and delegated workflow run lineage", async () => {
+    const dir = makeTempDir("task-store-lineage-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "TASK-ROOT", title: "Root task", status: "todo" });
+    ts.addTask({ id: "TASK-CHILD", title: "Child task", status: "todo" });
+    ts.setTaskParent("TASK-CHILD", "TASK-ROOT", { source: "test" });
+    ts.linkTaskWorkflowRun("TASK-CHILD", {
+      runId: "run-child-1",
+      workflowId: "wf-backend",
+      workflowName: "Backend Delegate",
+      nodeId: "delegate-node",
+      status: "completed",
+      rootRunId: "run-root-1",
+      parentRunId: "run-parent-1",
+      taskId: "TASK-CHILD",
+      rootTaskId: "TASK-ROOT",
+      parentTaskId: "TASK-CHILD",
+      sessionId: "TASK-CHILD:delegate:run-parent-1",
+      rootSessionId: "TASK-ROOT",
+      parentSessionId: "TASK-CHILD",
+      delegationDepth: 2,
+    });
+
+    const child = ts.getTask("TASK-CHILD");
+    expect(child?.topology).toEqual(expect.objectContaining({
+      graphParentTaskId: "TASK-ROOT",
+      graphRootTaskId: "TASK-ROOT",
+      graphDepth: 1,
+      graphPath: ["TASK-ROOT", "TASK-CHILD"],
+      latestRunId: "run-child-1",
+      rootRunId: "run-root-1",
+      parentRunId: "run-parent-1",
+      latestSessionId: "TASK-CHILD:delegate:run-parent-1",
+      rootSessionId: "TASK-ROOT",
+      parentSessionId: "TASK-CHILD",
+      rootTaskId: "TASK-ROOT",
+      parentTaskId: "TASK-CHILD",
+      delegationDepth: 2,
+    }));
+    expect(child?.workflowRuns).toEqual([
+      expect.objectContaining({
+        runId: "run-child-1",
+        workflowName: "Backend Delegate",
+        rootRunId: "run-root-1",
+        parentRunId: "run-parent-1",
+        rootTaskId: "TASK-ROOT",
+        parentTaskId: "TASK-CHILD",
+        sessionId: "TASK-CHILD:delegate:run-parent-1",
+        rootSessionId: "TASK-ROOT",
+        parentSessionId: "TASK-CHILD",
+        delegationDepth: 2,
+      }),
+    ]);
+
+    const tsReloaded = await loadTaskStoreModule();
+    tsReloaded.configureTaskStore({ storePath });
+    tsReloaded.loadStore();
+    expect(tsReloaded.getTask("TASK-CHILD")?.topology).toEqual(expect.objectContaining({
+      graphRootTaskId: "TASK-ROOT",
+      latestRunId: "run-child-1",
+      latestSessionId: "TASK-CHILD:delegate:run-parent-1",
+    }));
+  });
+});
+
+describe("task-store review persistence", () => {
+  it("stores a current review verdict with a single stable timestamp", async () => {
+    const dir = makeTempDir("task-store-review-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "review-1", title: "Review me", status: "inreview" });
+    const reviewed = ts.setReviewResult("review-1", {
+      approved: false,
+      issues: [{ severity: "major", description: "Fix regression" }],
+    });
+
+    expect(reviewed.reviewStatus).toBe("changes_requested");
+    expect(reviewed.reviewedAt).toBeTruthy();
+    expect(reviewed.updatedAt).toBe(reviewed.reviewedAt);
+    expect(reviewed.lastActivityAt).toBe(reviewed.reviewedAt);
+  });
+
+  it("blocks completing a review-backed task until review is approved", async () => {
+    const dir = makeTempDir("task-store-review-blocked-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "review-blocked-1",
+      title: "Needs approval",
+      status: "inreview",
+      prUrl: "https://example.test/pr/1",
+    });
+
+    const result = ts.completeTask("review-blocked-1");
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("completion_guard_blocked");
+    expect(result.reason).toBe("review_not_approved");
+    expect(ts.getTask("review-blocked-1")?.status).toBe("inreview");
+  });
+
+  it("allows completing a review-backed task after approval", async () => {
+    const dir = makeTempDir("task-store-review-approved-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "review-approved-1",
+      title: "Approved task",
+      status: "inreview",
+      prNumber: 42,
+    });
+    ts.setReviewResult("review-approved-1", { approved: true });
+
+    const result = ts.completeTask("review-approved-1");
+    expect(result.ok).toBe(true);
+    expect(result.toStatus).toBe("done");
+    expect(ts.getTask("review-approved-1")?.status).toBe("done");
+  });
+
+  it("allows forced completion overrides for review-backed tasks", async () => {
+    const dir = makeTempDir("task-store-review-force-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "review-force-1",
+      title: "Force override",
+      status: "inreview",
+      prUrl: "https://example.test/pr/force",
+    });
+
+    const result = ts.completeTask("review-force-1", { force: true });
+    expect(result.ok).toBe(true);
+    expect(ts.getTask("review-force-1")?.status).toBe("done");
+  });
+});
+
 describe("task-store DAG organization", () => {
   it("reorders sprint orders, auto-applies sequential dependencies, and syncs epic dependencies", async () => {
     const dir = makeTempDir("task-store-dag-organize-");
@@ -372,6 +539,149 @@ describe("task-store DAG organization", () => {
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery?.active).toBe(false);
     expect(task.meta?.worktreeFailure).toBeUndefined();
+  });
+
+  it("recovers blocked tasks with stale workflow placeholders", async () => {
+    const dir = makeTempDir("task-store-stale-worktree-placeholder-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "blocked-placeholder-1",
+      title: "Blocked placeholder task",
+      status: "blocked",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+    });
+
+    const recovered = ts.recoverAutoBlockedTasks();
+    const task = ts.getTask("blocked-placeholder-1");
+
+    expect(recovered.recoveredTaskIds).toEqual(["blocked-placeholder-1"]);
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
+  });
+
+  it("auto-unblocks blocked parent tasks when all child tasks are settled", async () => {
+    const dir = makeTempDir("task-store-parent-recovery-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "parent-blocked-1",
+      title: "Blocked parent task",
+      status: "blocked",
+      cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+      blockedReason: "Waiting for replanned subtasks to complete",
+      childTaskIds: ["child-done-1", "child-cancelled-1"],
+      meta: {
+        blockedReason: "Waiting for replanned subtasks to complete",
+        worktreeFailure: {
+          failureKind: "stale_child_state",
+          blockedReason: "stale child blocker",
+        },
+        keep: "yes",
+      },
+    });
+    ts.addTask({ id: "child-done-1", title: "Child done", status: "done", parentTaskId: "parent-blocked-1" });
+    ts.addTask({ id: "child-cancelled-1", title: "Child cancelled", status: "cancelled", parentTaskId: "parent-blocked-1" });
+
+    const recovered = ts.recoverAutoBlockedTasks();
+    const task = ts.getTask("parent-blocked-1");
+    const lastTimelineEvent = task.timeline.at(-1);
+    const lastHistory = task.statusHistory.at(-1);
+
+    expect(recovered.recoveredTaskIds).toEqual(["parent-blocked-1"]);
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
+    expect(task.meta?.blockedReason).toBeUndefined();
+    expect(task.meta?.worktreeFailure).toBeUndefined();
+    expect(task.meta?.keep).toBe("yes");
+    expect(lastHistory).toMatchObject({
+      status: "todo",
+      source: "auto-recovery",
+    });
+    expect(lastTimelineEvent).toMatchObject({
+      type: "status.transition",
+      action: "recover_parent_task",
+      status: "todo",
+      source: "auto-recovery",
+    });
+    expect(String(lastTimelineEvent?.message || "")).toContain("all 2 subtasks settled");
+  });
+
+  it("recovers blocked parent tasks with PR metadata back to inreview", async () => {
+    const dir = makeTempDir("task-store-parent-recovery-pr-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "parent-review-1",
+      title: "Blocked parent task with PR",
+      status: "blocked",
+      blockedReason: "Waiting for decomposed child tasks to complete",
+      childTaskIds: ["child-review-1"],
+      prNumber: 42,
+    });
+    ts.addTask({ id: "child-review-1", title: "Child done", status: "done", parentTaskId: "parent-review-1" });
+
+    const recovered = ts.recoverAutoBlockedTasks();
+    const task = ts.getTask("parent-review-1");
+
+    expect(recovered.recoveredTaskIds).toEqual(["parent-review-1"]);
+    expect(task.status).toBe("inreview");
+    expect(task.blockedReason).toBeNull();
+    expect(task.statusHistory.at(-1)).toMatchObject({
+      status: "inreview",
+      source: "auto-recovery",
+    });
+  });
+
+  it("does not recover blocked parent tasks while any child remains non-terminal", async () => {
+    const dir = makeTempDir("task-store-parent-recovery-pending-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "parent-pending-1",
+      title: "Blocked parent task pending child",
+      status: "blocked",
+      blockedReason: "Waiting for replanned subtasks to complete",
+      childTaskIds: ["child-active-1", "child-done-2"],
+    });
+    ts.addTask({ id: "child-active-1", title: "Child active", status: "inprogress", parentTaskId: "parent-pending-1" });
+    ts.addTask({ id: "child-done-2", title: "Child done", status: "done", parentTaskId: "parent-pending-1" });
+
+    const recovered = ts.recoverAutoBlockedTasks();
+    const task = ts.getTask("parent-pending-1");
+
+    expect(recovered.recoveredTaskIds).toEqual([]);
+    expect(task.status).toBe("blocked");
+    expect(task.blockedReason).toBe("Waiting for replanned subtasks to complete");
+    expect(task.statusHistory.at(-1)?.status).not.toBe("todo");
+    expect(task.timeline.at(-1)?.action).not.toBe("recover_parent_task");
   });
 
   it("clears blocked metadata in one operation when manually unblocked", async () => {
