@@ -31,7 +31,6 @@ import {
   undoHistory,
 } from "./workflow-canvas-utils.mjs";
 import { createSession } from "../components/session-list.js";
-import { activeWorkspaceId } from "../components/workspace-switcher.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 import {
@@ -113,44 +112,6 @@ function resetWorkflowRunsState(scopeWorkflowId = null) {
   workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
 }
 
-function buildWorkflowRunApiPath(path) {
-  const workspaceId = String(
-    activeWorkspaceId.value ||
-    (typeof window !== "undefined" ? window.__bosunWorkspaceId : "") ||
-    "",
-  ).trim();
-  if (!workspaceId) return path;
-  try {
-    const url = new URL(path, window.location.origin);
-    url.searchParams.set("workspace", workspaceId);
-    return `${url.pathname}${url.search}`;
-  } catch {
-    const joiner = path.includes("?") ? "&" : "?";
-    return `${path}${joiner}workspace=${encodeURIComponent(workspaceId)}`;
-  }
-}
-
-function appendQueryParams(path, params = {}) {
-  try {
-    const url = new URL(path, window.location.origin);
-    for (const [key, value] of Object.entries(params)) {
-      if (value == null) continue;
-      url.searchParams.set(key, String(value));
-    }
-    return `${url.pathname}${url.search}`;
-  } catch {
-    const search = new URLSearchParams();
-    for (const [key, value] of Object.entries(params)) {
-      if (value == null) continue;
-      search.set(key, String(value));
-    }
-    const query = search.toString();
-    if (!query) return path;
-    const joiner = path.includes("?") ? "&" : "?";
-    return `${path}${joiner}${query}`;
-  }
-}
-
 function mergeWorkflowRunPages(existingRuns, nextRuns) {
   const merged = [];
   const seen = new Set();
@@ -170,27 +131,6 @@ function cloneVars(input) {
     if (typeof structuredClone === "function") return structuredClone(input);
   } catch {}
   return JSON.parse(JSON.stringify(input));
-}
-
-/**
- * Safely coerce a variable/config value to a type suitable for an HTML input.
- * Objects are serialized to JSON; number and select inputs fall back to "".
- */
-function safeFieldValue(v, kind) {
-  if (v == null) return "";
-  if (typeof v !== "object") return v;
-  if (kind === "number" || kind === "select") return "";
-  return JSON.stringify(v, null, 2);
-}
-
-// Normalise an option entry that may be a plain string (from older API responses)
-// or a { value, label } object. Returns null for stale "[Truncated]" sentinels.
-function toMenuOption(opt) {
-  if (opt == null) return null;
-  const v = typeof opt === "string" ? opt : opt.value;
-  const l = typeof opt === "string" ? opt : (opt.label ?? v);
-  if (v == null || v === "[Truncated]") return null;
-  return { value: v, label: l ?? v };
 }
 
 function returnToWorkflowList() {
@@ -1137,7 +1077,7 @@ function ExecuteWorkflowDialog() {
           key=${key}
           label=${label + (isRequired ? " *" : "")}
           type="number"
-          value=${safeFieldValue(current, "number")}
+          value=${current ?? ""}
           onChange=${(e) => updateVar(key, e.target.value === "" ? "" : Number(e.target.value))}
           helperText=${help}
           size="small"
@@ -1152,7 +1092,7 @@ function ExecuteWorkflowDialog() {
         <${TextField}
           key=${key}
           label=${label + (isRequired ? " *" : "")}
-          value=${safeFieldValue(current, "json")}
+          value=${current ?? ""}
           onChange=${(e) => updateVar(key, e.target.value)}
           helperText=${help || "JSON object or array"}
           size="small"
@@ -1170,11 +1110,11 @@ function ExecuteWorkflowDialog() {
         <${FormControl} key=${key} fullWidth size="small" sx=${{ mb: 1.5 }}>
           <${InputLabel}>${label + (isRequired ? " *" : "")}</${InputLabel}>
           <${Select}
-            value=${safeFieldValue(current, "select")}
+            value=${current ?? ""}
             label=${label + (isRequired ? " *" : "")}
             onChange=${(e) => updateVar(key, e.target.value)}
           >
-            ${options.flatMap((opt) => { const o = toMenuOption(opt); return o ? [html`<${MenuItem} key=${String(o.value)} value=${o.value}>${o.label}</${MenuItem}>`] : []; })}
+            ${options.map((opt) => html`<${MenuItem} key=${String(opt.value)} value=${opt.value}>${opt.label}</${MenuItem}>`)}
           </${Select}>
           <${Typography} variant="caption" sx=${{ color: "text.secondary", mt: 0.5, ml: 1.5 }}>
             ${help || "Preset options"}.
@@ -1188,7 +1128,7 @@ function ExecuteWorkflowDialog() {
       <${TextField}
         key=${key}
         label=${label + (isRequired ? " *" : "")}
-        value=${safeFieldValue(current)}
+        value=${current ?? ""}
         onChange=${(e) => updateVar(key, e.target.value)}
         helperText=${help}
         size="small"
@@ -1465,7 +1405,7 @@ function InstallTemplateDialog() {
           key=${descriptor.key}
           label=${descriptor.label + (descriptor.required ? " *" : "")}
           type="number"
-          value=${safeFieldValue(current, "number")}
+          value=${current ?? ""}
           onChange=${(e) => updateVar(descriptor.key, e.target.value === "" ? "" : Number(e.target.value))}
           helperText=${descriptor.help}
           size="small"
@@ -1479,7 +1419,7 @@ function InstallTemplateDialog() {
         <${TextField}
           key=${descriptor.key}
           label=${descriptor.label + (descriptor.required ? " *" : "")}
-          value=${safeFieldValue(current, "json")}
+          value=${current ?? ""}
           onChange=${(e) => updateVar(descriptor.key, e.target.value)}
           helperText=${descriptor.help || "JSON object or array"}
           size="small"
@@ -1496,11 +1436,11 @@ function InstallTemplateDialog() {
         <${FormControl} key=${descriptor.key} fullWidth size="small" sx=${{ mb: 1.5 }}>
           <${InputLabel}>${descriptor.label + (descriptor.required ? " *" : "")}</${InputLabel}>
           <${Select}
-            value=${safeFieldValue(current, "select")}
+            value=${current ?? ""}
             label=${descriptor.label + (descriptor.required ? " *" : "")}
             onChange=${(e) => updateVar(descriptor.key, e.target.value)}
           >
-            ${descriptor.options.flatMap((opt) => { const o = toMenuOption(opt); return o ? [html`<${MenuItem} key=${String(o.value)} value=${o.value}>${o.label}</${MenuItem}>`] : []; })}
+            ${descriptor.options.map((opt) => html`<${MenuItem} key=${String(opt.value)} value=${opt.value}>${opt.label}</${MenuItem}>`)}
           </${Select}>
         </${FormControl}>
       `;
@@ -1510,7 +1450,7 @@ function InstallTemplateDialog() {
       <${TextField}
         key=${descriptor.key}
         label=${descriptor.label + (descriptor.required ? " *" : "")}
-        value=${safeFieldValue(current)}
+        value=${current ?? ""}
         onChange=${(e) => updateVar(descriptor.key, e.target.value)}
         helperText=${descriptor.help}
         size="small"
@@ -1707,8 +1647,7 @@ function openInstallTemplateDialog(templateId) {
   for (const variable of variableList) {
     const key = String(variable?.key || "").trim();
     if (!key) continue;
-    const dv = variable?.defaultValue ?? "";
-    defaults[key] = (dv !== null && typeof dv === "object") ? JSON.stringify(dv) : dv;
+    defaults[key] = cloneVars(variable?.defaultValue ?? "");
   }
   installDialogTemplate.value = template;
   installDialogVars.value = defaults;
@@ -1825,11 +1764,11 @@ async function loadRuns(workflowId, opts = {}) {
       Number.isFinite(rawOffset) && rawOffset > 0
         ? Math.max(0, Math.floor(rawOffset))
         : 0;
-    const baseUrl = buildWorkflowRunApiPath(scopedWorkflowId
+    const baseUrl = scopedWorkflowId
       ? `/api/workflows/${scopedWorkflowId}/runs`
-      : "/api/workflows/runs");
+      : "/api/workflows/runs";
     if (append) workflowRunsLoadingMore.value = true;
-    const data = await apiFetch(appendQueryParams(baseUrl, { limit, offset }));
+    const data = await apiFetch(`${baseUrl}?limit=${limit}&offset=${offset}`);
     if (data?.runs) {
       const pageRuns = Array.isArray(data.runs) ? data.runs : [];
       const mergedRuns = append
@@ -1855,9 +1794,7 @@ async function loadRuns(workflowId, opts = {}) {
 async function loadRunDetail(runId, opts = {}) {
   if (!runId) return;
   try {
-    const data = await apiFetch(
-      buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(runId)}`),
-    );
+    const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`);
     if (data?.run) {
       const scopedWorkflowId = String(opts?.workflowId || workflowRunsScopeId.value || data.run.workflowId || "").trim() || null;
       if (scopedWorkflowId) {
@@ -3334,7 +3271,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
       </div>
 
-      <div style="position: absolute; top: 108px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
+      <div style="position: absolute; top: 64px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
         <div style="pointer-events: auto; background: var(--bg-card, #2b2a27); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; backdrop-filter: blur(8px); box-shadow: var(--shadow-lg, 0 10px 30px rgba(0,0,0,0.28)); overflow: hidden; color: var(--color-text, #e8eaf0);">
           <div style="display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom: 1px solid var(--color-border, #2a3040);">
             <span class="icon-inline">${resolveIcon("chart")}</span>
@@ -4632,20 +4569,20 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
                   type="number"
                   size="small"
                   variant="outlined"
-                  value=${typeof value === "object" ? "" : value}
+                  value=${value}
                   onInput=${(e) => onFieldChange(key, Number(e.target.value))}
                   fullWidth
                   placeholder=${fieldSchema.default != null ? `Default: ${fieldSchema.default}` : ""}
                 />
-              ` : Array.isArray(fieldSchema.enum) ? html`
+              ` : fieldSchema.enum ? html`
                 <${Select}
-                  value=${typeof value === "object" ? "" : value}
+                  value=${value}
                   onChange=${(e) => onFieldChange(key, e.target.value)}
                   size="small"
                   fullWidth
                 >
                   <${MenuItem} value="">— select —</${MenuItem}>
-                  ${fieldSchema.enum.flatMap(opt => { const o = toMenuOption(opt); return o ? [html`<${MenuItem} key=${String(o.value)} value=${o.value}>${o.label}</${MenuItem}>`] : []; })}
+                  ${fieldSchema.enum.map(opt => html`<${MenuItem} key=${opt} value=${opt}>${opt}</${MenuItem}>`)}
                 </${Select}>
               ` : (typeof value === "string" && value.length > 80) || key === "prompt" || key === "expression" || key === "template" || key === "command" || key === "body" || key === "message" || key === "filter" ? html`
                 <${TextField}
@@ -4934,21 +4871,18 @@ function WorkflowListView() {
                         `}
                       </div>
                     `}
-                    <!-- Footer: info row -->
-                    <div style="display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-bottom: 6px; flex-wrap: nowrap; overflow: hidden;">
-                      <span style="white-space: nowrap; flex-shrink: 0;">${wf.nodeCount || 0} nodes</span>
-                      <span style="flex-shrink: 0;">·</span>
-                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;">
+                    <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
+                      <span>${wf.nodeCount || 0} nodes</span>
+                      <span>·</span>
+                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5);">
                         ${group.label}
                       </span>
-                    </div>
-                    <!-- Footer: action buttons row -->
-                    <div style="display: flex; gap: 4px; align-items: center; flex-wrap: nowrap;" onClick=${(e) => e.stopPropagation()}>
+                      <div style="flex: 1;"></div>
                       ${hasTemplateUpdate && html`
                         <${Button}
                           variant="text"
                           size="small"
-                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none', minWidth: 0, padding: '2px 6px' }}
+                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
                           onClick=${async (e) => {
                             e.stopPropagation();
                             if (!isCustomizedTemplate) {
@@ -4978,7 +4912,7 @@ function WorkflowListView() {
                       ${!isCore && html`<${Button}
                         variant="text"
                         size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none', minWidth: 0, padding: '2px 6px' }}
+                        sx=${{ fontSize: '11px', textTransform: 'none' }}
                         onClick=${(e) => {
                           e.stopPropagation();
                           setWorkflowEnabled(wf.id, !wf.enabled);
@@ -4987,11 +4921,10 @@ function WorkflowListView() {
                         <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
                         ${wf.enabled ? "Pause" : "Resume"}
                       <//>`}
-                      <div style="flex: 1;"></div>
                       <${Button}
                         variant="text"
                         size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none', minWidth: 0, padding: '2px 4px', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
+                        sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
                         onClick=${(e) => {
                           e.stopPropagation();
                           if (!wf.enabled) {
@@ -5006,7 +4939,7 @@ function WorkflowListView() {
                       <${Button}
                         variant="text"
                         size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none', minWidth: 0, padding: '2px 4px' }}
+                        sx=${{ fontSize: '11px', textTransform: 'none' }}
                         onClick=${(e) => {
                           e.stopPropagation();
                           exportWorkflow(wf);
@@ -5014,7 +4947,7 @@ function WorkflowListView() {
                       >
                         <span class="icon-inline">${resolveIcon("save")}</span>
                       <//>
-                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none', minWidth: 0, padding: '2px 4px' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
                         <span class="icon-inline">${resolveIcon("trash")}</span>
                       <//>`}
                     </div>
@@ -6257,19 +6190,18 @@ export function WorkflowsTab() {
     }
 
     if (workflowId) {
-      const wantsCode = Boolean(route.codeView);
       apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`)
         .then((d) => {
           activeWorkflow.value = d?.workflow || activeWorkflow.value;
           if (activeWorkflow.value?.id === workflowId || d?.workflow?.id === workflowId) {
-            viewMode.value = wantsCode ? "code" : "canvas";
+            viewMode.value = "canvas";
           }
         })
         .catch(() => {
           const existing = (workflows.value || []).find((wf) => wf.id === workflowId);
           if (existing) {
             activeWorkflow.value = existing;
-            viewMode.value = wantsCode ? "code" : "canvas";
+            viewMode.value = "canvas";
           }
         });
       return;
@@ -6285,13 +6217,6 @@ export function WorkflowsTab() {
 
   useEffect(() => {
     const mode = viewMode.value;
-    if (mode === "code" && activeWorkflow.value?.id) {
-      setRouteParams(
-        { workflowId: activeWorkflow.value.id, codeView: "1" },
-        { replace: true, skipGuard: true },
-      );
-      return;
-    }
     if (mode === "canvas" && activeWorkflow.value?.id) {
       setRouteParams(
         { workflowId: activeWorkflow.value.id },
