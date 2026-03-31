@@ -3683,7 +3683,7 @@ function isCodexResumeTimeoutError(errorValue) {
  */
 async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
   // Coerce to number — prevents string concatenation in setTimeout arithmetic
-  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
+  timeoutMs = Math.min(Number(timeoutMs) || DEFAULT_TIMEOUT_MS, MAX_SET_TIMEOUT_MS);
   const { onEvent, abortController: externalAC, envOverrides = null } = extra;
 
   let CodexClass;

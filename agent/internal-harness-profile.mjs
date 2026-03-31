@@ -33,7 +33,8 @@ function slugify(value) {
   return toTrimmedString(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "harness";
+    .replace(/^-+/, "")
+    .replace(/-+$/, "") || "harness";
 }
 
 function safeClone(value) {
@@ -73,7 +74,7 @@ function parseSourceObject(source) {
   try {
     return JSON.parse(raw);
   } catch {
-    const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const fenceMatch = raw.match(/```(?:json)?[ \t]*\r?\n([\s\S]*?)```/i);
     if (fenceMatch?.[1]) {
       return JSON.parse(fenceMatch[1]);
     }
