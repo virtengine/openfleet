@@ -21,6 +21,7 @@ export const SHORTCUT_GROUPS = [
       ["↑ / ↓", "Move session selection"],
       ["Enter", "Open session detail"],
       ["H", "Open selected harness run"],
+      ["M", "Open agent live monitor detail"],
       ["[ / ]", "Move harness selection"],
       ["L", "Open session logs"],
       ["D", "Open session diff"],
@@ -115,6 +116,9 @@ export function getFooterHints(screen, context = {}) {
     if (context.confirmKill) {
       return [["Y", "Kill session"], ["N", "Keep session"], ["Esc", "Cancel"], ["?", "Help"]];
     }
+    if (context.agentMonitorDetailOpen) {
+      return [["M", "Refresh monitor"], ["Esc", "Close"], ["?", "Help"]];
+    }
     if (context.harnessNudgeMode) {
       return [["Type", "Compose nudge"], ["Enter", "Send nudge"], ["Backspace", "Delete char"], ["Esc", "Cancel"], ["?", "Help"]];
     }
@@ -124,7 +128,7 @@ export function getFooterHints(screen, context = {}) {
     if (context.detailOpen || context.logsOpen || context.diffOpen) {
       return [["Esc", "Close pane"], ["↑/↓", "Change session"], ["L", "Logs"], ["D", "Diff"], ["?", "Help"]];
     }
-    return [["↑/↓", "Move"], ["Enter", "Detail"], ["H", "Harness"], ["[ / ]", "Select harness"], ["?", "Help"]];
+    return [["↑/↓", "Move"], ["Enter", "Detail"], ["M", "Monitor"], ["H", "Harness"], ["[ / ]", "Select harness"]];
   }
 
   if (screen === "workflows") {

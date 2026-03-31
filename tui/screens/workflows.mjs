@@ -374,10 +374,10 @@ function InboxDetail({ item }) {
   const lines = inboxDetailLines(item);
   return html`
     <${Box} flexDirection="column" paddingY=${1}>
-      <${Text} bold>Workflow Inbox Detail<//>
+      <${Text} key="workflow-inbox-detail-title" bold>Workflow Inbox Detail<//>
       ${lines.map((line, index) => html`<${Text} key=${`line-${index}`} wrap="truncate-end">${line}<//>`)}
-      <${Box} marginTop=${1} flexDirection="column">
-        <${Text} dimColor>[A]pprove  [X] deny  [Esc] close<//>
+      <${Box} key="workflow-inbox-detail-actions" marginTop=${1} flexDirection="column">
+        <${Text} key="workflow-inbox-detail-help" dimColor>[A]pprove  [X] deny  [Esc] close<//>
       <//>
     <//>
   `;
@@ -403,39 +403,39 @@ function WorkflowRunDetail({ run, evaluation, forensics, snapshots, snapshotStat
 
   return html`
     <${Box} flexDirection="column" paddingY=${1}>
-      <${Text} bold>Workflow Run Detail<//>
+      <${Text} key="workflow-run-detail-title" bold>Workflow Run Detail<//>
       ${detailLines.map((line, index) => html`<${Text} key=${`detail-${index}`} wrap="truncate-end">${line}<//>`)}
-      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-        <${Text} bold>Recent Ledger Events<//>
+      <${Box} key="workflow-run-ledger" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} key="workflow-run-ledger-title" bold>Recent Ledger Events<//>
         ${ledgerEvents.length
           ? ledgerEvents.map((event, index) => html`
               <${Text} key=${`${safeRun.runId || "run"}-${index}`} wrap="truncate-end">
                 ${truncate(summarizeLedgerEvent(event), 96)}
               <//>
             `)
-          : html`<${Text} dimColor>No ledger events recorded.<//>`}
+          : html`<${Text} key="workflow-run-no-ledger-events" dimColor>No ledger events recorded.<//>`}
       <//>
-      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-        <${Text} bold>Run Evaluation<//>
+      <${Box} key="workflow-run-evaluation" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} key="workflow-run-evaluation-title" bold>Run Evaluation<//>
         ${extractEvaluationLines(evaluation).map((line, index) => html`
           <${Text} key=${`evaluation-${index}`} wrap="truncate-end">${line}<//>
         `)}
       <//>
-      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-        <${Text} bold>Run Forensics<//>
+      <${Box} key="workflow-run-forensics" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} key="workflow-run-forensics-title" bold>Run Forensics<//>
         ${extractForensicsLines(forensics).map((line, index) => html`
           <${Text} key=${`forensics-${index}`} wrap="truncate-end">${line}<//>
         `)}
       <//>
-      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-        <${Text} bold>Run Snapshots<//>
+      <${Box} key="workflow-run-snapshots" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} key="workflow-run-snapshots-title" bold>Run Snapshots<//>
         ${extractSnapshotLines(snapshots).map((line, index) => html`
           <${Text} key=${`snapshot-${index}`} wrap="truncate-end">${line}<//>
         `)}
-        ${snapshotStatusLine ? html`<${Text} color="yellow">${snapshotStatusLine}<//>` : null}
+        ${snapshotStatusLine ? html`<${Text} key="workflow-run-snapshot-status" color="yellow">${snapshotStatusLine}<//>` : null}
       <//>
-      <${Box} marginTop=${1} flexDirection="column">
-        <${Text} dimColor>[F] forensics  [V] evaluate  [P] snapshot  [O] restore  [M] remediate  [C]ancel  [T] retry  [A]pprove  [X] deny  [Esc] close<//>
+      <${Box} key="workflow-run-actions" marginTop=${1} flexDirection="column">
+        <${Text} key="workflow-run-actions-help" dimColor>[F] forensics  [V] evaluate  [P] snapshot  [O] restore  [M] remediate  [C]ancel  [T] retry  [A]pprove  [X] deny  [Esc] close<//>
       <//>
     <//>
   `;
@@ -888,6 +888,7 @@ export default function WorkflowsScreen({
       ${workflowRunDetail
         ? html`
             <${WorkflowRunDetail}
+              key="workflow-run-detail-view"
               run=${workflowRunDetail}
               evaluation=${workflowRunEvaluation}
               forensics=${workflowRunForensics}
@@ -895,11 +896,11 @@ export default function WorkflowsScreen({
               snapshotStatusLine=${workflowRunSnapshotStatusLine}
             />`
         : detailItem
-        ? html`<${InboxDetail} item=${detailItem} />`
+        ? html`<${InboxDetail} key="workflow-inbox-detail-view" item=${detailItem} />`
         : html`
-            <${Box} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Operator Inbox (${operatorInbox.length})<//>
-              <${Text} dimColor>Pending workflow approvals plus waiting or stalled harness runs<//>
+            <${Box} key="workflow-operator-inbox" flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} key="workflow-operator-inbox-title" bold>Operator Inbox (${operatorInbox.length})<//>
+              <${Text} key="workflow-operator-inbox-subtitle" dimColor>Pending workflow approvals plus waiting or stalled harness runs<//>
               ${operatorInbox.length
                 ? operatorInbox.map((item, index) => {
                     const row = describeInboxItem(item, index === selectedInboxIndex);
@@ -909,12 +910,12 @@ export default function WorkflowsScreen({
                       <//>
                     `;
                   })
-                : html`<${Text} dimColor>No operator action is currently required.<//>`}
+                : html`<${Text} key="workflow-operator-inbox-empty" dimColor>No operator action is currently required.<//>`}
             <//>
 
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Recent Workflow Runs (${recentWorkflowRuns.length})<//>
-              <${Text} dimColor>[G detail · [ / ] select]<//>
+            <${Box} key="workflow-recent-runs" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} key="workflow-recent-runs-title" bold>Recent Workflow Runs (${recentWorkflowRuns.length})<//>
+              <${Text} key="workflow-recent-runs-help" dimColor>[G detail · [ / ] select]<//>
               ${recentWorkflowRuns.length
                 ? recentWorkflowRuns.map((run, index) => {
                     const row = describeWorkflowRunRow(run, index === selectedRunIndex);
@@ -924,36 +925,36 @@ export default function WorkflowsScreen({
                       <//>
                     `;
                   })
-                : html`<${Text} dimColor>No workflow runs recorded yet.<//>`}
+                : html`<${Text} key="workflow-recent-runs-empty" dimColor>No workflow runs recorded yet.<//>`}
             <//>
 
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Workflow Snapshot<//>
-              <${Text}>Configured: ${workflows.length}${loading ? " (loading)" : ""}<//>
-              <${Text}>Active Runs: ${activeWorkflowRuns.length}/${totalWorkflows}<//>
-              <${Text}>Pending Approvals: ${workflowApprovals.length + harnessApprovals.length}<//>
-              ${error ? html`<${Text} color="red">${error}<//>` : null}
+            <${Box} key="workflow-snapshot" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} key="workflow-snapshot-title" bold>Workflow Snapshot<//>
+              <${Text} key="workflow-snapshot-configured">Configured: ${workflows.length}${loading ? " (loading)" : ""}<//>
+              <${Text} key="workflow-snapshot-active">Active Runs: ${activeWorkflowRuns.length}/${totalWorkflows}<//>
+              <${Text} key="workflow-snapshot-approvals">Pending Approvals: ${workflowApprovals.length + harnessApprovals.length}<//>
+              ${error ? html`<${Text} key="workflow-snapshot-error" color="red">${error}<//>` : null}
             <//>
 
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Configured Workflows<//>
+            <${Box} key="workflow-configured-list" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} key="workflow-configured-list-title" bold>Configured Workflows<//>
               ${workflows.length
-                ? workflows.slice(0, 10).map((workflow) => html`
-                    <${Text} key=${workflow.id || workflow.name} wrap="truncate-end">
+                ? workflows.slice(0, 10).map((workflow, index) => html`
+                    <${Text} key=${`${workflow.id || workflow.name || "workflow"}-${index}`} wrap="truncate-end">
                       ${truncate(workflow.name || workflow.id || "workflow", 32).padEnd(34, " ")}
                       ${String(workflow.enabled === false ? "disabled" : "enabled").padEnd(9, " ")}
                       ${truncate(workflow.source || workflow.file || "configured", 34)}
                     <//>
                   `)
-                : html`<${Text} dimColor>No workflows loaded yet.<//>`}
+                : html`<${Text} key="workflow-configured-list-empty" dimColor>No workflows loaded yet.<//>`}
             <//>
 
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Workflow Event Timeline<//>
+            <${Box} key="workflow-event-timeline" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} key="workflow-event-timeline-title" bold>Workflow Event Timeline<//>
               ${workflowEvents.length
                 ? workflowEvents.slice(0, 8).map((event, index) => html`
                     <${Text}
-                      key=${event.id || `${event.workflowId || "wf"}-${event.runId || "run"}-${index}`}
+                      key=${`${event.id || `${event.workflowId || "wf"}-${event.runId || "run"}`}-${index}`}
                       color=${eventTone(event.status, event.eventType)}
                       wrap="truncate-end"
                     >
@@ -964,13 +965,13 @@ export default function WorkflowsScreen({
                       ${truncate(event.error || event.message || event.nodeLabel || event.nodeId || "-", 56)}
                     <//>
                   `)
-                : html`<${Text} dimColor>No workflow status events streamed yet.<//>`}
+                : html`<${Text} key="workflow-event-timeline-empty" dimColor>No workflow status events streamed yet.<//>`}
             <//>
           `}
       ${statusLine
         ? html`
-            <${Box} marginTop=${1}>
-              <${Text} color="yellow">${statusLine}<//>
+            <${Box} key="workflow-status-line" marginTop=${1}>
+              <${Text} key="workflow-status-line-text" color="yellow">${statusLine}<//>
             <//>
           `
         : null}

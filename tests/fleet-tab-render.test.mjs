@@ -501,6 +501,22 @@ for (const { relPath, source } of sourceFiles) {
       expect(source).toContain('<div class="fleet-metric-value numeral">${metric.value}</div>');
     });
   });
+
+  describe(`Fleet/Agents live monitor parity (${relPath})`, () => {
+    it("loads agent event-bus monitoring endpoints and renders the operator cards", () => {
+      expect(source).toContain('apiFetch("/api/agents/events/status")');
+      expect(source).toContain('apiFetch("/api/agents/events/liveness")');
+      expect(source).toContain('apiFetch("/api/agents/events/errors")');
+      expect(source).toContain('apiFetch("/api/agents/events?limit=25")');
+      expect(source).toContain("Agent Live Monitor");
+      expect(source).toContain("Liveness Detail");
+      expect(source).toContain("Error Pattern Detail");
+      expect(source).toContain("Recent Agent Events");
+      expect(source).toContain("Event bus started:");
+      expect(source).toContain("normalizeAgentLiveness");
+      expect(source).toContain("normalizeAgentErrorPatterns");
+    });
+  });
 }
 
 for (const relPath of ["ui/tabs/telemetry.js", "site/ui/tabs/telemetry.js"]) {
@@ -612,21 +628,42 @@ for (const relPath of ["ui/tabs/agents.js", "site/ui/tabs/agents.js"]) {
 describe("TUI agents harness monitor", () => {
   it("renders harness detail, approvals, and nudge controls backed by harness APIs", () => {
     expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/harness/runs?limit=8")');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/agents/events/status")');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/agents/events/liveness")');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/agents/events/errors")');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/agents/events?limit=25")');
     expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}`)');
     expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/events?limit=40&direction=desc`)');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/approval`)');
     expect(tuiAgentsSource).toContain('`/api/harness/approvals/${encodeURIComponent(requestId)}/resolve`');
     expect(tuiAgentsSource).toContain('`/api/harness/runs/${encodeURIComponent(runId)}/nudge`');
     expect(tuiAgentsSource).toContain("function HarnessDetail(");
+    expect(tuiAgentsSource).toContain("function AgentMonitorDetail(");
+    expect(tuiAgentsSource).toContain("Agent Live Monitor (");
+    expect(tuiAgentsSource).toContain("Agent Live Monitor Detail");
+    expect(tuiAgentsSource).toContain("Liveness Detail");
+    expect(tuiAgentsSource).toContain("Error Pattern Detail");
+    expect(tuiAgentsSource).toContain("Recent Agent Events");
+    expect(tuiAgentsSource).toContain("[M detail]");
+    expect(tuiAgentsSource).toContain("[M] refresh monitor  [Esc] close");
+    expect(tuiAgentsSource).toContain("function agentEventToLogLine(");
+    expect(tuiAgentsSource).toContain("Error Patterns");
     expect(tuiAgentsSource).toContain("Harness monitor (");
     expect(tuiAgentsSource).toContain("[H detail · [ / ] select]");
+    expect(tuiAgentsSource).toContain("Approval State");
     expect(tuiAgentsSource).toContain('const [harnessNudgeMode, setHarnessNudgeMode] = React.useState(false);');
     expect(tuiAgentsSource).toContain('if (harnessDetailView) {');
+    expect(tuiAgentsSource).toContain('if (agentMonitorDetailOpen) {');
     expect(tuiAgentsSource).toContain('if ((input === "a" || input === "A")');
     expect(tuiAgentsSource).toContain('if ((input === "x" || input === "X")');
     expect(tuiAgentsSource).toContain('if ((input === "n" || input === "N")');
     expect(tuiAgentsSource).toContain('if (input === "h" || input === "H") {');
+    expect(tuiAgentsSource).toContain('if (input === "m" || input === "M") {');
     expect(tuiAgentsSource).toContain('if (input === "[") {');
     expect(tuiAgentsSource).toContain('if (input === "]") {');
+    const helpSource = readFileSync(resolve(process.cwd(), "ui/tui/HelpScreen.js"), "utf8");
+    expect(helpSource).toContain('["M", "Open agent live monitor detail"]');
+    expect(helpSource).toContain("if (context.agentMonitorDetailOpen) {");
   });
 });
 

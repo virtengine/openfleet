@@ -224,6 +224,30 @@ function getHarnessAttentionDetail(run) {
   return String(run?.summary || run?.health?.state || "No summary yet").trim();
 }
 
+function normalizeAgentLiveness(payload) {
+  if (Array.isArray(payload?.agents)) return payload.agents;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function normalizeAgentErrorPatterns(payload) {
+  if (Array.isArray(payload?.patterns)) return payload.patterns;
+  if (Array.isArray(payload?.errors)) return payload.errors;
+  return [];
+}
+
+function getAgentMonitorSummary(event) {
+  return String(
+    event?.message
+    || event?.summary
+    || event?.payload?.message
+    || event?.payload?.summary
+    || event?.payload?.reason
+    || event?.payload?.status
+    || "",
+  ).replace(/\s+/g, " ").trim();
+}
+
 function formatTurnTokens(turn) {
   const total = Number(turn?.totalTokens || 0);
   const input = Number(turn?.inputTokens || 0);
@@ -1563,6 +1587,10 @@ export function AgentsTab() {
   const [harnessActionByRun, setHarnessActionByRun] = useState({});
   const [focusedHarnessRunId, setFocusedHarnessRunId] = useState("");
   const [focusedHarnessSource, setFocusedHarnessSource] = useState("");
+  const [agentEventStatus, setAgentEventStatus] = useState(null);
+  const [agentLiveness, setAgentLiveness] = useState([]);
+  const [agentErrorPatterns, setAgentErrorPatterns] = useState([]);
+  const [agentRecentEvents, setAgentRecentEvents] = useState([]);
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -1675,6 +1703,35 @@ export function AgentsTab() {
     setFocusedHarnessSource(routeHarnessSource || "workflow approvals");
     setRouteParams({}, { replace: true, skipGuard: true });
   }, [routeHarnessRunId, routeHarnessSource]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadAgentMonitor = async () => {
+      try {
+        const [statusPayload, livenessPayload, errorPayload, recentEventsPayload] = await Promise.all([
+          apiFetch("/api/agents/events/status"),
+          apiFetch("/api/agents/events/liveness"),
+          apiFetch("/api/agents/events/errors"),
+          apiFetch("/api/agents/events?limit=25"),
+        ]);
+        if (cancelled) return;
+        setAgentEventStatus(statusPayload || null);
+        setAgentLiveness(normalizeAgentLiveness(livenessPayload));
+        setAgentErrorPatterns(normalizeAgentErrorPatterns(errorPayload));
+        setAgentRecentEvents(Array.isArray(recentEventsPayload?.events) ? recentEventsPayload.events : []);
+      } catch {
+        if (cancelled) return;
+      }
+    };
+    void loadAgentMonitor();
+    const interval = setInterval(() => {
+      void loadAgentMonitor();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     loadWorkspaces().catch(() => {});
@@ -1868,6 +1925,25 @@ export function AgentsTab() {
     { key: "stalled", label: `Stalled (${harnessStalledCount})` },
     { key: "all", label: `All (${harnessRuns.length})` },
   ];
+  const trackedAgentCount = Math.max(
+    Number(agentEventStatus?.trackedAgents || 0) || 0,
+    agentLiveness.length,
+  );
+  const aliveAgentCount = agentLiveness.filter((entry) => entry?.alive !== false).length;
+  const staleAgentCount = agentLiveness.filter((entry) => entry?.alive === false).length;
+  const agentEventLogSize = Number(agentEventStatus?.eventLogSize || 0) || 0;
+  const agentListenerCount = Number(agentEventStatus?.listenerCount || 0) || 0;
+  const agentMonitorSummaryText = trackedAgentCount > 0 || agentEventLogSize > 0
+    ? [
+        `${trackedAgentCount} tracked`,
+        `${aliveAgentCount} alive`,
+        `${staleAgentCount} stale`,
+        `${agentErrorPatterns.length} patterns`,
+      ].join(" · ")
+    : "Agent event-bus telemetry appears here once live activity is recorded.";
+  const visibleAgentLiveness = agentLiveness.slice(0, 6);
+  const visibleAgentErrorPatterns = agentErrorPatterns.slice(0, 5);
+  const visibleAgentEvents = agentRecentEvents.slice(0, 6);
 
   const handleFleetRefresh = () => {
     haptic();
@@ -2166,6 +2242,131 @@ export function AgentsTab() {
                 },
               )}
             </div>
+          <//>
+        <//>
+
+        <${Card} className="fleet-slotmap-card">
+          <${Collapsible}
+            title=${trackedAgentCount > 0
+              ? html`Agent Live Monitor · <span class="numeral">${trackedAgentCount}</span> tracked`
+              : "Agent Live Monitor"}
+            defaultOpen=${!isCompact}
+          >
+            <div class="meta-text mb-sm">${agentMonitorSummaryText}</div>
+            <div class="fleet-metrics" style=${{ marginBottom: "0.75rem" }}>
+              ${[
+                { label: "Tracked", value: trackedAgentCount },
+                { label: "Alive", value: aliveAgentCount },
+                { label: "Stale", value: staleAgentCount },
+                { label: "Patterns", value: agentErrorPatterns.length },
+                { label: "Events", value: agentEventLogSize },
+                { label: "Listeners", value: agentListenerCount },
+              ].map((metric) => html`
+                <div class="fleet-metric" key=${metric.label}>
+                  <div class="fleet-metric-label">${metric.label}</div>
+                  <div class="fleet-metric-value numeral">${metric.value}</div>
+                </div>
+              `)}
+            </div>
+            <div class="task-card-meta" style=${{ marginBottom: "0.5rem" }}>
+              Event bus started: ${agentEventStatus?.started === true ? "yes" : "no"}
+            </div>
+            <div class="task-card-meta" style=${{ marginBottom: "0.35rem", fontWeight: 700 }}>
+              Liveness Detail
+            </div>
+            ${visibleAgentLiveness.length
+              ? html`<div class="fleet-turn-timeline">
+                  ${visibleAgentLiveness.map((entry, index) => {
+                    const key = String(entry?.agentId || entry?.sessionId || entry?.taskId || `agent-${index}`).trim();
+                    const staleMs = Number(entry?.staleSinceMs || 0) || 0;
+                    const summary = String(entry?.summary || entry?.reason || entry?.taskTitle || "").trim();
+                    return html`
+                      <div class="task-card fleet-turn-card" key=${key}>
+                        <div class="task-card-header">
+                          <div>
+                            <div class="task-card-title">${truncate(key, 64)}</div>
+                            <div class="task-card-meta">
+                              ${String(entry?.status || entry?.state || entry?.health || (entry?.alive === false ? "stale" : "alive")).trim() || "unknown"}
+                              ${entry?.lastHeartbeatAt ? ` · heartbeat ${formatRelative(entry.lastHeartbeatAt)}` : ""}
+                              ${staleMs > 0 ? ` · stale ${formatMsDuration(staleMs)}` : ""}
+                            </div>
+                          </div>
+                          <${Chip}
+                            size="small"
+                            label=${entry?.alive === false ? "stale" : "alive"}
+                            sx=${{
+                              fontWeight: 700,
+                              background: entry?.alive === false ? "rgba(239, 68, 68, 0.16)" : "rgba(16, 185, 129, 0.16)",
+                              color: entry?.alive === false ? "var(--color-error)" : "var(--color-done)",
+                            }}
+                          />
+                        </div>
+                        <div class="meta-text">${summary || "No liveness summary reported."}</div>
+                      </div>
+                    `;
+                  })}
+                </div>`
+              : html`<${EmptyState} message="No liveness detail reported yet." />`}
+            <div class="task-card-meta" style=${{ marginTop: "0.75rem", marginBottom: "0.35rem", fontWeight: 700 }}>
+              Error Pattern Detail
+            </div>
+            ${visibleAgentErrorPatterns.length
+              ? html`<div class="fleet-turn-timeline">
+                  ${visibleAgentErrorPatterns.map((entry, index) => {
+                    const key = String(entry?.pattern || entry?.error || entry?.message || `pattern-${index}`).trim();
+                    const count = Number(entry?.count || entry?.hits || entry?.occurrences || 0) || 0;
+                    const scope = String(entry?.taskId || entry?.sessionId || entry?.agentId || entry?.source || "").trim();
+                    return html`
+                      <div class="task-card fleet-turn-card" key=${key}>
+                        <div class="task-card-header">
+                          <div>
+                            <div class="task-card-title">${truncate(key, 64)}</div>
+                            <div class="task-card-meta">
+                              <span class="numeral">${count}</span> hits
+                              ${scope ? ` · ${scope}` : ""}
+                            </div>
+                          </div>
+                          <${Chip}
+                            size="small"
+                            label=${count > 0 ? "active" : "clear"}
+                            sx=${{
+                              fontWeight: 700,
+                              background: count > 0 ? "rgba(245, 158, 11, 0.18)" : "rgba(16, 185, 129, 0.16)",
+                              color: count > 0 ? "var(--color-warning, #f59e0b)" : "var(--color-done)",
+                            }}
+                          />
+                        </div>
+                      </div>
+                    `;
+                  })}
+                </div>`
+              : html`<${EmptyState} message="No recurring error patterns detected." />`}
+            <div class="task-card-meta" style=${{ marginTop: "0.75rem", marginBottom: "0.35rem", fontWeight: 700 }}>
+              Recent Agent Events
+            </div>
+            ${visibleAgentEvents.length
+              ? html`<div class="fleet-turn-timeline">
+                  ${visibleAgentEvents.map((event, index) => {
+                    const eventType = String(event?.type || event?.eventType || "event").trim() || "event";
+                    const taskScope = String(event?.taskId || event?.agentId || event?.sessionId || "").trim();
+                    const summary = getAgentMonitorSummary(event);
+                    return html`
+                      <div class="task-card fleet-turn-card" key=${String(event?.id || `${eventType}-${index}`)}>
+                        <div class="task-card-header">
+                          <div>
+                            <div class="task-card-title">${eventType}</div>
+                            <div class="task-card-meta">
+                              ${event?.timestamp ? formatRelative(event.timestamp) : "timestamp unavailable"}
+                              ${taskScope ? ` · ${taskScope}` : ""}
+                            </div>
+                          </div>
+                        </div>
+                        <div class="meta-text">${summary || "No event summary available."}</div>
+                      </div>
+                    `;
+                  })}
+                </div>`
+              : html`<${EmptyState} message="No recent agent events recorded." />`}
           <//>
         <//>
       </div>

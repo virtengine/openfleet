@@ -1244,6 +1244,7 @@ describeUiServer("ui-server mini app", () => {
           TELEGRAM_INTERVAL_MIN: "15",
           FLEET_ENABLED: "false",
           FLEET_SYNC_INTERVAL_MS: "90000",
+          SELF_RESTART_QUIET_MS: "180000",
           EXECUTORS: "CODEX:DEFAULT:70,COPILOT:DEFAULT:30",
         },
       }),
@@ -1269,6 +1270,7 @@ describeUiServer("ui-server mini app", () => {
         "TELEGRAM_INTERVAL_MIN",
         "FLEET_ENABLED",
         "FLEET_SYNC_INTERVAL_MS",
+        "SELF_RESTART_QUIET_MS",
         "EXECUTORS",
       ]),
     );
@@ -1293,6 +1295,7 @@ describeUiServer("ui-server mini app", () => {
     expect(config.telegramIntervalMin).toBe(15);
     expect(config.fleetEnabled).toBe(false);
     expect(config.fleetSyncIntervalMs).toBe(90000);
+    expect(process.env.SELF_RESTART_QUIET_MS).toBe("180000");
     expect(config.executors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ executor: "CODEX", variant: "DEFAULT", weight: 70 }),

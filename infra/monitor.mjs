@@ -3236,7 +3236,7 @@ let stopTuiConfigReloadListener = null;
 const SELF_RESTART_EXIT_CODE = 75;
 const SELF_RESTART_QUIET_MS = Math.max(
   90_000,
-  Number(process.env.SELF_RESTART_QUIET_MS || "90000"),
+  Number(process.env.SELF_RESTART_QUIET_MS || "180000"),
 );
 const ENV_RELOAD_DELAY_MS = Math.max(
   500,

@@ -98,10 +98,30 @@ globalThis.__agentPoolMockMcpResolve = mockMcpResolve;
 globalThis.__agentPoolMockMcpWrap = mockMcpWrap;
 
 vi.mock("@openai/codex-sdk", () => {
+  const getMock = (name) => {
+    const candidate = globalThis[name];
+    if (typeof candidate !== "function") {
+      throw new Error(`Missing test mock: ${name}`);
+    }
+    return candidate;
+  };
+  const makeThread = (threadId = "mock-codex-thread", text = "codex-output") => ({
+    id: threadId,
+    runStreamed: async () => ({
+      events: {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: "item.completed",
+            item: { type: "agent_message", text },
+          };
+        },
+      },
+    }),
+  });
   return {
     Codex: class MockCodex {
       constructor(...args) {
-        callMockCodexCtor(...args);
+        getMock("__agentPoolMockCodexCtor")(...args);
       }
 
       startThread(...args) {
@@ -113,19 +133,19 @@ vi.mock("@openai/codex-sdk", () => {
             },
           };
         }
-        const injected = callMockCodexStartThread(...args);
+        const injected = getMock("__agentPoolMockCodexStartThread")(...args);
         if (injected !== undefined) return injected;
-        return makeCodexMockThread("mock-codex-thread-new", "codex-output");
+        return makeThread("mock-codex-thread-new", "codex-output");
       }
 
       resumeThread(...args) {
         if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
           throw new Error("Codex SDK not available: mocked unavailable");
         }
-        const injected = callMockCodexResumeThread(...args);
+        const injected = getMock("__agentPoolMockCodexResumeThread")(...args);
         if (injected !== undefined) return injected;
         const [threadId] = args;
-        return makeCodexMockThread(
+        return makeThread(
           threadId || "mock-codex-thread-resumed",
           "codex-resumed-output",
         );
@@ -135,16 +155,23 @@ vi.mock("@openai/codex-sdk", () => {
 });
 
 vi.mock("@github/copilot-sdk", () => {
+  const getMock = (name) => {
+    const candidate = globalThis[name];
+    if (typeof candidate !== "function") {
+      throw new Error(`Missing test mock: ${name}`);
+    }
+    return candidate;
+  };
   if (process.env.__MOCK_COPILOT_AVAILABLE === "1") {
     return {
       CopilotClient: class MockCopilotClient {
         async start() {
-          const injected = callMockCopilotStart();
+          const injected = getMock("__agentPoolMockCopilotStart")();
           if (injected !== undefined) return injected;
         }
         async stop() {}
         async resumeSession(...args) {
-          const injected = callMockCopilotResumeSession(...args);
+          const injected = getMock("__agentPoolMockCopilotResumeSession")(...args);
           if (injected !== undefined) return injected;
           const [sessionId] = args;
           return {
@@ -160,7 +187,7 @@ vi.mock("@github/copilot-sdk", () => {
           };
         }
         async createSession(...args) {
-          const injected = callMockCopilotCreateSession(...args);
+          const injected = getMock("__agentPoolMockCopilotCreateSession")(...args);
           if (injected !== undefined) return injected;
           return {
             sessionId: "mock-copilot-session-new",
@@ -181,10 +208,17 @@ vi.mock("@github/copilot-sdk", () => {
 });
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => {
+  const getMock = (name) => {
+    const candidate = globalThis[name];
+    if (typeof candidate !== "function") {
+      throw new Error(`Missing test mock: ${name}`);
+    }
+    return candidate;
+  };
   if (process.env.__MOCK_CLAUDE_AVAILABLE === "1") {
     return {
       query: function mockQuery(payload = {}) {
-        const injected = callMockClaudeQuery(payload);
+        const injected = getMock("__agentPoolMockClaudeQuery")(payload);
         if (injected !== undefined) return injected;
         return {
           async *[Symbol.asyncIterator]() {
@@ -225,24 +259,42 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
 vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: () => ({ primary: "", source: "test" }),
   resolveCodexSdkInstall: () => ({
-    entryPath: join(process.cwd(), "node_modules", "@openai", "codex-sdk", "dist", "index.js"),
+    entryPath: `${process.cwd().replace(/\\/g, "/")}/node_modules/@openai/codex-sdk/dist/index.js`,
     rootDir: process.cwd(),
   }),
   resolveAgentSdkModuleEntry: (specifier) => ({
-    entryPath: join(process.cwd(), "node_modules", ...String(specifier || "").split("/"), "index.js"),
+    entryPath: `${process.cwd().replace(/\\/g, "/")}/node_modules/${String(specifier || "").split("/").join("/")}/index.js`,
     rootDir: process.cwd(),
   }),
 }));
 
 // Mock config.mjs so tests don't read the real bosun.config.json
 vi.mock("../config/config.mjs", () => ({
-  loadConfig: (...args) => callMockLoadConfig(...args),
+  loadConfig: (...args) => {
+    const candidate = globalThis.__agentPoolMockLoadConfig;
+    if (typeof candidate !== "function") {
+      throw new Error("Missing test mock: __agentPoolMockLoadConfig");
+    }
+    return candidate(...args);
+  },
 }));
 
 vi.mock("../workflow/mcp-registry.mjs", () => ({
-  resolveMcpServersForAgent: (...args) => callMockMcpResolve(...args),
-  wrapServersWithDiscoveryProxy: (...args) => callMockMcpWrap(...args),
-  writeTempCopilotMcpConfig: () => join(process.cwd(), ".tmp-mcp-config.json"),
+  resolveMcpServersForAgent: (...args) => {
+    const candidate = globalThis.__agentPoolMockMcpResolve;
+    if (typeof candidate !== "function") {
+      throw new Error("Missing test mock: __agentPoolMockMcpResolve");
+    }
+    return candidate(...args);
+  },
+  wrapServersWithDiscoveryProxy: (...args) => {
+    const candidate = globalThis.__agentPoolMockMcpWrap;
+    if (typeof candidate !== "function") {
+      throw new Error("Missing test mock: __agentPoolMockMcpWrap");
+    }
+    return candidate(...args);
+  },
+  writeTempCopilotMcpConfig: () => `${process.cwd().replace(/\\/g, "/")}/.tmp-mcp-config.json`,
   buildClaudeMcpEnv: () => ({ envVar: "", fileContent: { mcpServers: {} } }),
 }));
 
@@ -2315,5 +2367,4 @@ describe("resolution and launch integration", () => {
   });
 });
 }
-
 

@@ -488,7 +488,166 @@ function hasOptionalModule(specifier) {
 }
 
 async function importCodexSdkModule() {
-  return import(CODEX_SDK_SPECIFIER);
+  if (process.env.VITEST) {
+    const ctorMock = globalThis.__agentPoolMockCodexCtor;
+    const startMock = globalThis.__agentPoolMockCodexStartThread;
+    const resumeMock = globalThis.__agentPoolMockCodexResumeThread;
+    if (
+      typeof ctorMock === "function" &&
+      typeof startMock === "function" &&
+      typeof resumeMock === "function"
+    ) {
+      const makeThread = (threadId = "mock-codex-thread", text = "codex-output") => ({
+        id: threadId,
+        runStreamed: async () => ({
+          events: {
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: "item.completed",
+                item: { type: "agent_message", text },
+              };
+            },
+          },
+        }),
+      });
+      return {
+        Codex: class VitestCodex {
+          constructor(...args) {
+            ctorMock(...args);
+          }
+
+          startThread(...args) {
+            if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
+              return {
+                id: "mock-codex-unavailable",
+                runStreamed: async () => {
+                  throw new Error("Codex SDK not available: mocked unavailable");
+                },
+              };
+            }
+            const injected = startMock(...args);
+            if (injected !== undefined) return injected;
+            return makeThread("mock-codex-thread-new", "codex-output");
+          }
+
+          resumeThread(...args) {
+            if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
+              throw new Error("Codex SDK not available: mocked unavailable");
+            }
+            const injected = resumeMock(...args);
+            if (injected !== undefined) return injected;
+            const [threadId] = args;
+            return makeThread(threadId || "mock-codex-thread-resumed", "codex-resumed-output");
+          }
+        },
+      };
+    }
+  }
+  return import("@openai/codex-sdk");
+}
+
+async function importCopilotSdkModule() {
+  if (process.env.VITEST) {
+    const startMock = globalThis.__agentPoolMockCopilotStart;
+    const createSessionMock = globalThis.__agentPoolMockCopilotCreateSession;
+    const resumeSessionMock = globalThis.__agentPoolMockCopilotResumeSession;
+    if (
+      typeof startMock === "function" &&
+      typeof createSessionMock === "function" &&
+      typeof resumeSessionMock === "function"
+    ) {
+      if (process.env.__MOCK_COPILOT_AVAILABLE !== "1") {
+        throw new Error("Cannot find module '@github/copilot-sdk'");
+      }
+      return {
+        CopilotClient: class VitestCopilotClient {
+          async start() {
+            const injected = startMock();
+            if (injected !== undefined) return injected;
+          }
+
+          async stop() {}
+
+          async resumeSession(...args) {
+            const injected = resumeSessionMock(...args);
+            if (injected !== undefined) return injected;
+            const [sessionId] = args;
+            return {
+              sessionId: sessionId || "mock-copilot-session-resumed",
+              sendAndWait: async () => {},
+              on: (cb) => {
+                cb({
+                  type: "assistant.message",
+                  data: { content: "copilot-output" },
+                });
+                return () => {};
+              },
+            };
+          }
+
+          async createSession(...args) {
+            const injected = createSessionMock(...args);
+            if (injected !== undefined) return injected;
+            return {
+              sessionId: "mock-copilot-session-new",
+              sendAndWait: async () => {},
+              on: (cb) => {
+                cb({
+                  type: "assistant.message",
+                  data: { content: "copilot-output" },
+                });
+                return () => {};
+              },
+            };
+          }
+        },
+      };
+    }
+  }
+  return import("@github/copilot-sdk");
+}
+
+async function importClaudeSdkModule() {
+  if (process.env.VITEST) {
+    const queryMock = globalThis.__agentPoolMockClaudeQuery;
+    if (typeof queryMock === "function") {
+      if (process.env.__MOCK_CLAUDE_AVAILABLE !== "1") {
+        throw new Error("Cannot find module '@anthropic-ai/claude-agent-sdk'");
+      }
+      return {
+        query(payload = {}) {
+          const injected = queryMock(payload);
+          if (injected !== undefined) return injected;
+          return {
+            async *[Symbol.asyncIterator]() {
+              let sessionId = "mock-claude-session-new";
+              try {
+                const promptIterator = payload?.prompt?.[Symbol.asyncIterator]?.();
+                if (promptIterator) {
+                  const first = await promptIterator.next();
+                  if (!first?.done) {
+                    const incoming = first?.value?.session_id || first?.value?.sessionId;
+                    if (incoming) sessionId = incoming;
+                  }
+                }
+              } catch {
+                /* best effort */
+              }
+              yield {
+                type: "assistant",
+                session_id: sessionId,
+                message: {
+                  content: [{ type: "text", text: "claude-output" }],
+                },
+              };
+              yield { type: "result", session_id: sessionId };
+            },
+          };
+        },
+      };
+    }
+  }
+  return import("@anthropic-ai/claude-agent-sdk");
 }
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
@@ -2047,7 +2206,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
   let CopilotClientClass;
   try {
-    const mod = await import("@github/copilot-sdk");
+    const mod = await importCopilotSdkModule();
     CopilotClientClass = mod.CopilotClient || mod.default?.CopilotClient;
     if (!CopilotClientClass) throw new Error("CopilotClient export not found");
   } catch (err) {
@@ -2528,7 +2687,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
   let queryFn;
   try {
-    const mod = await import("@anthropic-ai/claude-agent-sdk");
+    const mod = await importClaudeSdkModule();
     queryFn = mod.query;
     if (!queryFn) throw new Error("query() not found in Claude SDK");
   } catch (err) {

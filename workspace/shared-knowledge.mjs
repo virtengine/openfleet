@@ -435,17 +435,21 @@ function isEntryVisibleForContext(entry, context) {
 }
 
 async function loadContextPathAdjacency(repoRoot, directPaths = []) {
-  try {
-    await ensureContextIndexFresh({
-      rootDir: repoRoot,
-      changedFiles: directPaths,
-      useTreeSitter: false,
-      useZoekt: false,
-    });
-  } catch {
-    // best-effort refresh only
-  }
   const contextIndexDbPath = resolve(repoRoot, ".bosun", "context-index", "index.db");
+  const hasRefreshablePath = (Array.isArray(directPaths) ? directPaths : [])
+    .some((relPath) => existsSync(resolve(repoRoot, String(relPath || ""))));
+  if (hasRefreshablePath) {
+    try {
+      await ensureContextIndexFresh({
+        rootDir: repoRoot,
+        changedFiles: directPaths,
+        useTreeSitter: false,
+        useZoekt: false,
+      });
+    } catch {
+      // best-effort refresh only
+    }
+  }
   if (existsSync(contextIndexDbPath)) {
     try {
       const dbAdjacency = await getContextPathAdjacency(directPaths, {
