@@ -1,30 +1,150 @@
-import { useCallback, useEffect, useState } from "react";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import * as ReactModule from "react";
 
-import { listWorkflowSummaries } from "../../workflow/workflow-cli.mjs";
+const React = ReactModule.default ?? ReactModule;
+const useCallback = ReactModule.useCallback ?? React.useCallback;
+const useEffect = ReactModule.useEffect ?? React.useEffect;
+const useMemo = ReactModule.useMemo ?? React.useMemo;
+const useState = ReactModule.useState ?? React.useState;
+
+import { loadConfig } from "../../config/config.mjs";
+import { CONFIG_FILES } from "../../config/config-file-names.mjs";
+import { parseWorkflowInput } from "../../workflow/workflow-cli.mjs";
+import { getWorkflowEngine } from "../../workflow/workflow-engine.mjs";
+
+function resolveConfigFilePath(config) {
+  const configDir = String(config?.configDir || "").trim();
+  if (configDir) {
+    for (const fileName of CONFIG_FILES) {
+      const filePath = resolve(configDir, fileName);
+      if (existsSync(filePath)) return filePath;
+    }
+    return resolve(configDir, CONFIG_FILES[0]);
+  }
+  return resolve(process.cwd(), ".bosun", "bosun.config.json");
+}
+
+function readConfigDocument(config) {
+  const filePath = resolveConfigFilePath(config);
+  try {
+    const raw = existsSync(filePath) ? JSON.parse(readFileSync(filePath, "utf8")) : {};
+    return { filePath, raw: raw && typeof raw === "object" ? raw : {} };
+  } catch {
+    return { filePath, raw: {} };
+  }
+}
+
+function writeConfigDocument(filePath, raw) {
+  writeFileSync(filePath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+}
+
+function summarizeWorkflowDefinition(entry = {}) {
+  const requiredInputs = entry?.requiredInputs || entry?.required_inputs || entry?.inputSchema || {};
+  return {
+    ...entry,
+    requiredInputs,
+    schedule: entry?.schedule || entry?.trigger || "manual",
+    lastRunAt: entry?.lastRunAt || entry?.lastRun || null,
+    lastResult: entry?.lastResult || entry?.status || "-",
+  };
+}
+
+function createEngine(config) {
+  const configPath = resolveConfigFilePath(config);
+  const configDir = dirname(configPath);
+  return getWorkflowEngine({
+    configDir,
+    workflowDir: resolve(configDir, "workflows"),
+    runsDir: resolve(configDir, "workflow-runs"),
+  });
+}
 
 export function useWorkflows(config) {
+  const resolvedConfig = useMemo(() => config ?? loadConfig(process.argv), [config]);
   const [workflows, setWorkflows] = useState([]);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const summaries = await Promise.resolve(listWorkflowSummaries(config));
-      setWorkflows(Array.isArray(summaries) ? summaries : []);
+      const engine = createEngine(resolvedConfig);
+      const summaries = engine.list().map(summarizeWorkflowDefinition);
+      setWorkflows(summaries);
+      setHistory(engine.getRunHistory(null, 50));
       setError(null);
     } catch (err) {
       setError(String(err?.message || err));
     } finally {
       setLoading(false);
     }
-  }, [config]);
+  }, [resolvedConfig]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  return { workflows, loading, error, refresh };
+  const workflowMap = useMemo(
+    () => new Map((workflows || []).map((workflow) => [workflow.id, workflow])),
+    [workflows],
+  );
+
+  const getRunDetail = useCallback((runId) => {
+    try {
+      return createEngine(resolvedConfig).getRunDetail(runId);
+    } catch {
+      return null;
+    }
+  }, [resolvedConfig]);
+
+  const triggerWorkflow = useCallback(async (workflowId, input = {}) => {
+    const engine = createEngine(resolvedConfig);
+    const rawPayload = typeof input === "string" ? parseWorkflowInput(input) : input;
+    const payload = { ...rawPayload, _triggerSource: "manual" };
+    return engine.execute(workflowId, payload, { force: true });
+  }, [resolvedConfig]);
+
+  const cancelRun = useCallback(async (runId) => {
+    return createEngine(resolvedConfig).cancelRun(runId, { reason: "Cancelled from TUI" });
+  }, [resolvedConfig]);
+
+  const toggleWorkflow = useCallback(async (workflowId) => {
+    const { filePath, raw } = readConfigDocument(resolvedConfig);
+    const next = { ...raw, workflows: { ...(raw.workflows || {}) } };
+    const current = next.workflows[workflowId] && typeof next.workflows[workflowId] === "object"
+      ? { ...next.workflows[workflowId] }
+      : {};
+    current.enabled = current.enabled === false ? true : false;
+    next.workflows[workflowId] = current;
+    writeConfigDocument(filePath, next);
+    await refresh();
+    return current.enabled;
+  }, [refresh, resolvedConfig]);
+
+  const uninstallWorkflow = useCallback(async (workflowId) => {
+    const { filePath, raw } = readConfigDocument(resolvedConfig);
+    const nextWorkflows = { ...(raw.workflows || {}) };
+    delete nextWorkflows[workflowId];
+    writeConfigDocument(filePath, { ...raw, workflows: nextWorkflows });
+    await refresh();
+    return true;
+  }, [refresh, resolvedConfig]);
+
+  return {
+    workflows,
+    workflowMap,
+    history,
+    loading,
+    error,
+    refresh,
+    getRunDetail,
+    triggerWorkflow,
+    cancelRun,
+    toggleWorkflow,
+    uninstallWorkflow,
+  };
 }
 
 export default useWorkflows;

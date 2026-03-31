@@ -17,6 +17,7 @@ bosun-shared-workspaces.ps1
 
 # npm artifacts
 node_modules/
+.npm-cache*/
 *.tgz
 /.bosun/
 

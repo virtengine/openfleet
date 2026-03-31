@@ -27,7 +27,7 @@ const {
 } = nodeCrypto;
 const argon2 = typeof nodeArgon2 === "function" ? nodeArgon2 : null;
 
-// ── Response compression + caching helpers ──────────────────────────────────
+// Response compression + caching helpers
 const GZIP_MIN_BYTES = 1024;
 const COMPRESSIBLE_TYPES = /^(text\/|application\/json|application\/javascript|image\/svg)/;
 
@@ -41,10 +41,12 @@ async function compressAndSend(req, res, statusCode, headers, body) {
   if (buf.length >= GZIP_MIN_BYTES && COMPRESSIBLE_TYPES.test(ct) && acceptsGzip(req)) {
     try {
       const compressed = await gzipAsync(buf);
-      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
       res.end(compressed);
       return;
-    } catch { /* fall through to uncompressed */ }
+    } catch {
+      // Fall through to the uncompressed response path.
+    }
   }
   res.writeHead(statusCode, headers);
   res.end(buf);
@@ -11699,8 +11701,8 @@ async function readJsonBody(req, maxBytes = 1_000_000) {
       if (!data) return resolveBody(null);
       try {
         resolveBody(JSON.parse(data));
-      } catch (err) {
-        rejectBody(err);
+      } catch {
+        rejectBody(new Error("Invalid JSON body"));
       }
     });
   });
@@ -22965,7 +22967,7 @@ export async function startTelegramUiServer(options = {}) {
         }
         return;
       }
-      jsonResponse(res, 500, err);
+      jsonResponse(res, 500, { ok: false, error: "Internal server error" });
     }
   };
 
@@ -23080,6 +23082,12 @@ export async function startTelegramUiServer(options = {}) {
     function broadcastTaskEvent(type, task) {
       broadcastUiEvent(["tasks", "tui"], type, task);
     }
+
+    function broadcastWorkflowStatusEvent(payload) {
+      broadcastUiEvent(["workflows", "tui"], "workflow:status", payload);
+    }
+
+    globalThis.__bosun_broadcastWorkflowStatusEvent = broadcastWorkflowStatusEvent;
 
     wsServer.on("connection", (socket, req) => {
       socket.__channels = new Set(["*"]);
