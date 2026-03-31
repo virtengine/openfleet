@@ -973,6 +973,13 @@ Always use deterministic TF ops.
           hash: legacyEntry.hash,
         }),
       ]);
+      const rewrittenRegistry = JSON.parse(await readFile(registryPath, "utf8"));
+      expect(rewrittenRegistry.entries).toEqual([
+        expect.objectContaining({
+          content: "Workspace memory: seed deterministic data before replaying flaky workflows.",
+          hash: legacyEntry.hash,
+        }),
+      ]);
     });
 
     it("prefers memories tied to directly changed files over generic workspace memories", async () => {

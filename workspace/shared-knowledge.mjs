@@ -324,6 +324,9 @@ async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process
   const legacyRegistry = await loadLegacyRegistryEntries(repoRoot);
   if (legacyRegistry.entries.length > 0) {
     await backfillLedgerEntries(repoRoot, legacyRegistry.entries);
+    const syncedRegistry = loadLedgerRegistryEntries(repoRoot) || legacyRegistry;
+    await saveRegistryEntries(repoRoot, syncedRegistry);
+    return syncedRegistry;
   }
   return legacyRegistry;
 }
@@ -445,12 +448,15 @@ async function loadContextPathAdjacency(repoRoot, directPaths = []) {
   const contextIndexDbPath = resolve(repoRoot, ".bosun", "context-index", "index.db");
   if (existsSync(contextIndexDbPath)) {
     try {
-      return await getContextPathAdjacency(directPaths, {
+      const dbAdjacency = await getContextPathAdjacency(directPaths, {
         rootDir: repoRoot,
         relationTypes: [...PATH_ADJACENCY_RELATION_TYPES],
       });
+      if (dbAdjacency instanceof Map && dbAdjacency.size > 0) {
+        return dbAdjacency;
+      }
     } catch {
-      return new Map();
+      // fall back to the JSON projection below
     }
   }
   const indexPath = resolve(repoRoot, CONTEXT_INDEX_FILE);
