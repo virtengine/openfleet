@@ -500,7 +500,7 @@ describe("task-store DAG organization", () => {
     expect(ts.getTask("review-b")?.dependencyTaskIds || []).not.toContain("review-a");
   });
 
-  it("recovers timed blocked tasks back to todo", async () => {
+  it("does not auto-recover branch refresh conflicts that require repair workflow", async () => {
     const dir = makeTempDir("task-store-auto-recovery-");
     const storeDir = join(dir, ".bosun", ".cache");
     mkdirSync(storeDir, { recursive: true });
@@ -533,12 +533,15 @@ describe("task-store DAG organization", () => {
     const recovered = ts.recoverAutoBlockedTasks();
     const task = ts.getTask("blocked-auto-1");
 
-    expect(recovered.recoveredTaskIds).toEqual(["blocked-auto-1"]);
-    expect(task.status).toBe("todo");
-    expect(task.cooldownUntil).toBeNull();
-    expect(task.blockedReason).toBeNull();
-    expect(task.meta?.autoRecovery?.active).toBe(false);
-    expect(task.meta?.worktreeFailure).toBeUndefined();
+    expect(recovered.recoveredTaskIds).toEqual([]);
+    expect(task.status).toBe("blocked");
+    expect(task.cooldownUntil).toBe(retryAt);
+    expect(task.blockedReason).toBe("Auto recovery pending");
+    expect(task.meta?.autoRecovery?.active).toBe(true);
+    expect(task.meta?.worktreeFailure).toMatchObject({
+      failureKind: "branch_refresh_conflict",
+      blockedReason: "repair pending",
+    });
   });
 
   it("recovers blocked tasks with stale workflow placeholders", async () => {

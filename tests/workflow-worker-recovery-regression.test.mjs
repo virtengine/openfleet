@@ -26,4 +26,12 @@ describe("workflow worker recovery regressions", () => {
     expect(uiServerSource).toContain("!engine.isAvailable()");
     expect(uiServerSource).toContain("_wfEngineByWorkspace.delete(workspaceKey);");
   });
+
+  it("forwards agent pool bridge calls with the current prompt-plus-options signatures", () => {
+    expect(workerSource).toContain('async launchOrResumeThread(prompt, cwd, timeout, opts) {');
+    expect(workerSource).toContain('return callMainService("agentPool.launchOrResumeThread", [prompt, cwd, timeout, opts]);');
+    expect(workerSource).toContain('async execWithRetry(prompt, opts) {');
+    expect(workerSource).toContain('return callMainService("agentPool.execWithRetry", [prompt, opts]);');
+    expect(uiServerSource).toContain('if (fn === "execWithRetry")         return execWithRetry(args[0], args[1] || {});');
+  });
 });

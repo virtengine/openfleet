@@ -612,7 +612,7 @@ describe("trigger.task_available", () => {
     expect(result.blocked[0].blockingTaskIds).toEqual(["epic-b-task-1"]);
   });
 
-  it("recovers timed blocked worktree tasks back to todo before polling", async () => {
+  it("does not auto-recover branch refresh conflicts before polling", async () => {
     const nt = getNodeType("trigger.task_available");
     const retryAt = new Date(Date.now() - 60_000).toISOString();
     let todoTasks = [];
@@ -621,11 +621,17 @@ describe("trigger.task_available", () => {
       title: "Blocked WT task",
       status: "blocked",
       cooldownUntil: retryAt,
+      blockedReason: "Repair workflow pending",
       meta: {
         autoRecovery: {
           active: true,
           reason: "worktree_failure",
           retryAt,
+        },
+        worktreeFailure: {
+          failureKind: "branch_refresh_conflict",
+          retryable: false,
+          blockedReason: "repair pending",
         },
       },
     };
@@ -656,14 +662,8 @@ describe("trigger.task_available", () => {
       },
     });
 
-    expect(updateTask).toHaveBeenCalledTimes(1);
-    expect(updateTask).toHaveBeenCalledWith("blocked-worktree-task", expect.objectContaining({
-      status: "todo",
-      cooldownUntil: null,
-      blockedReason: null,
-    }));
-    expect(result.triggered).toBe(true);
-    expect(result.selectedTaskId).toBe("blocked-worktree-task");
+    expect(updateTask).not.toHaveBeenCalled();
+    expect(result.triggered).toBe(false);
   });
 
   it("bypasses missing-task guard by default and emits audit event", async () => {

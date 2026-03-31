@@ -65,12 +65,11 @@ async function initEngine(cfg = {}) {
     async launchEphemeralThread(prompt, cwd, timeout, opts) {
       return callMainService("agentPool.launchEphemeralThread", [prompt, cwd, timeout, opts]);
     },
-    async launchOrResumeThread(prompt, cwd, opts) {
-      return callMainService("agentPool.launchOrResumeThread", [prompt, cwd, opts]);
+    async launchOrResumeThread(prompt, cwd, timeout, opts) {
+      return callMainService("agentPool.launchOrResumeThread", [prompt, cwd, timeout, opts]);
     },
-    async execWithRetry(taskKey, fn, opts) {
-      /* execWithRetry takes a function — not serialisable; call main-thread shim */
-      return callMainService("agentPool.execWithRetry", [taskKey, null, opts]);
+    async execWithRetry(prompt, opts) {
+      return callMainService("agentPool.execWithRetry", [prompt, opts]);
     },
     async continueSession(sessionId, prompt, opts) {
       return callMainService("agentPool.continueSession", [sessionId, prompt, opts]);

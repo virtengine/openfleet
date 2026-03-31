@@ -3095,6 +3095,7 @@ async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }
   for (const task of Array.isArray(blockedTasks) ? blockedTasks : []) {
     const autoRecovery = task?.meta?.autoRecovery;
     const worktreeFailure = task?.meta?.worktreeFailure;
+    const failureKind = String(worktreeFailure?.failureKind || autoRecovery?.failureKind || "").trim();
     const hasPlaceholder = hasStaleWorktreePlaceholders(task);
     const isRecoverableBlockedTask = (
       autoRecovery &&
@@ -3105,6 +3106,7 @@ async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }
       typeof worktreeFailure === "object"
     ) || hasPlaceholder;
     if (!isRecoverableBlockedTask) continue;
+    if (failureKind === "branch_refresh_conflict" && !hasPlaceholder) continue;
 
     const retryAtMs = resolveRetryAtMs(task, autoRecovery);
     if (Number.isFinite(retryAtMs) && retryAtMs > nowMs) continue;
@@ -17736,7 +17738,7 @@ export function classifyAcquireWorktreeFailure(errorInput) {
       errorMessage: normalized,
       retryable: false,
       failureKind: "branch_refresh_conflict",
-      blockedReason: "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.",
+      blockedReason: "Managed worktree refresh conflict detected; task remains blocked until repair workflow succeeds.",
       detectedIssues: ["refresh_conflict"],
       phase: "post-pull",
     };
@@ -18269,8 +18271,9 @@ registerBuiltinNodeType("action.acquire_worktree", {
         phase,
       } = classified;
       const recordedAt = new Date().toISOString();
-      const autoRecoverDelayMs = retryable ? 0 : getNonRetryableWorktreeRecoveryMs();
-      const retryAt = retryable ? null : new Date(Date.now() + autoRecoverDelayMs).toISOString();
+      const shouldScheduleAutoRecovery = !retryable && failureKind !== "branch_refresh_conflict";
+      const autoRecoverDelayMs = shouldScheduleAutoRecovery ? getNonRetryableWorktreeRecoveryMs() : 0;
+      const retryAt = shouldScheduleAutoRecovery ? new Date(Date.now() + autoRecoverDelayMs).toISOString() : null;
       if (!retryable) {
         await recordWorktreeRecoveryEvent(repoRoot, {
           outcome: "recreation_failed",

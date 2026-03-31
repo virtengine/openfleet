@@ -1038,6 +1038,16 @@ class InternalAdapter {
     }
     const updates = {};
     const baseBranch = resolveBaseBranchInput(patch);
+    const baseBranchProvided =
+      hasOwnField(patch, "baseBranch") ||
+      hasOwnField(patch, "base_branch") ||
+      hasOwnField(patch, "upstream_branch") ||
+      hasOwnField(patch, "upstreamBranch") ||
+      hasOwnField(patch, "upstream") ||
+      hasOwnField(patch, "target_branch") ||
+      hasOwnField(patch, "targetBranch") ||
+      hasOwnField(patch, "base") ||
+      hasOwnField(patch, "target");
     if (typeof patch.title === "string") updates.title = patch.title;
     if (typeof patch.description === "string") updates.description = patch.description;
     if (typeof patch.status === "string" && patch.status.trim()) {
@@ -1095,8 +1105,8 @@ class InternalAdapter {
     }
     const current = getInternalTask(normalizedId);
     const replaceMeta = patch.replaceMeta === true;
-    if (baseBranch) {
-      updates.baseBranch = baseBranch;
+    if (baseBranchProvided) {
+      updates.baseBranch = baseBranch || null;
     }
     if (assigneeProvided || assignee || assignees.length > 0) {
       updates.assignee = assignee || assignees[0] || null;
@@ -1141,17 +1151,24 @@ class InternalAdapter {
         ...(Array.isArray(patch.repositories) ? { repositories: patch.repositories } : {}),
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
       };
+      if (baseBranchProvided && !baseBranch) {
+        delete updates.meta.baseBranch;
+        delete updates.meta.base_branch;
+      }
       for (const [key, value] of Object.entries(patch.meta)) {
         if (value == null && Object.prototype.hasOwnProperty.call(updates.meta, key)) {
           delete updates.meta[key];
         }
       }
-    } else if (baseBranch) {
+    } else if (baseBranchProvided) {
       updates.meta = {
         ...(current?.meta || {}),
-        base_branch: baseBranch,
-        baseBranch,
+        ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
       };
+      if (!baseBranch) {
+        delete updates.meta.baseBranch;
+        delete updates.meta.base_branch;
+      }
     }
     const directLinkage = mergePrLinkageRecords(current?.prLinkage, current?.meta?.prLinkage, patch.prLinkage, patch.meta?.prLinkage, [normalizePrLinkageEntry(patch, patch)]);
     if (directLinkage.length > 0) {
@@ -1696,7 +1713,7 @@ function extractBaseBranchFromLabels(labels) {
 function extractBaseBranchFromText(text) {
   if (!text) return null;
   const match = String(text || "").match(
-    /\b(?:upstream|base|target)(?:_branch| branch)?\s*[:=]\s*([A-Za-z0-9._/-]+)/i,
+    /\b(?:(?:upstream|base)(?:_branch| branch)?|target(?:_branch| branch))\s*[:=]\s*([A-Za-z0-9._/-]+)/i,
   );
   if (!match?.[1]) return null;
   return normalizeBranchName(match[1]);
@@ -1722,7 +1739,7 @@ function upsertBaseBranchMarker(text, baseBranch) {
   if (!branch) return String(text || "");
   const source = String(text || "");
   const pattern =
-    /\b(?:upstream|base|target)(?:_branch| branch)?\s*[:=]\s*([A-Za-z0-9._/-]+)/i;
+    /\b(?:(?:upstream|base)(?:_branch| branch)?|target(?:_branch| branch))\s*[:=]\s*([A-Za-z0-9._/-]+)/i;
   if (pattern.test(source)) {
     return source.replace(pattern, `base_branch: ${branch}`);
   }

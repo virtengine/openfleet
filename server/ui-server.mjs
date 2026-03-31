@@ -1523,7 +1523,7 @@ class WorkflowEngineProxy {
       case "agentPool": {
         if (fn === "launchEphemeralThread") return launchEphemeralThread(...args);
         if (fn === "launchOrResumeThread")  return launchOrResumeThread(...args);
-        if (fn === "execWithRetry")         return execWithRetry(args[0], () => Promise.resolve(), args[2] || {});
+        if (fn === "execWithRetry")         return execWithRetry(args[0], args[1] || {});
         if (fn === "continueSession") {
           const [sessionId, prompt, opts = {}] = args;
           return launchEphemeralThread(prompt, opts.cwd || process.cwd(), opts.timeout || 3600000, { resumeThreadId: sessionId, sdk: opts.sdk });

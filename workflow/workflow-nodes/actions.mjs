@@ -6519,7 +6519,7 @@ export function classifyAcquireWorktreeFailure(errorInput) {
       errorMessage,
       retryable: false,
       failureKind: "branch_refresh_conflict",
-      blockedReason: "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.",
+      blockedReason: "Managed worktree refresh conflict detected; task remains blocked until repair workflow succeeds.",
       detectedIssues: ["refresh_conflict"],
       phase: "post-pull",
     };

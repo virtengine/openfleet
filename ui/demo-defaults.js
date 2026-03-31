@@ -2428,8 +2428,8 @@
         "session-tracked",
         "worktree-managed"
       ],
-      "nodeCount": 15,
-      "edgeCount": 14,
+      "nodeCount": 17,
+      "edgeCount": 19,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.manual",
@@ -2533,18 +2533,19 @@
           ]
         },
         {
-          "id": "setup-worktree",
+          "id": "validate-pr-state",
           "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
+          "label": "Validate PR Is Still Open",
           "config": {
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const mergedAt=String(view?.mergedAt||'').trim()||null;   const closedAt=String(view?.closedAt||'').trim()||null;   const merged=state==='MERGED'||Boolean(mergedAt);   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);   const shouldResolveTask=Boolean(targetTaskStatus);   const reason=open?'open':(merged?'pr_merged':(state==='CLOSED'?'pr_closed':(isDraft?'draft_pr':'pr_not_open')));   console.log(JSON.stringify({ok:open,open,skip:!open,reason,state,isDraft,merged,mergedAt,closedAt,shouldResolveTask,targetTaskStatus,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
             "env": {
               "PR_REPO": "{{prParams.repo}}",
               "PR_BRANCH": "{{prParams.branch}}",
@@ -2561,6 +2562,69 @@
           ]
         },
         {
+          "id": "resolve-pr-task",
+          "type": "action.run_command",
+          "label": "Resolve Task For Closed or Merged PR",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const taskId=String(process.env.TASK_ID||'').trim(); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const url=String(process.env.PR_URL||'').trim(); const state=String(process.env.PR_STATE||'').trim().toUpperCase(); const mergedAt=String(process.env.PR_MERGED_AT||'').trim()||null; const closedAt=String(process.env.PR_CLOSED_AT||'').trim()||null; const reason=String(process.env.PR_REASON||'').trim(); const explicitStatus=String(process.env.TARGET_TASK_STATUS||'').trim().toLowerCase(); const targetTaskStatus=explicitStatus||(state==='MERGED'||mergedAt?'done':(state==='CLOSED'?'cancelled':'')); const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); const maxBuffer=25*1024*1024; function parseJson(raw,fallback){try{return JSON.parse(String(raw||''));}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} if(!taskRunner){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_command_missing',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} if(!taskId||!targetTaskStatus){console.log(JSON.stringify({resolved:false,skipped:true,reason:'missing_task_or_status',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} let snapshot=null; try{snapshot=parseJson(runTask(['get',taskId,'--json']),null);}catch(err){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_lookup_failed',taskId,targetTaskStatus,error:String(err?.message||err)}));process.exit(0);} if(!snapshot||typeof snapshot!=='object'){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_not_found',taskId,targetTaskStatus}));process.exit(0);} const previousStatus=String(snapshot?.status||'').trim().toLowerCase()||null; const existingComments=Array.isArray(snapshot?.comments)?snapshot.comments:(Array.isArray(snapshot?.meta?.comments)?snapshot.meta.comments:[]); const resolutionKey='pr-resolution:'+repo+'#'+num+':'+targetTaskStatus; const alreadyCommented=existingComments.some((comment)=>String(comment?.meta?.resolutionKey||'').trim()===resolutionKey); const timestamp=new Date().toISOString(); const prLabel=num?'PR #'+num:'associated PR'; let message=''; if(targetTaskStatus==='done'){message=prLabel+(url?' ('+url+')':'')+' was merged'+(mergedAt?' at '+mergedAt:'')+'. Bosun marked this task done because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else if(targetTaskStatus==='cancelled'){message=prLabel+(url?' ('+url+')':'')+' was closed without merge'+(closedAt?' at '+closedAt:'')+'. Bosun cancelled this task because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else{message=prLabel+(url?' ('+url+')':'')+' changed state to '+(state||'unknown')+'.';} if(reason) message+=' Resolution trigger: '+reason+'.'; const nextComments=alreadyCommented?existingComments:[...existingComments,{body:message,author:'bosun',source:'workflow',kind:'pr-resolution',createdAt:timestamp,meta:{resolutionKey,repo,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null}}]; const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{}; const patch={status:targetTaskStatus,comments:nextComments,meta:{...existingMeta,lastPrResolution:{repo:repo||null,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null,mergedAt,closedAt,resolvedAt:timestamp}}}; runTask(['update',taskId,JSON.stringify(patch)]); console.log(JSON.stringify({resolved:true,taskId,targetTaskStatus,previousStatus,commentAdded:!alreadyCommented,repo,number:num,url:url||null,state:state||null,reason:reason||null}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
+            "env": {
+              "TASK_ID": "{{taskId}}",
+              "PR_REPO": "{{setup-worktree.output.repo || validate-pr-state.output.repo || prParams.repo}}",
+              "PR_NUMBER": "{{setup-worktree.output.number || validate-pr-state.output.number || prParams.number}}",
+              "PR_BRANCH": "{{setup-worktree.output.branch || validate-pr-state.output.branch || prParams.branch}}",
+              "PR_URL": "{{setup-worktree.output.url || validate-pr-state.output.url || data.item.url || data.item.prDigest.core.url || ''}}",
+              "PR_STATE": "{{setup-worktree.output.state || validate-pr-state.output.state || ''}}",
+              "PR_MERGED_AT": "{{setup-worktree.output.mergedAt || validate-pr-state.output.mergedAt || ''}}",
+              "PR_CLOSED_AT": "{{setup-worktree.output.closedAt || validate-pr-state.output.closedAt || ''}}",
+              "TARGET_TASK_STATUS": "{{setup-worktree.output.targetTaskStatus || validate-pr-state.output.targetTaskStatus || ''}}",
+              "PR_REASON": "{{setup-worktree.output.reason || validate-pr-state.output.reason || ''}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "setup-worktree",
+          "type": "action.run_command",
+          "label": "Clone & Checkout PR Branch",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); function readErr(err){return [String(err?.message||''),String(err?.stderr||''),String(err?.stdout||'')].filter(Boolean).join(' ');} function isMissingBranchError(err){const text=readErr(err);return /remote branch .* not found|couldn't find remote ref|remote ref does not exist|invalid reference: origin\\//i.test(text);} function viewPrState(){   try{     const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();     const view=JSON.parse(raw||'{}');     const state=String(view?.state||'').trim().toUpperCase();     const mergedAt=String(view?.mergedAt||'').trim()||null;     const closedAt=String(view?.closedAt||'').trim()||null;     const merged=state==='MERGED'||Boolean(mergedAt);     const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);     return {state,merged,mergedAt,closedAt,targetTaskStatus,shouldResolveTask:Boolean(targetTaskStatus),url:String(view?.url||'').trim()||null,branch:String(view?.headRefName||branch||'').trim()||branch,base:String(view?.baseRefName||base||'main').trim()||base||'main'};   }catch(err){     return {state:null,merged:false,mergedAt:null,closedAt:null,targetTaskStatus:null,shouldResolveTask:false,url:null,branch,base,error:String(err?.message||err)};   } } try{   let reused=false;   if(fs.existsSync(path.join(wt,'.git'))){     try{       const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();       if(cur===branch){         execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});         execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});         execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});         try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}         reused=true;       }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}     }catch(err){       if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}       try{fs.rmSync(wt,{recursive:true,force:true});}catch{}       throw err;     }   }   if(!reused){     if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}     execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});     execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});     execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});     try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}   }   const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();   if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);}   console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused,skip:false})); }catch(err){   if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}   console.error(readErr(err)||String(err?.message||err));   process.exit(1); }"
+            ],
+            "parseJson": true,
+            "failOnError": true,
+            "timeoutMs": 600000,
+            "env": {
+              "PR_REPO": "{{validate-pr-state.output.repo || prParams.repo}}",
+              "PR_BRANCH": "{{validate-pr-state.output.branch || prParams.branch}}",
+              "PR_BASE": "{{validate-pr-state.output.base || prParams.base}}",
+              "PR_NUMBER": "{{validate-pr-state.output.number || prParams.number}}"
+            }
+          },
+          "position": {
+            "x": 2060,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-worktree-path",
           "type": "action.set_variable",
           "label": "Set Agent Working Directory",
@@ -2569,7 +2633,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 1780,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -2597,7 +2661,7 @@
             }
           },
           "position": {
-            "x": 2060,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -2614,7 +2678,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -2631,7 +2695,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2620,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -2655,7 +2719,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2900,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -2683,7 +2747,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -2707,7 +2771,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -2734,7 +2798,7 @@
             }
           },
           "position": {
-            "x": 3740,
+            "x": 4300,
             "y": 100
           },
           "outputs": [
@@ -2758,7 +2822,7 @@
             }
           },
           "position": {
-            "x": 4020,
+            "x": 4580,
             "y": 100
           },
           "outputs": [
@@ -2792,16 +2856,45 @@
           "sourcePort": "default"
         },
         {
-          "id": "resolve-pr-params->setup-worktree",
+          "id": "resolve-pr-params->validate-pr-state",
           "source": "resolve-pr-params",
-          "target": "setup-worktree",
+          "target": "validate-pr-state",
           "sourcePort": "default"
+        },
+        {
+          "id": "validate-pr-state->setup-worktree",
+          "source": "validate-pr-state",
+          "target": "setup-worktree",
+          "sourcePort": "default",
+          "condition": "$output?.open === true"
+        },
+        {
+          "id": "validate-pr-state->resolve-pr-task",
+          "source": "validate-pr-state",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask === true"
+        },
+        {
+          "id": "validate-pr-state->release-claim",
+          "source": "validate-pr-state",
+          "target": "release-claim",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask !== true"
+        },
+        {
+          "id": "setup-worktree->resolve-pr-task",
+          "source": "setup-worktree",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.skip === true && $output?.shouldResolveTask === true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
           "source": "setup-worktree",
           "target": "set-worktree-path",
-          "sourcePort": "default"
+          "sourcePort": "default",
+          "condition": "$output?.skip !== true"
         },
         {
           "id": "set-worktree-path->detect-conflicts",
@@ -2843,6 +2936,12 @@
           "id": "cleanup-worktree->update-sibling-branches",
           "source": "cleanup-worktree",
           "target": "update-sibling-branches",
+          "sourcePort": "default"
+        },
+        {
+          "id": "resolve-pr-task->release-claim",
+          "source": "resolve-pr-task",
+          "target": "release-claim",
           "sourcePort": "default"
         },
         {
@@ -3644,8 +3743,8 @@
         "session-tracked",
         "worktree-managed"
       ],
-      "nodeCount": 13,
-      "edgeCount": 12,
+      "nodeCount": 15,
+      "edgeCount": 17,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.manual",
@@ -3750,18 +3849,19 @@
           ]
         },
         {
-          "id": "setup-worktree",
+          "id": "validate-pr-state",
           "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
+          "label": "Validate PR Is Still Open",
           "config": {
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const mergedAt=String(view?.mergedAt||'').trim()||null;   const closedAt=String(view?.closedAt||'').trim()||null;   const merged=state==='MERGED'||Boolean(mergedAt);   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);   const shouldResolveTask=Boolean(targetTaskStatus);   const reason=open?'open':(merged?'pr_merged':(state==='CLOSED'?'pr_closed':(isDraft?'draft_pr':'pr_not_open')));   console.log(JSON.stringify({ok:open,open,skip:!open,reason,state,isDraft,merged,mergedAt,closedAt,shouldResolveTask,targetTaskStatus,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
             "env": {
               "PR_REPO": "{{prParams.repo}}",
               "PR_BRANCH": "{{prParams.branch}}",
@@ -3778,6 +3878,69 @@
           ]
         },
         {
+          "id": "resolve-pr-task",
+          "type": "action.run_command",
+          "label": "Resolve Task For Closed or Merged PR",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const taskId=String(process.env.TASK_ID||'').trim(); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const url=String(process.env.PR_URL||'').trim(); const state=String(process.env.PR_STATE||'').trim().toUpperCase(); const mergedAt=String(process.env.PR_MERGED_AT||'').trim()||null; const closedAt=String(process.env.PR_CLOSED_AT||'').trim()||null; const reason=String(process.env.PR_REASON||'').trim(); const explicitStatus=String(process.env.TARGET_TASK_STATUS||'').trim().toLowerCase(); const targetTaskStatus=explicitStatus||(state==='MERGED'||mergedAt?'done':(state==='CLOSED'?'cancelled':'')); const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); const maxBuffer=25*1024*1024; function parseJson(raw,fallback){try{return JSON.parse(String(raw||''));}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} if(!taskRunner){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_command_missing',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} if(!taskId||!targetTaskStatus){console.log(JSON.stringify({resolved:false,skipped:true,reason:'missing_task_or_status',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} let snapshot=null; try{snapshot=parseJson(runTask(['get',taskId,'--json']),null);}catch(err){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_lookup_failed',taskId,targetTaskStatus,error:String(err?.message||err)}));process.exit(0);} if(!snapshot||typeof snapshot!=='object'){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_not_found',taskId,targetTaskStatus}));process.exit(0);} const previousStatus=String(snapshot?.status||'').trim().toLowerCase()||null; const existingComments=Array.isArray(snapshot?.comments)?snapshot.comments:(Array.isArray(snapshot?.meta?.comments)?snapshot.meta.comments:[]); const resolutionKey='pr-resolution:'+repo+'#'+num+':'+targetTaskStatus; const alreadyCommented=existingComments.some((comment)=>String(comment?.meta?.resolutionKey||'').trim()===resolutionKey); const timestamp=new Date().toISOString(); const prLabel=num?'PR #'+num:'associated PR'; let message=''; if(targetTaskStatus==='done'){message=prLabel+(url?' ('+url+')':'')+' was merged'+(mergedAt?' at '+mergedAt:'')+'. Bosun marked this task done because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else if(targetTaskStatus==='cancelled'){message=prLabel+(url?' ('+url+')':'')+' was closed without merge'+(closedAt?' at '+closedAt:'')+'. Bosun cancelled this task because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else{message=prLabel+(url?' ('+url+')':'')+' changed state to '+(state||'unknown')+'.';} if(reason) message+=' Resolution trigger: '+reason+'.'; const nextComments=alreadyCommented?existingComments:[...existingComments,{body:message,author:'bosun',source:'workflow',kind:'pr-resolution',createdAt:timestamp,meta:{resolutionKey,repo,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null}}]; const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{}; const patch={status:targetTaskStatus,comments:nextComments,meta:{...existingMeta,lastPrResolution:{repo:repo||null,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null,mergedAt,closedAt,resolvedAt:timestamp}}}; runTask(['update',taskId,JSON.stringify(patch)]); console.log(JSON.stringify({resolved:true,taskId,targetTaskStatus,previousStatus,commentAdded:!alreadyCommented,repo,number:num,url:url||null,state:state||null,reason:reason||null}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
+            "env": {
+              "TASK_ID": "{{taskId}}",
+              "PR_REPO": "{{setup-worktree.output.repo || validate-pr-state.output.repo || prParams.repo}}",
+              "PR_NUMBER": "{{setup-worktree.output.number || validate-pr-state.output.number || prParams.number}}",
+              "PR_BRANCH": "{{setup-worktree.output.branch || validate-pr-state.output.branch || prParams.branch}}",
+              "PR_URL": "{{setup-worktree.output.url || validate-pr-state.output.url || data.item.url || data.item.prDigest.core.url || ''}}",
+              "PR_STATE": "{{setup-worktree.output.state || validate-pr-state.output.state || ''}}",
+              "PR_MERGED_AT": "{{setup-worktree.output.mergedAt || validate-pr-state.output.mergedAt || ''}}",
+              "PR_CLOSED_AT": "{{setup-worktree.output.closedAt || validate-pr-state.output.closedAt || ''}}",
+              "TARGET_TASK_STATUS": "{{setup-worktree.output.targetTaskStatus || validate-pr-state.output.targetTaskStatus || ''}}",
+              "PR_REASON": "{{setup-worktree.output.reason || validate-pr-state.output.reason || ''}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "setup-worktree",
+          "type": "action.run_command",
+          "label": "Clone & Checkout PR Branch",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); function readErr(err){return [String(err?.message||''),String(err?.stderr||''),String(err?.stdout||'')].filter(Boolean).join(' ');} function isMissingBranchError(err){const text=readErr(err);return /remote branch .* not found|couldn't find remote ref|remote ref does not exist|invalid reference: origin\\//i.test(text);} function viewPrState(){   try{     const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();     const view=JSON.parse(raw||'{}');     const state=String(view?.state||'').trim().toUpperCase();     const mergedAt=String(view?.mergedAt||'').trim()||null;     const closedAt=String(view?.closedAt||'').trim()||null;     const merged=state==='MERGED'||Boolean(mergedAt);     const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);     return {state,merged,mergedAt,closedAt,targetTaskStatus,shouldResolveTask:Boolean(targetTaskStatus),url:String(view?.url||'').trim()||null,branch:String(view?.headRefName||branch||'').trim()||branch,base:String(view?.baseRefName||base||'main').trim()||base||'main'};   }catch(err){     return {state:null,merged:false,mergedAt:null,closedAt:null,targetTaskStatus:null,shouldResolveTask:false,url:null,branch,base,error:String(err?.message||err)};   } } try{   let reused=false;   if(fs.existsSync(path.join(wt,'.git'))){     try{       const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();       if(cur===branch){         execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});         execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});         execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});         try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}         reused=true;       }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}     }catch(err){       if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}       try{fs.rmSync(wt,{recursive:true,force:true});}catch{}       throw err;     }   }   if(!reused){     if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}     execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});     execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});     execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});     try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}   }   const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();   if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);}   console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused,skip:false})); }catch(err){   if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}   console.error(readErr(err)||String(err?.message||err));   process.exit(1); }"
+            ],
+            "parseJson": true,
+            "failOnError": true,
+            "timeoutMs": 600000,
+            "env": {
+              "PR_REPO": "{{validate-pr-state.output.repo || prParams.repo}}",
+              "PR_BRANCH": "{{validate-pr-state.output.branch || prParams.branch}}",
+              "PR_BASE": "{{validate-pr-state.output.base || prParams.base}}",
+              "PR_NUMBER": "{{validate-pr-state.output.number || prParams.number}}"
+            }
+          },
+          "position": {
+            "x": 2060,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-worktree-path",
           "type": "action.set_variable",
           "label": "Set Agent Working Directory",
@@ -3786,7 +3949,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 1780,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -3803,7 +3966,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2060,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -3820,7 +3983,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -3844,7 +4007,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2620,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -3872,7 +4035,7 @@
             }
           },
           "position": {
-            "x": 2900,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -3896,7 +4059,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -3920,7 +4083,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -3954,16 +4117,45 @@
           "sourcePort": "default"
         },
         {
-          "id": "resolve-pr-params->setup-worktree",
+          "id": "resolve-pr-params->validate-pr-state",
           "source": "resolve-pr-params",
-          "target": "setup-worktree",
+          "target": "validate-pr-state",
           "sourcePort": "default"
+        },
+        {
+          "id": "validate-pr-state->setup-worktree",
+          "source": "validate-pr-state",
+          "target": "setup-worktree",
+          "sourcePort": "default",
+          "condition": "$output?.open === true"
+        },
+        {
+          "id": "validate-pr-state->resolve-pr-task",
+          "source": "validate-pr-state",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask === true"
+        },
+        {
+          "id": "validate-pr-state->release-claim",
+          "source": "validate-pr-state",
+          "target": "release-claim",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask !== true"
+        },
+        {
+          "id": "setup-worktree->resolve-pr-task",
+          "source": "setup-worktree",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.skip === true && $output?.shouldResolveTask === true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
           "source": "setup-worktree",
           "target": "set-worktree-path",
-          "sourcePort": "default"
+          "sourcePort": "default",
+          "condition": "$output?.skip !== true"
         },
         {
           "id": "set-worktree-path->setup-prompt",
@@ -3993,6 +4185,12 @@
           "id": "push-fixes->cleanup-worktree",
           "source": "push-fixes",
           "target": "cleanup-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "resolve-pr-task->release-claim",
+          "source": "resolve-pr-task",
+          "target": "release-claim",
           "sourcePort": "default"
         },
         {
@@ -12559,8 +12757,8 @@
         "recovery",
         "autofix"
       ],
-      "nodeCount": 9,
-      "edgeCount": 9,
+      "nodeCount": 8,
+      "edgeCount": 8,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
@@ -12623,31 +12821,11 @@
           ]
         },
         {
-          "id": "load-recovery-strategies",
-          "type": "action.load_skillbook_strategies",
-          "label": "Load Recovery Strategies",
-          "config": {
-            "workflowId": "",
-            "category": "strategy",
-            "status": "promoted",
-            "query": "{{taskTitle}} {{lastError}}",
-            "limit": 4,
-            "outputVariable": "recoverySkillbookGuidance"
-          },
-          "position": {
-            "x": 600,
-            "y": 330
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "analyze-error",
           "type": "action.run_agent",
           "label": "Analyze Failure",
           "config": {
-            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}\n\nReusable prior strategies:\n{{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}",
+            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}",
             "timeoutMs": 300000
           },
           "position": {
@@ -12663,7 +12841,7 @@
           "type": "action.run_agent",
           "label": "Retry Task",
           "config": {
-            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n- reusableStrategies: {{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
+            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
             "timeoutMs": 3600000,
             "failOnError": true,
             "maxRetries": "{{maxRetries}}",
@@ -12751,9 +12929,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "check-retries->load-recovery-strategies",
+          "id": "check-retries->analyze-error",
           "source": "check-retries",
-          "target": "load-recovery-strategies",
+          "target": "analyze-error",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -12763,12 +12941,6 @@
           "target": "escalate",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "load-recovery-strategies->analyze-error",
-          "source": "load-recovery-strategies",
-          "target": "analyze-error",
-          "sourcePort": "default"
         },
         {
           "id": "analyze-error->retry-task",
@@ -12816,31 +12988,26 @@
         "health",
         "config",
         "doctor",
-        "monitoring",
-        "self-improvement",
-        "benchmark"
+        "monitoring"
       ],
-      "nodeCount": 17,
-      "edgeCount": 18,
+      "nodeCount": 7,
+      "edgeCount": 8,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.schedule",
       "variables": {
-        "intervalMs": 3600000,
-        "maxBenchmarkRuns": 12
+        "intervalMs": 3600000
       },
       "metadata": {
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.1.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "health",
           "config",
           "doctor",
-          "monitoring",
-          "self-improvement",
-          "benchmark"
+          "monitoring"
         ],
         "replaces": {
           "module": "config-doctor.mjs",
@@ -12919,30 +13086,6 @@
           ]
         },
         {
-          "id": "collect-recent-runs",
-          "type": "action.run_command",
-          "label": "Collect Recent Runs",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const maxRuns = Math.max(1, parseInt(process.env.MAX_BENCHMARK_RUNS || \"12\", 10) || 12);\n        const runsDir = path.resolve(process.cwd(), \".bosun\", \"workflow-runs\");\n        const indexPath = path.join(runsDir, \"index.json\");\n        let entries = [];\n        if (fs.existsSync(indexPath)) {\n          try {\n            const raw = JSON.parse(fs.readFileSync(indexPath, \"utf8\"));\n            entries = Array.isArray(raw) ? raw : (Array.isArray(raw?.runs) ? raw.runs : []);\n          } catch {}\n        }\n        const candidates = entries\n          .filter((entry) => entry && entry.runId && [\"completed\", \"failed\"].includes(String(entry.status || \"\").toLowerCase()))\n          .sort((left, right) => Number(right?.startedAt || 0) - Number(left?.startedAt || 0))\n          .slice(0, maxRuns)\n          .map((entry) => ({\n            runId: entry.runId,\n            workflowId: entry.workflowId || null,\n            workflowName: entry.workflowName || null,\n            status: entry.status || null,\n            startedAt: entry.startedAt || null,\n            score: entry.score ?? null,\n            issueAdvisorRecommendation: entry.issueAdvisorRecommendation || null,\n          }));\n        const selected = candidates[0] || null;\n        console.log(JSON.stringify({\n          count: candidates.length,\n          candidates,\n          selectedRunId: selected?.runId || null,\n          selectedWorkflowId: selected?.workflowId || null,\n        }));\n      "
-            ],
-            "env": {
-              "MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
-            },
-            "parseJson": true,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 900,
-            "y": 200
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "has-issues",
           "type": "condition.expression",
           "label": "Any Issues?",
@@ -12952,155 +13095,6 @@
           "position": {
             "x": 400,
             "y": 380
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-recent-runs",
-          "type": "condition.expression",
-          "label": "Recent Runs Available?",
-          "config": {
-            "expression": "Boolean($ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId)"
-          },
-          "position": {
-            "x": 900,
-            "y": 380
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "evaluate-latest-run",
-          "type": "action.evaluate_run",
-          "label": "Evaluate Latest Run",
-          "config": {
-            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId || ''}}",
-            "workflowId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedWorkflowId || ''}}",
-            "includeTrend": true,
-            "outputVariable": "healthCheckRunEvaluation"
-          },
-          "position": {
-            "x": 900,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "apply-ratchet",
-          "type": "action.apply_self_improvement_ratchet",
-          "label": "Apply Ratchet Decision",
-          "config": {
-            "evaluationNodeId": "evaluate-latest-run",
-            "scopeLevel": "workspace",
-            "scope": "workflow-reliability",
-            "category": "strategy",
-            "outputVariable": "healthCheckRatchet"
-          },
-          "position": {
-            "x": 900,
-            "y": 840
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "ratchet-applied",
-          "type": "condition.expression",
-          "label": "Ratchet Applied?",
-          "config": {
-            "expression": "['capture_baseline','apply_candidate'].includes($ctx.getNodeOutput('apply-ratchet')?.decision || '')"
-          },
-          "position": {
-            "x": 720,
-            "y": 980
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "ratchet-reverted",
-          "type": "condition.expression",
-          "label": "Ratchet Reverted?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('apply-ratchet')?.decision === 'revert_to_baseline'"
-          },
-          "position": {
-            "x": 1080,
-            "y": 980
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "log-ratchet-apply",
-          "type": "notify.log",
-          "label": "Log Ratchet Apply",
-          "config": {
-            "message": "Self-improvement ratchet {{$ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}} for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}; active baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 720,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-ratchet-revert",
-          "type": "notify.log",
-          "label": "Log Ratchet Revert",
-          "config": {
-            "message": "Self-improvement ratchet reverted workflow to baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}} after run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-ratchet-keep",
-          "type": "notify.log",
-          "label": "Log Ratchet Keep",
-          "config": {
-            "message": "Self-improvement ratchet kept baseline for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}: {{$ctx.getNodeOutput('apply-ratchet')?.summary || 'no baseline change'}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1320,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-runs",
-          "type": "notify.log",
-          "label": "Log No Benchmark Data",
-          "config": {
-            "message": "Health check self-improvement skipped: no recent completed or failed workflow runs available.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 1120,
-            "y": 540
           },
           "outputs": [
             "default"
@@ -13158,12 +13152,6 @@
           "sourcePort": "default"
         },
         {
-          "id": "trigger->collect-recent-runs",
-          "source": "trigger",
-          "target": "collect-recent-runs",
-          "sourcePort": "default"
-        },
-        {
           "id": "check-config->has-issues",
           "source": "check-config",
           "target": "has-issues",
@@ -13180,66 +13168,6 @@
           "source": "check-agents",
           "target": "has-issues",
           "sourcePort": "default"
-        },
-        {
-          "id": "collect-recent-runs->has-recent-runs",
-          "source": "collect-recent-runs",
-          "target": "has-recent-runs",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-recent-runs->evaluate-latest-run",
-          "source": "has-recent-runs",
-          "target": "evaluate-latest-run",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-recent-runs->log-no-runs",
-          "source": "has-recent-runs",
-          "target": "log-no-runs",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "evaluate-latest-run->apply-ratchet",
-          "source": "evaluate-latest-run",
-          "target": "apply-ratchet",
-          "sourcePort": "default"
-        },
-        {
-          "id": "apply-ratchet->ratchet-applied",
-          "source": "apply-ratchet",
-          "target": "ratchet-applied",
-          "sourcePort": "default"
-        },
-        {
-          "id": "ratchet-applied->log-ratchet-apply",
-          "source": "ratchet-applied",
-          "target": "log-ratchet-apply",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "ratchet-applied->ratchet-reverted",
-          "source": "ratchet-applied",
-          "target": "ratchet-reverted",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "ratchet-reverted->log-ratchet-revert",
-          "source": "ratchet-reverted",
-          "target": "log-ratchet-revert",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "ratchet-reverted->log-ratchet-keep",
-          "source": "ratchet-reverted",
-          "target": "log-ratchet-keep",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
         },
         {
           "id": "has-issues->alert",
@@ -13926,6 +13854,498 @@
       ]
     },
     {
+      "id": "template-recover-blocked-task",
+      "name": "Recover Blocked Task (Worktree)",
+      "description": "Sub-workflow invoked once per blocked task by template-recover-blocked-worktrees. Sweeps stale worktrees for the task, acquires a clean one, and unblocks the task so it re-enters the normal task lifecycle. Works across all workspace repos — repo context is sourced entirely from the task's own stored metadata.",
+      "category": "reliability",
+      "categoryLabel": "Reliability",
+      "categoryIcon": ":shield:",
+      "categoryOrder": 5,
+      "tags": [
+        "recovery",
+        "worktree",
+        "blocked",
+        "resilience",
+        "sub-workflow"
+      ],
+      "nodeCount": 10,
+      "edgeCount": 9,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.event",
+      "variables": {
+        "baseBranch": "main",
+        "defaultTargetBranch": "origin/main"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "recovery",
+          "worktree",
+          "blocked",
+          "resilience",
+          "sub-workflow"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.event",
+          "label": "Recovery Requested",
+          "config": {
+            "eventType": "task.blocked.recovery_requested"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-context",
+          "type": "condition.expression",
+          "label": "Has Task Context?",
+          "config": {
+            "expression": "Boolean($data?.item?.taskId || $data?.taskId) && Boolean($data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch) && Boolean($data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot)"
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-wt",
+          "type": "action.recover_worktree",
+          "label": "Reset Broken Worktree",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+            "repoRoot": "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
+            "worktreePath": "{{$data?.item?.worktreePath || $data?.worktreePath || $data?.item?.meta?.worktreeFailure?.worktreePath || $data?.meta?.worktreeFailure?.worktreePath || ''}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquire-wt",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Clean Worktree",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+            "repoRoot": "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
+            "baseBranch": "{{$data?.item?.baseBranch || $data?.baseBranch || $data?.item?.meta?.worktreeFailure?.baseBranch || $data?.meta?.worktreeFailure?.baseBranch || baseBranch}}",
+            "defaultTargetBranch": "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || $data?.item?.meta?.worktreeFailure?.defaultTargetBranch || $data?.meta?.worktreeFailure?.defaultTargetBranch || defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-acquired",
+          "type": "condition.expression",
+          "label": "Worktree Acquired?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-wt')?.success === true"
+          },
+          "position": {
+            "x": 250,
+            "y": 640
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "unblock-task",
+          "type": "action.update_task_status",
+          "label": "Unblock Task",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "status": "todo",
+            "taskTitle": "{{$data?.item?.taskTitle || $data?.taskTitle || $data?.item?.taskId || $data?.taskId || ''}}",
+            "workflowEvent": "task.blocked.recovery_succeeded",
+            "workflowData": {
+              "stage": "worktree_recovery",
+              "result": "recovered",
+              "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+              "worktreePath": "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}"
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-blocked-meta",
+          "type": "action.bosun_function",
+          "label": "Clear Blocked Metadata",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+              "fields": {
+                "blockedReason": null,
+                "meta": "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.autoRecovery; delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-success",
+          "type": "notify.log",
+          "label": "Log Recovery Success",
+          "config": {
+            "message": ":check: Worktree recovery succeeded for task {{$data?.item?.taskId || $data?.taskId}} ({{$data?.item?.taskTitle || $data?.taskTitle || 'unknown'}}). Task unblocked and returned to todo.",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-context",
+          "type": "notify.log",
+          "label": "Log Missing Context",
+          "config": {
+            "message": "Blocked task recovery skipped — missing taskId or branch in dispatch payload. Item: {{JSON.stringify($data?.item || {})}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-acquire-failed",
+          "type": "notify.log",
+          "label": "Log Acquire Failure",
+          "config": {
+            "message": ":warning: Worktree recovery failed for task {{$data?.item?.taskId || $data?.taskId}} — could not acquire a clean worktree. Branch: {{$data?.item?.branch || $data?.branch || 'unknown'}}. Manual intervention may be required.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-context",
+          "source": "trigger",
+          "target": "check-context",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-context->recover-wt",
+          "source": "check-context",
+          "target": "recover-wt",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-context->log-no-context",
+          "source": "check-context",
+          "target": "log-no-context",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-wt->acquire-wt",
+          "source": "recover-wt",
+          "target": "acquire-wt",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-wt->check-acquired",
+          "source": "acquire-wt",
+          "target": "check-acquired",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-acquired->unblock-task",
+          "source": "check-acquired",
+          "target": "unblock-task",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-acquired->log-acquire-failed",
+          "source": "check-acquired",
+          "target": "log-acquire-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "unblock-task->clear-blocked-meta",
+          "source": "unblock-task",
+          "target": "clear-blocked-meta",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-blocked-meta->log-success",
+          "source": "clear-blocked-meta",
+          "target": "log-success",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-recover-blocked-worktrees",
+      "name": "Recover Blocked Worktree Tasks",
+      "description": "Scheduled operator-assist workflow that finds all tasks blocked due to worktree failures, sweeps their stale worktrees, and re-queues each as todo. Works across every repo in the workspace — repo context is read from each task's own metadata, so no repo configuration is needed here.",
+      "category": "reliability",
+      "categoryLabel": "Reliability",
+      "categoryIcon": ":shield:",
+      "categoryOrder": 5,
+      "tags": [
+        "recovery",
+        "worktree",
+        "blocked",
+        "resilience",
+        "automation",
+        "scheduled"
+      ],
+      "nodeCount": 7,
+      "edgeCount": 6,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "scheduleIntervalMs": 1800000,
+        "maxPerSweep": 20,
+        "maxConcurrent": 2
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "recovery",
+          "worktree",
+          "blocked",
+          "resilience",
+          "automation",
+          "scheduled"
+        ],
+        "requiredTemplates": [
+          "template-recover-blocked-task"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Scheduled Worktree Recovery Sweep",
+          "config": {
+            "intervalMs": "{{scheduleIntervalMs}}",
+            "cron": "*/30 * * * *"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "query-blocked",
+          "type": "action.run_command",
+          "label": "Query Blocked Tasks",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, { status: \"blocked\" }))\n          .then(tasks => {\n            const limit = parseInt(process.env.MAX_PER_SWEEP || \"20\");\n            const blocked = (tasks || [])\n              .map(t => {\n                const meta = t && typeof t.meta === \"object\" ? t.meta : {};\n                const worktreeFailure = meta && typeof meta.worktreeFailure === \"object\" ? meta.worktreeFailure : {};\n                const branch = t?.branch || t?.branchName || t?.metadata?.branch || meta?.branch || worktreeFailure?.branch || null;\n                const repoRoot = t?.repoRoot || t?.workspace || t?.metadata?.repoRoot || t?.metadata?.workspace || meta?.repoRoot || meta?.workspace || worktreeFailure?.repoRoot || null;\n                const worktreePath = t?.worktreePath || t?.metadata?.worktreePath || meta?.worktreePath || worktreeFailure?.worktreePath || null;\n                const baseBranch = t?.baseBranch || t?.metadata?.baseBranch || meta?.baseBranch || worktreeFailure?.baseBranch || null;\n                const defaultTargetBranch = t?.defaultTargetBranch || t?.metadata?.defaultTargetBranch || meta?.defaultTargetBranch || worktreeFailure?.defaultTargetBranch || null;\n                return {\n                  taskId:       t?.id,\n                  taskTitle:    t?.title || t?.id,\n                  branch,\n                  repoRoot,\n                  worktreePath,\n                  repository:   t?.repository || t?.metadata?.repository || meta?.repository || null,\n                  baseBranch,\n                  defaultTargetBranch,\n                  meta,\n                };\n              })\n              .filter(t => t && t.taskId && t.branch && t.repoRoot)\n              .slice(0, limit)\n              ;\n            console.log(JSON.stringify(blocked));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+            ],
+            "env": {
+              "MAX_PER_SWEEP": "{{maxPerSweep}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-has-tasks",
+          "type": "condition.expression",
+          "label": "Any Blocked Tasks?",
+          "config": {
+            "expression": "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0"
+          },
+          "position": {
+            "x": 400,
+            "y": 360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-each",
+          "type": "loop.for_each",
+          "label": "Recover Each Blocked Task",
+          "config": {
+            "items": "$ctx.getNodeOutput('query-blocked')?.output || []",
+            "variable": "item",
+            "indexVariable": "recoveryIndex",
+            "maxConcurrent": "{{maxConcurrent}}",
+            "workflowId": "template-recover-blocked-task",
+            "mode": "dispatch"
+          },
+          "position": {
+            "x": 400,
+            "y": 510
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "prune-worktrees",
+          "type": "action.run_command",
+          "label": "Prune Stale Worktree Refs",
+          "config": {
+            "command": "git",
+            "args": [
+              "worktree",
+              "prune",
+              "--verbose"
+            ],
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 650
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-summary",
+          "type": "notify.log",
+          "label": "Log Recovery Summary",
+          "config": {
+            "message": ":broom: Blocked worktree recovery sweep dispatched for {{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-idle",
+          "type": "notify.log",
+          "label": "Log No Blocked Tasks",
+          "config": {
+            "message": "Blocked worktree recovery sweep: no blocked tasks with branch context found.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 620,
+            "y": 510
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->query-blocked",
+          "source": "trigger",
+          "target": "query-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "query-blocked->check-has-tasks",
+          "source": "query-blocked",
+          "target": "check-has-tasks",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-has-tasks->recover-each",
+          "source": "check-has-tasks",
+          "target": "recover-each",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-has-tasks->log-idle",
+          "source": "check-has-tasks",
+          "target": "log-idle",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-each->prune-worktrees",
+          "source": "recover-each",
+          "target": "prune-worktrees",
+          "sourcePort": "default"
+        },
+        {
+          "id": "prune-worktrees->log-summary",
+          "source": "prune-worktrees",
+          "target": "log-summary",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-task-archiver",
       "name": "Task Archiver",
       "description": "Automated archival of completed tasks — migrates old completed/cancelled tasks to local archives, cleans up agent sessions, prunes archives beyond retention, and optionally chains into Sprint Retrospective.",
@@ -14375,7 +14795,7 @@
           "label": "Handoff Lifecycle If Missing",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -15012,14 +15432,16 @@
         "resilience",
         "automation"
       ],
-      "nodeCount": 16,
-      "edgeCount": 17,
+      "nodeCount": 21,
+      "edgeCount": 24,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
       "variables": {
         "repairTimeoutMs": 5400000,
         "verificationTimeoutMs": 3600000,
+        "repoRoot": "",
+        "defaultTargetBranch": "main",
         "baseBranch": "main",
         "verificationCommand": "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
         "repairPrompt": "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for Bosun PR lifecycle handoff."
@@ -15082,18 +15504,88 @@
           ]
         },
         {
-          "id": "has-worktree",
+          "id": "has-branch-context",
           "type": "condition.expression",
-          "label": "Worktree Context Available?",
+          "label": "Branch Context Available?",
           "config": {
-            "expression": "Boolean($data?.worktreePath)"
+            "expression": "Boolean($data?.repoRoot) && Boolean($data?.branch) && Boolean($data?.taskId)"
           },
           "position": {
             "x": 400,
             "y": 180
           },
           "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-repair-worktree",
+          "type": "action.recover_worktree",
+          "label": "Reset Broken Worktree",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 220,
+            "y": 320
+          },
+          "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "acquire-repair-worktree",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Clean Worktree",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 220,
+            "y": 460
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquired-repair-worktree",
+          "type": "condition.expression",
+          "label": "Clean Worktree Ready?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-repair-worktree')?.success === true"
+          },
+          "position": {
+            "x": 220,
+            "y": 600
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "has-worktree",
+          "type": "condition.expression",
+          "label": "Fallback Worktree Context Available?",
+          "config": {
+            "expression": "Boolean($data?.worktreePath)"
+          },
+          "position": {
+            "x": 560,
+            "y": 320
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -15102,12 +15594,12 @@
           "label": "Refresh Worktree",
           "config": {
             "operation": "fetch",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 320
+            "y": 740
           },
           "outputs": [
             "default"
@@ -15119,12 +15611,12 @@
           "label": "Repair Task",
           "config": {
             "prompt": "{{repairPrompt}}",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "timeoutMs": "{{repairTimeoutMs}}"
           },
           "position": {
             "x": 400,
-            "y": 460
+            "y": 880
           },
           "outputs": [
             "default"
@@ -15136,13 +15628,13 @@
           "label": "Re-run Quality Gates",
           "config": {
             "command": "{{verificationCommand}}",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "timeoutMs": "{{verificationTimeoutMs}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 600
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -15157,7 +15649,7 @@
           },
           "position": {
             "x": 400,
-            "y": 740
+            "y": 1160
           },
           "outputs": [
             "default"
@@ -15169,7 +15661,7 @@
           "label": "Handoff/Refresh Lifecycle",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -15179,7 +15671,7 @@
           },
           "position": {
             "x": 250,
-            "y": 880
+            "y": 1300
           },
           "outputs": [
             "default"
@@ -15194,7 +15686,7 @@
           },
           "position": {
             "x": 250,
-            "y": 950
+            "y": 1370
           },
           "outputs": [
             "yes",
@@ -15219,7 +15711,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1020
+            "y": 1440
           },
           "outputs": [
             "default"
@@ -15227,15 +15719,22 @@
         },
         {
           "id": "clear-repair-blocked-success",
-          "type": "action.set_variable",
-          "label": "Clear Repair Block",
+          "type": "action.bosun_function",
+          "label": "Clear Repair Blocked State",
           "config": {
-            "key": "repairBlocked",
-            "value": "false"
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": null,
+                "blockedReason": null,
+                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
+              }
+            }
           },
           "position": {
             "x": 250,
-            "y": 1090
+            "y": 1510
           },
           "outputs": [
             "default"
@@ -15260,7 +15759,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1160
+            "y": 1650
           },
           "outputs": [
             "default"
@@ -15285,7 +15784,30 @@
           },
           "position": {
             "x": 560,
-            "y": 880
+            "y": 1300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-repair-blocked-failure",
+          "type": "action.bosun_function",
+          "label": "Clear Failed Repair Blocked State",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": null,
+                "blockedReason": null,
+                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 560,
+            "y": 1440
           },
           "outputs": [
             "default"
@@ -15301,7 +15823,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1300
+            "y": 1790
           },
           "outputs": [
             "default"
@@ -15316,7 +15838,7 @@
           },
           "position": {
             "x": 560,
-            "y": 1020
+            "y": 1580
           },
           "outputs": [
             "default"
@@ -15331,8 +15853,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 700,
-            "y": 320
+            "x": 720,
+            "y": 460
           },
           "outputs": [
             "default"
@@ -15341,29 +15863,69 @@
       ],
       "edges": [
         {
-          "id": "trigger-failed->has-worktree",
+          "id": "trigger-failed->has-branch-context",
           "source": "trigger-failed",
-          "target": "has-worktree",
+          "target": "has-branch-context",
           "sourcePort": "default"
         },
         {
-          "id": "trigger-finalization->has-worktree",
+          "id": "trigger-finalization->has-branch-context",
           "source": "trigger-finalization",
-          "target": "has-worktree",
+          "target": "has-branch-context",
           "sourcePort": "default"
+        },
+        {
+          "id": "has-branch-context->recover-repair-worktree",
+          "source": "has-branch-context",
+          "target": "recover-repair-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-branch-context->has-worktree",
+          "source": "has-branch-context",
+          "target": "has-worktree",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-repair-worktree->acquire-repair-worktree",
+          "source": "recover-repair-worktree",
+          "target": "acquire-repair-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-repair-worktree->acquired-repair-worktree",
+          "source": "acquire-repair-worktree",
+          "target": "acquired-repair-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquired-repair-worktree->refresh-worktree",
+          "source": "acquired-repair-worktree",
+          "target": "refresh-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "acquired-repair-worktree->no-worktree",
+          "source": "acquired-repair-worktree",
+          "target": "no-worktree",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "has-worktree->refresh-worktree",
           "source": "has-worktree",
           "target": "refresh-worktree",
-          "sourcePort": "default",
+          "sourcePort": "yes",
           "condition": "$output?.result === true"
         },
         {
           "id": "has-worktree->no-worktree",
           "source": "has-worktree",
           "target": "no-worktree",
-          "sourcePort": "default",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -15437,8 +15999,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-todo->notify-escalate",
+          "id": "mark-todo->clear-repair-blocked-failure",
           "source": "mark-todo",
+          "target": "clear-repair-blocked-failure",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-repair-blocked-failure->notify-escalate",
+          "source": "clear-repair-blocked-failure",
           "target": "notify-escalate",
           "sourcePort": "default"
         },
@@ -15761,7 +16329,7 @@
           "type": "action.run_command",
           "label": "Rotate Agent Logs",
           "config": {
-            "command": "find .bosun/logs -name '*.log' -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Rotated'",
+            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','logs');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()&&entry.name.endsWith('.log')){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Rotated '+removed+'\\n');\"",
             "continueOnError": true
           },
           "position": {
@@ -15777,7 +16345,7 @@
           "type": "action.run_command",
           "label": "Clean Old Evidence",
           "config": {
-            "command": "find .bosun/evidence -type f -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Cleaned'",
+            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','evidence');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Cleaned '+removed+'\\n');\"",
             "continueOnError": true
           },
           "position": {
@@ -22173,11 +22741,10 @@
         "lifecycle",
         "executor",
         "workflow-first",
-        "core",
-        "multi-remediation"
+        "core"
       ],
-      "nodeCount": 73,
-      "edgeCount": 84,
+      "nodeCount": 62,
+      "edgeCount": 71,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -22190,8 +22757,6 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
-        "delegationWatchdogTimeoutMs": 300000,
-        "delegationWatchdogMaxRecoveries": 1,
         "prePrValidationEnabled": true,
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
@@ -22207,16 +22772,15 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 5,
+        "version": 2,
         "createdAt": "2026-03-01T00:00:00Z",
-        "templateVersion": "4.1.0",
+        "templateVersion": "2.1.0",
         "tags": [
           "task",
           "lifecycle",
           "executor",
           "workflow-first",
-          "core",
-          "multi-remediation"
+          "core"
         ],
         "requiredTemplates": [
           "template-bosun-pr-progressor",
@@ -22491,9 +23055,7 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false,
-            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
-            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
+            "failOnError": false
           },
           "position": {
             "x": 200,
@@ -22518,9 +23080,7 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false,
-            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
-            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
+            "failOnError": false
           },
           "position": {
             "x": 200,
@@ -22545,9 +23105,7 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false,
-            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
-            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
+            "failOnError": false
           },
           "position": {
             "x": 200,
@@ -22656,13 +23214,12 @@
           ]
         },
         {
-          "id": "set-fix-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Validation Output",
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
           "config": {
-            "key": "fixSummary",
-            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; const diag = out.outputDiagnostics || {}; const sections = []; sections.push('## Validation Result'); sections.push('- Exit code: ' + (out.exitCode ?? 'unknown')); sections.push('- Runner: ' + (diag.family || diag.runner || 'unknown')); if (diag.summary) sections.push('- Summary: ' + diag.summary); const targets = diag.failedTargets || []; if (targets.length) {   sections.push('');   sections.push('## Failed Targets (' + targets.length + ')');   targets.slice(0, 30).forEach(t => sections.push('  - ' + t));   if (targets.length > 30) sections.push('  ... and ' + (targets.length - 30) + ' more'); } const rerun = out.outputSuggestedRerun || diag.suggestedRerun || ''; if (rerun) {   sections.push('');   sections.push('## Suggested Rerun Command');   sections.push('```');   sections.push(rerun);   sections.push('```'); } const hint = out.outputHint || diag.hint || ''; if (hint) sections.push('\\nHint: ' + hint); sections.push(''); sections.push('## Full Command Output'); sections.push(String(out.output || '').slice(0, 12000)); return sections.join('\\n'); })()",
-            "isExpression": true
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+            "level": "warn"
           },
           "position": {
             "x": 300,
@@ -22673,184 +23230,17 @@
           ]
         },
         {
-          "id": "auto-fix-validation",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation (Pass 1)",
-          "config": {
-            "prompt": "# Fix Pre-PR Validation Failures — Pass 1\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Your job is to fix EVERY error so validation passes.\n\n{{fixSummary}}\n\nSTRATEGY:\n1. Start from the **Failed Targets** list above — these are the exact files/tests/packages that broke.\n2. Fix compilation and syntax errors FIRST (missing imports, typos, type errors).\n3. Then fix test failures — open each failing test file, read what it asserts, and fix your code or the test expectation.\n4. If a **Suggested Rerun Command** is shown above, use it to re-run only the failing targets and iterate faster.\n5. Once targeted failures are fixed, run the full validation command to confirm everything passes.\n\nRULES:\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
-            "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
-          },
-          "position": {
-            "x": 300,
-            "y": 2080
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-pre-pr-validation",
-          "type": "action.run_command",
-          "label": "Retry Pre-PR Validation",
-          "config": {
-            "command": "{{prePrValidationCommand}}",
-            "commandType": "qualityGate",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 300,
-            "y": 2160
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-validation-ok",
-          "type": "condition.expression",
-          "label": "Retry Validation Passed?",
-          "config": {
-            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
-          },
-          "position": {
-            "x": 300,
-            "y": 2240
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "set-fix2-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Both Validation Outputs",
-          "config": {
-            "key": "fix2Summary",
-            "value": "(() => { function summarizeRun(label, out) {   const diag = out.outputDiagnostics || {};   const lines = ['### ' + label];   lines.push('- Exit code: ' + (out.exitCode ?? 'unknown'));   lines.push('- Runner: ' + (diag.family || diag.runner || 'unknown'));   if (diag.summary) lines.push('- Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('- Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('- Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('- Hint: ' + hint);   if (diag.deltaSummary) lines.push('- Delta: ' + diag.deltaSummary);   lines.push('');   lines.push('Full output:');   lines.push(String(out.output || '').slice(0, 8000));   return lines.join('\\n'); } const v1 = $ctx.getNodeOutput('pre-pr-validation') || {}; const v2 = $ctx.getNodeOutput('retry-pre-pr-validation') || {}; return [   '## Validation History (both passes failed)',   '',   summarizeRun('Pass 1 — Original Validation', v1),   '',   summarizeRun('Pass 2 — After First Auto-Fix', v2), ].join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 500,
-            "y": 2300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix-validation-2",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation (Pass 2 — Escalated)",
-          "config": {
-            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\n{{fix2Summary}}\n\nANALYSIS STEPS:\n1. Compare the **Failed Targets** between Pass 1 and Pass 2.\n   - If the SAME targets still fail → your previous fix was wrong. Revert it and try a different approach.\n   - If NEW targets appeared → your fix broke something else. Fix both.\n   - If some targets were RESOLVED → the approach was partially right. Focus on the remaining ones.\n2. Use the **Delta** field (if present) to see exactly what changed between runs.\n3. Use the **Suggested Rerun Command** to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior your change invalidated, fix the test AND the code.\n- If the build/lint/test commands are misconfigured for your changes, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun the full validation command locally and confirm ALL checks pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
-            "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
-          },
-          "position": {
-            "x": 500,
-            "y": 2380
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-pre-pr-validation",
-          "type": "action.run_command",
-          "label": "Retry-2 Pre-PR Validation",
-          "config": {
-            "command": "{{prePrValidationCommand}}",
-            "commandType": "qualityGate",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 500,
-            "y": 2460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-validation-ok",
-          "type": "condition.expression",
-          "label": "Retry-2 Validation Passed?",
-          "config": {
-            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry2-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
-          },
-          "position": {
-            "x": 500,
-            "y": 2540
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "log-validation-failed",
-          "type": "notify.log",
-          "label": "Log Validation Failed",
-          "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after 2 auto-fix remediation passes, blocking task",
-            "level": "warn"
-          },
-          "position": {
-            "x": 700,
-            "y": 2600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-blocked-validation-failed",
+          "id": "set-todo-validation-failed",
           "type": "action.update_task_status",
-          "label": "Block Task (Validation Fail)",
+          "label": "Set Todo (Validation Fail)",
           "config": {
             "taskId": "{{taskId}}",
-            "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "Pre-PR validation failed after 2 automated remediation passes"
+            "status": "todo",
+            "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 700,
-            "y": 2680
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-validation-blocked",
-          "type": "notify.telegram",
-          "label": "Notify Validation Blocked",
-          "config": {
-            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after 2 automated remediation attempts. Manual review needed."
-          },
-          "position": {
-            "x": 700,
-            "y": 2760
+            "x": 300,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -22896,29 +23286,12 @@
           ]
         },
         {
-          "id": "build-pr-body",
-          "type": "action.set_variable",
-          "label": "Build PR Description",
-          "config": {
-            "key": "prBody",
-            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const dc = $ctx.getNodeOutput('detect-commits') || {}; const stats = dc.diffStats || {}; const msgs = Array.isArray(dc.commitMessages) ? dc.commitMessages : []; const files = Array.isArray(dc.changedFiles) ? dc.changedFiles : []; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } if (msgs.length) {   s.push('');   s.push('## Changes');   s.push('');   msgs.forEach(m => s.push('- ' + m)); } if (stats.filesChanged) {   s.push('');   s.push('**' + stats.filesChanged + ' file' + (stats.filesChanged === 1 ? '' : 's') + ' changed, ' + (stats.insertions || 0) + ' insertion' + ((stats.insertions || 0) === 1 ? '' : 's') + '(+), ' + (stats.deletions || 0) + ' deletion' + ((stats.deletions || 0) === 1 ? '' : 's') + '(-)**'); } if (files.length) {   s.push('');   s.push('<details><summary>Files touched (' + files.length + ')</summary>');   s.push('');   files.slice(0, 80).forEach(f => s.push('- `' + f + '`'));   if (files.length > 80) s.push('- ... and ' + (files.length - 80) + ' more');   s.push('');   s.push('</details>'); } s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 0,
-            "y": 2195
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "{{prBody}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -23092,29 +23465,12 @@
           ]
         },
         {
-          "id": "build-pr-body-stolen",
-          "type": "action.set_variable",
-          "label": "Build PR Description (Recovered)",
-          "config": {
-            "key": "prBody",
-            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } s.push(''); s.push('> Claim was lost during agent execution — PR recovered.'); s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 400,
-            "y": 1680
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Recover PR Link",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "{{prBody}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -23248,7 +23604,7 @@
               "set-todo-push-failed",
               "set-blocked-push-failed",
               "set-todo-cooldown",
-              "notify-validation-blocked",
+              "set-todo-validation-failed",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -23712,91 +24068,21 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "pre-pr-validation-ok->set-fix-summary",
+          "id": "pre-pr-validation-ok->log-validation-failed",
           "source": "pre-pr-validation-ok",
-          "target": "set-fix-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-fix-summary->auto-fix-validation",
-          "source": "set-fix-summary",
-          "target": "auto-fix-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-validation->retry-pre-pr-validation",
-          "source": "auto-fix-validation",
-          "target": "retry-pre-pr-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-pre-pr-validation->retry-validation-ok",
-          "source": "retry-pre-pr-validation",
-          "target": "retry-validation-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-validation-ok->push-branch",
-          "source": "retry-validation-ok",
-          "target": "push-branch",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry-validation-ok->set-fix2-summary",
-          "source": "retry-validation-ok",
-          "target": "set-fix2-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-fix2-summary->auto-fix-validation-2",
-          "source": "set-fix2-summary",
-          "target": "auto-fix-validation-2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-validation-2->retry2-pre-pr-validation",
-          "source": "auto-fix-validation-2",
-          "target": "retry2-pre-pr-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-pre-pr-validation->retry2-validation-ok",
-          "source": "retry2-pre-pr-validation",
-          "target": "retry2-validation-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-validation-ok->push-branch",
-          "source": "retry2-validation-ok",
-          "target": "push-branch",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry2-validation-ok->log-validation-failed",
-          "source": "retry2-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "log-validation-failed->set-blocked-validation-failed",
+          "id": "log-validation-failed->set-todo-validation-failed",
           "source": "log-validation-failed",
-          "target": "set-blocked-validation-failed",
+          "target": "set-todo-validation-failed",
           "sourcePort": "default"
         },
         {
-          "id": "set-blocked-validation-failed->notify-validation-blocked",
-          "source": "set-blocked-validation-failed",
-          "target": "notify-validation-blocked",
-          "sourcePort": "default"
-        },
-        {
-          "id": "notify-validation-blocked->join-outcomes",
-          "source": "notify-validation-blocked",
+          "id": "set-todo-validation-failed->join-outcomes",
+          "source": "set-todo-validation-failed",
           "target": "join-outcomes",
           "sourcePort": "default"
         },
@@ -23807,17 +24093,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->build-pr-body",
+          "id": "push-ok->create-pr",
           "source": "push-ok",
-          "target": "build-pr-body",
+          "target": "create-pr",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
-        },
-        {
-          "id": "build-pr-body->create-pr",
-          "source": "build-pr-body",
-          "target": "create-pr",
-          "sourcePort": "default"
         },
         {
           "id": "create-pr->pr-created",
@@ -23910,17 +24190,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->build-pr-body-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "build-pr-body-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
-        },
-        {
-          "id": "build-pr-body-stolen->create-pr-retry",
-          "source": "build-pr-body-stolen",
-          "target": "create-pr-retry",
-          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->pr-created-stolen",
@@ -26762,7 +27036,7 @@
       "description": "Fixes one Bosun-attached PR using a dedicated long-running agent (up to 2 hours). Dispatched by the PR Watchdog loop for each unclaimed PR needing repair. Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease and cleans up. The agent NEVER manages git setup or push.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 15,
+      "nodeCount": 17,
       "trigger": "trigger.manual",
       "variables": {},
       "nodes": [
@@ -26848,18 +27122,19 @@
           ]
         },
         {
-          "id": "setup-worktree",
+          "id": "validate-pr-state",
           "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
+          "label": "Validate PR Is Still Open",
           "config": {
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const mergedAt=String(view?.mergedAt||'').trim()||null;   const closedAt=String(view?.closedAt||'').trim()||null;   const merged=state==='MERGED'||Boolean(mergedAt);   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);   const shouldResolveTask=Boolean(targetTaskStatus);   const reason=open?'open':(merged?'pr_merged':(state==='CLOSED'?'pr_closed':(isDraft?'draft_pr':'pr_not_open')));   console.log(JSON.stringify({ok:open,open,skip:!open,reason,state,isDraft,merged,mergedAt,closedAt,shouldResolveTask,targetTaskStatus,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
             "env": {
               "PR_REPO": "{{prParams.repo}}",
               "PR_BRANCH": "{{prParams.branch}}",
@@ -26876,6 +27151,69 @@
           ]
         },
         {
+          "id": "resolve-pr-task",
+          "type": "action.run_command",
+          "label": "Resolve Task For Closed or Merged PR",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const taskId=String(process.env.TASK_ID||'').trim(); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const url=String(process.env.PR_URL||'').trim(); const state=String(process.env.PR_STATE||'').trim().toUpperCase(); const mergedAt=String(process.env.PR_MERGED_AT||'').trim()||null; const closedAt=String(process.env.PR_CLOSED_AT||'').trim()||null; const reason=String(process.env.PR_REASON||'').trim(); const explicitStatus=String(process.env.TARGET_TASK_STATUS||'').trim().toLowerCase(); const targetTaskStatus=explicitStatus||(state==='MERGED'||mergedAt?'done':(state==='CLOSED'?'cancelled':'')); const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); const maxBuffer=25*1024*1024; function parseJson(raw,fallback){try{return JSON.parse(String(raw||''));}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} if(!taskRunner){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_command_missing',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} if(!taskId||!targetTaskStatus){console.log(JSON.stringify({resolved:false,skipped:true,reason:'missing_task_or_status',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} let snapshot=null; try{snapshot=parseJson(runTask(['get',taskId,'--json']),null);}catch(err){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_lookup_failed',taskId,targetTaskStatus,error:String(err?.message||err)}));process.exit(0);} if(!snapshot||typeof snapshot!=='object'){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_not_found',taskId,targetTaskStatus}));process.exit(0);} const previousStatus=String(snapshot?.status||'').trim().toLowerCase()||null; const existingComments=Array.isArray(snapshot?.comments)?snapshot.comments:(Array.isArray(snapshot?.meta?.comments)?snapshot.meta.comments:[]); const resolutionKey='pr-resolution:'+repo+'#'+num+':'+targetTaskStatus; const alreadyCommented=existingComments.some((comment)=>String(comment?.meta?.resolutionKey||'').trim()===resolutionKey); const timestamp=new Date().toISOString(); const prLabel=num?'PR #'+num:'associated PR'; let message=''; if(targetTaskStatus==='done'){message=prLabel+(url?' ('+url+')':'')+' was merged'+(mergedAt?' at '+mergedAt:'')+'. Bosun marked this task done because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else if(targetTaskStatus==='cancelled'){message=prLabel+(url?' ('+url+')':'')+' was closed without merge'+(closedAt?' at '+closedAt:'')+'. Bosun cancelled this task because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else{message=prLabel+(url?' ('+url+')':'')+' changed state to '+(state||'unknown')+'.';} if(reason) message+=' Resolution trigger: '+reason+'.'; const nextComments=alreadyCommented?existingComments:[...existingComments,{body:message,author:'bosun',source:'workflow',kind:'pr-resolution',createdAt:timestamp,meta:{resolutionKey,repo,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null}}]; const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{}; const patch={status:targetTaskStatus,comments:nextComments,meta:{...existingMeta,lastPrResolution:{repo:repo||null,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null,mergedAt,closedAt,resolvedAt:timestamp}}}; runTask(['update',taskId,JSON.stringify(patch)]); console.log(JSON.stringify({resolved:true,taskId,targetTaskStatus,previousStatus,commentAdded:!alreadyCommented,repo,number:num,url:url||null,state:state||null,reason:reason||null}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
+            "env": {
+              "TASK_ID": "{{taskId}}",
+              "PR_REPO": "{{setup-worktree.output.repo || validate-pr-state.output.repo || prParams.repo}}",
+              "PR_NUMBER": "{{setup-worktree.output.number || validate-pr-state.output.number || prParams.number}}",
+              "PR_BRANCH": "{{setup-worktree.output.branch || validate-pr-state.output.branch || prParams.branch}}",
+              "PR_URL": "{{setup-worktree.output.url || validate-pr-state.output.url || data.item.url || data.item.prDigest.core.url || ''}}",
+              "PR_STATE": "{{setup-worktree.output.state || validate-pr-state.output.state || ''}}",
+              "PR_MERGED_AT": "{{setup-worktree.output.mergedAt || validate-pr-state.output.mergedAt || ''}}",
+              "PR_CLOSED_AT": "{{setup-worktree.output.closedAt || validate-pr-state.output.closedAt || ''}}",
+              "TARGET_TASK_STATUS": "{{setup-worktree.output.targetTaskStatus || validate-pr-state.output.targetTaskStatus || ''}}",
+              "PR_REASON": "{{setup-worktree.output.reason || validate-pr-state.output.reason || ''}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "setup-worktree",
+          "type": "action.run_command",
+          "label": "Clone & Checkout PR Branch",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); function readErr(err){return [String(err?.message||''),String(err?.stderr||''),String(err?.stdout||'')].filter(Boolean).join(' ');} function isMissingBranchError(err){const text=readErr(err);return /remote branch .* not found|couldn't find remote ref|remote ref does not exist|invalid reference: origin\\//i.test(text);} function viewPrState(){   try{     const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();     const view=JSON.parse(raw||'{}');     const state=String(view?.state||'').trim().toUpperCase();     const mergedAt=String(view?.mergedAt||'').trim()||null;     const closedAt=String(view?.closedAt||'').trim()||null;     const merged=state==='MERGED'||Boolean(mergedAt);     const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);     return {state,merged,mergedAt,closedAt,targetTaskStatus,shouldResolveTask:Boolean(targetTaskStatus),url:String(view?.url||'').trim()||null,branch:String(view?.headRefName||branch||'').trim()||branch,base:String(view?.baseRefName||base||'main').trim()||base||'main'};   }catch(err){     return {state:null,merged:false,mergedAt:null,closedAt:null,targetTaskStatus:null,shouldResolveTask:false,url:null,branch,base,error:String(err?.message||err)};   } } try{   let reused=false;   if(fs.existsSync(path.join(wt,'.git'))){     try{       const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();       if(cur===branch){         execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});         execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});         execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});         try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}         reused=true;       }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}     }catch(err){       if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}       try{fs.rmSync(wt,{recursive:true,force:true});}catch{}       throw err;     }   }   if(!reused){     if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}     execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});     execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});     execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});     try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}   }   const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();   if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);}   console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused,skip:false})); }catch(err){   if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}   console.error(readErr(err)||String(err?.message||err));   process.exit(1); }"
+            ],
+            "parseJson": true,
+            "failOnError": true,
+            "timeoutMs": 600000,
+            "env": {
+              "PR_REPO": "{{validate-pr-state.output.repo || prParams.repo}}",
+              "PR_BRANCH": "{{validate-pr-state.output.branch || prParams.branch}}",
+              "PR_BASE": "{{validate-pr-state.output.base || prParams.base}}",
+              "PR_NUMBER": "{{validate-pr-state.output.number || prParams.number}}"
+            }
+          },
+          "position": {
+            "x": 2060,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-worktree-path",
           "type": "action.set_variable",
           "label": "Set Agent Working Directory",
@@ -26884,7 +27222,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 1780,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -26912,7 +27250,7 @@
             }
           },
           "position": {
-            "x": 2060,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -26929,7 +27267,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -26946,7 +27284,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2620,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -26970,7 +27308,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2900,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -26998,7 +27336,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -27022,7 +27360,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -27049,7 +27387,7 @@
             }
           },
           "position": {
-            "x": 3740,
+            "x": 4300,
             "y": 100
           },
           "outputs": [
@@ -27073,7 +27411,7 @@
             }
           },
           "position": {
-            "x": 4020,
+            "x": 4580,
             "y": 100
           },
           "outputs": [
@@ -27107,16 +27445,45 @@
           "sourcePort": "default"
         },
         {
-          "id": "resolve-pr-params->setup-worktree",
+          "id": "resolve-pr-params->validate-pr-state",
           "source": "resolve-pr-params",
-          "target": "setup-worktree",
+          "target": "validate-pr-state",
           "sourcePort": "default"
+        },
+        {
+          "id": "validate-pr-state->setup-worktree",
+          "source": "validate-pr-state",
+          "target": "setup-worktree",
+          "sourcePort": "default",
+          "condition": "$output?.open === true"
+        },
+        {
+          "id": "validate-pr-state->resolve-pr-task",
+          "source": "validate-pr-state",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask === true"
+        },
+        {
+          "id": "validate-pr-state->release-claim",
+          "source": "validate-pr-state",
+          "target": "release-claim",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask !== true"
+        },
+        {
+          "id": "setup-worktree->resolve-pr-task",
+          "source": "setup-worktree",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.skip === true && $output?.shouldResolveTask === true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
           "source": "setup-worktree",
           "target": "set-worktree-path",
-          "sourcePort": "default"
+          "sourcePort": "default",
+          "condition": "$output?.skip !== true"
         },
         {
           "id": "set-worktree-path->detect-conflicts",
@@ -27158,6 +27525,12 @@
           "id": "cleanup-worktree->update-sibling-branches",
           "source": "cleanup-worktree",
           "target": "update-sibling-branches",
+          "sourcePort": "default"
+        },
+        {
+          "id": "resolve-pr-task->release-claim",
+          "source": "resolve-pr-task",
+          "target": "release-claim",
           "sourcePort": "default"
         },
         {
@@ -27924,7 +28297,7 @@
       "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 13,
+      "nodeCount": 15,
       "trigger": "trigger.manual",
       "variables": {},
       "nodes": [
@@ -28010,18 +28383,19 @@
           ]
         },
         {
-          "id": "setup-worktree",
+          "id": "validate-pr-state",
           "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
+          "label": "Validate PR Is Still Open",
           "config": {
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const mergedAt=String(view?.mergedAt||'').trim()||null;   const closedAt=String(view?.closedAt||'').trim()||null;   const merged=state==='MERGED'||Boolean(mergedAt);   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);   const shouldResolveTask=Boolean(targetTaskStatus);   const reason=open?'open':(merged?'pr_merged':(state==='CLOSED'?'pr_closed':(isDraft?'draft_pr':'pr_not_open')));   console.log(JSON.stringify({ok:open,open,skip:!open,reason,state,isDraft,merged,mergedAt,closedAt,shouldResolveTask,targetTaskStatus,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
             "env": {
               "PR_REPO": "{{prParams.repo}}",
               "PR_BRANCH": "{{prParams.branch}}",
@@ -28038,6 +28412,69 @@
           ]
         },
         {
+          "id": "resolve-pr-task",
+          "type": "action.run_command",
+          "label": "Resolve Task For Closed or Merged PR",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const taskId=String(process.env.TASK_ID||'').trim(); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const url=String(process.env.PR_URL||'').trim(); const state=String(process.env.PR_STATE||'').trim().toUpperCase(); const mergedAt=String(process.env.PR_MERGED_AT||'').trim()||null; const closedAt=String(process.env.PR_CLOSED_AT||'').trim()||null; const reason=String(process.env.PR_REASON||'').trim(); const explicitStatus=String(process.env.TARGET_TASK_STATUS||'').trim().toLowerCase(); const targetTaskStatus=explicitStatus||(state==='MERGED'||mergedAt?'done':(state==='CLOSED'?'cancelled':'')); const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); const maxBuffer=25*1024*1024; function parseJson(raw,fallback){try{return JSON.parse(String(raw||''));}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} if(!taskRunner){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_command_missing',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} if(!taskId||!targetTaskStatus){console.log(JSON.stringify({resolved:false,skipped:true,reason:'missing_task_or_status',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} let snapshot=null; try{snapshot=parseJson(runTask(['get',taskId,'--json']),null);}catch(err){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_lookup_failed',taskId,targetTaskStatus,error:String(err?.message||err)}));process.exit(0);} if(!snapshot||typeof snapshot!=='object'){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_not_found',taskId,targetTaskStatus}));process.exit(0);} const previousStatus=String(snapshot?.status||'').trim().toLowerCase()||null; const existingComments=Array.isArray(snapshot?.comments)?snapshot.comments:(Array.isArray(snapshot?.meta?.comments)?snapshot.meta.comments:[]); const resolutionKey='pr-resolution:'+repo+'#'+num+':'+targetTaskStatus; const alreadyCommented=existingComments.some((comment)=>String(comment?.meta?.resolutionKey||'').trim()===resolutionKey); const timestamp=new Date().toISOString(); const prLabel=num?'PR #'+num:'associated PR'; let message=''; if(targetTaskStatus==='done'){message=prLabel+(url?' ('+url+')':'')+' was merged'+(mergedAt?' at '+mergedAt:'')+'. Bosun marked this task done because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else if(targetTaskStatus==='cancelled'){message=prLabel+(url?' ('+url+')':'')+' was closed without merge'+(closedAt?' at '+closedAt:'')+'. Bosun cancelled this task because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else{message=prLabel+(url?' ('+url+')':'')+' changed state to '+(state||'unknown')+'.';} if(reason) message+=' Resolution trigger: '+reason+'.'; const nextComments=alreadyCommented?existingComments:[...existingComments,{body:message,author:'bosun',source:'workflow',kind:'pr-resolution',createdAt:timestamp,meta:{resolutionKey,repo,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null}}]; const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{}; const patch={status:targetTaskStatus,comments:nextComments,meta:{...existingMeta,lastPrResolution:{repo:repo||null,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null,mergedAt,closedAt,resolvedAt:timestamp}}}; runTask(['update',taskId,JSON.stringify(patch)]); console.log(JSON.stringify({resolved:true,taskId,targetTaskStatus,previousStatus,commentAdded:!alreadyCommented,repo,number:num,url:url||null,state:state||null,reason:reason||null}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
+            "env": {
+              "TASK_ID": "{{taskId}}",
+              "PR_REPO": "{{setup-worktree.output.repo || validate-pr-state.output.repo || prParams.repo}}",
+              "PR_NUMBER": "{{setup-worktree.output.number || validate-pr-state.output.number || prParams.number}}",
+              "PR_BRANCH": "{{setup-worktree.output.branch || validate-pr-state.output.branch || prParams.branch}}",
+              "PR_URL": "{{setup-worktree.output.url || validate-pr-state.output.url || data.item.url || data.item.prDigest.core.url || ''}}",
+              "PR_STATE": "{{setup-worktree.output.state || validate-pr-state.output.state || ''}}",
+              "PR_MERGED_AT": "{{setup-worktree.output.mergedAt || validate-pr-state.output.mergedAt || ''}}",
+              "PR_CLOSED_AT": "{{setup-worktree.output.closedAt || validate-pr-state.output.closedAt || ''}}",
+              "TARGET_TASK_STATUS": "{{setup-worktree.output.targetTaskStatus || validate-pr-state.output.targetTaskStatus || ''}}",
+              "PR_REASON": "{{setup-worktree.output.reason || validate-pr-state.output.reason || ''}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "setup-worktree",
+          "type": "action.run_command",
+          "label": "Clone & Checkout PR Branch",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); function readErr(err){return [String(err?.message||''),String(err?.stderr||''),String(err?.stdout||'')].filter(Boolean).join(' ');} function isMissingBranchError(err){const text=readErr(err);return /remote branch .* not found|couldn't find remote ref|remote ref does not exist|invalid reference: origin\\//i.test(text);} function viewPrState(){   try{     const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();     const view=JSON.parse(raw||'{}');     const state=String(view?.state||'').trim().toUpperCase();     const mergedAt=String(view?.mergedAt||'').trim()||null;     const closedAt=String(view?.closedAt||'').trim()||null;     const merged=state==='MERGED'||Boolean(mergedAt);     const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);     return {state,merged,mergedAt,closedAt,targetTaskStatus,shouldResolveTask:Boolean(targetTaskStatus),url:String(view?.url||'').trim()||null,branch:String(view?.headRefName||branch||'').trim()||branch,base:String(view?.baseRefName||base||'main').trim()||base||'main'};   }catch(err){     return {state:null,merged:false,mergedAt:null,closedAt:null,targetTaskStatus:null,shouldResolveTask:false,url:null,branch,base,error:String(err?.message||err)};   } } try{   let reused=false;   if(fs.existsSync(path.join(wt,'.git'))){     try{       const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();       if(cur===branch){         execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});         execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});         execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});         try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}         reused=true;       }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}     }catch(err){       if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}       try{fs.rmSync(wt,{recursive:true,force:true});}catch{}       throw err;     }   }   if(!reused){     if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}     execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});     execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});     execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});     try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}   }   const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();   if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);}   console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused,skip:false})); }catch(err){   if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}   console.error(readErr(err)||String(err?.message||err));   process.exit(1); }"
+            ],
+            "parseJson": true,
+            "failOnError": true,
+            "timeoutMs": 600000,
+            "env": {
+              "PR_REPO": "{{validate-pr-state.output.repo || prParams.repo}}",
+              "PR_BRANCH": "{{validate-pr-state.output.branch || prParams.branch}}",
+              "PR_BASE": "{{validate-pr-state.output.base || prParams.base}}",
+              "PR_NUMBER": "{{validate-pr-state.output.number || prParams.number}}"
+            }
+          },
+          "position": {
+            "x": 2060,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-worktree-path",
           "type": "action.set_variable",
           "label": "Set Agent Working Directory",
@@ -28046,7 +28483,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 1780,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -28063,7 +28500,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2060,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -28080,7 +28517,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -28104,7 +28541,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2620,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -28132,7 +28569,7 @@
             }
           },
           "position": {
-            "x": 2900,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -28156,7 +28593,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -28180,7 +28617,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -28214,16 +28651,45 @@
           "sourcePort": "default"
         },
         {
-          "id": "resolve-pr-params->setup-worktree",
+          "id": "resolve-pr-params->validate-pr-state",
           "source": "resolve-pr-params",
-          "target": "setup-worktree",
+          "target": "validate-pr-state",
           "sourcePort": "default"
+        },
+        {
+          "id": "validate-pr-state->setup-worktree",
+          "source": "validate-pr-state",
+          "target": "setup-worktree",
+          "sourcePort": "default",
+          "condition": "$output?.open === true"
+        },
+        {
+          "id": "validate-pr-state->resolve-pr-task",
+          "source": "validate-pr-state",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask === true"
+        },
+        {
+          "id": "validate-pr-state->release-claim",
+          "source": "validate-pr-state",
+          "target": "release-claim",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask !== true"
+        },
+        {
+          "id": "setup-worktree->resolve-pr-task",
+          "source": "setup-worktree",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.skip === true && $output?.shouldResolveTask === true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
           "source": "setup-worktree",
           "target": "set-worktree-path",
-          "sourcePort": "default"
+          "sourcePort": "default",
+          "condition": "$output?.skip !== true"
         },
         {
           "id": "set-worktree-path->setup-prompt",
@@ -28253,6 +28719,12 @@
           "id": "push-fixes->cleanup-worktree",
           "source": "push-fixes",
           "target": "cleanup-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "resolve-pr-task->release-claim",
+          "source": "resolve-pr-task",
+          "target": "release-claim",
           "sourcePort": "default"
         },
         {
@@ -36398,7 +36870,7 @@
       "description": "Automated error recovery flow when an agent crashes or fails. Analyzes logs, attempts auto-fix, and escalates if needed.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 9,
+      "nodeCount": 8,
       "trigger": "trigger.event",
       "variables": {
         "maxRetries": 3
@@ -36435,31 +36907,11 @@
           ]
         },
         {
-          "id": "load-recovery-strategies",
-          "type": "action.load_skillbook_strategies",
-          "label": "Load Recovery Strategies",
-          "config": {
-            "workflowId": "",
-            "category": "strategy",
-            "status": "promoted",
-            "query": "{{taskTitle}} {{lastError}}",
-            "limit": 4,
-            "outputVariable": "recoverySkillbookGuidance"
-          },
-          "position": {
-            "x": 600,
-            "y": 330
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "analyze-error",
           "type": "action.run_agent",
           "label": "Analyze Failure",
           "config": {
-            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}\n\nReusable prior strategies:\n{{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}",
+            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}",
             "timeoutMs": 300000
           },
           "position": {
@@ -36475,7 +36927,7 @@
           "type": "action.run_agent",
           "label": "Retry Task",
           "config": {
-            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n- reusableStrategies: {{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
+            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
             "timeoutMs": 3600000,
             "failOnError": true,
             "maxRetries": "{{maxRetries}}",
@@ -36563,9 +37015,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "check-retries->load-recovery-strategies",
+          "id": "check-retries->analyze-error",
           "source": "check-retries",
-          "target": "load-recovery-strategies",
+          "target": "analyze-error",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -36575,12 +37027,6 @@
           "target": "escalate",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "load-recovery-strategies->analyze-error",
-          "source": "load-recovery-strategies",
-          "target": "analyze-error",
-          "sourcePort": "default"
         },
         {
           "id": "analyze-error->retry-task",
@@ -36635,11 +37081,10 @@
       "description": "Periodic system health check: validates config, verifies SDK availability, checks git state, and reports any issues found.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 17,
+      "nodeCount": 7,
       "trigger": "trigger.schedule",
       "variables": {
-        "intervalMs": 3600000,
-        "maxBenchmarkRuns": 12
+        "intervalMs": 3600000
       },
       "nodes": [
         {
@@ -36707,30 +37152,6 @@
           ]
         },
         {
-          "id": "collect-recent-runs",
-          "type": "action.run_command",
-          "label": "Collect Recent Runs",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const maxRuns = Math.max(1, parseInt(process.env.MAX_BENCHMARK_RUNS || \"12\", 10) || 12);\n        const runsDir = path.resolve(process.cwd(), \".bosun\", \"workflow-runs\");\n        const indexPath = path.join(runsDir, \"index.json\");\n        let entries = [];\n        if (fs.existsSync(indexPath)) {\n          try {\n            const raw = JSON.parse(fs.readFileSync(indexPath, \"utf8\"));\n            entries = Array.isArray(raw) ? raw : (Array.isArray(raw?.runs) ? raw.runs : []);\n          } catch {}\n        }\n        const candidates = entries\n          .filter((entry) => entry && entry.runId && [\"completed\", \"failed\"].includes(String(entry.status || \"\").toLowerCase()))\n          .sort((left, right) => Number(right?.startedAt || 0) - Number(left?.startedAt || 0))\n          .slice(0, maxRuns)\n          .map((entry) => ({\n            runId: entry.runId,\n            workflowId: entry.workflowId || null,\n            workflowName: entry.workflowName || null,\n            status: entry.status || null,\n            startedAt: entry.startedAt || null,\n            score: entry.score ?? null,\n            issueAdvisorRecommendation: entry.issueAdvisorRecommendation || null,\n          }));\n        const selected = candidates[0] || null;\n        console.log(JSON.stringify({\n          count: candidates.length,\n          candidates,\n          selectedRunId: selected?.runId || null,\n          selectedWorkflowId: selected?.workflowId || null,\n        }));\n      "
-            ],
-            "env": {
-              "MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
-            },
-            "parseJson": true,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 900,
-            "y": 200
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "has-issues",
           "type": "condition.expression",
           "label": "Any Issues?",
@@ -36740,155 +37161,6 @@
           "position": {
             "x": 400,
             "y": 380
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-recent-runs",
-          "type": "condition.expression",
-          "label": "Recent Runs Available?",
-          "config": {
-            "expression": "Boolean($ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId)"
-          },
-          "position": {
-            "x": 900,
-            "y": 380
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "evaluate-latest-run",
-          "type": "action.evaluate_run",
-          "label": "Evaluate Latest Run",
-          "config": {
-            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId || ''}}",
-            "workflowId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedWorkflowId || ''}}",
-            "includeTrend": true,
-            "outputVariable": "healthCheckRunEvaluation"
-          },
-          "position": {
-            "x": 900,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "apply-ratchet",
-          "type": "action.apply_self_improvement_ratchet",
-          "label": "Apply Ratchet Decision",
-          "config": {
-            "evaluationNodeId": "evaluate-latest-run",
-            "scopeLevel": "workspace",
-            "scope": "workflow-reliability",
-            "category": "strategy",
-            "outputVariable": "healthCheckRatchet"
-          },
-          "position": {
-            "x": 900,
-            "y": 840
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "ratchet-applied",
-          "type": "condition.expression",
-          "label": "Ratchet Applied?",
-          "config": {
-            "expression": "['capture_baseline','apply_candidate'].includes($ctx.getNodeOutput('apply-ratchet')?.decision || '')"
-          },
-          "position": {
-            "x": 720,
-            "y": 980
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "ratchet-reverted",
-          "type": "condition.expression",
-          "label": "Ratchet Reverted?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('apply-ratchet')?.decision === 'revert_to_baseline'"
-          },
-          "position": {
-            "x": 1080,
-            "y": 980
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "log-ratchet-apply",
-          "type": "notify.log",
-          "label": "Log Ratchet Apply",
-          "config": {
-            "message": "Self-improvement ratchet {{$ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}} for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}; active baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 720,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-ratchet-revert",
-          "type": "notify.log",
-          "label": "Log Ratchet Revert",
-          "config": {
-            "message": "Self-improvement ratchet reverted workflow to baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}} after run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-ratchet-keep",
-          "type": "notify.log",
-          "label": "Log Ratchet Keep",
-          "config": {
-            "message": "Self-improvement ratchet kept baseline for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}: {{$ctx.getNodeOutput('apply-ratchet')?.summary || 'no baseline change'}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1320,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-runs",
-          "type": "notify.log",
-          "label": "Log No Benchmark Data",
-          "config": {
-            "message": "Health check self-improvement skipped: no recent completed or failed workflow runs available.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 1120,
-            "y": 540
           },
           "outputs": [
             "default"
@@ -36946,12 +37218,6 @@
           "sourcePort": "default"
         },
         {
-          "id": "trigger->collect-recent-runs",
-          "source": "trigger",
-          "target": "collect-recent-runs",
-          "sourcePort": "default"
-        },
-        {
           "id": "check-config->has-issues",
           "source": "check-config",
           "target": "has-issues",
@@ -36968,66 +37234,6 @@
           "source": "check-agents",
           "target": "has-issues",
           "sourcePort": "default"
-        },
-        {
-          "id": "collect-recent-runs->has-recent-runs",
-          "source": "collect-recent-runs",
-          "target": "has-recent-runs",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-recent-runs->evaluate-latest-run",
-          "source": "has-recent-runs",
-          "target": "evaluate-latest-run",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-recent-runs->log-no-runs",
-          "source": "has-recent-runs",
-          "target": "log-no-runs",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "evaluate-latest-run->apply-ratchet",
-          "source": "evaluate-latest-run",
-          "target": "apply-ratchet",
-          "sourcePort": "default"
-        },
-        {
-          "id": "apply-ratchet->ratchet-applied",
-          "source": "apply-ratchet",
-          "target": "ratchet-applied",
-          "sourcePort": "default"
-        },
-        {
-          "id": "ratchet-applied->log-ratchet-apply",
-          "source": "ratchet-applied",
-          "target": "log-ratchet-apply",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "ratchet-applied->ratchet-reverted",
-          "source": "ratchet-applied",
-          "target": "ratchet-reverted",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "ratchet-reverted->log-ratchet-revert",
-          "source": "ratchet-reverted",
-          "target": "log-ratchet-revert",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "ratchet-reverted->log-ratchet-keep",
-          "source": "ratchet-reverted",
-          "target": "log-ratchet-keep",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
         },
         {
           "id": "has-issues->alert",
@@ -37051,8 +37257,8 @@
         "templateState": {
           "templateId": "template-health-check",
           "templateName": "Health Check",
-          "templateVersion": "1.1.0",
-          "installedTemplateVersion": "1.1.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -37679,6 +37885,469 @@
       }
     },
     {
+      "id": "wf-recover-blocked-task",
+      "name": "Recover Blocked Task (Worktree)",
+      "description": "Sub-workflow invoked once per blocked task by template-recover-blocked-worktrees. Sweeps stale worktrees for the task, acquires a clean one, and unblocks the task so it re-enters the normal task lifecycle. Works across all workspace repos — repo context is sourced entirely from the task's own stored metadata.",
+      "category": "reliability",
+      "enabled": true,
+      "nodeCount": 10,
+      "trigger": "trigger.event",
+      "variables": {
+        "baseBranch": "main",
+        "defaultTargetBranch": "origin/main"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.event",
+          "label": "Recovery Requested",
+          "config": {
+            "eventType": "task.blocked.recovery_requested"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-context",
+          "type": "condition.expression",
+          "label": "Has Task Context?",
+          "config": {
+            "expression": "Boolean($data?.item?.taskId || $data?.taskId) && Boolean($data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch) && Boolean($data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot)"
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-wt",
+          "type": "action.recover_worktree",
+          "label": "Reset Broken Worktree",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+            "repoRoot": "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
+            "worktreePath": "{{$data?.item?.worktreePath || $data?.worktreePath || $data?.item?.meta?.worktreeFailure?.worktreePath || $data?.meta?.worktreeFailure?.worktreePath || ''}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquire-wt",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Clean Worktree",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+            "repoRoot": "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
+            "baseBranch": "{{$data?.item?.baseBranch || $data?.baseBranch || $data?.item?.meta?.worktreeFailure?.baseBranch || $data?.meta?.worktreeFailure?.baseBranch || baseBranch}}",
+            "defaultTargetBranch": "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || $data?.item?.meta?.worktreeFailure?.defaultTargetBranch || $data?.meta?.worktreeFailure?.defaultTargetBranch || defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-acquired",
+          "type": "condition.expression",
+          "label": "Worktree Acquired?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-wt')?.success === true"
+          },
+          "position": {
+            "x": 250,
+            "y": 640
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "unblock-task",
+          "type": "action.update_task_status",
+          "label": "Unblock Task",
+          "config": {
+            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+            "status": "todo",
+            "taskTitle": "{{$data?.item?.taskTitle || $data?.taskTitle || $data?.item?.taskId || $data?.taskId || ''}}",
+            "workflowEvent": "task.blocked.recovery_succeeded",
+            "workflowData": {
+              "stage": "worktree_recovery",
+              "result": "recovered",
+              "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
+              "worktreePath": "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}"
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-blocked-meta",
+          "type": "action.bosun_function",
+          "label": "Clear Blocked Metadata",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
+              "fields": {
+                "blockedReason": null,
+                "meta": "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.autoRecovery; delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 250,
+            "y": 940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-success",
+          "type": "notify.log",
+          "label": "Log Recovery Success",
+          "config": {
+            "message": ":check: Worktree recovery succeeded for task {{$data?.item?.taskId || $data?.taskId}} ({{$data?.item?.taskTitle || $data?.taskTitle || 'unknown'}}). Task unblocked and returned to todo.",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-context",
+          "type": "notify.log",
+          "label": "Log Missing Context",
+          "config": {
+            "message": "Blocked task recovery skipped — missing taskId or branch in dispatch payload. Item: {{JSON.stringify($data?.item || {})}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-acquire-failed",
+          "type": "notify.log",
+          "label": "Log Acquire Failure",
+          "config": {
+            "message": ":warning: Worktree recovery failed for task {{$data?.item?.taskId || $data?.taskId}} — could not acquire a clean worktree. Branch: {{$data?.item?.branch || $data?.branch || 'unknown'}}. Manual intervention may be required.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-context",
+          "source": "trigger",
+          "target": "check-context",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-context->recover-wt",
+          "source": "check-context",
+          "target": "recover-wt",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-context->log-no-context",
+          "source": "check-context",
+          "target": "log-no-context",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-wt->acquire-wt",
+          "source": "recover-wt",
+          "target": "acquire-wt",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-wt->check-acquired",
+          "source": "acquire-wt",
+          "target": "check-acquired",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-acquired->unblock-task",
+          "source": "check-acquired",
+          "target": "unblock-task",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-acquired->log-acquire-failed",
+          "source": "check-acquired",
+          "target": "log-acquire-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "unblock-task->clear-blocked-meta",
+          "source": "unblock-task",
+          "target": "clear-blocked-meta",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-blocked-meta->log-success",
+          "source": "clear-blocked-meta",
+          "target": "log-success",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-recover-blocked-task",
+          "templateName": "Recover Blocked Task (Worktree)",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-recover-blocked-worktrees",
+      "name": "Recover Blocked Worktree Tasks",
+      "description": "Scheduled operator-assist workflow that finds all tasks blocked due to worktree failures, sweeps their stale worktrees, and re-queues each as todo. Works across every repo in the workspace — repo context is read from each task's own metadata, so no repo configuration is needed here.",
+      "category": "reliability",
+      "enabled": true,
+      "nodeCount": 7,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "scheduleIntervalMs": 1800000,
+        "maxPerSweep": 20,
+        "maxConcurrent": 2
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Scheduled Worktree Recovery Sweep",
+          "config": {
+            "intervalMs": "{{scheduleIntervalMs}}",
+            "cron": "*/30 * * * *"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "query-blocked",
+          "type": "action.run_command",
+          "label": "Query Blocked Tasks",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, { status: \"blocked\" }))\n          .then(tasks => {\n            const limit = parseInt(process.env.MAX_PER_SWEEP || \"20\");\n            const blocked = (tasks || [])\n              .map(t => {\n                const meta = t && typeof t.meta === \"object\" ? t.meta : {};\n                const worktreeFailure = meta && typeof meta.worktreeFailure === \"object\" ? meta.worktreeFailure : {};\n                const branch = t?.branch || t?.branchName || t?.metadata?.branch || meta?.branch || worktreeFailure?.branch || null;\n                const repoRoot = t?.repoRoot || t?.workspace || t?.metadata?.repoRoot || t?.metadata?.workspace || meta?.repoRoot || meta?.workspace || worktreeFailure?.repoRoot || null;\n                const worktreePath = t?.worktreePath || t?.metadata?.worktreePath || meta?.worktreePath || worktreeFailure?.worktreePath || null;\n                const baseBranch = t?.baseBranch || t?.metadata?.baseBranch || meta?.baseBranch || worktreeFailure?.baseBranch || null;\n                const defaultTargetBranch = t?.defaultTargetBranch || t?.metadata?.defaultTargetBranch || meta?.defaultTargetBranch || worktreeFailure?.defaultTargetBranch || null;\n                return {\n                  taskId:       t?.id,\n                  taskTitle:    t?.title || t?.id,\n                  branch,\n                  repoRoot,\n                  worktreePath,\n                  repository:   t?.repository || t?.metadata?.repository || meta?.repository || null,\n                  baseBranch,\n                  defaultTargetBranch,\n                  meta,\n                };\n              })\n              .filter(t => t && t.taskId && t.branch && t.repoRoot)\n              .slice(0, limit)\n              ;\n            console.log(JSON.stringify(blocked));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+            ],
+            "env": {
+              "MAX_PER_SWEEP": "{{maxPerSweep}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 400,
+            "y": 190
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-has-tasks",
+          "type": "condition.expression",
+          "label": "Any Blocked Tasks?",
+          "config": {
+            "expression": "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0"
+          },
+          "position": {
+            "x": 400,
+            "y": 360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-each",
+          "type": "loop.for_each",
+          "label": "Recover Each Blocked Task",
+          "config": {
+            "items": "$ctx.getNodeOutput('query-blocked')?.output || []",
+            "variable": "item",
+            "indexVariable": "recoveryIndex",
+            "maxConcurrent": "{{maxConcurrent}}",
+            "workflowId": "template-recover-blocked-task",
+            "mode": "dispatch"
+          },
+          "position": {
+            "x": 400,
+            "y": 510
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "prune-worktrees",
+          "type": "action.run_command",
+          "label": "Prune Stale Worktree Refs",
+          "config": {
+            "command": "git",
+            "args": [
+              "worktree",
+              "prune",
+              "--verbose"
+            ],
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 650
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-summary",
+          "type": "notify.log",
+          "label": "Log Recovery Summary",
+          "config": {
+            "message": ":broom: Blocked worktree recovery sweep dispatched for {{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 250,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-idle",
+          "type": "notify.log",
+          "label": "Log No Blocked Tasks",
+          "config": {
+            "message": "Blocked worktree recovery sweep: no blocked tasks with branch context found.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 620,
+            "y": 510
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->query-blocked",
+          "source": "trigger",
+          "target": "query-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "query-blocked->check-has-tasks",
+          "source": "query-blocked",
+          "target": "check-has-tasks",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-has-tasks->recover-each",
+          "source": "check-has-tasks",
+          "target": "recover-each",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-has-tasks->log-idle",
+          "source": "check-has-tasks",
+          "target": "log-idle",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-each->prune-worktrees",
+          "source": "recover-each",
+          "target": "prune-worktrees",
+          "sourcePort": "default"
+        },
+        {
+          "id": "prune-worktrees->log-summary",
+          "source": "prune-worktrees",
+          "target": "log-summary",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-recover-blocked-worktrees",
+          "templateName": "Recover Blocked Worktree Tasks",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-task-archiver",
       "name": "Task Archiver",
       "description": "Automated archival of completed tasks — migrates old completed/cancelled tasks to local archives, cleans up agent sessions, prunes archives beyond retention, and optionally chains into Sprint Retrospective.",
@@ -38062,7 +38731,7 @@
           "label": "Handoff Lifecycle If Missing",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -38681,11 +39350,13 @@
       "description": "Recovery workflow for tasks that fail execution or finalization. Refreshes worktree state, runs a repair agent, re-validates quality gates, and escalates only after automated repair fails.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 16,
+      "nodeCount": 21,
       "trigger": "trigger.event",
       "variables": {
         "repairTimeoutMs": 5400000,
         "verificationTimeoutMs": 3600000,
+        "repoRoot": "",
+        "defaultTargetBranch": "main",
         "baseBranch": "main",
         "verificationCommand": "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
         "repairPrompt": "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for Bosun PR lifecycle handoff."
@@ -38722,18 +39393,88 @@
           ]
         },
         {
-          "id": "has-worktree",
+          "id": "has-branch-context",
           "type": "condition.expression",
-          "label": "Worktree Context Available?",
+          "label": "Branch Context Available?",
           "config": {
-            "expression": "Boolean($data?.worktreePath)"
+            "expression": "Boolean($data?.repoRoot) && Boolean($data?.branch) && Boolean($data?.taskId)"
           },
           "position": {
             "x": 400,
             "y": 180
           },
           "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-repair-worktree",
+          "type": "action.recover_worktree",
+          "label": "Reset Broken Worktree",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 220,
+            "y": 320
+          },
+          "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "acquire-repair-worktree",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Clean Worktree",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 220,
+            "y": 460
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquired-repair-worktree",
+          "type": "condition.expression",
+          "label": "Clean Worktree Ready?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-repair-worktree')?.success === true"
+          },
+          "position": {
+            "x": 220,
+            "y": 600
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "has-worktree",
+          "type": "condition.expression",
+          "label": "Fallback Worktree Context Available?",
+          "config": {
+            "expression": "Boolean($data?.worktreePath)"
+          },
+          "position": {
+            "x": 560,
+            "y": 320
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -38742,12 +39483,12 @@
           "label": "Refresh Worktree",
           "config": {
             "operation": "fetch",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 320
+            "y": 740
           },
           "outputs": [
             "default"
@@ -38759,12 +39500,12 @@
           "label": "Repair Task",
           "config": {
             "prompt": "{{repairPrompt}}",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "timeoutMs": "{{repairTimeoutMs}}"
           },
           "position": {
             "x": 400,
-            "y": 460
+            "y": 880
           },
           "outputs": [
             "default"
@@ -38776,13 +39517,13 @@
           "label": "Re-run Quality Gates",
           "config": {
             "command": "{{verificationCommand}}",
-            "cwd": "{{worktreePath}}",
+            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
             "timeoutMs": "{{verificationTimeoutMs}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 600
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -38797,7 +39538,7 @@
           },
           "position": {
             "x": 400,
-            "y": 740
+            "y": 1160
           },
           "outputs": [
             "default"
@@ -38809,7 +39550,7 @@
           "label": "Handoff/Refresh Lifecycle",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -38819,7 +39560,7 @@
           },
           "position": {
             "x": 250,
-            "y": 880
+            "y": 1300
           },
           "outputs": [
             "default"
@@ -38834,7 +39575,7 @@
           },
           "position": {
             "x": 250,
-            "y": 950
+            "y": 1370
           },
           "outputs": [
             "yes",
@@ -38859,7 +39600,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1020
+            "y": 1440
           },
           "outputs": [
             "default"
@@ -38867,15 +39608,22 @@
         },
         {
           "id": "clear-repair-blocked-success",
-          "type": "action.set_variable",
-          "label": "Clear Repair Block",
+          "type": "action.bosun_function",
+          "label": "Clear Repair Blocked State",
           "config": {
-            "key": "repairBlocked",
-            "value": "false"
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": null,
+                "blockedReason": null,
+                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
+              }
+            }
           },
           "position": {
             "x": 250,
-            "y": 1090
+            "y": 1510
           },
           "outputs": [
             "default"
@@ -38900,7 +39648,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1160
+            "y": 1650
           },
           "outputs": [
             "default"
@@ -38925,7 +39673,30 @@
           },
           "position": {
             "x": 560,
-            "y": 880
+            "y": 1300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-repair-blocked-failure",
+          "type": "action.bosun_function",
+          "label": "Clear Failed Repair Blocked State",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": null,
+                "blockedReason": null,
+                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 560,
+            "y": 1440
           },
           "outputs": [
             "default"
@@ -38941,7 +39712,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1300
+            "y": 1790
           },
           "outputs": [
             "default"
@@ -38956,7 +39727,7 @@
           },
           "position": {
             "x": 560,
-            "y": 1020
+            "y": 1580
           },
           "outputs": [
             "default"
@@ -38971,8 +39742,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 700,
-            "y": 320
+            "x": 720,
+            "y": 460
           },
           "outputs": [
             "default"
@@ -38981,29 +39752,69 @@
       ],
       "edges": [
         {
-          "id": "trigger-failed->has-worktree",
+          "id": "trigger-failed->has-branch-context",
           "source": "trigger-failed",
-          "target": "has-worktree",
+          "target": "has-branch-context",
           "sourcePort": "default"
         },
         {
-          "id": "trigger-finalization->has-worktree",
+          "id": "trigger-finalization->has-branch-context",
           "source": "trigger-finalization",
-          "target": "has-worktree",
+          "target": "has-branch-context",
           "sourcePort": "default"
+        },
+        {
+          "id": "has-branch-context->recover-repair-worktree",
+          "source": "has-branch-context",
+          "target": "recover-repair-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-branch-context->has-worktree",
+          "source": "has-branch-context",
+          "target": "has-worktree",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "recover-repair-worktree->acquire-repair-worktree",
+          "source": "recover-repair-worktree",
+          "target": "acquire-repair-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-repair-worktree->acquired-repair-worktree",
+          "source": "acquire-repair-worktree",
+          "target": "acquired-repair-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquired-repair-worktree->refresh-worktree",
+          "source": "acquired-repair-worktree",
+          "target": "refresh-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "acquired-repair-worktree->no-worktree",
+          "source": "acquired-repair-worktree",
+          "target": "no-worktree",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "has-worktree->refresh-worktree",
           "source": "has-worktree",
           "target": "refresh-worktree",
-          "sourcePort": "default",
+          "sourcePort": "yes",
           "condition": "$output?.result === true"
         },
         {
           "id": "has-worktree->no-worktree",
           "source": "has-worktree",
           "target": "no-worktree",
-          "sourcePort": "default",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -39077,8 +39888,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-todo->notify-escalate",
+          "id": "mark-todo->clear-repair-blocked-failure",
           "source": "mark-todo",
+          "target": "clear-repair-blocked-failure",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-repair-blocked-failure->notify-escalate",
+          "source": "clear-repair-blocked-failure",
           "target": "notify-escalate",
           "sourcePort": "default"
         },
@@ -39356,7 +40173,7 @@
           "type": "action.run_command",
           "label": "Rotate Agent Logs",
           "config": {
-            "command": "find .bosun/logs -name '*.log' -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Rotated'",
+            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','logs');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()&&entry.name.endsWith('.log')){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Rotated '+removed+'\\n');\"",
             "continueOnError": true
           },
           "position": {
@@ -39372,7 +40189,7 @@
           "type": "action.run_command",
           "label": "Clean Old Evidence",
           "config": {
-            "command": "find .bosun/evidence -type f -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Cleaned'",
+            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','evidence');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Cleaned '+removed+'\\n');\"",
             "continueOnError": true
           },
           "position": {
@@ -45501,7 +46318,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 73,
+      "nodeCount": 62,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -45512,8 +46329,6 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
-        "delegationWatchdogTimeoutMs": 300000,
-        "delegationWatchdogMaxRecoveries": 1,
         "prePrValidationEnabled": true,
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
@@ -45780,9 +46595,7 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false,
-            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
-            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
+            "failOnError": false
           },
           "position": {
             "x": 200,
@@ -45807,9 +46620,7 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false,
-            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
-            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
+            "failOnError": false
           },
           "position": {
             "x": 200,
@@ -45834,9 +46645,7 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false,
-            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
-            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
+            "failOnError": false
           },
           "position": {
             "x": 200,
@@ -45945,13 +46754,12 @@
           ]
         },
         {
-          "id": "set-fix-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Validation Output",
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
           "config": {
-            "key": "fixSummary",
-            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; const diag = out.outputDiagnostics || {}; const sections = []; sections.push('## Validation Result'); sections.push('- Exit code: ' + (out.exitCode ?? 'unknown')); sections.push('- Runner: ' + (diag.family || diag.runner || 'unknown')); if (diag.summary) sections.push('- Summary: ' + diag.summary); const targets = diag.failedTargets || []; if (targets.length) {   sections.push('');   sections.push('## Failed Targets (' + targets.length + ')');   targets.slice(0, 30).forEach(t => sections.push('  - ' + t));   if (targets.length > 30) sections.push('  ... and ' + (targets.length - 30) + ' more'); } const rerun = out.outputSuggestedRerun || diag.suggestedRerun || ''; if (rerun) {   sections.push('');   sections.push('## Suggested Rerun Command');   sections.push('```');   sections.push(rerun);   sections.push('```'); } const hint = out.outputHint || diag.hint || ''; if (hint) sections.push('\\nHint: ' + hint); sections.push(''); sections.push('## Full Command Output'); sections.push(String(out.output || '').slice(0, 12000)); return sections.join('\\n'); })()",
-            "isExpression": true
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+            "level": "warn"
           },
           "position": {
             "x": 300,
@@ -45962,184 +46770,17 @@
           ]
         },
         {
-          "id": "auto-fix-validation",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation (Pass 1)",
-          "config": {
-            "prompt": "# Fix Pre-PR Validation Failures — Pass 1\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Your job is to fix EVERY error so validation passes.\n\n{{fixSummary}}\n\nSTRATEGY:\n1. Start from the **Failed Targets** list above — these are the exact files/tests/packages that broke.\n2. Fix compilation and syntax errors FIRST (missing imports, typos, type errors).\n3. Then fix test failures — open each failing test file, read what it asserts, and fix your code or the test expectation.\n4. If a **Suggested Rerun Command** is shown above, use it to re-run only the failing targets and iterate faster.\n5. Once targeted failures are fixed, run the full validation command to confirm everything passes.\n\nRULES:\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
-            "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
-          },
-          "position": {
-            "x": 300,
-            "y": 2080
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-pre-pr-validation",
-          "type": "action.run_command",
-          "label": "Retry Pre-PR Validation",
-          "config": {
-            "command": "{{prePrValidationCommand}}",
-            "commandType": "qualityGate",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 300,
-            "y": 2160
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-validation-ok",
-          "type": "condition.expression",
-          "label": "Retry Validation Passed?",
-          "config": {
-            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
-          },
-          "position": {
-            "x": 300,
-            "y": 2240
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "set-fix2-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Both Validation Outputs",
-          "config": {
-            "key": "fix2Summary",
-            "value": "(() => { function summarizeRun(label, out) {   const diag = out.outputDiagnostics || {};   const lines = ['### ' + label];   lines.push('- Exit code: ' + (out.exitCode ?? 'unknown'));   lines.push('- Runner: ' + (diag.family || diag.runner || 'unknown'));   if (diag.summary) lines.push('- Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('- Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('- Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('- Hint: ' + hint);   if (diag.deltaSummary) lines.push('- Delta: ' + diag.deltaSummary);   lines.push('');   lines.push('Full output:');   lines.push(String(out.output || '').slice(0, 8000));   return lines.join('\\n'); } const v1 = $ctx.getNodeOutput('pre-pr-validation') || {}; const v2 = $ctx.getNodeOutput('retry-pre-pr-validation') || {}; return [   '## Validation History (both passes failed)',   '',   summarizeRun('Pass 1 — Original Validation', v1),   '',   summarizeRun('Pass 2 — After First Auto-Fix', v2), ].join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 500,
-            "y": 2300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix-validation-2",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation (Pass 2 — Escalated)",
-          "config": {
-            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\n{{fix2Summary}}\n\nANALYSIS STEPS:\n1. Compare the **Failed Targets** between Pass 1 and Pass 2.\n   - If the SAME targets still fail → your previous fix was wrong. Revert it and try a different approach.\n   - If NEW targets appeared → your fix broke something else. Fix both.\n   - If some targets were RESOLVED → the approach was partially right. Focus on the remaining ones.\n2. Use the **Delta** field (if present) to see exactly what changed between runs.\n3. Use the **Suggested Rerun Command** to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior your change invalidated, fix the test AND the code.\n- If the build/lint/test commands are misconfigured for your changes, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun the full validation command locally and confirm ALL checks pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
-            "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
-          },
-          "position": {
-            "x": 500,
-            "y": 2380
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-pre-pr-validation",
-          "type": "action.run_command",
-          "label": "Retry-2 Pre-PR Validation",
-          "config": {
-            "command": "{{prePrValidationCommand}}",
-            "commandType": "qualityGate",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 500,
-            "y": 2460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-validation-ok",
-          "type": "condition.expression",
-          "label": "Retry-2 Validation Passed?",
-          "config": {
-            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry2-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
-          },
-          "position": {
-            "x": 500,
-            "y": 2540
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "log-validation-failed",
-          "type": "notify.log",
-          "label": "Log Validation Failed",
-          "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after 2 auto-fix remediation passes, blocking task",
-            "level": "warn"
-          },
-          "position": {
-            "x": 700,
-            "y": 2600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-blocked-validation-failed",
+          "id": "set-todo-validation-failed",
           "type": "action.update_task_status",
-          "label": "Block Task (Validation Fail)",
+          "label": "Set Todo (Validation Fail)",
           "config": {
             "taskId": "{{taskId}}",
-            "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "Pre-PR validation failed after 2 automated remediation passes"
+            "status": "todo",
+            "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 700,
-            "y": 2680
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-validation-blocked",
-          "type": "notify.telegram",
-          "label": "Notify Validation Blocked",
-          "config": {
-            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after 2 automated remediation attempts. Manual review needed."
-          },
-          "position": {
-            "x": 700,
-            "y": 2760
+            "x": 300,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -46185,29 +46826,12 @@
           ]
         },
         {
-          "id": "build-pr-body",
-          "type": "action.set_variable",
-          "label": "Build PR Description",
-          "config": {
-            "key": "prBody",
-            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const dc = $ctx.getNodeOutput('detect-commits') || {}; const stats = dc.diffStats || {}; const msgs = Array.isArray(dc.commitMessages) ? dc.commitMessages : []; const files = Array.isArray(dc.changedFiles) ? dc.changedFiles : []; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } if (msgs.length) {   s.push('');   s.push('## Changes');   s.push('');   msgs.forEach(m => s.push('- ' + m)); } if (stats.filesChanged) {   s.push('');   s.push('**' + stats.filesChanged + ' file' + (stats.filesChanged === 1 ? '' : 's') + ' changed, ' + (stats.insertions || 0) + ' insertion' + ((stats.insertions || 0) === 1 ? '' : 's') + '(+), ' + (stats.deletions || 0) + ' deletion' + ((stats.deletions || 0) === 1 ? '' : 's') + '(-)**'); } if (files.length) {   s.push('');   s.push('<details><summary>Files touched (' + files.length + ')</summary>');   s.push('');   files.slice(0, 80).forEach(f => s.push('- `' + f + '`'));   if (files.length > 80) s.push('- ... and ' + (files.length - 80) + ' more');   s.push('');   s.push('</details>'); } s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 0,
-            "y": 2195
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "{{prBody}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -46381,29 +47005,12 @@
           ]
         },
         {
-          "id": "build-pr-body-stolen",
-          "type": "action.set_variable",
-          "label": "Build PR Description (Recovered)",
-          "config": {
-            "key": "prBody",
-            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } s.push(''); s.push('> Claim was lost during agent execution — PR recovered.'); s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 400,
-            "y": 1680
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Recover PR Link",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "{{prBody}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -46537,7 +47144,7 @@
               "set-todo-push-failed",
               "set-blocked-push-failed",
               "set-todo-cooldown",
-              "notify-validation-blocked",
+              "set-todo-validation-failed",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -47001,91 +47608,21 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "pre-pr-validation-ok->set-fix-summary",
+          "id": "pre-pr-validation-ok->log-validation-failed",
           "source": "pre-pr-validation-ok",
-          "target": "set-fix-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-fix-summary->auto-fix-validation",
-          "source": "set-fix-summary",
-          "target": "auto-fix-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-validation->retry-pre-pr-validation",
-          "source": "auto-fix-validation",
-          "target": "retry-pre-pr-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-pre-pr-validation->retry-validation-ok",
-          "source": "retry-pre-pr-validation",
-          "target": "retry-validation-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-validation-ok->push-branch",
-          "source": "retry-validation-ok",
-          "target": "push-branch",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry-validation-ok->set-fix2-summary",
-          "source": "retry-validation-ok",
-          "target": "set-fix2-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-fix2-summary->auto-fix-validation-2",
-          "source": "set-fix2-summary",
-          "target": "auto-fix-validation-2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-validation-2->retry2-pre-pr-validation",
-          "source": "auto-fix-validation-2",
-          "target": "retry2-pre-pr-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-pre-pr-validation->retry2-validation-ok",
-          "source": "retry2-pre-pr-validation",
-          "target": "retry2-validation-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-validation-ok->push-branch",
-          "source": "retry2-validation-ok",
-          "target": "push-branch",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry2-validation-ok->log-validation-failed",
-          "source": "retry2-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "log-validation-failed->set-blocked-validation-failed",
+          "id": "log-validation-failed->set-todo-validation-failed",
           "source": "log-validation-failed",
-          "target": "set-blocked-validation-failed",
+          "target": "set-todo-validation-failed",
           "sourcePort": "default"
         },
         {
-          "id": "set-blocked-validation-failed->notify-validation-blocked",
-          "source": "set-blocked-validation-failed",
-          "target": "notify-validation-blocked",
-          "sourcePort": "default"
-        },
-        {
-          "id": "notify-validation-blocked->join-outcomes",
-          "source": "notify-validation-blocked",
+          "id": "set-todo-validation-failed->join-outcomes",
+          "source": "set-todo-validation-failed",
           "target": "join-outcomes",
           "sourcePort": "default"
         },
@@ -47096,17 +47633,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->build-pr-body",
+          "id": "push-ok->create-pr",
           "source": "push-ok",
-          "target": "build-pr-body",
+          "target": "create-pr",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
-        },
-        {
-          "id": "build-pr-body->create-pr",
-          "source": "build-pr-body",
-          "target": "create-pr",
-          "sourcePort": "default"
         },
         {
           "id": "create-pr->pr-created",
@@ -47199,17 +47730,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->build-pr-body-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "build-pr-body-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
-        },
-        {
-          "id": "build-pr-body-stolen->create-pr-retry",
-          "source": "build-pr-body-stolen",
-          "target": "create-pr-retry",
-          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->pr-created-stolen",
@@ -47403,8 +47928,8 @@
         "templateState": {
           "templateId": "template-task-lifecycle",
           "templateName": "Task Lifecycle",
-          "templateVersion": "4.1.0",
-          "installedTemplateVersion": "4.1.0",
+          "templateVersion": "2.1.0",
+          "installedTemplateVersion": "2.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -47834,7 +48359,7 @@
       "workflowId": "wf-pr-fix-single",
       "workflowName": "PR Fix Agent (Single PR)",
       "status": "completed",
-      "nodeCount": 15,
+      "nodeCount": 17,
       "duration": 74000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -49900,16 +50425,16 @@
       "enabledTools": null,
       "enabledMcpServers": []
     },
-    "background-task-execution": "# Skill: Background Task Execution\n\n- Send heartbeat updates before work starts, after major milestones, and during long operations.\n- Post status notes when a step runs long enough to look stalled.\n- Verify the affected code path before marking the task complete.\n- Finish only after build, tests, and any required push or PR handoff succeed.\n",
-    "pr-workflow": "# Skill: Pull Request Workflow\n\n- Fetch and merge the base branch plus `origin/main` before pushing.\n- Push the task branch and hand off PR lifecycle steps to Bosun.\n- Use a short PR description with Summary, Changes, Testing, and Notes.\n- Never bypass git hooks with `--no-verify`; fix the failing check or note unrelated breakage.\n",
-    "error-recovery": "# Skill: Error Recovery Patterns\n\n- Classify the failure first: syntax, test, dependency, git, network, config, or resource limits.\n- Fix the first real error before chasing downstream noise.\n- Prefer the smallest safe change that resolves the root cause.\n- If the error is external or flaky, retry with limits and stop rather than papering over it.\n",
-    "tdd-pattern": "# Skill: Test-Driven Development\n\n- Start with the smallest failing test that proves the target behavior.\n- Implement the minimum code required to pass that test.\n- Refactor only after the test is green.\n- Keep tests deterministic: no real network, random data, or timer-based synchronization.\n",
-    "commit-conventions": "# Skill: Conventional Commits\n\n- Use Conventional Commits such as `feat:`, `fix:`, `chore:`, or `test:`.\n- Keep the subject short, imperative, and scoped to the actual change.\n- Mention validation in the handoff or PR notes, not in the subject line.\n- Do not bundle unrelated work into the same commit message or commit.\n",
-    "agent-coordination": "# Skill: Multi-Agent Coordination\n\n- Keep scope ownership clear before editing shared files.\n- Prefer small, isolated changes that reduce merge conflict risk.\n- Leave concise status notes when handing work to another agent or retry.\n- Re-check git status before finalizing so no unrelated edits leak into the task.\n",
-    "bosun-agent-api": "# Skill: Bosun Agent Status API\n\n- POST `/status` when starting a new phase or when context changes.\n- POST `/heartbeat` during active work so Bosun does not requeue the task.\n- POST `/error` with concise failure context before aborting.\n- POST `/complete` only after verification is done and the task is truly finished.\n",
-    "code-quality-anti-patterns": "# Skill: Code Quality Anti-Patterns\n\n- Keep caches, lazy singletons, and loaded flags at module scope.\n- Await async work or attach `.catch()`; never leave floating promises.\n- Wrap hot-path callbacks and handlers in error boundaries.\n- Mock external boundaries only; avoid over-mocking the module under test.\n- Keep tests deterministic and remove dead branches instead of layering guard code.\n",
-    "skill-codebase-audit": "# Skill: Codebase Annotation Audit\n\n## Purpose\nSystematically audit and annotate a codebase so that *future* AI agents can\nnavigate it 4× faster, use 20% fewer tokens, and avoid false-positive changes.\nThis skill is **documentation-only** — it MUST NOT fix bugs, refactor code,\nor change program behavior.\n\n## Philosophy — LEAN Annotations\n\nModern AI coding SDKs (Copilot, Codex, Claude Code) already auto-compact\ncontext. Adding a memory/compaction layer on top is wasteful. What *does* help\nis **repo-level documentation** that agents read at the start of a session:\nsummaries, warnings, architectural notes, and module manifests. These cost zero\nruntime tokens and dramatically reduce exploration time.\n\n## Annotation Format\n\nUse structured comment headers that agents are trained to recognize:\n\n```\n// CLAUDE:SUMMARY — <module-name>\n// <1–3 sentence summary of purpose, key types, and public API>\n```\n\n```\n// CLAUDE:WARN — <module-name>\n// <non-obvious pitfall, race condition, or constraint agents MUST know>\n```\n\n- Place annotations at the **top of the file**, after imports / shebang.\n- Keep each annotation to ≤ 3 lines.\n- Do NOT annotate trivial files (configs, lockfiles, generated code).\n\n## 6-Phase Audit\n\n### Phase 1 — Inventory\nEnumerate every source file. For each file record:\n| Field | Value |\n|-------|-------|\n| path | relative from repo root |\n| lang | file extension / language |\n| lines | line count |\n| has_summary | yes / no |\n| has_warn | yes / no |\n| category | core / util / test / config / generated |\n\nOutput: `.bosun/audit/inventory.json`\n\n### Phase 2 — Summaries\nFor every file where `has_summary === false` and `category !== \"generated\"`:\n1. Read the file.\n2. Write a `CLAUDE:SUMMARY` comment at the top.\n3. Stage the file.\n\n### Phase 3 — Warnings\nFor every file, check for non-obvious constraints:\n- Singleton/caching requirements (must be module-scope)\n- Async fire-and-forget patterns (unhandled rejections)\n- Order-dependent initialization\n- Platform-specific behavior (Windows paths, etc.)\n\nAdd `CLAUDE:WARN` comments where found.\n\n### Phase 4 — Manifest Audit\nEnsure `AGENTS.md` (or equivalent) at repo root is accurate:\n- Lists all top-level modules with 1-line descriptions.\n- Documents build / test / lint commands.\n- Documents environment variables.\n- Documents commit conventions.\n- Lists known constraints or gotchas.\n\nIf the file is outdated or missing sections, append corrections.\n\n### Phase 5 — Conformity Check\nRe-scan all annotations and validate:\n- `CLAUDE:SUMMARY` is present in every non-trivial source file.\n- `CLAUDE:WARN` exists for files with known pitfalls.\n- No stale annotations reference symbols/functions that no longer exist.\n\nOutput: `.bosun/audit/conformity-report.json`\n\n### Phase 6 — Regeneration Schedule\nAnnotations rot. Add a `.bosun/audit/schedule.json` with:\n```json\n{\n  \"lastFullAudit\": \"<ISO timestamp>\",\n  \"nextRecommendedAudit\": \"<ISO timestamp + 30 days>\",\n  \"filesAudited\": <count>,\n  \"summariesAdded\": <count>,\n  \"warningsAdded\": <count>,\n  \"conformityScore\": <0-100>\n}\n```\n\n## Hard Rules\n\n1. **Do NOT change program behavior.** Only add/update comments and documentation.\n2. **Do NOT refactor, fix bugs, or rename symbols.** Documentation only.\n3. **Do NOT annotate generated files** (lockfiles, build output, `.min.js`, etc.).\n4. **Keep summaries ≤ 3 lines.** Agents need density, not essays.\n5. **Keep warnings actionable.** \"This is complex\" is useless.\n   \"Must call init() before query() — throws otherwise\" is helpful.\n6. **Stage files individually** — never `git add .`.\n7. **Commit with** `docs(audit): annotate <module>` — not `feat`/`fix`.\n\n## Success Metrics\n- A/B tested: annotated repos show 4× faster agent navigation.\n- 20% fewer tokens consumed per task.\n- Zero false-positive code changes from confused agents.\n",
-    "custom-tool-creation": "# Skill: Custom Tool Creation & Reuse\n\n- Reuse an existing tool before writing repetitive inline code.\n- Extract durable helpers when the same manual sequence appears more than once.\n- Store workspace tools in `.bosun/tools/` with clear titles, tags, and a narrow purpose.\n- Promote high-value helpers to global scope only when they are stable and broadly reusable.\n"
+    "background-task-execution": "# Skill: Background Task Execution\r\n\r\n- Send heartbeat updates before work starts, after major milestones, and during long operations.\r\n- Post status notes when a step runs long enough to look stalled.\r\n- Verify the affected code path before marking the task complete.\r\n- Finish only after build, tests, and any required push or PR handoff succeed.\n",
+    "pr-workflow": "# Skill: Pull Request Workflow\r\n\r\n- Fetch and merge the base branch plus `origin/main` before pushing.\r\n- Push the task branch and hand off PR lifecycle steps to Bosun.\r\n- Use a short PR description with Summary, Changes, Testing, and Notes.\r\n- Never bypass git hooks with `--no-verify`; fix the failing check or note unrelated breakage.\n",
+    "error-recovery": "# Skill: Error Recovery Patterns\r\n\r\n- Classify the failure first: syntax, test, dependency, git, network, config, or resource limits.\r\n- Fix the first real error before chasing downstream noise.\r\n- Prefer the smallest safe change that resolves the root cause.\r\n- If the error is external or flaky, retry with limits and stop rather than papering over it.\n",
+    "tdd-pattern": "# Skill: Test-Driven Development\r\n\r\n- Start with the smallest failing test that proves the target behavior.\r\n- Implement the minimum code required to pass that test.\r\n- Refactor only after the test is green.\r\n- Keep tests deterministic: no real network, random data, or timer-based synchronization.\n",
+    "commit-conventions": "# Skill: Conventional Commits\r\n\r\n- Use Conventional Commits such as `feat:`, `fix:`, `chore:`, or `test:`.\r\n- Keep the subject short, imperative, and scoped to the actual change.\r\n- Mention validation in the handoff or PR notes, not in the subject line.\r\n- Do not bundle unrelated work into the same commit message or commit.\n",
+    "agent-coordination": "# Skill: Multi-Agent Coordination\r\n\r\n- Keep scope ownership clear before editing shared files.\r\n- Prefer small, isolated changes that reduce merge conflict risk.\r\n- Leave concise status notes when handing work to another agent or retry.\r\n- Re-check git status before finalizing so no unrelated edits leak into the task.\n",
+    "bosun-agent-api": "# Skill: Bosun Agent Status API\r\n\r\n- POST `/status` when starting a new phase or when context changes.\r\n- POST `/heartbeat` during active work so Bosun does not requeue the task.\r\n- POST `/error` with concise failure context before aborting.\r\n- POST `/complete` only after verification is done and the task is truly finished.\n",
+    "code-quality-anti-patterns": "# Skill: Code Quality Anti-Patterns\r\n\r\n- Keep caches, lazy singletons, and loaded flags at module scope.\r\n- Await async work or attach `.catch()`; never leave floating promises.\r\n- Wrap hot-path callbacks and handlers in error boundaries.\r\n- Mock external boundaries only; avoid over-mocking the module under test.\r\n- Keep tests deterministic and remove dead branches instead of layering guard code.\n",
+    "skill-codebase-audit": "# Skill: Codebase Annotation Audit\r\n\r\n## Purpose\r\nSystematically audit and annotate a codebase so that *future* AI agents can\r\nnavigate it 4× faster, use 20% fewer tokens, and avoid false-positive changes.\r\nThis skill is **documentation-only** — it MUST NOT fix bugs, refactor code,\r\nor change program behavior.\r\n\r\n## Philosophy — LEAN Annotations\r\n\r\nModern AI coding SDKs (Copilot, Codex, Claude Code) already auto-compact\r\ncontext. Adding a memory/compaction layer on top is wasteful. What *does* help\r\nis **repo-level documentation** that agents read at the start of a session:\r\nsummaries, warnings, architectural notes, and module manifests. These cost zero\r\nruntime tokens and dramatically reduce exploration time.\r\n\r\n## Annotation Format\r\n\r\nUse structured comment headers that agents are trained to recognize:\r\n\r\n```\r\n// CLAUDE:SUMMARY — <module-name>\r\n// <1–3 sentence summary of purpose, key types, and public API>\r\n```\r\n\r\n```\r\n// CLAUDE:WARN — <module-name>\r\n// <non-obvious pitfall, race condition, or constraint agents MUST know>\r\n```\r\n\r\n- Place annotations at the **top of the file**, after imports / shebang.\r\n- Keep each annotation to ≤ 3 lines.\r\n- Do NOT annotate trivial files (configs, lockfiles, generated code).\r\n\r\n## 6-Phase Audit\r\n\r\n### Phase 1 — Inventory\r\nEnumerate every source file. For each file record:\r\n| Field | Value |\r\n|-------|-------|\r\n| path | relative from repo root |\r\n| lang | file extension / language |\r\n| lines | line count |\r\n| has_summary | yes / no |\r\n| has_warn | yes / no |\r\n| category | core / util / test / config / generated |\r\n\r\nOutput: `.bosun/audit/inventory.json`\r\n\r\n### Phase 2 — Summaries\r\nFor every file where `has_summary === false` and `category !== \"generated\"`:\r\n1. Read the file.\r\n2. Write a `CLAUDE:SUMMARY` comment at the top.\r\n3. Stage the file.\r\n\r\n### Phase 3 — Warnings\r\nFor every file, check for non-obvious constraints:\r\n- Singleton/caching requirements (must be module-scope)\r\n- Async fire-and-forget patterns (unhandled rejections)\r\n- Order-dependent initialization\r\n- Platform-specific behavior (Windows paths, etc.)\r\n\r\nAdd `CLAUDE:WARN` comments where found.\r\n\r\n### Phase 4 — Manifest Audit\r\nEnsure `AGENTS.md` (or equivalent) at repo root is accurate:\r\n- Lists all top-level modules with 1-line descriptions.\r\n- Documents build / test / lint commands.\r\n- Documents environment variables.\r\n- Documents commit conventions.\r\n- Lists known constraints or gotchas.\r\n\r\nIf the file is outdated or missing sections, append corrections.\r\n\r\n### Phase 5 — Conformity Check\r\nRe-scan all annotations and validate:\r\n- `CLAUDE:SUMMARY` is present in every non-trivial source file.\r\n- `CLAUDE:WARN` exists for files with known pitfalls.\r\n- No stale annotations reference symbols/functions that no longer exist.\r\n\r\nOutput: `.bosun/audit/conformity-report.json`\r\n\r\n### Phase 6 — Regeneration Schedule\r\nAnnotations rot. Add a `.bosun/audit/schedule.json` with:\r\n```json\r\n{\r\n  \"lastFullAudit\": \"<ISO timestamp>\",\r\n  \"nextRecommendedAudit\": \"<ISO timestamp + 30 days>\",\r\n  \"filesAudited\": <count>,\r\n  \"summariesAdded\": <count>,\r\n  \"warningsAdded\": <count>,\r\n  \"conformityScore\": <0-100>\r\n}\r\n```\r\n\r\n## Hard Rules\r\n\r\n1. **Do NOT change program behavior.** Only add/update comments and documentation.\r\n2. **Do NOT refactor, fix bugs, or rename symbols.** Documentation only.\r\n3. **Do NOT annotate generated files** (lockfiles, build output, `.min.js`, etc.).\r\n4. **Keep summaries ≤ 3 lines.** Agents need density, not essays.\r\n5. **Keep warnings actionable.** \"This is complex\" is useless.\r\n   \"Must call init() before query() — throws otherwise\" is helpful.\r\n6. **Stage files individually** — never `git add .`.\r\n7. **Commit with** `docs(audit): annotate <module>` — not `feat`/`fix`.\r\n\r\n## Success Metrics\r\n- A/B tested: annotated repos show 4× faster agent navigation.\r\n- 20% fewer tokens consumed per task.\r\n- Zero false-positive code changes from confused agents.\n",
+    "custom-tool-creation": "# Skill: Custom Tool Creation & Reuse\r\n\r\n- Reuse an existing tool before writing repetitive inline code.\r\n- Extract durable helpers when the same manual sequence appears more than once.\r\n- Store workspace tools in `.bosun/tools/` with clear titles, tags, and a narrow purpose.\r\n- Promote high-value helpers to global scope only when they are stable and broadly reusable.\n"
   }
 };
 })();

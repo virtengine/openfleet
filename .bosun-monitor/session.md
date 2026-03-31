@@ -68,3 +68,63 @@
     1. isolate the `manual-flows` / `Run Flows` array-as-element warning and patch both `ui/` + `site/ui/` copies if the misuse is confirmed.
     2. keep watching fresh watchdog cycles to confirm no new merged-PR clone failures reappear.
     3. continue deeper workflow/market/chat/fleet interaction sweeps from the same Playwright session instead of opening more browser processes.
+- Follow-up on 2026-04-01 (worktree refresh conflict recovery semantics):
+  - Revalidated the main pipeline bottleneck: `branch_refresh_conflict` is still the dominant live worktree failure mode surfaced in Pulse/workflow-run artifacts, but the deeper defect is not the initial block itself. The incorrect behavior was the generic auto-unblock path reactivating these blocked tasks and sending them straight back into the same failing reacquire loop.
+  - Source fix applied:
+    - `workflow/workflow-nodes.mjs`
+    - `workflow/workflow-nodes/actions.mjs`
+    - `task/task-store.mjs`
+  - Behavioral change:
+    - `branch_refresh_conflict` now reports a truthful blocked reason (`task remains blocked until repair workflow succeeds`) instead of claiming Bosun will retry automatically after cooldown.
+    - acquire-worktree no longer schedules a generic cooldown `retryAt` for `branch_refresh_conflict`.
+    - generic blocked-task auto-recovery in both workflow polling and task-store recovery now skips `branch_refresh_conflict` unless the task still contains unresolved workflow placeholders; this prevents churn where the monitor unblocks the task only for acquire-worktree to hit the same stale-refresh conflict again.
+  - Regression coverage added/updated:
+    - `tests/task-store.test.mjs`
+    - `tests/workflow-task-lifecycle.test.mjs`
+    - focused checks passed:
+      - `npm test -- tests/task-store.test.mjs -t "does not auto-recover branch refresh conflicts that require repair workflow"`
+      - `npm test -- tests/workflow-task-lifecycle.test.mjs -t "does not auto-recover branch refresh conflicts before polling"`
+      - `npm run build`
+  - Validation caveat:
+    - broad `npm test -- tests/task-store.test.mjs tests/workflow-task-lifecycle.test.mjs` still fails in `tests/workflow-task-lifecycle.test.mjs`, but the failures are unrelated template-shape assertions tied to pre-existing dirty changes in `workflow-templates/task-lifecycle.mjs` and `workflow-templates/reliability.mjs` already present in this checkout (`set-fix-summary`, `{{prBody}}`, watchdog defaults). I did not modify those files in this pass.
+  - Current pinned runtime snapshot after this pass:
+    - `node cli.mjs task stats --config-dir .bosun --repo-root .`
+    - `draft=45 todo=13 inprogress=8 inreview=0 done=104 blocked=10 total=183`
+  - Next concrete actions:
+    1. monitor whether blocked `branch_refresh_conflict` tasks now stay parked for repair instead of boomeranging back to todo.
+    2. inspect the repair-worktree workflow path on one affected task branch to confirm it can actually clear the conflict and unblock the task.
+    3. continue sequential Playwright sweeps from the authenticated portal session while avoiding new browser process churn.
+- Follow-up on 2026-04-01 (manual-flow health check `baseBranch=entire` loop fix):
+  - Diagnosed the current `todo -> inprogress -> todo` loop for task `5d0cd537-2dcc-4ced-a001-130b77aea729` as a false base-branch inference, not a `branch_refresh_conflict`.
+  - Root cause:
+    - internal kanban branch extraction treated plain prose `Target: entire repo` in the Codebase Health Check task description as a branch marker and normalized it into `baseBranch: "entire"`.
+    - Task Lifecycle then passed that through acquire-worktree, producing `fatal: invalid reference: entire` and retrying as `worktree_acquisition_failed`.
+  - Source fix applied:
+    - `kanban/kanban-adapter.mjs`
+    - `tests/kanban-adapter.test.mjs`
+  - Behavioral change:
+    - task text only infers base branches from explicit branch markers (`base branch`, `base_branch`, `upstream`, `target branch`), not generic `Target: ...` prose.
+    - internal task updates now honor explicit base-branch clears (`baseBranch: ""`) and remove stale canonical/meta base-branch fields instead of preserving old values.
+  - Validation passed:
+    - `npm test -- tests/kanban-adapter.test.mjs tests/manual-flows.test.mjs` => `90 passed`
+    - `npm run build`
+  - Live runtime repair:
+    - restarted Bosun on pinned roots with `node cli.mjs --stop-daemon --config-dir .bosun --repo-root .` then `node cli.mjs --daemon --config-dir .bosun --repo-root .`
+    - cleared the stale live task field via `/api/tasks/update` with `taskId=5d0cd537-2dcc-4ced-a001-130b77aea729` and `baseBranch=""`
+    - immediate task detail confirmed `baseBranch: null`
+    - current `monitor.log` evidence shows the next Task Lifecycle attempts now pass `acquire-worktree` with `worktree-ok result=true`, then continue through:
+      - `resolve-executor`
+      - `record-head`
+      - `read-workflow-contract`
+      - `workflow-contract-validation`
+      - `build-prompt`
+      - `run-agent-plan`
+    - this confirms the previous `invalid reference: entire` loop is cleared in the live runtime.
+  - Current live task state:
+    - task `5d0cd537-2dcc-4ced-a001-130b77aea729` is presently `inprogress`
+    - `baseBranch` is `null`
+    - `worktreePath` is now populated under `.bosun/worktrees/task-5d0cd5372dcc-...`
+  - Next concrete actions:
+    1. continue monitoring this task through agent execution/finalization to ensure it completes rather than stalling later in the lifecycle.
+    2. resume Playwright CLI/browser validation now that the highest-value live pipeline loop is fixed.
+    3. investigate the remaining daemon-status/process-accounting inconsistency (`--daemon-status` seeing multiple active Bosun processes) only if it causes operational confusion or restart issues.

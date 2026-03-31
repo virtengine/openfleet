@@ -1653,6 +1653,57 @@ describe("kanban-adapter internal backend", () => {
     expect(removeTask(created.id)).toBe(false);
   });
 
+  it("does not infer a base branch from health-check target prose", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "chore(health): codebase health check — all",
+      description: "Run all health check(s).\nTarget: entire repo\nOutput: json",
+      status: "todo",
+    });
+
+    expect(created.baseBranch).toBeNull();
+    expect(created.meta?.baseBranch ?? null).toBeNull();
+    expect(created.meta?.base_branch ?? null).toBeNull();
+  });
+
+  it("still infers a base branch from explicit branch markers in task text", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "Base branch marker task",
+      description: "Run validation.\nBase branch: origin/main",
+      status: "todo",
+    });
+
+    expect(created.baseBranch).toBe("origin/main");
+  });
+
+  it("clears persisted base branch metadata when explicitly unset", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "Clearable base branch",
+      description: "Base branch is stored explicitly in canonical metadata.",
+      status: "todo",
+      baseBranch: "origin/main",
+      meta: {
+        baseBranch: "origin/main",
+        base_branch: "origin/main",
+      },
+    });
+
+    expect(created.baseBranch).toBe("origin/main");
+
+    const updated = await adapter.updateTask(created.id, {
+      baseBranch: "",
+    });
+
+    expect(updated.baseBranch).toBeNull();
+    expect(updated.meta?.baseBranch ?? null).toBeNull();
+    expect(updated.meta?.base_branch ?? null).toBeNull();
+  });
+
   it("preserves PR linkage across repeated status updates and store reload cycles", async () => {
     const adapter = getKanbanAdapter();
 

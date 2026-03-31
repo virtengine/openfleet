@@ -3026,6 +3026,7 @@ export function recoverAutoBlockedTasks(options = {}) {
     if (!task || normalizeTaskStatus(task.status) !== "blocked") continue;
     const autoRecovery = task.meta?.autoRecovery;
     const worktreeFailure = task.meta?.worktreeFailure;
+    const failureKind = String(worktreeFailure?.failureKind || autoRecovery?.failureKind || "").trim();
     const hasPlaceholder = hasStaleWorktreePlaceholders(task);
     const isWorktreeRecovery = (
       autoRecovery &&
@@ -3037,6 +3038,7 @@ export function recoverAutoBlockedTasks(options = {}) {
       typeof worktreeFailure === "object"
     ) || hasPlaceholder;
     if (!isWorktreeRecovery) continue;
+    if (failureKind === "branch_refresh_conflict" && !hasPlaceholder) continue;
 
     const retryAtMs = resolveRetryAtMs(task, autoRecovery);
     if (Number.isFinite(retryAtMs) && retryAtMs > recoveredAtMs) continue;
