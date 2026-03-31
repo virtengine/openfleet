@@ -26,21 +26,33 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "id": "posttooluse-detected-npm-run-lint",
+        "command": "npm run lint",
+        "description": "Run lightweight repository validation after edits (Node.js)",
+        "blocking": false,
+        "timeout": 120000,
+        "sdks": [
+          "*"
+        ]
+      }
+    ],
     "PrePush": [
       {
-        "id": "prepush-go-vet",
-        "command": "go vet ./...",
-        "description": "Run go vet before push",
+        "id": "prepush-git-diff-check",
+        "command": "git diff --check",
+        "description": "Check tracked changes for whitespace and conflict-marker issues before push",
         "blocking": true,
-        "timeout": 120000,
+        "timeout": 30000,
         "sdks": [
           "*"
         ]
       },
       {
-        "id": "prepush-go-build",
-        "command": "go build ./...",
-        "description": "Verify Go build succeeds before push",
+        "id": "prepush-detected-npm-run-prepush-check",
+        "command": "npm run prepush:check",
+        "description": "Run detected repository quality gate before push (Node.js)",
         "blocking": true,
         "timeout": 300000,
         "sdks": [
@@ -64,6 +76,6 @@
   "meta": {
     "profile": "balanced",
     "generatedBy": "bosun setup",
-    "generatedAt": "2026-03-27T06:21:21.749Z"
+    "generatedAt": "2026-03-28T22:29:00.000Z"
   }
 }

@@ -23,6 +23,7 @@ import {
   registerNodeType,
   getNodeType,
 } from "../workflow/workflow-nodes.mjs";
+import { registerCustomTool } from "../agent/agent-custom-tools.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -159,6 +160,33 @@ describe("action.bosun_tool", () => {
     expect(result.matchedPort).toBeDefined();
     expect(ctx.data.todoResult).toBeDefined();
   }, 15000);
+
+  it("uses the workflow sandbox root when repoRoot is missing", async () => {
+    const handler = getNodeType("action.bosun_tool");
+    const engine = makeTmpEngine();
+    registerCustomTool(tmpDir, {
+      id: "sandbox-tool",
+      title: "Sandbox Tool",
+      description: "Prints a marker from the sandbox workspace",
+      category: "utility",
+      lang: "mjs",
+      script: "console.log('sandbox-ok');",
+    });
+    const ctx = new WorkflowContext({});
+    const node = {
+      id: "sandbox-tool-run",
+      type: "action.bosun_tool",
+      config: {
+        toolId: "sandbox-tool",
+        parseJson: false,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, engine);
+
+    expect(result.success).toBe(true);
+    expect(result.stdout).toContain("sandbox-ok");
+  });
 
   it("resolves args with template interpolation", async () => {
     const handler = getNodeType("action.bosun_tool");
@@ -364,6 +392,38 @@ describe("action.build_task_prompt", () => {
     expect(userPrompt).toContain("Issue Advisor Action");
     expect(userPrompt).toContain("replan_subgraph");
     expect(userPrompt).toContain("DAG Revisions");
+  });
+
+  it("includes a task reference section when taskUrl is provided", async () => {
+    const handler = getNodeType("action.build_task_prompt");
+    const repoRoot = makeTmpDir();
+    const node = {
+      id: "prompt-task-url",
+      type: "action.build_task_prompt",
+      config: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        taskDescription: "{{taskDescription}}",
+        taskUrl: "{{taskUrl}}",
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      },
+    };
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-URL",
+      taskTitle: "Track prompt reference",
+      taskDescription: "Follow the linked task.",
+      taskUrl: "https://github.com/acme/widgets/issues/42",
+      repoRoot,
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-url"),
+    });
+
+    const result = await handler.execute(node, ctx);
+    const userPrompt = result.userPrompt || result.prompt;
+
+    expect(userPrompt).toContain("## Task Reference");
+    expect(userPrompt).toContain("https://github.com/acme/widgets/issues/42");
   });
 });
 
@@ -896,6 +956,36 @@ describe("action.bosun_function", () => {
     expect(ctx.data.builtins).toEqual(result);
   });
 
+  it("resolves tool catalog lookups from the workflow sandbox when repoRoot is missing", async () => {
+    const handler = getNodeType("action.bosun_function");
+    const engine = makeTmpEngine();
+    registerCustomTool(tmpDir, {
+      id: "sandbox-tool",
+      title: "Sandbox Tool",
+      description: "Scoped to the workflow sandbox",
+      category: "utility",
+      lang: "mjs",
+      script: "console.log('sandbox-ok');",
+    });
+    const ctx = new WorkflowContext({});
+    const node = {
+      id: "fn-sandbox-tool",
+      type: "action.bosun_function",
+      config: {
+        function: "tools.get",
+        args: {
+          toolId: "sandbox-tool",
+        },
+      },
+    };
+
+    const result = await handler.execute(node, ctx, engine);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.found).toBe(true);
+    expect(result.data?.id).toBe("sandbox-tool");
+  });
+
   it("calls git.status and returns structured git info", async () => {
     const handler = getNodeType("action.bosun_function");
     const bosunRoot = resolve(import.meta.dirname, "..");
@@ -1341,4 +1431,3 @@ describe("cross-node data piping", () => {
     expect(invokeOutput.workflowId).toBe("chain-child-wf");
   });
 });
-

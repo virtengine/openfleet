@@ -507,6 +507,22 @@
   // support browsers without dynamic import support (eg Firefox 6x)
   let supportsJsonType = false;
   let supportsCssType = false;
+  const jsInjectionEscapeMap = {
+    '<': '\\u003C',
+    '>': '\\u003E',
+    '/': '\\u002F',
+    '\\': '\\\\',
+    '\b': '\\b',
+    '\f': '\\f',
+    '\n': '\\n',
+    '\r': '\\r',
+    '\t': '\\t',
+    '\0': '\\0',
+    '\u2028': '\\u2028',
+    '\u2029': '\\u2029'
+  };
+  const serializeForCode = value =>
+    JSON.stringify(value).replace(/[<>\/\\\b\f\n\r\t\0\u2028\u2029]/g, char => jsInjectionEscapeMap[char]);
 
   const supports = hasDocument && HTMLScriptElement.supports;
 
@@ -565,6 +581,7 @@
       }
       window.addEventListener('message', cb, false);
       // Feature checking with careful avoidance of unnecessary work - all gated on initial import map supports check. CSS gates on JSON feature check, Wasm instance phase gates on wasm source phase check.
+      const serializedWasmBytes = serializeForCode(wasmBytes);
       const importMapTest = `<script nonce=${nonce || ''}>${
       policy ? 't=(window.trustedTypes||window.TrustedTypes).createPolicy("es-module-shims",{createScript:s=>s});' : ''
     }b=(s,type='text/javascript')=>URL.createObjectURL(new Blob([s],{type}));c=u=>import(u).then(()=>true,()=>false);i=innerText=>${
@@ -575,7 +592,7 @@
       supportsImportMaps && jsonModulesEnabled ? `c(b(\`import"\${b('{}','text/json')}"with{type:"json"}\`))` : 'false'
     };sp=${
       supportsImportMaps && wasmSourcePhaseEnabled ?
-        `c(b(\`import source x from "\${b(new Uint8Array(${JSON.stringify(wasmBytes)}),'application/wasm')\}"\`))`
+        `c(b(\`import source x from "\${b(new Uint8Array(${serializedWasmBytes}),'application/wasm')\}"\`))`
       : 'false'
     };Promise.all([${supportsImportMaps ? 'true' : "c('x')"},${supportsImportMaps ? "c('y')" : false},cm,${
       supportsImportMaps && cssModulesEnabled ?
@@ -583,7 +600,7 @@
       : 'false'
     },sp,${
       supportsImportMaps && wasmInstancePhaseEnabled ?
-        `${wasmSourcePhaseEnabled ? 'sp.then(s=>s?' : ''}c(b(\`import"\${b(new Uint8Array(${JSON.stringify(wasmBytes)}),'application/wasm')\}"\`))${wasmSourcePhaseEnabled ? ':false)' : ''}`
+        `${wasmSourcePhaseEnabled ? 'sp.then(s=>s?' : ''}c(b(\`import"\${b(new Uint8Array(${serializedWasmBytes}),'application/wasm')\}"\`))${wasmSourcePhaseEnabled ? ':false)' : ''}`
       : 'false'
     }]).then(a=>parent.postMessage(['${msgTag}'].concat(a),'*'))<${''}/script>`;
 
@@ -910,7 +927,7 @@
     }
   };
 
-  const urlJsString = url => `'${url.replace(/'/g, "\\'")}'`;
+  const urlJsString = url => serializeForCode(String(url));
 
   let resolvedSource, lastIndex;
   const pushStringTo = (load, originalIndex, dynamicImportEndStack) => {

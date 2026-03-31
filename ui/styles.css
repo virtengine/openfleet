@@ -1,3 +1,62 @@
+:root {
+  --ws-badge-connected: #22c55e;
+  --ws-badge-reconnecting: #f59e0b;
+  --ws-badge-offline: #ef4444;
+}
+
+.connection-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.24));
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-secondary, #cbd5e1);
+  background: var(--bg-elevated, rgba(15, 23, 42, 0.24));
+}
+
+.connection-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 8px;
+  background: var(--ws-badge-offline);
+}
+
+.connection-badge-dot.connected {
+  background: var(--ws-badge-connected);
+}
+
+.connection-badge-dot.reconnecting {
+  background: var(--ws-badge-reconnecting);
+}
+
+.connection-badge-dot.offline {
+  background: var(--ws-badge-offline);
+}
+
+.connection-badge-label {
+  white-space: nowrap;
+}
+
+.connection-badge-pulse {
+  animation: connection-badge-pulse 1s ease-in-out infinite;
+}
+
+@keyframes connection-badge-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.55; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-badge-pulse {
+    animation: none;
+  }
+}
+
 /* @import directives moved to <link> tags in index.html for parallel loading */
 
 .floating-call-restore {
@@ -889,4 +948,52 @@
 
 button.task-related-link-chip {
   appearance: none;
+}
+
+
+.fleet-session-id-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  background: color-mix(in srgb, var(--surface-elevated, rgba(255,255,255,0.06)) 88%, transparent);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.fleet-session-id-pill:hover,
+.fleet-session-id-pill:focus-visible {
+  border-color: var(--accent-color, #7c3aed);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.fleet-session-id-pill:active {
+  transform: translateY(1px);
+}
+
+.fleet-session-id-pill-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+}
+
+.fleet-session-id-pill[data-copied="true"] {
+  color: var(--color-done);
+  border-color: color-mix(in srgb, var(--color-done) 70%, transparent);
+  background: color-mix(in srgb, var(--color-done) 14%, transparent);
+  animation: fleet-session-pill-copied 1.5s ease;
+}
+
+@keyframes fleet-session-pill-copied {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  20% {
+    transform: translateY(-1px);
+  }
 }
