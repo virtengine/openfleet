@@ -17,6 +17,7 @@ import { gzip as zlibGzip } from "node:zlib";
 import { promisify } from "node:util";
 import * as wsModule from "ws";
 import Ajv2020 from "ajv/dist/2020.js";
+import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 
 const gzipAsync = promisify(zlibGzip);
 
@@ -8187,6 +8188,12 @@ function normalizeLedgerSessionDocument(activity, options = {}) {
   const metadata = document.metadata && typeof document.metadata === "object"
     ? { ...document.metadata }
     : {};
+  const repairText = (value) => {
+    if (value == null) return value;
+    const normalized = String(value || "");
+    if (!normalized) return normalized;
+    return repairCommonMojibake(normalized);
+  };
   const workspaceId = document.workspaceId || metadata.workspaceId || activity?.workspaceId || null;
   const workspaceDir = normalizeCandidatePath(document.workspaceDir || metadata.workspaceDir);
   const workspaceRoot = normalizeCandidatePath(document.workspaceRoot || metadata.workspaceRoot || workspaceDir);
@@ -8195,8 +8202,8 @@ function normalizeLedgerSessionDocument(activity, options = {}) {
     id: sessionId,
     sessionId,
     taskId: document.taskId || activity?.latestTaskId || sessionId,
-    taskTitle: document.taskTitle || document.title || activity?.latestTaskTitle || null,
-    title: document.title || document.taskTitle || activity?.latestTaskTitle || null,
+    taskTitle: repairText(document.taskTitle || document.title || activity?.latestTaskTitle || null),
+    title: repairText(document.title || document.taskTitle || activity?.latestTaskTitle || null),
     type: document.type || document.sessionType || activity?.sessionType || "task",
     status: document.status || document.lifecycleStatus || activity?.latestStatus || "completed",
     lifecycleStatus: document.lifecycleStatus || activity?.latestStatus || document.status || "completed",
@@ -8212,6 +8219,8 @@ function normalizeLedgerSessionDocument(activity, options = {}) {
     messages: includeMessages && Array.isArray(document.messages)
       ? document.messages.map((message) => ({ ...message }))
       : [],
+    preview: repairText(document.preview || document.lastMessage || null),
+    lastMessage: repairText(document.lastMessage || document.preview || null),
     metadata: {
       ...metadata,
       ...(workspaceId ? { workspaceId } : {}),
@@ -8302,6 +8311,11 @@ function mergeSessionRecords(primarySession, fallbackSession) {
   const preferPrimaryIfLive = (...values) => (
     primaryIsLive ? values : [...values].reverse()
   );
+  const repairText = (value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized) return null;
+    return repairCommonMojibake(normalized);
+  };
   const workspaceId = pickString(fallback.workspaceId, fallbackMeta.workspaceId, primary.workspaceId, primaryMeta.workspaceId);
   const workspaceDir = pickString(fallback.workspaceDir, fallbackMeta.workspaceDir, primary.workspaceDir, primaryMeta.workspaceDir);
   const workspaceRoot = pickString(fallback.workspaceRoot, fallbackMeta.workspaceRoot, primary.workspaceRoot, primaryMeta.workspaceRoot, workspaceDir);
@@ -8333,12 +8347,12 @@ function mergeSessionRecords(primarySession, fallbackSession) {
     taskId: preferFallbackIdentity
       ? pickString(fallback.taskId, fallback.sessionId, primary.taskId, primary.sessionId)
       : pickString(primary.taskId, primary.sessionId, fallback.taskId, fallback.sessionId),
-    taskTitle: preferFallbackIdentity
+    taskTitle: repairText(preferFallbackIdentity
       ? pickString(fallback.taskTitle, fallback.title, primary.taskTitle, primary.title)
-      : pickString(primary.taskTitle, primary.title, fallback.taskTitle, fallback.title),
-    title: preferFallbackIdentity
+      : pickString(primary.taskTitle, primary.title, fallback.taskTitle, fallback.title)),
+    title: repairText(preferFallbackIdentity
       ? pickString(fallback.title, fallback.taskTitle, primary.title, primary.taskTitle)
-      : pickString(primary.title, primary.taskTitle, fallback.title, fallback.taskTitle),
+      : pickString(primary.title, primary.taskTitle, fallback.title, fallback.taskTitle)),
     type: pickString(primary.type, fallback.type),
     status,
     lifecycleStatus,
@@ -8362,18 +8376,18 @@ function mergeSessionRecords(primarySession, fallbackSession) {
     turnCount: Math.max(0, Number(primary.turnCount ?? fallback.turnCount ?? 0) || 0),
     turns: pickList(...preferPrimaryIfLive(primary.turns, fallback.turns)),
     messages: pickList(...preferPrimaryIfLive(primary.messages, fallback.messages)),
-    preview: pickString(...preferPrimaryIfLive(
+    preview: repairText(pickString(...preferPrimaryIfLive(
       primary.preview,
       primary.lastMessage,
       fallback.preview,
       fallback.lastMessage,
-    )),
-    lastMessage: pickString(...preferPrimaryIfLive(
+    ))),
+    lastMessage: repairText(pickString(...preferPrimaryIfLive(
       primary.lastMessage,
       primary.preview,
       fallback.lastMessage,
       fallback.preview,
-    )),
+    ))),
     metadata: {
       ...fallbackMeta,
       ...primaryMeta,
@@ -10067,6 +10081,9 @@ function shouldHideSessionFromDefaultList(session) {
       : {};
   const normalizedVisibility = String(metadata.visibility || "").trim().toLowerCase();
   const normalizedSource = String(metadata.source || "").trim().toLowerCase();
+  const normalizedType = String(session.type || session.sessionType || metadata.type || "").trim().toLowerCase();
+  const normalizedWorkspaceDir = normalizeCandidatePath(session.workspaceDir || metadata.workspaceDir);
+  const normalizedWorkspaceRoot = normalizeCandidatePath(session.workspaceRoot || metadata.workspaceRoot);
   if (
     metadata.hiddenInLists === true
     || metadata.hidden === true
@@ -10091,7 +10108,24 @@ function shouldHideSessionFromDefaultList(session) {
       )
     );
   if (internalTransportSession) return true;
-  return identifiers.some((value) => /^smoke(?:-vision)?-/i.test(String(value || "").trim()));
+  const fixturePattern = /^(?:manual-visible-session|tokens-visible-session|freshness-visible-session|chat-runtime|meeting-(?:1|vision)|workspace-scope-test(?:-.+)?|session-linked-task-1)$/i;
+  const hasFixtureIdentifier = identifiers.some((value) => fixturePattern.test(String(value || "").trim()));
+  if (hasFixtureIdentifier) return true;
+  const hasSmokeIdentifier = identifiers.some((value) => /^smoke(?:-vision)?-/i.test(String(value || "").trim()));
+  if (hasSmokeIdentifier) return true;
+  const looksLikeSyntheticType =
+    normalizedType.endsWith("-test")
+    || normalizedType.includes("scope-test")
+    || normalizedType === "workspace-scope-test";
+  if (looksLikeSyntheticType) return true;
+  const tempWorkspacePattern = /(?:\\|\/)(?:temp|tmp)(?:\\|\/)/i;
+  const looksTemporaryWorkspace =
+    tempWorkspacePattern.test(normalizedWorkspaceDir)
+    || tempWorkspacePattern.test(normalizedWorkspaceRoot);
+  const syntheticTempSource =
+    normalizedSource === "workflow-meeting"
+    || identifiers.some((value) => /workflow linked task/i.test(String(value || "")));
+  return looksTemporaryWorkspace && syntheticTempSource;
 }
 
 function buildInternalVoiceSessionMetadata(base = {}, source = "voice-http") {

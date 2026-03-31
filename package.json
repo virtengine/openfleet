@@ -407,7 +407,7 @@
     "vitest": "^4.0.18"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "publishConfig": {
     "access": "public"

@@ -5704,56 +5704,6 @@ function RunHistoryView() {
     if (approvalScopeFilter === "all") return approvalRequests;
     return approvalRequests.filter((entry) => normalizeApprovalScopeType(entry?.scopeType) === approvalScopeFilter);
   }, [approvalRequests, approvalScopeFilter]);
-  const operatorInboxItems = useMemo(() => {
-    const approvals = approvalRequests
-      .filter((entry) => String(entry?.status || "").trim().toLowerCase() === "pending")
-      .map((request) => ({
-        key: `approval:${request.requestId}`,
-        kind: "approval",
-        label: describeApprovalRequest(request),
-        detail: describeApprovalTarget(request),
-        state: String(request?.status || "pending").trim().toLowerCase() || "pending",
-        createdAt: request?.requestedAt || request?.createdAt || request?.updatedAt || null,
-        request,
-      }));
-    const harnessAttention = operatorHarnessRuns
-      .filter((run) => {
-        const state = String(
-          run?.health?.state
-          || run?.status
-          || run?.outcome
-          || run?.result?.status
-          || "",
-        ).trim().toLowerCase();
-        return state === "waiting" || state === "stalled";
-      })
-      .map((run) => ({
-        key: `harness:${run.runId}`,
-        kind: "harness-attention",
-        label: String(run?.taskTitle || run?.name || run?.runId || "Harness run").trim(),
-        detail: String(
-          run?.health?.attentionReason
-          || run?.health?.lastEventSummary
-          || run?.latestEvent?.summary
-          || run?.summary
-          || "Harness run needs operator attention."
-        ).trim(),
-        state: String(
-          run?.health?.state
-          || run?.status
-          || run?.outcome
-          || run?.result?.status
-          || "unknown"
-        ).trim().toLowerCase(),
-        createdAt: run?.updatedAt || run?.createdAt || run?.startedAt || null,
-        run,
-      }));
-    return [...approvals, ...harnessAttention].sort((a, b) => {
-      const aTime = new Date(a?.createdAt || 0).getTime() || 0;
-      const bTime = new Date(b?.createdAt || 0).getTime() || 0;
-      return bTime - aTime;
-    });
-  }, [approvalRequests, describeApprovalRequest, describeApprovalTarget, operatorHarnessRuns]);
 
   useEffect(() => {
     setLogsPaneSearch("");
@@ -5927,6 +5877,56 @@ function RunHistoryView() {
     if (request?.runId) parts.push(`run ${request.runId}`);
     return parts.join(" · ") || "No workflow target metadata";
   }, []);
+  const operatorInboxItems = useMemo(() => {
+    const approvals = approvalRequests
+      .filter((entry) => String(entry?.status || "").trim().toLowerCase() === "pending")
+      .map((request) => ({
+        key: `approval:${request.requestId}`,
+        kind: "approval",
+        label: describeApprovalRequest(request),
+        detail: describeApprovalTarget(request),
+        state: String(request?.status || "pending").trim().toLowerCase() || "pending",
+        createdAt: request?.requestedAt || request?.createdAt || request?.updatedAt || null,
+        request,
+      }));
+    const harnessAttention = operatorHarnessRuns
+      .filter((run) => {
+        const state = String(
+          run?.health?.state
+          || run?.status
+          || run?.outcome
+          || run?.result?.status
+          || "",
+        ).trim().toLowerCase();
+        return state === "waiting" || state === "stalled";
+      })
+      .map((run) => ({
+        key: `harness:${run.runId}`,
+        kind: "harness-attention",
+        label: String(run?.taskTitle || run?.name || run?.runId || "Harness run").trim(),
+        detail: String(
+          run?.health?.attentionReason
+          || run?.health?.lastEventSummary
+          || run?.latestEvent?.summary
+          || run?.summary
+          || "Harness run needs operator attention."
+        ).trim(),
+        state: String(
+          run?.health?.state
+          || run?.status
+          || run?.outcome
+          || run?.result?.status
+          || "unknown"
+        ).trim().toLowerCase(),
+        createdAt: run?.updatedAt || run?.createdAt || run?.startedAt || null,
+        run,
+      }));
+    return [...approvals, ...harnessAttention].sort((a, b) => {
+      const aTime = new Date(a?.createdAt || 0).getTime() || 0;
+      const bTime = new Date(b?.createdAt || 0).getTime() || 0;
+      return bTime - aTime;
+    });
+  }, [approvalRequests, describeApprovalRequest, describeApprovalTarget, operatorHarnessRuns]);
   const openApprovalTarget = useCallback((request) => {
     const scopeType = normalizeApprovalScopeType(request?.scopeType);
     const requestRunId = String(request?.runId || "").trim();

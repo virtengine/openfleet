@@ -41,6 +41,8 @@ const MODE_ALWAYS = "always";
 const MODE_OFF = "off";
 const TRUE_VALUES = new Set(["1", "true", "yes", "y", "on"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "n", "off"]);
+const MIN_SUPPORTED_NODE_MAJOR = 22;
+const MIN_SUPPORTED_NODE_MINOR = 13;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,6 +75,22 @@ function parseBoolEnv(value, fallback) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function getNodeVersionParts(version = process.versions.node) {
+  const [major = "0", minor = "0", patch = "0"] = String(version || "0.0.0").split(".");
+  return {
+    major: Number.parseInt(major, 10) || 0,
+    minor: Number.parseInt(minor, 10) || 0,
+    patch: Number.parseInt(patch, 10) || 0,
+  };
+}
+
+function isSupportedNodeVersion(version = process.versions.node) {
+  const { major, minor } = getNodeVersionParts(version);
+  if (major > MIN_SUPPORTED_NODE_MAJOR) return true;
+  if (major < MIN_SUPPORTED_NODE_MAJOR) return false;
+  return minor >= MIN_SUPPORTED_NODE_MINOR;
 }
 
 function normalizeScopedMode(value) {
@@ -348,6 +366,16 @@ const RECOMMENDED = [
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
+  if (!isSupportedNodeVersion()) {
+    console.error("");
+    console.error(
+      `  :close: Node.js ${process.versions.node} is not supported. Bosun requires Node.js ${MIN_SUPPORTED_NODE_MAJOR}.${MIN_SUPPORTED_NODE_MINOR}+ because it uses the built-in node:sqlite module.`,
+    );
+    console.error("     Upgrade to Node.js 22.13+ or 24.x LTS and retry npm install.");
+    process.exitCode = 1;
+    return;
+  }
+
   // Skip in CI environments
   if (process.env.CI || process.env.BOSUN_SKIP_POSTINSTALL) {
     return;
@@ -364,11 +392,12 @@ async function main() {
   let hasWarnings = false;
 
   // Node.js version check
-  const nodeMajor = Number(process.versions.node.split(".")[0]);
-  if (nodeMajor >= 18) {
+  if (isSupportedNodeVersion()) {
     console.log(`  :check: Node.js ${process.versions.node}`);
   } else {
-    console.log(`  :close: Node.js ${process.versions.node} — requires ≥ 18`);
+    console.log(
+      `  :close: Node.js ${process.versions.node} — requires ≥ ${MIN_SUPPORTED_NODE_MAJOR}.${MIN_SUPPORTED_NODE_MINOR}`,
+    );
     hasErrors = true;
   }
 

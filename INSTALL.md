@@ -8,7 +8,7 @@ This guide covers every way to install and run Bosun: from npm, from source, via
 
 | Requirement | Notes |
 |---|---|
-| **Node.js 18+** | v22 LTS recommended. Required for npm / source installs. Not needed for Docker. |
+| **Node.js 22.13+** | Required for npm / source installs because Bosun uses the built-in `node:sqlite` module. Node 24 LTS recommended. Not needed for Docker. |
 | **Git** | On PATH. Needed by all installation methods. |
 | **Bash** or **PowerShell 7+** | For executor wrapper scripts. Windows ships with PowerShell; macOS/Linux ship with bash. |
 | **GitHub CLI (`gh`)** | Recommended for PR workflows. `brew install gh` / `winget install GitHub.cli` / `apt install gh`. |

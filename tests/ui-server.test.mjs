@@ -2232,6 +2232,95 @@ describeUiServer("ui-server mini app", () => {
     expect(hiddenListJson.sessions.some((session) => session.id === "primary-voice-http-test-hidden")).toBe(true);
   }, 15000);
 
+  it("hides leaked synthetic fixture sessions from the default session list", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const tracker = getSessionTracker();
+    tracker.createSession({
+      id: "meeting-1",
+      type: "primary",
+      workspaceDir: join(tmpdir(), "bosun-meeting-fixture"),
+      metadata: {
+        source: "workflow-meeting",
+        title: "Synthetic Meeting Session",
+      },
+    });
+    tracker.createSession({
+      id: "workspace-scope-test-1234",
+      type: "workspace-scope-test",
+      workspaceDir: join(tmpdir(), "bosun-workspace-scope-test"),
+      metadata: {
+        title: "Workspace Scope Fixture",
+      },
+    });
+    tracker.createSession({
+      id: "manual-visible-session",
+      type: "primary",
+      workspaceDir: join(process.cwd(), "fixtures", "manual-visible-session"),
+      metadata: { title: "Visible Session" },
+    });
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
+    const listJson = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(listJson.sessions.some((session) => session.id === "meeting-1")).toBe(false);
+    expect(listJson.sessions.some((session) => session.id === "workspace-scope-test-1234")).toBe(false);
+    expect(listJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(false);
+
+    const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
+    const hiddenListJson = await hiddenListRes.json();
+    expect(hiddenListRes.status).toBe(200);
+    expect(hiddenListJson.ok).toBe(true);
+    expect(hiddenListJson.sessions.some((session) => session.id === "meeting-1")).toBe(true);
+    expect(hiddenListJson.sessions.some((session) => session.id === "workspace-scope-test-1234")).toBe(true);
+    expect(hiddenListJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
+
+    server.close();
+  }, 15000);
+
+  it("repairs common mojibake in session list titles", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const tracker = getSessionTracker();
+    tracker.createSession({
+      id: "mojibake-session",
+      type: "primary",
+      metadata: {
+        title: "feat(tui): Session Detail modal ÔÇö full session drill-down",
+      },
+    });
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
+    const listJson = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    const session = listJson.sessions.find((entry) => entry.id === "mojibake-session");
+    expect(session).toBeTruthy();
+    expect(session.title).toContain("—");
+    expect(session.title).not.toContain("ÔÇö");
+
+    server.close();
+  }, 15000);
+
   it("includes freshness metadata in session list payloads", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
