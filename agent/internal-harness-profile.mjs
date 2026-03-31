@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+const MAX_SLUG_INPUT_LENGTH = 200;
 const SECRET_KEY_RE = /(api[_-]?key|token|secret|password|client[_-]?secret|pat)/i;
 const SECRET_PLACEHOLDER_ENV_RE = /^(?:\$?\{?[A-Z0-9_:-]+\}?|<[^>]+>)$/;
 const SECRET_PLACEHOLDER_TEXT_RE = /^(?:changeme|replace[-_ ]?me|your[-_ ]?key|your[-_ ]?token)$/i;
@@ -30,11 +31,21 @@ function toTrimmedString(value) {
 }
 
 function slugify(value) {
-  return toTrimmedString(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "") || "harness";
+  const lower = toTrimmedString(value).slice(0, MAX_SLUG_INPUT_LENGTH).toLowerCase();
+  let slug = "";
+  let prevDash = true; // suppress leading dash
+  for (const ch of lower) {
+    if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) {
+      slug += ch;
+      prevDash = false;
+    } else if (!prevDash) {
+      slug += "-";
+      prevDash = true;
+    }
+  }
+  // Remove trailing dash
+  if (slug.endsWith("-")) slug = slug.slice(0, -1);
+  return slug || "harness";
 }
 
 function safeClone(value) {

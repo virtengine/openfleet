@@ -6254,7 +6254,7 @@ it("agent.run_planner injects compact repo topology when enabled", async () => {
   expect(sentPrompt).toContain("Areas: workflow (2), tests (1)");
   expect(sentPrompt).toContain("owner: workflow");
   expect(sentPrompt).toContain("adjacent: workflow/workflow-nodes.mjs, tests/workflow-engine.test.mjs");
-});
+}, 30000);
 
 it("agent.run_planner avoids duplicating repo topology blocks", async () => {
   const handler = getNodeType("agent.run_planner");

@@ -6,6 +6,7 @@ const GNAP_PROTOCOL_VERSION = "1";
 const GNAP_PROJECTION_MANAGER_ID = "bosun-gnap-projection";
 const MAX_TASK_DESCRIPTION_LENGTH = 16000;
 const MAX_MESSAGE_BODY_LENGTH = 12000;
+const MAX_SANITIZE_INPUT_LENGTH = 200;
 const MAX_TIMELINE_ENTRIES = 24;
 const MAX_ATTACHMENT_ENTRIES = 32;
 const MAX_WORKFLOW_RUN_ENTRIES = 24;
@@ -28,13 +29,23 @@ function truncateText(value, maxLength) {
 }
 
 function sanitizeFileComponent(value, fallback) {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "")
-    .slice(0, 64);
+  const lower = String(value ?? "").trim().slice(0, MAX_SANITIZE_INPUT_LENGTH).toLowerCase();
+  let normalized = "";
+  let prevDash = true; // suppress leading dash
+  for (const ch of lower) {
+    if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9") || ch === "." || ch === "_") {
+      normalized += ch;
+      prevDash = false;
+    } else if (ch === "-") {
+      if (!prevDash) { normalized += "-"; prevDash = true; }
+    } else if (!prevDash) {
+      normalized += "-";
+      prevDash = true;
+    }
+  }
+  // Remove trailing dash
+  if (normalized.endsWith("-")) normalized = normalized.slice(0, -1);
+  normalized = normalized.slice(0, 64);
   return normalized || fallback;
 }
 
