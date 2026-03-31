@@ -5216,6 +5216,22 @@
           const q = params.get('query') || '';
           return { data: buildContextForQuery(q) };
         }
+        if (route === '/api/harness/approvals') {
+          return {
+            ok: true,
+            approvals: [
+              {
+                requestId: 'demo-approval-1',
+                stageId: 'review',
+                stageType: 'approval',
+                taskId: 'bosun-42',
+                title: 'Approve harness patch application',
+                status: 'pending',
+                createdAt: new Date(Date.now() - 600000).toISOString(),
+              },
+            ],
+          };
+        }
         if (route === '/api/agent-runs') {
           return {
             ok: true, data: [

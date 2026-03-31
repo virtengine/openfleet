@@ -490,6 +490,29 @@ function summarizeLedgerEvent(event) {
   return parts.join(" · ");
 }
 
+function mergeApprovalRequestLists(...sources) {
+  const byId = new Map();
+  sources.flat().forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const requestId = String(entry?.requestId || "").trim();
+    if (!requestId) return;
+    const existing = byId.get(requestId);
+    if (!existing) {
+      byId.set(requestId, entry);
+      return;
+    }
+    const existingAt = Date.parse(String(existing?.updatedAt || existing?.requestedAt || 0));
+    const nextAt = Date.parse(String(entry?.updatedAt || entry?.requestedAt || 0));
+    if (!Number.isFinite(existingAt) || nextAt >= existingAt) {
+      byId.set(requestId, { ...existing, ...entry });
+    }
+  });
+  return Array.from(byId.values()).sort((left, right) =>
+    String(right?.updatedAt || right?.requestedAt || "").localeCompare(
+      String(left?.updatedAt || left?.requestedAt || ""),
+    ));
+}
+
 function summarizeProofBundleEntry(entry) {
   if (!entry || typeof entry !== "object") return "";
   const parts = [];
@@ -5641,6 +5664,39 @@ function RunHistoryView() {
   const [rawPaneSearch, setRawPaneSearch] = useState("");
   const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
 
+  const loadApprovals = useCallback(async (statusOverride = approvalStatusFilter) => {
+    setApprovalQueueLoading(true);
+    try {
+      const status = statusOverride || "pending";
+      const [workflowData, harnessData] = await Promise.all([
+        apiFetch(buildWorkflowRunApiPath(
+          appendQueryParams("/api/workflows/approvals", {
+            limit: 100,
+            status,
+          }),
+        )).catch(() => ({ requests: [] })),
+        apiFetch(appendQueryParams("/api/harness/approvals", {
+          limit: 100,
+          status,
+          includeResolved: status === "all" ? "1" : "",
+        })).catch(() => ({ requests: [] })),
+      ]);
+      setApprovalRequests(mergeApprovalRequestLists(
+        Array.isArray(workflowData?.requests) ? workflowData.requests : [],
+        Array.isArray(harnessData?.requests) ? harnessData.requests : [],
+      ));
+    } catch (err) {
+      console.error("[workflows] Failed to load approvals:", err);
+    } finally {
+      setApprovalQueueLoading(false);
+    }
+  }, [approvalStatusFilter]);
+
+  const approvalQueuePendingCount = useMemo(
+    () => approvalRequests.filter((entry) => String(entry?.status || "").trim().toLowerCase() === "pending").length,
+    [approvalRequests],
+  );
+
   useEffect(() => {
     setLogsPaneSearch("");
     setErrorsPaneSearch("");
@@ -5745,26 +5801,6 @@ function RunHistoryView() {
       activeNodes,
     };
   }, [runs, runCounts]);
-  const pendingApprovalCount = useMemo(
-    () => approvalRequests.filter((entry) => String(entry?.status || "").trim().toLowerCase() === "pending").length,
-    [approvalRequests],
-  );
-  const loadApprovals = useCallback(async (statusOverride = approvalStatusFilter) => {
-    setApprovalQueueLoading(true);
-    try {
-      const data = await apiFetch(buildWorkflowRunApiPath(
-        appendQueryParams("/api/workflows/approvals", {
-          limit: 100,
-          status: statusOverride || "pending",
-        }),
-      ));
-      setApprovalRequests(Array.isArray(data?.requests) ? data.requests : []);
-    } catch (err) {
-      console.error("[workflows] Failed to load approvals:", err);
-    } finally {
-      setApprovalQueueLoading(false);
-    }
-  }, [approvalStatusFilter]);
 
   const canLoadMoreRuns =
     hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
@@ -5784,17 +5820,20 @@ function RunHistoryView() {
     const notePrompt = decision === "approved" ? "Optional approval note" : "Reason for denying approval";
     const note = window.prompt(notePrompt, "") || "";
     try {
-      const endpoint = request.scopeType === "workflow-run" && request.scopeId
-        ? `/api/workflows/runs/${encodeURIComponent(request.scopeId)}/approval`
-        : `/api/workflows/approvals/${encodeURIComponent(request.requestId)}/resolve`;
-      await apiFetch(buildWorkflowRunApiPath(endpoint), {
+      const scopeType = String(request?.scopeType || "").trim().toLowerCase();
+      const endpoint = scopeType === "workflow-run" && request.scopeId
+        ? buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(request.scopeId)}/approval`)
+        : scopeType === "harness-run"
+          ? `/api/harness/approvals/${encodeURIComponent(request.requestId)}/resolve`
+          : buildWorkflowRunApiPath(`/api/workflows/approvals/${encodeURIComponent(request.requestId)}/resolve`);
+      await apiFetch(endpoint, {
         method: "POST",
         body: JSON.stringify({ decision, note }),
       });
       showToast(decision === "approved" ? "Approval request granted" : "Approval request denied", "success");
       await loadApprovals(approvalStatusFilter);
       const requestRunId = String(request?.runId || "").trim();
-      if (requestRunId && selectedRunId.value === requestRunId) {
+      if (scopeType !== "harness-run" && requestRunId && selectedRunId.value === requestRunId) {
         setTimeout(() => loadRunDetail(requestRunId), 250);
       } else if (request.scopeType === "workflow-run" && request.scopeId && selectedRunId.value === request.scopeId) {
         setTimeout(() => loadRunDetail(request.scopeId), 250);
@@ -5811,10 +5850,20 @@ function RunHistoryView() {
     if (scopeType === "workflow-action") {
       return `Action Approval · ${request?.action?.label || request?.nodeLabel || request?.nodeType || request?.scopeId || "action"}`;
     }
+    if (scopeType === "harness-run") {
+      return `Harness Run · ${request?.taskTitle || request?.runId || request?.scopeId || "harness"}`;
+    }
     return `Workflow Run · ${request?.workflowName || request?.runId || request?.scopeId || "run"}`;
   }, []);
   const describeApprovalTarget = useCallback((request) => {
     const parts = [];
+    const scopeType = String(request?.scopeType || "").trim().toLowerCase();
+    if (scopeType === "harness-run") {
+      if (request?.taskTitle) parts.push(request.taskTitle);
+      if (request?.stageId) parts.push(`stage ${request.stageId}`);
+      if (request?.runId) parts.push(`run ${request.runId}`);
+      return parts.join(" · ") || "No harness target metadata";
+    }
     if (request?.workflowName) parts.push(request.workflowName);
     if (request?.taskTitle) parts.push(request.taskTitle);
     if (request?.runId) parts.push(`run ${request.runId}`);
@@ -7089,7 +7138,7 @@ function RunHistoryView() {
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span class="wf-badge" style="background:#f59e0b24;color:#fbbf24;">Approval Queue</span>
-            <span class="wf-runs-count">Pending Approvals ${pendingApprovalCount}</span>
+            <span class="wf-runs-count">Pending Approvals ${approvalQueuePendingCount}</span>
             <span class="wf-runs-count">${approvalRequests.length} loaded</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -7110,6 +7159,7 @@ function RunHistoryView() {
                 const requestStatus = String(request?.status || "pending").trim().toLowerCase() || "pending";
                 const canResolve = requestStatus === "pending";
                 const requestRunId = String(request?.runId || "").trim();
+                const requestScopeType = String(request?.scopeType || "").trim().toLowerCase();
                 return html`
                   <div key=${request.requestId} style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px;">
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
@@ -7126,12 +7176,15 @@ function RunHistoryView() {
                     <div style="margin-top:6px;font-size:12px;color:var(--color-text-secondary,#cbd5e1);line-height:1.6;">
                       <div><b>Target:</b> ${describeApprovalTarget(request)}</div>
                       <div><b>Reason:</b> ${request?.reason || "No approval reason recorded."}</div>
-                      ${request?.nodeId && html`<div><b>${String(request?.scopeType || "").trim().toLowerCase() === "workflow-action" ? "Action Node" : "Gate Node"}:</b> <code>${request.nodeId}</code>${request?.nodeLabel ? ` · ${request.nodeLabel}` : ""}${request?.nodeType ? ` · ${request.nodeType}` : ""}</div>`}
+                      ${requestScopeType === "harness-run" && html`<div><b>Harness Stage:</b> <code>${request?.stageId || "—"}</code>${request?.stageType ? ` · ${request.stageType}` : ""}${request?.requestedBy ? ` · requested by ${request.requestedBy}` : ""}</div>`}
+                      ${request?.nodeId && html`<div><b>${requestScopeType === "workflow-action" ? "Action Node" : "Gate Node"}:</b> <code>${request.nodeId}</code>${request?.nodeLabel ? ` · ${request.nodeLabel}` : ""}${request?.nodeType ? ` · ${request.nodeType}` : ""}</div>`}
                       ${request?.action?.preview && html`<div><b>Preview:</b> <code>${request.action.preview}</code></div>`}
+                      ${request?.preview && requestScopeType === "harness-run" && html`<div><b>Preview:</b> <code>${request.preview}</code></div>`}
                       ${request?.resolution?.actorId && html`<div><b>Resolved By:</b> ${request.resolution.actorId}${request?.resolution?.note ? ` · ${request.resolution.note}` : ""}</div>`}
                     </div>
                     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-                      ${requestRunId && html`<${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(requestRunId)}>Open Run<//>`}
+                      ${requestRunId && requestScopeType !== "harness-run" && html`<${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(requestRunId)}>Open Run<//>`}
+                      ${requestRunId && requestScopeType === "harness-run" && html`<${Button} variant="outlined" size="small" onClick=${() => navigateTo("agents")}>Open Harness Monitor<//>`}
                       ${canResolve && html`
                         <${Button} variant="contained" size="small" color="success" onClick=${() => resolveQueuedApproval(request, "approved")}>
                           Approve Request

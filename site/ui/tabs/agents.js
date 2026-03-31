@@ -22,6 +22,8 @@ import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   executorData,
   agentsData,
+  statusData,
+  telemetrySummary,
   agentLogQuery,
   agentLogFile,
   agentWorkspaceTarget,
@@ -94,6 +96,132 @@ function formatMsDuration(ms) {
   if (sec < 60) return String(sec) + "s";
   if (sec < 3600) return String(Math.floor(sec / 60)) + "m " + String(sec % 60) + "s";
   return String(Math.floor(sec / 3600)) + "h " + String(Math.floor((sec % 3600) / 60)) + "m";
+}
+
+function getHarnessRunState(run) {
+  return String(
+    run?.health?.state
+    || run?.status
+    || run?.outcome
+    || run?.result?.status
+    || run?.result?.outcome
+    || "unknown",
+  ).trim().toLowerCase();
+}
+
+function getHarnessStateMeta(state) {
+  const normalized = String(state || "").trim().toLowerCase();
+  const base = {
+    label: normalized ? normalized.replace(/[_-]+/g, " ") : "unknown",
+    background: "rgba(148, 163, 184, 0.16)",
+    color: "var(--text-secondary)",
+  };
+  if (normalized === "working") {
+    return { label: "Working", background: "rgba(59, 130, 246, 0.16)", color: "var(--color-inprogress)" };
+  }
+  if (normalized === "waiting") {
+    return { label: "Waiting", background: "rgba(245, 158, 11, 0.18)", color: "var(--color-warning, #f59e0b)" };
+  }
+  if (normalized === "stalled") {
+    return { label: "Stalled", background: "rgba(239, 68, 68, 0.16)", color: "var(--color-error)" };
+  }
+  if (normalized === "completed") {
+    return { label: "Completed", background: "rgba(16, 185, 129, 0.16)", color: "var(--color-done)" };
+  }
+  if (normalized === "failed") {
+    return { label: "Failed", background: "rgba(239, 68, 68, 0.16)", color: "var(--color-error)" };
+  }
+  if (normalized === "aborted") {
+    return { label: "Aborted", background: "rgba(244, 63, 94, 0.14)", color: "var(--color-error)" };
+  }
+  if (normalized === "stop_requested") {
+    return { label: "Stop Requested", background: "rgba(251, 146, 60, 0.18)", color: "var(--color-warning, #f59e0b)" };
+  }
+  return base;
+}
+
+function getHarnessRunTimestamp(run) {
+  const value = run?.updatedAt || run?.endedAt || run?.startedAt || run?.createdAt || run?.timestamp || 0;
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function normalizeHarnessRuns(...sources) {
+  const deduped = new Map();
+  sources.flat().forEach((run) => {
+    if (!run || typeof run !== "object") return;
+    const runId = String(run?.runId || "").trim();
+    if (!runId) return;
+    const existing = deduped.get(runId);
+    if (!existing) {
+      deduped.set(runId, run);
+      return;
+    }
+    const existingTs = getHarnessRunTimestamp(existing);
+    const nextTs = getHarnessRunTimestamp(run);
+    if (nextTs > existingTs || (run?.active && !existing?.active)) {
+      deduped.set(runId, { ...existing, ...run });
+    }
+  });
+  return Array.from(deduped.values()).sort((a, b) => getHarnessRunTimestamp(b) - getHarnessRunTimestamp(a));
+}
+
+function matchesHarnessMonitorFilter(run, filter) {
+  const state = getHarnessRunState(run);
+  if (filter === "active") return run?.active === true || state === "working";
+  if (filter === "waiting") return run?.approvalPending === true || run?.health?.waitingForOperator === true || state === "waiting";
+  if (filter === "stalled") return state === "stalled";
+  if (filter === "attention") {
+    return ["waiting", "stalled", "failed", "aborted", "stop_requested"].includes(state)
+      || run?.approvalPending === true
+      || run?.health?.waitingForOperator === true;
+  }
+  return true;
+}
+
+function formatHarnessStage(run) {
+  return String(
+    run?.currentStageId
+    || run?.health?.approvalStageId
+    || run?.stageId
+    || run?.completedStageId
+    || run?.result?.completedStageId
+    || "—",
+  ).trim() || "—";
+}
+
+function getHarnessApprovalRequestId(run) {
+  return String(
+    run?.health?.approvalRequestId
+    || run?.approvalRequestId
+    || run?.requestId
+    || run?.latestApproval?.requestId
+    || "",
+  ).trim();
+}
+
+function getHarnessAttentionReason(run) {
+  return String(run?.health?.attentionReason || "").trim();
+}
+
+function getHarnessLatestEventSummary(run) {
+  return String(
+    run?.health?.lastEventSummary
+    || run?.latestEvent?.summary
+    || "",
+  ).trim();
+}
+
+function getHarnessAttentionDetail(run) {
+  const state = getHarnessRunState(run);
+  const attentionReason = getHarnessAttentionReason(run);
+  const approvalRequestId = getHarnessApprovalRequestId(run);
+  if (state === "waiting") {
+    const base = attentionReason || "Awaiting operator approval.";
+    return approvalRequestId ? `${base} · ${approvalRequestId}` : base;
+  }
+  if (attentionReason) return attentionReason;
+  return String(run?.summary || run?.health?.state || "No summary yet").trim();
 }
 
 function formatTurnTokens(turn) {
@@ -1403,7 +1531,11 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
 export function AgentsTab() {
   const executor = executorData.value;
   const agents = agentsData?.value || [];
+  const status = statusData.value || null;
+  const telemetry = telemetrySummary.value || null;
   const execData = executor?.data;
+  const harnessStatus = status?.harness || null;
+  const harnessTelemetry = telemetry?.harness || null;
   const workspaceSummary = execData?.workspaceSummary || null;
   const globalSlots = execData?.slots || [];
   const slots = workspaceSummary?.slots || globalSlots;
@@ -1426,6 +1558,8 @@ export function AgentsTab() {
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [fleetSearch, setFleetSearch] = useState("");
   const [sessionSearch, setSessionSearch] = useState("");
+  const [harnessFilter, setHarnessFilter] = useState("attention");
+  const [harnessActionByRun, setHarnessActionByRun] = useState({});
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -1492,7 +1626,7 @@ export function AgentsTab() {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task" });
+      loadSessions({ type: "task", workspace: activeWorkspaceId.value || "active" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
@@ -1663,11 +1797,88 @@ export function AgentsTab() {
     { label: "Idle Slots", value: idleSlots },
     { label: "Errors", value: statusCounts.error },
   ];
+  const harnessRuns = useMemo(
+    () => normalizeHarnessRuns(
+      Array.isArray(harnessStatus?.recentRuns) ? harnessStatus.recentRuns : [],
+      Array.isArray(harnessTelemetry?.recentRuns) ? harnessTelemetry.recentRuns : [],
+      harnessStatus?.lastRun ? [harnessStatus.lastRun] : [],
+      harnessTelemetry?.lastRun ? [harnessTelemetry.lastRun] : [],
+    ),
+    [harnessStatus, harnessTelemetry],
+  );
+  const harnessActiveCount = Math.max(
+    Number(harnessStatus?.activeRunCount || 0) || 0,
+    Number(harnessTelemetry?.activeRunCount || 0) || 0,
+    harnessRuns.filter((run) => run?.active === true || getHarnessRunState(run) === "working").length,
+  );
+  const harnessWaitingCount = harnessRuns.filter(
+    (run) => run?.approvalPending === true || run?.health?.waitingForOperator === true || getHarnessRunState(run) === "waiting",
+  ).length;
+  const harnessStalledCount = harnessRuns.filter((run) => getHarnessRunState(run) === "stalled").length;
+  const harnessWorkingCount = harnessRuns.filter((run) => getHarnessRunState(run) === "working").length;
+  const harnessApprovalCount = harnessRuns.filter((run) => run?.approvalPending === true || run?.health?.waitingForOperator === true).length;
+  const harnessVisibleRuns = useMemo(
+    () => harnessRuns.filter((run) => matchesHarnessMonitorFilter(run, harnessFilter)).slice(0, 6),
+    [harnessRuns, harnessFilter],
+  );
+  const harnessSummaryText = harnessRuns.length
+    ? [
+        `${harnessActiveCount} active`,
+        `${harnessWaitingCount} waiting`,
+        `${harnessStalledCount} stalled`,
+        `${harnessApprovalCount} approvals`,
+      ].join(" · ")
+    : "Harness telemetry appears here after the first run.";
+  const harnessFilterOptions = [
+    { key: "attention", label: `Attention (${harnessWaitingCount + harnessStalledCount})` },
+    { key: "active", label: `Active (${harnessActiveCount})` },
+    { key: "waiting", label: `Waiting (${harnessWaitingCount})` },
+    { key: "stalled", label: `Stalled (${harnessStalledCount})` },
+    { key: "all", label: `All (${harnessRuns.length})` },
+  ];
 
   const handleFleetRefresh = () => {
     haptic();
     refreshTab("agents", { force: true });
   };
+
+  const resolveHarnessApproval = useCallback(async (run, decision) => {
+    const runId = String(run?.runId || "").trim();
+    const requestId = getHarnessApprovalRequestId(run);
+    if (!runId || !requestId) {
+      showToast("Harness approval request is missing request metadata.", "error");
+      return;
+    }
+    const actionKey = `${runId}:${decision}`;
+    setHarnessActionByRun((current) => ({ ...current, [runId]: actionKey }));
+    haptic(decision === "approved" ? "light" : "heavy");
+    try {
+      await apiFetch(`/api/harness/approvals/${encodeURIComponent(requestId)}/resolve`, {
+        method: "POST",
+        body: JSON.stringify({
+          decision,
+          actor: "operator",
+          note: decision === "approved"
+            ? `Approved from harness monitor for stage ${formatHarnessStage(run)}.`
+            : `Denied from harness monitor for stage ${formatHarnessStage(run)}.`,
+        }),
+      });
+      showToast(
+        decision === "approved" ? "Harness approval granted." : "Harness approval denied.",
+        decision === "approved" ? "success" : "warning",
+      );
+      scheduleRefresh(200);
+      scheduleRefresh(1200);
+    } catch {
+      // apiFetch surfaces the error toast
+    } finally {
+      setHarnessActionByRun((current) => {
+        const next = { ...current };
+        delete next[runId];
+        return next;
+      });
+    }
+  }, []);
 
   const handleFocusDispatch = () => {
     haptic();
@@ -1758,6 +1969,132 @@ export function AgentsTab() {
           inputRef=${dispatchInputRef}
           className="fleet-dispatch-card"
         />
+
+        <${Card} className="fleet-harness-card">
+          <${Collapsible}
+            title=${harnessActiveCount > 0
+              ? html`Harness Monitor · <span class="numeral">${harnessActiveCount}</span> active`
+              : "Harness Monitor"}
+            defaultOpen=${true}
+          >
+            <div class="meta-text mb-sm">${harnessSummaryText}</div>
+            <div class="fleet-metrics" style=${{ marginBottom: "0.75rem" }}>
+              ${[
+                { label: "Working", value: harnessWorkingCount },
+                { label: "Waiting", value: harnessWaitingCount },
+                { label: "Stalled", value: harnessStalledCount },
+                { label: "Approvals", value: harnessApprovalCount },
+              ].map((metric) => html`
+                <div class="fleet-metric" key=${metric.label}>
+                  <div class="fleet-metric-label">${metric.label}</div>
+                  <div class="fleet-metric-value numeral">${metric.value}</div>
+                </div>
+              `)}
+            </div>
+            <div class="fleet-session-scope fleet-session-filter" style=${{ marginBottom: "0.75rem", flexWrap: "wrap" }}>
+              ${harnessFilterOptions.map((option) => html`
+                <${Button}
+                  key=${option.key}
+                  variant="text"
+                  size="small"
+                  className=${`fleet-session-scope-btn fleet-session-filter-btn ${harnessFilter === option.key ? "active" : ""}`}
+                  onClick=${() => {
+                    haptic();
+                    setHarnessFilter(option.key);
+                  }}
+                >
+                  ${option.label}
+                <//>
+              `)}
+            </div>
+            ${harnessVisibleRuns.length
+              ? html`<div class="fleet-turn-timeline">
+                  ${harnessVisibleRuns.map((run) => {
+                    const state = getHarnessRunState(run);
+                    const stateMeta = getHarnessStateMeta(state);
+                    const idleMs = Number(run?.health?.idleMs || 0) || 0;
+                    const stage = formatHarnessStage(run);
+                    const lastInterventionBy = String(run?.lastInterventionBy || run?.health?.lastInterventionBy || "").trim();
+                    const attentionDetail = getHarnessAttentionDetail(run);
+                    const latestEventSummary = getHarnessLatestEventSummary(run);
+                    const attentionSinceAt = run?.health?.attentionSinceAt || null;
+                    const lastEventAt = run?.health?.lastEventAt || run?.latestEventAt || null;
+                    const approvalRequestId = getHarnessApprovalRequestId(run);
+                    const actionState = harnessActionByRun[String(run?.runId || "").trim()] || "";
+                    const waitingForApproval = run?.health?.waitingForOperator || run?.approvalPending;
+                    return html`
+                      <div class="task-card fleet-turn-card" key=${run.runId}>
+                        <div class="task-card-header">
+                          <div>
+                            <div class="task-card-title">${truncate(run?.name || run?.runId || "(unnamed harness run)", 64)}</div>
+                            <div class="task-card-meta">
+                              ${run?.runId || "unknown"} · stage ${stage}
+                              ${run?.active ? " · live" : ""}
+                              ${idleMs > 0 ? ` · idle ${formatMsDuration(idleMs)}` : ""}
+                            </div>
+                          </div>
+                          <${Chip}
+                            size="small"
+                            label=${stateMeta.label}
+                            sx=${{
+                              fontWeight: 700,
+                              background: stateMeta.background,
+                              color: stateMeta.color,
+                            }}
+                          />
+                        </div>
+                        <div class="meta-text">
+                          ${attentionDetail}
+                        </div>
+                        <div class="task-card-meta" style=${{ marginTop: "0.35rem" }}>
+                          ${run?.startedAt ? `Started ${formatRelative(run.startedAt)}` : "Start time unavailable"}
+                          ${run?.updatedAt ? ` · Updated ${formatRelative(run.updatedAt)}` : ""}
+                          ${lastInterventionBy ? ` · Last control by ${lastInterventionBy}` : ""}
+                        </div>
+                        ${(latestEventSummary && latestEventSummary !== attentionDetail) || attentionSinceAt || lastEventAt
+                          ? html`<div class="task-card-meta" style=${{ marginTop: "0.2rem" }}>
+                              ${attentionSinceAt ? `Attention since ${formatRelative(attentionSinceAt)}` : ""}
+                              ${lastEventAt ? `${attentionSinceAt ? " · " : ""}Last event ${formatRelative(lastEventAt)}` : ""}
+                              ${latestEventSummary && latestEventSummary !== attentionDetail ? ` · ${latestEventSummary}` : ""}
+                            </div>`
+                          : null}
+                        ${waitingForApproval && approvalRequestId
+                          ? html`<div class="btn-row mt-sm">
+                              <${Button}
+                                variant="contained"
+                                color="success"
+                                size="small"
+                                disabled=${Boolean(actionState)}
+                                onClick=${() => resolveHarnessApproval(run, "approved")}
+                              >
+                                ${actionState === `${run.runId}:approved`
+                                  ? "Approving…"
+                                  : iconText(":white_check_mark: Approve")}
+                              <//>
+                              <${Button}
+                                variant="outlined"
+                                color="warning"
+                                size="small"
+                                disabled=${Boolean(actionState)}
+                                onClick=${() => resolveHarnessApproval(run, "denied")}
+                              >
+                                ${actionState === `${run.runId}:denied`
+                                  ? "Denying…"
+                                  : iconText(":no_entry: Deny")}
+                              <//>
+                            </div>`
+                          : null}
+                      </div>
+                    `;
+                  })}
+                </div>`
+              : html`<${EmptyState}
+                  message=${harnessRuns.length
+                    ? "No harness runs match this filter."
+                    : "No harness runs have been reported yet."}
+                />`}
+          <//>
+        <//>
 
         <${Card} className="fleet-slotmap-card">
           <${Collapsible} title="Slot Map" defaultOpen=${!isCompact}>
@@ -2751,7 +3088,7 @@ export function FleetSessionsTab() {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task" });
+      loadSessions({ type: "task", workspace: activeWorkspaceId.value || "active" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
