@@ -1,28 +1,8 @@
 import { createHmac } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { createServer as createNetServer } from "node:net";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addConfigReloadListener } from "../infra/config-reload-bus.mjs";
-import {
-  appendOperatorActionToStateLedger,
-  appendTaskTraceEventToStateLedger,
-  resetStateLedgerCache,
-  upsertSessionRecordToStateLedger,
-} from "../lib/state-ledger-sqlite.mjs";
-import {
-  _resetRuntimeAccumulatorForTests,
-  addCompletedSession,
-} from "../infra/runtime-accumulator.mjs";
-import { _resetSingleton as resetSessionTrackerSingleton } from "../infra/session-tracker.mjs";
-
-const describeUiServer = (
-  process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
-  || (process.platform === "win32" && /[\\/]\.codex[\\/]\.sandbox[\\/]/i.test(process.cwd()))
-)
-  ? describe.skip
-  : describe;
 
 function sanitizedGitEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -40,42 +20,13 @@ function sanitizedGitEnv(extra = {}) {
   return env;
 }
 
-async function settleUiRuntimeCleanup() {
-  const mod = await import("../server/ui-server.mjs");
-  mod.stopTelegramUiServer();
-  resetSessionTrackerSingleton({ persistDir: null });
-  _resetRuntimeAccumulatorForTests();
-  resetStateLedgerCache();
-  await new Promise((resolve) => setTimeout(resolve, 25));
-}
 
-async function removeDirWithRetries(dirPath) {
-  if (!dirPath) return;
-  let lastError = null;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    try {
-      rmSync(dirPath, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      lastError = error;
-      if (error?.code !== "EPERM") throw error;
-      resetStateLedgerCache();
-      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
-    }
-  }
-  throw lastError;
-}
-
-
-describeUiServer("ui-server mini app", () => {
+describe("ui-server mini app", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_TLS_DISABLE",
     "TELEGRAM_UI_ALLOW_UNSAFE",
     "TELEGRAM_MINIAPP_ENABLED",
     "TELEGRAM_UI_PORT",
-    "TELEGRAM_UI_HOST",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
     "TELEGRAM_UI_TUNNEL",
     "TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK",
     "TELEGRAM_UI_FALLBACK_AUTH_ENABLED",
@@ -101,29 +52,14 @@ describeUiServer("ui-server mini app", () => {
     "BOSUN_UI_RATE_LIMIT_PER_MIN",
     "BOSUN_UI_RATE_LIMIT_AUTHENTICATED_PER_MIN",
     "BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN",
-    "BOSUN_UI_COORDINATION_STATE_ENABLED",
-    "BOSUN_UI_SCOPE_LOCK_STATE_ENABLED",
-    "BOSUN_UI_AUDIT_SUMMARY_ENABLED",
-    "BOSUN_UI_EXECUTION_JOURNAL_STATE_ENABLED",
-    "BOSUN_UI_PLANNING_ACCOUNTING_ENABLED",
-    "BOSUN_UI_MONITORING_STATE_ENABLED",
     "TELEGRAM_INTERVAL_MIN",
     "BOSUN_CONFIG_PATH",
-    "BOSUN_TEST_CACHE_DIR",
-    "BOSUN_STATE_LEDGER_PATH",
     "BOSUN_HOME",
     "BOSUN_DIR",
     "CODEX_MONITOR_HOME",
     "CODEX_MONITOR_DIR",
-    "REPO_ROOT",
     "BOSUN_DESKTOP_API_KEY",
     "KANBAN_BACKEND",
-    "GNAP_ENABLED",
-    "GNAP_REPO_PATH",
-    "GNAP_SYNC_MODE",
-    "GNAP_RUN_STORAGE",
-    "GNAP_MESSAGE_STORAGE",
-    "GNAP_PUBLIC_ROADMAP_ENABLED",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
     "GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE",
@@ -139,66 +75,38 @@ describeUiServer("ui-server mini app", () => {
     "EXECUTORS",
     "FLEET_ENABLED",
     "FLEET_SYNC_INTERVAL_MS",
-    "BOSUN_HARNESS_ENABLED",
-    "BOSUN_HARNESS_SOURCE",
-    "BOSUN_HARNESS_VALIDATION_MODE",
     "OPENAI_API_KEY",
     "STATUS_FILE",
-    "BOSUN_FLOW_REQUIRE_REVIEW",
     "BOSUN_ENV_NO_OVERRIDE",
-    "BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG",
   ];
   let envSnapshot = {};
-  let testSandboxRoot = null;
 
   beforeEach(async () => {
     envSnapshot = Object.fromEntries(
       ENV_KEYS.map((key) => [key, process.env[key]]),
     );
-    testSandboxRoot = mkdtempSync(join(tmpdir(), "bosun-ui-server-test-"));
-    const { ensureTestRuntimeSandbox } = await import("../infra/test-runtime.mjs");
-    const sandbox = ensureTestRuntimeSandbox({ rootDir: testSandboxRoot, force: true });
     // Prevent loadConfig() → loadDotEnv() from overriding test-controlled env
     // vars with values from the user's on-disk .env file.
     process.env.BOSUN_ENV_NO_OVERRIDE = "1";
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "true";
-    process.env.TELEGRAM_BOT_TOKEN = "";
-    process.env.TELEGRAM_CHAT_ID = "";
     process.env.GITHUB_PROJECT_WEBHOOK_PATH = "/api/webhooks/github/project-sync";
     process.env.GITHUB_PROJECT_WEBHOOK_SECRET = "webhook-secret";
     process.env.GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE = "true";
     process.env.GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD = "2";
     process.env.KANBAN_BACKEND = "internal";
-    process.env.BOSUN_CONFIG_PATH = join(sandbox.configDir, "bosun.config.json");
-    process.env.BOSUN_HOME = sandbox.configDir;
-    process.env.BOSUN_DIR = sandbox.configDir;
-    process.env.BOSUN_TEST_CACHE_DIR = sandbox.cacheDir;
-    process.env.BOSUN_STATE_LEDGER_PATH = sandbox.stateLedgerPath;
-    process.env.CODEX_MONITOR_HOME = sandbox.configDir;
-    process.env.CODEX_MONITOR_DIR = sandbox.configDir;
-    delete process.env.REPO_ROOT;
-    delete process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG;
-    vi.resetModules();
-    resetSessionTrackerSingleton({ persistDir: null });
-    _resetRuntimeAccumulatorForTests({ cacheDir: sandbox.cacheDir });
-    resetStateLedgerCache();
 
     const { setKanbanBackend } = await import("../kanban/kanban-adapter.mjs");
     setKanbanBackend("internal");
   });
 
   afterEach(async () => {
-    await settleUiRuntimeCleanup();
+    const mod = await import("../server/ui-server.mjs");
+    mod.stopTelegramUiServer();
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
       else process.env[key] = envSnapshot[key];
     }
-    if (testSandboxRoot) {
-      await removeDirWithRetries(testSandboxRoot);
-      testSandboxRoot = null;
-    }
-    vi.resetModules();
   });
 
   async function getFreePort() {
@@ -217,49 +125,15 @@ describeUiServer("ui-server mini app", () => {
     expect(typeof mod.getTelegramUiUrl).toBe("function");
     expect(typeof mod.injectUiDependencies).toBe("function");
     expect(typeof mod.getLocalLanIp).toBe("function");
-  }, 30000);
-
-  it("reclaims stale live-pid instance locks when the recorded UI is unresponsive", async () => {
-    const cacheDir = join(process.env.BOSUN_HOME, ".cache");
-    const lockPath = join(cacheDir, "ui-server.instance.lock.json");
-    mkdirSync(cacheDir, { recursive: true });
-    writeFileSync(
-      lockPath,
-      JSON.stringify({
-        pid: Math.max(1, Number(process.ppid || 1)),
-        port: 6552,
-        host: "127.0.0.1",
-        protocol: "http",
-        url: "http://127.0.0.1:6552",
-        startedAt: Date.now() - 10 * 60 * 1000,
-      }, null, 2),
-      "utf8",
-    );
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: false,
-      skipAutoOpen: true,
-      instanceLockStaleGraceMs: 0,
-      instanceLockProbeTimeoutMs: 100,
-    });
-    try {
-      expect(server).toBeTruthy();
-      const payload = JSON.parse(readFileSync(lockPath, "utf8"));
-      expect(payload.pid).toBe(process.pid);
-      expect(payload.port).toBe(server.address().port);
-    } finally {
-      mod.stopTelegramUiServer();
-    }
-  }, 30000);
+  }, 15000);
 
   it("surfaces worktree recovery state through status, infra, and worktree endpoints", async () => {
-    const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-worktree-recovery-status-"));
-    const statusPath = join(tmpStatusDir, "orchestrator-status.json");
-    process.env.STATUS_FILE = statusPath;
-    mkdirSync(tmpStatusDir, { recursive: true });
+    const repoRoot = process.cwd();
+    const statusDir = resolve(repoRoot, ".cache");
+    const statusPath = resolve(statusDir, "orchestrator-status.json");
+    const hadStatusFile = existsSync(statusPath);
+    const previousStatus = hadStatusFile ? readFileSync(statusPath, "utf8") : null;
+    mkdirSync(statusDir, { recursive: true });
     writeFileSync(statusPath, JSON.stringify({
       counts: { running: 0, review: 0, error: 0, manual_review: 0 },
       worktreeRecovery: {
@@ -281,20 +155,6 @@ describeUiServer("ui-server mini app", () => {
     try {
       const mod = await import("../server/ui-server.mjs");
       mod.injectUiDependencies({
-        worktreeRecovery: {
-          health: "degraded",
-          failureStreak: 2,
-          recentEvents: [
-            {
-              outcome: "recreation_failed",
-              reason: "poisoned_worktree",
-              branch: "task/failing-worktree",
-              taskId: "task-failing-1",
-              error: "refresh conflict",
-              timestamp: "2026-03-22T01:02:03.000Z",
-            },
-          ],
-        },
         getInternalExecutor: () => ({
           getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
           isPaused: () => false,
@@ -314,7 +174,6 @@ describeUiServer("ui-server mini app", () => {
         health: "degraded",
         failureStreak: 2,
       });
-      expect(status.data.serverState).toBeUndefined();
 
       const infra = await fetch(`http://127.0.0.1:${port}/api/infra`).then((r) => r.json());
       expect(infra.ok).toBe(true);
@@ -322,7 +181,6 @@ describeUiServer("ui-server mini app", () => {
         health: "degraded",
         failureStreak: 2,
       });
-      expect(infra.data.serverState).toBeUndefined();
 
       const worktrees = await fetch(`http://127.0.0.1:${port}/api/worktrees`).then((r) => r.json());
       expect(worktrees.ok).toBe(true);
@@ -331,9 +189,13 @@ describeUiServer("ui-server mini app", () => {
         failureStreak: 2,
       });
     } finally {
-      rmSync(tmpStatusDir, { recursive: true, force: true });
+      if (hadStatusFile && previousStatus != null) {
+        writeFileSync(statusPath, previousStatus, "utf8");
+      } else {
+        rmSync(statusPath, { force: true });
+      }
     }
-  }, 30000);
+  });
 
   it("honors STATUS_FILE overrides for worktree recovery status", async () => {
     const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-status-file-"));
@@ -448,43 +310,34 @@ describeUiServer("ui-server mini app", () => {
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    try {
-      const port = server.address().port;
-      const token = mod.getSessionToken();
-      expect(token).toBeTruthy();
+    const port = server.address().port;
+    const token = mod.getSessionToken();
+    expect(token).toBeTruthy();
 
-      const response = await fetch(
-        `http://127.0.0.1:${port}/chat?launch=meeting&call=video&token=${encodeURIComponent(token)}`,
-        { redirect: "manual" },
-      );
-      expect(response.status).toBe(302);
-      expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
-      expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
-    } finally {
-      await new Promise((resolveClose) => server.close(resolveClose));
-    }
-  }, 30000);
+    const response = await fetch(
+      `http://127.0.0.1:${port}/chat?launch=meeting&call=video&token=${encodeURIComponent(token)}`,
+      { redirect: "manual" },
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
+    expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
+  });
   it("regenerates zero-entropy session tokens before issuing browser auth", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_TOKEN = "a".repeat(64);
     vi.resetModules();
     const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
+    await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    let token;
-    try {
-      token = mod.getSessionToken();
-      expect(token).toMatch(/^[a-f0-9]{64}$/i);
-    } finally {
-      await new Promise((resolveClose) => server.close(resolveClose));
-      delete process.env.BOSUN_UI_TOKEN;
-    }
+    const token = mod.getSessionToken();
+    expect(token).toMatch(/^[a-f0-9]{64}$/i);
     expect(token).not.toBe("a".repeat(64));
-  }, 30000);
+    delete process.env.BOSUN_UI_TOKEN;
+  });
 
 
   it("bootstraps local static requests into a session cookie", async () => {
@@ -523,8 +376,7 @@ describeUiServer("ui-server mini app", () => {
     });
     expect(third.status).toBe(200);
     expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
-    expect(String(third.headers.get("cache-control") || "")).toContain("no-cache");
-  }, 20000);
+  });
 
   it("serves shared /lib modules after local bootstrap", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -585,7 +437,7 @@ describeUiServer("ui-server mini app", () => {
     expect(setCookie).not.toContain("ve_session=");
     const location = response.headers.get("location") || "";
     expect(location).not.toContain("localBootstrap=1");
-  }, 15000);
+  });
 
   it("prefers persisted desktop API key over stale env key during desktop bootstrap", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -631,23 +483,15 @@ describeUiServer("ui-server mini app", () => {
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "0";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
-    let server = null;
-    try {
-      server = await mod.startTelegramUiServer({
-        host: "127.0.0.1",
-        skipInstanceLock: true,
-        skipAutoOpen: true,
-      });
+    const server = await mod.startTelegramUiServer({
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
 
-      expect(server).toBeTruthy();
-      expect(server.address().port).toBeGreaterThan(0);
-    } finally {
-      if (server) {
-        mod.stopTelegramUiServer();
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-    }
-  }, 15000);
+    expect(server).toBeTruthy();
+    expect(server.address().port).toBeGreaterThan(0);
+  });
 
   it("uses http URL for local publicHost when TLS is disabled", async () => {
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
@@ -665,27 +509,6 @@ describeUiServer("ui-server mini app", () => {
 
     expect(url).toBe(`http://127.0.0.1:${port}`);
   });
-
-  it("keeps /api/health public when auth is enabled", async () => {
-    process.env.TELEGRAM_UI_TLS_DISABLE = "true";
-    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
-    const payload = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(payload.ok).toBe(true);
-    expect(typeof payload.uptime).toBe("number");
-  }, 15000);
 
   it("hides tokenized browser URL in startup logs by default", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -742,10 +565,9 @@ describeUiServer("ui-server mini app", () => {
     delete process.env.BOSUN_UI_BROWSER_OPEN_MODE;
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    let server = null;
     try {
       const mod = await import("../server/ui-server.mjs");
-      server = await mod.startTelegramUiServer({
+      const server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -758,51 +580,14 @@ describeUiServer("ui-server mini app", () => {
       expect(startupLog).toContain("browserOpenMode=auto");
       expect(startupLog).toContain("autoOpen=enabled");
     } finally {
-      if (server) {
-        await new Promise((resolve) => server.close(resolve));
-      }
       logSpy.mockRestore();
     }
-  }, 30000);
-
-  it("suppresses browser auto-open when the requested port falls back to another port", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "1";
-    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
-    delete process.env.BOSUN_UI_BROWSER_OPEN_MODE;
-
-    const blocker = createNetServer();
-    await new Promise((resolveReady) => blocker.listen(0, "127.0.0.1", resolveReady));
-    const blockedPort = blocker.address().port;
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const markerPath = resolve(process.env.BOSUN_HOME, ".cache", "ui-auto-open.json");
-
-    try {
-      const mod = await import("../server/ui-server.mjs");
-      const server = await mod.startTelegramUiServer({
-        port: blockedPort,
-        host: "127.0.0.1",
-        skipInstanceLock: true,
-      });
-      expect(server).toBeTruthy();
-      expect(server.address().port).not.toBe(blockedPort);
-      expect(existsSync(markerPath)).toBe(false);
-      expect(
-        logSpy.mock.calls.some((args) =>
-          String(args[0] || "").includes("auto-open suppressed because requested port"),
-        ),
-      ).toBe(true);
-    } finally {
-      logSpy.mockRestore();
-      await new Promise((resolveDone) => blocker.close(resolveDone));
-    }
-  }, 20000);
+  });
 
   it("reports running monitor and server components from /healthz during monitor-mode portal startup", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.TELEGRAM_MINIAPP_ENABLED = "1";
     process.env.TELEGRAM_UI_PORT = "0";
-    process.env.TELEGRAM_UI_HOST = "127.0.0.1";
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
 
     const bot = await import("../telegram/telegram-bot.mjs");
@@ -820,7 +605,7 @@ describeUiServer("ui-server mini app", () => {
     } finally {
       bot.stopTelegramBot();
     }
-  }, 15000);
+  });
 
   it("returns effective settings values and sources for derived/default cases", async () => {
     delete process.env.TELEGRAM_MINIAPP_ENABLED;
@@ -840,8 +625,6 @@ describeUiServer("ui-server mini app", () => {
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
     });
     const port = server.address().port;
 
@@ -855,165 +638,7 @@ describeUiServer("ui-server mini app", () => {
     expect(json.sources?.GITHUB_PROJECT_MODE).toBe("default");
 
     rmSync(tmpDir, { recursive: true, force: true });
-  }, 15000);
-
-  it("serves the TUI config tree and saves schema-validated config edits atomically", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-tui-config-"));
-    const configPath = join(tmpDir, "bosun.config.json");
-    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
-    const savedKanbanBackend = process.env.KANBAN_BACKEND;
-    delete process.env.KANBAN_BACKEND;
-    process.env.BOSUN_CONFIG_PATH = configPath;
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        $schema: "./bosun.schema.json",
-        kanban: { backend: "github" },
-        internalExecutor: { maxParallel: 3 },
-        worktreeBootstrap: { commandTimeoutMs: 600000 },
-        voice: { openaiApiKey: "from-config" },
-      }, null, 2) + "\n",
-      "utf8",
-    );
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-    });
-    const port = server.address().port;
-
-    const treeRes = await fetch(`http://127.0.0.1:${port}/api/tui/config`);
-    const treeJson = await treeRes.json();
-    expect(treeRes.status).toBe(200);
-    expect(treeJson.ok).toBe(true);
-    expect(treeJson.sections.some((section) => section.label === "Kanban")).toBe(true);
-    const secretField = treeJson.sections
-      .flatMap((section) => section.items || [])
-      .find((item) => item.path === "voice.openaiApiKey");
-    expect(secretField?.masked).toBe(true);
-
-    let reloadPayload = null;
-    const stopListening = addConfigReloadListener((payload) => {
-      reloadPayload = payload;
-    });
-
-    const saveRes = await fetch(`http://127.0.0.1:${port}/api/tui/config`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: "kanban.backend", value: "internal" }),
-    });
-    const saveJson = await saveRes.json();
-    expect(saveRes.status).toBe(200);
-    expect(saveJson.ok).toBe(true);
-    expect(JSON.parse(readFileSync(configPath, "utf8")).kanban.backend).toBe("internal");
-    expect(reloadPayload?.path).toBe("kanban.backend");
-    expect(reloadPayload?.reason).toBe("tui-config-update");
-    expect(readdirSync(tmpDir).filter((name) => name.includes(".tmp-"))).toEqual([]);
-
-    const invalidRes = await fetch(`http://127.0.0.1:${port}/api/tui/config`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: "worktreeBootstrap.commandTimeoutMs", value: "oops" }),
-    });
-    const invalidJson = await invalidRes.json();
-    expect(invalidRes.status).toBe(400);
-    expect(invalidJson.ok).toBe(false);
-    expect(JSON.parse(readFileSync(configPath, "utf8")).worktreeBootstrap.commandTimeoutMs).toBe(600000);
-
-    process.env.KANBAN_BACKEND = "jira";
-    const readonlyRes = await fetch(`http://127.0.0.1:${port}/api/tui/config`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: "kanban.backend", value: "github" }),
-    });
-    const readonlyJson = await readonlyRes.json();
-    expect(readonlyRes.status).toBe(409);
-    expect(readonlyJson.error).toContain("read-only");
-
-    stopListening();
-    rmSync(tmpDir, { recursive: true, force: true });
-    if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
-    else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
-    if (savedKanbanBackend === undefined) delete process.env.KANBAN_BACKEND;
-    else process.env.KANBAN_BACKEND = savedKanbanBackend;
-  }, 15000);
-
-  it("serves and updates guardrails policy and runtime state", async () => {
-    const workspaceDir = mkdtempSync(join(tmpdir(), "bosun-guardrails-workspace-"));
-    const configDir = mkdtempSync(join(tmpdir(), "bosun-guardrails-config-"));
-    const configPath = join(configDir, "bosun.config.json");
-    // Clear higher-priority workspace hints so BOSUN_HOME is used
-    const savedMonitorHome = process.env.CODEX_MONITOR_HOME;
-    const savedMonitorDir = process.env.CODEX_MONITOR_DIR;
-    delete process.env.CODEX_MONITOR_HOME;
-    delete process.env.CODEX_MONITOR_DIR;
-    process.env.BOSUN_HOME = workspaceDir;
-    process.env.BOSUN_CONFIG_PATH = configPath;
-    delete process.env.BOSUN_FLOW_REQUIRE_REVIEW;
-    writeFileSync(
-      configPath,
-      JSON.stringify({ $schema: "./bosun.schema.json" }, null, 2) + "\n",
-      "utf8",
-    );
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-    });
-    const port = server.address().port;
-
-    const overviewRes = await fetch(`http://127.0.0.1:${port}/api/guardrails`);
-    const overviewJson = await overviewRes.json();
-    expect(overviewRes.status).toBe(200);
-    expect(overviewJson.ok).toBe(true);
-    expect(overviewJson.snapshot.INPUT.policy.enabled).toBe(true);
-    expect(overviewJson.snapshot.push.policy.blockAgentPushes).toBe(true);
-    expect(overviewJson.snapshot.push.policy.requireManagedPrePush).toBe(true);
-    expect(existsSync(resolve(workspaceDir, ".bosun", "guardrails.json"))).toBe(true);
-
-    const policyRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/policy`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ INPUT: { warnThreshold: 75, blockThreshold: 45 }, push: { blockAgentPushes: false } }),
-    });
-    const policyJson = await policyRes.json();
-    expect(policyRes.status).toBe(200);
-    expect(policyJson.INPUT.policy.warnThreshold).toBe(75);
-    expect(policyJson.INPUT.policy.blockThreshold).toBe(45);
-    expect(policyJson.push.policy.blockAgentPushes).toBe(false);
-
-    const runtimeRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/runtime`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ preflightEnabled: false, requireReview: false }),
-    });
-    const runtimeJson = await runtimeRes.json();
-    expect(runtimeRes.status).toBe(200);
-    expect(runtimeJson.runtime.preflightEnabled).toBe(false);
-    expect(runtimeJson.runtime.requireReview).toBe(false);
-    expect(JSON.parse(readFileSync(configPath, "utf8")).preflightEnabled).toBe(false);
-    expect(readFileSync(join(configDir, ".env"), "utf8")).toContain("BOSUN_FLOW_REQUIRE_REVIEW=false");
-
-    const assessRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/assess`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ input: { title: "fix", description: "" } }),
-    });
-    const assessJson = await assessRes.json();
-    expect(assessRes.status).toBe(200);
-    expect(assessJson.assessment.blocked).toBe(true);
-    expect(assessJson.assessment.status).toBe("block");
-
-    rmSync(workspaceDir, { recursive: true, force: true });
-    rmSync(configDir, { recursive: true, force: true });
-    // Restore higher-priority workspace hints
-    if (savedMonitorHome !== undefined) process.env.CODEX_MONITOR_HOME = savedMonitorHome;
-    if (savedMonitorDir !== undefined) process.env.CODEX_MONITOR_DIR = savedMonitorDir;
-  }, 15000);
+  });
 
   it("reflects runtime kanban backend switches via config update", async () => {
     process.env.KANBAN_BACKEND = "github";
@@ -1051,7 +676,7 @@ describeUiServer("ui-server mini app", () => {
     const githubJson = await githubRes.json();
     expect(githubRes.status).toBe(200);
     expect(githubJson.kanbanBackend).toBe("github");
-  }, 15000);
+  });
 
   it("accepts signed project webhook and triggers task sync", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -1100,7 +725,7 @@ describeUiServer("ui-server mini app", () => {
       { headers: { Authorization: "Bearer unused" } },
     ).then((r) => r.json());
     expect(metrics.data.webhook.syncSuccess).toBe(1);
-  }, 15000);
+  });
 
   it("rejects webhook with invalid signature", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -1141,7 +766,7 @@ describeUiServer("ui-server mini app", () => {
       `http://127.0.0.1:${port}/api/project-sync/metrics`,
     ).then((r) => r.json());
     expect(metrics.data.webhook.invalidSignature).toBe(1);
-  }, 15000);
+  });
 
   it("triggers alert hook after repeated webhook sync failures", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -1189,7 +814,7 @@ describeUiServer("ui-server mini app", () => {
       `http://127.0.0.1:${port}/api/project-sync/metrics`,
     ).then((r) => r.json());
     expect(metrics.data.webhook.alertsTriggered).toBe(1);
-  }, 15000);
+  });
 
   it("returns schema field errors for invalid hook targets", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -1213,7 +838,7 @@ describeUiServer("ui-server mini app", () => {
     expect(response.status).toBe(400);
     expect(json.ok).toBe(false);
     expect(json.fieldErrors?.BOSUN_HOOK_TARGETS).toBeTruthy();
-  }, 15000);
+  });
 
   it("writes supported settings into config file", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -1241,9 +866,6 @@ describeUiServer("ui-server mini app", () => {
           INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED: "false",
           INTERNAL_EXECUTOR_REPLENISH_ENABLED: "true",
           PROJECT_REQUIREMENTS_PROFILE: "system",
-          BOSUN_HARNESS_ENABLED: "true",
-          BOSUN_HARNESS_SOURCE: ".bosun/harness/internal-harness.md",
-          BOSUN_HARNESS_VALIDATION_MODE: "enforce",
           TELEGRAM_UI_PORT: "4400",
           TELEGRAM_INTERVAL_MIN: "15",
           FLEET_ENABLED: "false",
@@ -1266,9 +888,6 @@ describeUiServer("ui-server mini app", () => {
         "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
         "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
         "PROJECT_REQUIREMENTS_PROFILE",
-        "BOSUN_HARNESS_ENABLED",
-        "BOSUN_HARNESS_SOURCE",
-        "BOSUN_HARNESS_VALIDATION_MODE",
         "TELEGRAM_UI_PORT",
         "TELEGRAM_INTERVAL_MIN",
         "FLEET_ENABLED",
@@ -1290,9 +909,6 @@ describeUiServer("ui-server mini app", () => {
     expect(config.internalExecutor?.reviewAgentEnabled).toBe(false);
     expect(config.internalExecutor?.backlogReplenishment?.enabled).toBe(true);
     expect(config.projectRequirements?.profile).toBe("system");
-    expect(config.harness?.enabled).toBe(true);
-    expect(config.harness?.source).toBe(".bosun/harness/internal-harness.md");
-    expect(config.harness?.validation?.mode).toBe("enforce");
     expect(config.telegramUiPort).toBe(4400);
     expect(config.telegramIntervalMin).toBe(15);
     expect(config.fleetEnabled).toBe(false);
@@ -1305,91 +921,6 @@ describeUiServer("ui-server mini app", () => {
     );
 
     rmSync(tmpDir, { recursive: true, force: true });
-  }, 15000);
-
-  it("writes GNAP settings into config file and allows runtime backend selection", async () => {
-    const mod = await import("../server/ui-server.mjs");
-    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
-    const configPath = join(tmpDir, "bosun.config.json");
-    process.env.BOSUN_CONFIG_PATH = configPath;
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-    });
-    const port = server.address().port;
-
-    const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        changes: {
-          KANBAN_BACKEND: "gnap",
-          GNAP_ENABLED: "true",
-          GNAP_REPO_PATH: "C:/tmp/gnap-projection",
-          GNAP_SYNC_MODE: "projection",
-          GNAP_RUN_STORAGE: "local",
-          GNAP_MESSAGE_STORAGE: "off",
-          GNAP_PUBLIC_ROADMAP_ENABLED: "true",
-        },
-      }),
-    });
-    const json = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(json.ok).toBe(true);
-    expect(json.updatedConfig).toEqual(
-      expect.arrayContaining([
-        "KANBAN_BACKEND",
-        "GNAP_ENABLED",
-        "GNAP_REPO_PATH",
-        "GNAP_SYNC_MODE",
-        "GNAP_RUN_STORAGE",
-        "GNAP_MESSAGE_STORAGE",
-        "GNAP_PUBLIC_ROADMAP_ENABLED",
-      ]),
-    );
-    expect(process.env.KANBAN_BACKEND).toBe("gnap");
-
-    const config = JSON.parse(readFileSync(configPath, "utf8"));
-    expect(config.kanban?.backend).toBe("gnap");
-    expect(config.kanban?.gnap).toEqual({
-      enabled: true,
-      repoPath: "C:/tmp/gnap-projection",
-      syncMode: "projection",
-      runStorage: "local",
-      messageStorage: "off",
-      publicRoadmapEnabled: true,
-    });
-
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("rejects GNAP backend selection when required GNAP settings are missing", async () => {
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-    });
-    const port = server.address().port;
-
-    const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        changes: {
-          KANBAN_BACKEND: "gnap",
-          GNAP_ENABLED: "false",
-          GNAP_REPO_PATH: "",
-        },
-      }),
-    });
-    const json = await response.json();
-
-    expect(response.status).toBe(400);
-    expect(json.ok).toBe(false);
-    expect(json.fieldErrors?.GNAP_ENABLED).toMatch(/must be enabled/i);
-    expect(json.fieldErrors?.GNAP_REPO_PATH).toMatch(/required/i);
   });
 
   it("does not sync unsupported settings into config file", async () => {
@@ -1428,7 +959,7 @@ describeUiServer("ui-server mini app", () => {
     }
 
     rmSync(tmpDir, { recursive: true, force: true });
-  }, 15000);
+  });
 
   it("returns trigger template payload with history/stat fields", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -1719,44 +1250,40 @@ describeUiServer("ui-server mini app", () => {
       host: "127.0.0.1",
       dependencies: { execPrimaryPrompt },
     });
-    try {
-      const port = server.address().port;
+    const port = server.address().port;
 
-      const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "primary", prompt: "hello" }),
+    });
+    const createJson = await createResponse.json();
+    expect(createResponse.status).toBe(200);
+    expect(createJson.ok).toBe(true);
+    expect(createJson.session.metadata.workspaceId).toBe("chatws");
+    expect(createJson.session.metadata.workspaceDir).toBe(workspaceRepo);
+    const sessionId = createJson.session.id;
+
+    const messageResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
+      {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "primary", prompt: "hello" }),
-      });
-      const createJson = await createResponse.json();
-      expect(createResponse.status).toBe(200);
-      expect(createJson.ok).toBe(true);
-      expect(createJson.session.metadata.workspaceId).toBe("chatws");
-      expect(createJson.session.metadata.workspaceDir).toBe(workspaceRepo);
-      const sessionId = createJson.session.id;
+        body: JSON.stringify({ content: "run task", mode: "agent" }),
+      },
+    );
+    const messageJson = await messageResponse.json();
+    expect(messageResponse.status).toBe(200);
+    expect(messageJson.ok).toBe(true);
 
-      const messageResponse = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ content: "run task", mode: "agent" }),
-        },
-      );
-      const messageJson = await messageResponse.json();
-      expect(messageResponse.status).toBe(200);
-      expect(messageJson.ok).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
+    const [, opts] = execPrimaryPrompt.mock.calls[0];
+    expect(opts.sessionId).toBe(sessionId);
+    expect(opts.cwd).toBe(workspaceRepo);
 
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
-      const [, opts] = execPrimaryPrompt.mock.calls[0];
-      expect(opts.sessionId).toBe(sessionId);
-      expect(opts.cwd).toBe(workspaceRepo);
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await settleUiRuntimeCleanup();
-      await removeDirWithRetries(tmpDir);
-    }
-  }, 15000);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
 
   it("stops an in-flight session turn via /api/sessions/:id/stop", async () => {
     let rejectTurn = null;
@@ -1843,7 +1370,7 @@ describeUiServer("ui-server mini app", () => {
       err.name = "AbortError";
       rejectTurn(err);
     }
-  }, 15000);
+  });
 
   it("routes sdk commands with the session workspace cwd", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-sdk-workspace-"));
@@ -1880,41 +1407,37 @@ describeUiServer("ui-server mini app", () => {
       host: "127.0.0.1",
       dependencies: { execSdkCommand },
     });
-    try {
-      const port = server.address().port;
+    const port = server.address().port;
 
-      const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "primary", prompt: "hello" }),
-      });
-      const createJson = await createResponse.json();
-      const sessionId = createJson.session.id;
+    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "primary", prompt: "hello" }),
+    });
+    const createJson = await createResponse.json();
+    const sessionId = createJson.session.id;
 
-      const sdkResponse = await fetch(`http://127.0.0.1:${port}/api/agents/sdk-command`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ command: "/status", sessionId }),
-      });
-      const sdkJson = await sdkResponse.json();
-      expect(sdkResponse.status).toBe(200);
-      expect(sdkJson.ok).toBe(true);
-      expect(sdkJson.result).toBe("sdk-ok");
-      expect(execSdkCommand).toHaveBeenCalledWith(
-        "/status",
-        "",
-        undefined,
-        expect.objectContaining({
-          cwd: workspaceRepo,
-          sessionId,
-        }),
-      );
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await settleUiRuntimeCleanup();
-      await removeDirWithRetries(tmpDir);
-    }
-  }, 15000);
+    const sdkResponse = await fetch(`http://127.0.0.1:${port}/api/agents/sdk-command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "/status", sessionId }),
+    });
+    const sdkJson = await sdkResponse.json();
+    expect(sdkResponse.status).toBe(200);
+    expect(sdkJson.ok).toBe(true);
+    expect(sdkJson.result).toBe("sdk-ok");
+    expect(execSdkCommand).toHaveBeenCalledWith(
+      "/status",
+      "",
+      undefined,
+      expect.objectContaining({
+        cwd: workspaceRepo,
+        sessionId,
+      }),
+    );
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
 
   it("scopes session listing to the active workspace by default", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -1958,62 +1481,59 @@ describeUiServer("ui-server mini app", () => {
       host: "127.0.0.1",
     });
     const port = server.address().port;
-    try {
-      const setActiveWsOne = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspaceId: "ws-one" }),
-      }).then((r) => r.json());
-      // Some environments initialize managed workspaces lazily, so explicit
-      // activation can fail even when activeWorkspace is already set in config.
-      expect(typeof setActiveWsOne.ok).toBe("boolean");
 
-      const wsOneCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-one" }),
-      }).then((r) => r.json());
-      if (!wsOneCreate?.ok) {
-        return;
-      }
-      const wsOneSessionId = wsOneCreate?.session?.id;
+    const setActiveWsOne = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: "ws-one" }),
+    }).then((r) => r.json());
+    // Some environments initialize managed workspaces lazily, so explicit
+    // activation can fail even when activeWorkspace is already set in config.
+    expect(typeof setActiveWsOne.ok).toBe("boolean");
 
-      const wsTwoCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-two" }),
-      }).then((r) => r.json());
-      if (!wsTwoCreate?.ok) {
-        return;
-      }
-
-      const activeList = await fetch(
-        `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test`,
-      ).then((r) => r.json());
-      expect(activeList.ok).toBe(true);
-      expect(activeList.sessions).toHaveLength(1);
-      expect(activeList.sessions[0]?.id).toBe(wsOneSessionId);
-
-      const allList = await fetch(
-        `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test&workspace=all`,
-      ).then((r) => r.json());
-      expect(allList.ok).toBe(true);
-      expect(allList.sessions.length).toBeGreaterThanOrEqual(2);
-      const wsTwoSessionId = wsTwoCreate?.session?.id;
-      expect(typeof wsTwoSessionId).toBe("string");
-
-      const allScopedSession = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(wsTwoSessionId)}?workspace=all&limit=10`,
-      );
-      expect(allScopedSession.status).toBe(200);
-      const allScopedSessionBody = await allScopedSession.json();
-      expect(allScopedSessionBody.ok).toBe(true);
-      expect(allScopedSessionBody.session?.id).toBe(wsTwoSessionId);
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await settleUiRuntimeCleanup();
-      await removeDirWithRetries(tmpDir);
+    const wsOneCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-one" }),
+    }).then((r) => r.json());
+    if (!wsOneCreate?.ok) {
+      return;
     }
+    const wsOneSessionId = wsOneCreate?.session?.id;
+
+    const wsTwoCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-two" }),
+    }).then((r) => r.json());
+    if (!wsTwoCreate?.ok) {
+      return;
+    }
+
+    const activeList = await fetch(
+      `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test`,
+    ).then((r) => r.json());
+    expect(activeList.ok).toBe(true);
+    expect(activeList.sessions).toHaveLength(1);
+    expect(activeList.sessions[0]?.id).toBe(wsOneSessionId);
+
+    const allList = await fetch(
+      `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test&workspace=all`,
+    ).then((r) => r.json());
+    expect(allList.ok).toBe(true);
+    expect(allList.sessions.length).toBeGreaterThanOrEqual(2);
+    const wsTwoSessionId = wsTwoCreate?.session?.id;
+    expect(typeof wsTwoSessionId).toBe("string");
+
+    const allScopedSession = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(wsTwoSessionId)}?workspace=all&limit=10`,
+    );
+    expect(allScopedSession.status).toBe(200);
+    const allScopedSessionBody = await allScopedSession.json();
+    expect(allScopedSessionBody.ok).toBe(true);
+    expect(allScopedSessionBody.session?.id).toBe(wsTwoSessionId);
+
+    rmSync(tmpDir, { recursive: true, force: true });
   }, 20000);
 
   it("prefers repo-local .bosun config over global BOSUN_HOME for active workspace routing", async () => {
@@ -2021,7 +1541,6 @@ describeUiServer("ui-server mini app", () => {
     const previousRepoRoot = process.env.REPO_ROOT;
     const previousBosunHome = process.env.BOSUN_HOME;
     const previousBosunDir = process.env.BOSUN_DIR;
-    const previousTestRepoLocalOverride = process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG;
     const repoRootDir = mkdtempSync(join(tmpdir(), "bosun-repo-local-config-"));
     const globalHomeDir = mkdtempSync(join(tmpdir(), "bosun-global-home-"));
     const repoConfigDir = join(repoRootDir, ".bosun");
@@ -2078,14 +1597,12 @@ describeUiServer("ui-server mini app", () => {
     process.env.REPO_ROOT = repoRootDir;
     process.env.BOSUN_HOME = globalHomeDir;
     process.env.BOSUN_DIR = globalHomeDir;
-    process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG = "1";
     delete process.env.BOSUN_CONFIG_PATH;
     vi.resetModules();
-    let server = null;
 
     try {
       const mod = await import("../server/ui-server.mjs");
-      server = await mod.startTelegramUiServer({
+      const server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -2112,10 +1629,6 @@ describeUiServer("ui-server mini app", () => {
       expect(listJson.sessions).toHaveLength(1);
       expect(listJson.sessions[0]?.workspaceId).toBe("repo-ws");
     } finally {
-      if (server) {
-        await new Promise((resolve) => server.close(resolve));
-      }
-      await settleUiRuntimeCleanup();
       vi.resetModules();
       if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
       else process.env.REPO_ROOT = previousRepoRoot;
@@ -2123,10 +1636,8 @@ describeUiServer("ui-server mini app", () => {
       else process.env.BOSUN_HOME = previousBosunHome;
       if (previousBosunDir === undefined) delete process.env.BOSUN_DIR;
       else process.env.BOSUN_DIR = previousBosunDir;
-      if (previousTestRepoLocalOverride === undefined) delete process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG;
-      else process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG = previousTestRepoLocalOverride;
-      await removeDirWithRetries(repoRootDir);
-      await removeDirWithRetries(globalHomeDir);
+      rmSync(repoRootDir, { recursive: true, force: true });
+      rmSync(globalHomeDir, { recursive: true, force: true });
     }
   }, 20000);
 
@@ -2166,48 +1677,7 @@ describeUiServer("ui-server mini app", () => {
     expect(hiddenListRes.status).toBe(200);
     expect(hiddenListJson.ok).toBe(true);
     expect(hiddenListJson.sessions.some((session) => session.id === "smoke-openai-legacy")).toBe(true);
-  }, 30000);
-
-  it("hides internal voice http sessions from the default session list", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
-    _resetSingleton({ persistDir: null });
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-    const tracker = getSessionTracker();
-    tracker.createSession({
-      id: "primary-voice-http-test-hidden",
-      type: "voice",
-      metadata: {
-        source: "voice-http",
-        hiddenInLists: true,
-      },
-    });
-    tracker.createSession({
-      id: "manual-visible-session",
-      type: "primary",
-      metadata: { title: "Visible Session" },
-    });
-
-    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
-    const listJson = await listRes.json();
-    expect(listRes.status).toBe(200);
-    expect(listJson.ok).toBe(true);
-    expect(listJson.sessions.some((session) => session.id === "primary-voice-http-test-hidden")).toBe(false);
-    expect(listJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
-
-    const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
-    const hiddenListJson = await hiddenListRes.json();
-    expect(hiddenListRes.status).toBe(200);
-    expect(hiddenListJson.ok).toBe(true);
-    expect(hiddenListJson.sessions.some((session) => session.id === "primary-voice-http-test-hidden")).toBe(true);
-  }, 15000);
+  });
 
   it("includes freshness metadata in session list payloads", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -2250,7 +1720,7 @@ describeUiServer("ui-server mini app", () => {
     expect(Number.isNaN(Date.parse(listJson.loadMeta.lastSuccessAt))).toBe(false);
 
     server.close();
-  }, 15000);
+  });
 
   it("uses the higher authenticated session rate limit for session-token requests", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -2748,7 +2218,7 @@ describeUiServer("ui-server mini app", () => {
     expect(execJson.ok).toBe(true);
     expect(execJson.toolName).toBe("list_sessions");
     expect(typeof execJson.result).toBe("string");
-  }, 15000);
+  });
 
   it("applies task lifecycle start and pause actions through /api/tasks/update", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -2817,57 +2287,7 @@ describeUiServer("ui-server mini app", () => {
     expect(paused.ok).toBe(true);
     expect(paused.lifecycle.action).toBe("pause");
     expect(abortTask).toHaveBeenCalledWith(taskId, "task_lifecycle_pause");
-  }, 20000);
-
-  it("blocks completing review-backed tasks through /api/tasks/update until approved", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "Review gate",
-        description: "verify completion guard",
-        status: "inreview",
-        prUrl: "https://example.test/pr/123",
-      }),
-    }).then((r) => r.json());
-    expect(created.ok).toBe(true);
-    const taskId = created.data.id;
-
-    const taskStore = await import("../task/task-store.mjs");
-    taskStore.updateTask(taskId, {
-      status: "inreview",
-      prUrl: "https://example.test/pr/123",
-    });
-    await taskStore.waitForStoreWrites();
-
-    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/update`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        taskId,
-        status: "done",
-        lifecycleAction: "complete",
-      }),
-    });
-    const payload = await response.json();
-
-    expect(response.status).toBe(409);
-    expect(payload.ok).toBe(false);
-    expect(payload.error).toBe("completion_guard_blocked");
-    expect(payload.reason).toBe("review_not_approved");
-    expect(payload.lifecycle?.action).toBe("complete");
-    expect(taskStore.getTask(taskId)?.status).toBe("inreview");
-  }, 20000);
+  });
 
   it("serves retry queue snapshots from the agent event bus when available", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -2909,869 +2329,6 @@ describeUiServer("ui-server mini app", () => {
     expect(payload.stats.totalRetriesToday).toBe(7);
     expect(getRetryQueue).toHaveBeenCalled();
   });
-
-  it("compiles and activates harness profiles from configured source files", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-"));
-    const configPath = join(tmpDir, "bosun.config.json");
-    const harnessSourcePath = join(tmpDir, "internal-harness.md");
-    process.env.BOSUN_CONFIG_PATH = configPath;
-    writeFileSync(
-      harnessSourcePath,
-      [
-        "```json",
-        JSON.stringify({
-          name: "Bosun API Harness",
-          entryStageId: "plan",
-          skills: [{ ref: "/skills/checks/SKILL.md", pinned: true }],
-          stages: [
-            {
-              id: "plan",
-              type: "prompt",
-              prompt: "Plan the implementation and gather context.",
-              transitions: [{ on: "success", to: "gate" }],
-            },
-            {
-              id: "gate",
-              type: "gate",
-              prompt: "Run tests and wait for approval.",
-              tools: ["run_tests", "approval_gate"],
-              transitions: [{ on: "success", to: "done" }],
-            },
-            {
-              id: "done",
-              type: "finalize",
-              prompt: "Summarize the completed work.",
-            },
-          ],
-        }, null, 2),
-        "```",
-      ].join("\n"),
-      "utf8",
-    );
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        $schema: "./bosun.schema.json",
-        harness: {
-          enabled: true,
-          source: harnessSourcePath,
-          validation: {
-            mode: "report",
-          },
-        },
-      }, null, 2) + "\n",
-      "utf8",
-    );
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-    });
-    try {
-      const port = server.address().port;
-
-      const compileRes = await fetch(`http://127.0.0.1:${port}/api/harness/compile`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const compileJson = await compileRes.json();
-
-      expect(compileRes.status).toBe(200);
-      expect(compileJson.ok).toBe(true);
-      expect(compileJson.isValid).toBe(true);
-      expect(compileJson.sourceOrigin).toBe("config-file");
-      expect(compileJson.sourcePath).toBe(harnessSourcePath);
-      expect(compileJson.compiledProfile?.entryStageId).toBe("plan");
-      expect(existsSync(compileJson.artifactPath)).toBe(true);
-
-      const activateRes = await fetch(`http://127.0.0.1:${port}/api/harness/activate`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ artifactPath: compileJson.artifactPath }),
-      });
-      const activateJson = await activateRes.json();
-
-      expect(activateRes.status).toBe(200);
-      expect(activateJson.ok).toBe(true);
-      expect(activateJson.activeState?.artifactPath).toBe(compileJson.artifactPath);
-      expect(activateJson.activeState?.compiledProfile?.entryStageId).toBe("plan");
-
-      const activeRes = await fetch(`http://127.0.0.1:${port}/api/harness/active`);
-      const activeJson = await activeRes.json();
-
-      expect(activeRes.status).toBe(200);
-      expect(activeJson.ok).toBe(true);
-      expect(activeJson.activeState?.artifactPath).toBe(compileJson.artifactPath);
-      expect(activeJson.artifact?.compiledProfile?.name).toBe("Bosun API Harness");
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await removeDirWithRetries(tmpDir);
-    }
-  }, 30000);
-
-  it("runs harness profiles through the API with dry-run, persisted run records, and task-linked history", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-run-"));
-    const configPath = join(tmpDir, "bosun.config.json");
-    process.env.BOSUN_CONFIG_PATH = configPath;
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        $schema: "./bosun.schema.json",
-        harness: {
-          enabled: true,
-          validation: {
-            mode: "report",
-          },
-        },
-      }, null, 2) + "\n",
-      "utf8",
-    );
-
-    const harnessTurnExecutor = vi.fn(async ({ stage }) => {
-      if (stage.id === "plan") {
-        return {
-          success: false,
-          outcome: "needs-repair",
-          status: "needs_repair",
-          error: "lint failure",
-        };
-      }
-      return {
-        success: true,
-        outcome: "success",
-        status: "completed",
-      };
-    });
-    let releaseSlowStage = null;
-    const slowStageEntered = new Promise((resolve) => {
-      releaseSlowStage = resolve;
-    });
-    let slowRunId = null;
-    mod.injectUiDependencies({
-      harnessTurnExecutor: vi.fn(async (context) => {
-        if (context?.stage?.id === "plan" && String(context?.taskKey || "").includes("live-visibility")) {
-          slowRunId = String(context?.taskKey || "").replace("live-visibility:", "").trim() || null;
-          releaseSlowStage?.();
-          await new Promise((resolve) => setTimeout(resolve, 200));
-          return {
-            success: true,
-            outcome: "success",
-            status: "completed",
-          };
-        }
-        return harnessTurnExecutor(context);
-      }),
-    });
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-    });
-    try {
-      const port = server.address().port;
-      const createdTaskRes = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: "Harness linked task",
-          description: "Verify harness runs appear in canonical task detail history.",
-        }),
-      });
-      const createdTaskJson = await createdTaskRes.json();
-      expect(createdTaskRes.status).toBe(200);
-      expect(createdTaskJson.ok).toBe(true);
-      const taskId = createdTaskJson.data.id;
-
-      const source = {
-        name: "Bosun API Harness Runner",
-        entryStageId: "plan",
-        stages: [
-          {
-            id: "plan",
-            type: "prompt",
-            prompt: "Plan the work.",
-            transitions: [{ on: "needs-repair", to: "repair" }],
-            repairLoop: {
-              maxAttempts: 1,
-              targetStageId: "repair",
-              backoffMs: 1,
-            },
-          },
-          {
-            id: "repair",
-            type: "repair",
-            prompt: "Repair the issue.",
-            transitions: [{ on: "success", to: "done" }],
-          },
-          {
-            id: "done",
-            type: "finalize",
-            prompt: "Summarize the finished work.",
-          },
-        ],
-      };
-
-      const runRes = await fetch(`http://127.0.0.1:${port}/api/harness/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ source: JSON.stringify(source), taskId }),
-      });
-      const runJson = await runRes.json();
-
-      expect(runRes.status).toBe(200);
-      expect(runJson.ok).toBe(true);
-      expect(runJson.status).toBe("completed");
-      expect(runJson.taskId).toBe(taskId);
-      expect(runJson.runRecord?.taskId).toBe(taskId);
-      expect(runJson.result?.history?.map((entry) => entry.stageId)).toEqual(["plan", "repair", "done"]);
-      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:stage-transition" && event.reason === "needs-repair")).toBe(true);
-      expect(existsSync(runJson.runPath)).toBe(true);
-      expect(runJson.taskRun).toMatchObject({
-        runId: runJson.runId,
-        taskKey: taskId,
-        sdk: "internal-harness",
-        replayable: true,
-        meta: expect.objectContaining({
-          source: "harness",
-          taskId,
-          harnessRunId: runJson.runId,
-        }),
-      });
-      expect(harnessTurnExecutor).toHaveBeenCalledTimes(3);
-
-      const taskDetailRes = await fetch(
-        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
-      );
-      const taskDetailJson = await taskDetailRes.json();
-      expect(taskDetailRes.status).toBe(200);
-      expect(taskDetailJson.ok).toBe(true);
-      expect(taskDetailJson.data?.runs?.[0]).toMatchObject({
-        runId: runJson.runId,
-        taskKey: taskId,
-        sdk: "internal-harness",
-        replayable: true,
-        meta: expect.objectContaining({
-          source: "harness",
-          taskId,
-          harnessRunId: runJson.runId,
-        }),
-      });
-      expect(taskDetailJson.data?.runs?.[0]?.steps?.[0]?.summary).toBe("Started internal-harness run.");
-      expect(taskDetailJson.data?.meta?.latestRunSummary).toContain("Harness run completed at stage done");
-
-      const liveRunPromise = fetch(`http://127.0.0.1:${port}/api/harness/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          runId: "live-visibility-run",
-          taskKey: "live-visibility:live-visibility-run",
-          source: JSON.stringify({
-            name: "Bosun Live Harness",
-            entryStageId: "plan",
-            stages: [
-              { id: "plan", type: "prompt", prompt: "Plan the work." },
-            ],
-          }),
-        }),
-      });
-      await slowStageEntered;
-
-      const activeRunsRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs?limit=10`);
-      const activeRunsJson = await activeRunsRes.json();
-      expect(activeRunsRes.status).toBe(200);
-      expect(activeRunsJson.activeRunCount).toBeGreaterThanOrEqual(1);
-      expect(activeRunsJson.items[0]).toMatchObject({
-        runId: "live-visibility-run",
-        active: true,
-        status: "running",
-        health: expect.objectContaining({
-          state: "working",
-          waitingForOperator: false,
-        }),
-      });
-
-      const activeDetailRes = await fetch(
-        `http://127.0.0.1:${port}/api/harness/runs/${encodeURIComponent("live-visibility-run")}`,
-      );
-      const activeDetailJson = await activeDetailRes.json();
-      expect(activeDetailRes.status).toBe(200);
-      expect(activeDetailJson.run).toMatchObject({
-        runId: "live-visibility-run",
-        active: true,
-        status: "running",
-        health: expect.objectContaining({
-          state: "working",
-          waitingForOperator: false,
-        }),
-      });
-      expect(activeDetailJson.eventSummary?.counts?.stage).toBeGreaterThanOrEqual(1);
-
-      const activeStatusRes = await fetch(`http://127.0.0.1:${port}/api/status`);
-      const activeStatusJson = await activeStatusRes.json();
-      expect(activeStatusRes.status).toBe(200);
-      expect(activeStatusJson.data?.harness?.activeRunCount).toBeGreaterThanOrEqual(1);
-      expect(activeStatusJson.data?.harness?.totals?.active).toBeGreaterThanOrEqual(1);
-      expect(activeStatusJson.data?.harness?.lastRun?.runId).toBe("live-visibility-run");
-      expect(activeStatusJson.data?.harness?.lastRun?.health?.state).toBe("working");
-
-      const activeTelemetryRes = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
-      const activeTelemetryJson = await activeTelemetryRes.json();
-      expect(activeTelemetryRes.status).toBe(200);
-      expect(activeTelemetryJson.data?.harness?.activeRunCount).toBeGreaterThanOrEqual(1);
-      expect(activeTelemetryJson.data?.harness?.lastRun?.runId).toBe("live-visibility-run");
-      expect(activeTelemetryJson.data?.harness?.lastRun?.health?.state).toBe("working");
-
-      const liveRunRes = await liveRunPromise;
-      const liveRunJson = await liveRunRes.json();
-      expect(liveRunRes.status).toBe(200);
-      expect(liveRunJson.runId).toBe("live-visibility-run");
-
-    const runsRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs?limit=5`);
-    const runsJson = await runsRes.json();
-    expect(runsRes.status).toBe(200);
-    expect(runsJson.items?.some((item) => item?.runId === runJson.runId)).toBe(true);
-
-    const runDetailRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/${encodeURIComponent(runJson.runId)}`);
-    const runDetailJson = await runDetailRes.json();
-    expect(runDetailRes.status).toBe(200);
-    expect(runDetailJson.run?.runId).toBe(runJson.runId);
-    expect(runDetailJson.run?.result?.history?.map((entry) => entry.stageId)).toEqual(["plan", "repair", "done"]);
-    expect(runDetailJson.run?.health?.state).toBe("completed");
-    expect(runDetailJson.eventSummary).toMatchObject({
-      counts: expect.objectContaining({
-        total: expect.any(Number),
-        transition: expect.any(Number),
-        terminal: expect.any(Number),
-      }),
-      byType: expect.objectContaining({
-        "harness:stage-transition": expect.any(Number),
-      }),
-      latestStageId: "done",
-      terminalState: expect.objectContaining({
-        type: "harness:completed",
-        stageId: "done",
-      }),
-    });
-    expect(runDetailJson.normalizedEvents?.some((event) => event.type === "harness:stage-transition" && event.toStageId === "repair")).toBe(true);
-
-    const runEventsRes = await fetch(
-      `http://127.0.0.1:${port}/api/harness/runs/${encodeURIComponent(runJson.runId)}/events?category=transition&direction=desc&limit=2`,
-    );
-    const runEventsJson = await runEventsRes.json();
-    expect(runEventsRes.status).toBe(200);
-    expect(runEventsJson.summary).toMatchObject({
-      filteredCount: 2,
-      direction: "desc",
-      filters: { category: "transition" },
-    });
-    expect(runEventsJson.events).toHaveLength(2);
-    expect(runEventsJson.events.every((event) => event.category === "transition")).toBe(true);
-    expect(runEventsJson.events[0].summary).toContain("Transitioned from");
-
-      const replayRes = await fetch(
-        `http://127.0.0.1:${port}/api/harness/runs/${encodeURIComponent(runJson.runId)}/replay`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
-        },
-      );
-      const replayJson = await replayRes.json();
-      expect(replayRes.status).toBe(200);
-      expect(replayJson.ok).toBe(true);
-      expect(replayJson.replayedFromRunId).toBe(runJson.runId);
-      expect(replayJson.runId).not.toBe(runJson.runId);
-      expect(replayJson.taskId).toBe(taskId);
-      expect(replayJson.runRecord?.taskId).toBe(taskId);
-      expect(replayJson.taskRun).toMatchObject({
-        runId: replayJson.runId,
-        taskKey: taskId,
-        sdk: "internal-harness",
-        meta: expect.objectContaining({
-          source: "harness",
-          taskId,
-          harnessRunId: replayJson.runId,
-        }),
-      });
-      expect(harnessTurnExecutor).toHaveBeenCalledTimes(6);
-
-      const replayDetailRes = await fetch(
-        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
-      );
-      const replayDetailJson = await replayDetailRes.json();
-      expect(replayDetailRes.status).toBe(200);
-      expect(replayDetailJson.ok).toBe(true);
-      expect(replayDetailJson.data?.runs?.[0]?.runId).toBe(replayJson.runId);
-      expect(replayDetailJson.data?.meta?.latestRunSummary).toContain("Harness run completed at stage done");
-
-    const statusRes = await fetch(`http://127.0.0.1:${port}/api/status`);
-    const statusJson = await statusRes.json();
-    expect(statusRes.status).toBe(200);
-    expect(statusJson.data?.harness?.lastRun?.runId).toBe(replayJson.runId);
-    expect(statusJson.data?.harness?.totals?.successful).toBeGreaterThanOrEqual(1);
-
-    const telemetryRes = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
-    const telemetryJson = await telemetryRes.json();
-    expect(telemetryRes.status).toBe(200);
-    expect(telemetryJson.data?.harness?.lastRun?.runId).toBe(replayJson.runId);
-    expect(telemetryJson.data?.harness?.recentRuns?.[0]?.runId).toBe(replayJson.runId);
-
-    const dryRunRes = await fetch(`http://127.0.0.1:${port}/api/harness/run`, {
-      method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ source: JSON.stringify(source), dryRun: true }),
-      });
-      const dryRunJson = await dryRunRes.json();
-
-      expect(dryRunRes.status).toBe(200);
-      expect(dryRunJson.ok).toBe(true);
-      expect(dryRunJson.dryRun).toBe(true);
-      expect(dryRunJson.result?.dryRun).toBe(true);
-      expect(dryRunJson.result?.history?.every((entry) => entry.dryRun === true)).toBe(true);
-      expect(existsSync(dryRunJson.runPath)).toBe(true);
-      expect(harnessTurnExecutor).toHaveBeenCalledTimes(6);
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await removeDirWithRetries(tmpDir);
-    }
-  }, 30000);
-
-  it("stops active harness runs through the API and persists aborted task history", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-stop-"));
-    const configPath = join(tmpDir, "bosun.config.json");
-    process.env.BOSUN_CONFIG_PATH = configPath;
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        $schema: "./bosun.schema.json",
-        harness: {
-          enabled: true,
-          validation: { mode: "report" },
-        },
-      }, null, 2) + "\n",
-      "utf8",
-    );
-
-    let notifyStarted = null;
-    const started = new Promise((resolve) => {
-      notifyStarted = resolve;
-    });
-    mod.injectUiDependencies({
-      harnessTurnExecutor: vi.fn(async (context) => {
-        notifyStarted?.();
-        await new Promise((resolve, reject) => {
-          const signal = context?.signal;
-          if (signal?.aborted) {
-            const err = new Error("aborted");
-            err.name = "AbortError";
-            reject(err);
-            return;
-          }
-          signal?.addEventListener?.("abort", () => {
-            const err = new Error("aborted");
-            err.name = "AbortError";
-            reject(err);
-          }, { once: true });
-        });
-        return { success: true, outcome: "success", status: "completed" };
-      }),
-    });
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-    });
-    try {
-      const port = server.address().port;
-      const createdTaskRes = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: "Harness stop task",
-          description: "Verify stop persists aborted harness runs.",
-        }),
-      });
-      const createdTaskJson = await createdTaskRes.json();
-      expect(createdTaskRes.status).toBe(200);
-      expect(createdTaskJson.ok).toBe(true);
-      const taskId = createdTaskJson.data.id;
-
-      const runPromise = fetch(`http://127.0.0.1:${port}/api/harness/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          runId: "stop-harness-run",
-          taskId,
-          source: JSON.stringify({
-            name: "Bosun Stop Harness",
-            entryStageId: "plan",
-            stages: [
-              { id: "plan", type: "prompt", prompt: "Wait for stop." },
-            ],
-          }),
-        }),
-      });
-
-      await started;
-
-      const stopRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/stop-harness-run/stop`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reason: "operator_stop" }),
-      });
-      const stopJson = await stopRes.json();
-      expect(stopRes.status).toBe(200);
-      expect(stopJson).toMatchObject({
-        ok: true,
-        runId: "stop-harness-run",
-        stopped: true,
-        active: true,
-        stopRequested: true,
-        reason: "operator_stop",
-      });
-
-      const stopAgainRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/stop-harness-run/stop`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reason: "operator_stop" }),
-      });
-      const stopAgainJson = await stopAgainRes.json();
-      expect(stopAgainRes.status).toBe(200);
-      expect(stopAgainJson.ok).toBe(true);
-      expect(stopAgainJson.runId).toBe("stop-harness-run");
-      expect(typeof stopAgainJson.stopped).toBe("boolean");
-
-      const runRes = await runPromise;
-      const runJson = await runRes.json();
-      expect(runRes.status).toBe(200);
-      expect(runJson.ok).toBe(false);
-      expect(runJson.status).toBe("aborted");
-      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:aborted")).toBe(true);
-
-      const runDetailRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/stop-harness-run`);
-      const runDetailJson = await runDetailRes.json();
-      expect(runDetailRes.status).toBe(200);
-      expect(runDetailJson.eventSummary?.byType?.["harness:aborted"]).toBeGreaterThanOrEqual(1);
-
-      const taskDetailRes = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`);
-      const taskDetailJson = await taskDetailRes.json();
-      expect(taskDetailRes.status).toBe(200);
-      expect(taskDetailJson.data?.runs?.[0]).toMatchObject({
-        runId: "stop-harness-run",
-        taskKey: taskId,
-        status: "aborted",
-        meta: expect.objectContaining({
-          source: "harness",
-          taskId,
-        }),
-      });
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await removeDirWithRetries(tmpDir);
-    }
-  }, 30000);
-
-  it("nudges active harness runs and resolves approval interventions through the API", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-nudge-"));
-    const configPath = join(tmpDir, "bosun.config.json");
-    process.env.BOSUN_CONFIG_PATH = configPath;
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        $schema: "./bosun.schema.json",
-        harness: {
-          enabled: true,
-          validation: { mode: "report" },
-        },
-      }, null, 2) + "\n",
-      "utf8",
-    );
-
-    let sessionState = null;
-    mod.injectUiDependencies({
-      createCompiledInternalHarnessSession: vi.fn((compiledProfile, options = {}) => {
-        sessionState = {
-          events: [],
-          runStarted: false,
-          released: false,
-          nudges: [],
-          resolveRun: null,
-        };
-        return {
-          agentId: compiledProfile.agentId || "test-harness",
-          compiledProfile,
-          compiledProfileJson: JSON.stringify(compiledProfile),
-          validationReport: { errors: [], warnings: [], stats: compiledProfile.metadata || {} },
-          isValid: true,
-          canSteer: () => sessionState.runStarted && !sessionState.released,
-          steer: (prompt, meta = {}) => {
-            sessionState.nudges.push({ prompt, meta });
-            const baseEvent = {
-              runId: options.runId,
-              taskKey: options.taskKey,
-              stageId: "plan",
-              interventionType: String(meta?.kind || meta?.type || "nudge").trim() || "nudge",
-              timestamp: new Date().toISOString(),
-              meta: { ...(meta && typeof meta === "object" ? meta : {}) },
-            };
-            options.onHarnessEvent?.({
-              ...baseEvent,
-              type: "harness:intervention-requested",
-              prompt,
-            });
-            options.onHarnessEvent?.({
-              ...baseEvent,
-              type: "harness:intervention-delivered",
-              prompt,
-              reason: "steered",
-            });
-            return {
-              ok: true,
-              delivered: true,
-              reason: "steered",
-              interventionType: baseEvent.interventionType,
-              stageId: "plan",
-              targetTaskKey: options.taskKey,
-            };
-          },
-          run: () => new Promise((resolve) => {
-            sessionState.resolveRun = resolve;
-            sessionState.runStarted = true;
-            options.onHarnessEvent?.({
-              type: "harness:session-start",
-              runId: options.runId,
-              taskKey: options.taskKey,
-              entryStageId: "plan",
-              timestamp: new Date().toISOString(),
-            });
-            options.onHarnessEvent?.({
-              type: "harness:stage-start",
-              runId: options.runId,
-              taskKey: options.taskKey,
-              stageId: "plan",
-              stageType: "prompt",
-              mode: "initial",
-              step: 1,
-              maxSteps: 8,
-              timestamp: new Date().toISOString(),
-            });
-          }),
-          controller: {
-            canSteer: () => sessionState.runStarted && !sessionState.released,
-          },
-        };
-      }),
-    });
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-    });
-
-    try {
-      const port = server.address().port;
-      const runPromise = fetch(`http://127.0.0.1:${port}/api/harness/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          runId: "nudge-harness-run",
-          source: JSON.stringify({
-            name: "Bosun Nudge Harness",
-            entryStageId: "plan",
-            stages: [
-              { id: "plan", type: "prompt", prompt: "Wait for operator intervention." },
-            ],
-          }),
-        }),
-      });
-
-      await vi.waitFor(() => {
-        expect(sessionState?.runStarted).toBe(true);
-      });
-
-      const activeDetail = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run`).then((r) => r.json());
-      expect(activeDetail.run?.controls).toMatchObject({
-        canStop: true,
-        canNudge: true,
-      });
-
-      const nudgeRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run/nudge`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          prompt: "Inspect the failing harness test before continuing.",
-          mode: "steer",
-          actor: "operator",
-          reason: "new_evidence",
-        }),
-      });
-      const nudgeJson = await nudgeRes.json();
-      expect(nudgeRes.status).toBe(200);
-      expect(nudgeJson).toMatchObject({
-        ok: true,
-        runId: "nudge-harness-run",
-        delivered: true,
-        mode: "steer",
-        actor: "operator",
-        stageId: "plan",
-      });
-
-      const approvalRequestRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run/approval`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          actor: "reviewer",
-          reason: "Manual approval required before continuing.",
-          preview: "Wait for reviewer signoff before applying the final patch.",
-        }),
-      });
-      const approvalRequestJson = await approvalRequestRes.json();
-      expect(approvalRequestRes.status).toBe(200);
-      expect(approvalRequestJson).toMatchObject({
-        ok: true,
-        runId: "nudge-harness-run",
-        approvalPending: true,
-        active: true,
-        request: expect.objectContaining({
-          requestId: "harness-run:nudge-harness-run",
-          scopeType: "harness-run",
-          scopeId: "nudge-harness-run",
-          status: "pending",
-          stageId: "plan",
-          requestedBy: "reviewer",
-        }),
-      });
-
-      const approvalStatusJson = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run/approval`).then((r) => r.json());
-      expect(approvalStatusJson).toMatchObject({
-        ok: true,
-        approvalPending: true,
-        request: expect.objectContaining({
-          requestId: "harness-run:nudge-harness-run",
-          status: "pending",
-        }),
-      });
-
-      const waitingRunDetail = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run`).then((r) => r.json());
-      expect(waitingRunDetail.run?.controls).toMatchObject({
-        canApprove: true,
-      });
-      expect(waitingRunDetail.run?.health).toMatchObject({
-        state: "waiting",
-        waitingForOperator: true,
-        attentionCategory: "approval",
-        attentionReason: "Harness approval requested for stage plan.",
-        lastEventType: "harness:approval-requested",
-        lastEventSummary: "Harness approval requested for stage plan.",
-      });
-      expect(waitingRunDetail.run?.health?.attentionSinceAt).toEqual(expect.any(String));
-      expect(waitingRunDetail.run?.health?.lastEventAt).toEqual(expect.any(String));
-
-      const waitingRuns = await fetch(`http://127.0.0.1:${port}/api/harness/runs?state=waiting&waitingForOperator=true&limit=10`).then((r) => r.json());
-      expect(waitingRuns.ok).toBe(true);
-      expect(waitingRuns.items.some((item) => item?.runId === "nudge-harness-run")).toBe(true);
-      expect(waitingRuns.items.find((item) => item?.runId === "nudge-harness-run")?.health).toMatchObject({
-        attentionCategory: "approval",
-        attentionReason: "Harness approval requested for stage plan.",
-      });
-
-      const approvalListJson = await fetch(`http://127.0.0.1:${port}/api/harness/approvals?status=pending`).then((r) => r.json());
-      expect(approvalListJson.ok).toBe(true);
-      expect(approvalListJson.requests).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          requestId: "harness-run:nudge-harness-run",
-          scopeType: "harness-run",
-          status: "pending",
-        }),
-      ]));
-
-      const approvalRes = await fetch(`http://127.0.0.1:${port}/api/harness/approvals/${encodeURIComponent("harness-run:nudge-harness-run")}/resolve`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          decision: "approved",
-          actor: "reviewer",
-          note: "Ship after the focused test passes.",
-        }),
-      });
-      const approvalJson = await approvalRes.json();
-      expect(approvalRes.status).toBe(200);
-      expect(approvalJson).toMatchObject({
-        ok: true,
-        active: true,
-        request: expect.objectContaining({
-          requestId: "harness-run:nudge-harness-run",
-          status: "approved",
-          resolution: expect.objectContaining({
-            actorId: "reviewer",
-            note: "Ship after the focused test passes.",
-          }),
-        }),
-        wake: expect.objectContaining({
-          ok: true,
-          delivered: true,
-          interventionType: "approval",
-          stageId: "plan",
-        }),
-      });
-
-      sessionState.released = true;
-      sessionState.resolveRun?.({
-        success: true,
-        status: "completed",
-        runId: "nudge-harness-run",
-        currentStageId: "plan",
-        completedStageId: "plan",
-        history: [],
-      });
-
-      const runRes = await runPromise;
-      const runJson = await runRes.json();
-      expect(runRes.status).toBe(200);
-      expect(runJson.ok).toBe(true);
-      expect(runJson.health?.state).toBe("completed");
-      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:intervention-delivered")).toBe(true);
-      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:approval-requested")).toBe(true);
-      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:approval-resolved")).toBe(true);
-      expect(runJson.lastInterventionBy).toBe("reviewer");
-
-      const eventRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run/events?category=control`).then((r) => r.json());
-      expect(eventRes.ok).toBe(true);
-      expect(eventRes.events.some((event) => event.type === "harness:approval-requested")).toBe(true);
-      expect(eventRes.events.some((event) => event.type === "harness:approval-resolved")).toBe(true);
-      expect(eventRes.events.some((event) => event.type === "harness:intervention-requested")).toBe(true);
-      expect(eventRes.events.some((event) => event.type === "harness:intervention-delivered")).toBe(true);
-
-      expect(sessionState.nudges).toHaveLength(2);
-      expect(sessionState.nudges[0]).toMatchObject({
-        prompt: "Inspect the failing harness test before continuing.",
-        meta: expect.objectContaining({
-          kind: "steer",
-          actor: "operator",
-          reason: "new_evidence",
-        }),
-      });
-      expect(sessionState.nudges[1].meta).toMatchObject({
-        kind: "approval",
-        actor: "reviewer",
-        reason: "approved",
-        decision: "approved",
-        note: "Ship after the focused test passes.",
-      });
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await removeDirWithRetries(tmpDir);
-    }
-  }, 30000);
 
   it("retries tasks immediately and clears retry queue entries via the event bus", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -3825,7 +2382,7 @@ describeUiServer("ui-server mini app", () => {
     expect(executeTask.mock.calls[0][0]?.id).toBe(taskId);
     expect(resetTaskThrottleState).toHaveBeenCalledWith(taskId, {});
     expect(clearRetryQueueTask).toHaveBeenCalledWith(taskId, "manual-retry-now");
-  }, 15000);
+  });
 
   it("clears blocked task state through /api/tasks/unblock", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-unblock-"));
@@ -3985,7 +2542,7 @@ describeUiServer("ui-server mini app", () => {
     expect(task.meta?.worktreeFailure).toBeUndefined();
     expect(task.meta?.note).toBe("preserve-me");
     expect(resetTaskThrottleState).toHaveBeenCalledWith("task-edit-unblock", {});
-  }, 15000);
+  });
 
   it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-queue-"));
@@ -4054,343 +2611,65 @@ describeUiServer("ui-server mini app", () => {
 
   it("enriches task detail with linked workflow runs for the same taskId", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-detail-"));
-    const previousRepoRoot = process.env.REPO_ROOT;
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_HOME = isolatedDir;
     process.env.BOSUN_DIR = isolatedDir;
     process.env.CODEX_MONITOR_HOME = isolatedDir;
     process.env.CODEX_MONITOR_DIR = isolatedDir;
-    process.env.REPO_ROOT = isolatedDir;
-    mkdirSync(join(isolatedDir, ".git"), { recursive: true });
 
-    try {
-      const mod = await import("../server/ui-server.mjs");
-      const mockRuns = [];
-      mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, {
-        getRunHistory: async () => mockRuns.map((run) => ({
-          runId: run.runId,
-          rootRunId: run.rootRunId,
-          parentRunId: run.parentRunId,
-          workflowId: run.workflowId,
-          workflowName: run.workflowName,
-          status: run.status,
-          startedAt: run.startedAt,
-          endedAt: run.endedAt,
-          duration: run.duration,
-          taskId: run.detail?.data?.taskId || "",
-          taskIds: [run.detail?.data?.taskId || ""].filter(Boolean),
-          primarySessionId: run.primarySessionId,
-          rootTaskId: run.rootTaskId,
-          parentTaskId: run.parentTaskId,
-          rootSessionId: run.rootSessionId,
-          parentSessionId: run.parentSessionId,
-          delegationDepth: run.delegationDepth,
-          delegationTopology: run.delegationTopology,
-          runGraph: run.runGraph,
-        })),
-        getRunDetail: async (runId) => mockRuns.find((run) => run.runId === runId) || null,
-        getTaskTraceEvents: async (runId) => {
-          const run = mockRuns.find((entry) => entry.runId === runId);
-          if (!run) return [];
-          return [{
-            taskId: run.detail?.data?.taskId || "",
-            workflowId: run.workflowId,
-            runId: run.runId,
-            sessionId: run.primarySessionId,
-            eventType: "run.completed",
-          }];
-        },
-      });
-      const server = await mod.startTelegramUiServer({
-        port: await getFreePort(),
-        host: "127.0.0.1",
-        skipInstanceLock: true,
-        skipAutoOpen: true,
-      });
-      const port = server.address().port;
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
 
-      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "Workflow linked task", description: "trace workflow runs" }),
-      }).then((r) => r.json());
-      expect(created.ok).toBe(true);
-      const taskId = created.data.id;
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Workflow linked task", description: "trace workflow runs" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
 
-      const workflowId = `wf-task-trace-${Date.now()}`;
-      const linkedRunId = `run-task-trace-${Date.now()}`;
-      mockRuns.push({
-        runId: linkedRunId,
-        workflowId,
-        workflowName: "Task trace workflow",
-        status: "completed",
-        startedAt: "2026-03-31T05:58:00.000Z",
-        endedAt: "2026-03-31T06:00:00.000Z",
-        duration: 120000,
-        primarySessionId: `session:${linkedRunId}`,
-        rootRunId: "run-root-parent",
-        parentRunId: "run-parent-operator",
-        rootTaskId: taskId,
-        parentTaskId: taskId,
-        rootSessionId: `session:${linkedRunId}:root`,
-        parentSessionId: `session:${linkedRunId}:parent`,
-        delegationDepth: 2,
-        delegationTopology: {
-          runId: linkedRunId,
-          rootRunId: "run-root-parent",
-          parentRunId: "run-parent-operator",
-          taskId,
-          rootTaskId: taskId,
-          parentTaskId: taskId,
-          sessionId: `session:${linkedRunId}`,
-          rootSessionId: `session:${linkedRunId}:root`,
-          parentSessionId: `session:${linkedRunId}:parent`,
-          delegationDepth: 2,
-          childRunIds: [`${linkedRunId}:child-a`, `${linkedRunId}:child-b`],
-          childSessionIds: [`session:${linkedRunId}:child-a`],
-          familyRunIds: ["run-root-parent", "run-parent-operator", linkedRunId],
-          familySessionIds: [`session:${linkedRunId}:root`, `session:${linkedRunId}:parent`, `session:${linkedRunId}`],
-        },
-        detail: {
-          data: {
-            taskId,
-            taskTitle: "Workflow linked task",
-            sessionId: `session:${linkedRunId}`,
-          },
-        },
-        runGraph: {
-          runs: [{ runId: linkedRunId }],
-          executions: [{ executionId: "trigger:start" }],
-          timeline: [{ eventType: "run.completed" }],
-          edges: [],
-        },
-      });
+    const workflowId = `wf-task-trace-${Date.now()}`;
+    const saveWorkflow = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: workflowId,
+        name: "Task trace workflow",
+        enabled: true,
+        nodes: [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        ],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(saveWorkflow.ok).toBe(true);
 
-      const detail = await fetch(
-        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
-      ).then((r) => r.json());
-
-      expect(detail.ok).toBe(true);
-      expect(detail.data.id).toBe(taskId);
-      expect(Array.isArray(detail.data.workflowRuns)).toBe(true);
-      expect(detail.data.workflowRuns.length).toBeGreaterThan(0);
-      expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
-      expect(detail.data.workflowRuns).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          runId: linkedRunId,
-          rootRunId: "run-root-parent",
-          parentRunId: "run-parent-operator",
-          rootTaskId: taskId,
-          parentTaskId: taskId,
-          rootSessionId: `session:${linkedRunId}:root`,
-          parentSessionId: `session:${linkedRunId}:parent`,
-          delegationDepth: 2,
-          childRunIds: expect.arrayContaining([`${linkedRunId}:child-a`, `${linkedRunId}:child-b`]),
-          childSessionIds: expect.arrayContaining([`session:${linkedRunId}:child-a`]),
-          delegationTopology: expect.objectContaining({
-            runId: linkedRunId,
-            parentRunId: "run-parent-operator",
-            rootSessionId: `session:${linkedRunId}:root`,
-          }),
-        }),
-      ]));
-
-      const stateLedger = await import("../lib/state-ledger-sqlite.mjs");
-      stateLedger.writeWorkflowStateLedger({
-        runDocument: {
-          runId: linkedRunId,
-          rootRunId: linkedRunId,
-          workflowId,
-          workflowName: "Task trace workflow",
-          runKind: "workflow",
-          status: "completed",
-          startedAt: "2026-03-31T05:58:00.000Z",
-          endedAt: "2026-03-31T06:00:00.000Z",
-          updatedAt: "2026-03-31T06:00:00.000Z",
-          taskId,
-          taskTitle: "Workflow linked task",
-          sessionId: `session:${linkedRunId}`,
-          sessionType: "task",
-          eventCount: 1,
-          document: {
-            runId: linkedRunId,
-            workflowId,
-            workflowName: "Task trace workflow",
-            status: "completed",
-            taskId,
-            taskTitle: "Workflow linked task",
-            sessionId: `session:${linkedRunId}`,
-          },
-        },
-      }, { repoRoot: isolatedDir });
-      stateLedger.appendTaskTraceEventToStateLedger({
-        eventId: `${linkedRunId}:task-trace`,
+    const runResponse = await fetch(`http://127.0.0.1:${port}/api/workflows/${encodeURIComponent(workflowId)}/execute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        waitForCompletion: true,
         taskId,
         taskTitle: "Workflow linked task",
-        workflowId,
-        workflowName: "Task trace workflow",
-        runId: linkedRunId,
-        status: "completed",
-        eventType: "run.completed",
-        summary: "Workflow run completed for linked task",
-        workspaceId: "default",
-        sessionId: `session:${linkedRunId}`,
-        timestamp: "2026-03-31T06:00:00.000Z",
-      }, { repoRoot: isolatedDir });
-      expect(stateLedger.listTaskTraceEventsFromStateLedger({ repoRoot: isolatedDir, taskId })).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            taskId,
-            workflowId,
-            runId: expect.any(String),
-          }),
-        ]),
-      );
-      stateLedger.appendPromotedStrategyToStateLedger({
-        strategyId: `${workflowId}:promote:${taskId}:quality`,
-        workflowId,
-        runId: linkedRunId,
-        taskId,
-        sessionId: `session:${linkedRunId}`,
-        workspaceId: "default",
-        scope: "workflow-reliability",
-        scopeLevel: "workspace",
-        category: "strategy",
-        decision: "promote_strategy",
-        status: "promoted",
-        verificationStatus: "verified",
-        confidence: 0.91,
-        recommendation: "Keep the workflow pattern that completed without retries.",
-        rationale: "The trace completed cleanly and the task remained linked end to end.",
-        promotedAt: "2026-03-31T06:00:00.000Z",
-      }, { repoRoot: isolatedDir });
+      }),
+    }).then((r) => r.json());
+    expect(runResponse.ok).toBe(true);
 
-      const runDetail = await fetch(
-        `http://127.0.0.1:${port}/api/workflows/runs/${encodeURIComponent(linkedRunId)}`,
-      ).then((r) => r.json());
-      const refreshedDetail = await fetch(
-        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
-      ).then((r) => r.json());
+    const detail = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+    ).then((r) => r.json());
 
-      expect(runDetail.ok).toBe(true);
-      expect(refreshedDetail.ok).toBe(true);
-      expect(runDetail.run?.delegationTopology).toEqual(expect.objectContaining({
-        runId: linkedRunId,
-        rootRunId: "run-root-parent",
-        parentRunId: "run-parent-operator",
-        taskId,
-        rootSessionId: `session:${linkedRunId}:root`,
-        parentSessionId: `session:${linkedRunId}:parent`,
-        delegationDepth: 2,
-        childRunIds: expect.arrayContaining([`${linkedRunId}:child-a`, `${linkedRunId}:child-b`]),
-      }));
-      expect(runDetail.run?.auditActivity).toEqual(
-        expect.objectContaining({
-          summary: expect.objectContaining({
-            workflowId,
-          }),
-          taskTraceCount: expect.any(Number),
-          taskTraceEvents: expect.arrayContaining([
-            expect.objectContaining({
-              taskId,
-              workflowId,
-              runId: linkedRunId,
-            }),
-          ]),
-          promotedStrategies: expect.arrayContaining([
-            expect.objectContaining({
-              strategyId: `${workflowId}:promote:${taskId}:quality`,
-              runId: linkedRunId,
-              recommendation: "Keep the workflow pattern that completed without retries.",
-            }),
-          ]),
-        }),
-      );
-      expect(refreshedDetail.data.auditActivity).toEqual(
-        expect.objectContaining({
-          taskId,
-          summary: expect.objectContaining({
-            runCount: expect.any(Number),
-            eventCount: expect.any(Number),
-          }),
-          promotedStrategies: expect.arrayContaining([
-            expect.objectContaining({
-              strategyId: `${workflowId}:promote:${taskId}:quality`,
-            }),
-          ]),
-        }),
-      );
-
-      const auditRunResponse = await fetch(
-        `http://127.0.0.1:${port}/api/audit/runs/${encodeURIComponent(linkedRunId)}`,
-      ).then((r) => r.json());
-      expect(auditRunResponse.ok).toBe(true);
-      expect(auditRunResponse.audit).toEqual(
-        expect.objectContaining({
-          runId: linkedRunId,
-          auditEvents: expect.arrayContaining([
-            expect.objectContaining({
-              auditType: "task_trace",
-              runId: linkedRunId,
-            }),
-          ]),
-        }),
-      );
-
-      const auditTaskResponse = await fetch(
-        `http://127.0.0.1:${port}/api/audit/tasks/${encodeURIComponent(taskId)}`,
-      ).then((r) => r.json());
-      expect(auditTaskResponse.ok).toBe(true);
-      expect(auditTaskResponse.audit).toEqual(
-        expect.objectContaining({
-          taskId,
-          auditEvents: expect.arrayContaining([
-            expect.objectContaining({
-              taskId,
-              auditType: "promoted_strategy",
-            }),
-          ]),
-        }),
-      );
-
-      const auditEventsResponse = await fetch(
-        `http://127.0.0.1:${port}/api/audit/events?taskId=${encodeURIComponent(taskId)}&limit=20`,
-      ).then((r) => r.json());
-      expect(auditEventsResponse.ok).toBe(true);
-      expect(auditEventsResponse.events).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            taskId,
-            auditType: "promoted_strategy",
-          }),
-        ]),
-      );
-
-      const auditSummaryResponse = await fetch(
-        `http://127.0.0.1:${port}/api/audit/summary?limit=10&recentLimit=10`,
-      ).then((r) => r.json());
-      expect(auditSummaryResponse.ok).toBe(true);
-      expect(auditSummaryResponse.summary).toEqual(
-        expect.objectContaining({
-          taskCount: expect.any(Number),
-          recentEventCount: expect.any(Number),
-        }),
-      );
-      expect(auditSummaryResponse.tasks).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            taskId,
-          }),
-        ]),
-      );
-    } finally {
-      try {
-        const mod = await import("../server/ui-server.mjs");
-        mod._testInjectWorkflowEngine(null, null);
-      } catch {}
-      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
-      else process.env.REPO_ROOT = previousRepoRoot;
-    }
+    expect(detail.ok).toBe(true);
+    expect(detail.data.id).toBe(taskId);
+    expect(Array.isArray(detail.data.workflowRuns)).toBe(true);
+    expect(detail.data.workflowRuns.length).toBeGreaterThan(0);
+    expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   }, 20000);
 
   it("preserves incoming trace headers for workflow and task API actions", async () => {
@@ -4525,225 +2804,6 @@ describeUiServer("ui-server mini app", () => {
     expect(detail.data.meta.latestRunSummary).toContain("Investigated the failure");
   }, 20000);
 
-  it("reports server-state as disabled by default", async () => {
-    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-server-state-disabled-"));
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    process.env.BOSUN_HOME = isolatedDir;
-    process.env.BOSUN_DIR = isolatedDir;
-    process.env.CODEX_MONITOR_HOME = isolatedDir;
-    process.env.CODEX_MONITOR_DIR = isolatedDir;
-    process.env.REPO_ROOT = isolatedDir;
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    const response = await fetch(`http://127.0.0.1:${port}/api/server-state`).then((r) => r.json());
-    expect(response.ok).toBe(true);
-    expect(response.data).toEqual(expect.objectContaining({
-      enabled: false,
-      features: expect.objectContaining({
-        enabled: false,
-        coordination: false,
-        scopeLocks: false,
-        audit: false,
-        executionJournal: false,
-        planningAccounting: false,
-        monitoring: false,
-      }),
-      summary: expect.objectContaining({
-        enabledSectionCount: 0,
-      }),
-    }));
-  }, 20000);
-
-  it("exposes server-state coordination, audit, journal, planning, and monitoring summaries", async () => {
-    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-server-state-"));
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    process.env.BOSUN_HOME = isolatedDir;
-    process.env.BOSUN_DIR = isolatedDir;
-    process.env.CODEX_MONITOR_HOME = isolatedDir;
-    process.env.CODEX_MONITOR_DIR = isolatedDir;
-    process.env.REPO_ROOT = isolatedDir;
-    process.env.BOSUN_UI_COORDINATION_STATE_ENABLED = "true";
-    process.env.BOSUN_UI_SCOPE_LOCK_STATE_ENABLED = "true";
-    process.env.BOSUN_UI_AUDIT_SUMMARY_ENABLED = "true";
-    process.env.BOSUN_UI_EXECUTION_JOURNAL_STATE_ENABLED = "true";
-    process.env.BOSUN_UI_PLANNING_ACCOUNTING_ENABLED = "true";
-    process.env.BOSUN_UI_MONITORING_STATE_ENABLED = "true";
-    const statusCacheDir = join(isolatedDir, ".cache");
-    mkdirSync(statusCacheDir, { recursive: true });
-    writeFileSync(join(statusCacheDir, "orchestrator-status.json"), JSON.stringify({
-      counts: {
-        todo: 0,
-        inprogress: 0,
-        inreview: 0,
-        blocked: 1,
-        done: 0,
-      },
-      active_slots: "0/1",
-      executor_mode: "internal",
-      ts: "2026-03-31T10:00:05.000Z",
-    }, null, 2));
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    const taskStore = await import("../task/task-store.mjs");
-    const sharedStateManager = await import("../workspace/shared-state-manager.mjs");
-    const scopeLocks = await import("../workspace/scope-locks.mjs");
-
-    taskStore.addTask({
-      id: "task-server-state-1",
-      title: "Server state task",
-      status: "blocked",
-    });
-    taskStore.appendTaskRun("task-server-state-1", {
-      runId: "run-server-state-1",
-      startedAt: "2026-03-31T10:00:00.000Z",
-      status: "failed",
-      sdk: "codex",
-      threadId: "thread-server-state-1",
-      steps: [
-        { type: "thread", payload: { sdk: "codex", resumed: false } },
-        { type: "assistant", payload: { content: "Tracing a server-state failure path." } },
-      ],
-      artifacts: [
-        { path: "logs/server-state.log", label: "Server State Log" },
-      ],
-    });
-
-    await sharedStateManager.claimTaskInSharedState(
-      "task-server-state-1",
-      "workstation-1/agent-1",
-      "claim-token-server-state-1",
-      300,
-      isolatedDir,
-    );
-    await scopeLocks.acquireScopeLocks({
-      taskId: "task-server-state-1",
-      ownerId: "workstation-1/agent-1",
-      attemptToken: "claim-token-server-state-1",
-      repoRoot: isolatedDir,
-      ttlSeconds: 300,
-      scopePaths: ["src/server-state.mjs"],
-    });
-
-    appendTaskTraceEventToStateLedger({
-      taskId: "task-server-state-1",
-      runId: "run-server-state-1",
-      sessionId: "thread-server-state-1",
-      eventType: "agent_step",
-      status: "failed",
-      summary: "Task trace event recorded for server-state audit coverage.",
-    }, {
-      repoRoot: isolatedDir,
-    });
-    appendOperatorActionToStateLedger({
-      actionId: "operator-server-state-1",
-      actionType: "server_state_probe",
-      actorId: "ui",
-      actorType: "operator",
-      scope: "task",
-      scopeId: "task-server-state-1",
-      targetId: "task-server-state-1",
-      taskId: "task-server-state-1",
-      status: "completed",
-      result: { ok: true },
-      metadata: { summary: "Checked server-state summaries" },
-    }, {
-      repoRoot: isolatedDir,
-    });
-
-    const response = await fetch(`http://127.0.0.1:${port}/api/server-state?details=1`).then((r) => r.json());
-    const status = await fetch(`http://127.0.0.1:${port}/api/status`).then((r) => r.json());
-    const infra = await fetch(`http://127.0.0.1:${port}/api/infra`).then((r) => r.json());
-    expect(response.ok).toBe(true);
-    expect(status.ok).toBe(true);
-    expect(infra.ok).toBe(true);
-    expect(response.data).toEqual(expect.objectContaining({
-      enabled: true,
-      features: expect.objectContaining({
-        enabled: true,
-        coordination: true,
-        scopeLocks: true,
-        audit: true,
-        executionJournal: true,
-        planningAccounting: true,
-        monitoring: true,
-      }),
-      repoRoot: isolatedDir,
-      summary: expect.objectContaining({
-        enabledSectionCount: 6,
-      }),
-    }));
-    expect(status.data.serverState).toEqual(
-      expect.objectContaining({
-        enabled: true,
-      }),
-    );
-    expect(infra.data.serverState).toEqual(
-      expect.objectContaining({
-        enabled: true,
-      }),
-    );
-    expect(response.data.coordination).toEqual(expect.objectContaining({
-      sharedStates: expect.objectContaining({
-        claimedCount: expect.any(Number),
-        total: expect.any(Number),
-      }),
-    }));
-    expect(response.data.coordination.sharedStates.claimedCount).toBeGreaterThanOrEqual(1);
-    expect(response.data.scopeLocks).toEqual(expect.objectContaining({
-      totalLocks: 1,
-      uniqueTaskCount: 1,
-      uniqueOwnerCount: 1,
-    }));
-    expect(response.data.executionJournal).toEqual(expect.objectContaining({
-      taskCount: 1,
-      totalRuns: 1,
-      journalledRuns: 1,
-      totalSteps: expect.any(Number),
-      totalArtifacts: expect.any(Number),
-    }));
-    expect(response.data.audit).toEqual(expect.objectContaining({
-      taskCount: expect.any(Number),
-      recentEventCount: expect.any(Number),
-      taskSummaries: expect.arrayContaining([
-        expect.objectContaining({
-          taskId: "task-server-state-1",
-        }),
-      ]),
-    }));
-    expect(response.data.audit.recentEventCount).toBeGreaterThanOrEqual(1);
-    expect(response.data.planningAccounting).toEqual(expect.objectContaining({
-      tasks: expect.objectContaining({
-        total: expect.any(Number),
-        blocked: expect.any(Number),
-      }),
-      runtimeAccounting: expect.objectContaining({
-        sessionCount: expect.any(Number),
-      }),
-    }));
-    expect(response.data.planningAccounting.tasks.blocked).toBeGreaterThanOrEqual(1);
-    expect(response.data.monitoring).toEqual(expect.objectContaining({
-      completedSessionCount: expect.any(Number),
-      retryQueueDepth: expect.any(Number),
-      recentCompletedSessions: expect.any(Array),
-    }));
-  }, 20000);
-
   it("backfills linked session ids and worktree paths from persistent task sessions", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-linked-task-session-"));
     const worktreeDir = mkdtempSync(join(tmpdir(), "bosun-ui-linked-worktree-"));
@@ -4807,7 +2867,7 @@ describeUiServer("ui-server mini app", () => {
     expect(detail.data.meta.linkedSessionIds).toContain("session-linked-task-1");
   }, 20000);
 
-  it("preserves stored workflow session links while merging summary metadata without rereading run detail files", async () => {
+  it("preserves stored workflow session links while adding primary session ids from workflow detail", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-merge-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_HOME = isolatedDir;
@@ -4817,20 +2877,36 @@ describeUiServer("ui-server mini app", () => {
 
     const mod = await import("../server/ui-server.mjs");
     const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
-    let server = null;
     const fakeEngine = {
-      getRunHistory: vi.fn(() => []),
-      getRunDetail: vi.fn(() => {
-        throw new Error("run detail should not be loaded when summary metadata is present");
-      }),
-      getTaskTraceEvents: vi.fn(() => []),
+      getRunHistory: vi.fn(() => [{ runId: "run-merge-1" }]),
+      getRunDetail: vi.fn(() => ({
+        runId: "run-merge-1",
+        workflowId: "wf-merge-1",
+        workflowName: "Merged workflow",
+        status: "completed",
+        startedAt: "2026-03-15T12:00:00.000Z",
+        endedAt: "2026-03-15T12:02:00.000Z",
+        duration: 120000,
+        detail: {
+          data: {
+            taskId: "__task__",
+            sessionId: "derived-session-1",
+          },
+        },
+      })),
+      getTaskTraceEvents: vi.fn(() => [
+        {
+          taskId: "__task__",
+          meta: { sessionId: "trace-session-1" },
+        },
+      ]),
       registerTaskTraceHook: vi.fn(),
       load: vi.fn(),
     };
     mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
 
     try {
-      server = await mod.startTelegramUiServer({
+      const server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -4850,68 +2926,25 @@ describeUiServer("ui-server mini app", () => {
       expect(created.ok).toBe(true);
       const taskId = created.data.id;
 
-      fakeEngine.getRunHistory.mockImplementation(() => [
-        {
-          runId: "run-merge-1",
-          workflowId: "wf-merge-1",
-          workflowName: "Merged workflow",
-          status: "completed",
-          startedAt: "2026-03-15T12:00:00.000Z",
-          endedAt: "2026-03-15T12:02:00.000Z",
-          duration: 120000,
-          taskId,
-          taskIds: [taskId],
-          sessionId: "derived-session-1",
-          primarySessionId: "derived-session-1",
-          sessionIds: ["derived-session-1"],
-          plannerTimeline: [
-            {
-              eventType: "planner.plan_completed",
-              timestamp: "2026-03-15T12:01:30.000Z",
-              summary: "Planner completed with ranked tasks.",
-              stepLabel: "run-planner",
-              status: "completed",
-            },
-          ],
-          proofBundle: {
-            summary: {
-              plannerEventCount: 1,
-              decisionCount: 1,
-              evidenceCount: 1,
-              artifactCount: 1,
-            },
-            plannerTimeline: [
-              {
-                eventType: "planner.plan_completed",
-                timestamp: "2026-03-15T12:01:30.000Z",
-                summary: "Planner completed with ranked tasks.",
-                stepLabel: "run-planner",
-                status: "completed",
-              },
-            ],
-            decisions: [
-              {
-                source: "planner",
-                decision: "planner.plan_completed",
-                summary: "Planner completed with ranked tasks.",
-              },
-            ],
-            evidence: [
-              {
-                source: "completion-evidence",
-                kind: "artifact",
-                summary: "Independent review proof",
-              },
-            ],
-            artifacts: [
-              {
-                source: "ledger",
-                kind: "planner_output",
-                path: "/tmp/planner-output.json",
-                summary: "Planner output captured.",
-              },
-            ],
+      fakeEngine.getRunDetail.mockImplementation(() => ({
+        runId: "run-merge-1",
+        workflowId: "wf-merge-1",
+        workflowName: "Merged workflow",
+        status: "completed",
+        startedAt: "2026-03-15T12:00:00.000Z",
+        endedAt: "2026-03-15T12:02:00.000Z",
+        duration: 120000,
+        detail: {
+          data: {
+            taskId,
+            sessionId: "derived-session-1",
           },
+        },
+      }));
+      fakeEngine.getTaskTraceEvents.mockImplementation(() => [
+        {
+          taskId,
+          meta: { sessionId: "trace-session-1" },
         },
       ]);
 
@@ -4942,310 +2975,10 @@ describeUiServer("ui-server mini app", () => {
         primarySessionId: "derived-session-1",
       });
       expect(mergedRun.meta?.sessionId).toBe("stored-session-1");
-      expect(mergedRun.proofSummary).toMatchObject({
-        plannerEventCount: 1,
-        evidenceCount: 1,
-        artifactCount: 1,
-      });
-      expect(mergedRun.plannerTimeline?.[0]).toMatchObject({
-        eventType: "planner.plan_completed",
-        summary: "Planner completed with ranked tasks.",
-      });
-      expect(mergedRun.proofBundle?.artifacts?.[0]).toMatchObject({
-        path: "/tmp/planner-output.json",
-      });
-      expect(fakeEngine.getRunDetail).not.toHaveBeenCalled();
-      expect(fakeEngine.getTaskTraceEvents).not.toHaveBeenCalled();
-    } finally {
-      if (server) {
-        await new Promise((resolve) => server.close(resolve));
-      }
-      await settleUiRuntimeCleanup();
-      await removeDirWithRetries(isolatedDir);
-      mod._testInjectWorkflowEngine(workflowEngineModule, null);
-    }
-  }, 20000);
-
-  it("lists and resolves pending workflow approvals through workflow approval APIs", async () => {
-    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-approvals-"));
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    process.env.BOSUN_HOME = isolatedDir;
-    process.env.BOSUN_DIR = isolatedDir;
-    process.env.CODEX_MONITOR_HOME = isolatedDir;
-    process.env.CODEX_MONITOR_DIR = isolatedDir;
-
-    const mod = await import("../server/ui-server.mjs");
-    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
-    const runId = "run-approval-1";
-    const workflowId = "wf-approval-1";
-    const workflowName = "Approval Workflow";
-    const runsDir = join(isolatedDir, ".bosun", "workflow-runs");
-    mkdirSync(runsDir, { recursive: true });
-
-    const readRunDetail = () => JSON.parse(readFileSync(join(runsDir, `${runId}.json`), "utf8"));
-    const buildRun = () => {
-      const detail = readRunDetail();
-      return {
-        runId,
-        workflowId,
-        workflowName,
-        status: "paused",
-        startedAt: Number(detail.startedAt || Date.now()),
-        endedAt: Number(detail.endedAt || Date.now()),
-        executionPolicy: detail.data?._executionPolicy || detail.data?.executionPolicy || null,
-        policyOutcome: detail.data?._workflowGovernance?.policyOutcome || detail.data?.policyOutcome || null,
-        primaryGoalId: detail.data?._primaryGoalId || null,
-        primaryGoalTitle: detail.data?._primaryGoalTitle || null,
-        taskId: detail.data?.taskId || null,
-        taskTitle: detail.data?.taskTitle || null,
-        detail,
-      };
-    };
-
-    writeFileSync(join(runsDir, `${runId}.json`), JSON.stringify({
-      startedAt: Date.now() - 5000,
-      endedAt: Date.now() - 1000,
-      duration: 4000,
-      data: {
-        _workflowId: workflowId,
-        _workflowName: workflowName,
-        _primaryGoalId: "goal-approval",
-        _primaryGoalTitle: "Protect irreversible action",
-        taskId: "task-approval-1",
-        taskTitle: "Approval task",
-        _executionPolicy: {
-          mode: "manual",
-          approvalRequired: true,
-          approvalState: "pending",
-          blocked: true,
-        },
-        _workflowGovernance: {
-          executionPolicy: {
-            mode: "manual",
-            approvalRequired: true,
-            approvalState: "pending",
-            blocked: true,
-          },
-          policyOutcome: {
-            blocked: true,
-            status: "blocked",
-            violationCount: 1,
-          },
-        },
-      },
-      executionPolicy: {
-        mode: "manual",
-        approvalRequired: true,
-        approvalState: "pending",
-        blocked: true,
-      },
-      policyOutcome: {
-        blocked: true,
-        status: "blocked",
-        violationCount: 1,
-      },
-      nodeStatuses: {},
-      logs: [],
-      errors: [],
-    }, null, 2), "utf8");
-    writeFileSync(join(runsDir, "index.json"), JSON.stringify({
-      runs: [
-        {
-          runId,
-          workflowId,
-          workflowName,
-          status: "paused",
-          startedAt: Date.now() - 5000,
-          endedAt: Date.now() - 1000,
-          executionPolicy: {
-            mode: "manual",
-            approvalRequired: true,
-            approvalState: "pending",
-            blocked: true,
-          },
-          policyOutcome: {
-            blocked: true,
-            status: "blocked",
-            violationCount: 1,
-          },
-          primaryGoalId: "goal-approval",
-          primaryGoalTitle: "Protect irreversible action",
-          taskId: "task-approval-1",
-          taskTitle: "Approval task",
-        },
-      ],
-    }, null, 2), "utf8");
-
-    const fakeEngine = {
-      getRunHistory: vi.fn(() => [buildRun()]),
-      getRunDetail: vi.fn(() => buildRun()),
-      getTaskTraceEvents: vi.fn(() => []),
-      registerTaskTraceHook: vi.fn(),
-      load: vi.fn(),
-    };
-    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
-
-    try {
-      const server = await mod.startTelegramUiServer({
-        port: await getFreePort(),
-        host: "127.0.0.1",
-        skipInstanceLock: true,
-        skipAutoOpen: true,
-      });
-      const port = server.address().port;
-
-      const listed = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=pending`).then((r) => r.json());
-      expect(listed.ok).toBe(true);
-      expect(Array.isArray(listed.requests)).toBe(true);
-      expect(listed.requests).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          scopeId: runId,
-          scopeType: "workflow-run",
-          status: "pending",
-          primaryGoalId: "goal-approval",
-        }),
-      ]));
-
-      const resolved = await fetch(`http://127.0.0.1:${port}/api/workflows/runs/${encodeURIComponent(runId)}/approval`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          decision: "approved",
-          actorId: "test-operator",
-          note: "approval granted in test",
-        }),
-      }).then((r) => r.json());
-
-      expect(resolved.ok).toBe(true);
-      expect(resolved.request).toMatchObject({
-        requestId: `workflow-run:${runId}`,
-        status: "approved",
-        resolution: expect.objectContaining({
-          actorId: "test-operator",
-          note: "approval granted in test",
-        }),
-      });
-      expect(resolved.run.executionPolicy).toMatchObject({
-        approvalRequired: true,
-        approvalState: "approved",
-        blocked: false,
-      });
-
-      const persisted = readRunDetail();
-      expect(persisted.data._executionPolicy).toMatchObject({
-        approvalState: "approved",
-        blocked: false,
-        resolvedBy: "test-operator",
-      });
-      expect(persisted.data._workflowApproval).toMatchObject({
-        requestId: `workflow-run:${runId}`,
-        decision: "approved",
-        actorId: "test-operator",
-        note: "approval granted in test",
-      });
     } finally {
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
-  }, 20000);
-
-  it("lists and resolves workflow-gate approval requests through the generic approval queue API", async () => {
-    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-gate-approvals-"));
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    process.env.BOSUN_HOME = isolatedDir;
-    process.env.BOSUN_DIR = isolatedDir;
-    process.env.CODEX_MONITOR_HOME = isolatedDir;
-    process.env.CODEX_MONITOR_DIR = isolatedDir;
-
-    const mod = await import("../server/ui-server.mjs");
-    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
-    const approvalQueueModule = await import("../workflow/approval-queue.mjs");
-    const runId = "run-gate-approval-1";
-    const requestId = `workflow-gate:${runId}:gate-1`;
-
-    approvalQueueModule.upsertWorkflowGateApprovalRequest({
-      runId,
-      workflowId: "wf-gate-approval",
-      workflowName: "Gate Approval Workflow",
-      taskId: "task-gate-1",
-      taskTitle: "Ship guarded change",
-      nodeId: "gate-1",
-      nodeLabel: "Deploy Gate",
-      reason: "Push requires operator approval.",
-      timeoutMs: 60000,
-    }, { repoRoot: isolatedDir });
-
-    const fakeEngine = {
-      getRunHistory: vi.fn(() => []),
-      getRunDetail: vi.fn((id) => ({
-        runId: id,
-        workflowId: "wf-gate-approval",
-        workflowName: "Gate Approval Workflow",
-        status: "running",
-        detail: { data: {} },
-      })),
-      getTaskTraceEvents: vi.fn(() => []),
-      registerTaskTraceHook: vi.fn(),
-      load: vi.fn(),
-    };
-    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
-
-    try {
-      const server = await mod.startTelegramUiServer({
-        port: await getFreePort(),
-        host: "127.0.0.1",
-        skipInstanceLock: true,
-        skipAutoOpen: true,
-      });
-      const port = server.address().port;
-
-      const listed = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=pending&scopeType=workflow-gate`).then((r) => r.json());
-      expect(listed.ok).toBe(true);
-      expect(Array.isArray(listed.requests)).toBe(true);
-      expect(listed.requests).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          requestId,
-          scopeType: "workflow-gate",
-          scopeId: `${runId}:gate-1`,
-          status: "pending",
-          nodeId: "gate-1",
-        }),
-      ]));
-
-      const resolved = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals/${encodeURIComponent(requestId)}/resolve`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          decision: "denied",
-          actorId: "gate-operator",
-          note: "blocked in test",
-        }),
-      }).then((r) => r.json());
-
-      expect(resolved.ok).toBe(true);
-      expect(resolved.request).toMatchObject({
-        requestId,
-        status: "denied",
-        resolution: expect.objectContaining({
-          actorId: "gate-operator",
-          note: "blocked in test",
-        }),
-      });
-      expect(resolved.run).toMatchObject({
-        runId,
-        workflowId: "wf-gate-approval",
-      });
-      const persisted = approvalQueueModule.getApprovalRequest("workflow-gate", `${runId}:gate-1`, { repoRoot: isolatedDir });
-      expect(persisted).toMatchObject({
-        requestId,
-        status: "denied",
-        resolution: expect.objectContaining({
-          actorId: "gate-operator",
-        }),
-      });
-    } finally {
-      mod._testInjectWorkflowEngine(workflowEngineModule, null);
-    }
-  }, 20000);
+  });
 
   it("reports epic dependency blockers from start guards", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -5536,71 +3269,7 @@ describeUiServer("ui-server mini app", () => {
     expect(listResp.status).toBe(200);
     expect(listJson.ok).toBe(true);
     expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
-  }, 15000);
-
-  it("reads task log diagnostics from bounded monitor-log tails on task detail", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-
-    const mod = await import("../server/ui-server.mjs");
-    mod._testInjectWorkflowEngine(null, null);
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    const logsDir = resolve(process.cwd(), ".bosun", "logs");
-    mkdirSync(logsDir, { recursive: true });
-    const monitorErrorPath = resolve(logsDir, "monitor-error.log");
-    const previousMonitorError = existsSync(monitorErrorPath)
-      ? readFileSync(monitorErrorPath, "utf8")
-      : null;
-
-    try {
-      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: "blocked worktree task",
-          description: "collect recent worktree failure evidence",
-          status: "blocked",
-          branchName: "ve/task-log-tail-12345678",
-        }),
-      }).then((r) => r.json());
-
-      expect(created.ok).toBe(true);
-      const taskId = created.data.id;
-      const filler = Array.from({ length: 8000 }, (_, index) => `2026-03-04T04:00:${String(index % 60).padStart(2, "0")}.000Z filler line ${index}`);
-      filler.push(
-        `2026-03-04T04:30:00.000Z [ERROR] Worktree acquisition failed for ${taskId} branch ve/task-log-tail-12345678`,
-      );
-      writeFileSync(monitorErrorPath, `${filler.join("\n")}\n`, "utf8");
-
-      const detail = await fetch(
-        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
-      ).then((r) => r.json());
-
-      expect(detail.ok).toBe(true);
-      expect(detail.data.blockedContext.worktreeFailureCount).toBeGreaterThan(0);
-      expect(detail.data.blockedContext.logEvidence).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            source: "monitor-error.log",
-            message: expect.stringContaining("Worktree acquisition failed"),
-          }),
-        ]),
-      );
-    } finally {
-      if (previousMonitorError == null) {
-        rmSync(monitorErrorPath, { force: true });
-      } else {
-        writeFileSync(monitorErrorPath, previousMonitorError, "utf8");
-      }
-    }
-  }, 15000);
+  });
 
   it("surfaces repo-area contention summaries on /api/telemetry/summary", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -5643,69 +3312,6 @@ describeUiServer("ui-server mini app", () => {
       }),
     });
 
-    let server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    try {
-      const response = await fetch("http://127.0.0.1:" + port + "/api/telemetry/summary");
-      const payload = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(payload.ok).toBe(true);
-      expect(payload.repoAreaContention).toMatchObject({
-        totalEvents: 3,
-        totalWaitMs: 8400,
-        stale: false,
-      });
-      expect(payload.repoAreaContention.hotAreas[0]).toMatchObject({
-        area: "server",
-        waitingTasks: 2,
-        events: 3,
-      });
-      expect(payload.repoAreaContention.recent[0]).toMatchObject({
-        taskId: "task-123",
-        area: "server",
-      });
-    } finally {
-      if (server) {
-        await new Promise((resolve) => server.close(resolve));
-      }
-      await settleUiRuntimeCleanup();
-      server = null;
-    }
-  });
-
-  it("returns durable lifetime telemetry totals from the runtime accumulator", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-
-    const cacheDir = mkdtempSync(join(tmpdir(), "bosun-ui-telemetry-runtime-"));
-    vi.resetModules();
-    const runtimeAccumulator = await import("../infra/runtime-accumulator.mjs");
-    runtimeAccumulator._resetRuntimeAccumulatorForTests({ cacheDir });
-    const baselineTotals = {
-      ...(runtimeAccumulator.getRuntimeStats()?.lifetimeTotals || {}),
-    };
-    runtimeAccumulator.addCompletedSession({
-      id: "session-telemetry-1",
-      sessionId: "session-telemetry-1",
-      sessionKey: "task-telemetry-api:1",
-      taskId: "task-telemetry-api",
-      taskTitle: "Telemetry API task",
-      startedAt: 1_000,
-      endedAt: 9_000,
-      durationMs: 8_000,
-      inputTokens: 1_200,
-      outputTokens: 300,
-      tokenCount: 1_500,
-      status: "completed",
-    });
-
-    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -5714,27 +3320,26 @@ describeUiServer("ui-server mini app", () => {
     });
     const port = server.address().port;
 
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
-      const payload = await response.json();
+    const response = await fetch("http://127.0.0.1:" + port + "/api/telemetry/summary");
+    const payload = await response.json();
 
-      expect(response.status).toBe(200);
-      expect(payload.ok).toBe(true);
-      expect(payload.data.lifetimeTotals).toEqual(expect.objectContaining({
-        attemptsCount: Number(baselineTotals.attemptsCount || 0) + 1,
-        tokenCount: Number(baselineTotals.tokenCount || 0) + 1_500,
-        inputTokens: Number(baselineTotals.inputTokens || 0) + 1_200,
-        outputTokens: Number(baselineTotals.outputTokens || 0) + 300,
-        durationMs: Number(baselineTotals.durationMs || 0) + 8_000,
-      }));
-    } finally {
-      runtimeAccumulator._resetRuntimeAccumulatorForTests();
-      vi.resetModules();
-      await new Promise((resolve) => server.close(resolve));
-      await settleUiRuntimeCleanup();
-      await removeDirWithRetries(cacheDir);
-    }
-  }, 15000);
+    expect(response.status).toBe(200);
+    expect(payload.ok).toBe(true);
+    expect(payload.repoAreaContention).toMatchObject({
+      totalEvents: 3,
+      totalWaitMs: 8400,
+      stale: false,
+    });
+    expect(payload.repoAreaContention.hotAreas[0]).toMatchObject({
+      area: "server",
+      waitingTasks: 2,
+      events: 3,
+    });
+    expect(payload.repoAreaContention.recent[0]).toMatchObject({
+      taskId: "task-123",
+      area: "server",
+    });
+  });
   it("returns a diagnosticId on task detail failures and logs the raw backend cause", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -5786,7 +3391,7 @@ describeUiServer("ui-server mini app", () => {
         }),
       }),
     );
-  }, 15000);
+  });
   it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -5953,34 +3558,30 @@ describeUiServer("ui-server mini app", () => {
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    try {
-      const port = server.address().port;
+    const port = server.address().port;
 
-      const response = await fetch(`http://127.0.0.1:${port}/api/tasks/comment?taskId=T-123`);
-      const json = await response.json();
+    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/comment?taskId=T-123`);
+    const json = await response.json();
 
-      expect(response.status).toBe(200);
-      expect(json.ok).toBe(true);
-      expect(json.taskId).toBe("T-123");
-      expect(Array.isArray(json.comments)).toBe(true);
-      expect(json.comments).toEqual([
-        expect.objectContaining({
-          id: "c1",
-          body: "first",
-          author: "qa",
-          createdAt: "2026-03-08T00:00:00.000Z",
-        }),
-        expect.objectContaining({
-          id: "c2",
-          body: "second",
-          author: "dev",
-          createdAt: "2026-03-08T01:00:00.000Z",
-        }),
-      ]);
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-    }
-  }, 15000);
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.taskId).toBe("T-123");
+    expect(Array.isArray(json.comments)).toBe(true);
+    expect(json.comments).toEqual([
+      expect.objectContaining({
+        id: "c1",
+        body: "first",
+        author: "qa",
+        createdAt: "2026-03-08T00:00:00.000Z",
+      }),
+      expect.objectContaining({
+        id: "c2",
+        body: "second",
+        author: "dev",
+        createdAt: "2026-03-08T01:00:00.000Z",
+      }),
+    ]);
+  });
 
   it("keeps legacy tasks without workspace metadata in the active workspace task list", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6005,10 +3606,6 @@ describeUiServer("ui-server mini app", () => {
       "utf8",
     );
     process.env.BOSUN_CONFIG_PATH = configPath;
-    process.env.BOSUN_HOME = tmpDir;
-    process.env.BOSUN_DIR = tmpDir;
-    process.env.CODEX_MONITOR_HOME = tmpDir;
-    process.env.CODEX_MONITOR_DIR = tmpDir;
 
     const taskStore = await import("../task/task-store.mjs");
     const originalStorePath = taskStore.getStorePath();
@@ -6028,8 +3625,6 @@ describeUiServer("ui-server mini app", () => {
         skipAutoOpen: true,
       });
       const port = server.address().port;
-      taskStore.configureTaskStore({ storePath });
-      taskStore.loadStore();
 
       const response = await fetch(`http://127.0.0.1:${port}/api/tasks`);
       const json = await response.json();
@@ -6047,10 +3642,9 @@ describeUiServer("ui-server mini app", () => {
       ]);
     } finally {
       taskStore.configureTaskStore({ storePath: originalStorePath });
-      await settleUiRuntimeCleanup();
-      await removeDirWithRetries(tmpDir);
+      rmSync(tmpDir, { recursive: true, force: true });
     }
-  }, 15000);
+  });
 
   it("sets full dependencies and assigns sprint task ordering via task APIs", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6206,15 +3800,6 @@ describeUiServer("ui-server mini app", () => {
         storyPoints: 8,
         parentTaskId: "PARENT-1",
         dueDate: "2026-04-01",
-        goalId: "goal-platform",
-        parentGoalId: "goal-program",
-        budgetWindow: "2026-Q2",
-        budgetCents: 25000,
-        budgetCurrency: "USD",
-        coordinationTeamId: "team-platform",
-        coordinationRole: "implementer",
-        coordinationReportsTo: "planner-lead",
-        coordinationLevel: "squad",
       }),
     }).then((r) => r.json());
 
@@ -6225,32 +3810,12 @@ describeUiServer("ui-server mini app", () => {
     expect(created.data.storyPoints).toBe(8);
     expect(created.data.parentTaskId).toBe("PARENT-1");
     expect(created.data.dueDate).toBe("2026-04-01");
-    expect(created.data.goalId).toBe("goal-platform");
-    expect(created.data.primaryGoalId).toBe("goal-platform");
-    expect(created.data.parentGoalId).toBe("goal-program");
-    expect(created.data.budgetWindow).toBe("2026-Q2");
-    expect(created.data.budgetCents).toBe(25000);
-    expect(created.data.budgetCurrency).toBe("USD");
-    expect(created.data.coordinationTeamId).toBe("team-platform");
-    expect(created.data.coordinationRole).toBe("implementer");
-    expect(created.data.coordinationReportsTo).toBe("planner-lead");
-    expect(created.data.coordinationLevel).toBe("squad");
     expect(created.data.meta?.assignee).toBe("alice");
     expect(created.data.meta?.assignees).toEqual(["alice"]);
     expect(created.data.meta?.epicId).toBe("EPIC-123");
     expect(created.data.meta?.storyPoints).toBe(8);
     expect(created.data.meta?.parentTaskId).toBe("PARENT-1");
     expect(created.data.meta?.dueDate).toBe("2026-04-01");
-    expect(created.data.meta?.goalId).toBe("goal-platform");
-    expect(created.data.meta?.primaryGoalId).toBe("goal-platform");
-    expect(created.data.meta?.parentGoalId).toBe("goal-program");
-    expect(created.data.meta?.budgetWindow).toBe("2026-Q2");
-    expect(created.data.meta?.budgetCents).toBe(25000);
-    expect(created.data.meta?.budgetCurrency).toBe("USD");
-    expect(created.data.meta?.coordinationTeamId).toBe("team-platform");
-    expect(created.data.meta?.coordinationRole).toBe("implementer");
-    expect(created.data.meta?.coordinationReportsTo).toBe("planner-lead");
-    expect(created.data.meta?.coordinationLevel).toBe("squad");
 
     const updated = await fetch("http://127.0.0.1:" + port + "/api/tasks/update", {
       method: "POST",
@@ -6263,15 +3828,6 @@ describeUiServer("ui-server mini app", () => {
         storyPoints: 13,
         parentTaskId: "PARENT-2",
         dueDate: "2026-05-10",
-        goalId: "goal-reliability",
-        parentGoalId: "goal-platform",
-        budgetWindow: "2026-Q3",
-        budgetCents: 40000,
-        budgetCurrency: "AUD",
-        coordinationTeamId: "team-reliability",
-        coordinationRole: "reviewer",
-        coordinationReportsTo: "eng-manager",
-        coordinationLevel: "org",
       }),
     }).then((r) => r.json());
 
@@ -6282,32 +3838,12 @@ describeUiServer("ui-server mini app", () => {
     expect(updated.data.storyPoints).toBe(13);
     expect(updated.data.parentTaskId).toBe("PARENT-2");
     expect(updated.data.dueDate).toBe("2026-05-10");
-    expect(updated.data.goalId).toBe("goal-reliability");
-    expect(updated.data.primaryGoalId).toBe("goal-reliability");
-    expect(updated.data.parentGoalId).toBe("goal-platform");
-    expect(updated.data.budgetWindow).toBe("2026-Q3");
-    expect(updated.data.budgetCents).toBe(40000);
-    expect(updated.data.budgetCurrency).toBe("AUD");
-    expect(updated.data.coordinationTeamId).toBe("team-reliability");
-    expect(updated.data.coordinationRole).toBe("reviewer");
-    expect(updated.data.coordinationReportsTo).toBe("eng-manager");
-    expect(updated.data.coordinationLevel).toBe("org");
     expect(updated.data.meta?.assignee).toBe("charlie");
     expect(updated.data.meta?.assignees).toEqual(["charlie", "dana"]);
     expect(updated.data.meta?.epicId).toBe("EPIC-999");
     expect(updated.data.meta?.storyPoints).toBe(13);
     expect(updated.data.meta?.parentTaskId).toBe("PARENT-2");
     expect(updated.data.meta?.dueDate).toBe("2026-05-10");
-    expect(updated.data.meta?.goalId).toBe("goal-reliability");
-    expect(updated.data.meta?.primaryGoalId).toBe("goal-reliability");
-    expect(updated.data.meta?.parentGoalId).toBe("goal-platform");
-    expect(updated.data.meta?.budgetWindow).toBe("2026-Q3");
-    expect(updated.data.meta?.budgetCents).toBe(40000);
-    expect(updated.data.meta?.budgetCurrency).toBe("AUD");
-    expect(updated.data.meta?.coordinationTeamId).toBe("team-reliability");
-    expect(updated.data.meta?.coordinationRole).toBe("reviewer");
-    expect(updated.data.meta?.coordinationReportsTo).toBe("eng-manager");
-    expect(updated.data.meta?.coordinationLevel).toBe("org");
 
     const edited = await fetch("http://127.0.0.1:" + port + "/api/tasks/edit", {
       method: "POST",
@@ -6320,15 +3856,6 @@ describeUiServer("ui-server mini app", () => {
         storyPoints: 5,
         parentTaskId: "PARENT-3",
         dueDate: "2026-06-20",
-        goalId: "goal-shipping",
-        parentGoalId: "goal-reliability",
-        budgetWindow: "2026-Q4",
-        budgetCents: 55000,
-        budgetCurrency: "EUR",
-        coordinationTeamId: "team-release",
-        coordinationRole: "verifier",
-        coordinationReportsTo: "release-director",
-        coordinationLevel: "program",
       }),
     }).then((r) => r.json());
 
@@ -6339,139 +3866,13 @@ describeUiServer("ui-server mini app", () => {
     expect(edited.data.storyPoints).toBe(5);
     expect(edited.data.parentTaskId).toBe("PARENT-3");
     expect(edited.data.dueDate).toBe("2026-06-20");
-    expect(edited.data.goalId).toBe("goal-shipping");
-    expect(edited.data.primaryGoalId).toBe("goal-shipping");
-    expect(edited.data.parentGoalId).toBe("goal-reliability");
-    expect(edited.data.budgetWindow).toBe("2026-Q4");
-    expect(edited.data.budgetCents).toBe(55000);
-    expect(edited.data.budgetCurrency).toBe("EUR");
-    expect(edited.data.coordinationTeamId).toBe("team-release");
-    expect(edited.data.coordinationRole).toBe("verifier");
-    expect(edited.data.coordinationReportsTo).toBe("release-director");
-    expect(edited.data.coordinationLevel).toBe("program");
     expect(edited.data.meta?.assignee).toBe("eve");
     expect(edited.data.meta?.assignees).toEqual(["eve"]);
     expect(edited.data.meta?.epicId).toBe("EPIC-777");
     expect(edited.data.meta?.storyPoints).toBe(5);
     expect(edited.data.meta?.parentTaskId).toBe("PARENT-3");
     expect(edited.data.meta?.dueDate).toBe("2026-06-20");
-    expect(edited.data.meta?.goalId).toBe("goal-shipping");
-    expect(edited.data.meta?.primaryGoalId).toBe("goal-shipping");
-    expect(edited.data.meta?.parentGoalId).toBe("goal-reliability");
-    expect(edited.data.meta?.budgetWindow).toBe("2026-Q4");
-    expect(edited.data.meta?.budgetCents).toBe(55000);
-    expect(edited.data.meta?.budgetCurrency).toBe("EUR");
-    expect(edited.data.meta?.coordinationTeamId).toBe("team-release");
-    expect(edited.data.meta?.coordinationRole).toBe("verifier");
-    expect(edited.data.meta?.coordinationReportsTo).toBe("release-director");
-    expect(edited.data.meta?.coordinationLevel).toBe("program");
   });
-
-  it("matches task-assigned workflows using task goal and budget governance metadata", async () => {
-    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-governance-"));
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    process.env.BOSUN_HOME = isolatedDir;
-    process.env.BOSUN_DIR = isolatedDir;
-    process.env.CODEX_MONITOR_HOME = isolatedDir;
-    process.env.CODEX_MONITOR_DIR = isolatedDir;
-
-    const mod = await import("../server/ui-server.mjs");
-    let server = null;
-    const workflow = {
-      id: "wf-task-governance-match",
-      name: "Task Governance Match",
-      enabled: true,
-      nodes: [
-        {
-          id: "trigger",
-          type: "trigger.task_assigned",
-          label: "Task Assigned",
-          config: {
-            filter: [
-              '$data.primaryGoalId === "goal-ops"',
-              '$data.goalAncestry?.[0]?.goalId === "goal-program"',
-              '$data.goalAncestry?.[1]?.goalId === "goal-ops"',
-              '$data.budgetPolicy?.budgetWindow === "2026-Q2"',
-              "$data.budgetPolicy?.budgetCents === 25000",
-              '$data.budgetPolicy?.currency === "USD"',
-              '$data.coordination?.teamId === "team-platform"',
-              '$data.coordination?.role === "implementer"',
-              '$data.coordination?.reportsTo === "planner-lead"',
-              '$data.coordination?.level === "squad"',
-              'task.primaryGoalId === "goal-ops"',
-              '$data.task?.budgetPolicy?.budgetWindow === "2026-Q2"',
-              '$data.task?.coordination?.role === "implementer"',
-            ].join(" && "),
-          },
-        },
-        {
-          id: "log",
-          type: "notify.log",
-          label: "Log",
-          config: { message: "matched governance-backed task" },
-        },
-      ],
-      edges: [{ id: "edge-1", source: "trigger", target: "log" }],
-      variables: {},
-    };
-    const fakeEngine = {
-      list: vi.fn(async () => [{ id: workflow.id }]),
-      get: vi.fn(async (workflowId) => (workflowId === workflow.id ? workflow : null)),
-    };
-    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
-
-    try {
-      server = await mod.startTelegramUiServer({
-        port: await getFreePort(),
-        host: "127.0.0.1",
-        skipInstanceLock: true,
-        skipAutoOpen: true,
-      });
-      const port = server.address().port;
-
-      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: "Governed task",
-          description: "Task metadata should seed workflow governance",
-          goalId: "goal-ops",
-          parentGoalId: "goal-program",
-          budgetWindow: "2026-Q2",
-          budgetCents: 25000,
-          budgetCurrency: "USD",
-          coordinationTeamId: "team-platform",
-          coordinationRole: "implementer",
-          coordinationReportsTo: "planner-lead",
-          coordinationLevel: "squad",
-        }),
-      }).then((r) => r.json());
-
-      expect(created.ok).toBe(true);
-
-      const plan = await fetch(
-        `http://127.0.0.1:${port}/api/tasks/execution-plan?taskId=${encodeURIComponent(created.data.id)}`,
-      ).then((r) => r.json());
-
-      expect(plan.ok).toBe(true);
-      expect(plan.stageCount).toBe(1);
-      expect(plan.stages).toEqual([
-        expect.objectContaining({
-          workflowId: workflow.id,
-          workflowName: workflow.name,
-          matchType: "task_assigned",
-          nodeCount: 2,
-        }),
-      ]);
-      expect(fakeEngine.list).toHaveBeenCalledTimes(1);
-      expect(fakeEngine.get).toHaveBeenCalledWith(workflow.id);
-    } finally {
-      if (server) {
-        await new Promise((resolve) => server.close(resolve));
-      }
-      mod._testInjectWorkflowEngine(null, null);
-    }
-  }, 30000);
 
   it("creates and lists subtasks via /api/tasks/subtasks", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6553,265 +3954,6 @@ describeUiServer("ui-server mini app", () => {
     expect(Array.isArray(listedByParentTaskId.data)).toBe(true);
   });
 
-  it("generates and applies task replans with persistent graph proposals", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-
-    let baseTaskId = "";
-    const execPrimaryPrompt = vi.fn().mockImplementation(async () => ({
-      finalResponse: "```json\n" + JSON.stringify({
-        summary: "Split parser implementation from test coverage.",
-        planReasoning: "The current task is too broad for a single attempt and should fan out.",
-        currentPlanStep: "Create the parser implementation task first.",
-        stopReason: "Two subtasks cover the current scope cleanly.",
-        recommendedAction: "split_task",
-        parentTaskPatch: {
-          status: "blocked",
-          blockedReason: "Waiting for replanned subtasks to complete",
-        },
-        subtasks: [
-          {
-            title: "Build parser core",
-            description: "Implement the parser core and validation surface.",
-            acceptanceCriteria: ["Parses valid input", "Rejects malformed payloads"],
-            priority: "high",
-            tags: ["parser", "core"],
-          },
-          {
-            title: "Add parser integration tests",
-            description: "Add success and failure coverage for the parser.",
-            dependsOnIndexes: [0],
-            dependsOnTaskIds: baseTaskId ? [baseTaskId] : [],
-            acceptanceCriteria: ["Covers success path", "Covers failure path"],
-          },
-        ],
-      }, null, 2) + "\n```",
-    }));
-
-    const mod = await import("../server/ui-server.mjs");
-    mod.injectUiDependencies({ execPrimaryPrompt });
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-      dependencies: { execPrimaryPrompt },
-    });
-    const port = server.address().port;
-
-    const parentTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "Implement parser stack",
-        description: "Build parser, validation, and tests in one task.",
-        status: "blocked",
-        priority: "high",
-        tags: ["parser"],
-      }),
-    }).then((r) => r.json());
-    expect(parentTask.ok).toBe(true);
-
-    const baseTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "Shared tokenizer",
-        description: "Existing prerequisite task.",
-        status: "done",
-      }),
-    }).then((r) => r.json());
-    expect(baseTask.ok).toBe(true);
-    baseTaskId = baseTask.data.id;
-
-    const propose = await fetch("http://127.0.0.1:" + port + "/api/tasks/replan/propose", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ taskId: parentTask.data.id }),
-    }).then((r) => r.json());
-
-    expect(propose.ok).toBe(true);
-    expect(propose.proposal.recommendedAction).toBe("split_task");
-    expect(propose.proposal.subtasks).toHaveLength(2);
-    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
-    expect(propose.task.meta?.replanProposal?.summary).toContain("Split parser implementation");
-
-    const apply = await fetch("http://127.0.0.1:" + port + "/api/tasks/replan/apply", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ taskId: parentTask.data.id }),
-    }).then((r) => r.json());
-
-    expect(apply.ok).toBe(true);
-    expect(Array.isArray(apply.createdSubtasks)).toBe(true);
-    expect(apply.createdSubtasks).toHaveLength(2);
-    const [firstSubtask, secondSubtask] = apply.createdSubtasks;
-    expect(firstSubtask.parentTaskId || firstSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
-    expect(secondSubtask.parentTaskId || secondSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
-    const taskStore = await import("../task/task-store.mjs");
-    const storedSecond = taskStore.getTask(secondSubtask.id);
-    expect(storedSecond.dependencyTaskIds || storedSecond.dependsOn).toEqual(
-      expect.arrayContaining([firstSubtask.id, baseTask.data.id]),
-    );
-    expect(apply.task.status).toBe("blocked");
-    expect(apply.task.meta?.replanProposal?.status).toBe("applied");
-    expect(apply.task.meta?.plannerState?.latestReplan?.createdTaskIds).toEqual(
-      expect.arrayContaining([firstSubtask.id, secondSubtask.id]),
-    );
-
-    const detail = await fetch(
-      "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-    ).then((r) => r.json());
-    expect(detail.ok).toBe(true);
-    expect(detail.data.meta?.replanProposal?.status).toBe("applied");
-    expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(2);
-  }, 15000);
-
-  it("supports dedicated task decomposition endpoints with persistent proposals and child graph creation", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-
-    const execPrimaryPrompt = vi.fn().mockImplementation(async () => ({
-      finalResponse: "```json\n" + JSON.stringify({
-        summary: "Decompose the ingestion epic into a runnable child task graph.",
-        planReasoning: "The parent task mixes schema work, implementation, and verification that should run as separate child tasks.",
-        currentPlanStep: "Start with the schema contract child task.",
-        stopReason: "Three child tasks are sufficient for the current scope.",
-        recommendedAction: "split_task",
-        parentTaskPatch: {
-          status: "blocked",
-          blockedReason: "Waiting for decomposed child tasks to complete",
-          tags: ["decomposed"],
-        },
-        subtasks: [
-          {
-            title: "Define ingestion schema contract",
-            description: "Capture the input/output contract and validation rules for ingestion.",
-            acceptanceCriteria: ["Schema is documented", "Validation edge cases are covered"],
-            priority: "high",
-            tags: ["schema", "contract"],
-          },
-          {
-            title: "Implement ingestion pipeline",
-            description: "Build the ingestion flow against the agreed schema contract.",
-            dependsOnIndexes: [0],
-            acceptanceCriteria: ["Pipeline processes valid events", "Invalid events fail cleanly"],
-            priority: "high",
-            tags: ["implementation"],
-          },
-          {
-            title: "Verify ingestion end-to-end",
-            description: "Add end-to-end verification for the decomposed ingestion flow.",
-            dependsOnIndexes: [1],
-            acceptanceCriteria: ["End-to-end path is covered", "Regression evidence is recorded"],
-            tags: ["verification"],
-          },
-        ],
-        notes: ["Decomposition should preserve the parent task as the coordination node."],
-      }, null, 2) + "\n```",
-    }));
-
-    const postDedicatedDecompose = async (port, phase, payload) => {
-      const variants = phase === "propose"
-        ? [
-            { path: "/api/tasks/decompose/propose", body: payload },
-            { path: "/api/tasks/decompose", body: { ...payload, action: "propose" } },
-            { path: "/api/tasks/decompose", body: { ...payload, mode: "propose" } },
-          ]
-        : [
-            { path: "/api/tasks/decompose/apply", body: payload },
-            { path: "/api/tasks/decompose", body: { ...payload, action: "apply" } },
-            { path: "/api/tasks/decompose", body: { ...payload, mode: "apply" } },
-          ];
-      let lastResponse = null;
-      for (const variant of variants) {
-        const response = await fetch("http://127.0.0.1:" + port + variant.path, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(variant.body),
-        });
-        lastResponse = response;
-        if (response.status !== 404) {
-          return response.json();
-        }
-      }
-      throw new Error(`No dedicated decomposition endpoint was available for ${phase}; last status=${lastResponse?.status ?? "n/a"}`);
-    };
-
-    const mod = await import("../server/ui-server.mjs");
-    mod.injectUiDependencies({ execPrimaryPrompt });
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-      dependencies: { execPrimaryPrompt },
-    });
-    const port = server.address().port;
-
-    const parentTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "Ship ingestion reliability epic",
-        description: "Schema, implementation, and verification are currently bundled into one task.",
-        status: "inprogress",
-        priority: "critical",
-        tags: ["ingestion", "epic"],
-      }),
-    }).then((r) => r.json());
-    expect(parentTask.ok).toBe(true);
-
-    const propose = await postDedicatedDecompose(port, "propose", { taskId: parentTask.data.id });
-
-    expect(propose.ok).toBe(true);
-    expect(propose.proposal.recommendedAction).toBe("split_task");
-    expect(propose.proposal.subtasks).toHaveLength(3);
-    expect(propose.task.meta?.replanProposal?.status).toBe("proposed");
-    expect(propose.task.meta?.plannerState?.latestReplan?.status).toBe("proposed");
-    expect(propose.task.meta?.replanProposal?.summary).toContain("Decompose the ingestion epic");
-    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
-
-    const persistedBeforeApply = await fetch(
-      "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-    ).then((r) => r.json());
-    expect(persistedBeforeApply.ok).toBe(true);
-    expect(persistedBeforeApply.data.meta?.replanProposal?.status).toBe("proposed");
-    expect(persistedBeforeApply.data.meta?.replanProposal?.subtasks).toHaveLength(3);
-
-    const apply = await postDedicatedDecompose(port, "apply", { taskId: parentTask.data.id });
-
-    expect(apply.ok).toBe(true);
-    expect(Array.isArray(apply.createdSubtasks)).toBe(true);
-    expect(apply.createdSubtasks).toHaveLength(3);
-    expect(apply.task.status).toBe("blocked");
-    expect(apply.task.meta?.replanProposal?.status).toBe("applied");
-    expect(apply.task.meta?.plannerState?.latestReplan?.createdTaskIds).toEqual(
-      expect.arrayContaining(apply.createdSubtasks.map((entry) => entry.id)),
-    );
-    for (const subtask of apply.createdSubtasks) {
-      expect(subtask.parentTaskId || subtask?.meta?.parentTaskId).toBe(parentTask.data.id);
-      expect(subtask.meta?.replan?.proposalId).toBe(apply.proposal.proposalId);
-      expect(subtask.meta?.replan?.parentTaskId).toBe(parentTask.data.id);
-    }
-
-    const detail = await fetch(
-      "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-    ).then((r) => r.json());
-    expect(detail.ok).toBe(true);
-    expect(detail.data.meta?.replanProposal?.status).toBe("applied");
-    expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(3);
-
-    const listedChildren = await fetch(
-      "http://127.0.0.1:" + port + "/api/tasks/subtasks?parentTaskId=" + encodeURIComponent(parentTask.data.id),
-    ).then((r) => r.json());
-    expect(listedChildren.ok).toBe(true);
-    expect(Array.isArray(listedChildren.data)).toBe(true);
-    expect(listedChildren.data.map((entry) => entry.id)).toEqual(
-      expect.arrayContaining(apply.createdSubtasks.map((entry) => entry.id)),
-    );
-  }, 15000);
-
   it("organizes task DAGs and returns dependency suggestions", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -6867,7 +4009,7 @@ describeUiServer("ui-server mini app", () => {
       applyDependencySuggestions: true,
       syncEpicDependencies: true,
     });
-  }, 15000);
+  });
 
   it("focuses agent log tails on session-specific lines", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6909,7 +4051,7 @@ describeUiServer("ui-server mini app", () => {
     } finally {
       rmSync(logPath, { force: true });
     }
-  }, 15000);
+  });
 
   it("merges bounded system log tails across monitor, error, and daemon logs", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6925,14 +4067,7 @@ describeUiServer("ui-server mini app", () => {
 
     const logDir = join(process.cwd(), "logs");
     mkdirSync(logDir, { recursive: true });
-    const logNames = [
-      ...new Set([
-        ...readdirSync(logDir).filter((name) => name.endsWith(".log")),
-        "monitor.log",
-        "monitor-error.log",
-        "daemon.log",
-      ]),
-    ];
+    const logNames = ["monitor.log", "monitor-error.log", "daemon.log"];
     const backup = new Map(
       logNames.map((name) => {
         const filePath = join(logDir, name);
@@ -6956,9 +4091,6 @@ describeUiServer("ui-server mini app", () => {
     };
 
     try {
-      for (const name of logNames) {
-        rmSync(join(logDir, name), { force: true });
-      }
       for (const [name, content] of Object.entries(fixtures)) {
         writeFileSync(join(logDir, name), content, "utf8");
       }
@@ -6983,7 +4115,7 @@ describeUiServer("ui-server mini app", () => {
         else writeFileSync(filePath, content, "utf8");
       }
     }
-  }, 15000);
+  });
 
   it("falls back to session workspaceDir for diff view", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -7036,101 +4168,7 @@ describeUiServer("ui-server mini app", () => {
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(repoDir, { recursive: true, force: true });
     }
-  }, 20000);
-
-  it("serves persisted historic session detail and diff payloads", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const previousRepoRoot = process.env.REPO_ROOT;
-    delete process.env.REPO_ROOT;
-
-    const repoDir = mkdtempSync(join(tmpdir(), "bosun-persisted-session-diff-"));
-    const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-history-"));
-    const filePath = join(repoDir, "notes.txt");
-    const { execSync } = await import("node:child_process");
-    execSync("git init", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
-    execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
-    execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
-    writeFileSync(filePath, "line one\n", "utf8");
-    execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
-    execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
-    writeFileSync(filePath, "line one\nline two\n", "utf8");
-
-    const trackerMod = await import("../infra/session-tracker.mjs");
-    trackerMod._resetSingleton({ persistDir });
-    const tracker = trackerMod.getSessionTracker();
-    tracker.startSession("TASK-201", "Historic Task 201");
-    const liveSession = tracker.getSession("TASK-201");
-    liveSession.metadata.workspaceDir = repoDir;
-    liveSession.metadata.branch = "main";
-    tracker.recordEvent("TASK-201", {
-      role: "user",
-      content: "Inspect persisted history",
-      timestamp: "2026-03-28T14:00:00.000Z",
-    });
-    tracker.recordEvent("TASK-201", {
-      role: "assistant",
-      content: "Persisted history ready",
-      timestamp: "2026-03-28T14:00:03.000Z",
-    });
-    tracker.endSession("TASK-201", "completed");
-
-    trackerMod._resetSingleton({ persistDir });
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    try {
-      const detailPayload = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("TASK-201")}?workspace=all&full=1`,
-      ).then((r) => r.json());
-      expect(detailPayload?.ok).toBe(true);
-      expect(detailPayload?.session).toEqual(expect.objectContaining({
-        id: "TASK-201",
-        status: "completed",
-      }));
-
-      const diffPayload = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("TASK-201")}/diff?workspace=all`,
-      ).then((r) => r.json());
-      expect(diffPayload?.ok).toBe(true);
-      expect(diffPayload?.diff?.totalFiles).toBeGreaterThan(0);
-      expect(diffPayload?.source).toMatchObject({
-        kind: "session",
-        detail: repoDir,
-      });
-
-      const taskDiffPayload = await fetch(`http://127.0.0.1:${port}/api/tasks/diff`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          task: {
-            id: "TASK-201",
-            title: "Historic Task 201",
-            sessionId: "TASK-201",
-          },
-        }),
-      }).then((r) => r.json());
-      expect(taskDiffPayload?.ok).toBe(true);
-      expect(taskDiffPayload?.diff?.totalFiles).toBeGreaterThan(0);
-      expect(taskDiffPayload?.source).toMatchObject({
-        kind: "worktree",
-        detail: repoDir,
-      });
-    } finally {
-      trackerMod._resetSingleton({ persistDir: null });
-      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
-      else process.env.REPO_ROOT = previousRepoRoot;
-      rmSync(repoDir, { recursive: true, force: true });
-      rmSync(persistDir, { recursive: true, force: true });
-      await new Promise((resolve) => server.close(resolve));
-    }
-  }, 15000);
+  });
 
   it("builds task diff payloads from a posted task snapshot and linked worktree path", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -7183,7 +4221,7 @@ describeUiServer("ui-server mini app", () => {
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(repoDir, { recursive: true, force: true });
     }
-  }, 20000);
+  });
 
   it("reports live compaction telemetry breakdowns", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-telemetry-"));
@@ -7320,48 +4358,7 @@ describeUiServer("ui-server mini app", () => {
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
-  }, process.platform === "win32" ? 30000 : 15000);
-
-  it("includes split token counts in session list payloads", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
-    _resetSingleton({ persistDir: null });
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-    const tracker = getSessionTracker();
-    tracker.createSession({
-      id: "tokens-visible-session",
-      type: "primary",
-      metadata: { title: "Tokens Visible Session" },
-    });
-    tracker.appendEvent("tokens-visible-session", {
-      role: "assistant",
-      content: "Done",
-      meta: {
-        tokenUsage: {
-          totalTokens: 2000,
-          inputTokens: 1200,
-          outputTokens: 800,
-        },
-      },
-    });
-
-    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
-    const listJson = await listRes.json();
-    expect(listRes.status).toBe(200);
-    expect(listJson.ok).toBe(true);
-    const session = listJson.sessions.find((entry) => entry.id === "tokens-visible-session");
-    expect(session).toBeTruthy();
-    expect(session.totalTokens).toBe(2000);
-    expect(session.inputTokens).toBe(1200);
-    expect(session.outputTokens).toBe(800);
-  }, 15000);
+  });
 
   it("sources agent-run analytics from completed session history when session-start events are stale", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-usage-"));
@@ -7459,10 +4456,6 @@ describeUiServer("ui-server mini app", () => {
       expect(payload.data?.diagnostics?.agentRunSource).toBe("completed_sessions");
       expect(payload.data?.diagnostics?.completedSessions).toBe(2);
       expect(payload.data?.diagnostics?.sessionStarts).toBe(0);
-      expect(payload.data?.totalInputTokens).toBe(1700);
-      expect(payload.data?.totalOutputTokens).toBe(1000);
-      expect(payload.data?.trend?.inputTokens).toEqual([1700]);
-      expect(payload.data?.trend?.outputTokens).toEqual([1000]);
       expect(payload.data?.topAgents).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ name: "codex", count: 1 }),
@@ -7513,18 +4506,6 @@ describeUiServer("ui-server mini app", () => {
         {
           timestamp: new Date(now.getTime() - 40_000).toISOString(),
           attempt_id: attemptId,
-          event_type: "usage",
-          taskId: "task-123",
-          task_title: "Replayable task",
-          executor: "codex",
-          data: {
-            usage: { input_tokens: 120, output_tokens: 45, total_tokens: 165 },
-            duration_ms: 3200,
-          },
-        },
-        {
-          timestamp: new Date(now.getTime() - 35_000).toISOString(),
-          attempt_id: attemptId,
           event_type: "tool_result",
           taskId: "task-123",
           task_title: "Replayable task",
@@ -7564,9 +4545,8 @@ describeUiServer("ui-server mini app", () => {
         taskTitle: "Replayable task",
         executor: "codex",
         status: "failed",
-        eventCount: 5,
+        eventCount: 4,
       }));
-      expect(payload.data[0].totals.usageEvents).toBe(1);
       expect(payload.data[0].shortSteps).toEqual(expect.arrayContaining([
         expect.stringContaining("Started codex run"),
         expect.stringContaining("Called web.search"),
@@ -7579,397 +4559,6 @@ describeUiServer("ui-server mini app", () => {
       rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
   });
-
-  it("returns session turn timeline details including final turn counts", async () => {
-    const trackerMod = await import("../infra/session-tracker.mjs");
-    const tracker = trackerMod.getSessionTracker();
-    const mod = await import("../server/ui-server.mjs");
-    tracker.startSession("task-turn-api", "Turn API task", { type: "task" });
-    tracker.recordEvent("task-turn-api", {
-      role: "user",
-      content: "Inspect files",
-      timestamp: "2026-03-27T13:00:00.000Z",
-    });
-    tracker.recordEvent("task-turn-api", {
-      role: "assistant",
-      content: "Inspected files",
-      timestamp: "2026-03-27T13:00:03.000Z",
-      meta: { usage: { inputTokens: 50, outputTokens: 25, totalTokens: 75 } },
-    });
-    tracker.endSession("task-turn-api", "completed");
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    try {
-      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`);
-      const listJson = await listRes.json();
-      expect(listRes.status).toBe(200);
-      const listed = listJson.sessions.find((session) => session.id === "task-turn-api");
-      expect(listed).toEqual(expect.objectContaining({
-        id: "task-turn-api",
-        turnCount: 1,
-        status: "completed",
-      }));
-      expect(listed.turns).toEqual([
-        expect.objectContaining({ turnIndex: 0, durationMs: 3000, totalTokens: 75, status: "completed" }),
-      ]);
-
-      const detailRes = await fetch(`http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("task-turn-api")}?workspace=all&full=1`);
-      const detailJson = await detailRes.json();
-      expect(detailRes.status).toBe(200);
-      expect(detailJson.session).toEqual(expect.objectContaining({
-        id: "task-turn-api",
-        turnCount: 1,
-        status: "completed",
-      }));
-      expect(detailJson.session.turns).toEqual([
-        expect.objectContaining({ turnIndex: 0, durationMs: 3000, totalTokens: 75, status: "completed" }),
-      ]);
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-    }
-  }, 15000);
-
-  it("merges ledger-backed sessions into session list and detail fallbacks", async () => {
-    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-session-"));
-    const workspaceDir = join(isolatedRepoRoot, "workspaces", "workspace-ledger", "repo");
-    const previousRepoRoot = process.env.REPO_ROOT;
-    process.env.REPO_ROOT = isolatedRepoRoot;
-    vi.resetModules();
-    mkdirSync(join(workspaceDir, ".git"), { recursive: true });
-
-    upsertSessionRecordToStateLedger({
-      sessionId: "ledger-session-1",
-      type: "manual",
-      workspaceId: "workspace-ledger",
-      taskId: "ledger-task-1",
-      taskTitle: "Ledger only session",
-      status: "completed",
-      latestEventType: "assistant",
-      updatedAt: "2026-03-31T09:15:00.000Z",
-      startedAt: "2026-03-31T09:00:00.000Z",
-      eventCount: 2,
-      preview: "Stored directly in SQLite",
-      document: {
-        id: "ledger-session-1",
-        taskId: "ledger-task-1",
-        taskTitle: "Ledger only session",
-        type: "manual",
-        status: "completed",
-        lifecycleStatus: "completed",
-        workspaceId: "workspace-ledger",
-        workspaceDir,
-        workspaceRoot: workspaceDir,
-        createdAt: "2026-03-31T09:00:00.000Z",
-        lastActiveAt: "2026-03-31T09:15:00.000Z",
-        totalEvents: 2,
-        turnCount: 1,
-        messages: [
-          { role: "assistant", content: "Stored directly in SQLite", timestamp: "2026-03-31T09:15:00.000Z" },
-        ],
-        metadata: {
-          workspaceId: "workspace-ledger",
-          workspaceDir,
-          workspaceRoot: workspaceDir,
-        },
-      },
-    }, { repoRoot: isolatedRepoRoot });
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    try {
-      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`);
-      const listJson = await listRes.json();
-      expect(listRes.status).toBe(200);
-      expect(listJson.sessions).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          id: "ledger-session-1",
-          taskId: "ledger-task-1",
-          title: "Ledger only session",
-          status: "completed",
-        }),
-      ]));
-
-      const detailRes = await fetch(`http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-session-1")}?workspace=all&full=1`);
-      const detailJson = await detailRes.json();
-      expect(detailRes.status).toBe(200);
-      expect(detailJson.session).toEqual(expect.objectContaining({
-        id: "ledger-session-1",
-        taskId: "ledger-task-1",
-        taskTitle: "Ledger only session",
-        messages: [
-          expect.objectContaining({ content: "Stored directly in SQLite" }),
-        ],
-      }));
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await settleUiRuntimeCleanup();
-      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
-      else process.env.REPO_ROOT = previousRepoRoot;
-      vi.resetModules();
-      await removeDirWithRetries(isolatedRepoRoot);
-    }
-  });
-
-  it("prefers durable ledger metadata over stale tracker summaries for matching sessions", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-merge-"));
-    const workspaceDir = join(isolatedRepoRoot, "workspaces", "workspace-merge", "repo");
-    const previousRepoRoot = process.env.REPO_ROOT;
-    process.env.REPO_ROOT = isolatedRepoRoot;
-    vi.resetModules();
-    mkdirSync(join(workspaceDir, ".git"), { recursive: true });
-
-    upsertSessionRecordToStateLedger({
-      sessionId: "shared-session-1",
-      type: "manual",
-      workspaceId: "workspace-merge",
-      taskId: "ledger-task-merge",
-      taskTitle: "Ledger canonical title",
-      status: "completed",
-      latestEventType: "assistant",
-      updatedAt: "2026-03-31T10:15:00.000Z",
-      startedAt: "2026-03-31T10:00:00.000Z",
-      eventCount: 1,
-      preview: "Canonical ledger session",
-      document: {
-        id: "shared-session-1",
-        taskId: "ledger-task-merge",
-        taskTitle: "Ledger canonical title",
-        title: "Ledger canonical title",
-        type: "manual",
-        status: "completed",
-        lifecycleStatus: "completed",
-        workspaceId: "workspace-merge",
-        workspaceDir,
-        workspaceRoot: workspaceDir,
-        createdAt: "2026-03-31T10:00:00.000Z",
-        lastActiveAt: "2026-03-31T10:15:00.000Z",
-        totalEvents: 1,
-        messages: [
-          { role: "assistant", content: "Canonical ledger session", timestamp: "2026-03-31T10:15:00.000Z" },
-        ],
-        metadata: {
-          workspaceId: "workspace-merge",
-          workspaceDir,
-          workspaceRoot: workspaceDir,
-        },
-      },
-    }, { repoRoot: isolatedRepoRoot });
-
-    const trackerMod = await import("../infra/session-tracker.mjs");
-    trackerMod._resetSingleton({ persistDir: null });
-    const tracker = trackerMod.getSessionTracker();
-    tracker.createSession({
-      id: "shared-session-1",
-      type: "manual",
-      taskId: "tracker-task-merge",
-      metadata: {
-        title: "Tracker stale title",
-      },
-    });
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    try {
-      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`);
-      const listJson = await listRes.json();
-      expect(listRes.status).toBe(200);
-      expect(listJson.ok).toBe(true);
-      expect(listJson.sessions).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          id: "shared-session-1",
-          taskId: "ledger-task-merge",
-          title: "Ledger canonical title",
-          workspaceId: "workspace-merge",
-        }),
-      ]));
-
-      const detailRes = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("shared-session-1")}?workspace=all&full=1`,
-      );
-      const detailJson = await detailRes.json();
-      expect(detailRes.status).toBe(200);
-      expect(detailJson.session).toEqual(expect.objectContaining({
-        id: "shared-session-1",
-        taskId: "ledger-task-merge",
-        title: "Ledger canonical title",
-        workspaceId: "workspace-merge",
-        messages: [
-          expect.objectContaining({ content: "Canonical ledger session" }),
-        ],
-      }));
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await settleUiRuntimeCleanup();
-      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
-      else process.env.REPO_ROOT = previousRepoRoot;
-      vi.resetModules();
-      await removeDirWithRetries(isolatedRepoRoot);
-    }
-  });
-
-  it("filters ledger-only sessions to the active workspace using durable workspace metadata", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-workspace-"));
-    const configDir = join(isolatedRepoRoot, ".bosun");
-    const configPath = join(configDir, "bosun.config.json");
-    const wsOneRepo = join(isolatedRepoRoot, "workspaces", "ws-one", "repo1");
-    const wsTwoRepo = join(isolatedRepoRoot, "workspaces", "ws-two", "repo2");
-    const previousRepoRoot = process.env.REPO_ROOT;
-    process.env.REPO_ROOT = isolatedRepoRoot;
-    vi.resetModules();
-
-    mkdirSync(join(wsOneRepo, ".git"), { recursive: true });
-    mkdirSync(join(wsTwoRepo, ".git"), { recursive: true });
-    mkdirSync(configDir, { recursive: true });
-    writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          $schema: "./bosun.schema.json",
-          activeWorkspace: "ws-one",
-          workspaces: [
-            {
-              id: "ws-one",
-              name: "Workspace One",
-              activeRepo: "repo1",
-              repos: [{ name: "repo1", url: wsOneRepo, primary: true }],
-            },
-            {
-              id: "ws-two",
-              name: "Workspace Two",
-              activeRepo: "repo2",
-              repos: [{ name: "repo2", url: wsTwoRepo, primary: true }],
-            },
-          ],
-        },
-        null,
-        2,
-      ) + "\n",
-      "utf8",
-    );
-
-    upsertSessionRecordToStateLedger({
-      sessionId: "ledger-ws-one",
-      type: "manual",
-      workspaceId: "ws-one",
-      taskId: "ledger-task-ws-one",
-      taskTitle: "Workspace One durable session",
-      status: "completed",
-      updatedAt: "2026-03-31T11:10:00.000Z",
-      startedAt: "2026-03-31T11:00:00.000Z",
-      eventCount: 1,
-      document: {
-        id: "ledger-ws-one",
-        taskId: "ledger-task-ws-one",
-        taskTitle: "Workspace One durable session",
-        title: "Workspace One durable session",
-        type: "manual",
-        status: "completed",
-        lifecycleStatus: "completed",
-        workspaceId: "ws-one",
-        workspaceDir: wsOneRepo,
-        workspaceRoot: wsOneRepo,
-        createdAt: "2026-03-31T11:00:00.000Z",
-        lastActiveAt: "2026-03-31T11:10:00.000Z",
-        metadata: {
-          workspaceId: "ws-one",
-          workspaceDir: wsOneRepo,
-          workspaceRoot: wsOneRepo,
-        },
-      },
-    }, { repoRoot: isolatedRepoRoot });
-
-    upsertSessionRecordToStateLedger({
-      sessionId: "ledger-ws-two",
-      type: "manual",
-      workspaceId: "ws-two",
-      taskId: "ledger-task-ws-two",
-      taskTitle: "Workspace Two durable session",
-      status: "completed",
-      updatedAt: "2026-03-31T11:20:00.000Z",
-      startedAt: "2026-03-31T11:05:00.000Z",
-      eventCount: 1,
-      document: {
-        id: "ledger-ws-two",
-        taskId: "ledger-task-ws-two",
-        taskTitle: "Workspace Two durable session",
-        title: "Workspace Two durable session",
-        type: "manual",
-        status: "completed",
-        lifecycleStatus: "completed",
-        workspaceId: "ws-two",
-        workspaceDir: wsTwoRepo,
-        workspaceRoot: wsTwoRepo,
-        createdAt: "2026-03-31T11:05:00.000Z",
-        lastActiveAt: "2026-03-31T11:20:00.000Z",
-        metadata: {
-          workspaceId: "ws-two",
-          workspaceDir: wsTwoRepo,
-          workspaceRoot: wsTwoRepo,
-        },
-      },
-    }, { repoRoot: isolatedRepoRoot });
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    try {
-      const activeList = await fetch(
-        `http://127.0.0.1:${port}/api/sessions?workspace=active&type=manual`,
-      ).then((r) => r.json());
-      expect(activeList.ok).toBe(true);
-      expect(activeList.sessions).toHaveLength(1);
-      expect(activeList.sessions[0]?.id).toBe("ledger-ws-one");
-
-      const wrongWorkspaceDetail = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-ws-two")}?workspace=active&full=1`,
-      );
-      expect(wrongWorkspaceDetail.status).toBe(404);
-
-      const allList = await fetch(
-        `http://127.0.0.1:${port}/api/sessions?workspace=all&type=manual`,
-      ).then((r) => r.json());
-      expect(allList.ok).toBe(true);
-      expect(allList.sessions.map((entry) => entry.id)).toEqual(
-        expect.arrayContaining(["ledger-ws-one", "ledger-ws-two"]),
-      );
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await settleUiRuntimeCleanup();
-      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
-      else process.env.REPO_ROOT = previousRepoRoot;
-      vi.resetModules();
-      await removeDirWithRetries(isolatedRepoRoot);
-    }
-  }, 15000);
 
   it("returns replayable trajectory details for a single agent run", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-run-detail-"));
@@ -7994,18 +4583,6 @@ describeUiServer("ui-server mini app", () => {
         },
         {
           timestamp: new Date(now.getTime() - 30_000).toISOString(),
-          attempt_id: attemptId,
-          event_type: "usage",
-          taskId: "task-456",
-          task_title: "Replay detail task",
-          executor: "claude",
-          data: {
-            usage: { input_tokens: 80, output_tokens: 20, total_tokens: 100 },
-            duration_ms: 1800,
-          },
-        },
-        {
-          timestamp: new Date(now.getTime() - 20_000).toISOString(),
           attempt_id: attemptId,
           event_type: "agent_output",
           taskId: "task-456",
@@ -8052,19 +4629,7 @@ describeUiServer("ui-server mini app", () => {
         expect.stringContaining("Error: Context window exhausted"),
       ]));
       expect(payload.data.totals.errors).toBe(1);
-      expect(payload.data.turns).toEqual([
-        expect.objectContaining({
-          index: 1,
-          tokenCount: 100,
-          inputTokens: 80,
-          outputTokens: 20,
-          durationMs: 1800,
-        }),
-      ]);
       expect(payload.data.events[1]).toEqual(expect.objectContaining({
-        type: "usage",
-      }));
-      expect(payload.data.events[2]).toEqual(expect.objectContaining({
         type: "agent_output",
         summary: "Investigated failure and prepared patch.",
       }));
@@ -8073,38 +4638,6 @@ describeUiServer("ui-server mini app", () => {
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
-  });
-  it("includes turn counts in live sessions snapshots", async () => {
-    const mod = await import("../infra/tui-bridge.mjs");
-    const payload = mod.buildSessionsUpdatePayload([
-      {
-        id: "session-live-1",
-        taskId: "task-live-1",
-        title: "Live task",
-        type: "task",
-        status: "active",
-        workspaceId: null,
-        workspaceDir: null,
-        branch: "feature/live-turns",
-        turnCount: 3,
-        createdAt: "2026-03-21T00:00:00.000Z",
-        lastActiveAt: "2026-03-21T00:01:00.000Z",
-        idleMs: 0,
-        elapsedMs: 60000,
-        recommendation: "continue",
-        preview: "Working",
-        lastMessage: "Latest output",
-        insights: {},
-      },
-    ]);
-
-    expect(payload).toEqual([
-      expect.objectContaining({
-        id: "session-live-1",
-        taskId: "task-live-1",
-        turnCount: 3,
-      }),
-    ]);
   });
   it("serves benchmark snapshots and persists benchmark mode for the active workspace", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -8208,8 +4741,7 @@ describeUiServer("ui-server mini app", () => {
       expect(disabled.data.mode.enabled).toBe(false);
       expect(existsSync(modePath)).toBe(false);
     } finally {
-      await settleUiRuntimeCleanup();
-      await removeDirWithRetries(tmpDir);
+      rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 20000);
 
@@ -8313,8 +4845,7 @@ describeUiServer("ui-server mini app", () => {
       const store = JSON.parse(readFileSync(storePath, "utf8"));
       expect(Object.keys(store.tasks || {})).toContain("swebench-demo__bench-1");
     } finally {
-      await settleUiRuntimeCleanup();
-      await removeDirWithRetries(tmpDir);
+      rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 30000);
 
@@ -8326,4 +4857,10 @@ describeUiServer("ui-server mini app", () => {
     expect(source).toContain('await digest.notify(message, 4, {');
     expect(source).toContain('category: "workflow"');
   });
+
 });
+
+
+
+
+

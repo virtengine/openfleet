@@ -63,14 +63,8 @@
     --tg-safe-area-inset-right,
     env(safe-area-inset-right, 0px)
   );
-  --content-safe-top: var(
-    --tg-content-safe-area-inset-top,
-    var(--safe-top)
-  );
-  --content-safe-bottom: var(
-    --tg-content-safe-area-inset-bottom,
-    var(--safe-bottom)
-  );
+  --content-safe-top: var(--tg-content-safe-area-inset-top, 0px);
+  --content-safe-bottom: var(--tg-content-safe-area-inset-bottom, 0px);
 
   /* Viewport from Telegram */
   --viewport-height: var(--tg-viewport-height, 100vh);
@@ -669,15 +663,6 @@
   .inspector::-webkit-scrollbar-thumb {
     border-color: var(--bg-secondary);
   }
-}
-
-/* ── Typography utility: tabular numerals ─────────────────────── */
-:root {
-  --font-variant-numeric-portal: tabular-nums slashed-zero;
-}
-.numeral {
-  font-variant-numeric: var(--font-variant-numeric-portal);
-  letter-spacing: 0.01em;
 }
 
 /* ─── Global keyframes ─── */

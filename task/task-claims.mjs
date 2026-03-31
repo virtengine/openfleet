@@ -43,10 +43,6 @@ import {
 import os from "node:os";
 import { resolve } from "node:path";
 import {
-  appendTaskClaimAuditToStateLedger,
-  syncTaskClaimsRegistryToStateLedger,
-} from "../lib/state-ledger-sqlite.mjs";
-import {
   getPresenceState,
   initPresence,
   notePresence,
@@ -60,7 +56,6 @@ import {
   renewSharedStateHeartbeat,
   releaseSharedState,
 } from "../workspace/shared-state-manager.mjs";
-import { inferScopePaths } from "../workspace/scope-locks.mjs";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -82,8 +77,6 @@ const SHARED_STATE_FATAL_CLAIM_REASONS = new Set([
   "owner_mismatch",
   "attempt_token_mismatch",
   "task_ignored",
-  "scope_lock_conflict",
-  "scope_lock_owner_mismatch",
 ]);
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -303,29 +296,26 @@ async function saveClaimsRegistry(registry) {
   ensureInitialized();
   registry.updated_at = new Date().toISOString();
   const payload = JSON.stringify(registry, null, 2);
-  let persisted = false;
   // Include a UUID to prevent tmp-path collisions when multiple save calls
   // happen in the same millisecond within the same process.
   const tmpPath = `${state.claimsPath}.tmp-${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
   await writeFile(tmpPath, payload, { encoding: "utf8", flush: true });
   try {
     await retryFsOperation(() => rename(tmpPath, state.claimsPath));
-    persisted = true;
   } catch (err) {
     const reason = err?.message || err;
     // On Windows, rename can fail when the destination file is in use.
     try {
       await retryFsOperation(() => copyFile(tmpPath, state.claimsPath));
-      persisted = true;
       console.warn(
         `[task-claims] Atomic rename failed (${reason}); copied temp file into place.`,
       );
+      return;
     } catch (copyErr) {
       const copyReason = copyErr?.message || copyErr;
       await retryFsOperation(() =>
         writeFile(state.claimsPath, payload, { encoding: "utf8", flush: true }),
       );
-      persisted = true;
       console.warn(
         `[task-claims] Atomic rename failed (${reason}); copy fallback failed (${copyReason}); wrote registry directly.`,
       );
@@ -336,13 +326,6 @@ async function saveClaimsRegistry(registry) {
         /* best effort */
       }
     }
-  }
-
-  if (!persisted) return;
-  try {
-    syncTaskClaimsRegistryToStateLedger(registry, { repoRoot: state.repoRoot });
-  } catch (err) {
-    console.warn(`[task-claims] State ledger sync failed: ${err?.message || err}`);
   }
 }
 
@@ -356,20 +339,14 @@ async function saveClaimsRegistry(registry) {
  */
 async function appendAuditEntry(entry) {
   ensureInitialized();
-  const auditEntry = {
+  const line = JSON.stringify({
     ...entry,
     timestamp: entry.timestamp || new Date().toISOString(),
-  };
-  const line = JSON.stringify(auditEntry);
+  });
   try {
     await writeFile(state.auditPath, line + "\n", { flag: "a" });
   } catch (err) {
     console.warn(`[task-claims] Failed to write audit entry: ${err.message}`);
-  }
-  try {
-    appendTaskClaimAuditToStateLedger(auditEntry, { repoRoot: state.repoRoot });
-  } catch (err) {
-    console.warn(`[task-claims] State ledger audit sync failed: ${err?.message || err}`);
   }
 }
 
@@ -649,7 +626,6 @@ async function _claimTaskInner(opts) {
 
   // Build new claim
   const presenceState = getPresenceState();
-  const scopePaths = inferScopePaths({ metadata }, state.repoRoot);
   const claimMetadata = {
     ...metadata,
     host: metadata?.host || os.hostname(),
@@ -657,9 +633,6 @@ async function _claimTaskInner(opts) {
       ? Number(metadata.pid)
       : process.pid,
   };
-  if (scopePaths.length > 0) {
-    claimMetadata.scopePaths = scopePaths;
-  }
 
   const newClaim = {
     task_id: taskId,
@@ -686,10 +659,6 @@ async function _claimTaskInner(opts) {
         claimToken,
         Math.floor(SHARED_STATE_STALE_THRESHOLD_MS / 1000),
         state.repoRoot,
-        {
-          metadata: claimMetadata,
-          scopePaths,
-        },
       );
       if (!sharedResult.success) {
         const reason = sharedResult.reason || "shared_state_claim_failed";
@@ -724,10 +693,6 @@ async function _claimTaskInner(opts) {
               claimToken,
               Math.floor(SHARED_STATE_STALE_THRESHOLD_MS / 1000),
               state.repoRoot,
-              {
-                metadata: claimMetadata,
-                scopePaths,
-              },
             );
             if (forceResult.success) {
               console.info(`[task-claims] Shared state force-claimed after stale override for ${taskId}`);
@@ -1046,21 +1011,14 @@ async function _renewClaimInner(opts) {
         taskId,
         instanceId,
         claimToken,
-        state.repoRoot,
-        {
-          metadata: claim.metadata || {},
-        },
+        state.repoRoot
       );
       if (!sharedResult.success) {
         const reason = sharedResult.reason || "unknown";
         // Token/owner mismatch in shared state means another orchestrator has
         // taken over. Remove local ownership so this process does not retain a
         // stale claim that blocks redispatch after we abort.
-        if (
-          reason === "attempt_token_mismatch" ||
-          reason === "owner_mismatch" ||
-          reason === "scope_lock_owner_mismatch"
-        ) {
+        if (reason === "attempt_token_mismatch" || reason === "owner_mismatch") {
           delete registry.claims[taskId];
           await saveClaimsRegistry(registry);
           await appendAuditEntry({
@@ -1181,4 +1139,6 @@ export const _test = {
   retryFsOperation,
   isRetriableFsError,
 };
+
+
 

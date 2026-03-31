@@ -352,9 +352,6 @@ import {
   wsLatency,
   wsReconnectIn,
   wsConnected,
-  wsReconnectCount,
-  wsStatus,
-  wsLastReconnectAt,
   loadingCount,
 } from "./modules/api.js";
 import {
@@ -418,7 +415,6 @@ import { ChatTab } from "./tabs/chat.js";
 
 /* ── Lazy tab loading ── */
 const _lazyTabCache = {};
-const _lazyTabInflight = {};
 
 function resolveLazyTabComponent(mod, exportName) {
   const direct = exportName ? mod?.[exportName] : mod?.default;
@@ -435,34 +431,13 @@ function LazyTab({ loader, fallback, ...props }) {
   const [Comp, setComp] = useState(_lazyTabCache[loader.key] || null);
   const [err, setErr] = useState(null);
   useEffect(() => {
-    setErr(null);
-    if (_lazyTabCache[loader.key]) {
-      setComp(() => _lazyTabCache[loader.key]);
-      return;
-    }
+    if (_lazyTabCache[loader.key]) { setComp(() => _lazyTabCache[loader.key]); return; }
     let cancelled = false;
-    const pendingLoad = _lazyTabInflight[loader.key]
-      || loader()
-        .then((mod) => {
-          const C = resolveLazyTabComponent(mod, loader.exportName);
-          _lazyTabCache[loader.key] = C;
-          return C;
-        })
-        .finally(() => {
-          delete _lazyTabInflight[loader.key];
-        });
-    _lazyTabInflight[loader.key] = pendingLoad;
-
-    pendingLoad
-      .then((resolvedComp) => {
-        if (!cancelled) setComp(() => resolvedComp);
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setComp(null);
-          setErr(e);
-        }
-      });
+    loader().then((mod) => {
+      const C = resolveLazyTabComponent(mod, loader.exportName);
+      _lazyTabCache[loader.key] = C;
+      if (!cancelled) setComp(() => C);
+    }).catch((e) => { if (!cancelled) setErr(e); });
     return () => { cancelled = true; };
   }, [loader]);
   if (err) return html`<div style="padding:2rem;color:#ef4444">Failed to load tab: ${err.message}</div>`;
@@ -488,12 +463,10 @@ const BenchmarksTab = lazyTab("./tabs/benchmarks.js", "BenchmarksTab", () => imp
 const AgentsTab = lazyTab("./tabs/agents.js", "AgentsTab", () => import("./tabs/agents.js"));
 const FleetSessionsTab = lazyTab("./tabs/agents.js", "FleetSessionsTab", () => import("./tabs/agents.js"));
 const InfraTab = lazyTab("./tabs/infra.js", "InfraTab", () => import("./tabs/infra.js"));
-const GuardrailsTab = lazyTab("./tabs/guardrails.js", "GuardrailsTab", () => import("./tabs/guardrails.js"));
 const ControlTab = lazyTab("./tabs/control.js", "ControlTab", () => import("./tabs/control.js"));
 const LogsTab = lazyTab("./tabs/logs.js", "LogsTab", () => import("./tabs/logs.js"));
 const TelemetryTab = lazyTab("./tabs/telemetry.js", "TelemetryTab", () => import("./tabs/telemetry.js"));
 const SettingsTab = lazyTab("./tabs/settings.js", "SettingsTab", () => import("./tabs/settings.js"));
-const IntegrationsTab = lazyTab("./tabs/integrations.js", "IntegrationsTab", () => import("./tabs/integrations.js"));
 const WorkflowsTab = lazyTab("./tabs/workflows.js", "WorkflowsTab", () => import("./tabs/workflows.js"));
 const LibraryTab = lazyTab("./tabs/library.js", "LibraryTab", () => import("./tabs/library.js"));
 const LibraryMarketplaceTab = lazyTab("./tabs/library.js", "LibraryMarketplaceTab", () => import("./tabs/library.js"));
@@ -779,7 +752,6 @@ const TAB_COMPONENTS = {
   agents: AgentsTab,
   "fleet-sessions": FleetSessionsTab,
   infra: InfraTab,
-  guardrails: GuardrailsTab,
   control: ControlTab,
   logs: LogsTab,
   telemetry: TelemetryTab,
@@ -788,8 +760,8 @@ const TAB_COMPONENTS = {
   library: LibraryTab,
   marketplace: LibraryMarketplaceTab,
   settings: SettingsTab,
-  integrations: IntegrationsTab,
 };
+
 function getMaxFreshnessMs(rawFreshness) {
   if (typeof rawFreshness === "number") {
     return Number.isFinite(rawFreshness) ? rawFreshness : null;
@@ -817,39 +789,6 @@ function inferUiConnected() {
 /* ═══════════════════════════════════════════════
  *  Header
  * ═══════════════════════════════════════════════ */
-function ConnectionBadge() {
-  const status = wsStatus.value;
-  const reconnectCount = wsReconnectCount.value;
-  const lastReconnectAt = wsLastReconnectAt.value;
-
-  let label = "Offline";
-  let badgeClass = "offline";
-  if (status === "connected") {
-    label = "Connected";
-    badgeClass = "connected";
-  } else if (status === "reconnecting") {
-    label = reconnectCount > 0 ? `Reconnecting... ${reconnectCount}` : "Reconnecting...";
-    badgeClass = "reconnecting";
-  }
-
-  const lastReconnectLabel =
-    lastReconnectAt != null
-      ? new Date(lastReconnectAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })
-      : "never";
-  const tooltip = `Connection status: ${label}; last reconnect ${lastReconnectLabel}`;
-
-  return html`
-    <div
-      class=${`connection-badge ${badgeClass}`}
-      title=${tooltip}
-      aria-label=${tooltip}
-    >
-      <span class=${`connection-badge-dot ${badgeClass} ${status === "reconnecting" ? "connection-badge-pulse" : ""}`}></span>
-      <span class="connection-badge-label">${label}</span>
-    </div>
-  `;
-}
-
 function Header() {
   const isConn = inferUiConnected();
   const user = getTelegramUser();
@@ -886,28 +825,26 @@ function Header() {
   const userLabel = user ? `@${user.username || user.first_name}` : "";
   return html`
     <${AppBar} position="static" elevation=${0} sx=${{zIndex: 10, flexShrink: 0}} className="app-header">
-      <${Toolbar} variant="dense" className="app-header-toolbar">
+      <${Toolbar} variant="dense">
         <img src=${logoSrc} alt="Bosun" style=${{height: 24, width: 24, marginRight: 4}} data-logo-fallback-index="0" onError=${handleAppLogoLoadError} />
         <${Typography} variant="h6" sx=${{ml: 1, flexGrow: 0}}>Bosun</${Typography}>
-        <${Box} sx=${{ml: 2}} className="app-header-workspace">
+        <${Box} sx=${{ml: 2}}>
           <${WorkspaceSwitcher} />
         </${Box}>
         <${Box} sx=${{flexGrow: 1}} />
-        <${Stack} direction="row" spacing=${1} alignItems="center" className="app-header-status-stack">
-          <${ConnectionBadge} />
+        <${Stack} direction="row" spacing=${1} alignItems="center">
           <${Chip}
             size="small"
             label=${connLabel}
             color=${connColor}
             variant="outlined"
-            className="app-header-latency-chip"
             sx=${{fontSize: "0.7rem"}}
           />
           ${freshnessLabel
-            ? html`<${Typography} variant="caption" className="app-header-freshness" sx=${{opacity: 0.7}}>${freshnessLabel}</${Typography}>`
+            ? html`<${Typography} variant="caption" sx=${{opacity: 0.7}}>${freshnessLabel}</${Typography}>`
             : null}
           ${user
-            ? html`<${Chip} size="small" label=${userLabel} variant="outlined" className="app-header-user-chip" />`
+            ? html`<${Chip} size="small" label=${userLabel} variant="outlined" />`
             : null}
         </${Stack}>
       </${Toolbar}>
@@ -1021,6 +958,23 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
   const allSessions = sessionsData.value || [];
   const sessions = filterSessionsByType(allSessions, sessionType);
   const liveRuntimeCount = sessions.filter((s) => getSessionRuntimeState(s).isLive).length;
+
+  useEffect(() => {
+    // Session polling belongs to the active tab (Chat/Agents). The rail only
+    // performs a one-time fallback load to avoid filter thrash/flicker.
+    if (sessions.length > 0) return;
+    void loadSessions({ type: sessionType }).catch(() => {});
+  }, [sessionType, sessions.length]);
+
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    if (sessions.some((session) => session?.id === selectedSessionId.value)) return;
+    const next =
+      sessions.find((s) => getSessionRuntimeState(s).isLive) ||
+      sessions.find((s) => getSessionLifecycleState(s).isActive) ||
+      sessions[0];
+    if (next?.id) selectedSessionId.value = next.id;
+  }, [sessionType, sessionsData.value, selectedSessionId.value]);
 
   if (collapsed) {
     // Icon-only strip: colored dots for sessions + expand button
@@ -1282,28 +1236,6 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   const contextWindow = insights?.contextWindow || null;
   const tokenUsage = insights?.tokenUsage || null;
   const recentActions = Array.isArray(insights?.recentActions) ? insights.recentActions : [];
-
-  // Context window breakdown grouping
-  const _SYSTEM_CTX = new Set(["system instructions", "tool definitions", "system"]);
-  const _USER_CTX = new Set(["messages", "files", "tool results", "user context"]);
-  const ctxRefTokens = contextWindow?.totalTokens || tokenUsage?.totalTokens || 0;
-  const ctxSystemRows = insightsContextBreakdown.filter((r) => _SYSTEM_CTX.has(String(r.label || "").toLowerCase()));
-  const ctxUserRows = insightsContextBreakdown.filter((r) => _USER_CTX.has(String(r.label || "").toLowerCase()));
-  const ctxOtherRows = insightsContextBreakdown.filter(
-    (r) => !_SYSTEM_CTX.has(String(r.label || "").toLowerCase()) && !_USER_CTX.has(String(r.label || "").toLowerCase()),
-  );
-  const renderCtxRow = (row, idx) => {
-    const approxTokens = ctxRefTokens > 0 ? Math.round((row.percent / 100) * ctxRefTokens) : null;
-    return html`
-      <div class="inspector-ctx-row" key=${row.label || idx}>
-        <span>${row.label}</span>
-        <span class="inspector-ctx-row-right">
-          ${approxTokens != null ? html`<span class="inspector-ctx-tokens">${formatCompactCount(approxTokens)}</span>` : ""}
-          <span class="inspector-ctx-pct">${row.percent}%</span>
-        </span>
-      </div>`;
-  };
-
   let smartLogsContent = html`
     <div class="inspector-scroll">
       ${smartLogs.map(
@@ -1389,55 +1321,54 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
                         <div class="inspector-metric"><span class="label">Messages</span><strong>${formatCompactCount(insightsTotals.messages)}</strong></div>
                         <div class="inspector-metric"><span class="label">Errors</span><strong>${formatCompactCount(insightsTotals.errors)}</strong></div>
                       </div>
-                      ${(contextWindow || tokenUsage || insightsContextBreakdown.length > 0 || insightsTopTools.length > 0) &&
+                      ${(contextWindow || tokenUsage) &&
                         html`
                           <div class="inspector-context">
-                            <div class="inspector-ctx-header">
-                              <span class="inspector-ctx-title">Context Window</span>
-                              ${contextWindow?.percent != null
-                                ? html`<span class="inspector-ctx-pct-badge">${contextWindow.percent}%</span>`
-                                : html`<span class="inspector-ctx-pct-badge">Tracked</span>`}
-                            </div>
-                            ${contextWindow?.percent != null &&
-                              html`<div class="inspector-ctx-bar">
-                                <div class="inspector-ctx-bar-fill" style=${{ width: `${Math.min(100, contextWindow.percent)}%` }}></div>
-                              </div>`}
-                            ${contextWindow?.usedTokens != null &&
-                              html`<div class="inspector-ctx-summary">
-                                ${formatCompactCount(contextWindow.usedTokens)}${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)} tokens` : " tokens"}
-                              </div>`}
-                            ${ctxSystemRows.length > 0 &&
-                              html`<div class="inspector-ctx-group">
-                                <div class="inspector-ctx-group-label">System</div>
-                                ${ctxSystemRows.map(renderCtxRow)}
-                              </div>`}
-                            ${ctxUserRows.length > 0 &&
-                              html`<div class="inspector-ctx-group">
-                                <div class="inspector-ctx-group-label">User Context</div>
-                                ${ctxUserRows.map(renderCtxRow)}
-                              </div>`}
-                            ${ctxOtherRows.length > 0 && ctxOtherRows.map(renderCtxRow)}
+                            ${contextWindow &&
+                              html`
+                                <div class="inspector-kv"><span>Context Window</span><strong>
+                                  ${contextWindow.percent != null
+                                    ? `${contextWindow.percent}%`
+                                    : "Tracked"}
+                                </strong></div>
+                                ${(contextWindow.usedTokens || contextWindow.totalTokens) &&
+                                  html`
+                                    <div class="inspector-kv"><span>Token Fill</span><strong>
+                                      ${contextWindow.usedTokens != null ? formatCompactCount(contextWindow.usedTokens) : "—"}
+                                      ${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)}` : ""}
+                                    </strong></div>
+                                  `}
+                              `}
                             ${tokenUsage &&
-                              html`<div class="inspector-ctx-group">
-                                <div class="inspector-ctx-group-label">Token Usage</div>
-                                <div class="inspector-ctx-row">
-                                  <span>Input</span>
-                                  <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(tokenUsage.inputTokens)}</span></span>
+                              html`
+                                <div class="inspector-kv"><span>Token Usage</span><strong>${formatCompactCount(tokenUsage.totalTokens || 0)}</strong></div>
+                                <div class="inspector-kv"><span>Input / Output</span><strong>${formatCompactCount(tokenUsage.inputTokens || 0)} / ${formatCompactCount(tokenUsage.outputTokens || 0)}</strong></div>
+                              `}
+                          </div>
+                        `}
+                      ${insightsTopTools.length > 0 &&
+                        html`
+                          <div class="inspector-pill-row">
+                            ${insightsTopTools.map(
+                              (tool) => html`
+                                <span class="inspector-pill" key=${tool.name}>
+                                  ${tool.name}: ${formatCompactCount(tool.count)}
+                                </span>
+                              `,
+                            )}
+                          </div>
+                        `}
+                      ${insightsContextBreakdown.length > 0 &&
+                        html`
+                          <div class="inspector-breakdown">
+                            ${insightsContextBreakdown.slice(0, 6).map(
+                              (row) => html`
+                                <div class="inspector-breakdown-row" key=${row.label}>
+                                  <span>${row.label}</span>
+                                  <strong>${row.percent}%</strong>
                                 </div>
-                                <div class="inspector-ctx-row">
-                                  <span>Output</span>
-                                  <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(tokenUsage.outputTokens)}</span></span>
-                                </div>
-                              </div>`}
-                            ${insightsTopTools.length > 0 &&
-                              html`<div class="inspector-ctx-group">
-                                <div class="inspector-ctx-group-label">Top Tools</div>
-                                <div class="inspector-pill-row">
-                                  ${insightsTopTools.map(
-                                    (tool) => html`<span class="inspector-pill" key=${tool.name}>${tool.name}: ${formatCompactCount(tool.count)}</span>`,
-                                  )}
-                                </div>
-                              </div>`}
+                              `,
+                            )}
                           </div>
                         `}
                     `
@@ -2894,7 +2825,6 @@ function App() {
 /* ─── Mount ─── */
 const mountRoot = () => document.getElementById("app");
 const signalAppMounted = () => {
-  globalThis.__bosunAppMounted = true;
   globalThis.dispatchEvent?.(new Event("bosun:app-mounted"));
 };
 const mountApp = () => {
@@ -2912,7 +2842,6 @@ const remountApp = () => {
     root.replaceChildren();
   }
   preactRender(html`<${App} />`, root);
-  signalAppMounted();
 };
 globalThis.__veRemountApp = remountApp;
 mountApp();

@@ -375,7 +375,9 @@ export function ChatTab() {
       return false;
     }
   });
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(() => {
+    return !selectedSessionId.value && (globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false);
+  });
   const [focusMode, setFocusMode] = useState(() => {
     try {
       return localStorage.getItem("ve-chat-focus") === "true";
@@ -540,13 +542,51 @@ export function ChatTab() {
     };
   }, [focusMode]);
 
+  /* ── Auto-select first session if none ── */
+  /* NOTE: We use an effect subscription on the signal instead of putting
+     signal.value in the deps array.  Putting .value in deps causes Preact
+     to re-run the effect on every signal update AND re-render the component
+     simultaneously, creating a cascade storm that can crash the mini-app.
+     Instead we subscribe with effect() and clean up on unmount. */
+  useEffect(() => {
+    if (isMobile) return undefined;
+    // Use a short debounce to batch signal cascades during initial load
+    let debounceTimer = null;
+    const tryAutoSelect = () => {
+      try {
+        const sessions = sessionsData.value || [];
+        if (selectedSessionId.value || sessions.length === 0) return;
+        const next =
+          sessions.find(
+            (s) => getSessionLifecycleState(s).isActive,
+          ) || sessions[0];
+        if (next?.id) selectedSessionId.value = next.id;
+      } catch (err) {
+        console.warn("[ChatTab] Auto-select error:", err);
+      }
+    };
+    // Run once immediately for SSR / pre-loaded data
+    tryAutoSelect();
+    // Then watch for changes via polling (avoids signal dep cascade)
+    const interval = setInterval(tryAutoSelect, 1000);
+    return () => {
+      clearInterval(interval);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [isMobile]);
+
   useEffect(() => {
     if (!isMobile) {
       setDrawerOpen(false);
       return;
     }
-    setDrawerOpen(false);
-  }, [isMobile, sessionId]);
+    // Check signal value outside deps to avoid cascade
+    try {
+      if (!selectedSessionId.value) {
+        setDrawerOpen(true);
+      }
+    } catch { /* signal read error - ignore */ }
+  }, [isMobile]);
 
   useEffect(() => {
     if (!routeSessionId) return;
@@ -992,8 +1032,7 @@ export function ChatTab() {
 
   const handleBack = useCallback(() => {
     if (isMobile) {
-      selectedSessionId.value = null;
-      setDrawerOpen(false);
+      setDrawerOpen(true);
       return;
     }
     selectedSessionId.value = null;
@@ -1247,7 +1286,7 @@ export function ChatTab() {
           onDragLeave=${handleChatDragLeave}
           onDrop=${handleChatDrop}
         >
-          ${(sessionId || isMobile) &&
+          ${sessionId &&
           html`
             <${Paper} elevation=${1} className="chat-shell-header" sx=${{ borderRadius: 0 }}>
               <${Box} className="chat-shell-inner" sx=${{ display: "flex", alignItems: "center", gap: 1.5, px: 2, py: 1 }}>
@@ -1256,68 +1295,64 @@ export function ChatTab() {
                   ${resolveIcon("menu")}
                 <//>
                 <${Box} className="chat-shell-title" sx=${{ flex: 1, minWidth: 0 }}>
-                  <${Typography} variant="subtitle1" noWrap fontWeight=${600}>${sessionId ? sessionTitle : "New chat"}<//>
-                  <${Typography} variant="caption" color="text.secondary" noWrap>${sessionId ? (sessionMeta || "Session") : "Open sessions or start a new chat"}<//>
+                  <${Typography} variant="subtitle1" noWrap fontWeight=${600}>${sessionTitle}<//>
+                  <${Typography} variant="caption" color="text.secondary" noWrap>${sessionMeta || "Session"}<//>
                 <//>
-                ${sessionId
-                  ? html`
-                      <${Stack} direction="row" spacing=${0.5} className="chat-shell-actions">
+                <${Stack} direction="row" spacing=${0.5} className="chat-shell-actions">
+                  <${Button}
+                    variant="text"
+                    size="small"
+                    onClick=${() => openMeetingRoom("voice")}
+                    title="Start voice meeting for this session"
+                    startIcon=${resolveIcon("phone")}
+                    sx=${{ textTransform: "none" }}
+                  >
+                    Call
+                  <//>
+                  <${Button}
+                    variant="text"
+                    size="small"
+                    onClick=${() => openMeetingRoom("video")}
+                    title="Start video meeting for this session"
+                    startIcon=${resolveIcon("camera")}
+                    sx=${{ textTransform: "none" }}
+                  >
+                    Video
+                  <//>
+                  ${isDesktop &&
+                  html`
+                    <${Button}
+                      variant="text"
+                      size="small"
+                      onClick=${() => setFocusMode((prev) => !prev)}
+                      title=${focusMode ? "Exit focus mode" : "Enter focus mode"}
+                      sx=${{ textTransform: "none" }}
+                    >
+                      ${focusMode ? "Exit Focus" : "Focus"}
+                    <//>
+                  `}
+                  ${sessionLifecycle.key === "archived"
+                    ? html`
                         <${Button}
                           variant="text"
                           size="small"
-                          onClick=${() => openMeetingRoom("voice")}
-                          title="Start voice meeting for this session"
-                          startIcon=${resolveIcon("phone")}
+                          onClick=${() => resumeSession(activeSession.id)}
                           sx=${{ textTransform: "none" }}
                         >
-                          Call
+                          Restore
                         <//>
+                      `
+                    : html`
                         <${Button}
                           variant="text"
                           size="small"
-                          onClick=${() => openMeetingRoom("video")}
-                          title="Start video meeting for this session"
-                          startIcon=${resolveIcon("camera")}
+                          onClick=${() => archiveSession(activeSession.id)}
                           sx=${{ textTransform: "none" }}
                         >
-                          Video
+                          Archive
                         <//>
-                        ${isDesktop &&
-                        html`
-                          <${Button}
-                            variant="text"
-                            size="small"
-                            onClick=${() => setFocusMode((prev) => !prev)}
-                            title=${focusMode ? "Exit focus mode" : "Enter focus mode"}
-                            sx=${{ textTransform: "none" }}
-                          >
-                            ${focusMode ? "Exit Focus" : "Focus"}
-                          <//>
-                        `}
-                        ${sessionLifecycle.key === "archived"
-                          ? html`
-                              <${Button}
-                                variant="text"
-                                size="small"
-                                onClick=${() => resumeSession(activeSession.id)}
-                                sx=${{ textTransform: "none" }}
-                              >
-                                Restore
-                              <//>
-                            `
-                          : html`
-                              <${Button}
-                                variant="text"
-                                size="small"
-                                onClick=${() => archiveSession(activeSession.id)}
-                                sx=${{ textTransform: "none" }}
-                              >
-                                Archive
-                              <//>
-                            `}
-                      <//>
-                    `
-                  : null}
+                      `}
+                <//>
               <//>
             <//>
           `}

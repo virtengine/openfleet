@@ -91,5 +91,5 @@ describe("static relative URL paths", () => {
     }
 
     expect(missing).toEqual([]);
-  }, 20000);
+  });
 });

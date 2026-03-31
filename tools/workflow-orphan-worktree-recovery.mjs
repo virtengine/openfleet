@@ -8,23 +8,6 @@ const DEFAULT_BASE = "origin/main";
 const DEFAULT_MAX = 20;
 const TAG = "[workflow-orphan-recovery]";
 
-function emitJson(summary) {
-  process.stdout.write(`${JSON.stringify(summary)}\n`);
-}
-
-async function withStdoutSilenced(fn) {
-  const originalLog = console.log;
-  console.log = (...args) => {
-    const message = args.map((part) => String(part)).join(" ");
-    process.stderr.write(`${message}\n`);
-  };
-  try {
-    return await fn();
-  } finally {
-    console.log = originalLog;
-  }
-}
-
 function parseArgs(argv) {
   const parsed = {
     repoRoot: process.cwd(),
@@ -301,7 +284,7 @@ function taskTitleFromBranch(branch, taskIdPrefix) {
 
 async function loadStatusUpdater() {
   try {
-    const mod = await withStdoutSilenced(() => import("../kanban/kanban-adapter.mjs"));
+    const mod = await import("../kanban/kanban-adapter.mjs");
     if (typeof mod.updateTaskStatus === "function") return mod.updateTaskStatus;
   } catch {
     // Optional in recovery mode.
@@ -329,7 +312,7 @@ async function main() {
   };
 
   if (!existsSync(worktreeDir)) {
-    emitJson(summary);
+    console.log(JSON.stringify(summary));
     return;
   }
 
@@ -339,7 +322,7 @@ async function main() {
   } catch (err) {
     summary.success = false;
     summary.errors.push(`read_worktree_dir_failed:${err?.message || err}`);
-    emitJson(summary);
+    console.log(JSON.stringify(summary));
     return;
   }
 
@@ -421,13 +404,13 @@ async function main() {
     let statusUpdated = false;
     if (typeof updateTaskStatus === "function") {
       try {
-        await withStdoutSilenced(() => updateTaskStatus(taskIdPrefix, "inreview", {
+        await updateTaskStatus(taskIdPrefix, "inreview", {
           source: "workflow-orphan-worktree-recovery",
           branch,
           prNumber: pr.prNumber,
           prUrl: pr.prUrl,
           worktreePath,
-        }));
+        });
         statusUpdated = true;
       } catch (err) {
         summary.errors.push(`status_update_failed:${dirName}:${err?.message || err}`);
@@ -451,7 +434,7 @@ async function main() {
     summary.success = summary.recovered > 0;
   }
 
-  emitJson(summary);
+  console.log(JSON.stringify(summary));
 }
 
 main().catch((err) => {
@@ -465,5 +448,5 @@ main().catch((err) => {
     errors: [`fatal:${err?.message || err}`],
   };
   console.error(`${TAG} fatal: ${err?.message || err}`);
-  emitJson(summary);
+  console.log(JSON.stringify(summary));
 });

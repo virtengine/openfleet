@@ -12,7 +12,6 @@ import {
   getPresencePrefix,
   initPresence,
   getPresenceState,
-  buildLocalPresence,
 } from "../infra/presence.mjs";
 
 let tempRoot = null;
@@ -85,43 +84,6 @@ describe("formatPresenceMessage", () => {
     expect(parsed.workspace_role).toBe("worker");
     expect(parsed.coordinator_priority).toBe(100);
     expect(parsed.coordinator_eligible).toBe(true);
-  });
-});
-
-describe("buildLocalPresence", () => {
-  it("publishes hierarchy metadata from the local workspace when available", async () => {
-    tempRoot = await mkdtemp(resolve(tmpdir(), "bosun-presence-"));
-    await initPresence({
-      repoRoot: tempRoot,
-      presencePath: resolve(tempRoot, "presence.json"),
-      instanceId: "hierarchy-test",
-      force: true,
-      skipLoad: true,
-      localWorkspace: {
-        id: "ws-review",
-        name: "Review Workspace",
-        role: "worker",
-        capabilities: ["reviewer", "quality"],
-        teamId: "team-quality",
-        teamRole: "reviewer",
-        reportsTo: "planner-lead",
-        teamLevel: "squad",
-      },
-    });
-
-    const payload = buildLocalPresence();
-
-    expect(payload.instance_id).toBe("hierarchy-test");
-    expect(payload.workspace_id).toBe("ws-review");
-    expect(payload.workspace_role).toBe("worker");
-    expect(payload.team_id).toBe("team-quality");
-    expect(payload.team_role).toBe("reviewer");
-    expect(payload.reports_to).toBe("planner-lead");
-    expect(payload.team_level).toBe("squad");
-    expect(payload.teamId).toBe("team-quality");
-    expect(payload.teamRole).toBe("reviewer");
-    expect(payload.reportsTo).toBe("planner-lead");
-    expect(payload.teamLevel).toBe("squad");
   });
 });
 

@@ -7,7 +7,6 @@ import {
   getTemplate,
   installTemplate,
 } from "../workflow/workflow-templates.mjs";
-import { VALIDATE_AND_PR_SUB } from "../workflow-templates/sub-workflows.mjs";
 import {
   WorkflowEngine,
   getNodeType,
@@ -28,39 +27,6 @@ function makeTmpEngine() {
   });
   return engine;
 }
-
-function findNode(workflow, nodeId) {
-  return workflow.nodes.find((node) => node.id === nodeId);
-}
-
-describe("template-health-check self-improvement loop", () => {
-  it("collects recent runs, evaluates the latest run, and applies ratchet decisions", () => {
-    const template = getTemplate("template-health-check");
-    expect(template).toBeDefined();
-    expect(template.variables.maxBenchmarkRuns).toBe(12);
-    expect(findNode(template, "collect-recent-runs")?.type).toBe("action.run_command");
-    expect(findNode(template, "evaluate-latest-run")?.type).toBe("action.evaluate_run");
-    expect(findNode(template, "apply-ratchet")?.type).toBe("action.apply_self_improvement_ratchet");
-    expect(findNode(template, "ratchet-applied")?.type).toBe("condition.expression");
-    expect(findNode(template, "ratchet-reverted")?.type).toBe("condition.expression");
-    expect(template.edges.find((edge) => edge.source === "collect-recent-runs" && edge.target === "has-recent-runs")).toBeDefined();
-    expect(template.edges.find((edge) => edge.source === "evaluate-latest-run" && edge.target === "apply-ratchet")).toBeDefined();
-    expect(template.edges.find((edge) => edge.source === "apply-ratchet" && edge.target === "ratchet-applied")).toBeDefined();
-    expect(template.edges.find((edge) => edge.source === "ratchet-reverted" && edge.target === "log-ratchet-revert")).toBeDefined();
-  });
-});
-
-describe("template-error-recovery skillbook reuse", () => {
-  it("loads reusable recovery strategies before analyze/retry agent steps", () => {
-    const template = getTemplate("template-error-recovery");
-    expect(template).toBeDefined();
-    expect(findNode(template, "load-recovery-strategies")?.type).toBe("action.load_skillbook_strategies");
-    expect(findNode(template, "analyze-error")?.config?.prompt).toContain("Reusable prior strategies:");
-    expect(findNode(template, "retry-task")?.config?.prompt).toContain("reusableStrategies:");
-    expect(template.edges.find((edge) => edge.source === "check-retries" && edge.target === "load-recovery-strategies")).toBeDefined();
-    expect(template.edges.find((edge) => edge.source === "load-recovery-strategies" && edge.target === "analyze-error")).toBeDefined();
-  });
-});
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Task Archiver Template
@@ -156,56 +122,6 @@ describe("template-task-archiver", () => {
     expect(result.variables.ageHours).toBe(48);
     expect(result.variables.retentionDays).toBe(30);
     expect(result.variables.pruneEnabled).toBe(true); // unchanged default
-  });
-});
-
-describe("merge-before-push PR templates", () => {
-  it("template-task-lifecycle enables merge-before-push conflict resolution", () => {
-    const template = getTemplate("template-task-lifecycle");
-    const pushNode = findNode(template, "push-branch");
-
-    expect(pushNode).toBeDefined();
-    expect(pushNode.config.mergeBaseBeforePush).toBe(true);
-    expect(pushNode.config.autoResolveMergeConflicts).toBe(true);
-    expect(pushNode.config.conflictResolverSdk).toBe("auto");
-  });
-
-  it("template-backend-agent gates PR creation on a successful conflict-aware push", () => {
-    const template = getTemplate("template-backend-agent");
-    const pushNode = findNode(template, "push-branch");
-    const retryPushNode = findNode(template, "push-branch-retry");
-    const pushOkNode = findNode(template, "push-ok");
-    const retryPushOkNode = findNode(template, "push-ok-retry");
-
-    expect(pushNode.config.mergeBaseBeforePush).toBe(true);
-    expect(pushNode.config.autoResolveMergeConflicts).toBe(true);
-    expect(pushNode.config.conflictResolverSdk).toBe("{{agentSdk}}");
-    expect(retryPushNode.config.mergeBaseBeforePush).toBe(true);
-    expect(retryPushNode.config.autoResolveMergeConflicts).toBe(true);
-    expect(retryPushNode.config.conflictResolverSdk).toBe("{{agentSdk}}");
-    expect(pushOkNode).toBeDefined();
-    expect(retryPushOkNode).toBeDefined();
-    expect(template.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ source: "push-branch", target: "push-ok" }),
-      expect.objectContaining({ source: "push-ok", target: "create-pr", sourcePort: "yes" }),
-      expect.objectContaining({ source: "push-branch-retry", target: "push-ok-retry" }),
-      expect.objectContaining({ source: "push-ok-retry", target: "create-pr-retry", sourcePort: "yes" }),
-    ]));
-  });
-
-  it("validate-and-pr sub-workflow uses worktreePath and merge-before-push validation", () => {
-    const pushNode = findNode(VALIDATE_AND_PR_SUB, "push");
-    const pushOkNode = findNode(VALIDATE_AND_PR_SUB, "push-ok");
-
-    expect(pushNode.config.worktreePath).toBe("{{worktreePath}}");
-    expect(pushNode.config.baseBranch).toBe("{{baseBranch}}");
-    expect(pushNode.config.mergeBaseBeforePush).toBe(true);
-    expect(pushNode.config.autoResolveMergeConflicts).toBe(true);
-    expect(pushOkNode).toBeDefined();
-    expect(VALIDATE_AND_PR_SUB.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ source: "push", target: "push-ok" }),
-      expect.objectContaining({ source: "push-ok", target: "create-pr", sourcePort: "yes" }),
-    ]));
   });
 });
 

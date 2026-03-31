@@ -397,7 +397,7 @@ Check for relevant skills before implementing:
 ## Instructions
 1. Load relevant skills as described above.
 2. Read task requirements carefully.
-3. Implement required code changes using structured edit tools first. Prefer native Codex edit tools when available; otherwise use Bosun MCP file tools. Avoid repo-root scratch files such as \`.tmp-*\`, \`*.patch\`, ad hoc \`.cjs\` helpers, or redirected log files for edit workflows.
+3. Implement required code changes.
 4. Run relevant tests/lint/build checks.
 5. Commit with conventional commit format.
 6. Push branch updates.
@@ -968,3 +968,4 @@ Extract only when reuse is clear. Skip one-off logic.
   customToolsContext: `{{CUSTOM_TOOLS_BLOCK}}
 `,
 };
+

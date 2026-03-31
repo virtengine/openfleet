@@ -100,10 +100,6 @@ function buildLocalMeta() {
   const workspace = state.localWorkspace || {};
   const role = workspace.role || "workspace";
   const basePriority = role === "coordinator" ? 10 : 100;
-  const teamId = workspace.teamId || workspace.coordinationTeamId || null;
-  const teamRole = workspace.teamRole || workspace.coordinationRole || null;
-  const reportsTo = workspace.reportsTo || workspace.coordinationReportsTo || null;
-  const teamLevel = workspace.teamLevel || workspace.coordinationLevel || null;
 
   return {
     v: PRESENCE_VERSION,
@@ -116,10 +112,6 @@ function buildLocalMeta() {
     capabilities: Array.isArray(workspace.capabilities)
       ? workspace.capabilities
       : [],
-    ...(teamId ? { team_id: teamId, teamId } : {}),
-    ...(teamRole ? { team_role: teamRole, teamRole } : {}),
-    ...(reportsTo ? { reports_to: reportsTo, reportsTo } : {}),
-    ...(teamLevel ? { team_level: teamLevel, teamLevel } : {}),
     host: os.hostname(),
     platform: os.platform(),
     arch: os.arch(),

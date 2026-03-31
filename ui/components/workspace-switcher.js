@@ -883,16 +883,9 @@ export function WorkspaceSwitcher() {
       <${Button}
         size="small"
         variant="text"
-        className="ws-switcher-trigger"
         onClick=${handleMenuOpen}
         disabled=${Boolean(switchingId)}
-        sx=${{
-          textTransform: "none",
-          minWidth: 0,
-          maxWidth: { xs: 108, sm: 180 },
-          px: { xs: 0.75, sm: 1.25 },
-          justifyContent: "flex-start",
-        }}
+        sx=${{ textTransform: "none" }}
       >
         ${switchingId
           ? html`<${CircularProgress} size=${16} sx=${{ mr: 1 }} />`
@@ -902,9 +895,7 @@ export function WorkspaceSwitcher() {
               </span>`
             : null
         }
-        <span class="ws-switcher-trigger-label">
-          ${currentWs?.name || currentId || "Select Workspace"}
-        </span>
+        ${currentWs?.name || currentId || "Select Workspace"}
       <//>
 
       <${Menu}

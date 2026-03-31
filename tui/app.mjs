@@ -1,17 +1,6 @@
-import * as ReactModule from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import htm from "htm";
-import * as ink from "ink";
-
-const React = ReactModule.default ?? ReactModule;
-const useCallback = ReactModule.useCallback ?? React.useCallback;
-const useEffect = ReactModule.useEffect ?? React.useEffect;
-const useMemo = ReactModule.useMemo ?? React.useMemo;
-const useState = ReactModule.useState ?? React.useState;
-const Box = ink.Box ?? ink.default?.Box;
-const Text = ink.Text ?? ink.default?.Text;
-const useApp = ink.useApp ?? ink.default?.useApp;
-const useInput = ink.useInput ?? ink.default?.useInput;
-const useStdout = ink.useStdout ?? ink.default?.useStdout;
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 
 import wsBridgeFactory from "./lib/ws-bridge.mjs";
 import { getNextScreenForInput } from "./lib/navigation.mjs";
@@ -20,12 +9,9 @@ import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
 import LogsScreen from "./screens/logs.mjs";
 import StatusScreen from "./screens/status.mjs";
-import WorkflowsScreen from "./screens/workflows.mjs";
 import TelemetryScreen from "./screens/telemetry.mjs";
-import SettingsScreen from "./screens/settings.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
-import { useWorkflows } from "../ui/tui/useWorkflows.js";
 import CommandPalette from "./CommandPalette.js";
 import { buildCommandPaletteActions, createCommandPaletteHistoryAdapter } from "./lib/command-palette.mjs";
 import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "../ui/tui/HelpScreen.js";
@@ -43,10 +29,8 @@ const SCREENS = {
   status: StatusScreen,
   tasks: TasksScreen,
   agents: AgentsScreen,
-  logs: LogsScreen,
-  workflows: WorkflowsScreen,
   telemetry: TelemetryScreen,
-  settings: SettingsScreen,
+  logs: LogsScreen,
 };
 
 function ScreenTabs({ screen }) {
@@ -54,10 +38,8 @@ function ScreenTabs({ screen }) {
     { key: "status", num: "1", label: "Status" },
     { key: "tasks", num: "2", label: "Tasks" },
     { key: "agents", num: "3", label: "Agents" },
-    { key: "logs", num: "4", label: "Logs" },
-    { key: "workflows", num: "5", label: "Workflows" },
-    { key: "telemetry", num: "6", label: "Telemetry" },
-    { key: "settings", num: "7", label: "Settings" },
+    { key: "telemetry", num: "4", label: "Telemetry" },
+    { key: "logs", num: "5", label: "Logs" },
   ];
 
   return html`
@@ -126,7 +108,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [tasks, setTasks] = useState([]);
   const [workflows, setWorkflows] = useState([]);
   const [logs, setLogs] = useState([]);
-  const [workflowEvents, setWorkflowEvents] = useState([]);
   const [logsFilterState, setLogsFilterState] = useState(createDefaultLogsFilterState());
   const [error, setError] = useState(null);
   const [screenInputLocked, setScreenInputLocked] = useState(false);
@@ -142,12 +123,10 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     () => wsClient || wsBridgeFactory({ host, port }),
     [host, port, wsClient],
   );
-  const workflowsConfig = useMemo(() => ({}), []);
   const headerConfig = useMemo(
     () => readTuiHeaderConfig(bridge?.configDir),
     [bridge?.configDir],
   );
-  const workflowsState = useWorkflows(workflowsConfig);
   const resolvedHistory = useMemo(
     () => historyAdapter || createCommandPaletteHistoryAdapter(),
     [historyAdapter],
@@ -254,9 +233,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     on("tasks:update", () => {
       void refreshTasks().catch(() => {});
     });
-    on("workflow:status", (event) => {
-      setWorkflowEvents((previous) => [event, ...previous].slice(0, 25));
-    });
     on("task:update", (task) => {
       setTasks((previous) => upsertById(previous, task));
     });
@@ -306,14 +282,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       }
     };
   }, [bridge, effectiveRefreshMs, requestJson]);
-
-  useEffect(() => {
-    if (helpOpen) {
-      setFooterHints(getFooterHints(screen, { helpOpen: true }));
-      return;
-    }
-    setFooterHints(getFooterHints(screen));
-  }, [screen, helpOpen]);
 
   useEffect(() => {
     const intervalId = setInterval(() => {
@@ -425,7 +393,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       return;
     }
     setScreen((current) => getNextScreenForInput(current, input));
-  }, [exit, helpOpen, maxHelpScrollOffset, screen]);
+  }, [exit]);
 
   useInput((input, key) => {
     if (paletteOpen) return;
@@ -440,18 +408,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   });
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
-  const screenStats = stats;
-  const settingsState = {
-    configDir: bridge?.configDir,
-    host,
-    port,
-    protocol: bridge?.protocol,
-    refreshMs,
-    projectLabel: headerConfig.projectLabel,
-    configuredProviders: headerConfig.configuredProviders,
-    connectionState,
-  };
-  const footerText = (footerHints || []).map(([keysLabel, description]) => `${keysLabel} ${description}`).join("  |  ");
+  const screenStats = screen === "status" ? stats : undefined;
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
@@ -485,9 +442,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           sessions=${sessions}
           tasks=${tasks}
           logs=${logs}
-          workflowEvents=${workflowEvents}
-          workflowsState=${workflowsState}
-          settingsState=${settingsState}
           logsFilterState=${logsFilterState}
           wsBridge=${bridge}
           host=${host}
@@ -497,22 +451,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           onTasksChange=${setTasks}
           onLogsFilterStateChange=${setLogsFilterState}
           onInputCaptureChange=${setScreenInputLocked}
-          onFooterHintsChange=${setFooterHints}
         />
-        ${helpOpen
-          ? html`
-              <${Box} flexDirection="column" marginTop=${1}>
-                <${HelpScreen}
-                  scrollOffset=${helpScrollOffset}
-                  maxRows=${helpRows}
-                  groups=${CLI_SHORTCUT_GROUPS}
-                />
-              <//>
-            `
-          : null}
-      <//>
-      <${Box} paddingX=${1}>
-        <${Text} dimColor>${footerText}<//>
       <//>
     <//>
   `;

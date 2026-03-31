@@ -94,25 +94,15 @@ registerNodeType("loop.for_each", {
     required: ["items"],
   },
   async execute(node, ctx, engine) {
-    const rawExpr = node.config?.items || "[]";
-    // Strip trailing semicolons — the expression is wrapped in return(expr)
-    // so a stray ";" after an IIFE "})();" causes "Unexpected token ';'"
-    const expr = rawExpr.replace(/;\s*$/, "");
+    const expr = node.config?.items || "[]";
     let items;
     try {
       const fn = new Function("$data", "$ctx", `return (${expr});`);
       items = fn(ctx.data, ctx);
-    } catch (evalErr) {
-      ctx.log(node.id, `[loop] items expression eval error: ${evalErr?.message || evalErr} — expr snippet: ${expr.slice(0, 120)}`);
+    } catch {
       items = [];
     }
-    if (!Array.isArray(items)) {
-      ctx.log(node.id, `[loop] items is not array (type=${typeof items}), wrapping: ${JSON.stringify(items)?.slice(0, 200)}`);
-      items = [items];
-    }
-    if (items.length === 0) {
-      ctx.log(node.id, `[loop] items resolved to empty array — expression: ${expr.slice(0, 200)}`);
-    }
+    if (!Array.isArray(items)) items = [items];
     const max = node.config?.maxIterations || 50;
     items = items.slice(0, max);
     const varName = node.config?.variable || "item";

@@ -78,7 +78,6 @@ vi.mock("../config/config.mjs", () => ({
 
 vi.mock("../git/git-safety.mjs", () => ({
   evaluateBranchSafetyForPush: vi.fn(() => ({ safe: true })),
-  sanitizeGitEnv: vi.fn(() => ({})),
   normalizeBaseBranch: vi.fn((baseBranch = "main", remote = "origin") => {
     let branch = String(baseBranch || "main").trim();
     if (!branch) branch = "main";
@@ -298,42 +297,6 @@ describe("task-executor", () => {
       const status = ex.getStatus();
       expect(status.activeSlots).toBe(0);
       expect(status.slots).toEqual([]);
-    });
-
-    it("surfaces in-progress recovery telemetry in status and tui snapshots", () => {
-      const ex = new TaskExecutor();
-      ex._inProgressRecovery = {
-        totals: {
-          runs: 2,
-          failures: 1,
-          resumed: 3,
-          resetToTodo: 4,
-          reconciledDrift: 1,
-          skippedForActiveClaim: 2,
-          skippedForNoCommitBlock: 1,
-          resetUnstarted: 1,
-          staleSharedClaim: 2,
-          workflowOwnerlessReset: 1,
-        },
-        lastRun: {
-          trigger: "interval",
-          scannedCount: 5,
-          resumedCount: 2,
-          resetToTodoCount: 1,
-          staleSharedClaimCount: 1,
-          workflowOwnerlessResetCount: 1,
-          durationMs: 3200,
-        },
-        recentRuns: [],
-      };
-
-      const status = ex.getStatus();
-      const tuiStats = ex.getTuiStats();
-
-      expect(status.inProgressRecovery.totals.resetToTodo).toBe(4);
-      expect(status.inProgressRecovery.lastRun.scannedCount).toBe(5);
-      expect(tuiStats.recovery.totals.resumed).toBe(3);
-      expect(tuiStats.executor.activeSlots).toBe(0);
     });
 
     it("returns correct slot info when tasks are running", () => {
@@ -1047,14 +1010,6 @@ describe("task-executor", () => {
           ]),
         }),
       );
-      expect(runtimePayload.inProgressRecovery).toEqual(
-        expect.objectContaining({
-          totals: expect.objectContaining({
-            runs: 0,
-            resetToTodo: 0,
-          }),
-        }),
-      );
     });
 
     it("exposes adaptive lock reasons from historical telemetry", () => {
@@ -1144,46 +1099,6 @@ describe("task-executor", () => {
       expect(pausePayload.source).toBe("runtime-restore");
       expect(pausePayload.reason).toBe("manual");
       expect(typeof pausePayload.pausedAt).toBe("string");
-    });
-
-    it("restores persisted in-progress recovery telemetry from runtime state", () => {
-      existsSync.mockImplementation((filePath) =>
-        String(filePath || "").includes("task-executor-runtime.json"),
-      );
-      readFileSync.mockReturnValue(
-        JSON.stringify({
-          paused: false,
-          nextAgentInstanceId: 1,
-          inProgressRecovery: {
-            totals: {
-              runs: 3,
-              failures: 1,
-              resumed: 2,
-              resetToTodo: 5,
-              staleSharedClaim: 2,
-            },
-            lastRun: {
-              trigger: "startup",
-              scannedCount: 4,
-              resetToTodoCount: 2,
-              staleSharedClaimCount: 1,
-            },
-            recentRuns: [
-              { trigger: "interval", scannedCount: 1, resetToTodoCount: 1 },
-            ],
-          },
-          slots: {},
-        }),
-      );
-
-      const ex = new TaskExecutor();
-      ex._loadRuntimeState();
-      const recovery = ex.getStatus().inProgressRecovery;
-
-      expect(recovery.totals.runs).toBe(3);
-      expect(recovery.totals.resetToTodo).toBe(5);
-      expect(recovery.lastRun.trigger).toBe("startup");
-      expect(recovery.recentRuns).toHaveLength(1);
     });
   });
 
@@ -1729,12 +1644,7 @@ describe("task-executor", () => {
       ]);
       getActiveThreads.mockReturnValueOnce([]);
 
-      await expect(ex._recoverInterruptedInProgressTasks()).resolves.toEqual(
-        expect.objectContaining({
-          scannedCount: 1,
-          skippedForNoCommitBlockCount: 1,
-        }),
-      );
+      await expect(ex._recoverInterruptedInProgressTasks()).resolves.toBeUndefined();
 
       expect(updateTaskStatus).toHaveBeenCalledWith(
         "blocked-err-1",

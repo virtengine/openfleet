@@ -54,7 +54,6 @@ const CACHE_TTL = {
   benchmarks: 8000,
   telemetry: 15000,
   analytics: 30000,
-  "server-state": 5000,
   "retry-queue": 5000,
 };
 
@@ -246,7 +245,6 @@ export const connected = signal(false);
 export const statusData = signal(null);
 export const executorData = signal(null);
 export const projectSummary = signal(null);
-export const serverStateData = signal(null);
 
 // ── Tasks
 export const tasksLoaded = signal(false);
@@ -624,32 +622,10 @@ export async function loadStatus() {
     data: fallback,
   }));
   statusData.value = res.data ?? fallback;
-  const embeddedServerState = res?.serverState ?? statusData.value?.serverState ?? null;
-  if (embeddedServerState) {
-    serverStateData.value = embeddedServerState;
-    _cacheSet("/api/server-state", serverStateData.value);
-    _markFresh("server-state");
-  }
   connected.value = true;
   _cacheSet(url, statusData.value);
   _markFresh("status");
   _saveDashboardSnapshot();
-}
-
-export async function loadServerState(options = {}) {
-  const params = new URLSearchParams();
-  if (options?.details) params.set("details", "1");
-  const url = params.size > 0 ? `/api/server-state?${params}` : "/api/server-state";
-  const cached = _cacheGet(url);
-  if (_cacheFresh(url, "server-state")) return;
-  const fallback = cached?.data ?? serverStateData.value ?? null;
-  if (cached?.data) serverStateData.value = cached.data;
-  const res = await apiFetch(url, { _silent: true }).catch(() => ({
-    data: fallback,
-  }));
-  serverStateData.value = res?.data ?? res ?? fallback;
-  _cacheSet(url, serverStateData.value);
-  _markFresh("server-state");
 }
 
 /** Load executor state → executorData */
@@ -810,12 +786,6 @@ export async function loadInfra() {
     data: fallback,
   }));
   infraData.value = res.data ?? fallback;
-  const embeddedServerState = res?.serverState ?? infraData.value?.serverState ?? null;
-  if (embeddedServerState) {
-    serverStateData.value = embeddedServerState;
-    _cacheSet("/api/server-state", serverStateData.value);
-    _markFresh("server-state");
-  }
   _cacheSet(url, infraData.value);
   _markFresh("infra");
 }
@@ -1135,7 +1105,7 @@ const TAB_LOADERS = {
       loadUsageAnalytics(30),
       loadRetryQueue(),
     ]),
-  settings: () => Promise.all([loadStatus(), loadConfig(), loadServerState()]),
+  settings: () => Promise.all([loadStatus(), loadConfig()]),
 };
 
 /**
@@ -1262,3 +1232,4 @@ export function initWsInvalidationListener() {
       });
   });
 }
+

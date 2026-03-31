@@ -1103,66 +1103,6 @@ function pickTaskWorkflowSessionId(entry) {
   return "";
 }
 
-function uniqueTaskWorkflowIdentityList(values = []) {
-  const seen = new Set();
-  const out = [];
-  for (const value of Array.isArray(values) ? values : []) {
-    const normalized = String(value || "").trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(normalized);
-  }
-  return out;
-}
-
-function normalizeTaskWorkflowDelegationTopology(entry = {}) {
-  const rawTopology =
-    entry?.delegationTopology && typeof entry.delegationTopology === "object"
-      ? entry.delegationTopology
-      : (entry?.detail?.delegationTopology && typeof entry.detail.delegationTopology === "object"
-          ? entry.detail.delegationTopology
-          : (entry?.detail?.data?._delegationTopology && typeof entry.detail.data._delegationTopology === "object"
-              ? entry.detail.data._delegationTopology
-              : (entry?.data?._delegationTopology && typeof entry.data._delegationTopology === "object"
-                  ? entry.data._delegationTopology
-                  : null)));
-  const topology = rawTopology && typeof rawTopology === "object" ? rawTopology : {};
-  const pickString = (...candidates) => {
-    for (const value of candidates) {
-      const normalized = String(value || "").trim();
-      if (normalized) return normalized;
-    }
-    return "";
-  };
-  const pickList = (...candidates) => {
-    for (const value of candidates) {
-      if (Array.isArray(value) && value.length > 0) return uniqueTaskWorkflowIdentityList(value);
-    }
-    return [];
-  };
-  const delegationDepthRaw = Number(topology.delegationDepth ?? entry?.delegationDepth ?? 0);
-  const normalized = {
-    runId: pickString(topology.runId, entry?.runId),
-    rootRunId: pickString(topology.rootRunId, entry?.rootRunId),
-    parentRunId: pickString(topology.parentRunId, entry?.parentRunId),
-    taskId: pickString(topology.taskId, entry?.taskId, entry?.meta?.taskId, entry?.data?.taskId),
-    rootTaskId: pickString(topology.rootTaskId, entry?.rootTaskId),
-    parentTaskId: pickString(topology.parentTaskId, entry?.parentTaskId),
-    sessionId: pickString(topology.sessionId, pickTaskWorkflowSessionId(entry)),
-    rootSessionId: pickString(topology.rootSessionId, entry?.rootSessionId),
-    parentSessionId: pickString(topology.parentSessionId, entry?.parentSessionId),
-    delegationDepth: Number.isFinite(delegationDepthRaw) ? Math.max(0, Math.trunc(delegationDepthRaw)) : 0,
-    childRunIds: pickList(topology.childRunIds, entry?.childRunIds),
-    childSessionIds: pickList(topology.childSessionIds, entry?.childSessionIds),
-    familyRunIds: pickList(topology.familyRunIds, entry?.familyRunIds),
-    familySessionIds: pickList(topology.familySessionIds, entry?.familySessionIds),
-  };
-  const hasData = Object.entries(normalized).some(([key, value]) =>
-    Array.isArray(value) ? value.length > 0 : (key === "delegationDepth" ? value > 0 : Boolean(value)),
-  );
-  return hasData ? normalized : null;
-}
-
 export function normalizeTaskWorkflowRunEntry(entry) {
   if (entry == null) return null;
   if (typeof entry === "string") {
@@ -1187,11 +1127,6 @@ export function normalizeTaskWorkflowRunEntry(entry) {
           hasSessionLink: false,
           url: "",
           nodeId: "",
-          plannerTimeline: [],
-          proofBundle: null,
-          proofSummary: null,
-          issueAdvisor: null,
-          runGraph: null,
           meta: {},
         }
       : null;
@@ -1212,18 +1147,6 @@ export function normalizeTaskWorkflowRunEntry(entry) {
         ? Math.max(0, new Date(endedAt).getTime() - new Date(startedAt).getTime())
         : null);
   const sessionId = pickTaskWorkflowSessionId(entry);
-  const plannerTimeline = Array.isArray(entry.plannerTimeline)
-    ? entry.plannerTimeline
-    : (Array.isArray(entry.proofBundle?.plannerTimeline) ? entry.proofBundle.plannerTimeline : []);
-  const proofBundle =
-    entry.proofBundle && typeof entry.proofBundle === "object"
-      ? { ...entry.proofBundle }
-      : null;
-  const proofSummary =
-    entry.proofSummary && typeof entry.proofSummary === "object"
-      ? { ...entry.proofSummary }
-      : null;
-  const delegationTopology = normalizeTaskWorkflowDelegationTopology(entry);
   return {
     workflowId,
     workflowName,
@@ -1243,117 +1166,8 @@ export function normalizeTaskWorkflowRunEntry(entry) {
     hasSessionLink: Boolean(sessionId),
     url: String(entry.url || "").trim(),
     nodeId: String(entry.nodeId || "").trim(),
-    plannerTimeline,
-    proofBundle,
-    proofSummary,
-    issueAdvisor: entry.issueAdvisor && typeof entry.issueAdvisor === "object" ? { ...entry.issueAdvisor } : null,
-    runGraph: entry.runGraph && typeof entry.runGraph === "object" ? { ...entry.runGraph } : null,
-    rootRunId: delegationTopology?.rootRunId || String(entry.rootRunId || "").trim(),
-    parentRunId: delegationTopology?.parentRunId || String(entry.parentRunId || "").trim(),
-    rootTaskId: delegationTopology?.rootTaskId || String(entry.rootTaskId || "").trim(),
-    parentTaskId: delegationTopology?.parentTaskId || String(entry.parentTaskId || "").trim(),
-    rootSessionId: delegationTopology?.rootSessionId || String(entry.rootSessionId || "").trim(),
-    parentSessionId: delegationTopology?.parentSessionId || String(entry.parentSessionId || "").trim(),
-    delegationDepth: Number.isFinite(Number(delegationTopology?.delegationDepth ?? entry.delegationDepth))
-      ? Math.max(0, Math.trunc(Number(delegationTopology?.delegationDepth ?? entry.delegationDepth)))
-      : 0,
-    childRunIds: Array.isArray(delegationTopology?.childRunIds) ? [...delegationTopology.childRunIds] : [],
-    childSessionIds: Array.isArray(delegationTopology?.childSessionIds) ? [...delegationTopology.childSessionIds] : [],
-    familyRunIds: Array.isArray(delegationTopology?.familyRunIds) ? [...delegationTopology.familyRunIds] : [],
-    familySessionIds: Array.isArray(delegationTopology?.familySessionIds) ? [...delegationTopology.familySessionIds] : [],
-    delegationTopology: delegationTopology ? { ...delegationTopology } : null,
     meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
   };
-}
-
-function summarizeTaskWorkflowPlannerEvent(entry) {
-  if (!entry || typeof entry !== "object") return "";
-  const parts = [];
-  const stepLabel = String(entry.stepLabel || entry.nodeLabel || entry.nodeId || "").trim();
-  const summary = String(entry.summary || entry.reason || entry.error || "").trim();
-  const attachmentKind = String(entry.attachmentKind || "").trim();
-  const createdCount = Number(entry.createdCount || 0);
-  const skippedCount = Number(entry.skippedCount || 0);
-  if (stepLabel) parts.push(stepLabel);
-  if (summary) parts.push(summary);
-  if (attachmentKind) parts.push(attachmentKind.replaceAll("_", " "));
-  if (createdCount > 0 || skippedCount > 0) {
-    parts.push(`created ${createdCount} / skipped ${skippedCount}`);
-  }
-  return parts.join(" · ");
-}
-
-function buildTaskWorkflowProofBadges(run) {
-  const summary = run?.proofSummary && typeof run.proofSummary === "object" ? run.proofSummary : {};
-  const badges = [];
-  const plannerEventCount = Number(summary.plannerEventCount || run?.plannerTimeline?.length || 0);
-  const decisionCount = Number(summary.decisionCount || 0);
-  const evidenceCount = Number(summary.evidenceCount || 0);
-  const artifactCount = Number(summary.artifactCount || 0);
-  if (plannerEventCount > 0) badges.push(`${plannerEventCount} planner events`);
-  if (decisionCount > 0) badges.push(`${decisionCount} decisions`);
-  if (evidenceCount > 0) badges.push(`${evidenceCount} evidence`);
-  if (artifactCount > 0) badges.push(`${artifactCount} artifacts`);
-  return badges;
-}
-
-export function buildTaskWorkflowRunLineageBadges(run) {
-  const topology = run?.delegationTopology && typeof run.delegationTopology === "object"
-    ? run.delegationTopology
-    : normalizeTaskWorkflowDelegationTopology(run);
-  const runGraph = run?.runGraph && typeof run.runGraph === "object" ? run.runGraph : null;
-  const runCount = Array.isArray(runGraph?.runs) ? runGraph.runs.length : 0;
-  const executionCount = Array.isArray(runGraph?.executions) ? runGraph.executions.length : 0;
-  const timelineCount = Array.isArray(runGraph?.timeline) ? runGraph.timeline.length : 0;
-  const retryCount = Array.isArray(runGraph?.edges)
-    ? runGraph.edges.filter((entry) => entry?.type === "retry").length
-    : 0;
-  const badges = [];
-  if (runCount > 0) badges.push(`${runCount} runs`);
-  if (executionCount > 0) badges.push(`${executionCount} execution steps`);
-  if (timelineCount > 0) badges.push(`${timelineCount} lineage events`);
-  if (retryCount > 0) badges.push(`${retryCount} retries`);
-  if (Number(topology?.delegationDepth || 0) > 0) badges.push(`depth ${Number(topology.delegationDepth)}`);
-  if (Array.isArray(topology?.childRunIds) && topology.childRunIds.length > 0) {
-    badges.push(`${topology.childRunIds.length} child runs`);
-  }
-  if (Array.isArray(topology?.childSessionIds) && topology.childSessionIds.length > 0) {
-    badges.push(`${topology.childSessionIds.length} child sessions`);
-  }
-  return badges;
-}
-
-function buildTaskWorkflowRunTopologyLines(run) {
-  const topology = run?.delegationTopology && typeof run.delegationTopology === "object"
-    ? run.delegationTopology
-    : normalizeTaskWorkflowDelegationTopology(run);
-  if (!topology) return [];
-  const taskLine = [
-    topology.taskId ? `task ${topology.taskId}` : "",
-    topology.parentTaskId && topology.parentTaskId !== topology.taskId ? `parent ${topology.parentTaskId}` : "",
-    topology.rootTaskId && topology.rootTaskId !== topology.parentTaskId && topology.rootTaskId !== topology.taskId
-      ? `root ${topology.rootTaskId}`
-      : "",
-  ].filter(Boolean);
-  const sessionLine = [
-    topology.sessionId ? `current ${truncate(topology.sessionId, 36)}` : "",
-    topology.parentSessionId && topology.parentSessionId !== topology.sessionId
-      ? `parent ${truncate(topology.parentSessionId, 36)}`
-      : "",
-    topology.rootSessionId && topology.rootSessionId !== topology.parentSessionId && topology.rootSessionId !== topology.sessionId
-      ? `root ${truncate(topology.rootSessionId, 36)}`
-      : "",
-  ].filter(Boolean);
-  const familyLine = [
-    Array.isArray(topology.childRunIds) && topology.childRunIds.length > 0 ? `${topology.childRunIds.length} child runs` : "",
-    Array.isArray(topology.childSessionIds) && topology.childSessionIds.length > 0 ? `${topology.childSessionIds.length} child sessions` : "",
-    Array.isArray(topology.familyRunIds) && topology.familyRunIds.length > 1 ? `${topology.familyRunIds.length} family runs` : "",
-  ].filter(Boolean);
-  return [
-    taskLine.length > 0 ? `Task lineage: ${taskLine.join(" · ")}` : "",
-    sessionLine.length > 0 ? `Session ancestry: ${sessionLine.join(" · ")}` : "",
-    familyLine.length > 0 ? familyLine.join(" · ") : "",
-  ].filter(Boolean);
 }
 
 function buildTaskWorkflowRuns(task) {
@@ -1394,268 +1208,6 @@ export function buildTaskWorkflowRunStatusLine(run) {
   if (outcome && outcome !== status) parts.push(outcome);
   if (summary && summary !== status && summary !== outcome) parts.push(summary);
   return parts.join(" · ") || "No status summary";
-}
-
-function getTaskAuditText(value) {
-  if (value == null) return "";
-  if (typeof value === "string") return value.trim();
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return "";
-}
-
-function getTaskAuditValue(record, keys = []) {
-  if (!record || typeof record !== "object") return "";
-  for (const key of keys) {
-    const value = record?.[key];
-    if (Array.isArray(value)) {
-      const normalized = value.map((entry) => getTaskAuditText(entry)).filter(Boolean);
-      if (normalized.length) return normalized.join(", ");
-      continue;
-    }
-    const text = getTaskAuditText(value);
-    if (text) return text;
-  }
-  return "";
-}
-
-function getTaskAuditNestedSummary(value) {
-  if (!value || typeof value !== "object") return "";
-  return getTaskAuditValue(value, [
-    "summary",
-    "message",
-    "description",
-    "title",
-    "path",
-    "reason",
-    "error",
-    "status",
-    "decision",
-    "recommendation",
-    "kind",
-    "type",
-    "action",
-    "actionType",
-    "targetId",
-    "toolName",
-    "command",
-    "cwd",
-  ]);
-}
-
-function getTaskAuditTimestamp(record = {}) {
-  return getTaskAuditValue(record, [
-    "timestamp",
-    "createdAt",
-    "updatedAt",
-    "startedAt",
-    "completedAt",
-    "promotedAt",
-    "expires_at",
-    "expiresAt",
-    "claimed_at",
-    "claimedAt",
-    "renewed_at",
-    "renewedAt",
-  ]);
-}
-
-function formatTaskAuditTimestamp(record = {}) {
-  const timestamp = getTaskAuditTimestamp(record);
-  return timestamp ? formatRelative(timestamp) : "";
-}
-
-function formatTaskAuditConfidence(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "";
-  if (numeric >= 0 && numeric <= 1) return `${Math.round(numeric * 100)}%`;
-  return String(numeric);
-}
-
-function summarizeTaskAuditClaim(claim = {}) {
-  const bits = [];
-  const owner = getTaskAuditValue(claim, ["instance_id", "instanceId", "owner", "ownerId"]);
-  const token = getTaskAuditValue(claim, ["claim_token", "claimToken"]);
-  const expiresAt = getTaskAuditValue(claim, ["expires_at", "expiresAt"]);
-  const reason = getTaskAuditValue(claim, ["resolution_reason", "resolutionReason"]);
-  if (owner) bits.push(`owner ${owner}`);
-  if (token) bits.push(`token ${truncate(token, 24)}`);
-  if (expiresAt) bits.push(`expires ${formatRelative(expiresAt)}`);
-  if (reason) bits.push(reason);
-  return bits.join(" · ") || "Claim snapshot recorded";
-}
-
-function summarizeTaskAuditClaimEvent(event = {}) {
-  const action = getTaskAuditValue(event, ["action", "eventType"]) || "claim event";
-  const owner = getTaskAuditValue(event, [
-    "instance_id",
-    "instanceId",
-    "owner",
-    "existing_instance",
-    "existingInstance",
-    "previous_instance",
-    "previousInstance",
-  ]);
-  const reason = getTaskAuditValue(event, [
-    "resolution_reason",
-    "resolutionReason",
-    "rollback_reason",
-    "rollbackReason",
-    "forfeit_reason",
-    "forfeitReason",
-  ]);
-  return [action, owner ? `instance ${owner}` : "", reason].filter(Boolean).join(" · ") || "Claim event";
-}
-
-function summarizeTaskAuditToolCall(call = {}) {
-  const toolName = getTaskAuditValue(call, ["toolName", "toolId"]) || "tool call";
-  const status = getTaskAuditValue(call, ["status"]);
-  const summary = getTaskAuditValue(call, ["summary"]) || getTaskAuditNestedSummary(call.response) || getTaskAuditNestedSummary(call.request);
-  return [toolName, status && status !== toolName ? status : "", summary && summary !== status ? summary : ""]
-    .filter(Boolean)
-    .join(" · ") || "Tool call";
-}
-
-function summarizeTaskAuditArtifact(artifact = {}) {
-  return getTaskAuditValue(artifact, ["summary", "path", "kind"]) || getTaskAuditNestedSummary(artifact.metadata) || "Artifact";
-}
-
-function summarizeTaskAuditOperatorAction(action = {}) {
-  const actionType = getTaskAuditValue(action, ["actionType", "action"]) || "operator action";
-  const targetId = getTaskAuditValue(action, ["targetId"]);
-  const status = getTaskAuditValue(action, ["status"]);
-  const summary = getTaskAuditNestedSummary(action.result) || getTaskAuditNestedSummary(action.metadata) || getTaskAuditNestedSummary(action.request);
-  return [actionType, targetId ? `target ${targetId}` : "", status, summary].filter(Boolean).join(" · ") || "Operator action";
-}
-
-function summarizeTaskAuditPromotedStrategy(entry = {}) {
-  const recommendation = getTaskAuditValue(entry, ["recommendation", "decision", "strategyId"]) || "strategy";
-  const status = getTaskAuditValue(entry, ["status"]);
-  const verification = getTaskAuditValue(entry, ["verificationStatus", "verification_status"]);
-  const rationale = getTaskAuditValue(entry, ["rationale"]) || getTaskAuditNestedSummary(entry.document) || getTaskAuditNestedSummary(entry.payload);
-  return [recommendation, status, verification, rationale].filter(Boolean).join(" · ") || "Promoted strategy";
-}
-
-function summarizeTaskAuditTraceEvent(event = {}) {
-  const eventType = getTaskAuditValue(event, ["eventType"]) || "trace event";
-  const summary = getTaskAuditValue(event, ["summary", "error"]) || getTaskAuditNestedSummary(event.meta) || getTaskAuditNestedSummary(event.payload);
-  return [eventType, summary].filter(Boolean).join(" · ") || "Trace event";
-}
-
-function summarizeTaskAuditSessionActivity(activity = {}) {
-  const summary = getTaskAuditValue(activity, ["lastSummary", "latestTaskTitle", "latestWorkflowName"]);
-  const eventType = getTaskAuditValue(activity, ["latestEventType"]);
-  const status = getTaskAuditValue(activity, ["latestStatus"]);
-  const error = getTaskAuditValue(activity, ["lastErrorText"]);
-  return [summary, eventType, status, error].filter(Boolean).join(" · ") || "Session activity";
-}
-
-function summarizeTaskAuditAgentActivity(activity = {}) {
-  const summary = getTaskAuditValue(activity, ["lastSummary", "latestTaskTitle", "latestWorkflowName"]);
-  const eventType = getTaskAuditValue(activity, ["latestEventType"]);
-  const status = getTaskAuditValue(activity, ["latestStatus"]);
-  const error = getTaskAuditValue(activity, ["lastErrorText"]);
-  return [summary, eventType, status, error].filter(Boolean).join(" · ") || "Agent activity";
-}
-
-function resolveTaskWorkflowRunDelegationTopology(run = {}) {
-  const candidates = [
-    run?.delegationTopology,
-    run?.meta?.delegationTopology,
-    run?.detail?.delegationTopology,
-    run?.detail?.data?._delegationTopology,
-  ];
-  for (const candidate of candidates) {
-    if (candidate && typeof candidate === "object") return candidate;
-  }
-  return null;
-}
-
-function collectTaskWorkflowRunSessionIds(run = {}) {
-  const topology = resolveTaskWorkflowRunDelegationTopology(run);
-  const values = [
-    run?.sessionId,
-    run?.primarySessionId,
-    run?.meta?.sessionId,
-    run?.meta?.primarySessionId,
-    topology?.sessionId,
-    topology?.rootSessionId,
-    topology?.parentSessionId,
-    ...(Array.isArray(run?.sessionIds) ? run.sessionIds : []),
-    ...(Array.isArray(topology?.sessionIds) ? topology.sessionIds : []),
-  ];
-  const out = [];
-  const seen = new Set();
-  for (const value of values) {
-    const normalized = String(value || "").trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(normalized);
-  }
-  return out;
-}
-
-function collectTaskDurableSessionIds(task = {}, workflowRuns = [], auditActivity = null) {
-  const values = [
-    task?.sessionId,
-    task?.primarySessionId,
-    task?.meta?.sessionId,
-    task?.meta?.primarySessionId,
-    ...(Array.isArray(task?.meta?.linkedSessionIds) ? task.meta.linkedSessionIds : []),
-    ...(Array.isArray(auditActivity?.sessionIds) ? auditActivity.sessionIds : []),
-    auditActivity?.sessionActivity?.sessionId,
-  ];
-  for (const run of workflowRuns || []) {
-    values.push(...collectTaskWorkflowRunSessionIds(run));
-  }
-  const out = [];
-  const seen = new Set();
-  for (const value of values) {
-    const normalized = String(value || "").trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(normalized);
-  }
-  return out;
-}
-
-function summarizeTaskDelegationTopology(topology = {}) {
-  if (!topology || typeof topology !== "object") return "";
-  const parts = [];
-  const depth = Number(topology.delegationDepth);
-  const rootTaskId = String(topology.rootTaskId || "").trim();
-  const parentTaskId = String(topology.parentTaskId || "").trim();
-  const rootSessionId = String(topology.rootSessionId || "").trim();
-  const sessionCount = Array.isArray(topology.sessionIds) ? topology.sessionIds.length : 0;
-  if (Number.isFinite(depth) && depth >= 0) parts.push(`depth ${depth}`);
-  if (rootTaskId) parts.push(`root task ${rootTaskId}`);
-  if (parentTaskId && parentTaskId !== rootTaskId) parts.push(`parent task ${parentTaskId}`);
-  if (rootSessionId) parts.push(`root session ${rootSessionId}`);
-  if (sessionCount > 0) parts.push(`${sessionCount} durable sessions`);
-  return parts.join(" · ") || "Delegation topology recorded";
-}
-
-function buildTaskDelegationTopologyRows(workflowRuns = []) {
-  return (workflowRuns || [])
-    .map((run) => {
-      const topology = resolveTaskWorkflowRunDelegationTopology(run);
-      if (!topology) return null;
-      return {
-        run,
-        topology,
-        durableSessionIds: collectTaskWorkflowRunSessionIds(run),
-        summary: summarizeTaskDelegationTopology(topology),
-      };
-    })
-    .filter(Boolean);
-}
-
-function resolveTaskAuditSourceLabel(taskAuditActivity = null) {
-  if (!taskAuditActivity || typeof taskAuditActivity !== "object") return "";
-  const summary =
-    taskAuditActivity.summary && typeof taskAuditActivity.summary === "object"
-      ? taskAuditActivity.summary
-      : {};
-  return getTaskAuditValue(summary, ["stateSource", "storage", "store", "source"]) || "state ledger / SQLite";
 }
 
 export async function openTaskWorkflowRun(run, deps = {}) {
@@ -1955,14 +1507,11 @@ async function applyTaskLifecycleTransition(task, requestedStatus) {
     },
   );
 
-  const resolvedStatus =
-    String(apiResult?.data?.status || "").trim() || optimisticStatus;
-
   return {
     ok: true,
     cancelled: false,
     action: decision.action,
-    status: resolvedStatus,
+    status: optimisticStatus,
     response: apiResult,
   };
 }
@@ -3149,35 +2698,8 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [epicId, setEpicId] = useState(
     toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
   );
-  const [goalId, setGoalId] = useState(
-    toText(pickTaskField(task, ["goalId", "primaryGoalId"])),
-  );
-  const [parentGoalId, setParentGoalId] = useState(
-    toText(pickTaskField(task, ["parentGoalId"])),
-  );
   const [storyPoints, setStoryPoints] = useState(
     toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
-  );
-  const [budgetWindow, setBudgetWindow] = useState(
-    toText(pickTaskField(task, ["budgetWindow"])),
-  );
-  const [budgetCents, setBudgetCents] = useState(
-    toText(pickTaskField(task, ["budgetCents"])),
-  );
-  const [budgetCurrency, setBudgetCurrency] = useState(
-    toText(pickTaskField(task, ["budgetCurrency"])) || "USD",
-  );
-  const [coordinationTeamId, setCoordinationTeamId] = useState(
-    toText(pickTaskField(task, ["coordinationTeamId"])),
-  );
-  const [coordinationRole, setCoordinationRole] = useState(
-    toText(pickTaskField(task, ["coordinationRole"])),
-  );
-  const [coordinationReportsTo, setCoordinationReportsTo] = useState(
-    toText(pickTaskField(task, ["coordinationReportsTo"])),
-  );
-  const [coordinationLevel, setCoordinationLevel] = useState(
-    toText(pickTaskField(task, ["coordinationLevel"])),
   );
   const [dueDate, setDueDate] = useState(normalizeTaskDueDateInput(task));
   const [parentTaskId, setParentTaskId] = useState(
@@ -3187,14 +2709,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [subtasksLoading, setSubtasksLoading] = useState(false);
   const [subtaskTitle, setSubtaskTitle] = useState("");
   const [creatingSubtask, setCreatingSubtask] = useState(false);
-  const [replanProposal, setReplanProposal] = useState(
-    task?.meta?.replanProposal && typeof task.meta.replanProposal === "object"
-      ? task.meta.replanProposal
-      : null,
-  );
-  const [replanning, setReplanning] = useState(false);
-  const [applyingReplan, setApplyingReplan] = useState(false);
-  const [planningActionMode, setPlanningActionMode] = useState("replan");
   const attachmentInputRef = useRef(null);
   const initialSnapshotRef = useRef({
     title: sanitizeTaskText(task?.title || ""),
@@ -3207,16 +2721,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     assignee: toText(pickTaskField(task, ["assignee"])),
     assigneesInput: normalizeTaskAssigneesInput(task),
     epicId: toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
-    goalId: toText(pickTaskField(task, ["goalId", "primaryGoalId"])),
-    parentGoalId: toText(pickTaskField(task, ["parentGoalId"])),
     storyPoints: toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
-    budgetWindow: toText(pickTaskField(task, ["budgetWindow"])),
-    budgetCents: toText(pickTaskField(task, ["budgetCents"])),
-    budgetCurrency: toText(pickTaskField(task, ["budgetCurrency"])) || "USD",
-    coordinationTeamId: toText(pickTaskField(task, ["coordinationTeamId"])),
-    coordinationRole: toText(pickTaskField(task, ["coordinationRole"])),
-    coordinationReportsTo: toText(pickTaskField(task, ["coordinationReportsTo"])),
-    coordinationLevel: toText(pickTaskField(task, ["coordinationLevel"])),
     dueDate: normalizeTaskDueDateInput(task),
     parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
   });
@@ -3255,141 +2760,12 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.events,
     task?.activity,
   ]);
-  const baseWorkflowRuns = useMemo(() => buildTaskWorkflowRuns(task), [
+  const workflowRuns = useMemo(() => buildTaskWorkflowRuns(task), [
     task?.id,
     task?.workflowRuns,
     task?.workflowHistory,
     task?.workflows,
   ]);
-  const taskAuditActivity = useMemo(() => {
-    if (task?.auditActivity && typeof task.auditActivity === "object") return task.auditActivity;
-    if (task?.meta?.auditActivity && typeof task.meta.auditActivity === "object") return task.meta.auditActivity;
-    return null;
-  }, [task?.auditActivity, task?.meta]);
-  const taskAuditSummary = taskAuditActivity?.summary && typeof taskAuditActivity.summary === "object"
-    ? taskAuditActivity.summary
-    : {};
-  const taskAuditEvents = Array.isArray(taskAuditActivity?.auditEvents) ? taskAuditActivity.auditEvents : [];
-  const taskAuditArtifacts = Array.isArray(taskAuditActivity?.artifacts) ? taskAuditActivity.artifacts : [];
-  const taskAuditToolCalls = Array.isArray(taskAuditActivity?.toolCalls) ? taskAuditActivity.toolCalls : [];
-  const taskAuditOperatorActions = Array.isArray(taskAuditActivity?.operatorActions) ? taskAuditActivity.operatorActions : [];
-  const taskAuditPromotedStrategies = Array.isArray(taskAuditActivity?.promotedStrategies) ? taskAuditActivity.promotedStrategies : [];
-  const taskAuditPromotedStrategyEvents = Array.isArray(taskAuditActivity?.promotedStrategyEvents)
-    ? taskAuditActivity.promotedStrategyEvents
-    : [];
-  const taskAuditTraceEvents = Array.isArray(taskAuditActivity?.taskTraceEvents) ? taskAuditActivity.taskTraceEvents : [];
-  const taskAuditClaim = taskAuditActivity?.claim && typeof taskAuditActivity.claim === "object"
-    ? taskAuditActivity.claim
-    : null;
-  const taskAuditClaimEvents = Array.isArray(taskAuditActivity?.claimEvents) ? taskAuditActivity.claimEvents : [];
-  const taskAuditSessionIds = Array.isArray(taskAuditActivity?.sessionIds) ? taskAuditActivity.sessionIds : [];
-  const taskAuditAgentIds = Array.isArray(taskAuditActivity?.agentIds) ? taskAuditActivity.agentIds : [];
-  const taskAuditSessionActivity =
-    taskAuditActivity?.sessionActivity && typeof taskAuditActivity.sessionActivity === "object"
-      ? taskAuditActivity.sessionActivity
-      : null;
-  const taskAuditAgentActivity =
-    taskAuditActivity?.agentActivity && typeof taskAuditActivity.agentActivity === "object"
-      ? taskAuditActivity.agentActivity
-      : null;
-  const taskAuditWorkflowRuns = useMemo(() => {
-    if (!Array.isArray(taskAuditActivity?.workflowRuns)) return [];
-    return taskAuditActivity.workflowRuns
-      .map((entry) => normalizeTaskWorkflowRunEntry(entry))
-      .filter((entry) => entry && (entry.workflowId || entry.runId || entry.status || entry.result));
-  }, [taskAuditActivity?.workflowRuns]);
-  const workflowRuns = useMemo(() => {
-    const merged = [...baseWorkflowRuns, ...taskAuditWorkflowRuns];
-    const deduped = [];
-    const seen = new Set();
-    for (const run of merged) {
-      const key = String(
-        run?.runId
-          || `${run?.workflowId || ""}:${run?.nodeId || ""}:${run?.timestamp || run?.startedAt || run?.status || ""}`,
-      ).trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      deduped.push(run);
-    }
-    deduped.sort((a, b) => {
-      const ta = a?.timestamp ? new Date(a.timestamp).getTime() : 0;
-      const tb = b?.timestamp ? new Date(b.timestamp).getTime() : 0;
-      return tb - ta;
-    });
-    return deduped.slice(0, 30);
-  }, [baseWorkflowRuns, taskAuditWorkflowRuns]);
-  const taskTopology = useMemo(() => (
-    task?.topology && typeof task.topology === "object" ? task.topology : {}
-  ), [task?.topology]);
-  const taskGraphPath = useMemo(() => uniqueTaskWorkflowIdentityList(taskTopology?.graphPath || []), [taskTopology]);
-  const taskSessionAncestry = useMemo(() => [
-    taskTopology?.sessionId ? `current ${truncate(taskTopology.sessionId, 36)}` : "",
-    taskTopology?.parentSessionId && taskTopology.parentSessionId !== taskTopology.sessionId
-      ? `parent ${truncate(taskTopology.parentSessionId, 36)}`
-      : "",
-    taskTopology?.rootSessionId
-      && taskTopology.rootSessionId !== taskTopology.parentSessionId
-      && taskTopology.rootSessionId !== taskTopology.sessionId
-      ? `root ${truncate(taskTopology.rootSessionId, 36)}`
-      : "",
-  ].filter(Boolean), [taskTopology]);
-  const hasTaskAuditContent = Boolean(
-    taskAuditEvents.length
-    || taskAuditArtifacts.length
-    || taskAuditToolCalls.length
-    || taskAuditOperatorActions.length
-    || taskAuditPromotedStrategies.length
-    || taskAuditPromotedStrategyEvents.length
-    || taskAuditTraceEvents.length
-    || taskAuditClaim
-    || taskAuditClaimEvents.length
-    || taskAuditWorkflowRuns.length
-    || taskAuditSessionIds.length
-    || taskAuditAgentIds.length
-    || taskAuditSessionActivity
-    || taskAuditAgentActivity,
-  );
-  const taskAuditEventCount = Number(taskAuditSummary.eventCount || taskAuditEvents.length || 0);
-  const taskAuditClaimEventCount = Number(taskAuditSummary.claimEventCount || taskAuditClaimEvents.length || 0);
-  const taskAuditRunCount = Number(taskAuditSummary.runCount || taskAuditWorkflowRuns.length || 0);
-  const taskAuditToolCallCount = Number(taskAuditSummary.toolCallCount || taskAuditToolCalls.length || 0);
-  const taskAuditArtifactCount = Number(taskAuditSummary.artifactCount || taskAuditArtifacts.length || 0);
-  const taskAuditOperatorActionCount = Number(taskAuditSummary.operatorActionCount || taskAuditOperatorActions.length || 0);
-  const taskAuditPromotedStrategyCount = Number(taskAuditSummary.promotedStrategyCount || taskAuditPromotedStrategies.length || 0);
-  const taskAuditTraceCount = Number(taskAuditSummary.taskTraceCount || taskAuditTraceEvents.length || 0);
-  const taskAuditSourceLabel = useMemo(() => resolveTaskAuditSourceLabel(taskAuditActivity), [
-    taskAuditActivity,
-  ]);
-  const taskDurableSessionIds = useMemo(() => collectTaskDurableSessionIds(task, workflowRuns, taskAuditActivity), [
-    task?.id,
-    task?.sessionId,
-    task?.primarySessionId,
-    task?.meta,
-    workflowRuns,
-    taskAuditActivity,
-  ]);
-  const taskPrimaryDurableSessionId =
-    taskAuditSessionActivity?.sessionId || linkedSessionId || taskDurableSessionIds[0] || "";
-  const taskDelegationTopologyRows = useMemo(() => buildTaskDelegationTopologyRows(workflowRuns), [
-    workflowRuns,
-  ]);
-  const maxTaskDelegationDepth = taskDelegationTopologyRows.reduce((maxDepth, entry) => {
-    const depth = Number(entry?.topology?.delegationDepth);
-    if (!Number.isFinite(depth)) return maxDepth;
-    return Math.max(maxDepth, depth);
-  }, 0);
-  const plannerState = task?.meta?.plannerState?.latestReplan || null;
-  const planningMode = String(replanProposal?.mode || plannerState?.mode || "replan").trim().toLowerCase() === "decompose"
-    ? "decompose"
-    : "replan";
-  const planningLabel = planningMode === "decompose" ? "Decomposition" : "Replan";
-  const planningVerb = planningMode === "decompose" ? "decompose" : "replan";
-  const plannerOwnedTaskIds = Array.isArray(replanProposal?.createdTaskIds)
-    ? replanProposal.createdTaskIds.map((entry) => String(entry || "").trim()).filter(Boolean)
-    : [];
-  const plannerOwnedSubtasks = plannerOwnedTaskIds.length > 0
-    ? subtasks.filter((entry) => plannerOwnedTaskIds.includes(String(entry?.id || "").trim()))
-    : [];
   const historyTableRef = useRef(null);
   const [historyScrollTop, setHistoryScrollTop] = useState(0);
   const [historyViewportHeight, setHistoryViewportHeight] = useState(320);
@@ -3478,21 +2854,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const renderWorkflowActivityCard = useCallback((run, key) => {
     const metaLine = buildTaskWorkflowRunMetaLine(run);
     const statusLine = buildTaskWorkflowRunStatusLine(run);
-    const plannerPreview = Array.isArray(run?.plannerTimeline) ? run.plannerTimeline.slice(-3).reverse() : [];
-    const proofBadges = buildTaskWorkflowProofBadges(run);
-    const lineageBadges = buildTaskWorkflowRunLineageBadges(run);
-    const topologyLines = buildTaskWorkflowRunTopologyLines(run);
-    const latestDecision = String(
-      run?.proofSummary?.latestDecision?.summary
-      || run?.issueAdvisor?.summary
-      || "",
-    ).trim();
-    const latestArtifact = String(
-      run?.proofSummary?.latestArtifact?.path
-      || run?.proofSummary?.latestArtifact?.summary
-      || run?.proofSummary?.latestEvidence?.summary
-      || "",
-    ).trim();
     return html`
       <div
         class="task-comment-item task-workflow-run-card"
@@ -3515,42 +2876,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             <div class="task-comment-meta">${metaLine || "workflow"}</div>
             <div class="task-comment-body">${statusLine}</div>
             ${run.nodeId ? html`<div class="task-comment-meta">Node: ${run.nodeId}</div>` : null}
-            ${proofBadges.length > 0 ? html`
-              <div class="task-comment-meta" style=${{ marginTop: "6px" }}>
-                ${proofBadges.join(" · ")}
-              </div>
-            ` : null}
-            ${lineageBadges.length > 0 ? html`
-              <div class="task-comment-meta" style=${{ marginTop: proofBadges.length > 0 ? "4px" : "6px" }}>
-                Lineage: ${lineageBadges.join(" · ")}
-              </div>
-            ` : null}
-            ${topologyLines.length > 0 ? html`
-              <div style=${{ marginTop: lineageBadges.length > 0 || proofBadges.length > 0 ? "4px" : "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                ${topologyLines.map((line, index) => html`
-                  <div class="task-comment-meta" key=${`topology-${index}`}>${line}</div>
-                `)}
-              </div>
-            ` : null}
-            ${latestDecision ? html`
-              <div class="task-comment-body" style=${{ marginTop: "6px" }}>
-                Decision: ${latestDecision}
-              </div>
-            ` : null}
-            ${latestArtifact ? html`
-              <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                Proof: ${latestArtifact}
-              </div>
-            ` : null}
-            ${plannerPreview.length > 0 ? html`
-              <div style=${{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                ${plannerPreview.map((entry, index) => html`
-                  <div class="task-comment-meta" key=${`planner-preview-${index}`}>
-                    ${summarizeTaskWorkflowPlannerEvent(entry)}
-                  </div>
-                `)}
-              </div>
-            ` : null}
           </div>
           <div class="task-workflow-run-actions" onClick=${(event) => event.stopPropagation()}>
             ${run.hasRunLink ? html`
@@ -3693,36 +3018,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       assignee: assignee || "",
       assigneesInput: assigneesInput || "",
       epicId: epicId || "",
-      goalId: goalId || "",
-      parentGoalId: parentGoalId || "",
       storyPoints: storyPoints || "",
-      budgetWindow: budgetWindow || "",
-      budgetCents: budgetCents || "",
-      budgetCurrency: budgetCurrency || "",
-      coordinationTeamId: coordinationTeamId || "",
-      coordinationRole: coordinationRole || "",
-      coordinationReportsTo: coordinationReportsTo || "",
-      coordinationLevel: coordinationLevel || "",
       dueDate: dueDate || "",
       parentTaskId: parentTaskId || "",
     }),
     [
       assignee,
       assigneesInput,
-      budgetCents,
-      budgetCurrency,
-      budgetWindow,
       baseBranch,
-      coordinationLevel,
-      coordinationReportsTo,
-      coordinationRole,
-      coordinationTeamId,
       description,
       draft,
       dueDate,
       epicId,
-      goalId,
-      parentGoalId,
       parentTaskId,
       priority,
       status,
@@ -3736,22 +3043,15 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     [baselineVersion, editableSnapshot],
   );
   const hasUnsaved = changeCount > 0;
-  const activePlanningVerb = String(planningActionMode || planningMode || "replan").trim().toLowerCase() === "decompose"
-    ? "decompose"
-    : "replan";
   const activeOperationLabel = saving
     ? "Task save is in progress"
     : rewriting
       ? "Improve with AI is still running"
-      : replanning
-        ? `AI ${activePlanningVerb} is still running`
-        : applyingReplan
-          ? `Applying ${activePlanningVerb} graph changes`
-          : uploadingAttachment
-          ? "Attachment upload is still running"
-          : manualBusy
-            ? "Manual takeover update is in progress"
-            : "";
+      : uploadingAttachment
+        ? "Attachment upload is still running"
+        : manualBusy
+          ? "Manual takeover update is in progress"
+          : "";
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -3789,16 +3089,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     setAssignee(toText(pickTaskField(task, ["assignee"])));
     setAssigneesInput(normalizeTaskAssigneesInput(task));
     setEpicId(toText(pickTaskField(task, ["epicId", "epic", "epic_id"])));
-    setGoalId(toText(pickTaskField(task, ["goalId", "primaryGoalId"])));
-    setParentGoalId(toText(pickTaskField(task, ["parentGoalId"])));
     setStoryPoints(toText(pickTaskField(task, ["storyPoints", "points", "story_points"])));
-    setBudgetWindow(toText(pickTaskField(task, ["budgetWindow"])));
-    setBudgetCents(toText(pickTaskField(task, ["budgetCents"])));
-    setBudgetCurrency(toText(pickTaskField(task, ["budgetCurrency"])) || "USD");
-    setCoordinationTeamId(toText(pickTaskField(task, ["coordinationTeamId"])));
-    setCoordinationRole(toText(pickTaskField(task, ["coordinationRole"])));
-    setCoordinationReportsTo(toText(pickTaskField(task, ["coordinationReportsTo"])));
-    setCoordinationLevel(toText(pickTaskField(task, ["coordinationLevel"])));
     setDueDate(normalizeTaskDueDateInput(task));
     setParentTaskId(toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])));
     initialSnapshotRef.current = {
@@ -3812,32 +3103,12 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       assignee: toText(pickTaskField(task, ["assignee"])),
       assigneesInput: normalizeTaskAssigneesInput(task),
       epicId: toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
-      goalId: toText(pickTaskField(task, ["goalId", "primaryGoalId"])),
-      parentGoalId: toText(pickTaskField(task, ["parentGoalId"])),
       storyPoints: toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
-      budgetWindow: toText(pickTaskField(task, ["budgetWindow"])),
-      budgetCents: toText(pickTaskField(task, ["budgetCents"])),
-      budgetCurrency: toText(pickTaskField(task, ["budgetCurrency"])) || "USD",
-      coordinationTeamId: toText(pickTaskField(task, ["coordinationTeamId"])),
-      coordinationRole: toText(pickTaskField(task, ["coordinationRole"])),
-      coordinationReportsTo: toText(pickTaskField(task, ["coordinationReportsTo"])),
-      coordinationLevel: toText(pickTaskField(task, ["coordinationLevel"])),
       dueDate: normalizeTaskDueDateInput(task),
       parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
     };
     setBaselineVersion((v) => v + 1);
   }, [task?.id]);
-
-  useEffect(() => {
-    setReplanProposal(
-      task?.meta?.replanProposal && typeof task.meta.replanProposal === "object"
-        ? task.meta.replanProposal
-        : null,
-    );
-  }, [task?.id, task?.meta?.replanProposal]);
-  useEffect(() => {
-    setPlanningActionMode(String(task?.meta?.replanProposal?.mode || plannerState?.mode || "replan"));
-  }, [task?.id, task?.meta?.replanProposal?.mode, plannerState?.mode]);
 
   useEffect(() => {
     if (!workspaceOptions.length) {
@@ -3878,16 +3149,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     setAssignee(base.assignee || "");
     setAssigneesInput(base.assigneesInput || "");
     setEpicId(base.epicId || "");
-    setGoalId(base.goalId || "");
-    setParentGoalId(base.parentGoalId || "");
     setStoryPoints(base.storyPoints || "");
-    setBudgetWindow(base.budgetWindow || "");
-    setBudgetCents(base.budgetCents || "");
-    setBudgetCurrency(base.budgetCurrency || "USD");
-    setCoordinationTeamId(base.coordinationTeamId || "");
-    setCoordinationRole(base.coordinationRole || "");
-    setCoordinationReportsTo(base.coordinationReportsTo || "");
-    setCoordinationLevel(base.coordinationLevel || "");
     setDueDate(base.dueDate || "");
     setParentTaskId(base.parentTaskId || "");
     showToast("Changes discarded", "info");
@@ -3906,16 +3168,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     const assigneeValue = toText(assignee);
     const assigneesValue = normalizeDependencyInput(assigneesInput);
     const epicValue = toText(epicId);
-    const goalValue = toText(goalId);
-    const parentGoalValue = toText(parentGoalId);
     const storyPointsValue = toText(storyPoints);
-    const budgetWindowValue = toText(budgetWindow);
-    const budgetCentsValue = toText(budgetCents);
-    const budgetCurrencyValue = toText(budgetCurrency) || "USD";
-    const coordinationTeamIdValue = toText(coordinationTeamId);
-    const coordinationRoleValue = toText(coordinationRole);
-    const coordinationReportsToValue = toText(coordinationReportsTo);
-    const coordinationLevelValue = toText(coordinationLevel);
     const dueDateValue = toText(dueDate);
     const parentTaskValue = toText(parentTaskId);
     try {
@@ -3937,17 +3190,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   assignee: assigneeValue || null,
                   assignees: assigneesValue,
                   epicId: epicValue || null,
-                  goalId: goalValue || null,
-                  primaryGoalId: goalValue || null,
-                  parentGoalId: parentGoalValue || null,
                   storyPoints: storyPointsValue || null,
-                  budgetWindow: budgetWindowValue || null,
-                  budgetCents: budgetCentsValue || null,
-                  budgetCurrency: budgetCurrencyValue || null,
-                  coordinationTeamId: coordinationTeamIdValue || null,
-                  coordinationRole: coordinationRoleValue || null,
-                  coordinationReportsTo: coordinationReportsToValue || null,
-                  coordinationLevel: coordinationLevelValue || null,
                   dueDate: dueDateValue || null,
                   parentTaskId: parentTaskValue || null,
                 }
@@ -3971,16 +3214,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               assignee: assigneeValue || undefined,
               assignees: assigneesValue.length ? assigneesValue : undefined,
               epicId: epicValue || undefined,
-              goalId: goalValue || undefined,
-              parentGoalId: parentGoalValue || undefined,
               storyPoints: storyPointsValue || undefined,
-              budgetWindow: budgetWindowValue || undefined,
-              budgetCents: budgetCentsValue || undefined,
-              budgetCurrency: budgetCurrencyValue || undefined,
-              coordinationTeamId: coordinationTeamIdValue || undefined,
-              coordinationRole: coordinationRoleValue || undefined,
-              coordinationReportsTo: coordinationReportsToValue || undefined,
-              coordinationLevel: coordinationLevelValue || undefined,
               dueDate: dueDateValue || undefined,
               parentTaskId: parentTaskValue || undefined,
             }),
@@ -4009,16 +3243,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         assignee: assigneeValue,
         assigneesInput: assigneesValue.join(", "),
         epicId: epicValue,
-        goalId: goalValue,
-        parentGoalId: parentGoalValue,
         storyPoints: storyPointsValue,
-        budgetWindow: budgetWindowValue,
-        budgetCents: budgetCentsValue,
-        budgetCurrency: budgetCurrencyValue,
-        coordinationTeamId: coordinationTeamIdValue,
-        coordinationRole: coordinationRoleValue,
-        coordinationReportsTo: coordinationReportsToValue,
-        coordinationLevel: coordinationLevelValue,
         dueDate: dueDateValue,
         parentTaskId: parentTaskValue,
       };
@@ -4333,76 +3558,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       showToast("Failed to create subtask", "error");
     } finally {
       setCreatingSubtask(false);
-    }
-  };
-  const handleGenerateReplan = async (mode = "replan") => {
-    if (!task?.id || replanning) return;
-    const normalizedMode = String(mode || "replan").trim().toLowerCase() === "decompose" ? "decompose" : "replan";
-    setPlanningActionMode(normalizedMode);
-    setReplanning(true);
-    haptic("medium");
-    try {
-      const res = await apiFetch(
-        normalizedMode === "decompose" ? "/api/tasks/decompose/propose" : "/api/tasks/replan/propose",
-        {
-        method: "POST",
-          body: JSON.stringify({ taskId: task.id, planningMode: normalizedMode }),
-        },
-      );
-      const nextProposal = res?.proposal || res?.data || res?.task?.meta?.replanProposal || null;
-      if (nextProposal) {
-        setReplanProposal(nextProposal);
-        showToast(normalizedMode === "decompose" ? "Decomposition proposal generated" : "Replan proposal generated", "success");
-        scheduleRefresh(120);
-      } else {
-        showToast(normalizedMode === "decompose" ? "Decomposition proposal was empty" : "Replan proposal was empty", "warning");
-      }
-    } catch {
-      /* toast via apiFetch */
-    } finally {
-      setReplanning(false);
-    }
-  };
-  const handleApplyReplan = async () => {
-    if (!task?.id || applyingReplan || !replanProposal) return;
-    const normalizedMode = String(replanProposal?.mode || "replan").trim().toLowerCase() === "decompose" ? "decompose" : "replan";
-    setPlanningActionMode(normalizedMode);
-    const subtaskCount = Array.isArray(replanProposal?.subtasks) ? replanProposal.subtasks.length : 0;
-    const ok = await showConfirm(
-      subtaskCount > 0
-        ? `Apply this ${normalizedMode === "decompose" ? "decomposition" : "replan"} and create ${subtaskCount} subtasks?`
-        : `Apply this ${normalizedMode === "decompose" ? "decomposition" : "replan"} to update task planning state?`,
-    );
-    if (!ok) return;
-    setApplyingReplan(true);
-    haptic("medium");
-    try {
-      const res = await apiFetch(normalizedMode === "decompose" ? "/api/tasks/decompose/apply" : "/api/tasks/replan/apply", {
-        method: "POST",
-        body: JSON.stringify({ taskId: task.id, planningMode: normalizedMode }),
-      });
-      const appliedProposal = res?.proposal || res?.data?.proposal || null;
-      const createdSubtasks = Array.isArray(res?.createdSubtasks)
-        ? res.createdSubtasks
-        : Array.isArray(res?.data?.createdSubtasks)
-          ? res.data.createdSubtasks
-          : [];
-      if (appliedProposal) setReplanProposal(appliedProposal);
-      if (createdSubtasks.length > 0) {
-        setSubtasks((prev) => normalizeSubtasksPayload({ subtasks: [...prev, ...createdSubtasks] }));
-      }
-      showToast(
-        createdSubtasks.length > 0
-          ? `${normalizedMode === "decompose" ? "Decomposition" : "Replan"} applied: ${createdSubtasks.length} subtasks created`
-          : `${normalizedMode === "decompose" ? "Decomposition" : "Replan"} applied`,
-        "success",
-      );
-      await loadSubtasks();
-      scheduleRefresh(120);
-    } catch {
-      /* toast via apiFetch */
-    } finally {
-      setApplyingReplan(false);
     }
   };
   const handleRetry = async () => {
@@ -4868,141 +4023,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         </div>
 
-        ${/* AI Replan */ ""}
-        <div class="task-section">
-          <div class="task-section-title">
-            AI Replan
-            ${replanProposal?.status && html`<span class="task-tab-count">${replanProposal.status}</span>`}
-            <span style="margin-left:auto;display:flex;gap:6px;">
-              <${Button}
-                variant="text"
-                size="small"
-                onClick=${() => { void handleGenerateReplan("replan"); }}
-                disabled=${replanning || applyingReplan}
-              >
-                ${replanning ? "Planning…" : "Generate"}
-              <//>
-              <${Button}
-                variant="text"
-                size="small"
-                onClick=${() => { void handleGenerateReplan("decompose"); }}
-                disabled=${replanning || applyingReplan}
-              >
-                Decompose
-              <//>
-              <${Button}
-                variant="contained"
-                size="small"
-                onClick=${handleApplyReplan}
-                disabled=${applyingReplan || replanning || !replanProposal}
-              >
-                ${applyingReplan ? "Applying…" : "Apply"}
-              <//>
-            </span>
-          </div>
-          <div class="task-section-body">
-            ${!replanProposal && html`
-              <div class="meta-text">
-                Generate a graph-aware replan to adjust the current task graph, or use Decompose to turn this task into a planner-owned child graph with explicit subtasks and dependencies.
-              </div>
-            `}
-            ${replanProposal && html`
-              <div class="task-comments-list" style=${{ marginBottom: "10px" }}>
-                <div class="task-comment-item">
-                  <div class="task-comment-meta">
-                    ${planningLabel}
-                    ${replanProposal.recommendedAction || "replan" ? ` · ${replanProposal.recommendedAction || "replan"}` : ""}
-                    ${plannerState?.generatedAt ? ` · ${formatRelative(plannerState.generatedAt)}` : ""}
-                    ${Array.isArray(replanProposal.createdTaskIds) && replanProposal.createdTaskIds.length > 0
-                      ? ` · ${replanProposal.createdTaskIds.length} created`
-                      : ""}
-                  </div>
-                  <div class="task-comment-body">${replanProposal.summary || "Replan proposal available."}</div>
-                  ${replanProposal.planReasoning && html`
-                    <div class="task-comment-meta" style=${{ marginTop: "6px", whiteSpace: "pre-wrap" }}>
-                      ${replanProposal.planReasoning}
-                    </div>
-                  `}
-                  ${(replanProposal.currentPlanStep || replanProposal.stopReason) && html`
-                    <div class="task-comment-meta" style=${{ marginTop: "6px" }}>
-                      ${replanProposal.currentPlanStep ? `Next: ${replanProposal.currentPlanStep}` : ""}
-                      ${replanProposal.currentPlanStep && replanProposal.stopReason ? " · " : ""}
-                      ${replanProposal.stopReason ? `Stop: ${replanProposal.stopReason}` : ""}
-                    </div>
-                  `}
-                  ${replanProposal.parentTaskPatch && Object.keys(replanProposal.parentTaskPatch).length > 0 && html`
-                    <div class="task-comment-meta" style=${{ marginTop: "8px" }}>
-                      Parent patch:
-                      ${replanProposal.parentTaskPatch.status ? ` status=${replanProposal.parentTaskPatch.status}` : ""}
-                      ${replanProposal.parentTaskPatch.blockedReason ? ` · ${replanProposal.parentTaskPatch.blockedReason}` : ""}
-                    </div>
-                  `}
-                </div>
-                ${(planningMode === "decompose" || plannerOwnedSubtasks.length > 0) && html`
-                  <div class="task-comment-item">
-                    <div class="task-comment-meta">Planner Child Graph</div>
-                    <div class="task-comment-body">
-                      ${plannerOwnedSubtasks.length > 0
-                        ? `${plannerOwnedSubtasks.length} planner-owned child tasks are now attached to this parent task.`
-                        : "This proposal will create a planner-owned child graph under the current task when applied."}
-                    </div>
-                  </div>
-                `}
-                ${Array.isArray(replanProposal.subtasks) && replanProposal.subtasks.map((entry, index) => html`
-                  <div class="task-comment-item" key=${`replan-subtask-${index}`}>
-                    <div class="task-comment-meta">
-                      ${index + 1}. ${entry.priority || "medium"}
-                      ${entry.storyPoints ? ` · ${entry.storyPoints} pts` : ""}
-                      ${Array.isArray(entry.dependsOnIndexes) && entry.dependsOnIndexes.length > 0
-                        ? ` · depends on ${entry.dependsOnIndexes.map((dep) => dep + 1).join(", ")}`
-                        : ""}
-                      ${Array.isArray(entry.dependsOnTaskIds) && entry.dependsOnTaskIds.length > 0
-                        ? ` · external deps ${entry.dependsOnTaskIds.join(", ")}`
-                        : ""}
-                    </div>
-                    <div class="task-comment-body">${entry.title}</div>
-                    <div class="task-comment-meta" style=${{ whiteSpace: "pre-wrap", marginTop: "4px" }}>
-                      ${entry.description}
-                    </div>
-                    ${Array.isArray(entry.acceptanceCriteria) && entry.acceptanceCriteria.length > 0 && html`
-                      <div class="task-comment-meta" style=${{ marginTop: "6px" }}>
-                        Acceptance: ${entry.acceptanceCriteria.join(" | ")}
-                      </div>
-                    `}
-                  </div>
-                `)}
-                ${plannerOwnedSubtasks.length > 0 && plannerOwnedSubtasks.map((entry) => {
-                  const dependencyIds = [
-                    ...(Array.isArray(entry?.dependencyTaskIds) ? entry.dependencyTaskIds : []),
-                    ...(Array.isArray(entry?.dependsOn) ? entry.dependsOn : []),
-                  ].map((value) => String(value || "").trim()).filter(Boolean);
-                  return html`
-                    <div class="task-comment-item" key=${`planner-owned-${entry.id || entry.title || Math.random()}`}>
-                      <div class="task-comment-meta">
-                        planner-owned
-                        ${entry.status ? ` · ${entry.status}` : ""}
-                        ${dependencyIds.length > 0 ? ` · deps ${dependencyIds.join(", ")}` : ""}
-                      </div>
-                      <div class="task-comment-body">${entry.title || entry.id || "Child task"}</div>
-                      ${entry.description && html`
-                        <div class="task-comment-meta" style=${{ whiteSpace: "pre-wrap", marginTop: "4px" }}>
-                          ${entry.description}
-                        </div>
-                      `}
-                    </div>
-                  `;
-                })}
-                ${Array.isArray(replanProposal.notes) && replanProposal.notes.length > 0 && html`
-                  <div class="task-comment-item">
-                    <div class="task-comment-meta">Operator notes</div>
-                    <div class="task-comment-body">${replanProposal.notes.join("\n")}</div>
-                  </div>
-                `}
-              </div>
-            `}
-          </div>
-        </div>
-
         ${/* Subtasks */ ""}
         <div class="task-section">
           <div class="task-section-title">
@@ -5114,79 +4134,8 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 </div>
               </div>
               <div class="task-comment-item">
-                <div class="task-comment-meta">Durable Sessions</div>
-                <div class="task-comment-body">${taskDurableSessionIds.length
-                  ? `${taskDurableSessionIds.length} session IDs linked across the task, workflow runs, and state ledger.`
-                  : "No durable session lineage linked yet."}</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${[
-                    taskPrimaryDurableSessionId ? `primary ${truncate(taskPrimaryDurableSessionId, 36)}` : "",
-                    taskAuditSessionIds.length ? `${taskAuditSessionIds.length} ledger sessions` : "",
-                    taskAuditSourceLabel ? `source ${taskAuditSourceLabel}` : "source state ledger / SQLite",
-                  ].filter(Boolean).join(" · ")}
-                </div>
-              </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Planner / Proof</div>
-                <div class="task-comment-body">${workflowRuns.length
-                  ? `${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.plannerEventCount || run?.plannerTimeline?.length || 0), 0)} planner events · ${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.evidenceCount || 0), 0)} evidence items`
-                  : "No planner or proof events linked yet."}</div>
-              </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Execution Lineage</div>
-                <div class="task-comment-body">${workflowRuns.length
-                  ? `${workflowRuns.filter((run) => Array.isArray(run?.runGraph?.runs) && run.runGraph.runs.length > 0).length} run graphs linked · ${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.executions?.length || 0), 0)} execution steps`
-                  : "No execution lineage linked yet."}</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${workflowRuns.length
-                    ? `${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.timeline?.length || 0), 0)} lineage events`
-                    : ""}
-                </div>
-              </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Delegation Topology</div>
-                <div class="task-comment-body">${taskGraphPath.length > 1
-                  ? `Task graph: ${taskGraphPath.join(" → ")}`
-                  : (taskTopology?.latestRunId || taskTopology?.latestSessionId || taskTopology?.rootTaskId || taskTopology?.parentTaskId
-                      ? `${taskTopology.workflowName || taskTopology.workflowId || "workflow"} · ${taskTopology.rootTaskId || task?.id || "task"}`
-                      : "No delegated topology linked yet.")}</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${[
-                    Number.isFinite(Number(taskTopology?.delegationDepth)) ? `Delegation depth ${Number(taskTopology.delegationDepth || 0)}` : "",
-                    taskTopology?.latestRunId ? `run ${taskTopology.latestRunId}` : "",
-                    taskTopology?.latestSessionId ? `session ${truncate(taskTopology.latestSessionId, 36)}` : "",
-                    taskDelegationTopologyRows.length ? `${taskDelegationTopologyRows.length} delegated run families` : "",
-                  ].filter(Boolean).join(" · ")}
-                </div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${taskSessionAncestry.length > 0 ? `Session ancestry: ${taskSessionAncestry.join(" · ")}` : ""}
-                </div>
-              </div>
-              <div class="task-comment-item">
                 <div class="task-comment-meta">Timeline Events</div>
                 <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
-              </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Audit Trail</div>
-                <div class="task-comment-body">${hasTaskAuditContent
-                  ? `${taskAuditEventCount} ledger events · ${taskAuditToolCallCount} tool calls · ${taskAuditArtifactCount} artifacts · ${taskAuditClaimEventCount} claim events`
-                  : "No state ledger / SQLite audit linked yet."}</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${[
-                    taskAuditRunCount ? `${taskAuditRunCount} audit-linked workflow runs` : "",
-                    taskAuditPromotedStrategyCount ? `${taskAuditPromotedStrategyCount} promoted strategies` : "",
-                    taskAuditOperatorActionCount ? `${taskAuditOperatorActionCount} operator actions` : "",
-                    taskAuditTraceCount ? `${taskAuditTraceCount} task trace events` : "",
-                    taskAuditSourceLabel ? `source ${taskAuditSourceLabel}` : "",
-                  ].filter(Boolean).join(" · ")}
-                </div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${[
-                    taskAuditClaim ? summarizeTaskAuditClaim(taskAuditClaim) : "",
-                    taskAuditSessionActivity ? summarizeTaskAuditSessionActivity(taskAuditSessionActivity) : (taskAuditSessionIds.length ? `${taskAuditSessionIds.length} session IDs` : ""),
-                    taskAuditAgentActivity ? summarizeTaskAuditAgentActivity(taskAuditAgentActivity) : (taskAuditAgentIds.length ? `${taskAuditAgentIds.length} agent IDs` : ""),
-                  ].filter(Boolean).join(" · ")}
-                </div>
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Branch / PR</div>
@@ -5376,96 +4325,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         </div>
 
-        ${/* Goal */ ""}
-        <div class="task-sidebar-field">
-          <div class="task-sidebar-label">Goal</div>
-          <div class="task-sidebar-value">
-            <${TextField}
-              size="small"
-              variant="outlined"
-              placeholder="Primary goal ID"
-              value=${goalId}
-              onInput=${(e) => setGoalId(e.target.value)}
-              fullWidth
-            />
-          </div>
-        </div>
-
-        ${/* Parent Goal */ ""}
-        <div class="task-sidebar-field">
-          <div class="task-sidebar-label">Parent Goal</div>
-          <div class="task-sidebar-value">
-            <${TextField}
-              size="small"
-              variant="outlined"
-              placeholder="Parent goal ID"
-              value=${parentGoalId}
-              onInput=${(e) => setParentGoalId(e.target.value)}
-              fullWidth
-            />
-          </div>
-        </div>
-
-        ${/* Coordination Team */ ""}
-        <div class="task-sidebar-field">
-          <div class="task-sidebar-label">Coordination Team</div>
-          <div class="task-sidebar-value">
-            <${TextField}
-              size="small"
-              variant="outlined"
-              placeholder="Team ID"
-              value=${coordinationTeamId}
-              onInput=${(e) => setCoordinationTeamId(e.target.value)}
-              fullWidth
-            />
-          </div>
-        </div>
-
-        ${/* Coordination Role */ ""}
-        <div class="task-sidebar-field">
-          <div class="task-sidebar-label">Coordination Role</div>
-          <div class="task-sidebar-value">
-            <${TextField}
-              size="small"
-              variant="outlined"
-              placeholder="planner, implementer, reviewer"
-              value=${coordinationRole}
-              onInput=${(e) => setCoordinationRole(e.target.value)}
-              fullWidth
-            />
-          </div>
-        </div>
-
-        ${/* Reports To */ ""}
-        <div class="task-sidebar-field">
-          <div class="task-sidebar-label">Reports To</div>
-          <div class="task-sidebar-value">
-            <${TextField}
-              size="small"
-              variant="outlined"
-              placeholder="Supervisor or lead ID"
-              value=${coordinationReportsTo}
-              onInput=${(e) => setCoordinationReportsTo(e.target.value)}
-              fullWidth
-            />
-          </div>
-        </div>
-
-        ${/* Coordination Level */ ""}
-        <div class="task-sidebar-field">
-          <div class="task-sidebar-label">Coordination Level</div>
-          <div class="task-sidebar-value">
-            <${TextField}
-              size="small"
-              variant="outlined"
-              placeholder="squad, program, org"
-              value=${coordinationLevel}
-              onInput=${(e) => setCoordinationLevel(e.target.value)}
-              fullWidth
-            />
-          </div>
-        </div>
-
         ${/* Parent Task */ ""}
         <div class="task-sidebar-field">
           <div class="task-sidebar-label">Parent Task</div>
@@ -5478,48 +4337,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               onInput=${(e) => setParentTaskId(e.target.value)}
               fullWidth
             />
-          </div>
-        </div>
-
-        ${/* Budget Window */ ""}
-        <div class="task-sidebar-field">
-          <div class="task-sidebar-label">Budget Window</div>
-          <div class="task-sidebar-value">
-            <${TextField}
-              size="small"
-              variant="outlined"
-              placeholder="2026-Q2"
-              value=${budgetWindow}
-              onInput=${(e) => setBudgetWindow(e.target.value)}
-              fullWidth
-            />
-          </div>
-        </div>
-
-        ${/* Budget */ ""}
-        <div class="task-sidebar-field">
-          <div class="task-sidebar-label">Budget</div>
-          <div class="task-sidebar-value">
-            <div style="display:flex;gap:6px;">
-              <${TextField}
-                size="small"
-                variant="outlined"
-                type="number"
-                placeholder="Budget cents"
-                value=${budgetCents}
-                onInput=${(e) => setBudgetCents(e.target.value)}
-                inputProps=${{ min: 0, step: 1 }}
-                style=${{ flex: 1 }}
-              />
-              <${TextField}
-                size="small"
-                variant="outlined"
-                placeholder="USD"
-                value=${budgetCurrency}
-                onInput=${(e) => setBudgetCurrency(e.target.value.toUpperCase())}
-                style=${{ width: "88px" }}
-              />
-            </div>
           </div>
         </div>
 
@@ -6226,432 +5043,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
       `}
 
-      ${hasTaskAuditContent && html`
-        <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Audit Trail</div>
-          <div class="tag-row" style=${{ marginBottom: "8px" }}>
-            ${taskAuditClaim ? html`<span class="tag-chip">active claim</span>` : null}
-            ${taskAuditEventCount > 0 ? html`<span class="tag-chip">${taskAuditEventCount} audit events</span>` : null}
-            ${taskAuditClaimEventCount > 0 ? html`<span class="tag-chip">${taskAuditClaimEventCount} claim events</span>` : null}
-            ${taskAuditRunCount > 0 ? html`<span class="tag-chip">${taskAuditRunCount} ledger workflow runs</span>` : null}
-            ${taskAuditToolCallCount > 0 ? html`<span class="tag-chip">${taskAuditToolCallCount} tool calls</span>` : null}
-            ${taskAuditArtifactCount > 0 ? html`<span class="tag-chip">${taskAuditArtifactCount} artifacts</span>` : null}
-            ${taskAuditOperatorActionCount > 0 ? html`<span class="tag-chip">${taskAuditOperatorActionCount} operator actions</span>` : null}
-            ${taskAuditPromotedStrategyCount > 0 ? html`<span class="tag-chip">${taskAuditPromotedStrategyCount} promoted strategies</span>` : null}
-            ${taskAuditPromotedStrategyEvents.length > 0 ? html`<span class="tag-chip">${taskAuditPromotedStrategyEvents.length} strategy events</span>` : null}
-            ${taskAuditTraceCount > 0 ? html`<span class="tag-chip">${taskAuditTraceCount} task trace events</span>` : null}
-          </div>
-          ${(taskAuditSessionIds.length > 0 || taskAuditAgentIds.length > 0) && html`
-            <div class="tag-row" style=${{ marginBottom: "8px" }}>
-              ${taskAuditSessionIds.slice(0, 6).map((entry, index) => html`<span class="tag-chip" key=${`audit-session-${index}`}>session ${truncate(entry, 28)}</span>`)}
-              ${taskAuditAgentIds.slice(0, 6).map((entry, index) => html`<span class="tag-chip" key=${`audit-agent-${index}`}>agent ${truncate(entry, 28)}</span>`)}
-            </div>
-          `}
-          <div class="task-comments-list">
-            ${taskAuditClaim || taskAuditClaimEvents.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Claim Ledger</div>
-                <div class="task-comment-body">${taskAuditClaim ? summarizeTaskAuditClaim(taskAuditClaim) : "No active task claim recorded."}</div>
-                <div class="task-comment-meta">
-                  ${taskAuditClaim?.claim_token
-                    ? `token ${truncate(taskAuditClaim.claim_token, 24)}`
-                    : taskAuditClaimEvents.length
-                      ? `${taskAuditClaimEventCount} claim lifecycle events`
-                      : ""}
-                </div>
-                ${taskAuditClaimEvents.slice(-3).reverse().map((entry, index) => html`
-                  <div key=${`claim-event-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${summarizeTaskAuditClaimEvent(entry)}
-                    ${formatTaskAuditTimestamp(entry) ? ` · ${formatTaskAuditTimestamp(entry)}` : ""}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditSessionActivity || taskAuditAgentActivity || taskAuditSessionIds.length > 0 || taskAuditAgentIds.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Session & Agent Activity</div>
-                <div class="task-comment-body">
-                  ${taskAuditSessionActivity?.sessionId || taskAuditSessionIds[0]
-                    ? html`<span><b>Session:</b> <code>${taskAuditSessionActivity?.sessionId || taskAuditSessionIds[0]}</code></span>`
-                    : "No linked session activity recorded."}
-                </div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${taskAuditSessionActivity
-                    ? summarizeTaskAuditSessionActivity(taskAuditSessionActivity)
-                    : ""}
-                </div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${taskAuditAgentActivity?.agentId || taskAuditAgentIds[0]
-                    ? summarizeTaskAuditAgentActivity(taskAuditAgentActivity || { agentId: taskAuditAgentIds[0] })
-                    : ""}
-                </div>
-                ${(taskAuditSessionActivity?.lastSummary || taskAuditAgentActivity?.lastSummary) && html`
-                  <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${taskAuditSessionActivity?.lastSummary || taskAuditAgentActivity?.lastSummary}
-                  </div>
-                `}
-              </div>
-            ` : null}
-            ${taskDurableSessionIds.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Durable Session Topology</div>
-                <div class="task-comment-body">
-                  <span><b>Primary Session:</b> <code>${taskPrimaryDurableSessionId || taskDurableSessionIds[0]}</code></span>
-                </div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${taskDurableSessionIds.length} durable session IDs · ${taskAuditSourceLabel || "state ledger / SQLite"}
-                </div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${taskDurableSessionIds.slice(0, 4).map((sessionId) => html`<code key=${sessionId} style="margin-right:4px;">${sessionId}</code>`)}
-                </div>
-              </div>
-            ` : null}
-            ${taskDelegationTopologyRows.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Delegation Topology</div>
-                <div class="task-comment-body">${taskDelegationTopologyRows.length} delegated workflow run families linked to this task.</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  max depth ${maxTaskDelegationDepth} · ${taskDelegationTopologyRows.reduce((total, entry) => total + Number(entry?.durableSessionIds?.length || 0), 0)} run-linked sessions
-                </div>
-                ${taskDelegationTopologyRows.slice(0, 4).map((entry, index) => html`
-                  <div key=${`task-delegation-topology-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${entry.run.workflowName || entry.run.workflowId || entry.run.runId || "workflow"} · ${entry.summary}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditToolCalls.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Tool Calls</div>
-                <div class="task-comment-body">${Number(taskAuditSummary.toolCallCount || taskAuditToolCalls.length || 0)} recorded tool invocations.</div>
-                ${taskAuditToolCalls.slice(0, 4).map((entry, index) => html`
-                  <div key=${`tool-call-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${entry.toolName || entry.toolId || "tool"}
-                    ${entry.status ? ` · ${entry.status}` : ""}
-                    ${entry.provider ? ` · ${entry.provider}` : ""}
-                    ${entry.summary ? ` · ${entry.summary}` : ""}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditArtifacts.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Artifacts</div>
-                <div class="task-comment-body">${Number(taskAuditSummary.artifactCount || taskAuditArtifacts.length || 0)} artifact records captured.</div>
-                ${taskAuditArtifacts.slice(0, 4).map((entry, index) => html`
-                  <div key=${`artifact-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${entry.kind || "artifact"}
-                    ${entry.path ? ` · ${entry.path}` : ""}
-                    ${entry.summary ? ` · ${entry.summary}` : ""}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditOperatorActions.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Operator Actions</div>
-                <div class="task-comment-body">${Number(taskAuditSummary.operatorActionCount || taskAuditOperatorActions.length || 0)} operator actions linked to this task.</div>
-                ${taskAuditOperatorActions.slice(0, 4).map((entry, index) => html`
-                  <div key=${`operator-action-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${entry.actionType || "action"}
-                    ${entry.status ? ` · ${entry.status}` : ""}
-                    ${entry.actorId ? ` · ${entry.actorId}` : ""}
-                    ${entry.targetId ? ` · target ${entry.targetId}` : ""}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditPromotedStrategies.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Promoted Strategies</div>
-                <div class="task-comment-body">${Number(taskAuditSummary.promotedStrategyCount || taskAuditPromotedStrategies.length || 0)} promoted strategy records available.</div>
-                ${taskAuditPromotedStrategies.slice(0, 4).map((entry, index) => html`
-                  <div key=${`promoted-strategy-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${entry.recommendation || entry.decision || entry.strategyId || "strategy"}
-                    ${entry.status ? ` · ${entry.status}` : ""}
-                    ${entry.verificationStatus ? ` · ${entry.verificationStatus}` : ""}
-                    ${entry.confidence != null ? ` · confidence ${entry.confidence}` : ""}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditPromotedStrategyEvents.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Promoted Strategy Events</div>
-                <div class="task-comment-body">${taskAuditPromotedStrategyEvents.length} promotion lifecycle events captured.</div>
-                ${taskAuditPromotedStrategyEvents.slice(0, 4).map((entry, index) => html`
-                  <div key=${`promoted-strategy-event-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${entry.decision || entry.status || entry.strategyId || "event"}
-                    ${entry.verificationStatus ? ` · ${entry.verificationStatus}` : ""}
-                    ${entry.createdAt ? ` · ${formatRelative(entry.createdAt)}` : ""}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditTraceEvents.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Task Trace Events</div>
-                <div class="task-comment-body">${Number(taskAuditSummary.taskTraceCount || taskAuditTraceEvents.length || 0)} ledger trace events recorded.</div>
-                ${taskAuditTraceEvents.slice(0, 4).map((entry, index) => html`
-                  <div key=${`task-trace-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${entry.eventType || "event"}
-                    ${entry.status ? ` · ${entry.status}` : ""}
-                    ${entry.nodeLabel || entry.nodeId ? ` · ${entry.nodeLabel || entry.nodeId}` : ""}
-                    ${entry.summary ? ` · ${entry.summary}` : ""}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditWorkflowRuns.length > 0 ? html`
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Ledger Workflow Runs</div>
-                <div class="task-comment-body">${Number(taskAuditSummary.runCount || taskAuditWorkflowRuns.length || 0)} workflow runs linked from the state ledger.</div>
-                ${taskAuditWorkflowRuns.slice(0, 4).map((run, index) => html`
-                  <div key=${`audit-run-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                    ${run.workflowName || run.workflowId || "workflow"}
-                    ${run.runId ? ` · run ${run.runId}` : ""}
-                    ${run.status ? ` · ${run.status}` : ""}
-                    ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                  </div>
-                `)}
-              </div>
-            ` : null}
-            ${taskAuditEvents.slice(0, 12).map((entry, index) => html`
-              <div class="task-comment-item" key=${`audit-${index}`}>
-                <div class="task-comment-meta">
-                  ${(entry.auditType || "audit").replace(/_/g, " ")}
-                  ${entry.timestamp ? ` · ${formatRelative(entry.timestamp)}` : ""}
-                </div>
-                <div class="task-comment-body">${entry.summary || entry.eventType || entry.auditType || "Audit event"}</div>
-                <div class="task-comment-meta">
-                  ${[
-                    entry.runId ? `run ${entry.runId}` : "",
-                    entry.sessionId ? `session ${entry.sessionId}` : "",
-                    entry.agentId ? `agent ${entry.agentId}` : "",
-                  ].filter(Boolean).join(" · ")}
-                </div>
-              </div>
-            `)}
-          </div>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;" open>
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Recent Audit Events (${taskAuditEventCount})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditEvents.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No ledger timeline events recorded yet.</div></div>`
-                : taskAuditEvents.slice(0, 12).map((entry, index) => html`
-                    <div class="task-comment-item" key=${`audit-detail-${index}`}>
-                      <div class="task-comment-meta">
-                        ${(entry.auditType || "audit").replace(/_/g, " ")}
-                        ${entry.timestamp ? ` · ${formatRelative(entry.timestamp)}` : ""}
-                      </div>
-                      <div class="task-comment-body">${entry.summary || entry.eventType || entry.auditType || "Audit event"}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          entry.runId ? `run ${entry.runId}` : "",
-                          entry.sessionId ? `session ${entry.sessionId}` : "",
-                          entry.agentId ? `agent ${entry.agentId}` : "",
-                          entry.workflowId ? `workflow ${entry.workflowId}` : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Task Claims (${taskAuditClaimEventCount})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditClaimEvents.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No claim events recorded for this task.</div></div>`
-                : taskAuditClaimEvents.slice(-8).reverse().map((entry, index) => html`
-                    <div class="task-comment-item" key=${`claim-detail-${index}`}>
-                      <div class="task-comment-meta">
-                        ${getTaskAuditValue(entry, ["action", "eventType"]) || "claim event"}
-                        ${formatTaskAuditTimestamp(entry) ? ` · ${formatTaskAuditTimestamp(entry)}` : ""}
-                      </div>
-                      <div class="task-comment-body">${summarizeTaskAuditClaimEvent(entry)}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          getTaskAuditValue(entry, ["claim_token", "claimToken"]) ? `token ${truncate(getTaskAuditValue(entry, ["claim_token", "claimToken"]), 24)}` : "",
-                          getTaskAuditValue(entry, ["expires_at", "expiresAt"]) ? `expires ${formatRelative(getTaskAuditValue(entry, ["expires_at", "expiresAt"]))}` : "",
-                          getTaskAuditValue(entry, ["previous_instance", "previousInstance"]) ? `prev ${getTaskAuditValue(entry, ["previous_instance", "previousInstance"])}` : "",
-                          getTaskAuditValue(entry, ["rollback_to_instance", "rollbackToInstance"]) ? `rollback ${getTaskAuditValue(entry, ["rollback_to_instance", "rollbackToInstance"])}` : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Workflow Runs (${taskAuditRunCount})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditWorkflowRuns.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No ledger-linked workflow runs recorded for this task.</div></div>`
-                : taskAuditWorkflowRuns.slice(0, 8).map((run, index) => html`
-                    <div class="task-comment-item" key=${`audit-run-detail-${index}`}>
-                      <div class="task-comment-meta">${buildTaskWorkflowRunMetaLine(run)}</div>
-                      <div class="task-comment-body">${buildTaskWorkflowRunStatusLine(run)}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          run.nodeId ? `node ${run.nodeId}` : "",
-                          pickTaskWorkflowSessionId(run) ? `session ${pickTaskWorkflowSessionId(run)}` : "",
-                          run.hasRunLink ? "open from Workflow Activity" : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Tool Calls (${taskAuditToolCallCount})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditToolCalls.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No tool calls recorded in the ledger.</div></div>`
-                : taskAuditToolCalls.slice(-8).reverse().map((entry, index) => html`
-                    <div class="task-comment-item" key=${`tool-call-detail-${index}`}>
-                      <div class="task-comment-meta">
-                        ${getTaskAuditValue(entry, ["toolName", "toolId"]) || "tool"}
-                        ${formatTaskAuditTimestamp(entry) ? ` · ${formatTaskAuditTimestamp(entry)}` : ""}
-                      </div>
-                      <div class="task-comment-body">${summarizeTaskAuditToolCall(entry)}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          entry.callId ? `call ${entry.callId}` : "",
-                          entry.nodeId ? `node ${entry.nodeId}` : "",
-                          entry.sessionId ? `session ${entry.sessionId}` : "",
-                          Number.isFinite(Number(entry.durationMs)) && Number(entry.durationMs) > 0 ? formatDuration(Number(entry.durationMs)) : "",
-                          entry.cwd ? truncate(entry.cwd, 64) : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Artifacts (${taskAuditArtifactCount})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditArtifacts.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No artifacts recorded in the ledger.</div></div>`
-                : taskAuditArtifacts.slice(-8).reverse().map((entry, index) => html`
-                    <div class="task-comment-item" key=${`artifact-detail-${index}`}>
-                      <div class="task-comment-meta">
-                        ${getTaskAuditValue(entry, ["kind"]) || "artifact"}
-                        ${formatTaskAuditTimestamp(entry) ? ` · ${formatTaskAuditTimestamp(entry)}` : ""}
-                      </div>
-                      <div class="task-comment-body">${summarizeTaskAuditArtifact(entry)}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          entry.artifactId ? `artifact ${entry.artifactId}` : "",
-                          entry.runId ? `run ${entry.runId}` : "",
-                          entry.nodeId ? `node ${entry.nodeId}` : "",
-                          entry.sessionId ? `session ${entry.sessionId}` : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Operator Actions (${taskAuditOperatorActionCount})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditOperatorActions.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No operator actions recorded for this task.</div></div>`
-                : taskAuditOperatorActions.slice(-8).reverse().map((entry, index) => html`
-                    <div class="task-comment-item" key=${`operator-action-detail-${index}`}>
-                      <div class="task-comment-meta">
-                        ${getTaskAuditValue(entry, ["actionType", "action"]) || "operator action"}
-                        ${formatTaskAuditTimestamp(entry) ? ` · ${formatTaskAuditTimestamp(entry)}` : ""}
-                      </div>
-                      <div class="task-comment-body">${summarizeTaskAuditOperatorAction(entry)}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          entry.actorId ? `actor ${entry.actorId}` : "",
-                          entry.scope ? `${entry.scope}${entry.scopeId ? `:${entry.scopeId}` : ""}` : "",
-                          entry.sessionId ? `session ${entry.sessionId}` : "",
-                          entry.actionId ? `action ${entry.actionId}` : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Promoted Strategies (${taskAuditPromotedStrategyCount})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditPromotedStrategies.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No promoted strategies recorded for this task.</div></div>`
-                : taskAuditPromotedStrategies.slice(0, 8).map((entry, index) => html`
-                    <div class="task-comment-item" key=${`strategy-detail-${index}`}>
-                      <div class="task-comment-meta">
-                        ${getTaskAuditValue(entry, ["recommendation", "decision", "strategyId"]) || "strategy"}
-                        ${formatTaskAuditTimestamp(entry) ? ` · ${formatTaskAuditTimestamp(entry)}` : ""}
-                      </div>
-                      <div class="task-comment-body">${summarizeTaskAuditPromotedStrategy(entry)}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          entry.strategyId ? `strategy ${entry.strategyId}` : "",
-                          entry.runId ? `run ${entry.runId}` : "",
-                          entry.workflowId ? `workflow ${entry.workflowId}` : "",
-                          formatTaskAuditConfidence(entry.confidence) ? `confidence ${formatTaskAuditConfidence(entry.confidence)}` : "",
-                          entry.knowledgeHash ? `knowledge ${truncate(entry.knowledgeHash, 24)}` : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Strategy Event History (${taskAuditPromotedStrategyEvents.length})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditPromotedStrategyEvents.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No promoted-strategy event history recorded yet.</div></div>`
-                : taskAuditPromotedStrategyEvents.slice(-8).reverse().map((entry, index) => html`
-                    <div class="task-comment-item" key=${`strategy-event-detail-${index}`}>
-                      <div class="task-comment-meta">
-                        ${getTaskAuditValue(entry, ["category", "decision", "recommendation", "strategyId"]) || "strategy event"}
-                        ${formatTaskAuditTimestamp(entry) ? ` · ${formatTaskAuditTimestamp(entry)}` : ""}
-                      </div>
-                      <div class="task-comment-body">${summarizeTaskAuditPromotedStrategy(entry)}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          entry.strategyId ? `strategy ${entry.strategyId}` : "",
-                          entry.scope ? `${entry.scope}${entry.scopeId ? `:${entry.scopeId}` : ""}` : "",
-                          entry.runId ? `run ${entry.runId}` : "",
-                          entry.sessionId ? `session ${entry.sessionId}` : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Trace Events (${taskAuditTraceCount})</summary>
-            <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-              ${taskAuditTraceEvents.length === 0
-                ? html`<div class="task-comment-item"><div class="task-comment-body">No task trace events recorded in the ledger.</div></div>`
-                : taskAuditTraceEvents.slice(-8).reverse().map((entry, index) => html`
-                    <div class="task-comment-item" key=${`trace-detail-${index}`}>
-                      <div class="task-comment-meta">
-                        ${getTaskAuditValue(entry, ["eventType"]) || "trace event"}
-                        ${formatTaskAuditTimestamp(entry) ? ` · ${formatTaskAuditTimestamp(entry)}` : ""}
-                      </div>
-                      <div class="task-comment-body">${summarizeTaskAuditTraceEvent(entry)}</div>
-                      <div class="task-comment-meta">
-                        ${[
-                          entry.runId ? `run ${entry.runId}` : "",
-                          entry.workflowId ? `workflow ${entry.workflowId}` : "",
-                          entry.sessionId ? `session ${entry.sessionId}` : "",
-                          entry.agentId ? `agent ${entry.agentId}` : "",
-                          Number.isFinite(Number(entry.durationMs)) && Number(entry.durationMs) > 0 ? formatDuration(Number(entry.durationMs)) : "",
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                    </div>
-                  `)}
-            </div>
-          </details>
-        </div>
-      `}
-
-      ${historyEntries.length === 0 && workflowRuns.length === 0 && relatedLinks.length === 0 && !hasTaskAuditContent ? html`
+      ${historyEntries.length === 0 && workflowRuns.length === 0 && relatedLinks.length === 0 ? html`
         <div style="padding:24px;text-align:center;opacity:0.5;font-size:0.9em;">No history, workflow runs, or links recorded yet.</div>
       ` : ""}
 
@@ -8344,7 +6736,6 @@ export function TasksTab() {
 
   const filterButton = html`
     <${Button}
-      className=${`filter-toggle tasks-filter-btn ${filtersOpen || activeFilterCount > 0 ? "active" : ""}`}
       variant="outlined" size="small"
       onClick=${handleToggleFilters}
       aria-expanded=${filtersOpen}
@@ -8358,7 +6749,7 @@ export function TasksTab() {
   `;
 
   const viewToggle = html`
-    <${ToggleButtonGroup} className="view-toggle tasks-view-toggle" size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
+    <${ToggleButtonGroup} size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
       <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
       <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
       <${ToggleButton} value="dag" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
@@ -8384,7 +6775,6 @@ export function TasksTab() {
 
   const newButton = html`
     <${Button}
-      className="tasks-new-btn"
       variant="contained" size="small"
       onClick=${() => {
         haptic();
@@ -8400,7 +6790,6 @@ export function TasksTab() {
   const actionsMenu = html`
     <div class="actions-wrap" ref=${actionsRef}>
       <${Button}
-        className="actions-btn tasks-actions-btn"
         variant="text" size="small"
         onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
         aria-haspopup="menu"
@@ -8456,12 +6845,12 @@ export function TasksTab() {
           <div class=${`tasks-toolbar-actions ${isCompact ? "compact" : ""}`}>
             ${isCompact
               ? html`
-                  <div class="tasks-toolbar-group tasks-toolbar-group--primary">
+                  <div class="tasks-toolbar-group">
                     ${filterButton}
                     ${viewToggle}
                     ${dagSprintPicker}
                   </div>
-                  <div class="tasks-toolbar-group tasks-toolbar-group--secondary">
+                  <div class="tasks-toolbar-group">
                     ${newButton}
                     ${actionsMenu}
                   </div>
@@ -8538,7 +6927,7 @@ export function TasksTab() {
                       html`<${MenuItem} key=${o.value} value=${o.value}>${o.label}</${MenuItem}>`,
                   )}
                 </${Select}>
-                <span class="pill"><span class="numeral">${visible.length}</span> shown</span>
+                <span class="pill">${visible.length} shown</span>
               </div>
             </div>
             <div class="tasks-filter-section">
@@ -8700,7 +7089,7 @@ export function TasksTab() {
             }}
           >
             <span class="snapshot-dot" style="background:${m.color};" />
-            <strong class="snapshot-val numeral">${m.value}</strong>
+            <strong class="snapshot-val">${m.value}</strong>
             <span class="snapshot-lbl">${m.label}</span>
           <//><//>
         `)}
@@ -8717,12 +7106,12 @@ export function TasksTab() {
             class=${`snapshot-pill-btn ${dagFocusMode === option.id ? "snapshot-pill-active" : ""}`}
             onClick=${() => setDagFocusMode(option.id)}
           >
-            ${option.label} · <span class="numeral">${option.count}</span>
+            ${option.label} · ${option.count}
           </button>
         `)}
-        <span class="pill">Sprint nodes: <span class="numeral">${dagSprintGraphView.nodes.length}</span></span>
-        <span class="pill">Global nodes: <span class="numeral">${dagGlobalGraphView.nodes.length}</span></span>
-        <span class="pill">Epic nodes: <span class="numeral">${dagEpicGraphView.nodes.length}</span></span>
+        <span class="pill">Sprint nodes: ${dagSprintGraphView.nodes.length}</span>
+        <span class="pill">Global nodes: ${dagGlobalGraphView.nodes.length}</span>
+        <span class="pill">Epic nodes: ${dagEpicGraphView.nodes.length}</span>
       </div>
     `}
 
@@ -9087,7 +7476,7 @@ export function TasksTab() {
         >
           ← Prev
         <//>
-        <span class="pager-info">Page <span class="numeral">${page + 1}</span> / <span class="numeral">${totalPages}</span></span>
+        <span class="pager-info">Page ${page + 1} / ${totalPages}</span>
         <${Button}
           variant="outlined" size="small"
           onClick=${handleNext}
@@ -9279,16 +7668,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
   const [priority, setPriority] = useState(initialValues?.priority || "medium");
   const [taskType, setTaskType] = useState(initialTaskType);
   const [epicId, setEpicId] = useState(initialValues?.epicId || "");
-  const [goalId, setGoalId] = useState(initialValues?.goalId || "");
-  const [parentGoalId, setParentGoalId] = useState(initialValues?.parentGoalId || "");
   const [storyPoints, setStoryPoints] = useState(toText(initialValues?.storyPoints));
-  const [budgetWindow, setBudgetWindow] = useState(initialValues?.budgetWindow || "");
-  const [budgetCents, setBudgetCents] = useState(toText(initialValues?.budgetCents));
-  const [budgetCurrency, setBudgetCurrency] = useState(initialValues?.budgetCurrency || "USD");
-  const [coordinationTeamId, setCoordinationTeamId] = useState(initialValues?.coordinationTeamId || "");
-  const [coordinationRole, setCoordinationRole] = useState(initialValues?.coordinationRole || "");
-  const [coordinationReportsTo, setCoordinationReportsTo] = useState(initialValues?.coordinationReportsTo || "");
-  const [coordinationLevel, setCoordinationLevel] = useState(initialValues?.coordinationLevel || "");
   const [dependenciesInput, setDependenciesInput] = useState((initialValues?.dependencies || []).join(", "));
   const [selectedSprintId, setSelectedSprintId] = useState(initialValues?.sprintId || "");
   const [sprintOrderInput, setSprintOrderInput] = useState(toText(initialValues?.sprintOrder));
@@ -9299,19 +7679,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || initialValues?.workspaceId || "");
   const [repository, setRepository] = useState(initialValues?.repository || "");
   const [repositories, setRepositories] = useState([]);
-  const [showAdvanced, setShowAdvanced] = useState(Boolean(
-    initialValues?.epicId
-    || initialValues?.goalId
-    || initialValues?.parentGoalId
-    || initialValues?.budgetWindow
-    || initialValues?.budgetCents
-    || initialValues?.coordinationTeamId
-    || initialValues?.coordinationRole
-    || initialValues?.coordinationReportsTo
-    || initialValues?.coordinationLevel
-    || initialValues?.sprintId
-    || initialValues?.dependencies?.length,
-  ));
+  const [showAdvanced, setShowAdvanced] = useState(Boolean(initialValues?.epicId || initialValues?.sprintId || initialValues?.dependencies?.length));
   const initialSnapshotRef = useRef({
     title: initialValues?.title || "",
     description: initialValues?.description || "",
@@ -9319,16 +7687,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     priority: initialValues?.priority || "medium",
     taskType: initialTaskType,
     epicId: initialValues?.epicId || "",
-    goalId: initialValues?.goalId || "",
-    parentGoalId: initialValues?.parentGoalId || "",
     storyPoints: toText(initialValues?.storyPoints),
-    budgetWindow: initialValues?.budgetWindow || "",
-    budgetCents: toText(initialValues?.budgetCents),
-    budgetCurrency: initialValues?.budgetCurrency || "USD",
-    coordinationTeamId: initialValues?.coordinationTeamId || "",
-    coordinationRole: initialValues?.coordinationRole || "",
-    coordinationReportsTo: initialValues?.coordinationReportsTo || "",
-    coordinationLevel: initialValues?.coordinationLevel || "",
     sprintId: initialValues?.sprintId || "",
     sprintOrder: toText(initialValues?.sprintOrder),
     dependenciesInput: (initialValues?.dependencies || []).join(", "),
@@ -9401,23 +7760,14 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
       priority: priority || "medium",
       taskType,
       epicId: epicId || "",
-      goalId: goalId || "",
-      parentGoalId: parentGoalId || "",
       storyPoints: storyPoints || "",
-      budgetWindow: budgetWindow || "",
-      budgetCents: budgetCents || "",
-      budgetCurrency: budgetCurrency || "",
-      coordinationTeamId: coordinationTeamId || "",
-      coordinationRole: coordinationRole || "",
-      coordinationReportsTo: coordinationReportsTo || "",
-      coordinationLevel: coordinationLevel || "",
       sprintId: selectedSprintId || "",
       sprintOrder: sprintOrderInput || "",
       dependenciesInput: dependenciesInput || "",
       tagsInput: tagsInput || "",
       draft: Boolean(draft),
     }),
-    [baseBranch, budgetCents, budgetCurrency, budgetWindow, coordinationLevel, coordinationReportsTo, coordinationRole, coordinationTeamId, dependenciesInput, description, draft, epicId, goalId, parentGoalId, priority, selectedSprintId, sprintOrderInput, storyPoints, tagsInput, taskType, title],
+    [baseBranch, dependenciesInput, description, draft, epicId, priority, selectedSprintId, sprintOrderInput, storyPoints, tagsInput, taskType, title],
   );
   const changeCount = useMemo(
     () => countChangedFields(initialSnapshotRef.current, unsavedSnapshot),
@@ -9438,16 +7788,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     setPriority(base.priority || "medium");
     setTaskType(base.taskType || "task");
     setEpicId(base.epicId || "");
-    setGoalId(base.goalId || "");
-    setParentGoalId(base.parentGoalId || "");
     setStoryPoints(base.storyPoints || "");
-    setBudgetWindow(base.budgetWindow || "");
-    setBudgetCents(base.budgetCents || "");
-    setBudgetCurrency(base.budgetCurrency || "USD");
-    setCoordinationTeamId(base.coordinationTeamId || "");
-    setCoordinationRole(base.coordinationRole || "");
-    setCoordinationReportsTo(base.coordinationReportsTo || "");
-    setCoordinationLevel(base.coordinationLevel || "");
     setSelectedSprintId(base.sprintId || "");
     setSprintOrderInput(base.sprintOrder || "");
     setDependenciesInput(base.dependenciesInput || "");
@@ -9496,16 +7837,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
           priority,
           type: taskType,
           epicId: epicId || undefined,
-          goalId: goalId || undefined,
-          parentGoalId: parentGoalId || undefined,
           storyPoints: storyPoints === "" ? undefined : Number(storyPoints),
-          budgetWindow: budgetWindow || undefined,
-          budgetCents: budgetCents === "" ? undefined : Number(budgetCents),
-          budgetCurrency: (budgetCurrency || "USD").trim() || undefined,
-          coordinationTeamId: coordinationTeamId || undefined,
-          coordinationRole: coordinationRole || undefined,
-          coordinationReportsTo: coordinationReportsTo || undefined,
-          coordinationLevel: coordinationLevel || undefined,
           tags,
           draft,
           status: draft ? "draft" : "todo",
@@ -9558,16 +7890,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
         priority,
         taskType,
         epicId,
-        goalId,
-        parentGoalId,
         storyPoints,
-        budgetWindow,
-        budgetCents,
-        budgetCurrency,
-        coordinationTeamId,
-        coordinationRole,
-        coordinationReportsTo,
-        coordinationLevel,
         sprintId: selectedSprintId,
         sprintOrder: sprintOrderInput,
         dependenciesInput,
@@ -9606,16 +7929,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     priority,
     taskType,
     epicId,
-    goalId,
-    parentGoalId,
     storyPoints,
-    budgetWindow,
-    budgetCents,
-    budgetCurrency,
-    coordinationTeamId,
-    coordinationRole,
-    coordinationReportsTo,
-    coordinationLevel,
     selectedSprintId,
     sprintOrderInput,
     dependenciesInput,
@@ -9628,7 +7942,7 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
   ]);
 
   const parsedTags = normalizeTagInput(tagsInput);
-  const hasAdvanced = baseBranch || draft || showAdvanced || epicId || goalId || parentGoalId || budgetWindow || budgetCents || coordinationTeamId || coordinationRole || coordinationReportsTo || coordinationLevel || selectedSprintId || dependenciesInput || storyPoints || taskType !== "task";
+  const hasAdvanced = baseBranch || draft || showAdvanced || epicId || selectedSprintId || dependenciesInput || storyPoints || taskType !== "task";
 
   const footerContent = html`
     <${Button}
@@ -9815,23 +8129,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
         <!-- Advanced fields: base branch + draft -->
         ${(showAdvanced || hasAdvanced) && html`
           <${TextField} size="small" variant="outlined" placeholder="Base branch (optional, e.g. main)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
-          <div class="input-row">
-            <${TextField} size="small" variant="outlined" placeholder="Primary goal ID" value=${goalId} onInput=${(e) => setGoalId(e.target.value)} fullWidth />
-            <${TextField} size="small" variant="outlined" placeholder="Parent goal ID" value=${parentGoalId} onInput=${(e) => setParentGoalId(e.target.value)} fullWidth />
-          </div>
-          <div class="input-row">
-            <${TextField} size="small" variant="outlined" placeholder="Budget window (e.g. 2026-Q2)" value=${budgetWindow} onInput=${(e) => setBudgetWindow(e.target.value)} fullWidth />
-            <${TextField} size="small" variant="outlined" type="number" placeholder="Budget cents" value=${budgetCents} onInput=${(e) => setBudgetCents(e.target.value)} inputProps=${{ min: 0, step: 1 }} />
-            <${TextField} size="small" variant="outlined" placeholder="USD" value=${budgetCurrency} onInput=${(e) => setBudgetCurrency(e.target.value.toUpperCase())} />
-          </div>
-          <div class="input-row">
-            <${TextField} size="small" variant="outlined" placeholder="Coordination team ID" value=${coordinationTeamId} onInput=${(e) => setCoordinationTeamId(e.target.value)} fullWidth />
-            <${TextField} size="small" variant="outlined" placeholder="Coordination role" value=${coordinationRole} onInput=${(e) => setCoordinationRole(e.target.value)} fullWidth />
-          </div>
-          <div class="input-row">
-            <${TextField} size="small" variant="outlined" placeholder="Reports to" value=${coordinationReportsTo} onInput=${(e) => setCoordinationReportsTo(e.target.value)} fullWidth />
-            <${TextField} size="small" variant="outlined" placeholder="Coordination level" value=${coordinationLevel} onInput=${(e) => setCoordinationLevel(e.target.value)} fullWidth />
-          </div>
           <${Toggle}
             label="Draft (save to backlog, don't start)"
             checked=${draft}
@@ -9856,3 +8153,12 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
+
+
+
+
+
+
+
+
+

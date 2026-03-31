@@ -1,7 +1,3 @@
-// CLAUDE:SUMMARY — workflow-engine
-// Orchestrates workflow execution, persistence, retries, history, concurrency,
-// and node dispatch for Bosun workflows and their runtime bookkeeping.
-
 /**
  * workflow-engine.mjs — Bosun Workflow Engine
  *
@@ -49,7 +45,6 @@ import { getTemplate } from "./workflow-templates.mjs";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
-import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -73,20 +68,8 @@ const TAG = "[workflow-engine]";
 const WORKFLOW_DIR_NAME = "workflows";
 const WORKFLOW_RUNS_DIR = "workflow-runs";
 const WORKFLOW_TRAJECTORIES_DIR = "trajectories";
-function getRuntimeProcess() {
-  return globalThis.process;
-}
-
-function getRuntimeEnv() {
-  return getRuntimeProcess()?.env || {};
-}
-
-function getRuntimeCwd() {
-  return getRuntimeProcess()?.cwd?.() || ".";
-}
-
 function readBoundedEnvInt(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const parsed = Number(getRuntimeEnv()[name]);
+  const parsed = Number(process.env[name]);
   if (!Number.isFinite(parsed)) return fallback;
   const rounded = Math.round(parsed);
   return Math.min(max, Math.max(min, rounded));
@@ -151,8 +134,7 @@ const CHECKPOINT_DEBOUNCE_MS = readBoundedEnvInt(
   500,
   { min: 50, max: 10000 },
 );
-const ACTIVE_RUNS_INDEX = "_active-runs.json";
-const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
+const ACTIVE_RUNS_INDEX = "_active-runs.json";const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
   "WORKFLOW_TASK_TRACE_MAX_EVENTS",
   250,
   { min: 20, max: 5000 },
@@ -220,22 +202,17 @@ function buildDelegationWatchdogDecision(detail = {}) {
 
   const maxRecoveries = Math.max(
     0,
-    Math.trunc((() => {
-      const raw = watchdog.maxRecoveries
-        ?? watchdog.delegationWatchdogMaxRecoveries
-        ?? detail?.data?.delegationWatchdogMaxRecoveries
-        ?? DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES;
-      const parsed = Number(raw);
-      return Number.isFinite(parsed) ? parsed : DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES;
-    })()),
+    Math.trunc(Number(
+      watchdog.maxRecoveries
+      ?? watchdog.delegationWatchdogMaxRecoveries
+      ?? detail?.data?.delegationWatchdogMaxRecoveries
+      ?? DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES,
+    ) || DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES),
   );
   const recoveryAttempts = Math.max(
     0,
-    Math.trunc((() => {
-      const parsed = Number(watchdog.recoveryAttempts);
-      if (Number.isFinite(parsed)) return parsed;
-      return watchdog.recoveryAttempted === true ? 1 : 0;
-    })()),
+    Math.trunc(Number(watchdog.recoveryAttempts)
+      || (watchdog.recoveryAttempted === true ? 1 : 0)),
   );
 
   const reasonBase = `delegation_watchdog:${watchdog.nodeId || "unknown"}:${elapsedMs}ms>${timeoutMs}ms`;
@@ -253,7 +230,7 @@ function buildDelegationWatchdogDecision(detail = {}) {
 
   return {
     type: "retry",
-    mode: "from_failed",
+    mode: "from_scratch",
     reason: `${reasonBase}:retryable`,
     nodeId: watchdog.nodeId || null,
     elapsedMs,
@@ -307,376 +284,6 @@ function resolveTraceAgentId(data = {}, fallback = "") {
 }
 
 // ── Node Status ─────────────────────────────────────────────────────────────
-
-function normalizeDelegationTrail(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((entry) => entry && typeof entry === "object")
-    .map((entry) => ({ ...entry }))
-    .sort((a, b) => {
-      const aRaw = a?.at || a?.timestamp || 0;
-      const bRaw = b?.at || b?.timestamp || 0;
-
-      let aTime = Number(aRaw);
-      if (!Number.isFinite(aTime) && typeof aRaw === "string") {
-        const parsed = Date.parse(aRaw);
-        aTime = Number.isFinite(parsed) ? parsed : 0;
-      }
-
-      let bTime = Number(bRaw);
-      if (!Number.isFinite(bTime) && typeof bRaw === "string") {
-        const parsed = Date.parse(bRaw);
-        bTime = Number.isFinite(parsed) ? parsed : 0;
-      }
-      return aTime - bTime;
-    });
-}
-
-function normalizeDelegationGuardMap(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  return Object.fromEntries(
-    Object.entries(raw)
-      .filter(([key, value]) => String(key || "").trim() && value && typeof value === "object")
-      .map(([key, value]) => [String(key).trim(), { ...value }]),
-  );
-}
-
-const WORKFLOW_TEAM_STATE_VERSION = 1;
-const WORKFLOW_TEAM_TASK_STATUSES = new Set([
-  "open",
-  "claimed",
-  "completed",
-  "released",
-  "blocked",
-  "cancelled",
-]);
-
-function normalizeWorkflowStringList(raw, maxLength = 120) {
-  if (!Array.isArray(raw)) return [];
-  return Array.from(new Set(
-    raw
-      .map((value) => normalizeWorkflowText(value, maxLength))
-      .filter(Boolean),
-  ));
-}
-
-function normalizeWorkflowIsoTime(value) {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value).toISOString();
-  }
-  const text = String(value || "").trim();
-  if (!text) return null;
-  const parsed = Date.parse(text);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
-}
-
-function normalizeWorkflowTeamMember(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const memberId = normalizeWorkflowText(
-    raw.memberId || raw.id || raw.agentId || raw.name || "",
-    120,
-  );
-  if (!memberId) return null;
-  return {
-    memberId,
-    name: normalizeWorkflowText(raw.name || raw.label || memberId, 160) || memberId,
-    role: normalizeWorkflowText(raw.role || raw.coordinationRole || "", 80) || null,
-    reportsTo: normalizeWorkflowText(raw.reportsTo || raw.coordinationReportsTo || "", 120) || null,
-    level: normalizeWorkflowInteger(raw.level ?? raw.coordinationLevel, { min: 0, max: 100 }),
-    channels: normalizeWorkflowStringList(raw.channels, 120),
-    tags: normalizeWorkflowStringList(raw.tags, 80),
-    skills: normalizeWorkflowStringList(raw.skills, 120),
-    metadata:
-      raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
-        ? sanitizeJsonValue(raw.metadata)
-        : {},
-    joinedAt:
-      normalizeWorkflowIsoTime(raw.joinedAt) ||
-      normalizeWorkflowIsoTime(raw.createdAt) ||
-      null,
-    active: raw.active !== false,
-  };
-}
-
-function normalizeWorkflowTeamChannel(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const channelId = normalizeWorkflowText(raw.channelId || raw.id || raw.name || "", 120);
-  if (!channelId) return null;
-  return {
-    channelId,
-    name: normalizeWorkflowText(raw.name || channelId, 160) || channelId,
-    kind: normalizeWorkflowText(raw.kind || "channel", 40) || "channel",
-    members: normalizeWorkflowStringList(raw.members, 120),
-    topic: normalizeWorkflowText(raw.topic || "", 240) || null,
-    metadata:
-      raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
-        ? sanitizeJsonValue(raw.metadata)
-        : {},
-    createdAt:
-      normalizeWorkflowIsoTime(raw.createdAt) ||
-      normalizeWorkflowIsoTime(raw.joinedAt) ||
-      null,
-  };
-}
-
-function normalizeWorkflowTeamClaimHistory(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((entry) => entry && typeof entry === "object")
-    .map((entry) => ({
-      action: normalizeWorkflowText(entry.action || "claim", 40) || "claim",
-      memberId: normalizeWorkflowText(entry.memberId || entry.actorId || "", 120) || null,
-      at:
-        normalizeWorkflowIsoTime(entry.at) ||
-        normalizeWorkflowIsoTime(entry.timestamp) ||
-        new Date().toISOString(),
-      note: normalizeWorkflowText(entry.note || "", 240) || null,
-    }))
-    .sort((a, b) => Date.parse(a.at || 0) - Date.parse(b.at || 0));
-}
-
-function normalizeWorkflowTeamTask(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const taskId = normalizeWorkflowText(raw.taskId || raw.id || "", 120);
-  if (!taskId) return null;
-  const normalizedStatus = String(raw.status || "open").trim().toLowerCase() || "open";
-  return {
-    taskId,
-    title: normalizeWorkflowText(raw.title || raw.summary || taskId, 240) || taskId,
-    description: normalizeWorkflowText(raw.description || raw.details || "", 2000) || null,
-    status: WORKFLOW_TEAM_TASK_STATUSES.has(normalizedStatus) ? normalizedStatus : "open",
-    priority: normalizeWorkflowText(raw.priority || "", 40) || null,
-    availableTo: normalizeWorkflowStringList(raw.availableTo, 120),
-    labels: normalizeWorkflowStringList(raw.labels, 80),
-    tags: normalizeWorkflowStringList(raw.tags, 80),
-    channelId: normalizeWorkflowText(raw.channelId || "", 120) || null,
-    createdBy: normalizeWorkflowText(raw.createdBy || raw.actorId || "", 120) || null,
-    claimedBy: normalizeWorkflowText(raw.claimedBy || "", 120) || null,
-    completedBy: normalizeWorkflowText(raw.completedBy || "", 120) || null,
-    releasedBy: normalizeWorkflowText(raw.releasedBy || "", 120) || null,
-    createdAt:
-      normalizeWorkflowIsoTime(raw.createdAt) ||
-      normalizeWorkflowIsoTime(raw.timestamp) ||
-      null,
-    claimedAt: normalizeWorkflowIsoTime(raw.claimedAt) || null,
-    completedAt: normalizeWorkflowIsoTime(raw.completedAt) || null,
-    releasedAt: normalizeWorkflowIsoTime(raw.releasedAt) || null,
-    claimHistory: normalizeWorkflowTeamClaimHistory(raw.claimHistory),
-    metadata:
-      raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
-        ? sanitizeJsonValue(raw.metadata)
-        : {},
-  };
-}
-
-function normalizeWorkflowTeamMessage(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const messageId = normalizeWorkflowText(raw.messageId || raw.id || "", 120);
-  if (!messageId) return null;
-  return {
-    messageId,
-    kind: normalizeWorkflowText(raw.kind || (raw.to ? "direct" : "channel"), 40) || "channel",
-    fromMemberId:
-      normalizeWorkflowText(raw.fromMemberId || raw.from || raw.senderId || "", 120) || null,
-    toMemberIds:
-      Array.isArray(raw.toMemberIds)
-        ? normalizeWorkflowStringList(raw.toMemberIds, 120)
-        : normalizeWorkflowStringList(raw.to || [], 120),
-    channelId: normalizeWorkflowText(raw.channelId || raw.channel || "", 120) || null,
-    subject: normalizeWorkflowText(raw.subject || "", 200) || null,
-    content: normalizeWorkflowText(raw.content || raw.message || raw.summary || "", 4000) || null,
-    taskId: normalizeWorkflowText(raw.taskId || "", 120) || null,
-    metadata:
-      raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
-        ? sanitizeJsonValue(raw.metadata)
-        : {},
-    readBy: normalizeWorkflowStringList(raw.readBy, 120),
-    createdAt:
-      normalizeWorkflowIsoTime(raw.createdAt) ||
-      normalizeWorkflowIsoTime(raw.timestamp) ||
-      null,
-  };
-}
-
-function normalizeWorkflowTeamEvent(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const eventId = normalizeWorkflowText(raw.eventId || raw.id || "", 120);
-  if (!eventId) return null;
-  return {
-    eventId,
-    type: normalizeWorkflowText(raw.type || raw.eventType || "event", 80) || "event",
-    actorId: normalizeWorkflowText(raw.actorId || raw.memberId || "", 120) || null,
-    memberId: normalizeWorkflowText(raw.memberId || raw.actorId || "", 120) || null,
-    taskId: normalizeWorkflowText(raw.taskId || "", 120) || null,
-    messageId: normalizeWorkflowText(raw.messageId || "", 120) || null,
-    status: normalizeWorkflowText(raw.status || "", 40) || null,
-    summary: normalizeWorkflowText(raw.summary || raw.message || "", 320) || null,
-    at:
-      normalizeWorkflowIsoTime(raw.at) ||
-      normalizeWorkflowIsoTime(raw.timestamp) ||
-      new Date().toISOString(),
-    metadata:
-      raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
-        ? sanitizeJsonValue(raw.metadata)
-        : {},
-  };
-}
-
-function normalizeWorkflowTeamState(raw = {}) {
-  const source =
-    raw && typeof raw === "object" && !Array.isArray(raw)
-      ? raw
-      : {};
-  const dedupeBy = (items, key) => {
-    const map = new Map();
-    for (const item of items) {
-      const itemKey = String(item?.[key] || "").trim();
-      if (!itemKey) continue;
-      map.set(itemKey, item);
-    }
-    return [...map.values()];
-  };
-  const normalized = {
-    version: WORKFLOW_TEAM_STATE_VERSION,
-    teamId: normalizeWorkflowText(source.teamId || source.id || "", 120) || null,
-    name: normalizeWorkflowText(source.name || source.teamName || "", 160) || null,
-    leadId: normalizeWorkflowText(source.leadId || source.ownerId || "", 120) || null,
-    defaultChannel: normalizeWorkflowText(source.defaultChannel || "team", 120) || "team",
-    initializedAt:
-      normalizeWorkflowIsoTime(source.initializedAt) ||
-      normalizeWorkflowIsoTime(source.createdAt) ||
-      null,
-    updatedAt:
-      normalizeWorkflowIsoTime(source.updatedAt) ||
-      normalizeWorkflowIsoTime(source.initializedAt) ||
-      null,
-    roster: dedupeBy(
-      Array.isArray(source.roster)
-        ? source.roster.map((entry) => normalizeWorkflowTeamMember(entry)).filter(Boolean)
-        : [],
-      "memberId",
-    ),
-    channels: dedupeBy(
-      Array.isArray(source.channels)
-        ? source.channels.map((entry) => normalizeWorkflowTeamChannel(entry)).filter(Boolean)
-        : [],
-      "channelId",
-    ),
-    tasks: dedupeBy(
-      Array.isArray(source.tasks)
-        ? source.tasks.map((entry) => normalizeWorkflowTeamTask(entry)).filter(Boolean)
-        : [],
-      "taskId",
-    ).sort((a, b) => {
-      const aTime = Date.parse(a.createdAt || a.claimedAt || a.completedAt || 0) || 0;
-      const bTime = Date.parse(b.createdAt || b.claimedAt || b.completedAt || 0) || 0;
-      return aTime - bTime;
-    }),
-    messages: dedupeBy(
-      Array.isArray(source.messages)
-        ? source.messages.map((entry) => normalizeWorkflowTeamMessage(entry)).filter(Boolean)
-        : [],
-      "messageId",
-    ).sort((a, b) => {
-      const aTime = Date.parse(a.createdAt || 0) || 0;
-      const bTime = Date.parse(b.createdAt || 0) || 0;
-      return aTime - bTime;
-    }),
-    events: dedupeBy(
-      Array.isArray(source.events)
-        ? source.events.map((entry) => normalizeWorkflowTeamEvent(entry)).filter(Boolean)
-        : [],
-      "eventId",
-    ).sort((a, b) => {
-      const aTime = Date.parse(a.at || 0) || 0;
-      const bTime = Date.parse(b.at || 0) || 0;
-      return aTime - bTime;
-    }),
-  };
-  if (normalized.leadId && !normalized.roster.some((member) => member.memberId === normalized.leadId)) {
-    normalized.roster.push({
-      memberId: normalized.leadId,
-      name: normalized.leadId,
-      role: "lead",
-      reportsTo: null,
-      level: 0,
-      channels: [],
-      tags: [],
-      skills: [],
-      metadata: {},
-      joinedAt: normalized.initializedAt,
-      active: true,
-    });
-  }
-  if (!normalized.channels.some((channel) => channel.channelId === normalized.defaultChannel)) {
-    normalized.channels.push({
-      channelId: normalized.defaultChannel,
-      name: normalized.defaultChannel,
-      kind: "channel",
-      members: [],
-      topic: null,
-      metadata: {},
-      createdAt: normalized.initializedAt,
-    });
-  }
-  return normalized;
-}
-
-function cloneWorkflowTeamState(state) {
-  return sanitizeJsonValue(normalizeWorkflowTeamState(state || {})) || null;
-}
-
-function hasWorkflowTeamStateData(state) {
-  return Boolean(
-    state &&
-    typeof state === "object" &&
-    !Array.isArray(state) &&
-    (
-      state.teamId ||
-      state.leadId ||
-      (Array.isArray(state.roster) && state.roster.length > 0) ||
-      (Array.isArray(state.tasks) && state.tasks.length > 0) ||
-      (Array.isArray(state.messages) && state.messages.length > 0) ||
-      (Array.isArray(state.events) && state.events.length > 0)
-    )
-  );
-}
-
-function buildWorkflowTeamSummary(state) {
-  const normalized = normalizeWorkflowTeamState(state || {});
-  const openTaskCount = normalized.tasks.filter((task) => task.status === "open" || task.status === "released").length;
-  const claimedTaskCount = normalized.tasks.filter((task) => task.status === "claimed").length;
-  const completedTaskCount = normalized.tasks.filter((task) => task.status === "completed").length;
-  const blockedTaskCount = normalized.tasks.filter((task) => task.status === "blocked").length;
-  const directMessageCount = normalized.messages.filter((message) => message.kind === "direct").length;
-  const channelMessageCount = normalized.messages.length - directMessageCount;
-  return {
-    teamId: normalized.teamId || null,
-    name: normalized.name || null,
-    leadId: normalized.leadId || null,
-    defaultChannel: normalized.defaultChannel || null,
-    rosterCount: normalized.roster.length,
-    channelCount: normalized.channels.length,
-    taskCount: normalized.tasks.length,
-    openTaskCount,
-    claimedTaskCount,
-    completedTaskCount,
-    blockedTaskCount,
-    messageCount: normalized.messages.length,
-    directMessageCount,
-    channelMessageCount,
-    eventCount: normalized.events.length,
-    lastUpdatedAt: normalized.updatedAt || normalized.initializedAt || null,
-  };
-}
-
-function extractDelegationGuardMap(detail, run = null) {
-  return normalizeDelegationGuardMap(
-    detail?.data?._delegationTransitionGuards ??
-    run?.detail?.data?._delegationTransitionGuards ??
-    run?.delegationTransitionGuards,
-  );
-}
 
 export const NodeStatus = Object.freeze({
   PENDING: "pending",
@@ -870,27 +477,8 @@ function resolveNodePorts(node) {
   // Merge explicit outputPorts with configuredOutputs so that type-specific
   // ports (yes/no for conditions, case names for switches, etc.) are always
   // present even when outputPorts was auto-persisted with only "default".
-  // When handler ports exist, refresh stored port type/accepts to avoid stale
-  // port metadata causing false validation failures after handler updates.
   let resolvedOutputs;
-  if (handlerOutputs.length > 0) {
-    const handlerByName = new Map(handlerOutputs.map((p) => [p.name, p]));
-    const storedBase = outputPorts.length > 0 ? outputPorts : configuredOutputs;
-    if (storedBase.length > 0) {
-      // Refresh stored ports with handler type/accepts where names match; preserve
-      // extra stored ports (dynamic switch/condition outputs not in the handler).
-      const refreshed = storedBase.map((p) => {
-        const hp = handlerByName.get(p.name);
-        return hp ? { ...p, type: hp.type, accepts: hp.accepts } : p;
-      });
-      const storedNames = new Set(storedBase.map((p) => p.name));
-      const extra = configuredOutputs.filter((p) => !storedNames.has(p.name) && !handlerByName.has(p.name));
-      const missingHandlerPorts = handlerOutputs.filter((p) => !storedNames.has(p.name));
-      resolvedOutputs = [...refreshed, ...extra, ...missingHandlerPorts];
-    } else {
-      resolvedOutputs = handlerOutputs;
-    }
-  } else if (outputPorts.length > 0 && configuredOutputs.length > 0) {
+  if (outputPorts.length > 0 && configuredOutputs.length > 0) {
     const existingNames = new Set(outputPorts.map((p) => p.name));
     const additional = configuredOutputs.filter((p) => !existingNames.has(p.name));
     resolvedOutputs = [...outputPorts, ...additional];
@@ -898,21 +486,19 @@ function resolveNodePorts(node) {
     resolvedOutputs = outputPorts;
   } else if (configuredOutputs.length > 0) {
     resolvedOutputs = configuredOutputs;
+  } else if (handlerOutputs.length > 0) {
+    resolvedOutputs = handlerOutputs;
   } else {
     resolvedOutputs = [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "output", 0)];
   }
 
-  // For inputs, always prefer the handler definition over persisted ports.
-  // Input ports are purely derived from node type registrations — they are never
-  // authored by users — so stale persisted types must not override fresh handler
-  // definitions (which may have expanded accepts lists in later versions).
   return {
-    inputs: handlerInputs.length > 0
-      ? handlerInputs
-      : (inputPorts.length > 0
-        ? inputPorts
-        : (configuredInputs.length > 0
-          ? configuredInputs
+    inputs: inputPorts.length > 0
+      ? inputPorts
+      : (configuredInputs.length > 0
+        ? configuredInputs
+        : (handlerInputs.length > 0
+          ? handlerInputs
           : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "input", 0)])),
     outputs: resolvedOutputs,
   };
@@ -1103,353 +689,10 @@ function cloneRunSnapshot(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function sanitizeJsonValue(value, seen = new WeakSet()) {
-  if (value == null) return value;
-  const valueType = typeof value;
-  if (
-    valueType === "string" ||
-    valueType === "number" ||
-    valueType === "boolean"
-  ) {
-    return value;
-  }
-  if (valueType === "bigint") return String(value);
-  if (valueType === "function" || valueType === "symbol") return undefined;
-  if (value instanceof Date) {
-    const ts = value.getTime();
-    return Number.isFinite(ts) ? value.toISOString() : null;
-  }
-  if (value instanceof Error) {
-    return cleanObject({
-      name: value.name || "Error",
-      message: value.message || String(value),
-      stack: value.stack || undefined,
-    });
-  }
-  if (Buffer.isBuffer(value)) {
-    return value.toString("base64");
-  }
-  if (valueType !== "object") {
-    return String(value);
-  }
-  const ctorName = String(value?.constructor?.name || "");
-  if (
-    ctorName === "Timeout" ||
-    ctorName === "Immediate" ||
-    ctorName === "AbortSignal" ||
-    ctorName === "Promise"
-  ) {
-    return `[${ctorName}]`;
-  }
-  if (seen.has(value)) return "[Circular]";
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      return value.map((entry) => {
-        const sanitized = sanitizeJsonValue(entry, seen);
-        return sanitized === undefined ? null : sanitized;
-      });
-    }
-    if (value instanceof Map) {
-      const out = {};
-      for (const [entryKey, entryValue] of value.entries()) {
-        const normalizedKey = String(entryKey || "").trim();
-        if (!normalizedKey) continue;
-        const sanitized = sanitizeJsonValue(entryValue, seen);
-        if (sanitized !== undefined) out[normalizedKey] = sanitized;
-      }
-      return out;
-    }
-    if (value instanceof Set) {
-      const out = [];
-      for (const entry of value.values()) {
-        const sanitized = sanitizeJsonValue(entry, seen);
-        if (sanitized !== undefined) out.push(sanitized);
-      }
-      return out;
-    }
-    const out = {};
-    for (const [entryKey, entryValue] of Object.entries(value)) {
-      const sanitized = sanitizeJsonValue(entryValue, seen);
-      if (sanitized !== undefined) out[entryKey] = sanitized;
-    }
-    return out;
-  } finally {
-    seen.delete(value);
-  }
-}
-
 function cleanObject(value = {}) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
   );
-}
-
-function normalizeWorkflowText(value, maxLength = 240) {
-  const text = String(value ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!text) return null;
-  if (!Number.isFinite(maxLength) || maxLength <= 0 || text.length <= maxLength) return text;
-  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function normalizeWorkflowInteger(value, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  const rounded = Math.trunc(parsed);
-  return Math.max(min, Math.min(max, rounded));
-}
-
-function normalizeGoalAncestry(raw, fallbackGoal = null) {
-  const source = Array.isArray(raw)
-    ? raw
-    : Array.isArray(raw?.goalAncestry)
-      ? raw.goalAncestry
-      : Array.isArray(raw?.ancestry)
-        ? raw.ancestry
-        : [];
-  const normalized = source
-    .filter((entry) => entry && typeof entry === "object")
-    .map((entry, index) => {
-      const goalId = normalizeWorkflowText(
-        entry.goalId || entry.id || entry.goal?.id || entry.goal?.goalId || "",
-        160,
-      );
-      const title = normalizeWorkflowText(
-        entry.title || entry.goalTitle || entry.name || entry.goal?.title || entry.goal?.name || "",
-        240,
-      );
-      const depth = normalizeWorkflowInteger(entry.depth ?? index, { min: 0, max: 1_000 });
-      if (!goalId && !title) return null;
-      return cleanObject({
-        goalId: goalId || null,
-        title: title || null,
-        parentGoalId: normalizeWorkflowText(entry.parentGoalId || entry.parentId || "", 160) || null,
-        kind: normalizeWorkflowText(entry.kind || entry.type || "", 80) || null,
-        status: normalizeWorkflowText(entry.status || "", 80) || null,
-        source: normalizeWorkflowText(entry.source || "", 120) || null,
-        depth,
-      });
-    })
-    .filter(Boolean);
-  if (normalized.length > 0) return normalized;
-
-  if (!fallbackGoal || typeof fallbackGoal !== "object") return [];
-  const fallbackGoalId = normalizeWorkflowText(fallbackGoal.goalId || fallbackGoal.id || "", 160);
-  const fallbackTitle = normalizeWorkflowText(fallbackGoal.title || fallbackGoal.name || "", 240);
-  if (!fallbackGoalId && !fallbackTitle) return [];
-  return [cleanObject({
-    goalId: fallbackGoalId || null,
-    title: fallbackTitle || null,
-    kind: normalizeWorkflowText(fallbackGoal.kind || fallbackGoal.type || "", 80) || null,
-    status: normalizeWorkflowText(fallbackGoal.status || "", 80) || null,
-    source: normalizeWorkflowText(fallbackGoal.source || "", 120) || null,
-    depth: 0,
-  })];
-}
-
-function buildGoalState(data = {}) {
-  const primaryGoalSource =
-    data?.primaryGoal ||
-    data?._primaryGoal ||
-    data?.goal ||
-    data?._goal ||
-    null;
-  const goalAncestry = normalizeGoalAncestry(
-    data?.goalAncestry || data?._goalAncestry || data?.workflowGoalAncestry || data?._workflowGoalAncestry,
-    primaryGoalSource,
-  );
-  const primaryGoal = goalAncestry.at(-1) || null;
-  return {
-    goalAncestry,
-    primaryGoalId: primaryGoal?.goalId || normalizeWorkflowText(data?.primaryGoalId || data?._primaryGoalId || "", 160) || null,
-    primaryGoalTitle: primaryGoal?.title || normalizeWorkflowText(data?.primaryGoalTitle || data?._primaryGoalTitle || "", 240) || null,
-    goalDepth: primaryGoal ? normalizeWorkflowInteger(primaryGoal.depth, { min: 0, max: 1_000 }) ?? Math.max(goalAncestry.length - 1, 0) : null,
-  };
-}
-
-function normalizeHeartbeatRun(raw = {}) {
-  if (!raw || typeof raw !== "object") return null;
-  const runId = normalizeWorkflowText(raw.runId || raw.heartbeatRunId || raw.id || "", 160);
-  const status = normalizeWorkflowText(raw.status || raw.state || "", 80);
-  const sourceRunId = normalizeWorkflowText(raw.sourceRunId || raw.parentRunId || raw.originRunId || "", 160);
-  const wakeAt = normalizeWorkflowText(raw.wakeAt || raw.resumeAt || raw.nextWakeAt || "", 80);
-  const lastHeartbeatAt = normalizeWorkflowText(raw.lastHeartbeatAt || raw.heartbeatAt || raw.lastSeenAt || "", 80);
-  const attempt = normalizeWorkflowInteger(raw.attempt ?? raw.retryCount, { min: 0, max: 10_000 });
-  if (!runId && !status && !sourceRunId && !wakeAt && !lastHeartbeatAt && attempt == null) return null;
-  return cleanObject({
-    runId: runId || null,
-    status: status || null,
-    sourceRunId: sourceRunId || null,
-    wakeAt: wakeAt || null,
-    lastHeartbeatAt: lastHeartbeatAt || null,
-    trigger: normalizeWorkflowText(raw.trigger || raw.reason || "", 160) || null,
-    attempt,
-  });
-}
-
-function normalizeWakeupRequest(raw = {}) {
-  if (!raw || typeof raw !== "object") return null;
-  const requestId = normalizeWorkflowText(raw.requestId || raw.id || raw.wakeupRequestId || "", 160);
-  const source = normalizeWorkflowText(raw.source || raw.reason || raw.trigger || "", 160);
-  const requestedAt = normalizeWorkflowText(raw.requestedAt || raw.createdAt || "", 80);
-  const wakeAt = normalizeWorkflowText(raw.wakeAt || raw.resumeAt || raw.scheduledFor || "", 80);
-  if (!requestId && !source && !requestedAt && !wakeAt) return null;
-  return cleanObject({
-    requestId: requestId || null,
-    source: source || null,
-    requestedAt: requestedAt || null,
-    wakeAt: wakeAt || null,
-    taskId: normalizeWorkflowText(raw.taskId || "", 160) || null,
-    sessionId: normalizeWorkflowText(raw.sessionId || raw.threadId || "", 160) || null,
-  });
-}
-
-function normalizeBudgetPolicy(raw = {}) {
-  if (!raw || typeof raw !== "object") return null;
-  const budgetWindow = normalizeWorkflowText(raw.budgetWindow || raw.window || raw.period || "", 160);
-  const budgetCents = normalizeWorkflowInteger(raw.budgetCents ?? raw.limitCents ?? raw.limit, { min: 0 });
-  const spentCents = normalizeWorkflowInteger(raw.spentCents ?? raw.usedCents ?? raw.actualCents ?? raw.spent, { min: 0 });
-  const reservedCents = normalizeWorkflowInteger(raw.reservedCents ?? raw.pendingCents, { min: 0 });
-  const remainingCents = normalizeWorkflowInteger(
-    raw.remainingCents ?? (budgetCents != null ? budgetCents - (spentCents || 0) - (reservedCents || 0) : null),
-    { min: Number.MIN_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
-  );
-  const nearLimitThreshold = normalizeWorkflowInteger(raw.nearLimitThresholdCents ?? raw.warningCents, { min: 0 });
-  if (budgetWindow == null && budgetCents == null && spentCents == null && reservedCents == null && remainingCents == null) return null;
-  return cleanObject({
-    budgetWindow: budgetWindow || null,
-    budgetCents,
-    spentCents: spentCents ?? 0,
-    reservedCents: reservedCents ?? 0,
-    remainingCents,
-    nearLimitThresholdCents: nearLimitThreshold,
-    currency: normalizeWorkflowText(raw.currency || "USD", 16) || "USD",
-    approvalRequired: raw.approvalRequired === true,
-    owner: normalizeWorkflowText(raw.owner || raw.team || "", 160) || null,
-  });
-}
-
-function buildBudgetOutcome(policy = null) {
-  if (!policy || typeof policy !== "object") return null;
-  const budgetCents = normalizeWorkflowInteger(policy.budgetCents, { min: 0 });
-  const spentCents = normalizeWorkflowInteger(policy.spentCents, { min: 0 }) ?? 0;
-  const reservedCents = normalizeWorkflowInteger(policy.reservedCents, { min: 0 }) ?? 0;
-  const effectiveSpend = spentCents + reservedCents;
-  const remainingCents = normalizeWorkflowInteger(
-    policy.remainingCents ?? (budgetCents != null ? budgetCents - effectiveSpend : null),
-    { min: Number.MIN_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
-  );
-  const utilizationRatio = budgetCents && budgetCents > 0
-    ? Math.max(0, Number((effectiveSpend / budgetCents).toFixed(3)))
-    : 0;
-  const nearLimitThreshold = normalizeWorkflowInteger(policy.nearLimitThresholdCents, { min: 0 });
-  const exceeded = budgetCents != null ? effectiveSpend > budgetCents : false;
-  const nearLimit = !exceeded && budgetCents != null
-    ? (
-        (nearLimitThreshold != null && remainingCents != null && remainingCents <= nearLimitThreshold) ||
-        utilizationRatio >= 0.9
-      )
-    : false;
-  return cleanObject({
-    status: exceeded ? "exceeded" : (nearLimit ? "near_limit" : "ok"),
-    budgetCents,
-    spentCents,
-    reservedCents,
-    remainingCents,
-    utilizationRatio,
-    exceeded,
-    nearLimit,
-    approvalRequired: policy.approvalRequired === true,
-  });
-}
-
-function normalizePolicyViolation(entry = {}, index = 0) {
-  const ruleId = normalizeWorkflowText(entry.ruleId || entry.id || `${index}`, 160);
-  const message = normalizeWorkflowText(entry.message || entry.reason || entry.summary || "", 260);
-  if (!ruleId && !message) return null;
-  return cleanObject({
-    ruleId: ruleId || null,
-    message: message || null,
-    severity: normalizeWorkflowText(entry.severity || "warning", 40) || "warning",
-    blocking: entry.blocking === true || entry.blocked === true,
-    nodeId: normalizeWorkflowText(entry.nodeId || "", 160) || null,
-  });
-}
-
-function normalizeExecutionPolicy(raw = {}) {
-  if (!raw || typeof raw !== "object") return null;
-  const violations = Array.isArray(raw.violations)
-    ? raw.violations.map((entry, index) => normalizePolicyViolation(entry, index)).filter(Boolean)
-    : [];
-  const blocked = raw.blocked === true || raw.requiresApproval === true && raw.approvalState === "pending";
-  if (violations.length === 0 && !blocked && !raw.approvalRequired && !raw.approvalState && !raw.mode) return null;
-  return cleanObject({
-    mode: normalizeWorkflowText(raw.mode || raw.policyMode || "", 80) || null,
-    blocked,
-    approvalRequired: raw.approvalRequired === true || raw.requiresApproval === true,
-    approvalState: normalizeWorkflowText(raw.approvalState || raw.state || "", 80) || null,
-    violations,
-  });
-}
-
-function buildPolicyOutcome(policy = null) {
-  if (!policy || typeof policy !== "object") return null;
-  const violations = Array.isArray(policy.violations) ? policy.violations : [];
-  const blockingViolationCount = violations.filter((entry) => entry?.blocking === true).length;
-  const violationCount = violations.length;
-  const blocked = policy.blocked === true || blockingViolationCount > 0;
-  return cleanObject({
-    status: blocked ? "blocked" : (violationCount > 0 ? "warning" : "ok"),
-    blocked,
-    approvalRequired: policy.approvalRequired === true,
-    approvalState: policy.approvalState || null,
-    violationCount,
-    blockingViolationCount,
-  });
-}
-
-function buildWorkflowGovernanceState(data = {}) {
-  const goalState = buildGoalState(data);
-  const heartbeatRun = normalizeHeartbeatRun(
-    data?.heartbeatRun || data?._heartbeatRun || data?.workflowHeartbeatRun || data?._workflowHeartbeatRun,
-  );
-  const wakeupRequest = normalizeWakeupRequest(
-    data?.wakeupRequest || data?._wakeupRequest || data?.workflowWakeupRequest || data?._workflowWakeupRequest,
-  );
-  const budgetPolicy = normalizeBudgetPolicy(
-    data?.budgetPolicy || data?._budgetPolicy || data?.workflowBudgetPolicy || data?._workflowBudgetPolicy,
-  );
-  const executionPolicy = normalizeExecutionPolicy(
-    data?.executionPolicy || data?._executionPolicy || data?.workflowExecutionPolicy || data?._workflowExecutionPolicy,
-  );
-  return cleanObject({
-    ...goalState,
-    heartbeatRun,
-    wakeupRequest,
-    budgetPolicy,
-    executionPolicy,
-    budgetOutcome: buildBudgetOutcome(budgetPolicy),
-    policyOutcome: buildPolicyOutcome(executionPolicy),
-  });
-}
-
-function toWorkflowGovernanceData(state = {}) {
-  return cleanObject({
-    _workflowGovernance: state,
-    _goalAncestry: state.goalAncestry,
-    _primaryGoalId: state.primaryGoalId || undefined,
-    _primaryGoalTitle: state.primaryGoalTitle || undefined,
-    _goalDepth: state.goalDepth ?? undefined,
-    _heartbeatRun: state.heartbeatRun || undefined,
-    _wakeupRequest: state.wakeupRequest || undefined,
-    _budgetPolicy: state.budgetPolicy || undefined,
-    _executionPolicy: state.executionPolicy || undefined,
-    _budgetOutcome: state.budgetOutcome || undefined,
-    _policyOutcome: state.policyOutcome || undefined,
-  });
 }
 
 function normalizeDagText(value, maxLength = 240) {
@@ -1796,201 +1039,6 @@ function collectValidationFailures(detail = {}) {
     .filter(Boolean);
 }
 
-function collectRunTaskIds(detail = {}) {
-  const ids = new Set();
-  const push = (value) => {
-    const normalized = String(value || "").trim();
-    if (normalized) ids.add(normalized);
-  };
-
-  push(detail?.data?.taskId);
-  push(detail?.data?.activeTaskId);
-  push(detail?.data?.task?.id);
-  push(detail?.data?.taskInfo?.id);
-  push(detail?.data?.taskDetail?.id);
-  push(detail?.data?._workflowRootTaskId);
-  push(detail?.data?._workflowParentTaskId);
-
-  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
-    push(event?.taskId);
-  }
-
-  return [...ids];
-}
-
-function resolveRunTaskTitle(detail = {}) {
-  const direct = [
-    detail?.data?.taskTitle,
-    detail?.data?.task?.title,
-    detail?.data?.taskInfo?.title,
-    detail?.data?.taskDetail?.title,
-  ]
-    .map((value) => String(value || "").trim())
-    .find(Boolean);
-  if (direct) return direct;
-
-  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
-    const title = String(event?.taskTitle || "").trim();
-    if (title) return title;
-  }
-
-  return null;
-}
-
-function collectRunSessionIds(detail = {}) {
-  const ids = [];
-  const seen = new Set();
-  const push = (value) => {
-    const normalized = String(value || "").trim();
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    ids.push(normalized);
-  };
-
-  for (const value of [
-    detail?.data?._workflowSessionId,
-    detail?.data?._workflowRootSessionId,
-    detail?.data?._workflowParentSessionId,
-    detail?.data?.sessionId,
-    detail?.data?.threadId,
-    detail?.data?.task?.sessionId,
-    detail?.data?.task?.threadId,
-  ]) {
-    push(value);
-  }
-  for (const value of Array.isArray(detail?.data?._delegatedSessionIds) ? detail.data._delegatedSessionIds : []) {
-    push(value);
-  }
-
-  for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
-    for (const value of [
-      event?.sessionId,
-      event?.threadId,
-      event?.meta?.sessionId,
-      event?.meta?.threadId,
-    ]) {
-      push(value);
-    }
-  }
-
-  return ids;
-}
-
-function buildRunDelegationTopology({ runId = null, detail = {}, runGraph = null } = {}) {
-  const taskIds = collectRunTaskIds(detail);
-  const sessionIds = collectRunSessionIds(detail);
-  const requestedRunId = String(runId || detail?.id || "").trim() || null;
-  const requestedRun =
-    Array.isArray(runGraph?.runs) && requestedRunId
-      ? runGraph.runs.find((entry) => String(entry?.runId || "") === requestedRunId) || null
-      : null;
-  const rootRunId = String(
-    detail?.dagState?.rootRunId ||
-      detail?.data?._workflowRootRunId ||
-      requestedRun?.rootRunId ||
-      requestedRunId ||
-      "",
-  ).trim() || null;
-  const parentRunId = String(
-    detail?.dagState?.parentRunId ||
-      detail?.data?._workflowParentRunId ||
-      requestedRun?.parentRunId ||
-      "",
-  ).trim() || null;
-  const taskId = String(taskIds[0] || requestedRun?.taskId || "").trim() || null;
-  const rootTaskId = String(
-    detail?.data?._workflowRootTaskId ||
-      requestedRun?.rootTaskId ||
-      taskId ||
-      "",
-  ).trim() || taskId || null;
-  const parentTaskId = String(
-    detail?.data?._workflowParentTaskId ||
-      requestedRun?.parentTaskId ||
-      "",
-  ).trim() || null;
-  const sessionId = String(
-    detail?.data?._workflowSessionId ||
-      sessionIds[0] ||
-      requestedRun?.sessionId ||
-      "",
-  ).trim() || (sessionIds[0] || null);
-  const rootSessionId = String(
-    detail?.data?._workflowRootSessionId ||
-      requestedRun?.rootSessionId ||
-      sessionId ||
-      "",
-  ).trim() || sessionId || null;
-  const parentSessionId = String(
-    detail?.data?._workflowParentSessionId ||
-      requestedRun?.parentSessionId ||
-      "",
-  ).trim() || null;
-  const delegationDepthRaw = Number(
-    detail?.data?._workflowDelegationDepth ??
-      requestedRun?.delegationDepth ??
-      0,
-  );
-  const delegationDepth = Number.isFinite(delegationDepthRaw)
-    ? Math.max(0, Math.trunc(delegationDepthRaw))
-    : 0;
-  const childRunIds = Array.isArray(runGraph?.runs) && requestedRunId
-    ? runGraph.runs
-        .filter((entry) => String(entry?.parentRunId || "") === requestedRunId)
-        .map((entry) => String(entry?.runId || "").trim())
-        .filter(Boolean)
-    : [];
-  const childSessionIds = Array.isArray(runGraph?.runs)
-    ? [...new Set(
-        runGraph.runs
-          .filter((entry) => String(entry?.parentRunId || "") === requestedRunId)
-          .map((entry) => String(entry?.sessionId || "").trim())
-          .filter(Boolean),
-      )]
-    : [];
-  const familyRunIds = Array.isArray(runGraph?.runs)
-    ? [...new Set(runGraph.runs.map((entry) => String(entry?.runId || "").trim()).filter(Boolean))]
-    : [];
-  const familySessionIds = Array.isArray(runGraph?.runs)
-    ? [...new Set(runGraph.runs.map((entry) => String(entry?.sessionId || "").trim()).filter(Boolean))]
-    : [];
-  return cleanObject({
-    runId: requestedRunId,
-    rootRunId,
-    parentRunId,
-    taskId,
-    rootTaskId,
-    parentTaskId,
-    taskIds,
-    sessionId,
-    rootSessionId,
-    parentSessionId,
-    sessionIds,
-    delegationDepth,
-    childRunIds,
-    childSessionIds,
-    familyRunIds,
-    familySessionIds,
-  });
-}
-
-function buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx) {
-  const detail = ctx?.toJSON?.(Date.now()) || {};
-  const taskIds = collectRunTaskIds(detail);
-  const sessionIds = collectRunSessionIds(detail);
-  return cleanObject({
-    runId,
-    workflowId,
-    workflowName,
-    startedAt: ctx?.startedAt || Date.now(),
-    taskId: taskIds[0] || undefined,
-    taskIds: taskIds.length > 0 ? taskIds : undefined,
-    taskTitle: resolveRunTaskTitle(detail) || undefined,
-    sessionId: sessionIds[0] || undefined,
-    sessionIds: sessionIds.length > 0 ? sessionIds : undefined,
-  });
-}
-
 export class WorkflowContext {
   constructor(initialData = {}) {
     this.id = randomUUID();
@@ -2116,100 +1164,6 @@ export class WorkflowContext {
     this.logs.push({ nodeId, message, level, timestamp: Date.now() });
   }
 
-  getDelegationAuditTrail() {
-    return normalizeDelegationTrail(
-      this.data?._delegationAuditTrail ??
-      this.data?._workflowDelegationTrail ??
-      this.data?._delegationTrail,
-    );
-  }
-
-  recordDelegationEvent(event = {}) {
-    if (!this.data || typeof this.data !== "object") this.data = {};
-    this.data._delegationTransitionGuards = normalizeDelegationGuardMap(this.data._delegationTransitionGuards);
-    const entry = {
-      ...event,
-      type: String(event?.type || event?.eventType || "").trim() || "unknown",
-      eventType: String(event?.eventType || event?.type || "").trim() || "unknown",
-      at: Number(event?.at) || Date.now(),
-      timestamp: event?.timestamp || new Date().toISOString(),
-    };
-    const key = String(event?.transitionKey || event?.idempotencyKey || "").trim();
-    if (key) {
-      if (!this.data._delegationTransitionGuards || typeof this.data._delegationTransitionGuards !== "object") {
-        this.data._delegationTransitionGuards = {};
-      }
-      if (this.data._delegationTransitionGuards[key]) {
-        return {
-          ...this.data._delegationTransitionGuards[key],
-          recorded: false,
-        };
-      }
-      entry.transitionKey = entry.transitionKey || key;
-      entry.idempotencyKey = entry.idempotencyKey || key;
-      this.data._delegationTransitionGuards[key] = entry;
-    }
-    const nextTrail = normalizeDelegationTrail([...this.getDelegationAuditTrail(), entry]);
-    this.data._delegationAuditTrail = nextTrail;
-    this.data._workflowDelegationTrail = nextTrail;
-    this.data._delegationTrail = nextTrail;
-    if (!this.__workflowRuntimeState || typeof this.__workflowRuntimeState !== "object") {
-      this.__workflowRuntimeState = {};
-    }
-    this.__workflowRuntimeState.delegationAuditTrail = nextTrail;
-    return {
-      ...entry,
-      recorded: true,
-    };
-  }
-
-  getDelegationTransitionGuard(key) {
-    const normalizedKey = String(key || "").trim();
-    if (!normalizedKey) return null;
-    const guards = normalizeDelegationGuardMap(this.data?._delegationTransitionGuards);
-    return guards[normalizedKey] ? { ...guards[normalizedKey] } : null;
-  }
-
-  setDelegationTransitionGuard(key, value = {}) {
-    const normalizedKey = String(key || "").trim();
-    if (!normalizedKey) return null;
-    if (!this.data || typeof this.data !== "object") this.data = {};
-    const guards = normalizeDelegationGuardMap(this.data._delegationTransitionGuards);
-    const nextValue = { ...value, transitionKey: value?.transitionKey || normalizedKey };
-    guards[normalizedKey] = nextValue;
-    this.data._delegationTransitionGuards = guards;
-    return { ...nextValue };
-  }
-
-  getWorkflowTeamState() {
-    return cloneWorkflowTeamState(
-      this?.__workflowRuntimeState?.workflowTeamState ??
-      this?.data?._workflowTeamState ??
-      this?.data?.workflowTeamState ??
-      {},
-    );
-  }
-
-  setWorkflowTeamState(state = {}) {
-    const normalized = normalizeWorkflowTeamState(state || {});
-    if (!this.data || typeof this.data !== "object") this.data = {};
-    this.data._workflowTeamState = normalized;
-    this.data.workflowTeamState = normalized;
-    if (!this.__workflowRuntimeState || typeof this.__workflowRuntimeState !== "object") {
-      this.__workflowRuntimeState = {};
-    }
-    this.__workflowRuntimeState.workflowTeamState = normalized;
-    return cloneWorkflowTeamState(normalized);
-  }
-
-  updateWorkflowTeamState(updater) {
-    const current = this.getWorkflowTeamState();
-    const next = typeof updater === "function"
-      ? updater(cloneWorkflowTeamState(current))
-      : { ...current, ...(updater || {}) };
-    return this.setWorkflowTeamState(next || current);
-  }
-
   /** Record an error */
   error(nodeId, error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -2281,18 +1235,6 @@ export class WorkflowContext {
       dagState: this.data?._dagState || null,
       issueAdvisor: this.data?._issueAdvisor || null,
       replayTrajectory: this.data?._replayTrajectory || null,
-      delegationAuditTrail: this.getDelegationAuditTrail(),
-      delegationTrail: this.getDelegationAuditTrail(),
-      delegationTransitionGuards:
-        this.data?._delegationTransitionGuards && typeof this.data._delegationTransitionGuards === "object"
-          ? { ...this.data._delegationTransitionGuards }
-          : {},
-      workflowTeamState: hasWorkflowTeamStateData(this.getWorkflowTeamState())
-        ? this.getWorkflowTeamState()
-        : null,
-      teamSummary: hasWorkflowTeamStateData(this.getWorkflowTeamState())
-        ? buildWorkflowTeamSummary(this.getWorkflowTeamState())
-        : null,
       stepSummaries: Array.isArray(this.data?._replayTrajectory?.steps)
         ? this.data._replayTrajectory.steps.map((s) => ({
             nodeId: s.nodeId,
@@ -2323,9 +1265,8 @@ export class WorkflowEngine extends EventEmitter {
   constructor(opts = {}) {
     super();
     const sandbox = ensureTestRuntimeSandbox();
-    const runtimeCwd = getRuntimeCwd();
-    const defaultWorkflowDir = resolve(runtimeCwd, ".bosun", WORKFLOW_DIR_NAME);
-    const defaultRunsDir = resolve(runtimeCwd, ".bosun", WORKFLOW_RUNS_DIR);
+    const defaultWorkflowDir = resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
+    const defaultRunsDir = resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
     this.workflowDir = resolvePathForTestRuntime(
       opts.workflowDir || defaultWorkflowDir,
       defaultWorkflowDir,
@@ -2336,11 +1277,10 @@ export class WorkflowEngine extends EventEmitter {
       defaultRunsDir,
       sandbox?.runsDir,
     );
-    this._configDir = opts.configDir || runtimeCwd;
-    const env = getRuntimeEnv();
+    this._configDir = opts.configDir || process.cwd();
     this.detectInterruptedRuns = opts.detectInterruptedRuns !== false &&
-      env.WORKFLOW_DETECT_INTERRUPTED_RUNS !== "0" &&
-      env.WORKFLOW_DETECT_INTERRUPTED_RUNS !== "false";
+      process.env.WORKFLOW_DETECT_INTERRUPTED_RUNS !== "0" &&
+      process.env.WORKFLOW_DETECT_INTERRUPTED_RUNS !== "false";
     this.services = opts.services || {};
     this._workflows = new Map();
     this._activeRuns = new Map();
@@ -2751,21 +1691,10 @@ export class WorkflowEngine extends EventEmitter {
       ctx?.data?.taskDetail?.title ||
       "",
     ).trim();
-    const governanceState = buildWorkflowGovernanceState(ctx?.data || {});
     return cleanObject({
       ...extra,
       taskId: taskId || undefined,
       taskTitle: taskTitle || undefined,
-      goalAncestry: governanceState.goalAncestry?.length ? governanceState.goalAncestry : undefined,
-      primaryGoalId: governanceState.primaryGoalId || undefined,
-      primaryGoalTitle: governanceState.primaryGoalTitle || undefined,
-      goalDepth: governanceState.goalDepth ?? undefined,
-      heartbeatRun: governanceState.heartbeatRun || undefined,
-      wakeupRequest: governanceState.wakeupRequest || undefined,
-      budgetPolicy: governanceState.budgetPolicy || undefined,
-      budgetOutcome: governanceState.budgetOutcome || undefined,
-      executionPolicy: governanceState.executionPolicy || undefined,
-      policyOutcome: governanceState.policyOutcome || undefined,
     });
   }
 
@@ -2882,29 +1811,6 @@ export class WorkflowEngine extends EventEmitter {
       prUrl: String(
         ctx?.data?.prUrl ||
         result?.prUrl ||
-        "",
-      ).trim() || null,
-      workspaceId: String(
-        ctx?.data?._workspaceId ||
-        ctx?.data?.workspaceId ||
-        ctx?.data?.task?.meta?.workspaceId ||
-        result?.workspaceId ||
-        result?.task?.meta?.workspaceId ||
-        "",
-      ).trim() || null,
-      sessionId: String(
-        ctx?.data?.sessionId ||
-        ctx?.data?.threadId ||
-        ctx?.data?.task?.meta?.sessionId ||
-        result?.sessionId ||
-        result?.threadId ||
-        "",
-      ).trim() || null,
-      agentId: String(
-        ctx?.data?.agentId ||
-        ctx?.data?.task?.assignee ||
-        result?.agentId ||
-        result?.task?.assignee ||
         "",
       ).trim() || null,
     };
@@ -3028,16 +1934,9 @@ export class WorkflowEngine extends EventEmitter {
       branch: taskContext.branch,
       prNumber: taskContext.prNumber,
       prUrl: taskContext.prUrl,
-      workspaceId: taskContext.workspaceId,
-      sessionId: taskContext.sessionId,
-      agentId: taskContext.agentId,
       traceId: activeTrace?.traceId || null,
       spanId: activeTrace?.spanId || null,
       parentSpanId: activeTrace?.parentSpanId || null,
-      benchmarkHint:
-        kind === "workflow.run.end" || kind === "workflow.run.error"
-          ? sanitizeJsonValue(ctx?.data?._selfImprovementInsights?.benchmark || null)
-          : null,
       meta: extra && typeof extra === "object" ? extra : null,
     };
 
@@ -3131,12 +2030,10 @@ export class WorkflowEngine extends EventEmitter {
     }
     def.metadata.version = (def.metadata.version || 0) + 1;
 
-    // Prevent disabling core workflows — unless paused by another workflow
+    // Prevent disabling core workflows
     const existing = this._workflows.get(def.id);
     if (existing?.core === true && def.enabled === false) {
-      if (!def.metadata?.pausedByWorkflow) {
-        def.enabled = true;
-      }
+      def.enabled = true;
     }
     // Preserve core flag — cannot be removed via save
     if (existing?.core === true) {
@@ -3225,21 +2122,12 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {{ activeRuns: number, maxConcurrentRuns: number, queuedRuns: number, maxConcurrentBranches: number }}
    */
   getConcurrencyStats() {
-    let agentSlots;
-    try { agentSlots = getAgentExecutionSlotStatus(); } catch { agentSlots = null; }
     return {
       activeRuns: this._runSlots,
       maxConcurrentRuns: MAX_CONCURRENT_RUNS,
       queuedRuns: this._runQueue.length,
       sharedRootRuns: this._rootRunSlotRefs.size,
       maxConcurrentBranches: MAX_CONCURRENT_BRANCHES,
-      ...(agentSlots && {
-        agentSlots: {
-          active: agentSlots.activeSlots,
-          max: agentSlots.maxParallel,
-          queued: agentSlots.queuedSlots,
-        },
-      }),
     };
   }
 
@@ -3427,11 +2315,9 @@ export class WorkflowEngine extends EventEmitter {
       ...def.variables,
       ...inputData,
     });
-    const governanceState = buildWorkflowGovernanceState(initialData);
 
     const ctx = new WorkflowContext({
       ...initialData,
-      ...toWorkflowGovernanceData(governanceState),
       _workflowId: workflowId,
       _workflowName: def.name,
       _workflowDefinitionSnapshot: cloneRunSnapshot(def),
@@ -3466,22 +2352,6 @@ export class WorkflowEngine extends EventEmitter {
 
     // ── Persist run immediately so it survives process restarts ──────
     this._persistActiveRunState(runId, workflowId, def.name, ctx);
-    try {
-      this._executionLedger.ensureRun({
-        runId,
-        workflowId,
-        workflowName: def.name,
-        rootRunId: ctx.data?._workflowRootRunId || runId,
-        parentRunId: ctx.data?._workflowParentRunId || null,
-        retryOf: ctx.data?._retryOf || null,
-        retryMode: opts._retryMode || null,
-        startedAt: new Date(ctx.startedAt).toISOString(),
-        status: WorkflowStatus.RUNNING,
-        ...governanceState,
-      });
-    } catch (err) {
-      console.warn(`${TAG} execution ledger ensureRun failed: ${String(err?.message || err)}`);
-    }
 
     this.emit("run:start", { runId, workflowId, name: def.name });
     this._emitWorkflowStatus({
@@ -3657,24 +2527,15 @@ export class WorkflowEngine extends EventEmitter {
    *
    * @param {string} runId - The original run ID to retry.
    * @param {object} [retryOpts]
-   * @param {"from_failed"|"from_scratch"|"replan_from_failed"|"replan_subgraph"} [retryOpts.mode="from_failed"]
+   * @param {"from_failed"|"from_scratch"} [retryOpts.mode="from_failed"]
    *   - `"from_failed"` — re-execute starting from the first failed node,
    *     pre-populating the context with already-completed node outputs.
    *   - `"from_scratch"` — re-execute the entire workflow from the beginning
    *     with the same input data that was used originally.
-   *   - `"replan_from_failed"` / `"replan_subgraph"` — preserve completed
-   *     outputs like `from_failed` while keeping the requested replan mode
-   *     explicit for planner-aware downstream steps.
    * @returns {Promise<{retryRunId: string, mode: string, ctx: WorkflowContext}>}
    */
   async retryRun(runId, retryOpts = {}) {
-    const requestedMode = String(retryOpts.mode || "").trim().toLowerCase();
-    const mode =
-      requestedMode === "from_scratch" ||
-      requestedMode === "replan_from_failed" ||
-      requestedMode === "replan_subgraph"
-        ? requestedMode
-        : "from_failed";
+    const mode = retryOpts.mode === "from_scratch" ? "from_scratch" : "from_failed";
     const decisionReason = String(retryOpts._decisionReason || "").trim() || null;
     const originalRun = this.getRunDetail(runId);
     if (!originalRun) {
@@ -3696,6 +2557,23 @@ export class WorkflowEngine extends EventEmitter {
     delete originalData._workflowId;
     delete originalData._workflowName;
     const retryData = this._applyResumeInputMigrations(def, originalData);
+    const shouldAdvanceDelegationWatchdog = decisionReason?.startsWith("delegation_watchdog:") ?? false;
+    if (
+      shouldAdvanceDelegationWatchdog &&
+      retryData?._delegationWatchdog &&
+      typeof retryData._delegationWatchdog === "object"
+    ) {
+      const priorAttempts = Number(retryData._delegationWatchdog.recoveryAttempts);
+      const recoveryAttempts = Number.isFinite(priorAttempts)
+        ? Math.max(0, Math.trunc(priorAttempts))
+        : (retryData._delegationWatchdog.recoveryAttempted === true ? 1 : 0);
+      retryData._delegationWatchdog = {
+        ...retryData._delegationWatchdog,
+        recoveryAttempts: recoveryAttempts + 1,
+        recoveryAttempted: true,
+        updatedAt: new Date().toISOString(),
+      };
+    }
 
     this.emit("run:retry", {
       originalRunId: runId,
@@ -3775,10 +2653,7 @@ export class WorkflowEngine extends EventEmitter {
     });
 
     this._recordDagRevision(ctx, {
-      reason:
-        mode === "from_failed" || mode === "replan_from_failed"
-          ? "retry_replan_from_failed"
-          : `retry_${mode}`,
+      reason: mode === "from_failed" ? "retry_replan_from_failed" : `retry_${mode}`,
       sourceRunId: runId,
       preservedCompletedNodeIds,
       focusNodeIds,
@@ -3997,10 +2872,10 @@ export class WorkflowEngine extends EventEmitter {
       mode = "from_failed";
       reason = "issue_advisor.spawn_fix_step";
     } else if (issueAdvisor?.recommendedAction === "replan_subgraph") {
-      mode = "replan_subgraph";
+      mode = "from_scratch";
       reason = "issue_advisor.replan_subgraph";
     } else if (issueAdvisor?.recommendedAction === "replan_from_failed") {
-      mode = "replan_from_failed";
+      mode = "from_scratch";
       reason = "issue_advisor.replan_from_failed";
     } else if (issueAdvisor?.recommendedAction === "inspect_failure") {
       mode = "from_scratch";
@@ -4019,7 +2894,6 @@ export class WorkflowEngine extends EventEmitter {
     return {
       mode,
       reason,
-      suggestedRetryMode: mode,
       fallbackMode,
       completedCount,
       failedCount,
@@ -4167,11 +3041,7 @@ export class WorkflowEngine extends EventEmitter {
             !!eventData?.prEvent;
           if (!hasPrSignal) continue;
         }
-        if (
-          tNode.type === "trigger.task_assigned"
-          && eventType !== "task.assigned"
-          && eventType !== "task.review_fix_requested"
-        ) {
+        if (tNode.type === "trigger.task_assigned" && eventType !== "task.assigned") {
           continue;
         }
         if (tNode.type === "trigger.anomaly") {
@@ -4241,7 +3111,7 @@ export class WorkflowEngine extends EventEmitter {
 
     // Load workspace state for filtering
     const wsMgr = ensureWorkspaceManagerSync();
-    const configDir = opts?.configDir || this._configDir || getRuntimeCwd();
+    const configDir = opts?.configDir || this._configDir || process.cwd();
     let workspaceSummary = null;
     if (wsMgr?.getWorkspaceStateSummary) {
       try {
@@ -4328,9 +3198,8 @@ export class WorkflowEngine extends EventEmitter {
   getRunHistory(workflowId, limit = null) {
     const normalizedLimit = Number(limit);
     const hasLimit = Number.isFinite(normalizedLimit) && normalizedLimit > 0;
-    const resolvedLimit = hasLimit ? Math.floor(normalizedLimit) : null;
     const targetCount = hasLimit
-      ? Math.min(MAX_PERSISTED_RUNS, Math.max(resolvedLimit, 200))
+      ? Math.min(MAX_PERSISTED_RUNS, Math.max(Math.floor(normalizedLimit), 200))
       : MAX_PERSISTED_RUNS;
     const persisted = this._hydrateRunIndexFromDetails(targetCount)
       .map((entry) => this._normalizeRunSummary(entry))
@@ -4340,14 +3209,10 @@ export class WorkflowEngine extends EventEmitter {
 
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
-    const shouldHydrateDetails = !hasLimit || resolvedLimit <= 50 || Boolean(workflowId);
-    const shouldDecorateDetails = Boolean(workflowId) || (!hasLimit ? false : resolvedLimit <= 20);
-    if (shouldHydrateDetails) {
-      runs = runs.map((run) => this.getRunDetail(run.runId, { decorate: shouldDecorateDetails }) || run);
-    }
+    runs = runs.map((run) => this.getRunDetail(run.runId) || run);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     if (hasLimit) {
-      return runs.slice(0, resolvedLimit);
+      return runs.slice(0, Math.floor(normalizedLimit));
     }
     return runs;
   }
@@ -4361,19 +3226,11 @@ export class WorkflowEngine extends EventEmitter {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
       : 20;
-      const persisted = this._hydrateRunIndexFromDetails(Math.max(offset + limit, 200))
-        .map((entry) => this._normalizeRunSummary(entry))
-        .filter(Boolean);
-      const active = this.getActiveRuns();
-      const activeRunIds = new Set(active.map((run) => run.runId));
-      let allRuns = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
-      if (workflowId) allRuns = allRuns.filter((run) => run.workflowId === workflowId);
-      allRuns.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
+    const allRuns = this.getRunHistory(workflowId);
     const total = allRuns.length;
     const runs = allRuns.slice(offset, offset + limit);
     const nextOffset = offset + runs.length;
     return {
-      items: runs,
       runs,
       total,
       offset,
@@ -4445,7 +3302,8 @@ export class WorkflowEngine extends EventEmitter {
       if (runs.length > MAX_PERSISTED_RUNS) {
         runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
       }
-      this._writeRunIndex(runs);
+      const indexPath = resolve(this.runsDir, "index.json");
+      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
       return runs;
     } catch {
       return runs;
@@ -4526,339 +3384,6 @@ export class WorkflowEngine extends EventEmitter {
     };
   }
 
-  _collectOutputArtifactEntries(nodeId, nodeLabel, output) {
-    const entries = [];
-    if (!output || typeof output !== "object") return entries;
-
-    const pushEntry = (entry = {}) => {
-      const path = normalizeDagText(entry?.path || entry?.artifactPath || entry?.reviewPath || entry?.evidenceDir || "", 320);
-      const summary = normalizeDagText(entry?.summary || entry?.label || entry?.name || path || "", 220);
-      if (!path && !summary) return;
-      entries.push(cleanObject({
-        source: "node-output",
-        nodeId,
-        nodeLabel: nodeLabel || null,
-        kind: entry?.kind || (path ? "artifact" : "evidence"),
-        label: normalizeDagText(entry?.label || entry?.name || "", 180) || null,
-        path: path || null,
-        retrieveCommand: entry?.retrieveCommand || null,
-        summary: summary || null,
-      }));
-    };
-
-    for (const artifact of Array.isArray(output.artifactPointers) ? output.artifactPointers : []) {
-      pushEntry(artifact);
-    }
-    for (const artifact of Array.isArray(output.artifacts) ? output.artifacts : []) {
-      pushEntry(artifact);
-    }
-    for (const path of Array.isArray(output.artifactPaths) ? output.artifactPaths : []) {
-      pushEntry({ path, kind: "artifact" });
-    }
-    for (const path of [
-      output.reviewPath,
-      output.evidenceDir,
-      output.artifactRoot,
-      output.path,
-    ]) {
-      pushEntry({ path, kind: "artifact" });
-    }
-
-    return entries;
-  }
-
-  _buildPlannerTimeline(run = {}, detail = null, runGraph = null) {
-    const requestedRunId = String(run?.runId || "").trim();
-    const sourceTimeline = Array.isArray(runGraph?.timeline)
-      ? runGraph.timeline
-      : (Array.isArray(run?.ledger?.events) ? run.ledger.events : []);
-    const timeline = sourceTimeline
-      .filter((event) => {
-        if (!String(event?.eventType || "").startsWith("planner.")) return false;
-        const eventRunId = String(event?.runId || "").trim();
-        return !requestedRunId || !eventRunId || eventRunId === requestedRunId;
-      })
-      .map((event) => {
-        const eventType = String(event?.eventType || "").trim();
-        const normalizedEventType =
-          event?.meta?.normalizedEventType
-          || (eventType === "planner.plan_reasoning"
-            ? "plan_reasoning"
-            : (eventType === "planner.plan_initialized" || eventType === "planner.plan_completed" || eventType === "planner.plan_failed")
-              ? "plan"
-              : (eventType === "planner.step_started")
-                ? "current_plan_step"
-                : (eventType === "planner.step_completed" || eventType === "planner.step_blocked" || eventType === "planner.post_attachment")
-                  ? "step_result"
-                  : null);
-        return cleanObject({
-        id: event?.id || null,
-        seq: Number.isFinite(Number(event?.seq)) ? Number(event.seq) : null,
-        timestamp: event?.timestamp || null,
-        eventType: eventType || null,
-        normalizedEventType,
-        runId: event?.runId || run?.runId || null,
-        nodeId: event?.nodeId || null,
-        nodeLabel: event?.nodeLabel || null,
-        status: event?.status || null,
-        summary: normalizeDagText(event?.summary || event?.reason || event?.error || "", 240) || null,
-        reason: normalizeDagText(event?.reason || "", 180) || null,
-        error: normalizeDagText(event?.error || "", 220) || null,
-        stepKey: event?.meta?.stepKey || event?.executionKey || event?.executionId || null,
-        stepLabel: event?.meta?.stepLabel || event?.executionLabel || event?.nodeLabel || event?.nodeId || null,
-        attachmentKind: event?.meta?.attachmentKind || null,
-        taskCount: Number.isFinite(Number(event?.meta?.taskCount)) ? Number(event.meta.taskCount) : null,
-        parsedCount: Number.isFinite(Number(event?.meta?.parsedCount)) ? Number(event.meta.parsedCount) : null,
-        createdCount: Number.isFinite(Number(event?.meta?.createdCount)) ? Number(event.meta.createdCount) : null,
-        skippedCount: Number.isFinite(Number(event?.meta?.skippedCount)) ? Number(event.meta.skippedCount) : null,
-        itemCount: Number.isFinite(Number(event?.meta?.itemCount)) ? Number(event.meta.itemCount) : null,
-        threadId: event?.meta?.threadId || null,
-        plan: event?.meta?.plan || (normalizedEventType === "plan"
-          ? {
-              phase: event?.executionKind || null,
-              stepLabel: event?.meta?.stepLabel || event?.executionLabel || event?.nodeLabel || event?.nodeId || null,
-              status: event?.status || null,
-              summary: normalizeDagText(event?.summary || "", 240) || null,
-              reason: normalizeDagText(event?.reason || "", 180) || null,
-            }
-          : null),
-        currentPlanStep: event?.meta?.currentPlanStep || (normalizedEventType === "current_plan_step"
-          ? {
-              phase: event?.executionKind || null,
-              stepLabel: event?.meta?.stepLabel || event?.executionLabel || event?.nodeLabel || event?.nodeId || null,
-              status: event?.status || null,
-            }
-          : null),
-        stepResult: event?.meta?.stepResult || (normalizedEventType === "step_result"
-          ? {
-              phase: event?.executionKind || null,
-              stepLabel: event?.meta?.stepLabel || event?.executionLabel || event?.nodeLabel || event?.nodeId || null,
-              status: event?.status || null,
-              summary: normalizeDagText(event?.summary || "", 240) || null,
-              reason: normalizeDagText(event?.reason || "", 180) || null,
-              attachmentKind: event?.meta?.attachmentKind || null,
-            }
-          : null),
-      });
-      })
-      .sort((left, right) => {
-        const delta = new Date(left?.timestamp || 0).getTime() - new Date(right?.timestamp || 0).getTime();
-        if (delta !== 0) return delta;
-        return Number(left?.seq || 0) - Number(right?.seq || 0);
-      });
-    const deduped = [];
-    const seen = new Set();
-    for (const entry of timeline) {
-      const key = JSON.stringify([
-        entry?.runId || "",
-        entry?.eventType || "",
-        entry?.nodeId || "",
-        entry?.stepKey || "",
-        entry?.attachmentKind || "",
-        entry?.summary || "",
-        entry?.reason || "",
-        entry?.error || "",
-        entry?.taskCount ?? "",
-        entry?.parsedCount ?? "",
-        entry?.createdCount ?? "",
-        entry?.skippedCount ?? "",
-        entry?.itemCount ?? "",
-      ]);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      deduped.push(entry);
-    }
-    return deduped;
-  }
-
-  _buildRunProofBundle(run = {}, detail = null, runGraph = null, plannerTimeline = []) {
-    const dagNodes = detail?.dagState?.nodes && typeof detail.dagState.nodes === "object"
-      ? Object.values(detail.dagState.nodes)
-      : [];
-    const ledgerEvents = Array.isArray(run?.ledger?.events) ? run.ledger.events : [];
-
-    const evidence = [];
-    for (const node of dagNodes) {
-      const nodeId = String(node?.nodeId || "").trim() || null;
-      const nodeLabel = String(node?.label || nodeId || "").trim() || null;
-      for (const entry of Array.isArray(node?.completionEvidence) ? node.completionEvidence : []) {
-        evidence.push(cleanObject({
-          source: "completion-evidence",
-          nodeId,
-          nodeLabel,
-          kind: entry?.kind || "evidence",
-          label: normalizeDagText(entry?.label || entry?.title || "", 180) || null,
-          path: normalizeDagText(entry?.path || "", 320) || null,
-          summary: normalizeDagText(entry?.summary || entry?.message || entry?.path || "", 220) || null,
-          value: entry?.value ?? null,
-          status: node?.status || null,
-        }));
-      }
-      evidence.push(...this._collectOutputArtifactEntries(
-        nodeId,
-        nodeLabel,
-        detail?.nodeOutputs?.[nodeId] || null,
-      ));
-    }
-    const skillbookGuidance =
-      detail?.skillbookGuidance && typeof detail.skillbookGuidance === "object"
-        ? detail.skillbookGuidance
-        : null;
-    for (const strategy of Array.isArray(skillbookGuidance?.strategies) ? skillbookGuidance.strategies.slice(0, 8) : []) {
-      evidence.push(cleanObject({
-        source: "skillbook",
-        kind: "reusable_strategy",
-        label: normalizeDagText(strategy?.recommendation || strategy?.strategyId || "", 180) || null,
-        summary: normalizeDagText(strategy?.rationale || strategy?.workflowId || "", 220) || null,
-        status: strategy?.status || null,
-        value: strategy?.confidence ?? null,
-      }));
-    }
-
-    const decisions = [];
-    const issueAdvisor = detail?.issueAdvisor && typeof detail.issueAdvisor === "object"
-      ? detail.issueAdvisor
-      : null;
-    if (issueAdvisor) {
-      decisions.push(cleanObject({
-        source: "issue-advisor",
-        decision: issueAdvisor.recommendedAction || null,
-        decisionClass: issueAdvisor.retryDecisionClass || null,
-        summary: normalizeDagText(issueAdvisor.summary || "", 220) || null,
-        guidance: normalizeDagText(issueAdvisor.nextStepGuidance || "", 260) || null,
-      }));
-    }
-    if (run?.retryDecisionReason) {
-      decisions.push({
-        source: "retry-policy",
-        decision: run.retryMode || null,
-        decisionClass: "retry",
-        summary: normalizeDagText(run.retryDecisionReason, 220),
-      });
-    }
-    const selfImprovementRatchet =
-      detail?.selfImprovementRatchet && typeof detail.selfImprovementRatchet === "object"
-        ? detail.selfImprovementRatchet
-        : null;
-    if (selfImprovementRatchet) {
-      decisions.push(cleanObject({
-        source: "self-improvement-ratchet",
-        decision: selfImprovementRatchet.decision || null,
-        decisionClass: selfImprovementRatchet.decision || null,
-        summary: normalizeDagText(selfImprovementRatchet.summary || "", 220) || null,
-        guidance: normalizeDagText(selfImprovementRatchet.rationale || "", 260) || null,
-      }));
-    }
-    if (skillbookGuidance?.guidanceSummary || skillbookGuidance?.summary) {
-      decisions.push(cleanObject({
-        source: "skillbook",
-        decision: "reuse_strategies",
-        decisionClass: "guidance",
-        summary: normalizeDagText(skillbookGuidance.guidanceSummary || skillbookGuidance.summary || "", 220) || null,
-        guidance: normalizeDagText(
-          skillbookGuidance.strategies?.[0]?.recommendation || skillbookGuidance.strategies?.[0]?.rationale || "",
-          260,
-        ) || null,
-      }));
-    }
-    for (const event of plannerTimeline) {
-      if (!event?.summary && !event?.reason && !event?.error) continue;
-      decisions.push(cleanObject({
-        source: "planner",
-        decision: event.eventType || null,
-        decisionClass: event.status || null,
-        summary: event.summary || event.reason || event.error || null,
-        nodeId: event.nodeId || null,
-        stepKey: event.stepKey || null,
-        timestamp: event.timestamp || null,
-      }));
-    }
-
-    const artifacts = [
-      ...evidence.filter((entry) => entry?.path),
-      ...ledgerEvents
-        .filter((event) =>
-          String(event?.eventType || "") === "planner.post_attachment" ||
-          String(event?.eventType || "").startsWith("artifact.") ||
-          String(event?.eventType || "").startsWith("proof."),
-        )
-        .map((event) => cleanObject({
-          source: "ledger",
-          nodeId: event?.nodeId || null,
-          nodeLabel: event?.nodeLabel || null,
-          kind: event?.meta?.attachmentKind || event?.meta?.kind || "attachment",
-          label: normalizeDagText(event?.summary || event?.executionLabel || "", 180) || null,
-          path: normalizeDagText(event?.meta?.path || event?.meta?.artifactPath || "", 320) || null,
-          summary: normalizeDagText(event?.summary || event?.reason || "", 220) || null,
-          retrieveCommand: event?.meta?.retrieveCommand || null,
-          timestamp: event?.timestamp || null,
-          created: Array.isArray(event?.meta?.created) ? event.meta.created : undefined,
-          skipped: Array.isArray(event?.meta?.skipped) ? event.meta.skipped : undefined,
-        })),
-    ];
-
-    const dedupe = (items, keyFn, limit = 80) => {
-      const out = [];
-      const seen = new Set();
-      for (const item of items) {
-        if (!item) continue;
-        const key = keyFn(item);
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        out.push(item);
-        if (out.length >= limit) break;
-      }
-      return out;
-    };
-
-    const normalizedEvidence = dedupe(
-      evidence,
-      (entry) => JSON.stringify([
-        entry?.source || "",
-        entry?.nodeId || "",
-        entry?.kind || "",
-        entry?.path || "",
-        entry?.summary || "",
-      ]),
-    );
-    const normalizedArtifacts = dedupe(
-      artifacts,
-      (entry) => JSON.stringify([
-        entry?.source || "",
-        entry?.nodeId || "",
-        entry?.kind || "",
-        entry?.path || "",
-        entry?.label || "",
-        entry?.summary || "",
-      ]),
-    );
-    const normalizedDecisions = dedupe(
-      decisions,
-      (entry) => JSON.stringify([
-        entry?.source || "",
-        entry?.decision || "",
-        entry?.decisionClass || "",
-        entry?.summary || "",
-        entry?.nodeId || "",
-        entry?.timestamp || "",
-      ]),
-      40,
-    );
-
-    return {
-      summary: {
-        plannerEventCount: plannerTimeline.length,
-        decisionCount: normalizedDecisions.length,
-        evidenceCount: normalizedEvidence.length,
-        artifactCount: normalizedArtifacts.length,
-      },
-      plannerTimeline,
-      decisions: normalizedDecisions,
-      evidence: normalizedEvidence,
-      artifacts: normalizedArtifacts,
-    };
-  }
-
   _buildExecutionTree(runGraph, startRunId) {
     if (!runGraph || !Array.isArray(runGraph.runs) || runGraph.runs.length === 0) return null;
     const runMap = new Map(runGraph.runs.map((entry) => [entry.runId, { ...entry, children: [] }]));
@@ -4872,147 +3397,31 @@ export class WorkflowEngine extends EventEmitter {
     return runMap.get(requestedRunId) || runMap.get(runGraph.rootRunId) || null;
   }
 
-  _extractDelegationTrail(detail, run = null) {
-    const candidates = [
-      detail?.delegationAuditTrail,
-      detail?.delegationTrail,
-      detail?.data?._delegationAuditTrail,
-      detail?.data?._workflowDelegationTrail,
-      detail?.data?._delegationTrail,
-      run?.detail?.delegationAuditTrail,
-      run?.detail?.delegationTrail,
-      run?.detail?.data?._delegationAuditTrail,
-      run?.detail?.data?._workflowDelegationTrail,
-      run?.detail?.data?._delegationTrail,
-      run?.delegationTrail,
-      run?.delegationAuditTrail,
-    ];
-    return normalizeDelegationTrail(candidates.find((value) => Array.isArray(value)) || []);
-  }
-
   _decorateRunDetail(run) {
     if (!run?.runId) return run;
     const runGraph = this.getRunGraph(run.runId);
-    const delegationTrail = this._extractDelegationTrail(run?.detail, run);
-    const delegationTransitionGuards = extractDelegationGuardMap(run?.detail, run);
-    const workflowTeamState = hasWorkflowTeamStateData(
-      run?.detail?.workflowTeamState ??
-      run?.detail?.data?._workflowTeamState ??
-      run?.detail?.data?.workflowTeamState,
-    )
-      ? cloneWorkflowTeamState(
-          run?.detail?.workflowTeamState ??
-          run?.detail?.data?._workflowTeamState ??
-          run?.detail?.data?.workflowTeamState,
-        )
-      : null;
-    const teamSummary = workflowTeamState
-      ? buildWorkflowTeamSummary(workflowTeamState)
-      : (run?.teamSummary || null);
-    const detail =
-      run?.detail && typeof run.detail === "object"
-        ? {
-            ...run.detail,
-            data:
-              run.detail.data && typeof run.detail.data === "object"
-                ? { ...run.detail.data }
-                : run.detail.data,
-          }
-        : run?.detail;
-    if (delegationTrail.length > 0 && detail && typeof detail === "object") {
-      if (!detail.data || typeof detail.data !== "object") {
-        detail.data = {};
-      }
-      if (!Array.isArray(detail.data._delegationAuditTrail)) {
-        detail.data._delegationAuditTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-      if (!Array.isArray(detail.data._workflowDelegationTrail)) {
-        detail.data._workflowDelegationTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-      if (!Array.isArray(detail.data._delegationTrail)) {
-        detail.data._delegationTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-      if (!Array.isArray(detail.delegationAuditTrail)) {
-        detail.delegationAuditTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-      if (!Array.isArray(detail.delegationTrail)) {
-        detail.delegationTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-    }
-    if (workflowTeamState && detail && typeof detail === "object") {
-      if (!detail.data || typeof detail.data !== "object") {
-        detail.data = {};
-      }
-      if (!detail.data._workflowTeamState || typeof detail.data._workflowTeamState !== "object") {
-        detail.data._workflowTeamState = cloneWorkflowTeamState(workflowTeamState);
-      }
-      if (!detail.data.workflowTeamState || typeof detail.data.workflowTeamState !== "object") {
-        detail.data.workflowTeamState = cloneWorkflowTeamState(workflowTeamState);
-      }
-      if (!detail.data._workflowTeamSummary || typeof detail.data._workflowTeamSummary !== "object") {
-        detail.data._workflowTeamSummary = teamSummary;
-      }
-      if (!detail.workflowTeamState || typeof detail.workflowTeamState !== "object") {
-        detail.workflowTeamState = cloneWorkflowTeamState(workflowTeamState);
-      }
-      if (!detail.teamSummary || typeof detail.teamSummary !== "object") {
-        detail.teamSummary = teamSummary;
-      }
-    }
-    const plannerTimeline = this._buildPlannerTimeline(run, detail, runGraph);
-    const proofBundle = this._buildRunProofBundle(run, detail, runGraph, plannerTimeline);
-    const delegationTopology = buildRunDelegationTopology({
-      runId: run.runId,
-      detail,
-      runGraph,
-    });
-    if (delegationTopology && detail && typeof detail === "object") {
-      if (!detail.data || typeof detail.data !== "object") {
-        detail.data = {};
-      }
-      if (!detail.data._delegationTopology || typeof detail.data._delegationTopology !== "object") {
-        detail.data._delegationTopology = delegationTopology;
-      }
-      if (!detail.delegationTopology || typeof detail.delegationTopology !== "object") {
-        detail.delegationTopology = delegationTopology;
-      }
-    }
     return {
       ...run,
-      detail,
       runGraph,
-      plannerTimeline,
-      proofBundle,
       executionTree: this._buildExecutionTree(runGraph, run.runId),
-      delegationTopology,
-      delegationTrail,
-      delegationAuditTrail: delegationTrail,
-      latestDelegationEvent: delegationTrail.at(-1) || null,
-      delegationTransitionGuards,
-      workflowTeamState,
-      teamSummary,
-      teamId: teamSummary?.teamId || run?.teamId || null,
-      teamLeadId: teamSummary?.leadId || run?.teamLeadId || null,
     };
   }
 
   /** Get full run detail for a specific runId */
-  getRunDetail(runId, options = {}) {
+  getRunDetail(runId) {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
     if (!normalizedRunId) return null;
     const ledger = this.getRunLedger(normalizedRunId);
-    const decorate = options?.decorate !== false;
 
     const activeRun = this._activeRuns.get(normalizedRunId);
     if (activeRun?.ctx) {
       const summary = this._buildActiveRunSummary(normalizedRunId, activeRun);
       if (!summary) return null;
-      const hydrated = {
+      return this._decorateRunDetail({
         ...summary,
         detail: this._serializeRunContext(activeRun.ctx, true),
         ledger,
-      };
-      return decorate ? this._decorateRunDetail(hydrated) : hydrated;
+      });
     }
 
     const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
@@ -5031,8 +3440,7 @@ export class WorkflowEngine extends EventEmitter {
           status: summary.status || WorkflowStatus.COMPLETED,
           detail,
         });
-        const hydrated = { ...summary, ...recomputed, detail, ledger };
-        return decorate ? this._decorateRunDetail(hydrated) : hydrated;
+        return this._decorateRunDetail({ ...summary, ...recomputed, detail, ledger });
       }
       const terminalRaw = String(detail?.data?._workflowTerminalStatus || "")
         .trim()
@@ -5051,8 +3459,7 @@ export class WorkflowEngine extends EventEmitter {
         status,
         detail,
       });
-      const hydrated = { ...computed, detail, ledger };
-      return decorate ? this._decorateRunDetail(hydrated) : hydrated;
+      return this._decorateRunDetail({ ...computed, detail, ledger });
     } catch {
       return null;
     }
@@ -5127,24 +3534,6 @@ export class WorkflowEngine extends EventEmitter {
           failedNodes,
         },
         {
-          mode: "replan_from_failed",
-          label: "Replan from failed boundary",
-          description: "Preserve completed node outputs and rerun the planner or replanner path from the failed boundary.",
-          recommended: retryDecision.mode === "replan_from_failed",
-          reason: retryDecision.mode === "replan_from_failed" ? retryDecision.reason : null,
-          available: canResumeFromFailed,
-          failedNodes,
-        },
-        {
-          mode: "replan_subgraph",
-          label: "Replan impacted subgraph",
-          description: "Preserve completed work and rerun planner-aware downstream steps for the impacted subgraph.",
-          recommended: retryDecision.mode === "replan_subgraph",
-          reason: retryDecision.mode === "replan_subgraph" ? retryDecision.reason : null,
-          available: canResumeFromFailed,
-          failedNodes,
-        },
-        {
           mode: "from_scratch",
           label: "Retry from scratch",
           description: "Re-run the workflow from the beginning with the original input data.",
@@ -5170,7 +3559,7 @@ export class WorkflowEngine extends EventEmitter {
     const events = Array.isArray(detail?.data?._taskWorkflowEvents)
       ? detail.data._taskWorkflowEvents
       : [];
-    return events.map((event) => sanitizeJsonValue(event) || {});
+    return events.map((event) => ({ ...event }));
   }
 
   /**
@@ -5202,18 +3591,6 @@ export class WorkflowEngine extends EventEmitter {
       errors: (detail.errors || []).filter((e) => e.nodeId === nodeId),
       retryAttempts: detail.retryAttempts?.[nodeId] || 0,
       statusEvents: (detail.nodeStatusEvents || []).filter((e) => e.nodeId === nodeId),
-      issueFindings: Array.isArray(detail?.dagState?.nodes?.[nodeId]?.issueFindings)
-        ? detail.dagState.nodes[nodeId].issueFindings
-        : [],
-      completionEvidence: Array.isArray(detail?.dagState?.nodes?.[nodeId]?.completionEvidence)
-        ? detail.dagState.nodes[nodeId].completionEvidence
-        : [],
-      plannerTimeline: Array.isArray(run?.plannerTimeline)
-        ? run.plannerTimeline.filter((entry) => String(entry?.nodeId || "").trim() === nodeId)
-        : [],
-      proofArtifacts: Array.isArray(run?.proofBundle?.artifacts)
-        ? run.proofBundle.artifacts.filter((entry) => String(entry?.nodeId || "").trim() === nodeId)
-        : [],
     };
   }
 
@@ -5237,9 +3614,6 @@ export class WorkflowEngine extends EventEmitter {
       startedAt: detail.startedAt || null,
       endedAt: detail.endedAt || null,
       durationMs: detail.duration || null,
-      plannerTimeline: run?.plannerTimeline || [],
-      proofBundle: run?.proofBundle || null,
-      runGraph: run?.runGraph || null,
       nodes,
     };
   }
@@ -6058,7 +4432,7 @@ export class WorkflowEngine extends EventEmitter {
             // booleans so loop-exit expressions never fire.  Cap iterations
             // to a small number (2) to validate the loop structure without
             // executing hundreds of iterations.
-            const DRY_RUN_BACK_EDGE_CAP = 1;
+            const DRY_RUN_BACK_EDGE_CAP = 2;
             const maxIter = opts.dryRun
               ? Math.min(Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS, DRY_RUN_BACK_EDGE_CAP)
               : (Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS);
@@ -6237,7 +4611,7 @@ export class WorkflowEngine extends EventEmitter {
   /** @returns {string[]} service keys the node type needs (may be empty) */
   _getNodeRequiredCapabilities(nodeType) {
     // Agent nodes need the agentPool service
-    if (nodeType.startsWith("agent.")) {
+    if (nodeType.startsWith("agent.") || nodeType === "action.run_agent") {
       return ["agentPool"];
     }
     // Session continuation / restart also need agentPool
@@ -6305,21 +4679,10 @@ export class WorkflowEngine extends EventEmitter {
 
   _readRunIndex() {
     const indexPath = resolve(this.runsDir, "index.json");
-    if (!existsSync(indexPath)) {
-      this._runIndexCache = [];
-      this._runIndexCacheMtime = 0;
-      return [];
-    }
+    if (!existsSync(indexPath)) return [];
     try {
-      const mtimeMs = statSync(indexPath).mtimeMs || 0;
-      if (Array.isArray(this._runIndexCache) && this._runIndexCacheMtime === mtimeMs) {
-        return this._runIndexCache;
-      }
       const index = JSON.parse(readFileSync(indexPath, "utf8"));
-      const runs = Array.isArray(index?.runs) ? index.runs : [];
-      this._runIndexCache = runs;
-      this._runIndexCacheMtime = mtimeMs;
-      return runs;
+      return Array.isArray(index?.runs) ? index.runs : [];
     } catch {
       return [];
     }
@@ -6371,7 +4734,7 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _getRunStuckThresholdMs() {
-    const raw = Number(getRuntimeEnv().WORKFLOW_RUN_STUCK_THRESHOLD_MS);
+    const raw = Number(process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS);
     if (Number.isFinite(raw) && raw > 0) return raw;
     return DEFAULT_RUN_STUCK_THRESHOLD_MS;
   }
@@ -6410,77 +4773,11 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _serializeRunContext(ctx, isRunning = false) {
-    const detail = sanitizeJsonValue(ctx.toJSON(Date.now())) || {};
-    if (!detail.data || typeof detail.data !== "object") detail.data = {};
-    const governanceState = buildWorkflowGovernanceState(ctx?.data || {});
-    detail.data = {
-      ...detail.data,
-      ...toWorkflowGovernanceData(governanceState),
-    };
-    if (governanceState.goalAncestry?.length) detail.goalAncestry = governanceState.goalAncestry;
-    if (governanceState.primaryGoalId) detail.primaryGoalId = governanceState.primaryGoalId;
-    if (governanceState.primaryGoalTitle) detail.primaryGoalTitle = governanceState.primaryGoalTitle;
-    if (governanceState.goalDepth != null) detail.goalDepth = governanceState.goalDepth;
-    if (governanceState.heartbeatRun) detail.heartbeatRun = governanceState.heartbeatRun;
-    if (governanceState.wakeupRequest) detail.wakeupRequest = governanceState.wakeupRequest;
-    if (governanceState.budgetPolicy) detail.budgetPolicy = governanceState.budgetPolicy;
-    if (governanceState.executionPolicy) detail.executionPolicy = governanceState.executionPolicy;
-    if (governanceState.budgetOutcome) detail.budgetOutcome = governanceState.budgetOutcome;
-    if (governanceState.policyOutcome) detail.policyOutcome = governanceState.policyOutcome;
-    if (ctx?.data?._dagState) detail.dagState = sanitizeJsonValue(ctx.data._dagState);
-    if (ctx?.data?._issueAdvisor) detail.issueAdvisor = sanitizeJsonValue(ctx.data._issueAdvisor);
-    if (ctx?.data?._selfImprovementInsights) {
-      detail.selfImprovementInsights = sanitizeJsonValue(ctx.data._selfImprovementInsights);
-    }
-    if (ctx?.data?._selfImprovementRatchet) {
-      detail.selfImprovementRatchet = sanitizeJsonValue(ctx.data._selfImprovementRatchet);
-    }
-    if (ctx?.data?._lastRunEvaluation) {
-      detail.runEvaluation = sanitizeJsonValue(ctx.data._lastRunEvaluation);
-    }
-    if (ctx?.data?._lastPromotedStrategy) {
-      detail.promotedStrategy = sanitizeJsonValue(ctx.data._lastPromotedStrategy);
-    }
-    if (ctx?.data?._skillbookGuidance) {
-      detail.skillbookGuidance = sanitizeJsonValue(ctx.data._skillbookGuidance);
-    }
-    const runtimeDelegationTrail = Array.isArray(ctx?.__workflowRuntimeState?.delegationAuditTrail)
-      ? normalizeDelegationTrail(ctx.__workflowRuntimeState.delegationAuditTrail)
-      : [];
-    const persistedDelegationTrail = runtimeDelegationTrail.length > 0
-      ? runtimeDelegationTrail
-      : normalizeDelegationTrail(
-          ctx?.data?._delegationAuditTrail ??
-          ctx?.data?._workflowDelegationTrail ??
-          ctx?.data?._delegationTrail,
-        );
-    if (persistedDelegationTrail.length > 0) {
-      detail.data._delegationAuditTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-      detail.data._workflowDelegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-      detail.data._delegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-      detail.delegationAuditTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-      detail.delegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-    }
-    const runtimeTeamState = hasWorkflowTeamStateData(ctx?.__workflowRuntimeState?.workflowTeamState)
-      ? cloneWorkflowTeamState(ctx.__workflowRuntimeState.workflowTeamState)
-      : null;
-    const persistedTeamState = runtimeTeamState || (
-      hasWorkflowTeamStateData(ctx?.data?._workflowTeamState ?? ctx?.data?.workflowTeamState)
-        ? cloneWorkflowTeamState(ctx?.data?._workflowTeamState ?? ctx?.data?.workflowTeamState)
-        : null
-    );
-    if (persistedTeamState) {
-      const teamSummary = buildWorkflowTeamSummary(persistedTeamState);
-      detail.data._workflowTeamState = persistedTeamState;
-      detail.data.workflowTeamState = persistedTeamState;
-      detail.data._workflowTeamSummary = teamSummary;
-      detail.workflowTeamState = persistedTeamState;
-      detail.teamSummary = teamSummary;
-    }
+    const detail = ctx.toJSON(Date.now());
+    if (ctx?.data?._dagState) detail.dagState = ctx.data._dagState;
+    if (ctx?.data?._issueAdvisor) detail.issueAdvisor = ctx.data._issueAdvisor;
     if (ctx?.data?._workflowDefinitionSnapshot) {
-      detail.workflowDefinition = sanitizeJsonValue(
-        cloneRunSnapshot(ctx.data._workflowDefinitionSnapshot),
-      );
+      detail.workflowDefinition = cloneRunSnapshot(ctx.data._workflowDefinitionSnapshot);
     }
     if (isRunning) {
       detail.endedAt = null;
@@ -6520,14 +4817,6 @@ export class WorkflowEngine extends EventEmitter {
     const triggeredBy = detail?.data?._triggeredBy || null;
     const targetRepo = detail?.data?._targetRepo || null;
     const triggerVars = detail?.data?._triggerVars || null;
-    const delegationTrail = normalizeDelegationTrail(
-      detail?.delegationAuditTrail ??
-      detail?.delegationTrail ??
-      detail?.data?._delegationAuditTrail ??
-      detail?.data?._workflowDelegationTrail ??
-      detail?.data?._delegationTrail,
-    );
-    const delegationTransitionGuards = extractDelegationGuardMap(detail);
     const rootRunId =
       detail?.dagState?.rootRunId ||
       detail?.data?._workflowRootRunId ||
@@ -6549,25 +4838,6 @@ export class WorkflowEngine extends EventEmitter {
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
     const dagRevisionCount = Array.isArray(detail?.dagState?.revisions) ? detail.dagState.revisions.length : 0;
     const validationFailures = collectValidationFailures(detail);
-    const taskIds = collectRunTaskIds(detail);
-    const sessionIds = collectRunSessionIds(detail);
-    const taskTitle = resolveRunTaskTitle(detail);
-    const delegationTopology = buildRunDelegationTopology({ runId, detail });
-    const governanceState = buildWorkflowGovernanceState(detail?.data || detail || {});
-    const workflowTeamState = hasWorkflowTeamStateData(
-      detail?.workflowTeamState ??
-      detail?.data?._workflowTeamState ??
-      detail?.data?.workflowTeamState,
-    )
-      ? normalizeWorkflowTeamState(
-          detail?.workflowTeamState ??
-          detail?.data?._workflowTeamState ??
-          detail?.data?.workflowTeamState,
-        )
-      : null;
-    const teamSummary = workflowTeamState
-      ? buildWorkflowTeamSummary(workflowTeamState)
-      : null;
 
     return {
       runId,
@@ -6589,11 +4859,6 @@ export class WorkflowEngine extends EventEmitter {
       isStuck,
       stuckMs,
       stuckThresholdMs: threshold,
-      delegationTrail,
-      delegationAuditTrail: delegationTrail,
-      latestDelegationEvent: delegationTrail.at(-1) || null,
-      delegationTransitionGuards,
-      delegationTopology,
       triggerEvent,
       triggerSource,
       triggeredBy,
@@ -6607,25 +4872,6 @@ export class WorkflowEngine extends EventEmitter {
       issueAdvisorRecommendation,
       issueAdvisorSummary,
       dagRevisionCount,
-      taskId: taskIds[0] || null,
-      taskIds,
-      taskTitle,
-      sessionId: sessionIds[0] || null,
-      sessionIds,
-      primarySessionId: sessionIds[0] || null,
-      teamId: teamSummary?.teamId || null,
-      teamLeadId: teamSummary?.leadId || null,
-      teamSummary,
-      goalAncestry: governanceState.goalAncestry || [],
-      primaryGoalId: governanceState.primaryGoalId || null,
-      primaryGoalTitle: governanceState.primaryGoalTitle || null,
-      goalDepth: governanceState.goalDepth ?? null,
-      heartbeatRun: governanceState.heartbeatRun || null,
-      wakeupRequest: governanceState.wakeupRequest || null,
-      budgetPolicy: governanceState.budgetPolicy || null,
-      executionPolicy: governanceState.executionPolicy || null,
-      budgetOutcome: governanceState.budgetOutcome || null,
-      policyOutcome: governanceState.policyOutcome || null,
       ...(validationFailures.length > 0
         ? {
             validationFailures,
@@ -6725,7 +4971,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Add to active-runs index
       const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
-      entries.push(buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx));
+      entries.push({ runId, workflowId, workflowName, startedAt: ctx.startedAt });
       this._writeActiveRunsIndex(entries);
 
       // Write initial detail file so we can resume from it
@@ -6797,6 +5043,7 @@ export class WorkflowEngine extends EventEmitter {
    */
   _ensureRunInIndex(runId, workflowId, workflowName, detail) {
     try {
+      const indexPath = resolve(this.runsDir, "index.json");
       const runs = this._readRunIndex();
       const existingIdx = runs.findIndex((r) => r.runId === runId);
 
@@ -6814,7 +5061,7 @@ export class WorkflowEngine extends EventEmitter {
         runs.push(summary);
       }
       if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
-      this._writeRunIndex(runs);
+      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
     } catch (err) {
       console.error(`${TAG} Failed to ensure run in index:`, err.message);
     }
@@ -6837,7 +5084,7 @@ export class WorkflowEngine extends EventEmitter {
           .filter((run) => run?.runId)
           .map((run) => [String(run.runId), run]),
       );
-      const maxResumableStaleRunsRaw = Number(getRuntimeEnv().WORKFLOW_INTERRUPTED_RESUME_MAX_RUNS);
+      const maxResumableStaleRunsRaw = Number(process.env.WORKFLOW_INTERRUPTED_RESUME_MAX_RUNS);
       const maxResumableStaleRuns = Number.isFinite(maxResumableStaleRunsRaw)
         ? Math.max(1, Math.min(500, Math.floor(maxResumableStaleRunsRaw)))
         : 25;
@@ -6927,8 +5174,9 @@ export class WorkflowEngine extends EventEmitter {
       }
 
       if (interrupted.length > 0) {
+        const indexPath = resolve(this.runsDir, "index.json");
         if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
-        this._writeRunIndex(runs);
+        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
       }
 
       // Clear the active-runs index — we've handled recoverable entries.
@@ -7112,18 +5360,6 @@ export class WorkflowEngine extends EventEmitter {
         source: "detail",
       };
     }
-    const topologyTaskId = String(
-      detail?.delegationTopology?.taskId ||
-        detail?.data?._delegationTopology?.taskId ||
-        "",
-    ).trim();
-    if (topologyTaskId) {
-      return {
-        taskId: topologyTaskId,
-        taskTitle: String(detail?.taskTitle || detail?.data?.taskTitle || "").trim() || null,
-        source: "topology",
-      };
-    }
     const ledgerIdentity = this._executionLedger.getTaskIdentity(runSummary?.runId || detail?.id || "");
     if (ledgerIdentity?.taskId) return ledgerIdentity;
     return null;
@@ -7134,12 +5370,13 @@ export class WorkflowEngine extends EventEmitter {
    */
   _markRunUnresumable(runId, reason) {
     try {
+      const indexPath = resolve(this.runsDir, "index.json");
       const runs = this._readRunIndex();
       const idx = runs.findIndex((r) => r.runId === runId);
       if (idx >= 0) {
         runs[idx].resumable = false;
         runs[idx].resumeResult = reason;
-        this._writeRunIndex(runs);
+        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
       }
     } catch (err) {
       console.error(`${TAG} Failed to mark run unresumable:`, err.message);
@@ -7152,32 +5389,25 @@ export class WorkflowEngine extends EventEmitter {
     try {
       this._ensureDirs();
       const workflow = this.get(workflowId);
-      const workflowName = workflow?.name || ctx.data?._workflowName || workflowId;
       const detail = this._serializeRunContext(ctx, false);
       const summary = this._buildSummaryFromDetail({
         runId,
         workflowId,
-        workflowName,
+        workflowName: workflow?.name || ctx.data?._workflowName || workflowId,
         status: this._resolveWorkflowStatus(ctx),
         detail,
       });
 
       // Deduplicate: remove any existing entry for this runId before appending
+      const indexPath = resolve(this.runsDir, "index.json");
       let runs = this._readRunIndex().filter((r) => r.runId !== runId);
       runs.push(summary);
       // Keep last N runs
       if (runs.length > MAX_PERSISTED_RUNS) runs = runs.slice(-MAX_PERSISTED_RUNS);
-      this._writeRunIndex(runs);
+      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
 
       // Save full run detail
       this._writeRunDetail(runId, detail);
-      this.emit("run:complete", {
-        runId,
-        workflowId,
-        workflowName,
-        status: summary.status,
-        summary,
-      });
     } catch (err) {
       console.error(`${TAG} Failed to persist run log:`, err.message);
     }
@@ -7187,60 +5417,6 @@ export class WorkflowEngine extends EventEmitter {
     const detailPath = resolve(this.runsDir, `${runId}.json`);
     writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
   }
-
-  _writeRunIndex(runs) {
-    const indexPath = resolve(this.runsDir, "index.json");
-    writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
-    this._runIndexCache = runs;
-    try {
-      this._runIndexCacheMtime = statSync(indexPath).mtimeMs || Date.now();
-    } catch {
-      this._runIndexCacheMtime = Date.now();
-    }
-  }
-
-  /**
-   * Delete run detail files older than the most recent `keepCount` files.
-   * Keeps index.json and active-runs.json untouched.
-   * Safe to call on startup and periodically (e.g. daily).
-   *
-   * @param {number} [keepCount] Number of most-recent run files to retain (default MAX_PERSISTED_RUNS).
-   * @returns {{ deleted: number, kept: number, errors: number }}
-   */
-  pruneOldRunFiles(keepCount = MAX_PERSISTED_RUNS) {
-    const PROTECTED = new Set(["index.json", ACTIVE_RUNS_INDEX]);
-    const normalizedKeep = Math.max(20, Math.floor(Number(keepCount) || MAX_PERSISTED_RUNS));
-
-    if (!existsSync(this.runsDir)) return { deleted: 0, kept: 0, errors: 0 };
-
-    let allFiles;
-    try {
-      allFiles = readdirSync(this.runsDir)
-        .filter((f) => f.endsWith(".json") && !PROTECTED.has(f))
-        .map((f) => {
-          const p = resolve(this.runsDir, f);
-          let mtimeMs = 0;
-          try { mtimeMs = statSync(p).mtimeMs || 0; } catch { /* ignore */ }
-          return { file: f, path: p, mtimeMs };
-        })
-        .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    } catch {
-      return { deleted: 0, kept: 0, errors: 1 };
-    }
-
-    const toDelete = allFiles.slice(normalizedKeep);
-    let deleted = 0;
-    let errors = 0;
-    for (const entry of toDelete) {
-      try {
-        unlinkSync(entry.path);
-        deleted++;
-      } catch {
-        errors++;
-      }
-    }
-    return { deleted, kept: allFiles.length - toDelete.length, errors };
-  }
 }
 
 // ── Module-level convenience functions ──────────────────────────────────────
@@ -7248,8 +5424,7 @@ export class WorkflowEngine extends EventEmitter {
 let _defaultEngine = null;
 
 function shouldDisableDefaultInterruptedRunDetection(opts = {}) {
-  const env = getRuntimeEnv();
-  const isTestProcess = Boolean(env.VITEST) || env.NODE_ENV === "test";
+  const isTestProcess = Boolean(process.env.VITEST) || process.env.NODE_ENV === "test";
   return isTestProcess && !opts.workflowDir && !opts.runsDir;
 }
 
@@ -7297,7 +5472,7 @@ export function getWorkflowEngine(opts = {}) {
     const shouldReinitialize =
       (workflowDir && workflowDir !== _defaultEngine.workflowDir) ||
       (runsDir && runsDir !== _defaultEngine.runsDir) ||
-      (configDir && configDir !== resolve(_defaultEngine._configDir || getRuntimeCwd()));
+      (configDir && configDir !== resolve(_defaultEngine._configDir || process.cwd()));
 
     if (shouldReinitialize) {
       const engineOpts = {
@@ -7334,3 +5509,9 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+
+
+
+
+

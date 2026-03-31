@@ -13,11 +13,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { getNodeType } from "../workflow/workflow-nodes.mjs";
-import { getApprovalRequest, resolveApprovalRequest } from "../workflow/approval-queue.mjs";
 import { WorkflowContext } from "../workflow/workflow-engine.mjs";
 
 // -- Helpers ------------------------------------------------------------------
@@ -141,56 +137,6 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("main");
-  });
-
-  it("waits for operator approval before creating a PR when risky approvals are enabled", async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), "wf-create-pr-approval-"));
-    const previousSetting = process.env.WORKFLOW_RISKY_ACTION_APPROVALS_ENABLED;
-    process.env.WORKFLOW_RISKY_ACTION_APPROVALS_ENABLED = "true";
-    try {
-      const node = makeNode("action.create_pr", {
-        title: "feat: approval gated",
-        branch: "feat/approval-gated",
-        cwd: fastFailCwd,
-      });
-      const ctx = makeCtx({
-        repoRoot,
-        _dagState: { runId: "run-risky-pr", workflowId: "wf-risky" },
-        _workflowId: "wf-risky",
-        _workflowName: "Risky Approval Workflow",
-      });
-      const engine = {
-        _checkpointRun: vi.fn(() => {
-          const requestId = Object.keys(ctx.data._pendingApprovalRequests || {})[0];
-          if (requestId) {
-            resolveApprovalRequest(requestId, {
-              repoRoot,
-              decision: "approved",
-              actorId: "test-operator",
-              note: "approved in test",
-            });
-          }
-        }),
-      };
-
-      const result = await getNodeType("action.create_pr").execute(node, ctx, engine);
-      const request = getApprovalRequest("workflow-action", "run-risky-pr:test-node", { repoRoot });
-
-      expect(engine._checkpointRun).toHaveBeenCalled();
-      expect(request?.status).toBe("approved");
-      expect(request?.action?.label).toBe("Create pull request");
-      expect(result.success).toBe(true);
-      expect(result.handedOff).toBe(true);
-      expect(ctx.data._pendingApprovalRequests).toEqual({});
-    } finally {
-      if (previousSetting === undefined) delete process.env.WORKFLOW_RISKY_ACTION_APPROVALS_ENABLED;
-      else process.env.WORKFLOW_RISKY_ACTION_APPROVALS_ENABLED = previousSetting;
-      try {
-        rmSync(repoRoot, { recursive: true, force: true });
-      } catch {
-        // Windows can briefly retain handles on the approval queue file after the assertion path.
-      }
-    }
   });
 });
 

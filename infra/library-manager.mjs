@@ -53,11 +53,6 @@ const skillEntryIndexCache = new Map();
 const repoContextCache = new Map();
 
 const REPO_CONTEXT_TTL_MS = 120_000;
-const UNRESOLVED_TEMPLATE_TOKEN_RE = /\{\{[^{}]+\}\}/;
-
-export function hasUnresolvedTemplateTokens(value) {
-  return UNRESOLVED_TEMPLATE_TOKEN_RE.test(String(value || ""));
-}
 
 /**
  * Maps file extensions → domain tags used for scoring.

@@ -55,7 +55,7 @@ describe("tui event contract", () => {
       uptimeMs: 30_000,
     });
 
-    expect(payload).toMatchObject({
+    expect(payload).toEqual({
       activeAgents: 3,
       maxAgents: 8,
       tokensIn: 1200,
@@ -64,9 +64,6 @@ describe("tui event contract", () => {
       totalTokens: 1600,
       throughputTps: 13.5,
       uptimeMs: 30_000,
-      activeSessionCount: 0,
-      completedSessionCount: 0,
-      totalSessionCount: 0,
       rateLimits: {
         openai: {
           primary: 120,
@@ -87,41 +84,6 @@ describe("tui event contract", () => {
           unit: "rpm",
         },
       },
-      rateLimitSummary: {
-        providerCount: 2,
-        providersNearExhaustion: 1,
-        providersExhausted: 1,
-      },
-      sessionHealth: {
-        live: 0,
-        active: 0,
-        working: 0,
-        editing: 0,
-        committing: 0,
-        idle: 0,
-        stalled: 0,
-        blocked: 0,
-        completed: 0,
-      },
-      context: {
-        liveSessionCount: 0,
-        completedSessionCount: 0,
-        sessionsNearContextLimit: 0,
-        sessionsHighContextPressure: 0,
-        maxContextUsagePercent: 0,
-        avgContextUsagePercent: null,
-      },
-      toolSummary: {
-        toolCalls: 0,
-        toolResults: 0,
-        errors: 0,
-        editOps: 0,
-        commitOps: 0,
-        sessionsWithEdits: 0,
-        sessionsWithCommits: 0,
-        topTools: [],
-      },
-      activeSessions: [],
     });
 
     expect(validate(payload)).toBe(true);

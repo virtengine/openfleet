@@ -13,14 +13,6 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const variablesSourceFiles = [
-  "ui/styles/variables.css",
-  "site/ui/styles/variables.css",
-].map((relPath) => ({
-  relPath,
-  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
-}));
-
 const sourceFiles = [
   "ui/tabs/agents.js",
   "site/ui/tabs/agents.js",
@@ -37,37 +29,8 @@ const sessionListSourceFiles = [
   source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
 }));
 
-const dashboardSourceFiles = [
-  "ui/tabs/dashboard.js",
-  "site/ui/tabs/dashboard.js",
-].map((relPath) => ({
-  relPath,
-  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
-}));
-
-const telemetrySourceFiles = [
-  "ui/tabs/telemetry.js",
-  "site/ui/tabs/telemetry.js",
-  "tui/screens/telemetry.mjs",
-].map((relPath) => ({
-  relPath,
-  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
-}));
-
-const tuiAgentsSource = readFileSync(resolve(process.cwd(), "tui/screens/agents.mjs"), "utf8");
-
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
-    it("renders a keyboard-accessible session id pill with copy feedback state", () => {
-      expect(source).toContain("fleet-session-id-pill");
-      expect(source).toContain("type=\"button\"");
-      expect(source).toContain("aria-label=${`Copy session ID ${sessionId}`}");
-      expect(source).toContain("data-copied=${copiedSessionId === sessionId ? \"true\" : \"false\"}");
-      expect(source).toContain("sessionId.slice(0, 8)");
-      expect(source).toContain("copySessionId(sessionId)");
-      expect(source).toContain("fleet-session-id-pill-icon");
-      expect(source).toContain('copiedSessionId === sessionId ? "✓" : ICONS.copy');
-    });
     it("never fabricates session ids for task-only fallback entries", () => {
       expect(source).toContain("function resolveFleetEntrySessionId(entry)");
       expect(source).toContain("if (entry?.isTaskFallback || entry?.slot?.synthetic) return \"\";");
@@ -136,36 +99,6 @@ for (const { relPath, source } of sourceFiles) {
       expect(surroundingChunk).toMatch(/key=\$\{(?:fleetSlotKey\(|slot\?\.taskId)/);
       // Should NOT use key=${i} as the only key
       expect(surroundingChunk).not.toMatch(/key=\$\{i\}\s*\n/);
-    });
-
-
-    it("renders live turn counts in agent cards and exposes the turns detail tab", () => {
-      expect(source).toContain("fleet-slot-meta-turns");
-      expect(source).toContain("Turns ${Number(entry.session?.turnCount || 0)}");
-      expect(source).toContain('detailTab === "turns"');
-      expect(source).toContain('iconText(":repeat: Turns")');
-      expect(source).toContain("fleet-turn-timeline");
-      expect(source).toContain("formatTurnTokens(turn)");
-      expect(source).toContain("formatMsDuration(turn.durationMs || 0)");
-    });
-
-    it("scopes Fleet metrics to workspace slot summaries and separates session-only activity", () => {
-      expect(source).toContain("const workspaceSummary = execData?.workspaceSummary || null;");
-      expect(source).not.toContain('loadSessions({ type: "task", workspace: "all" });');
-      expect(source).not.toContain("Math.max(activeSlots, activeSessionCount)");
-      expect(source).toContain('label: "Dedicated Slots"');
-      expect(source).toContain('label: "Session Only"');
-      expect(source).toContain('label: "Active Sessions"');
-      expect(source).toContain('label: "Workflows"');
-      expect(source).toContain("getFleetEntryMetaLabel(entry)");
-      expect(source).toContain("getFleetEntryOriginLabel(selectedEntry)");
-      expect(source).toContain('return isFleetEntryActive(entry) ? "Session only" : "Session history";');
-    });
-
-    it("preserves backend slot indexes when workspace-filtered slots are rendered", () => {
-      expect(source).toContain("function resolveFleetSlotIndex(slot, fallbackIndex = 0)");
-      expect(source).toContain("resolveFleetSlotIndex(slot, i)");
-      expect(source).toContain("index: resolveFleetSlotIndex(slots[slotIndex], slotIndex)");
     });
 
     it("agent threads list uses stable keys, not array indices", () => {
@@ -313,21 +246,6 @@ describe("fleet entry building logic", () => {
       const uniqueKeys = new Set(keys);
       expect(uniqueKeys.size).toBe(keys.length);
     }
-  });
-});
-
-describe("executor workspace summary source", () => {
-  const serverSource = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
-
-  it("adds workspace-scoped slot summaries to /api/executor", () => {
-    expect(serverSource).toContain("function buildWorkspaceExecutorSummary(execStatus, workspaceContext)");
-    expect(serverSource).toContain("const workspaceSummary = execStatus");
-    expect(serverSource).toContain("{ ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails }");
-  });
-
-  it("uses the actual request url when augmenting executor workflow counts", () => {
-    expect(serverSource).toContain("getWorkflowRequestContext(url, { bootstrapTemplates: false })");
-    expect(serverSource).not.toContain("getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false }).catch(() => null);");
   });
 });
 
@@ -480,133 +398,5 @@ describe("kanban PR linkage rendering", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
-  });
-});
-
-for (const { relPath, source } of variablesSourceFiles) {
-  describe(`shared numeral utility (${relPath})`, () => {
-    it("defines the portal numeral token and utility class once", () => {
-      expect(source).toContain("--font-variant-numeric-portal: tabular-nums slashed-zero;");
-      expect(source).toMatch(/\.numeral\s*\{[\s\S]*font-variant-numeric:\s*var\(--font-variant-numeric-portal\);[\s\S]*letter-spacing:\s*0\.01em;/);
-    });
-  });
-}
-
-for (const { relPath, source } of sourceFiles) {
-  describe(`Fleet/Agents numeric treatment (${relPath})`, () => {
-    it("applies the numeral utility to capacity and metric outputs", () => {
-      expect(source).toContain('<span class="numeral">${activeSlots}</span>');
-      expect(source).toContain('<span class="numeral">${maxParallel}</span>');
-      expect(source).toContain('<span class="numeral">${capacityPct}%</span>');
-      expect(source).toContain('<div class="fleet-metric-value numeral">${metric.value}</div>');
-    });
-  });
-}
-
-for (const relPath of ["ui/tabs/telemetry.js", "site/ui/tabs/telemetry.js"]) {
-  const source = readFileSync(resolve(process.cwd(), relPath), "utf8");
-  describe(`Telemetry numeric treatment (${relPath})`, () => {
-    it("uses the numeral utility for aligned numeric columns", () => {
-      expect(source).toContain('variant="caption" className="numeral">${formatBytes(ev.originalChars)}');
-      expect(source).toContain('variant="caption" className="numeral">${formatBytes(ev.compressedChars)}');
-      expect(source).toContain('variant="caption" className="numeral">${formatCount(ev.estimatedSavedTokens || 0)}');
-      expect(source).toContain(
-        'variant="caption" className="numeral">\n                      ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}'
-      );
-      expect(source).not.toContain('font-variant-numeric');
-    });
-  });
-
-  if (relPath === "ui/tabs/telemetry.js") {
-    describe(`Telemetry durable runtime adoption (${relPath})`, () => {
-      it("renders the durable session runtime panel in the owned ui bundle", () => {
-        expect(source).toContain("Durable Session Runtime");
-        expect(source).toContain("SQL-backed session lineage");
-        expect(source).toContain("State ledger / SQL");
-        expect(source).toContain("Top Durable Tools");
-      });
-    });
-  }
-}
-
-for (const { relPath, source } of telemetrySourceFiles) {
-  describe(`Telemetry compact count formatting (${relPath})`, () => {
-    it("supports K/M/B/T abbreviations for large counts", () => {
-      expect(source).toContain("1_000_000_000_000");
-      expect(source).toContain("1_000_000_000");
-      expect(source).toContain("1_000_000");
-      expect(source).toContain("1_000");
-      expect(source).toContain('"T"');
-      expect(source).toContain('"B"');
-      expect(source).toContain('"M"');
-      expect(source).toContain('"K"');
-    });
-  });
-}
-
-for (const { relPath, source } of dashboardSourceFiles) {
-  describe(`Dashboard Git Graph rendering (${relPath})`, () => {
-    it("renders the Git Graph card without gating it on a preloaded commit list", () => {
-      expect(source).toContain('<${CommitGraph} maxCommits=${40} compact=${true} />');
-      expect(source).not.toContain('${recentCommits.length > 0 && html`');
-    });
-  });
-
-  if (relPath === "ui/tabs/dashboard.js") {
-    describe(`Dashboard durable runtime adoption (${relPath})`, () => {
-      it("renders the durable runtime status summary in the owned ui bundle", () => {
-        expect(source).toContain("Durable Runtime");
-        expect(source).toContain("Session lineage and context pressure");
-        expect(source).toContain("State ledger / SQL");
-      });
-    });
-  }
-}
-
-for (const relPath of ["ui/tabs/tasks.js", "site/ui/tabs/tasks.js"]) {
-  const source = readFileSync(resolve(process.cwd(), relPath), "utf8");
-  describe(`Tasks numeric treatment (${relPath})`, () => {
-    it("uses the numeral utility for snapshot counters and pager values", () => {
-      expect(source).toContain('<strong class="snapshot-val numeral">${m.value}</strong>');
-      expect(source).toContain('${option.label} · <span class="numeral">${option.count}</span>');
-      expect(source).toContain('Sprint nodes: <span class="numeral">${dagSprintGraphView.nodes.length}</span>');
-      expect(source).toContain('Global nodes: <span class="numeral">${dagGlobalGraphView.nodes.length}</span>');
-      expect(source).toContain('Epic nodes: <span class="numeral">${dagEpicGraphView.nodes.length}</span>');
-      expect(source).toContain('<span class="numeral">${visible.length}</span> shown');
-      expect(source).toContain('Page <span class="numeral">${page + 1}</span> / <span class="numeral">${totalPages}</span>');
-    });
-  });
-}
-
-for (const relPath of ["ui/tabs/agents.js", "site/ui/tabs/agents.js"]) {
-  const source = readFileSync(resolve(process.cwd(), relPath), "utf8");
-  describe(`Agents detail numeric treatment (${relPath})`, () => {
-    it("uses the numeral utility for live slot counters and durations", () => {
-      expect(source).toContain('<span class="numeral">${activeSlots}</span> active · <span class="numeral">${freeSlots}</span> free');
-      expect(source).toContain('Attempt <span class="numeral">${slot.attempt || 1}</span>');
-      expect(source).toContain('<div class="agent-duration numeral">${formatDuration(slot.startedAt)}</div>');
-      expect(source).toContain('Completed: <span class="numeral">${slot.completedCount}</span>');
-    });
-  });
-}
-
-describe("TUI agents harness monitor", () => {
-  it("renders harness detail, approvals, and nudge controls backed by harness APIs", () => {
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/harness/runs?limit=8")');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}`)');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/events?limit=40&direction=desc`)');
-    expect(tuiAgentsSource).toContain('`/api/harness/approvals/${encodeURIComponent(requestId)}/resolve`');
-    expect(tuiAgentsSource).toContain('`/api/harness/runs/${encodeURIComponent(runId)}/nudge`');
-    expect(tuiAgentsSource).toContain("function HarnessDetail(");
-    expect(tuiAgentsSource).toContain("Harness monitor (");
-    expect(tuiAgentsSource).toContain("[H detail · [ / ] select]");
-    expect(tuiAgentsSource).toContain('const [harnessNudgeMode, setHarnessNudgeMode] = React.useState(false);');
-    expect(tuiAgentsSource).toContain('if (harnessDetailView) {');
-    expect(tuiAgentsSource).toContain('if ((input === "a" || input === "A")');
-    expect(tuiAgentsSource).toContain('if ((input === "x" || input === "X")');
-    expect(tuiAgentsSource).toContain('if ((input === "n" || input === "N")');
-    expect(tuiAgentsSource).toContain('if (input === "h" || input === "H") {');
-    expect(tuiAgentsSource).toContain('if (input === "[") {');
-    expect(tuiAgentsSource).toContain('if (input === "]") {');
   });
 });

@@ -11,16 +11,12 @@ const _inflight = new Map();
 
 /** Reactive signal: whether the WebSocket is currently connected */
 export const wsConnected = signal(false);
-/** Reactive signal: high-level socket state for connection badges */
-export const wsStatus = signal("offline");
 /** Reactive signal: WebSocket round-trip latency in ms (null if unknown) */
 export const wsLatency = signal(null);
 /** Reactive signal: countdown seconds until next reconnect attempt (null when connected) */
 export const wsReconnectIn = signal(null);
 /** Reactive signal: number of reconnections since last user-initiated action */
 export const wsReconnectCount = signal(0);
-/** Reactive signal: timestamp of the most recent successful reconnect */
-export const wsLastReconnectAt = signal(null);
 /** Reactive signal: count of in-flight apiFetch calls (drives top loading bar) */
 export const loadingCount = signal(0);
 
@@ -85,7 +81,7 @@ async function readApiErrorBody(response) {
 function resolveApiErrorMessage(status, text, payload) {
   if (payload && typeof payload === "object") {
     const message = String(
-      payload.message || payload.detail || payload.reason || payload.error || "",
+      payload.error || payload.message || payload.detail || payload.reason || "",
     ).trim();
     if (message) return message;
   }
@@ -323,16 +319,9 @@ export function connectWebSocket() {
 
   const socket = new WebSocket(wsUrl.toString());
   ws = socket;
-  if (wsReconnectCount.value > 0) {
-    wsStatus.value = "reconnecting";
-  }
 
   socket.addEventListener("open", () => {
-    if (wsReconnectCount.value > 0) {
-      wsLastReconnectAt.value = Date.now();
-    }
     wsConnected.value = true;
-    wsStatus.value = "connected";
     wsLatency.value = null;
     retryMs = 1000; // reset backoff on successful connect
     clearCountdown();
@@ -383,7 +372,6 @@ export function connectWebSocket() {
 
   socket.addEventListener("close", () => {
     wsConnected.value = false;
-    wsStatus.value = "reconnecting";
     wsLatency.value = null;
     ws = null;
     stopPing();
@@ -400,7 +388,6 @@ export function connectWebSocket() {
 
   socket.addEventListener("error", () => {
     wsConnected.value = false;
-    wsStatus.value = "reconnecting";
   });
 }
 
@@ -423,7 +410,6 @@ export function disconnectWebSocket() {
     ws = null;
   }
   wsConnected.value = false;
-  wsStatus.value = "offline";
   wsLatency.value = null;
 }
 
@@ -461,3 +447,4 @@ export function unsubscribeFromLogs() {
 export function resetReconnectCount() {
   wsReconnectCount.value = 0;
 }
+

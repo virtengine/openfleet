@@ -142,20 +142,11 @@ export function buildStatusHeaderModel({
   const tokensTotal = Math.max(0, toNumber(stats?.tokensTotal ?? stats?.totalTokens, tokensIn + tokensOut));
   const providers = normalizeHeaderRateLimits(stats?.rateLimits || {}, configuredProviders);
   const connection = CONNECTION_STATES[connectionState] || CONNECTION_STATES.offline;
-  const sessionHealth = stats?.sessionHealth && typeof stats.sessionHealth === "object"
-    ? stats.sessionHealth
-    : {};
-  const context = stats?.context && typeof stats.context === "object" ? stats.context : {};
-  const rateLimitSummary =
-    stats?.rateLimitSummary && typeof stats.rateLimitSummary === "object"
-      ? stats.rateLimitSummary
-      : {};
 
   return {
     row1: `Agents: ${padMetric(activeAgents, 2)}/${padMetric(maxAgents, 2)} | Throughput: ${throughputTps} tps | Runtime: ${formatDuration(uptimeMs)} | Tokens: in ${formatCompactMetric(tokensIn)} | out ${formatCompactMetric(tokensOut)} | total ${formatCompactMetric(tokensTotal)}`,
     row2: PROVIDER_ORDER.map((provider) => providers[provider]),
     row3: {
-      healthLabel: `Live ${padMetric(sessionHealth.live || stats?.activeSessionCount || 0, 2)} | blocked ${padMetric(sessionHealth.blocked || 0, 2)} | stalled ${padMetric(sessionHealth.stalled || 0, 2)} | near limit ${padMetric(context.sessionsNearContextLimit || 0, 2)} | rate alerts ${padMetric(rateLimitSummary.providersNearExhaustion || 0, 2)}`,
       connection,
       projectLabel: String(projectLabel || "").trim() || "No project",
       refreshLabel: `Next refresh: ${Math.max(0, Math.trunc(toNumber(refreshCountdownSec, 0)))}s`,
@@ -200,9 +191,6 @@ export default function StatusHeader({
             ${index < model.row2.length - 1 ? html`<${Text} dimColor> | <//>` : null}
           <//>
         `)}
-      <//>
-      <${Box} marginTop=${1}>
-        <${Text}>${model.row3.healthLabel}<//>
       <//>
       <${Box} marginTop=${1}>
         <${Text} color=${model.row3.connection.color}>${connectionDot}<//>

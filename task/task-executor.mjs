@@ -120,8 +120,6 @@ const MAX_NO_COMMIT_ATTEMPTS = 3; // Stop picking up a task after N consecutive 
 const NO_COMMIT_COOLDOWN_BASE_MS = 15 * 60 * 1000; // 15 minutes base cooldown for no-commit
 const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
-const LIST_TASKS_CACHE_TTL_MS = 5000;
-const LIST_TASKS_CACHE_MAX_ENTRIES = 12;
 const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
 const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
 const REPO_AREA_STARVATION_WAIT_MS = 2 * 60 * 1000;
@@ -784,7 +782,6 @@ const INPROGRESS_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours — agen
 const INPROGRESS_RECOVERY_UNSTARTED_RESET_MS = 20 * 60 * 1000;
 /** Periodic in-progress recovery cadence while executor is running */
 const INPROGRESS_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
-const INPROGRESS_RECOVERY_HISTORY_LIMIT = 12;
 
 function normalizeSelector(value) {
   return String(value || "")
@@ -1262,79 +1259,6 @@ function isSharedHeartbeatStale(heartbeat, thresholdMs) {
 function normalizeTaskIdKey(taskId) {
   const normalized = String(taskId ?? "").trim();
   return normalized;
-}
-
-function createEmptyInProgressRecoverySnapshot() {
-  return {
-    totals: {
-      runs: 0,
-      failures: 0,
-      resumed: 0,
-      resetToTodo: 0,
-      reconciledDrift: 0,
-      skippedForActiveClaim: 0,
-      skippedForNoCommitBlock: 0,
-      resetUnstarted: 0,
-      staleSharedClaim: 0,
-      workflowOwnerlessReset: 0,
-    },
-    lastRun: null,
-    recentRuns: [],
-  };
-}
-
-function toNonNegativeInt(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
-  return Math.max(0, Math.trunc(numeric));
-}
-
-function normalizeInProgressRecoveryRun(run = {}) {
-  return {
-    trigger: String(run?.trigger || "").trim() || "interval",
-    startedAt: String(run?.startedAt || "").trim() || null,
-    finishedAt: String(run?.finishedAt || "").trim() || null,
-    durationMs: toNonNegativeInt(run?.durationMs),
-    scannedCount: toNonNegativeInt(run?.scannedCount),
-    availableSlots: toNonNegativeInt(run?.availableSlots),
-    resumedCount: toNonNegativeInt(run?.resumedCount),
-    resetToTodoCount: toNonNegativeInt(run?.resetToTodoCount),
-    reconciledDriftCount: toNonNegativeInt(run?.reconciledDriftCount),
-    skippedForActiveClaimCount: toNonNegativeInt(run?.skippedForActiveClaimCount),
-    skippedForNoCommitBlockCount: toNonNegativeInt(run?.skippedForNoCommitBlockCount),
-    resetUnstartedCount: toNonNegativeInt(run?.resetUnstartedCount),
-    staleSharedClaimCount: toNonNegativeInt(run?.staleSharedClaimCount),
-    workflowOwnerlessResetCount: toNonNegativeInt(run?.workflowOwnerlessResetCount),
-    prunedRuntimeCount: toNonNegativeInt(run?.prunedRuntimeCount),
-    failed: run?.failed === true,
-    error: String(run?.error || "").trim() || null,
-  };
-}
-
-function normalizeInProgressRecoverySnapshot(snapshot = {}) {
-  const base = createEmptyInProgressRecoverySnapshot();
-  const totals = snapshot?.totals && typeof snapshot.totals === "object"
-    ? snapshot.totals
-    : {};
-  base.totals = {
-    runs: toNonNegativeInt(totals.runs),
-    failures: toNonNegativeInt(totals.failures),
-    resumed: toNonNegativeInt(totals.resumed),
-    resetToTodo: toNonNegativeInt(totals.resetToTodo),
-    reconciledDrift: toNonNegativeInt(totals.reconciledDrift),
-    skippedForActiveClaim: toNonNegativeInt(totals.skippedForActiveClaim),
-    skippedForNoCommitBlock: toNonNegativeInt(totals.skippedForNoCommitBlock),
-    resetUnstarted: toNonNegativeInt(totals.resetUnstarted),
-    staleSharedClaim: toNonNegativeInt(totals.staleSharedClaim),
-    workflowOwnerlessReset: toNonNegativeInt(totals.workflowOwnerlessReset),
-  };
-  base.lastRun = snapshot?.lastRun ? normalizeInProgressRecoveryRun(snapshot.lastRun) : null;
-  base.recentRuns = Array.isArray(snapshot?.recentRuns)
-    ? snapshot.recentRuns
-      .map((run) => normalizeInProgressRecoveryRun(run))
-      .slice(-INPROGRESS_RECOVERY_HISTORY_LIMIT)
-    : [];
-  return base;
 }
 
 function extractBacklogCandidates(outputText) {
@@ -2520,7 +2444,6 @@ class TaskExecutor {
     this._pollInProgress = false;
     this._recoveryTimer = null;
     this._inProgressRecoveryInFlight = false;
-    this._inProgressRecovery = createEmptyInProgressRecoverySnapshot();
     this._resolvedProjectId = null;
     this._taskClaimsReady = false;
     this._taskClaimsInitPromise = null;
@@ -2609,8 +2532,6 @@ class TaskExecutor {
     this._listTasksFailureCount = 0;
     this._listTasksBackoffUntil = 0;
     this._listTasksBackoffReason = "";
-    this._listTasksCache = new Map();
-    this._listTasksInflight = new Map();
     // Throttle draft-task filtering log messages (every 5 min max)
     this._lastDraftFilterLogAt = 0;
     this._projectResolveFailureWindowStart = 0;
@@ -2766,9 +2687,6 @@ class TaskExecutor {
       if (Number.isFinite(nextId) && nextId > 0) {
         this._nextAgentInstanceId = Math.floor(nextId);
       }
-      this._inProgressRecovery = normalizeInProgressRecoverySnapshot(
-        parsed?.inProgressRecovery,
-      );
 
       this._repoAreaDispatchCycles = Math.max(
         0,
@@ -3257,50 +3175,46 @@ class TaskExecutor {
         };
       }
 
-      const payloadRecord = {
-        paused: this._paused,
-        pausedAt: this._pausedAt,
-        pauseUntil: this._pauseUntil,
-        pauseReason: this._pauseReason,
-        nextAgentInstanceId: this._nextAgentInstanceId,
-        inProgressRecovery: this._inProgressRecovery,
-        repoAreaParallelLimit: this.repoAreaParallelLimit,
-        repoAreaDispatchCycles: this._repoAreaDispatchCycles,
-        repoAreaConflictCount: this._repoAreaConflictCount,
-        repoAreaFairQueueCursor: this._repoAreaFairQueueCursor,
-        repoAreaLockMetrics: Object.fromEntries(this._repoAreaLockMetrics),
-        repoAreaWorkerMetrics: Object.fromEntries(this._repoAreaWorkerMetrics),
-        repoAreaDispatchCycle: {
-          ...this._repoAreaDispatchCycle,
-          blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
-          saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
-          starvingAreas: [...(this._repoAreaDispatchCycle.starvingAreas || [])],
-          cycleAreaMetrics: { ...this._repoAreaDispatchCycle.cycleAreaMetrics },
-          areaLimits: { ...(this._repoAreaDispatchCycle.areaLimits || {}) },
-        },
-        repoAreaTelemetry: Object.fromEntries(this._repoAreaTelemetry),
-        repoAreaBlockedTasks: Object.fromEntries(this._repoAreaBlockedTasks),
-        repoAreaTaskAreas: Object.fromEntries(this._repoAreaTaskAreas),
-        repoAreaTaskStartedAt: Object.fromEntries(this._repoAreaTaskStartedAt),
-        repoAreaContentionEvents: this._repoAreaContentionEvents.slice(
-          -REPO_AREA_CONTENTION_EVENT_LIMIT,
+      writeFileSync(
+        RUNTIME_STATE_FILE,
+        JSON.stringify(
+          {
+            paused: this._paused,
+            pausedAt: this._pausedAt,
+            pauseUntil: this._pauseUntil,
+            pauseReason: this._pauseReason,
+            nextAgentInstanceId: this._nextAgentInstanceId,
+            repoAreaParallelLimit: this.repoAreaParallelLimit,
+            repoAreaDispatchCycles: this._repoAreaDispatchCycles,
+            repoAreaConflictCount: this._repoAreaConflictCount,
+            repoAreaFairQueueCursor: this._repoAreaFairQueueCursor,
+            repoAreaLockMetrics: Object.fromEntries(this._repoAreaLockMetrics),
+            repoAreaWorkerMetrics: Object.fromEntries(this._repoAreaWorkerMetrics),
+            repoAreaDispatchCycle: {
+              ...this._repoAreaDispatchCycle,
+              blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
+              saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
+              starvingAreas: [...(this._repoAreaDispatchCycle.starvingAreas || [])],
+              cycleAreaMetrics: { ...this._repoAreaDispatchCycle.cycleAreaMetrics },
+              areaLimits: { ...(this._repoAreaDispatchCycle.areaLimits || {}) },
+            },
+            repoAreaTelemetry: Object.fromEntries(this._repoAreaTelemetry),
+            repoAreaBlockedTasks: Object.fromEntries(this._repoAreaBlockedTasks),
+            repoAreaTaskAreas: Object.fromEntries(this._repoAreaTaskAreas),
+            repoAreaTaskStartedAt: Object.fromEntries(this._repoAreaTaskStartedAt),
+            repoAreaContentionEvents: this._repoAreaContentionEvents.slice(
+              -REPO_AREA_CONTENTION_EVENT_LIMIT,
+            ),
+            repoAreaDispatchHistory: this._repoAreaDispatchHistory.slice(-20),
+            repoAreaLockStatus: this._buildRepoAreaLockStatus(),
+            slots,
+            savedAt: new Date().toISOString(),
+          },
+          null,
+          2,
         ),
-        repoAreaDispatchHistory: this._repoAreaDispatchHistory.slice(-20),
-        repoAreaLockStatus: this._buildRepoAreaLockStatus(),
-        slots,
-      };
-      const comparablePayload = JSON.stringify(payloadRecord);
-      if (comparablePayload === this._lastRuntimeStatePayload) return;
-      const payload = JSON.stringify(
-        {
-          ...payloadRecord,
-          savedAt: new Date().toISOString(),
-        },
-        null,
-        2,
+        "utf8",
       );
-      writeFileSync(RUNTIME_STATE_FILE, payload, "utf8");
-      this._lastRuntimeStatePayload = comparablePayload;
     } catch (err) {
       console.warn(`${TAG} failed to save runtime slot state: ${err.message}`);
     }
@@ -4053,73 +3967,10 @@ class TaskExecutor {
     return this._projectResolvePromise;
   }
 
-  _buildListTasksCacheKey(projectId, options = {}) {
-    const normalizedProjectId = String(projectId || "").trim() || "*";
-    const normalizedStatus = String(options?.status || "").trim().toLowerCase() || "*";
-    return `${normalizedProjectId}|${normalizedStatus}`;
-  }
-
-  _storeListTasksCacheEntry(key, tasks) {
-    this._listTasksCache.set(key, {
-      ts: Date.now(),
-      tasks: Array.isArray(tasks) ? tasks : [],
-    });
-    if (this._listTasksCache.size > LIST_TASKS_CACHE_MAX_ENTRIES) {
-      const oldestKey = this._listTasksCache.keys().next().value;
-      if (oldestKey) this._listTasksCache.delete(oldestKey);
-    }
-  }
-
-  async _listTasksCached(projectId, options = {}, ttlMs = LIST_TASKS_CACHE_TTL_MS) {
-    const key = this._buildListTasksCacheKey(projectId, options);
-    const now = Date.now();
-    const cached = this._listTasksCache.get(key);
-    if (cached && now - Number(cached.ts || 0) <= ttlMs) {
-      return cached.tasks;
-    }
-
-    const inflight = this._listTasksInflight.get(key);
-    if (inflight) return inflight;
-
-    const pending = Promise.resolve()
-      .then(() => listTasks(projectId || undefined, options))
-      .then((tasks) => {
-        const normalized = Array.isArray(tasks) ? tasks : [];
-        this._storeListTasksCacheEntry(key, normalized);
-        return normalized;
-      })
-      .finally(() => {
-        this._listTasksInflight.delete(key);
-      });
-
-    this._listTasksInflight.set(key, pending);
-    return pending;
-  }
-
-  async _recoverInterruptedInProgressTasks(trigger = "interval") {
-    const startedAtMs = Date.now();
-    const summary = {
-      trigger,
-      startedAt: new Date(startedAtMs).toISOString(),
-      finishedAt: null,
-      durationMs: 0,
-      scannedCount: 0,
-      availableSlots: 0,
-      resumedCount: 0,
-      resetToTodoCount: 0,
-      reconciledDriftCount: 0,
-      skippedForActiveClaimCount: 0,
-      skippedForNoCommitBlockCount: 0,
-      resetUnstartedCount: 0,
-      staleSharedClaimCount: 0,
-      workflowOwnerlessResetCount: 0,
-      prunedRuntimeCount: 0,
-      failed: false,
-      error: null,
-    };
+  async _recoverInterruptedInProgressTasks() {
     if (!this._running) return;
     if (this._paused) return;
-    if (this._activeSlots.size >= this.maxParallel) return summary;
+    if (this._activeSlots.size >= this.maxParallel) return;
     if (this._shouldBackoffListTasks()) return;
     await ensureThreadRegistryLoaded().catch(() => {
       /* best effort */
@@ -4127,11 +3978,11 @@ class TaskExecutor {
 
     const projectId = await this._ensureResolvedProjectId();
     const requiresProjectId = this._requiresKanbanProjectId();
-    if (requiresProjectId && !projectId) return summary;
+    if (requiresProjectId && !projectId) return;
 
     let inProgressTasks = [];
     try {
-      const fetched = await this._listTasksCached(projectId || undefined, {
+      const fetched = await listTasks(projectId || undefined, {
         status: "inprogress",
       });
       if (Array.isArray(fetched)) {
@@ -4142,15 +3993,10 @@ class TaskExecutor {
       this._resetListTasksBackoff();
     } catch (err) {
       this._noteListTasksFailure(err);
-      return summary;
+      return;
     }
 
-    summary.scannedCount = inProgressTasks.length;
-    if (!inProgressTasks.length) {
-      summary.finishedAt = new Date().toISOString();
-      summary.durationMs = Date.now() - startedAtMs;
-      return summary;
-    }
+    if (!inProgressTasks.length) return;
 
     // Runtime metadata can outlive crashes. Drop stale records that are no
     // longer in-progress so new runs get fresh instance IDs and start times.
@@ -4169,7 +4015,6 @@ class TaskExecutor {
     if (prunedRuntime > 0) {
       this._saveRuntimeState();
     }
-    summary.prunedRuntimeCount = prunedRuntime;
 
     const activeThreads = new Set(
       getActiveThreads()
@@ -4181,12 +4026,7 @@ class TaskExecutor {
       : new Set();
 
     const available = Math.max(0, this.maxParallel - this._activeSlots.size);
-    summary.availableSlots = available;
-    if (available === 0) {
-      summary.finishedAt = new Date().toISOString();
-      summary.durationMs = Date.now() - startedAtMs;
-      return summary;
-    }
+    if (available === 0) return;
 
     /** @type {Array<Object>} */
     const resumable = [];
@@ -4195,8 +4035,6 @@ class TaskExecutor {
     let skippedForActiveClaim = 0;
     let skippedForNoCommitBlock = 0;
     let resetUnstarted = 0;
-    let staleSharedClaimCount = 0;
-    let workflowOwnerlessResetCount = 0;
 
     for (const task of inProgressTasks) {
       const id = normalizeTaskIdKey(task?.id || task?.task_id);
@@ -4245,7 +4083,6 @@ class TaskExecutor {
               }
             }
             hasStaleSharedClaim = true;
-            staleSharedClaimCount++;
           }
         } catch {
           /* best effort */
@@ -4346,7 +4183,6 @@ class TaskExecutor {
           }
           this._removeRuntimeSlot(id);
           resetToTodo++;
-          workflowOwnerlessResetCount++;
           continue;
         }
         try {
@@ -4367,7 +4203,6 @@ class TaskExecutor {
         }
         this._removeRuntimeSlot(id);
         resetToTodo++;
-        workflowOwnerlessResetCount++;
         continue;
       }
 
@@ -4437,17 +4272,6 @@ class TaskExecutor {
             : ""),
       );
     }
-    summary.resumedCount = toDispatch.length;
-    summary.resetToTodoCount = resetToTodo;
-    summary.reconciledDriftCount = reconciledDrift;
-    summary.skippedForActiveClaimCount = skippedForActiveClaim;
-    summary.skippedForNoCommitBlockCount = skippedForNoCommitBlock;
-    summary.resetUnstartedCount = resetUnstarted;
-    summary.staleSharedClaimCount = staleSharedClaimCount;
-    summary.workflowOwnerlessResetCount = workflowOwnerlessResetCount;
-    summary.finishedAt = new Date().toISOString();
-    summary.durationMs = Date.now() - startedAtMs;
-    return summary;
   }
 
   _readActiveWorkflowTaskIds() {
@@ -4496,41 +4320,6 @@ class TaskExecutor {
     return taskIds;
   }
 
-  _recordInProgressRecoveryRun(run) {
-    const normalized = normalizeInProgressRecoveryRun(run);
-    const hasActivity =
-      normalized.failed ||
-      normalized.scannedCount > 0 ||
-      normalized.resumedCount > 0 ||
-      normalized.resetToTodoCount > 0 ||
-      normalized.reconciledDriftCount > 0 ||
-      normalized.skippedForActiveClaimCount > 0 ||
-      normalized.skippedForNoCommitBlockCount > 0 ||
-      normalized.staleSharedClaimCount > 0 ||
-      normalized.workflowOwnerlessResetCount > 0;
-    if (!hasActivity && normalized.trigger !== "startup") {
-      return;
-    }
-
-    const current = normalizeInProgressRecoverySnapshot(this._inProgressRecovery);
-    current.totals.runs += 1;
-    if (normalized.failed) current.totals.failures += 1;
-    current.totals.resumed += normalized.resumedCount;
-    current.totals.resetToTodo += normalized.resetToTodoCount;
-    current.totals.reconciledDrift += normalized.reconciledDriftCount;
-    current.totals.skippedForActiveClaim += normalized.skippedForActiveClaimCount;
-    current.totals.skippedForNoCommitBlock += normalized.skippedForNoCommitBlockCount;
-    current.totals.resetUnstarted += normalized.resetUnstartedCount;
-    current.totals.staleSharedClaim += normalized.staleSharedClaimCount;
-    current.totals.workflowOwnerlessReset += normalized.workflowOwnerlessResetCount;
-    current.lastRun = normalized;
-    current.recentRuns = [...current.recentRuns, normalized].slice(
-      -INPROGRESS_RECOVERY_HISTORY_LIMIT,
-    );
-    this._inProgressRecovery = current;
-    this._saveRuntimeState();
-  }
-
   /**
    * Returns the current executor status for monitoring / Telegram.
    * @returns {Object}
@@ -4571,7 +4360,6 @@ class TaskExecutor {
       taskTimeoutMs: this.taskTimeoutMs,
       maxRetries: this.maxRetries,
       projectId: this._resolvedProjectId || this.projectId || null,
-      inProgressRecovery: normalizeInProgressRecoverySnapshot(this._inProgressRecovery),
       backlogReplenishment: { ...this._backlogReplenishment },
       repoAreaLocks: this._buildRepoAreaLockStatus(),
       projectRequirements: { ...this._projectRequirements },
@@ -4593,21 +4381,6 @@ class TaskExecutor {
       tokensOut: tokenTotals.tokensOut,
       tokensTotal: tokenTotals.tokensTotal || (tokenTotals.tokensIn + tokenTotals.tokensOut),
       rateLimits: {},
-      recovery: normalizeInProgressRecoverySnapshot(this._inProgressRecovery),
-      executor: {
-        mode: this.mode,
-        paused: this._paused,
-        activeSlots: this._activeSlots.size,
-        maxParallel: this.maxParallel,
-        slots: Array.from(this._activeSlots.values()).map((slot) => ({
-          taskId: slot.taskId,
-          taskTitle: slot.taskTitle,
-          sdk: slot.sdk,
-          model: slot.model || "",
-          status: slot.status,
-          runningFor: Math.round((Date.now() - slot.startedAt) / 1000),
-        })),
-      },
     };
   }
 
@@ -5819,7 +5592,7 @@ class TaskExecutor {
       return { completed: false, reason: "project_not_found", createdCount: 0 };
     }
 
-    const tasks = await this._listTasksCached(projectId || undefined);
+    const tasks = await listTasks(projectId || undefined);
     const allTasks = Array.isArray(tasks) ? tasks : [];
     const sinceMs = parseTaskTimestamp(task) || Date.now();
     const candidates = allTasks.filter((candidate) => {
@@ -5871,16 +5644,8 @@ class TaskExecutor {
     if (this._inProgressRecoveryInFlight) return;
     this._inProgressRecoveryInFlight = true;
     try {
-      const summary = await this._recoverInterruptedInProgressTasks(trigger);
-      this._recordInProgressRecoveryRun(summary);
+      await this._recoverInterruptedInProgressTasks();
     } catch (err) {
-      this._recordInProgressRecoveryRun({
-        trigger,
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
-        failed: true,
-        error: err?.message || String(err),
-      });
       console.warn(
         `${TAG} in-progress recovery warning (${trigger}): ${err?.message || err}`,
       );
@@ -6563,3 +6328,4 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+

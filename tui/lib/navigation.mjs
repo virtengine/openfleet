@@ -1,20 +1,17 @@
-const SCREEN_ORDER = ["status", "tasks", "agents", "logs"];
-const EXTENDED_SCREEN_ORDER = [...SCREEN_ORDER, "workflows", "telemetry", "settings"];
+const SCREEN_ORDER = ["status", "tasks", "agents", "telemetry", "logs"];
 const SCREEN_BY_INPUT = new Map([
   ["1", "status"],
   ["2", "tasks"],
   ["3", "agents"],
-  ["4", "logs"],
-  ["5", "workflows"],
-  ["6", "telemetry"],
-  ["7", "settings"],
+  ["4", "telemetry"],
+  ["5", "logs"],
 ]);
 
 export function getNextScreenForInput(currentScreen = "status", input = "") {
   const next = SCREEN_BY_INPUT.get(String(input || "").trim());
   if (next) return next;
-  if (EXTENDED_SCREEN_ORDER.includes(currentScreen)) return currentScreen;
+  if (SCREEN_ORDER.includes(currentScreen)) return currentScreen;
   return "status";
 }
 
-export { SCREEN_ORDER, EXTENDED_SCREEN_ORDER };
+export { SCREEN_ORDER };

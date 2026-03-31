@@ -13,8 +13,6 @@ describe("fleet-coordinator", () => {
   });
 
   afterEach(async () => {
-    const { resetStateLedgerCache } = await import("../lib/state-ledger-sqlite.mjs");
-    resetStateLedgerCache();
     if (tempRoot) {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = null;
@@ -239,69 +237,6 @@ describe("fleet-coordinator", () => {
       // Should prefer ws-2 because it has "veid" capability
       expect(result.assignments[0].assignedTo).toBe("ws-2");
     });
-
-    it("prefers same-team peers for coordinated tasks", () => {
-      const waves = [["t1"]];
-      const peers = [
-        { instance_id: "ws-1", instance_label: "worker-a", teamId: "team-alpha" },
-        { instance_id: "ws-2", instance_label: "worker-b", teamId: "team-beta" },
-      ];
-      const taskMap = new Map([[
-        "t1",
-        {
-          id: "t1",
-          title: "alpha task",
-          coordinationTeamId: "team-beta",
-        },
-      ]]);
-
-      const result = assignTasksToWorkstations(waves, peers, taskMap);
-
-      expect(result.assignments[0].assignedTo).toBe("ws-2");
-      expect(result.assignments[0].assignmentReasons).toContain("team-match");
-    });
-
-    it("prefers matching coordination roles ahead of round-robin defaults", () => {
-      const waves = [["t1"]];
-      const peers = [
-        { instance_id: "ws-1", instance_label: "general-worker", workspace_role: "worker" },
-        { instance_id: "ws-2", instance_label: "review-bot", team_role: "reviewer" },
-      ];
-      const taskMap = new Map([[
-        "t1",
-        {
-          id: "t1",
-          title: "review task",
-          coordinationRole: "reviewer",
-        },
-      ]]);
-
-      const result = assignTasksToWorkstations(waves, peers, taskMap);
-
-      expect(result.assignments[0].assignedTo).toBe("ws-2");
-      expect(result.assignments[0].assignmentReasons).toContain("role-match");
-    });
-
-    it("prefers peers in the expected reports-to chain", () => {
-      const waves = [["t1"]];
-      const peers = [
-        { instance_id: "ws-1", instance_label: "impl-a", reports_to: "planner-a" },
-        { instance_id: "ws-2", instance_label: "impl-b", reports_to: "planner-b" },
-      ];
-      const taskMap = new Map([[
-        "t1",
-        {
-          id: "t1",
-          title: "planned task",
-          coordinationReportsTo: "planner-b",
-        },
-      ]]);
-
-      const result = assignTasksToWorkstations(waves, peers, taskMap);
-
-      expect(result.assignments[0].assignedTo).toBe("ws-2");
-      expect(result.assignments[0].assignmentReasons).toContain("reports-to-match");
-    });
   });
 
   describe("calculateBacklogDepth", () => {
@@ -427,8 +362,6 @@ describe("shared-knowledge", () => {
   });
 
   afterEach(async () => {
-    const { resetStateLedgerCache } = await import("../lib/state-ledger-sqlite.mjs");
-    resetStateLedgerCache();
     if (tempRoot) {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = null;
@@ -805,96 +738,6 @@ Always use deterministic TF ops.
       expect(briefing).toContain("[run]");
       expect(briefing).toContain("[workspace]");
       expect(briefing).not.toContain("[team]");
-    });
-
-    it("retrieves memories from the SQL ledger even when the JSON registry is missing", async () => {
-      const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
-      const {
-        listKnowledgeEntriesFromStateLedger,
-      } = await import("../lib/state-ledger-sqlite.mjs");
-
-      const result = await appendKnowledgeEntry(buildKnowledgeEntry({
-        content: "Workspace memory: reset fixtures before retrying browser login flows.",
-        scope: "testing",
-        scopeLevel: "workspace",
-        teamId: "team-a",
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        runId: "run-1",
-        agentId: "agent-workspace",
-      }));
-      expect(result.success).toBe(true);
-
-      await rm(registryPath, { force: true });
-
-      const retrieved = await retrieveKnowledgeEntries({
-        repoRoot: tempRoot,
-        teamId: "team-a",
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        runId: "run-1",
-        query: "retry browser login fixtures",
-        limit: 5,
-      });
-
-      expect(retrieved).toEqual([
-        expect.objectContaining({
-          content: "Workspace memory: reset fixtures before retrying browser login flows.",
-          scopeLevel: "workspace",
-        }),
-      ]);
-      expect(listKnowledgeEntriesFromStateLedger({ repoRoot: tempRoot, workspaceId: "workspace-1" })).toEqual([
-        expect.objectContaining({
-          content: "Workspace memory: reset fixtures before retrying browser login flows.",
-        }),
-      ]);
-    });
-
-    it("backfills legacy JSON registry memories into the SQL ledger on retrieval", async () => {
-      const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
-      const {
-        listKnowledgeEntriesFromStateLedger,
-      } = await import("../lib/state-ledger-sqlite.mjs");
-
-      const legacyEntry = buildKnowledgeEntry({
-        content: "Workspace memory: seed deterministic data before replaying flaky workflows.",
-        scope: "testing",
-        scopeLevel: "workspace",
-        teamId: "team-a",
-        workspaceId: "workspace-1",
-        sessionId: "session-legacy",
-        runId: "run-legacy",
-        agentId: "agent-legacy",
-      });
-      await mkdir(resolve(tempRoot, ".cache", "bosun"), { recursive: true });
-      await writeFile(registryPath, JSON.stringify({
-        version: "1.0.0",
-        updatedAt: legacyEntry.timestamp,
-        entries: [legacyEntry],
-      }, null, 2), "utf8");
-
-      const retrieved = await retrieveKnowledgeEntries({
-        repoRoot: tempRoot,
-        teamId: "team-a",
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        runId: "run-1",
-        query: "deterministic replay workflows",
-        limit: 5,
-      });
-
-      expect(retrieved).toEqual([
-        expect.objectContaining({
-          content: "Workspace memory: seed deterministic data before replaying flaky workflows.",
-          scopeLevel: "workspace",
-        }),
-      ]);
-      expect(listKnowledgeEntriesFromStateLedger({ repoRoot: tempRoot, workspaceId: "workspace-1" })).toEqual([
-        expect.objectContaining({
-          content: "Workspace memory: seed deterministic data before replaying flaky workflows.",
-          hash: legacyEntry.hash,
-        }),
-      ]);
     });
   });
 

@@ -8,8 +8,6 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlink
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { executeAnnotationAudit } from "./manual-flow-audit.mjs";
-import { resolveResearchEvidenceSidecarConfig } from "./research-evidence-sidecar.mjs";
-import { RESEARCH_EVIDENCE_AGENT_TEMPLATE } from "../workflow-templates/research-evidence.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -384,68 +382,6 @@ export const BUILTIN_FLOW_TEMPLATES = [
         type: "toggle",
         defaultValue: true,
         helpText: "Run a web search for relevant papers before generating a solution.",
-      },
-      {
-        id: "useEvidenceSidecar",
-        label: "Use Evidence Sidecar",
-        type: "toggle",
-        defaultValue: true,
-        helpText:
-          "Build a structured scientific evidence bundle before generation. " +
-          "Bosun remains the orchestrator; only reviewed findings are promoted into shared knowledge.",
-      },
-      {
-        id: "evidenceMode",
-        label: "Evidence Mode",
-        type: "select",
-        defaultValue: "answer",
-        options: [
-          { label: "Answer Grounding", value: "answer" },
-          { label: "Summarize Evidence", value: "summarize" },
-          { label: "Contradiction Detection", value: "contradictions" },
-          { label: "Evidence Inventory Only", value: "evidence-only" },
-        ],
-        required: true,
-        helpText: "Controls how the scientific evidence bundle is assembled and prioritized.",
-      },
-      {
-        id: "corpusPaths",
-        label: "Evidence Corpus Paths",
-        type: "textarea",
-        placeholder: "docs/research\npapers/notes.md",
-        defaultValue: "",
-        required: false,
-        helpText:
-          "Optional newline- or comma-separated local text sources. PDFs remain excluded from the Bosun context index; " +
-          "use sidecar-ready text or extracted notes here instead.",
-      },
-      {
-        id: "maxEvidenceSources",
-        label: "Max Evidence Sources",
-        type: "number",
-        defaultValue: 6,
-        required: false,
-        helpText: "Maximum evidence items retained in the sidecar bundle (1-20).",
-      },
-      {
-        id: "promoteReviewedFindings",
-        label: "Promote Reviewed Findings",
-        type: "toggle",
-        defaultValue: true,
-        helpText:
-          "When verification returns CORRECT, write a concise reviewed finding into shared knowledge. " +
-          "Raw sidecar artifacts stay outside shared knowledge.",
-      },
-      {
-        id: "sidecarCommand",
-        label: "External Sidecar Command",
-        type: "text",
-        placeholder: "uv run ace-sidecar --mode research",
-        defaultValue: "",
-        required: false,
-        helpText:
-          "Optional command that reads JSON from stdin and returns structured evidence JSON. " +
-          "Leave blank to use Bosun-local evidence bundling only.",
       },
       {
         id: "executionMode",
@@ -1228,26 +1164,17 @@ async function executeContextIndexFull(formValues, rootDir, _context = {}) {
 }
 
 async function executeResearchAgent(formValues, rootDir, context = {}) {
-  const researchConfig = resolveResearchAgentConfig(formValues, rootDir);
-  const {
-    problem,
-    domain,
-    maxIterations,
-    searchLiterature,
-    executionMode,
-    useEvidenceSidecar,
-  } = researchConfig;
+  const researchConfig = resolveResearchAgentConfig(formValues);
+  const { problem, domain, maxIterations, searchLiterature, executionMode } = researchConfig;
 
   if (executionMode === "task") {
     const taskDescription = buildResearchTaskDescription(researchConfig);
     if (context.taskManager && typeof context.taskManager.createTask === "function") {
       const task = await context.taskManager.createTask({
-        title: `research: ${useEvidenceSidecar ? "evidence-backed" : "iterative"} agent (${domain})`,
+        title: `research: iterative agent (${domain})`,
         description: taskDescription,
         priority: "high",
-        labels: useEvidenceSidecar
-          ? ["research", "verification-loop", "scientific-evidence", "aletheia"]
-          : ["research", "verification-loop", "aletheia"],
+        labels: ["research", "verification-loop", "aletheia"],
       });
       return {
         mode: "task-dispatched",
@@ -1256,8 +1183,6 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
         domain,
         maxIterations,
         searchLiterature,
-        useEvidenceSidecar,
-        evidenceMode: researchConfig.evidenceMode,
       };
     }
     return buildResearchInstructionsResult(
@@ -1274,11 +1199,13 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
     );
   }
 
-  const templateId = useEvidenceSidecar
-    ? ensureTemplateWorkflowInstalled(engine, RESEARCH_EVIDENCE_AGENT_TEMPLATE)
-    : await ensureBundledTemplateInstalled(engine, "template-research-agent");
+  const { installTemplate } = await import("./workflow-templates.mjs");
+  const templateId = "template-research-agent";
+  if (!engine.get(templateId)) {
+    installTemplate(templateId, engine);
+  }
 
-  const input = buildResearchWorkflowInput(researchConfig, rootDir, context);
+  const input = buildResearchWorkflowInput(researchConfig);
 
   Promise.resolve()
     .then(() => engine.execute(templateId, input, { force: true, triggerSource: "manual" }))
@@ -1294,13 +1221,11 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
     domain,
     maxIterations,
     searchLiterature,
-    useEvidenceSidecar,
-    evidenceMode: researchConfig.evidenceMode,
     triggerSource: "manual",
   };
 }
 
-function resolveResearchAgentConfig(formValues, rootDir = process.cwd()) {
+function resolveResearchAgentConfig(formValues) {
   const problem = String(formValues?.problem || "").trim();
   if (!problem) {
     throw new Error("Research problem is required.");
@@ -1311,49 +1236,18 @@ function resolveResearchAgentConfig(formValues, rootDir = process.cwd()) {
   const maxIterations = Number.isFinite(maxIterationsRaw)
     ? Math.min(50, Math.max(1, Math.floor(maxIterationsRaw)))
     : 10;
-  const useEvidenceSidecar = parseManualFlowBoolean(formValues?.useEvidenceSidecar, true);
-  const evidenceConfig = resolveResearchEvidenceSidecarConfig({
-    repoRoot: rootDir,
-    problem,
-    domain,
-    evidenceMode: formValues?.evidenceMode,
-    maxEvidenceSources: formValues?.maxEvidenceSources,
-    corpusPaths: formValues?.corpusPaths,
-    searchLiterature: formValues?.searchLiterature,
-    promoteReviewedFindings: formValues?.promoteReviewedFindings,
-    sidecarCommand: formValues?.sidecarCommand,
-    triggerSource: "manual",
-  });
 
   return {
     problem,
     domain,
     maxIterations,
-    searchLiterature: evidenceConfig.searchLiterature,
+    searchLiterature: formValues?.searchLiterature !== false,
     executionMode: String(formValues?.executionMode || "workflow").trim().toLowerCase(),
-    useEvidenceSidecar,
-    evidenceMode: evidenceConfig.evidenceMode,
-    corpusPaths: evidenceConfig.corpusPaths,
-    maxEvidenceSources: evidenceConfig.maxEvidenceSources,
-    promoteReviewedFindings: evidenceConfig.promoteReviewedFindings,
-    sidecarCommand: evidenceConfig.sidecarCommand,
   };
 }
 
-function buildResearchTaskDescription(config) {
-  const {
-    problem,
-    domain,
-    maxIterations,
-    searchLiterature,
-    useEvidenceSidecar,
-    evidenceMode,
-    corpusPaths,
-    maxEvidenceSources,
-    promoteReviewedFindings,
-    sidecarCommand,
-  } = config;
-  const baseDescription = (
+function buildResearchTaskDescription({ problem, domain, maxIterations, searchLiterature }) {
+  return (
     `Run iterative research for the following problem:\n\n` +
     `${problem}\n\n` +
     `Domain: ${domain}\n` +
@@ -1362,126 +1256,28 @@ function buildResearchTaskDescription(config) {
     `Use a generate -> verify -> revise loop. If verification identifies critical flaws, ` +
     `regenerate from a fundamentally different approach.`
   );
-  if (!useEvidenceSidecar) {
-    return baseDescription;
-  }
-  const corpusLine = corpusPaths.length > 0
-    ? `Evidence corpus paths: ${corpusPaths.join(", ")}\n`
-    : "Evidence corpus paths: (none provided)\n";
-  const externalLine = sidecarCommand
-    ? `External sidecar command: ${sidecarCommand}\n`
-    : "External sidecar command: Bosun-local evidence bundling only\n";
-  return (
-    `${baseDescription}\n\n` +
-    `Use the Bosun scientific evidence sidecar before generation.\n` +
-    `Evidence mode: ${evidenceMode}\n` +
-    `Max evidence sources: ${maxEvidenceSources}\n` +
-    `${corpusLine}` +
-    `Promote reviewed findings: ${promoteReviewedFindings}\n` +
-    `${externalLine}` +
-    `Only write back reviewed findings after verification returns CORRECT.`
-  );
 }
 
-function buildResearchInstructionsResult(config, instructions) {
-  const {
-    problem,
-    domain,
-    maxIterations,
-    searchLiterature,
-    useEvidenceSidecar,
-    evidenceMode,
-    corpusPaths,
-    maxEvidenceSources,
-    promoteReviewedFindings,
-    sidecarCommand,
-  } = config;
+function buildResearchInstructionsResult({ problem, domain, maxIterations, searchLiterature }, instructions) {
   return {
     mode: "instructions",
     problem,
     domain,
     maxIterations,
     searchLiterature,
-    useEvidenceSidecar,
-    evidenceMode,
-    corpusPaths,
-    maxEvidenceSources,
-    promoteReviewedFindings,
-    sidecarCommand,
     instructions,
   };
 }
 
-function parseManualFlowBoolean(value, fallback = false) {
-  if (typeof value === "boolean") return value;
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (!normalized) return fallback;
-  if (["1", "true", "yes", "on", "y"].includes(normalized)) return true;
-  if (["0", "false", "no", "off", "n"].includes(normalized)) return false;
-  return fallback;
-}
-
-function buildResearchWorkflowInput(config, rootDir, context = {}) {
-  const {
-    problem,
-    domain,
-    maxIterations,
-    searchLiterature,
-    useEvidenceSidecar,
-    evidenceMode,
-    corpusPaths,
-    maxEvidenceSources,
-    promoteReviewedFindings,
-    sidecarCommand,
-  } = config;
+function buildResearchWorkflowInput({ problem, domain, maxIterations, searchLiterature }) {
   return {
-    repoRoot: rootDir,
-    workspaceId: String(context?.runMetadata?.workspaceId || "").trim(),
-    taskId: String(context?.taskId || "").trim(),
-    runId: String(context?.runId || "").trim(),
     problem,
     domain,
     maxIterations,
     searchLiterature,
-    useEvidenceSidecar,
-    evidenceMode,
-    corpusPaths,
-    maxEvidenceSources,
-    promoteReviewedFindings,
-    sidecarCommand,
-    iterationCount: 0,
-    currentDraft: "",
     _previousFeedback: "",
     triggerSource: "manual",
   };
-}
-
-async function ensureBundledTemplateInstalled(engine, templateId) {
-  const existing = engine.get(templateId);
-  if (existing) return existing.id || templateId;
-  const { installTemplate } = await import("./workflow-templates.mjs");
-  const installed = installTemplate(templateId, engine);
-  return installed?.id || templateId;
-}
-
-function ensureTemplateWorkflowInstalled(engine, templateDefinition) {
-  const templateId = String(templateDefinition?.id || "").trim();
-  if (!templateId) {
-    throw new Error("Research evidence template is missing an id.");
-  }
-  const existing = engine.get(templateId);
-  if (existing) return existing.id || templateId;
-
-  const definition = JSON.parse(JSON.stringify(templateDefinition));
-  definition.id = templateId;
-  definition.enabled = true;
-  definition.metadata = {
-    ...(definition.metadata || {}),
-    installedFrom: templateId,
-    templateSource: "manual-flow-local",
-  };
-  const saved = engine.save(definition);
-  return saved?.id || templateId;
 }
 
 /** Executor for user-created custom templates. */

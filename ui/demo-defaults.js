@@ -15,11 +15,10 @@
         "pr",
         "handoff",
         "progression",
-        "event-driven",
-        "worktree-managed"
+        "event-driven"
       ],
-      "nodeCount": 22,
-      "edgeCount": 25,
+      "nodeCount": 13,
+      "edgeCount": 16,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.workflow_call",
@@ -32,22 +31,15 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 6,
-        "createdAt": "2026-03-30T00:00:00Z",
-        "templateVersion": "6.0.0",
+        "version": 1,
+        "createdAt": "2026-03-13T00:00:00Z",
+        "templateVersion": "1.0.0",
         "tags": [
           "github",
           "pr",
           "handoff",
           "progression",
-          "event-driven",
-          "worktree-managed"
-        ],
-        "changelog": [
-          "v6.0: Set _agentWorkflowActive to prevent delegation to Backend Agent.",
-          "v5.0: Set _agentWorkflowActive to prevent delegation to Backend Agent.",
-          "v3.0: Structured agent prompt with Fix Summary, specific conflict files, CI diagnostics, and actionable review signals — matching human-quality context.",
-          "v2.0: Programmatic worktree setup + push. Agent no longer manages git state directly — fixes the live-pr-XXX synthetic branch problem."
+          "event-driven"
         ]
       },
       "nodes": [
@@ -102,7 +94,7 @@
           "label": "Normalize PR Context",
           "config": {
             "key": "prProgressContext",
-            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
+            "value": "(() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
             "isExpression": true
           },
           "position": {
@@ -207,223 +199,20 @@
           ]
         },
         {
-          "id": "resolve-pr-params",
-          "type": "action.set_variable",
-          "label": "Resolve PR Parameters",
-          "config": {
-            "key": "prParams",
-            "value": "(()=>{const raw=$ctx?.getNodeOutput?.('inspect-pr')?.output||'{}';const d=typeof raw==='object'?raw:(()=>{try{return JSON.parse(raw)}catch{return {}}})();const ctx=$data?.prProgressContext||{};return {repo:String(d.repo||d.prDigest?.core?.repo||ctx.repo||''),branch:String(d.branch||d.prDigest?.core?.branch||ctx.branch||''),base:String(d.baseBranch||d.prDigest?.core?.baseBranch||ctx.baseBranch||'main'),number:String(d.prNumber||d.prDigest?.core?.number||ctx.prNumber||'0'),classification:String(d.classification||''),mergeable:String(d.mergeable||d.prDigest?.core?.mergeable||'')};})()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 220,
-            "y": 850
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-pr-worktree",
-          "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-progfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
-            ],
-            "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
-            "env": {
-              "PR_REPO": "{{prParams.repo}}",
-              "PR_BRANCH": "{{prParams.branch}}",
-              "PR_BASE": "{{prParams.base}}",
-              "PR_NUMBER": "{{prParams.number}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 880
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-pr-worktree-path",
-          "type": "action.set_variable",
-          "label": "Set Agent Working Directory",
-          "config": {
-            "key": "worktreePath",
-            "value": "{{setup-pr-worktree.output.worktreePath}}"
-          },
-          "position": {
-            "x": 220,
-            "y": 920
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "detect-pr-conflicts",
-          "type": "action.run_command",
-          "label": "Detect Merge Conflict Files",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const classification=String(process.env.CLASSIFICATION||'').trim(); const mergeable=String(process.env.MERGEABLE||'').trim().toUpperCase(); if(!wt){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);} const isConflict=classification==='conflict'||['CONFLICTING','DIRTY'].includes(mergeable); if(!isConflict){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);} let mergeOutput=''; let conflictFiles=[]; try{   try{mergeOutput=execFileSync('git',['merge','--no-commit','--no-ff','origin/'+base],{cwd:wt,encoding:'utf8',timeout:60000}).toString();}   catch(e){mergeOutput=String(e?.stderr||'')+' '+String(e?.stdout||'');}   try{     const diffFiles=execFileSync('git',['diff','--name-only','--diff-filter=U'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(diffFiles){conflictFiles=diffFiles.split(/\\r?\\n/).map(f=>f.trim()).filter(Boolean);}   }catch{}   if(conflictFiles.length===0){     const matches=mergeOutput.match(/CONFLICT[^:]*:\\s*Merge conflict in (.+)/gi)||[];     conflictFiles=matches.map(m=>{const f=m.match(/in\\s+(.+)/i);return f?f[1].trim():'';}).filter(Boolean);   }   try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{} }catch(e){   try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{}   console.log(JSON.stringify({hasConflicts:false,conflictFiles:[],error:String(e?.message||e).slice(0,500)}));   process.exit(0); } console.log(JSON.stringify({hasConflicts:conflictFiles.length>0,conflictFiles:[...new Set(conflictFiles)],mergeOutput:String(mergeOutput||'').slice(0,2000)}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 120000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-pr-worktree.output.worktreePath}}",
-              "PR_BASE": "{{prParams.base}}",
-              "CLASSIFICATION": "{{prParams.classification}}",
-              "MERGEABLE": "{{prParams.mergeable}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-fix-prompt",
-          "type": "action.set_variable",
-          "label": "Build Structured Fix Prompt",
-          "config": {
-            "key": "agentPrompt",
-            "value": "(()=>{\n  const inspectRaw = $ctx?.getNodeOutput?.('inspect-pr')?.output || '{}';\n  const fixRaw = $ctx?.getNodeOutput?.('programmatic-fix')?.output || '{}';\n  const conflictRaw = $ctx?.getNodeOutput?.('detect-pr-conflicts')?.output || '{}';\n  const inspect = (()=>{ try { return typeof inspectRaw === 'object' ? inspectRaw : JSON.parse(inspectRaw); } catch { return {}; } })();\n  const fix = (()=>{ try { return typeof fixRaw === 'object' ? fixRaw : JSON.parse(fixRaw); } catch { return {}; } })();\n  const conflictDetection = (()=>{ try { return typeof conflictRaw === 'object' ? conflictRaw : JSON.parse(conflictRaw); } catch { return {}; } })();\n  const prDigest = inspect.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(inspect.repo || core.repo || $data?.prProgressContext?.repo || '');\n  const branch = String(inspect.branch || core.branch || $data?.prProgressContext?.branch || '');\n  const base = String(inspect.baseBranch || core.baseBranch || $data?.prProgressContext?.baseBranch || 'main');\n  const number = String(inspect.prNumber || core.number || $data?.prProgressContext?.prNumber || '');\n  const title = String(inspect.title || core.title || $data?.prProgressContext?.taskTitle || '');\n  const url = String(inspect.url || core.url || $data?.prProgressContext?.prUrl || '');\n  const classification = String(inspect.classification || '');\n  const reason = String(fix.reason || classification || '');\n  const mergeable = String(inspect.mergeable || core.mergeable || '');\n  const failedChecks = Array.isArray(inspect.failedCheckNames) ? inspect.failedCheckNames : [];\n  const failedJobs = Array.isArray(fix.failedJobs) ? fix.failedJobs : [];\n  const annotations = Array.isArray(fix.failedAnnotations) ? fix.failedAnnotations : [];\n  const logExcerpt = String(fix.failedLogExcerpt || '').trim();\n  const recentRuns = Array.isArray(fix.recentRuns) ? fix.recentRuns : [];\n  const ciSummary = prDigest.ciSummary || inspect.ciSummary || {};\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n';\n  p += '- **Fix Reason**: `' + reason + '`\\n';\n  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n  if (fix.error) p += '- **Error**: ' + fix.error + '\\n';\n  p += '\\n';\n  /* --- Fix Summary --- */\n  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n  const fixItems = [];\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base `' + base + '`'));\n  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n  if (fixItems.length > 0) {\n    p += '## Fix Summary\\n\\nThis PR needs the following fixes:\\n';\n    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n    p += '\\n';\n  }\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) {\n    p += '## Merge Conflict\\n\\n';\n    p += 'This branch has conflicts that must be resolved.\\n';\n    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n    if (detectedConflictFiles.length > 0) {\n      p += '**Conflicting files:**\\n';\n      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n      p += '\\n';\n    }\n  }\n  if (failedChecks.length > 0) {\n    p += '## Failed CI Checks\\n\\n';\n    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n    p += '## CI Check Summary\\n\\n';\n    p += 'Total: ' + (ciSummary.total||0) + ' | Failing: ' + (ciSummary.failing||0) + ' | Pending: ' + (ciSummary.pending||0) + ' | Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n  }\n  if (fix.failedRun) {\n    const run = fix.failedRun;\n    p += '## Failed Workflow Run\\n\\n';\n    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n    p += '- **Run ID**: ' + run.databaseId + '\\n';\n    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n    if (run.url) p += '- **URL**: ' + run.url + '\\n';\n    p += '\\n';\n  }\n  if (failedJobs.length > 0) {\n    p += '## Failed Jobs\\n\\n';\n    failedJobs.slice(0,8).forEach(job => {\n      p += '### ' + (job.name||'unknown') + '\\n';\n      p += '- Conclusion: ' + job.conclusion + '\\n';\n      if (job.url) p += '- URL: ' + job.url + '\\n';\n      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n      }\n      p += '\\n';\n    });\n  }\n  if (annotations.length > 0) {\n    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n    annotations.slice(0,6).forEach(annot => {\n      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n        p += '**Job: ' + (annot.name||'') + '**\\n';\n        annot.annotations.slice(0,15).forEach(a => {\n          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n        });\n        p += '\\n';\n      }\n    });\n  }\n  if (logExcerpt) {\n    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n    p += '## Reviews & Inline Comments\\n\\n';\n    reviewsWithBody.slice(0,5).forEach(r => {\n      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n    });\n    if (reviewComments.length > 0) {\n      p += 'Inline comments:\\n';\n      reviewComments.slice(0,12).forEach(c => {\n        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n      });\n      p += '\\n';\n    }\n  }\n  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n  if (issueCommentsWithBody.length > 0) {\n    p += '## Issue Comments\\n\\n';\n    issueCommentsWithBody.slice(0,5).forEach(c => {\n      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n    });\n  }\n  return p;\n})()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 220,
-            "y": 950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-active",
-          "type": "action.set_variable",
-          "label": "Mark Agent Workflow Active",
-          "config": {
-            "key": "_agentWorkflowActive",
-            "value": "true",
-            "isExpression": true
-          },
-          "position": {
-            "x": 220,
-            "y": 980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "dispatch-fix-agent",
           "type": "action.run_agent",
           "label": "Dispatch Focused Fix Agent",
           "config": {
-            "prompt": "{{agentPrompt}}\n\n## Workspace\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-pr-worktree.output.branch}}`). The base branch (`origin/{{setup-pr-worktree.output.base}}`) has been fetched.\n\n## CRITICAL RULES — READ BEFORE DOING ANYTHING\n\n1. **Do NOT clone or re-clone the repo** — you are already in it.\n2. **Do NOT create new branches.** Stay on the current branch.\n3. **Do NOT push.** The workflow pushes for you automatically after you finish.\n4. **Do NOT switch branches** with `git checkout` or `git switch`.\n5. **Do NOT run `cd` to change to a different directory.** Stay in the cwd.\n6. Fix ONLY the specific issues listed in the Fix Summary above.\n7. Do NOT merge, approve, or close the PR.\n8. Do NOT touch any other PRs or repos.\n\n## Fix Instructions\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\nUse the PR digest (CI diagnostics, log excerpts, annotations, reviews) above to identify the root cause and apply the MINIMAL fix.\n\n- For merge conflicts: `git merge origin/{{setup-pr-worktree.output.base}}` and resolve.\n- For CI failures: study the error output and apply the MINIMAL code fix.\n- For review feedback: address each comment precisely.\n- After fixing, remove the label:\n  `gh pr edit {{setup-pr-worktree.output.number}} --repo {{setup-pr-worktree.output.repo}} --remove-label bosun-needs-fix`\n",
+            "prompt": "You are a Bosun PR repair fallback agent working one PR only.\n\nPR context:\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\nRepair attempt output:\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\n\nRules:\n- Only fix this PR's CI or merge-conflict issue.\n- Do not merge, approve, or close the PR.\n- Keep the patch minimal and scoped to the reported failure.\n- If you repair the PR, remove the bosun-needs-fix label.\n",
             "sdk": "auto",
             "timeoutMs": 1800000,
-            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
-            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
           },
           "position": {
             "x": 220,
-            "y": 970
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "push-pr-fixes",
-          "type": "action.run_command",
-          "label": "Push Fixes to PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const expectedBranch=String(process.env.PR_BRANCH||'').trim(); if(!wt){console.log(JSON.stringify({pushed:false,reason:'no worktree path'}));process.exit(0);} const branch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(expectedBranch&&branch!==expectedBranch){console.log(JSON.stringify({pushed:false,reason:'branch mismatch',expected:expectedBranch,actual:branch}));process.exit(1);} const status=execFileSync('git',['status','--porcelain'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); const diff=execFileSync('git',['diff','--stat','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); const ahead=execFileSync('git',['rev-list','--count','origin/'+branch+'..HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(!status&&!diff&&ahead==='0'){console.log(JSON.stringify({pushed:false,reason:'nothing to push'}));process.exit(0);} if(status){execFileSync('git',['add','-A'],{cwd:wt,timeout:30000});execFileSync('git',['commit','-m','fix: bosun PR repair (progressor)'],{cwd:wt,timeout:30000});} execFileSync('git',['push','--force-with-lease','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:'inherit'}); console.log(JSON.stringify({pushed:true,branch}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 300000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-pr-worktree.output.worktreePath}}",
-              "PR_BRANCH": "{{setup-pr-worktree.output.branch}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 1020
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "cleanup-pr-worktree",
-          "type": "action.run_command",
-          "label": "Cleanup Temp Clone",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const wt=String(process.env.WORKTREE_PATH||'').trim(); if(wt&&fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});console.log('cleaned up '+wt);}catch(e){console.warn('cleanup failed: '+e.message);}} else{console.log('nothing to clean');}"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 60000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-pr-worktree.output.worktreePath}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 1060
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "update-sibling-branches",
-          "type": "action.run_command",
-          "label": "Update Sibling PR Branches",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const repo=String(process.env.REPO||'').trim(); const thisPrNumber=String(process.env.THIS_PR||'').trim(); const base=String(process.env.BASE_BRANCH||'main').trim(); if(!repo){console.log(JSON.stringify({updated:0,reason:'no repo'}));process.exit(0);} let prs=[]; try{prs=JSON.parse(execFileSync('gh',['pr','list','--repo',repo,'--base',base,'--state','open','--json','number,headRefOid','--limit','50'],{encoding:'utf8',timeout:30000}));} catch(e){console.log(JSON.stringify({updated:0,error:String(e?.message||e).slice(0,200)}));process.exit(0);} let updated=0,failed=0; for(const pr of prs){   if(String(pr.number)===thisPrNumber)continue;   try{     execFileSync('gh',['api','-X','PUT','repos/'+repo+'/pulls/'+pr.number+'/update-branch','--field','expected_head_sha='+pr.headRefOid],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000});     updated++;console.log('Updated PR #'+pr.number);   }catch(e){     const msg=String(e?.stderr||e?.message||e);     if(/already up/i.test(msg)||/merge conflict/i.test(msg)){continue;}     failed++;console.log('Skip PR #'+pr.number+': '+msg.slice(0,150));   } } console.log(JSON.stringify({updated,failed,total:prs.length}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 180000,
-            "env": {
-              "REPO": "{{prParams.repo}}",
-              "THIS_PR": "{{prParams.number}}",
-              "BASE_BRANCH": "{{prParams.base}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 1080
+            "y": 950
           },
           "outputs": [
             "default"
@@ -571,9 +360,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-agent-needed->resolve-pr-params",
+          "id": "fix-agent-needed->dispatch-fix-agent",
           "source": "fix-agent-needed",
-          "target": "resolve-pr-params",
+          "target": "dispatch-fix-agent",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -585,62 +374,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "resolve-pr-params->setup-pr-worktree",
-          "source": "resolve-pr-params",
-          "target": "setup-pr-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-pr-worktree->set-pr-worktree-path",
-          "source": "setup-pr-worktree",
-          "target": "set-pr-worktree-path",
-          "sourcePort": "default"
-        },
-        {
-          "id": "set-pr-worktree-path->detect-pr-conflicts",
-          "source": "set-pr-worktree-path",
-          "target": "detect-pr-conflicts",
-          "sourcePort": "default"
-        },
-        {
-          "id": "detect-pr-conflicts->build-fix-prompt",
-          "source": "detect-pr-conflicts",
-          "target": "build-fix-prompt",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build-fix-prompt->mark-active",
-          "source": "build-fix-prompt",
-          "target": "mark-active",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-active->dispatch-fix-agent",
-          "source": "mark-active",
-          "target": "dispatch-fix-agent",
-          "sourcePort": "default"
-        },
-        {
-          "id": "dispatch-fix-agent->push-pr-fixes",
+          "id": "dispatch-fix-agent->notify-complete",
           "source": "dispatch-fix-agent",
-          "target": "push-pr-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-pr-fixes->cleanup-pr-worktree",
-          "source": "push-pr-fixes",
-          "target": "cleanup-pr-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "cleanup-pr-worktree->update-sibling-branches",
-          "source": "cleanup-pr-worktree",
-          "target": "update-sibling-branches",
-          "sourcePort": "default"
-        },
-        {
-          "id": "update-sibling-branches->notify-complete",
-          "source": "update-sibling-branches",
           "target": "notify-complete",
           "sourcePort": "default"
         },
@@ -695,8 +430,8 @@
         "bosun-attached",
         "safety"
       ],
-      "nodeCount": 25,
-      "edgeCount": 35,
+      "nodeCount": 19,
+      "edgeCount": 26,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -706,21 +441,21 @@
         "labelNeedsReview": "bosun-needs-human-review",
         "repoScope": "auto",
         "maxPrs": 25,
-        "intervalMs": 1800000,
+        "intervalMs": 90000,
         "suspiciousDeletionRatio": 3,
         "minDestructiveDeletions": 500,
         "autoApplySuggestions": true,
         "trustedAuthors": "",
         "allowTrustedFixes": false,
         "allowTrustedMerges": false,
-        "maxConcurrentFixes": 3,
-        "prFixTtlMinutes": 120
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1
       },
       "metadata": {
         "author": "bosun",
-        "version": 6,
+        "version": 4,
         "createdAt": "2025-07-01T00:00:00Z",
-        "templateVersion": "3.1.0",
+        "templateVersion": "2.3.0",
         "tags": [
           "github",
           "pr",
@@ -736,7 +471,7 @@
             "registerBuiltinHooks (PostPR block)"
           ],
           "calledFrom": [],
-          "description": "v3.1: Adds pause/resume of Task Lifecycle and Task Batch Processor while PR fix-agents are in-flight, preventing resource contention from new task spawning. v3.0: Replaces single mega-agent dispatch with per-PR claim system and parallel fan-out. Each PR gets its own dedicated agent (template-pr-fix-single) with 2-hour budget. PR claims prevent duplicate work across watchdog cycles (TTL=prFixTtlMinutes). All per-PR agents are session-tracked in Fleet/Sessions. v2.3: Adds fast-path update-branch for out-of-date (BEHIND) PRs without conflicts. Consolidates PR polling into one gh pr list fetch per target repo per cycle. Uses deterministic-first remediation and review/merge command nodes; agent execution is now fallback-only for unresolved conflicts or failed automatic remediation attempts. All external PRs (no bosun-attached label) remain untouched."
+          "description": "v2.3: Adds fast-path update-branch for out-of-date (BEHIND) PRs without conflicts. Consolidates PR polling into one gh pr list fetch per target repo per cycle. Uses deterministic-first remediation and review/merge command nodes; agent execution is now fallback-only for unresolved conflicts or failed automatic remediation attempts. All external PRs (no bosun-attached label) remain untouched."
         }
       },
       "nodes": [
@@ -763,7 +498,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,body,author,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']); const BEHIND_MERGEABLES=new Set(['BEHIND']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; const BOSUN_CREATED_LABEL='bosun-pr-bosun-created'; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} const GH_MAX_BUFFER=25*1024*1024;const GH_CACHE_TTL_MS=30000;const ghReadCache=new Map();let ghRateLimitUntil=0;function ghSleep(ms){if(!Number.isFinite(ms)||ms<=0)return;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Math.min(ms,5000));}function ghCacheKey(args){return JSON.stringify(Array.isArray(args)?args:[]);}function isGhReadOnly(args){const list=Array.isArray(args)?args.map((item)=>String(item||'').trim().toLowerCase()):[];if(list.length===0)return false;const joined=' '+list.join(' ')+' ';return !/( edit | merge | close | reopen | rerun | delete | create | ready | cancel )/.test(joined);}function readGhMessage(error){return String(error?.stderr||error?.stdout||error?.message||error||'');}function runGh(args){const cacheable=isGhReadOnly(args);const key=cacheable?ghCacheKey(args):'';const now=Date.now();if(cacheable){const cached=ghReadCache.get(key);if(cached&&cached.expiresAt>now)return cached.output;if(now<ghRateLimitUntil&&cached)return cached.output;}let lastError=null;for(let attempt=0;attempt<2;attempt+=1){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(error){const message=readGhMessage(error);lastError=error;const retryAfter=message.match(/retry after\\s+(\\d+)\\s*second/i)||message.match(/try again in\\s+(\\d+)\\s*second/i);if(/secondary rate limit|rate limit exceeded|api rate limit/i.test(message)&&attempt===0){const waitMs=Math.max(1000,Math.min(5000,(Number(retryAfter?.[1]||0)||2)*1000));ghRateLimitUntil=Date.now()+waitMs;ghSleep(waitMs);continue;}if(/ENOBUFS|maxbuffer|stdout maxbuffer length exceeded/i.test(message)&&attempt===0){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER*2}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(innerError){lastError=innerError;}}break;}}throw lastError;}function ghJson(args){const out=runGh(args);return out?JSON.parse(out):[];}function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function normalizeList(value){if(Array.isArray(value)) return value.map((entry)=>String(entry||'').trim().toLowerCase()).filter(Boolean); return String(value||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean);} function parseBool(value,fallback){if(value===undefined||value===null||value==='') return fallback; const raw=String(value).trim().toLowerCase(); if(['1','true','yes','on'].includes(raw)) return true; if(['0','false','no','off'].includes(raw)) return false; return fallback;} function normalizeCheckKey(name){return String(name||'').trim().toLowerCase().replace(/\\s+/g,' ');} function matchesCheckPattern(name,pattern){const text=String(name||'').trim().toLowerCase();const token=String(pattern||'').trim().toLowerCase();if(!text||!token)return false;if(token==='*')return true;if(!token.includes('*'))return text.includes(token);const parts=token.split('*').filter(Boolean);if(parts.length===0)return true;let cursor=0;for(const part of parts){const idx=text.indexOf(part,cursor);if(idx===-1)return false;cursor=idx+part.length;}if(!token.startsWith('*')&&!text.startsWith(parts[0]||''))return false;if(!token.endsWith('*')&&!text.endsWith(parts[parts.length-1]||''))return false;return true;} function matchesAnyPattern(name,patterns){return (Array.isArray(patterns)?patterns:[]).some((pattern)=>matchesCheckPattern(name,pattern));} function readCheckState(check){return String(check?.conclusion||check?.state||check?.status||check?.bucket||'').trim().toUpperCase();} function isPassingCheckState(state,treatNeutralAsPass){if(!state)return true;if(['SUCCESS','PASS','PASSED','COMPLETED'].includes(state))return true;if(treatNeutralAsPass&&['NEUTRAL','SKIPPED'].includes(state))return true;return !FAIL_STATES.has(state)&&!PEND_STATES.has(state);} function evaluateCheckGates(checks,policy){const normalized=(Array.isArray(checks)?checks:[]).map((check)=>({raw:check,name:readCheckName(check),state:readCheckState(check)})).filter((check)=>check.name);const considered=normalized.filter((check)=>!matchesAnyPattern(check.name,policy.ignorePatterns));let required=considered;if(policy.mode==='required-only'){required=considered.filter((check)=>matchesAnyPattern(check.name,policy.requiredPatterns));}if((Array.isArray(policy.optionalPatterns)?policy.optionalPatterns:[]).length>0){required=required.filter((check)=>!matchesAnyPattern(check.name,policy.optionalPatterns));}const missingRequired=policy.requireAnyRequiredCheck&&required.length===0;const failedRequiredChecks=required.filter((check)=>FAIL_STATES.has(check.state));const pendingRequiredChecks=required.filter((check)=>PEND_STATES.has(check.state));const hasRequiredFailure=failedRequiredChecks.length>0;const hasBlockingPending=policy.treatPendingRequiredAsBlocking&&pendingRequiredChecks.length>0;const isReady=!missingRequired&&!hasRequiredFailure&&!hasBlockingPending&&required.every((check)=>isPassingCheckState(check.state,policy.treatNeutralAsPass));return {consideredCount:considered.length,requiredCount:required.length,failedRequiredChecks:failedRequiredChecks.map((check)=>check.raw),pendingRequiredChecks:pendingRequiredChecks.map((check)=>check.raw),hasRequiredFailure,hasBlockingPending,blocksForMissingRequired:missingRequired,isReady,shouldKickCi:considered.length===0};} function buildFailureFingerprint(names){const normalized=[...new Set((Array.isArray(names)?names:[]).map(normalizeCheckKey).filter(Boolean))].sort();return normalized.join('|');} function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];} function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);} function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function readBosunConfig(){ try { return JSON.parse(fs.readFileSync(configPath(),'utf8')); } catch { return {}; } } function collectReposFromConfig(){   const repos=[];   try{     const cfg=readBosunConfig();     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } const BOSUN_CONFIG=readBosunConfig(); const PR_AUTOMATION=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.prAutomation==='object')?BOSUN_CONFIG.prAutomation:{}; const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all'); const TRUSTED_AUTHORS=new Set([...normalizeList(PR_AUTOMATION?.trustedAuthors),...normalizeList('{{trustedAuthors}}')]); const ALLOW_TRUSTED_FIXES=parseBool(PR_AUTOMATION?.allowTrustedFixes ?? '{{allowTrustedFixes}}', false); const ALLOW_TRUSTED_MERGES=parseBool(PR_AUTOMATION?.allowTrustedMerges ?? '{{allowTrustedMerges}}', false); const CHECK_GATES=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.gates==='object'&&BOSUN_CONFIG.gates&&typeof BOSUN_CONFIG.gates.checks==='object')?BOSUN_CONFIG.gates.checks:{}; const CHECK_MODE=((String(CHECK_GATES?.mode||'all').trim().toLowerCase())||'all'); const REQUIRED_CHECK_PATTERNS=normalizeList(CHECK_GATES?.requiredPatterns); const OPTIONAL_CHECK_PATTERNS=normalizeList(CHECK_GATES?.optionalPatterns); const IGNORE_CHECK_PATTERNS=normalizeList(CHECK_GATES?.ignorePatterns); const REQUIRE_ANY_REQUIRED_CHECK=parseBool(CHECK_GATES?.requireAnyRequiredCheck, true); const TREAT_PENDING_REQUIRED_AS_BLOCKING=parseBool(CHECK_GATES?.treatPendingRequiredAsBlocking, true); const TREAT_NEUTRAL_AS_PASS=parseBool(CHECK_GATES?.treatNeutralAsPass, false); const defaultBranchFailureCache=new Map(); function collectDefaultBranchFailureNames(repo,baseBranch){const cacheKey=[repo,baseBranch].join('::');if(defaultBranchFailureCache.has(cacheKey))return defaultBranchFailureCache.get(cacheKey);const failedNames=new Set();try{const runs=safeGhJson(['run','list','--repo',repo,'--branch',baseBranch,'--json','databaseId,workflowName,displayTitle,conclusion,status','--limit','6'],[]);for(const run of (Array.isArray(runs)?runs:[])){const conclusion=String(run?.conclusion||'').trim().toUpperCase();if(!FAIL_STATES.has(conclusion))continue;const runId=Number(run?.databaseId||0)||0;if(runId>0){const view=safeGhJson(['run','view',String(runId),'--repo',repo,'--json','jobs'],{});const jobs=Array.isArray(view?.jobs)?view.jobs:[];for(const job of jobs){const jobState=String(job?.conclusion||job?.status||'').trim().toUpperCase();if(FAIL_STATES.has(jobState)){const normalized=normalizeCheckKey(job?.name);if(normalized)failedNames.add(normalized);}}}const workflowName=normalizeCheckKey(run?.workflowName||run?.displayTitle);if(workflowName)failedNames.add(workflowName);}}catch{}const resolved=[...failedNames];defaultBranchFailureCache.set(cacheKey,resolved);return resolved;} function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const taskCli=path.join(process.cwd(),'task','task-cli.mjs'); const taskRunner=fs.existsSync(taskCli)?'direct':'cli'; const taskMaxBuffer=1024*1024*8; function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:taskMaxBuffer}).trim();} let taskListCache=null; function loadTaskList(){if(taskListCache)return taskListCache;try{const raw=runTask(['list','--json']);const tasks=parseJson(raw,[]);taskListCache=Array.isArray(tasks)?tasks:[];}catch{taskListCache=[];}return taskListCache;} function normalizeTaskValue(value){return String(value||'').trim().toLowerCase();} function resolveTaskIdForPr(item){const prNumber=Number(item?.n||0)||0;const prUrl=normalizeTaskValue(item?.url);const branch=normalizeTaskValue(item?.branch);const matches=loadTaskList().filter((task)=>{if(!task||typeof task!=='object')return false;const taskPrNumber=Number(task?.prNumber||task?.pr_number||0)||0;if(prNumber>0&&taskPrNumber===prNumber)return true;const taskPrUrl=normalizeTaskValue(task?.prUrl||task?.pr_url);if(prUrl&&taskPrUrl===prUrl)return true;const taskBranch=normalizeTaskValue(task?.branchName||task?.branch||task?.meta?.branchName||task?.meta?.branch);return Boolean(branch&&taskBranch===branch);});if(matches.length===0)return null;const inReview=matches.find((task)=>normalizeTaskValue(task?.status)==='inreview');return String((inReview||matches[0])?.id||'').trim()||null;} function getTaskSnapshot(id){if(!id)return null;try{return parseJson(runTask(['get',id,'--json']),null);}catch{return null;}} function updateTaskReviewSignal(item){const taskId=resolveTaskIdForPr(item);if(!taskId)return false;const snapshot=getTaskSnapshot(taskId)||{};const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{};const existingReviewHealth=existingMeta.reviewHealth&&typeof existingMeta.reviewHealth==='object'?existingMeta.reviewHealth:{};const nextReviewHealth={...existingReviewHealth,status:String(item?.reviewStatus||'unknown'),failureScope:String(item?.failureScope||'none'),sharedIncidentId:item?.sharedIncidentId||null,failureFingerprint:item?.failureFingerprint||null,failingWorkflow:item?.failingWorkflow||null,failingJobs:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],baseBranch:String(item?.base||snapshot?.baseBranch||'').trim()||null,repo:String(item?.repo||'').trim()||null,updatedAt:new Date().toISOString(),source:'pr-watchdog'};const patch={meta:{...existingMeta,reviewHealth:nextReviewHealth}};try{runTask(['update',taskId,JSON.stringify(patch)]);return true;}catch{return false;}} const sharedFailureFingerprints=new Map(); for(const pr of prs){const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);const bosunCreated=isBosunCreated(pr);const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));const attachEligible=bosunCreated||ATTACH_MODE==='all'||(ATTACH_MODE==='trusted-only'&&trustedAuthor);const checks=pr.statusCheckRollup||[];const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});const failedCheckNames=gateVerdict.failedRequiredChecks.map(readCheckName).filter(Boolean);const hasSecurityFail=failedCheckNames.some(isSecurityCheckName);const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());const isDraft=pr.isDraft===true;const repo=String(pr.__repo||'').trim();const base=String(pr.baseRefName||'').trim()||'main';if(isDraft||!attachEligible||!gateVerdict.hasRequiredFailure||hasSecurityFail||isConflict)continue;const fingerprint=buildFailureFingerprint(failedCheckNames);if(!fingerprint)continue;const sharedKey=[repo,base,fingerprint].join('::');sharedFailureFingerprints.set(sharedKey,(sharedFailureFingerprints.get(sharedKey)||0)+1);} const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],sharedFailures=[],pending=[],drafted=[],behindBranches=[],skippedUntrusted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0,taskReviewSignalsUpdated=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const bosunCreated=isBosunCreated(pr);   const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));   const attachEligible=bosunCreated || ATTACH_MODE==='all' || (ATTACH_MODE==='trusted-only' && trustedAuthor);   const canFix=bosunCreated || (attachEligible && ALLOW_TRUSTED_FIXES && trustedAuthor);   const canMerge=bosunCreated || (attachEligible && ALLOW_TRUSTED_MERGES && trustedAuthor);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});   const failedChecks=gateVerdict.failedRequiredChecks;   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=gateVerdict.hasRequiredFailure;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=gateVerdict.hasBlockingPending;   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isBehind=BEHIND_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   const base=String(pr.baseRefName||'').trim()||'main';   const failureFingerprint=buildFailureFingerprint(failedCheckNames);   const sharedFailureKey=[repo,base,failureFingerprint].join('::');   const repeatedFailureCount=Number(sharedFailureFingerprints.get(sharedFailureKey)||0);   const defaultBranchFailureNames=repo&&base?collectDefaultBranchFailureNames(repo,base):[];   const defaultBranchFailureSet=new Set((Array.isArray(defaultBranchFailureNames)?defaultBranchFailureNames:[]).map(normalizeCheckKey).filter(Boolean));   const allFailuresOnDefaultBranch=failedCheckNames.length>0&&failedCheckNames.every((name)=>defaultBranchFailureSet.has(normalizeCheckKey(name)));   const isSharedFailure=hasFail&&!hasSecurityFail&&!isConflict&&(allFailuresOnDefaultBranch||repeatedFailureCount>=2);   const sharedIncidentId=isSharedFailure&&failureFingerprint?[repo,base,failureFingerprint].join(':'):null;   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(!bosunCreated && !attachEligible){skippedUntrusted.push({n:pr.number,repo,reason:'attach_policy_excluded'});continue;}   if(!bosunCreated && !trustedAuthor){skippedUntrusted.push({n:pr.number,repo,reason:'public_observation_only'});continue;}   if(isBehind&&!isConflict){     if(canFix) behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});   }   if(isConflict){     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'fix_not_allowed'});continue;}     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'conflict',failureScope:'pr_local',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'security_fix_not_allowed'});continue;}     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'security_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:securityCheckNames[0]||failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     if(isSharedFailure){       sharedFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,failureFingerprint,sharedIncidentId,defaultBranchFailureNames,repeatedFailureCount});       if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'shared_ci_failure',failureScope:'shared',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId}))taskReviewSignalsUpdated++;       if(hasFixLabel){         try{const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];if(repo)rmArgs.push('--repo',repo);execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});staleLabelCleared++;}         catch(e){process.stderr.write('shared-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}       }       continue;     }     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'ci_fix_not_allowed'});continue;}     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'ci_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:hasPend?'pending':gateVerdict.isReady?'ready':'idle',failureScope:'none',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(hasFixLabel&&!hasPend&&!gateVerdict.blocksForMissingRequired){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(gateVerdict.isReady&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       if(canMerge){ readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend}); } else { skippedUntrusted.push({n:pr.number,repo,reason:'merge_not_allowed'}); }     }     if(gateVerdict.shouldKickCi&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   behindBranches,   securityFailures,   ciFailures,   sharedFailures,   pending:pending.length,   drafted:drafted.length,   skippedUntrusted,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length,   sharedIncidentCount:sharedFailures.length,   taskReviewSignalsUpdated,   trustPolicy:{trustedAuthors:[...TRUSTED_AUTHORS],allowTrustedFixes:ALLOW_TRUSTED_FIXES,allowTrustedMerges:ALLOW_TRUSTED_MERGES} }));"
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,body,author,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']); const BEHIND_MERGEABLES=new Set(['BEHIND']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; const BOSUN_CREATED_LABEL='bosun-pr-bosun-created'; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function normalizeList(value){if(Array.isArray(value)) return value.map((entry)=>String(entry||'').trim().toLowerCase()).filter(Boolean); return String(value||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean);} function parseBool(value,fallback){if(value===undefined||value===null||value==='') return fallback; const raw=String(value).trim().toLowerCase(); if(['1','true','yes','on'].includes(raw)) return true; if(['0','false','no','off'].includes(raw)) return false; return fallback;} function normalizeCheckKey(name){return String(name||'').trim().toLowerCase().replace(/\\s+/g,' ');} function matchesCheckPattern(name,pattern){const text=String(name||'').trim().toLowerCase();const token=String(pattern||'').trim().toLowerCase();if(!text||!token)return false;if(token==='*')return true;if(!token.includes('*'))return text.includes(token);const parts=token.split('*').filter(Boolean);if(parts.length===0)return true;let cursor=0;for(const part of parts){const idx=text.indexOf(part,cursor);if(idx===-1)return false;cursor=idx+part.length;}if(!token.startsWith('*')&&!text.startsWith(parts[0]||''))return false;if(!token.endsWith('*')&&!text.endsWith(parts[parts.length-1]||''))return false;return true;} function matchesAnyPattern(name,patterns){return (Array.isArray(patterns)?patterns:[]).some((pattern)=>matchesCheckPattern(name,pattern));} function readCheckState(check){return String(check?.conclusion||check?.state||check?.status||check?.bucket||'').trim().toUpperCase();} function isPassingCheckState(state,treatNeutralAsPass){if(!state)return true;if(['SUCCESS','PASS','PASSED','COMPLETED'].includes(state))return true;if(treatNeutralAsPass&&['NEUTRAL','SKIPPED'].includes(state))return true;return !FAIL_STATES.has(state)&&!PEND_STATES.has(state);} function evaluateCheckGates(checks,policy){const normalized=(Array.isArray(checks)?checks:[]).map((check)=>({raw:check,name:readCheckName(check),state:readCheckState(check)})).filter((check)=>check.name);const considered=normalized.filter((check)=>!matchesAnyPattern(check.name,policy.ignorePatterns));let required=considered;if(policy.mode==='required-only'){required=considered.filter((check)=>matchesAnyPattern(check.name,policy.requiredPatterns));}if((Array.isArray(policy.optionalPatterns)?policy.optionalPatterns:[]).length>0){required=required.filter((check)=>!matchesAnyPattern(check.name,policy.optionalPatterns));}const missingRequired=policy.requireAnyRequiredCheck&&required.length===0;const failedRequiredChecks=required.filter((check)=>FAIL_STATES.has(check.state));const pendingRequiredChecks=required.filter((check)=>PEND_STATES.has(check.state));const hasRequiredFailure=failedRequiredChecks.length>0;const hasBlockingPending=policy.treatPendingRequiredAsBlocking&&pendingRequiredChecks.length>0;const isReady=!missingRequired&&!hasRequiredFailure&&!hasBlockingPending&&required.every((check)=>isPassingCheckState(check.state,policy.treatNeutralAsPass));return {consideredCount:considered.length,requiredCount:required.length,failedRequiredChecks:failedRequiredChecks.map((check)=>check.raw),pendingRequiredChecks:pendingRequiredChecks.map((check)=>check.raw),hasRequiredFailure,hasBlockingPending,blocksForMissingRequired:missingRequired,isReady,shouldKickCi:considered.length===0};} function buildFailureFingerprint(names){const normalized=[...new Set((Array.isArray(names)?names:[]).map(normalizeCheckKey).filter(Boolean))].sort();return normalized.join('|');} function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];} function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);} function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function readBosunConfig(){ try { return JSON.parse(fs.readFileSync(configPath(),'utf8')); } catch { return {}; } } function collectReposFromConfig(){   const repos=[];   try{     const cfg=readBosunConfig();     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } const BOSUN_CONFIG=readBosunConfig(); const PR_AUTOMATION=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.prAutomation==='object')?BOSUN_CONFIG.prAutomation:{}; const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all'); const TRUSTED_AUTHORS=new Set([...normalizeList(PR_AUTOMATION?.trustedAuthors),...normalizeList('{{trustedAuthors}}')]); const ALLOW_TRUSTED_FIXES=parseBool(PR_AUTOMATION?.allowTrustedFixes ?? '{{allowTrustedFixes}}', false); const ALLOW_TRUSTED_MERGES=parseBool(PR_AUTOMATION?.allowTrustedMerges ?? '{{allowTrustedMerges}}', false); const CHECK_GATES=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.gates==='object'&&BOSUN_CONFIG.gates&&typeof BOSUN_CONFIG.gates.checks==='object')?BOSUN_CONFIG.gates.checks:{}; const CHECK_MODE=((String(CHECK_GATES?.mode||'all').trim().toLowerCase())||'all'); const REQUIRED_CHECK_PATTERNS=normalizeList(CHECK_GATES?.requiredPatterns); const OPTIONAL_CHECK_PATTERNS=normalizeList(CHECK_GATES?.optionalPatterns); const IGNORE_CHECK_PATTERNS=normalizeList(CHECK_GATES?.ignorePatterns); const REQUIRE_ANY_REQUIRED_CHECK=parseBool(CHECK_GATES?.requireAnyRequiredCheck, true); const TREAT_PENDING_REQUIRED_AS_BLOCKING=parseBool(CHECK_GATES?.treatPendingRequiredAsBlocking, true); const TREAT_NEUTRAL_AS_PASS=parseBool(CHECK_GATES?.treatNeutralAsPass, false); const defaultBranchFailureCache=new Map(); function collectDefaultBranchFailureNames(repo,baseBranch){const cacheKey=[repo,baseBranch].join('::');if(defaultBranchFailureCache.has(cacheKey))return defaultBranchFailureCache.get(cacheKey);const failedNames=new Set();try{const runs=safeGhJson(['run','list','--repo',repo,'--branch',baseBranch,'--json','databaseId,workflowName,displayTitle,conclusion,status','--limit','6'],[]);for(const run of (Array.isArray(runs)?runs:[])){const conclusion=String(run?.conclusion||'').trim().toUpperCase();if(!FAIL_STATES.has(conclusion))continue;const runId=Number(run?.databaseId||0)||0;if(runId>0){const view=safeGhJson(['run','view',String(runId),'--repo',repo,'--json','jobs'],{});const jobs=Array.isArray(view?.jobs)?view.jobs:[];for(const job of jobs){const jobState=String(job?.conclusion||job?.status||'').trim().toUpperCase();if(FAIL_STATES.has(jobState)){const normalized=normalizeCheckKey(job?.name);if(normalized)failedNames.add(normalized);}}}const workflowName=normalizeCheckKey(run?.workflowName||run?.displayTitle);if(workflowName)failedNames.add(workflowName);}}catch{}const resolved=[...failedNames];defaultBranchFailureCache.set(cacheKey,resolved);return resolved;} function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const taskCli=path.join(process.cwd(),'task','task-cli.mjs'); const taskRunner=fs.existsSync(taskCli)?'direct':'cli'; const taskMaxBuffer=1024*1024*8; function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:taskMaxBuffer}).trim();} let taskListCache=null; function loadTaskList(){if(taskListCache)return taskListCache;try{const raw=runTask(['list','--json']);const tasks=parseJson(raw,[]);taskListCache=Array.isArray(tasks)?tasks:[];}catch{taskListCache=[];}return taskListCache;} function normalizeTaskValue(value){return String(value||'').trim().toLowerCase();} function resolveTaskIdForPr(item){const prNumber=Number(item?.n||0)||0;const prUrl=normalizeTaskValue(item?.url);const branch=normalizeTaskValue(item?.branch);const matches=loadTaskList().filter((task)=>{if(!task||typeof task!=='object')return false;const taskPrNumber=Number(task?.prNumber||task?.pr_number||0)||0;if(prNumber>0&&taskPrNumber===prNumber)return true;const taskPrUrl=normalizeTaskValue(task?.prUrl||task?.pr_url);if(prUrl&&taskPrUrl===prUrl)return true;const taskBranch=normalizeTaskValue(task?.branchName||task?.branch||task?.meta?.branchName||task?.meta?.branch);return Boolean(branch&&taskBranch===branch);});if(matches.length===0)return null;const inReview=matches.find((task)=>normalizeTaskValue(task?.status)==='inreview');return String((inReview||matches[0])?.id||'').trim()||null;} function getTaskSnapshot(id){if(!id)return null;try{return parseJson(runTask(['get',id,'--json']),null);}catch{return null;}} function updateTaskReviewSignal(item){const taskId=resolveTaskIdForPr(item);if(!taskId)return false;const snapshot=getTaskSnapshot(taskId)||{};const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{};const existingReviewHealth=existingMeta.reviewHealth&&typeof existingMeta.reviewHealth==='object'?existingMeta.reviewHealth:{};const nextReviewHealth={...existingReviewHealth,status:String(item?.reviewStatus||'unknown'),failureScope:String(item?.failureScope||'none'),sharedIncidentId:item?.sharedIncidentId||null,failureFingerprint:item?.failureFingerprint||null,failingWorkflow:item?.failingWorkflow||null,failingJobs:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],baseBranch:String(item?.base||snapshot?.baseBranch||'').trim()||null,repo:String(item?.repo||'').trim()||null,updatedAt:new Date().toISOString(),source:'pr-watchdog'};const patch={meta:{...existingMeta,reviewHealth:nextReviewHealth}};try{runTask(['update',taskId,JSON.stringify(patch)]);return true;}catch{return false;}} const sharedFailureFingerprints=new Map(); for(const pr of prs){const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);const bosunCreated=isBosunCreated(pr);const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));const attachEligible=bosunCreated||ATTACH_MODE==='all'||(ATTACH_MODE==='trusted-only'&&trustedAuthor);const checks=pr.statusCheckRollup||[];const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});const failedCheckNames=gateVerdict.failedRequiredChecks.map(readCheckName).filter(Boolean);const hasSecurityFail=failedCheckNames.some(isSecurityCheckName);const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());const isDraft=pr.isDraft===true;const repo=String(pr.__repo||'').trim();const base=String(pr.baseRefName||'').trim()||'main';if(isDraft||!attachEligible||!gateVerdict.hasRequiredFailure||hasSecurityFail||isConflict)continue;const fingerprint=buildFailureFingerprint(failedCheckNames);if(!fingerprint)continue;const sharedKey=[repo,base,fingerprint].join('::');sharedFailureFingerprints.set(sharedKey,(sharedFailureFingerprints.get(sharedKey)||0)+1);} const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],sharedFailures=[],pending=[],drafted=[],behindBranches=[],skippedUntrusted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0,taskReviewSignalsUpdated=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const bosunCreated=isBosunCreated(pr);   const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));   const attachEligible=bosunCreated || ATTACH_MODE==='all' || (ATTACH_MODE==='trusted-only' && trustedAuthor);   const canFix=bosunCreated || (attachEligible && ALLOW_TRUSTED_FIXES && trustedAuthor);   const canMerge=bosunCreated || (attachEligible && ALLOW_TRUSTED_MERGES && trustedAuthor);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});   const failedChecks=gateVerdict.failedRequiredChecks;   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=gateVerdict.hasRequiredFailure;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=gateVerdict.hasBlockingPending;   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isBehind=BEHIND_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   const base=String(pr.baseRefName||'').trim()||'main';   const failureFingerprint=buildFailureFingerprint(failedCheckNames);   const sharedFailureKey=[repo,base,failureFingerprint].join('::');   const repeatedFailureCount=Number(sharedFailureFingerprints.get(sharedFailureKey)||0);   const defaultBranchFailureNames=repo&&base?collectDefaultBranchFailureNames(repo,base):[];   const defaultBranchFailureSet=new Set((Array.isArray(defaultBranchFailureNames)?defaultBranchFailureNames:[]).map(normalizeCheckKey).filter(Boolean));   const allFailuresOnDefaultBranch=failedCheckNames.length>0&&failedCheckNames.every((name)=>defaultBranchFailureSet.has(normalizeCheckKey(name)));   const isSharedFailure=hasFail&&!hasSecurityFail&&!isConflict&&(allFailuresOnDefaultBranch||repeatedFailureCount>=2);   const sharedIncidentId=isSharedFailure&&failureFingerprint?[repo,base,failureFingerprint].join(':'):null;   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(!bosunCreated && !attachEligible){skippedUntrusted.push({n:pr.number,repo,reason:'attach_policy_excluded'});continue;}   if(!bosunCreated && !trustedAuthor){skippedUntrusted.push({n:pr.number,repo,reason:'public_observation_only'});continue;}   if(isBehind&&!isConflict){     if(canFix) behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});   }   if(isConflict){     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'fix_not_allowed'});continue;}     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'conflict',failureScope:'pr_local',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'security_fix_not_allowed'});continue;}     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'security_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:securityCheckNames[0]||failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     if(isSharedFailure){       sharedFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,failureFingerprint,sharedIncidentId,defaultBranchFailureNames,repeatedFailureCount});       if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'shared_ci_failure',failureScope:'shared',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId}))taskReviewSignalsUpdated++;       if(hasFixLabel){         try{const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];if(repo)rmArgs.push('--repo',repo);execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});staleLabelCleared++;}         catch(e){process.stderr.write('shared-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}       }       continue;     }     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'ci_fix_not_allowed'});continue;}     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'ci_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:hasPend?'pending':gateVerdict.isReady?'ready':'idle',failureScope:'none',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(hasFixLabel&&!hasPend&&!gateVerdict.blocksForMissingRequired){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(gateVerdict.isReady&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       if(canMerge){ readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend}); } else { skippedUntrusted.push({n:pr.number,repo,reason:'merge_not_allowed'}); }     }     if(gateVerdict.shouldKickCi&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   behindBranches,   securityFailures,   ciFailures,   sharedFailures,   pending:pending.length,   drafted:drafted.length,   skippedUntrusted,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length,   sharedIncidentCount:sharedFailures.length,   taskReviewSignalsUpdated,   trustPolicy:{trustedAuthors:[...TRUSTED_AUTHORS],allowTrustedFixes:ALLOW_TRUSTED_FIXES,allowTrustedMerges:ALLOW_TRUSTED_MERGES} }));"
             ],
             "continueOnError": false,
             "failOnError": true
@@ -897,58 +632,22 @@
           ]
         },
         {
-          "id": "claim-unclaimed-security-prs",
-          "type": "action.run_command",
-          "label": "Claim Unclaimed Security PRs",
+          "id": "dispatch-security-fix-agent",
+          "type": "action.run_agent",
+          "label": "Dispatch Security Fix Agent",
           "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const raw=String(process.env.BOSUN_SECURITY_FIX||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const needsAgent=Array.isArray(payload.needsAgent)?payload.needsAgent:[]; const TTL_MINUTES=Math.max(5,Number(process.env.PR_FIX_TTL_MINUTES||120)); const TTL_MS=TTL_MINUTES*60*1000; const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-security-fix-claims.json'); const now=Date.now(); let data={claims:{},updatedAt:new Date().toISOString()}; try{fs.mkdirSync(path.dirname(CLAIM_FILE),{recursive:true});}catch{} try{if(fs.existsSync(CLAIM_FILE))data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));}catch{} if(!data.claims)data.claims={}; for(const[key,claim]of Object.entries(data.claims)){if(now-new Date(claim.claimedAt).getTime()>TTL_MS)delete data.claims[key];} const unclaimed=[]; const alreadyClaimed=[]; for(const item of needsAgent){   const key=String(item.repo||'')+'/'+String(item.number||'');   if(!key||key==='/'){continue;}   if(data.claims[key]){alreadyClaimed.push({key,...item});continue;}   data.claims[key]={claimedAt:new Date().toISOString(),repo:item.repo,number:item.number};   unclaimed.push({...item,claimKey:key,taskId:'pr-secfix-'+String(item.repo||'').replace(/[^a-z0-9]/gi,'-')+'-'+String(item.number||'')}); } data.updatedAt=new Date().toISOString(); try{fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');}catch{} console.log(JSON.stringify({unclaimedCount:unclaimed.length,alreadyClaimedCount:alreadyClaimed.length,unclaimed,alreadyClaimed}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "BOSUN_SECURITY_FIX": "{{$ctx.getNodeOutput('programmatic-security-fix')?.output || '{}'}}",
-              "PR_FIX_TTL_MINUTES": "{{prFixTtlMinutes}}"
-            }
+            "prompt": "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\nEach item represents a Bosun-created or explicitly trusted PR blocked by CodeQL or GitHub code scanning.\nUse the supplied alert data, prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, and prDigest.checks to make the smallest safe code change that resolves the finding.\nFor each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\nSTRICT RULES:\n- Only fix the listed code-scanning or CodeQL findings.\n- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
+            "maxRetries": 2,
+            "retryDelayMs": 30000,
+            "continueOnError": true
           },
           "position": {
             "x": 120,
-            "y": 920
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-unclaimed-security-fixes",
-          "type": "condition.expression",
-          "label": "Unclaimed Security Fixes?",
-          "config": {
-            "expression": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-security-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return (Array.isArray(d.unclaimed)?d.unclaimed:[]).length>0;}catch(e){return false;}})()"
-          },
-          "position": {
-            "x": 120,
-            "y": 1010
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "dispatch-security-fix-agents",
-          "type": "loop.for_each",
-          "label": "Dispatch Security Fix Agents (Per PR)",
-          "config": {
-            "items": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-security-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return Array.isArray(d.unclaimed)?d.unclaimed:[];}catch{return []}})()",
-            "variable": "item",
-            "maxConcurrent": "{{maxConcurrentFixes}}",
-            "workflowId": "template-pr-security-fix-single"
-          },
-          "position": {
-            "x": 120,
-            "y": 1100
+            "y": 970
           },
           "outputs": [
             "default"
@@ -977,7 +676,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[]; const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[]; const needsAgent=[]; let rerunRequested=0; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const MAX_AUTO_RERUN_ATTEMPT=1; const GH_MAX_BUFFER=25*1024*1024;const GH_CACHE_TTL_MS=30000;const ghReadCache=new Map();let ghRateLimitUntil=0;function ghSleep(ms){if(!Number.isFinite(ms)||ms<=0)return;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Math.min(ms,5000));}function ghCacheKey(args){return JSON.stringify(Array.isArray(args)?args:[]);}function isGhReadOnly(args){const list=Array.isArray(args)?args.map((item)=>String(item||'').trim().toLowerCase()):[];if(list.length===0)return false;const joined=' '+list.join(' ')+' ';return !/( edit | merge | close | reopen | rerun | delete | create | ready | cancel )/.test(joined);}function readGhMessage(error){return String(error?.stderr||error?.stdout||error?.message||error||'');}function runGh(args){const cacheable=isGhReadOnly(args);const key=cacheable?ghCacheKey(args):'';const now=Date.now();if(cacheable){const cached=ghReadCache.get(key);if(cached&&cached.expiresAt>now)return cached.output;if(now<ghRateLimitUntil&&cached)return cached.output;}let lastError=null;for(let attempt=0;attempt<2;attempt+=1){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(error){const message=readGhMessage(error);lastError=error;const retryAfter=message.match(/retry after\\s+(\\d+)\\s*second/i)||message.match(/try again in\\s+(\\d+)\\s*second/i);if(/secondary rate limit|rate limit exceeded|api rate limit/i.test(message)&&attempt===0){const waitMs=Math.max(1000,Math.min(5000,(Number(retryAfter?.[1]||0)||2)*1000));ghRateLimitUntil=Date.now()+waitMs;ghSleep(waitMs);continue;}if(/ENOBUFS|maxbuffer|stdout maxbuffer length exceeded/i.test(message)&&attempt===0){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER*2}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(innerError){lastError=innerError;}}break;}}throw lastError;}function ghJson(args){const out=runGh(args);return out?JSON.parse(out):[];}function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}} function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||job.id||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||job.html_url||''),checkRunUrl:String(job.check_run_url||job.checkRunUrl||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=String(check?.name||check?.context||check?.workflowName||'').trim();const state=String(check?.state||check?.conclusion||'').toUpperCase();const bucket=String(check?.bucket||'').toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const path=String(file?.filename||file?.path||'').trim();return path?{path,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{});const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[]).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[]).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[]).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[]).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{});const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const failingChecks=checks.filter((check)=>['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(check.state)||check.bucket==='FAIL');const pendingChecks=checks.filter((check)=>['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED'].includes(check.state));const labels=(Array.isArray(pr.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} const CI_LOG_EXCERPT_MAX_CHARS=12000;const CI_MAX_JOB_DIAGNOSTICS=10;const CI_MAX_ANNOTATIONS=60;function safeGhJsonRunner(runner,args,fallback){try{const out=runner(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}function parseCheckRunId(value){const match=String(value||'').match(/\\/check-runs\\/(\\d+)/i);return match?Number(match[1]||0)||0:0;}function normalizeAnnotation(annotation){if(!annotation||typeof annotation!=='object')return null;const path=String(annotation.path||'').trim();const message=truncateText(annotation.message,1200);if(!path&&!message)return null;return {path:path||null,startLine:Number(annotation.start_line||0)||null,endLine:Number(annotation.end_line||0)||null,startColumn:Number(annotation.start_column||0)||null,endColumn:Number(annotation.end_column||0)||null,level:String(annotation.annotation_level||'').trim()||null,title:truncateText(annotation.title,300)||null,message,rawDetails:truncateText(annotation.raw_details,800)||null};}function collectCheckRunAnnotations(repo,checkRunId,runner){if(!repo||!checkRunId)return [];const annotations=[];for(let page=1;page<=3&&annotations.length<CI_MAX_ANNOTATIONS;page+=1){const batch=safeGhJsonRunner(runner,['api','repos/'+repo+'/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page],[]);if(!Array.isArray(batch)||batch.length===0)break;for(const entry of batch){const normalized=normalizeAnnotation(entry);if(normalized)annotations.push(normalized);if(annotations.length>=CI_MAX_ANNOTATIONS)break;}if(batch.length<50)break;}return annotations.slice(0,CI_MAX_ANNOTATIONS);}function collectCiDiagnostics(repo,run,runner){const info={failedRun:normalizeRun(run),failedJobs:[],failedAnnotations:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId||!repo)return info;let workflowJobs=[];try{const viewRaw=runner(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const apiJobs=safeGhJsonRunner(runner,['api','repos/'+repo+'/actions/runs/'+runId+'/jobs?per_page=100'],{});workflowJobs=Array.isArray(apiJobs?.jobs)?apiJobs.jobs:(Array.isArray(view.jobs)?view.jobs:[]);info.failedJobs=workflowJobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,CI_MAX_JOB_DIAGNOSTICS);}catch(e){info.diagnosticsError=String(e?.message||e);}try{for(const job of info.failedJobs){const checkRunId=parseCheckRunId(job?.checkRunUrl);const annotations=collectCheckRunAnnotations(repo,checkRunId,runner);if(annotations.length===0)continue;info.failedAnnotations.push({name:String(job?.name||''),checkRunId,annotations});if(info.failedAnnotations.length>=CI_MAX_JOB_DIAGNOSTICS)break;}}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}try{info.failedLogExcerpt=truncateText(runner(['run','view',String(runId),'--repo',repo,'--log-failed']),CI_LOG_EXCERPT_MAX_CHARS);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;} for(const item of ciFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   const failedCheckNames=Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[];   const url=String(item?.url||'').trim();   const title=String(item?.title||'').trim();   const prDigest=repo&&n?collectPrDigest(repo,n,{branch,title,url}):null;   if(!repo||!branch){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'missing_repo_or_branch',prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   let runs=[];   try{     const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);     const parsedRuns=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     runs=Array.isArray(parsedRuns)?parsedRuns:[];   }catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_run_listing_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   const failed=runs.find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));   const failedRun=normalizeRun(failed);   if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){     try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}     catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}   }   if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}   needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5),prDigest,digestSummary:String(prDigest?.digestSummary||'')}); } let branchUpdated=0; for(const item of conflicts){   const repo=String(item?.repo||'').trim();   const n=String(item?.n||'').trim();   const branch=String(item?.branch||'').trim();   const base=String(item?.base||'').trim();   const mergeable=String(item?.mergeable||'').toUpperCase();   const prDigest=repo&&n?collectPrDigest(repo,n,{branch,base,url:String(item?.url||'')}):null;   if(!repo||!n){needsAgent.push({...item,reason:'missing_repo_or_pr',prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   if(mergeable==='BEHIND'){     try{       const headSha=JSON.parse(runGh(['pr','view',n,'--repo',repo,'--json','headRefOid'])).headRefOid;       const apiArgs=['api','-X','PUT','repos/'+repo+'/pulls/'+n+'/update-branch','--field','expected_head_sha='+headSha];       runGh(apiArgs);       branchUpdated++;     }catch(e){needsAgent.push({repo,number:n,branch,base,mergeable,reason:'branch_update_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||'')});}     continue;   }   needsAgent.push({repo,number:n,branch,base,mergeable,reason:'merge_conflict_requires_code_resolution',prDigest,digestSummary:String(prDigest?.digestSummary||'')}); } const fullPayload={rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent}; const fs=require('fs');const path=require('path'); const bosunHome=String(process.env.BOSUN_HOME||'').trim(); const tmpDir=bosunHome?path.join(bosunHome,'tmp'):path.join(process.cwd(),'.cache','bosun'); try{fs.mkdirSync(tmpDir,{recursive:true})}catch{} const tmpFile=path.join(tmpDir,'programmatic-fix-output.json'); try{fs.writeFileSync(tmpFile,JSON.stringify(fullPayload),'utf8');process.stderr.write('[programmatic-fix] wrote '+tmpFile+' ('+JSON.stringify(fullPayload).length+' bytes)\\n')}catch(e){process.stderr.write('[programmatic-fix] failed to write temp file '+tmpFile+': '+String(e?.message||e)+'\\n')} console.log(JSON.stringify({rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,tmpFile}));"
+              "const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[]; const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[]; const needsAgent=[]; let rerunRequested=0; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const MAX_AUTO_RERUN_ATTEMPT=1; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}} function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||job.id||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||job.html_url||''),checkRunUrl:String(job.check_run_url||job.checkRunUrl||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=String(check?.name||check?.context||check?.workflowName||'').trim();const state=String(check?.state||check?.conclusion||'').toUpperCase();const bucket=String(check?.bucket||'').toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const path=String(file?.filename||file?.path||'').trim();return path?{path,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{});const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[]).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[]).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[]).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[]).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{});const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const failingChecks=checks.filter((check)=>['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(check.state)||check.bucket==='FAIL');const pendingChecks=checks.filter((check)=>['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED'].includes(check.state));const labels=(Array.isArray(pr.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} const CI_LOG_EXCERPT_MAX_CHARS=12000;const CI_MAX_JOB_DIAGNOSTICS=10;const CI_MAX_ANNOTATIONS=60;function safeGhJsonRunner(runner,args,fallback){try{const out=runner(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}function parseCheckRunId(value){const match=String(value||'').match(/\\/check-runs\\/(\\d+)/i);return match?Number(match[1]||0)||0:0;}function normalizeAnnotation(annotation){if(!annotation||typeof annotation!=='object')return null;const path=String(annotation.path||'').trim();const message=truncateText(annotation.message,1200);if(!path&&!message)return null;return {path:path||null,startLine:Number(annotation.start_line||0)||null,endLine:Number(annotation.end_line||0)||null,startColumn:Number(annotation.start_column||0)||null,endColumn:Number(annotation.end_column||0)||null,level:String(annotation.annotation_level||'').trim()||null,title:truncateText(annotation.title,300)||null,message,rawDetails:truncateText(annotation.raw_details,800)||null};}function collectCheckRunAnnotations(repo,checkRunId,runner){if(!repo||!checkRunId)return [];const annotations=[];for(let page=1;page<=3&&annotations.length<CI_MAX_ANNOTATIONS;page+=1){const batch=safeGhJsonRunner(runner,['api','repos/'+repo+'/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page],[]);if(!Array.isArray(batch)||batch.length===0)break;for(const entry of batch){const normalized=normalizeAnnotation(entry);if(normalized)annotations.push(normalized);if(annotations.length>=CI_MAX_ANNOTATIONS)break;}if(batch.length<50)break;}return annotations.slice(0,CI_MAX_ANNOTATIONS);}function collectCiDiagnostics(repo,run,runner){const info={failedRun:normalizeRun(run),failedJobs:[],failedAnnotations:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId||!repo)return info;let workflowJobs=[];try{const viewRaw=runner(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const apiJobs=safeGhJsonRunner(runner,['api','repos/'+repo+'/actions/runs/'+runId+'/jobs?per_page=100'],{});workflowJobs=Array.isArray(apiJobs?.jobs)?apiJobs.jobs:(Array.isArray(view.jobs)?view.jobs:[]);info.failedJobs=workflowJobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,CI_MAX_JOB_DIAGNOSTICS);}catch(e){info.diagnosticsError=String(e?.message||e);}try{for(const job of info.failedJobs){const checkRunId=parseCheckRunId(job?.checkRunUrl);const annotations=collectCheckRunAnnotations(repo,checkRunId,runner);if(annotations.length===0)continue;info.failedAnnotations.push({name:String(job?.name||''),checkRunId,annotations});if(info.failedAnnotations.length>=CI_MAX_JOB_DIAGNOSTICS)break;}}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}try{info.failedLogExcerpt=truncateText(runner(['run','view',String(runId),'--repo',repo,'--log-failed']),CI_LOG_EXCERPT_MAX_CHARS);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;} for(const item of ciFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   const failedCheckNames=Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[];   const url=String(item?.url||'').trim();   const title=String(item?.title||'').trim();   const prDigest=repo&&n?collectPrDigest(repo,n,{branch,title,url}):null;   if(!repo||!branch){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'missing_repo_or_branch',prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   let runs=[];   try{     const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);     const parsedRuns=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     runs=Array.isArray(parsedRuns)?parsedRuns:[];   }catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_run_listing_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   const failed=runs.find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));   const failedRun=normalizeRun(failed);   if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){     try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}     catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}   }   if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}   needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5),prDigest,digestSummary:String(prDigest?.digestSummary||'')}); } let branchUpdated=0; for(const item of conflicts){   const repo=String(item?.repo||'').trim();   const n=String(item?.n||'').trim();   const branch=String(item?.branch||'').trim();   const base=String(item?.base||'').trim();   const mergeable=String(item?.mergeable||'').toUpperCase();   const prDigest=repo&&n?collectPrDigest(repo,n,{branch,base,url:String(item?.url||'')}):null;   if(!repo||!n){needsAgent.push({...item,reason:'missing_repo_or_pr',prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   if(mergeable==='BEHIND'){     try{       const headSha=JSON.parse(runGh(['pr','view',n,'--repo',repo,'--json','headRefOid'])).headRefOid;       const apiArgs=['api','-X','PUT','repos/'+repo+'/pulls/'+n+'/update-branch','--field','expected_head_sha='+headSha];       runGh(apiArgs);       branchUpdated++;     }catch(e){needsAgent.push({repo,number:n,branch,base,mergeable,reason:'branch_update_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||'')});}     continue;   }   needsAgent.push({repo,number:n,branch,base,mergeable,reason:'merge_conflict_requires_code_resolution',prDigest,digestSummary:String(prDigest?.digestSummary||'')}); } console.log(JSON.stringify({rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent}));"
             ],
             "continueOnError": true,
             "failOnError": false,
@@ -1009,57 +708,22 @@
           ]
         },
         {
-          "id": "claim-unclaimed-prs",
-          "type": "action.run_command",
-          "label": "Claim & Filter Unclaimed PRs",
+          "id": "dispatch-fix-agent",
+          "type": "action.run_agent",
+          "label": "Dispatch Fix Agent (Fallback)",
           "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const bosunHome=String(process.env.BOSUN_HOME||'').trim(); const tmpDir=bosunHome?path.join(bosunHome,'tmp'):path.join(process.cwd(),'.cache','bosun'); const tmpFile=path.join(tmpDir,'programmatic-fix-output.json'); let raw=''; try{raw=fs.readFileSync(tmpFile,'utf8');}catch(e){process.stderr.write('[claim] cannot read temp file '+tmpFile+': '+String(e?.message||e)+'\\n');} const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const needsAgent=Array.isArray(payload.needsAgent)?payload.needsAgent:[]; const TTL_MS=Math.max(60000,Number(process.env.PR_FIX_TTL_MINUTES||'120')*60*1000); const STALE_CLAIM_MS=Math.max(10*60*1000,Math.min(TTL_MS,20*60*1000)); const CLAIM_DIR=tmpDir; const CLAIM_FILE=path.join(CLAIM_DIR,'pr-fix-claims.json'); function loadClaims(){try{const d=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));return(d&&typeof d==='object'&&d.claims&&typeof d.claims==='object')?d.claims:{};}catch{return {};}} function saveClaims(claims){try{if(!fs.existsSync(CLAIM_DIR))fs.mkdirSync(CLAIM_DIR,{recursive:true});const data={version:1,claims,updatedAt:new Date().toISOString()};const tmp=CLAIM_FILE+'.tmp'+Date.now();fs.writeFileSync(tmp,JSON.stringify(data,null,2),'utf8');fs.renameSync(tmp,CLAIM_FILE);}catch(e){process.stderr.write('[claim] save error: '+String(e?.message||e)+'\\n');}} const now=Date.now(); const claims=loadClaims(); /* Purge expired or abandoned claims so stalled repair runs do not block retries for hours. */ for(const key of Object.keys(claims)){const claim=claims[key]||{};const expiresAt=new Date(claim.expiresAt||0).getTime();const claimedAt=new Date(claim.claimedAt||0).getTime();const staleByAge=Number.isFinite(claimedAt)&&claimedAt>0&&(now-claimedAt)>=STALE_CLAIM_MS;if(now>expiresAt||staleByAge)delete claims[key];} const unclaimed=[]; const alreadyClaimed=[]; for(const item of needsAgent){   const repo=String(item?.repo||'').trim();   const number=String(item?.number||item?.n||'').trim();   if(!repo||!number){unclaimed.push({...item,taskId:'pr-fix-unknown',taskTitle:'Unknown PR',claimKey:''});continue;}   const key=repo+'#'+number;   const claim=claims[key];   if(claim&&now<new Date(claim.expiresAt||0).getTime()){     alreadyClaimed.push({key,repo,number,reason:item?.reason||'',claimedAt:claim.claimedAt,expiresAt:claim.expiresAt});     process.stderr.write('[pr-watchdog] '+key+' already claimed (claimed '+claim.claimedAt+', expires '+claim.expiresAt+'), skipping\\n');     continue;   }   const safeRepo=repo.replace(/[^a-z0-9]/gi,'-').replace(/-+/g,'-').replace(/^-|-$/g,'');   const taskId='pr-fix-'+safeRepo+'-'+number;   const taskTitle='Fix PR #'+number+(item?.title?' \\''+String(item.title).slice(0,60)+'\\'':'')+' ('+repo+')';   claims[key]={repo,number,taskId,taskTitle,claimedAt:new Date().toISOString(),expiresAt:new Date(now+TTL_MS).toISOString()};   unclaimed.push({...item,taskId,taskTitle,number,repo,claimKey:key}); } saveClaims(claims); console.log(JSON.stringify({unclaimed,alreadyClaimed,unclaimedCount:unclaimed.length,alreadyClaimedCount:alreadyClaimed.length,totalNeedsAgent:needsAgent.length}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "PR_FIX_TTL_MINUTES": "{{prFixTtlMinutes}}"
-            }
+            "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nEach unresolved item includes prDigest with the PR body, files, issue comments, reviews, review comments, review requests, and check summaries. Use that context first.\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: start from failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
+            "maxRetries": 2,
+            "retryDelayMs": 30000,
+            "continueOnError": true
           },
           "position": {
             "x": 280,
             "y": 970
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-unclaimed-fixes",
-          "type": "condition.expression",
-          "label": "Unclaimed Fixes?",
-          "config": {
-            "expression": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return (Array.isArray(d.unclaimed)?d.unclaimed:[]).length>0;}catch(e){return false;}})()"
-          },
-          "position": {
-            "x": 280,
-            "y": 1060
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "dispatch-fix-agents",
-          "type": "loop.for_each",
-          "label": "Dispatch Fix Agents (Per PR)",
-          "config": {
-            "items": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return Array.isArray(d.unclaimed)?d.unclaimed:[];}catch{return []}})()",
-            "variable": "item",
-            "maxConcurrent": "{{maxConcurrentFixes}}",
-            "workflowId": "template-pr-fix-single"
-          },
-          "position": {
-            "x": 280,
-            "y": 1160
           },
           "outputs": [
             "default"
@@ -1115,48 +779,6 @@
           "position": {
             "x": 400,
             "y": 900
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pause-task-spawning",
-          "type": "action.run_command",
-          "label": "Pause Task Spawning",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'),path=require('path');const wfDir=path.resolve(process.env.BOSUN_CONFIG_DIR||'.bosun','workflows');const PAUSE_TARGETS=['template-task-lifecycle','template-task-batch-processor'];if(!fs.existsSync(wfDir)){process.exit(0);}let paused=0;for(const f of fs.readdirSync(wfDir).filter(f=>f.endsWith('.json'))){  try{const fp=path.join(wfDir,f);const def=JSON.parse(fs.readFileSync(fp,'utf8'));  const tmpl=String(def?.metadata?.installedFrom||'').trim();  if(!PAUSE_TARGETS.includes(tmpl))continue;  if(def.enabled===false&&def.metadata?.pausedByWorkflow)continue;  def.enabled=false;def.metadata=def.metadata||{};  def.metadata.pausedByWorkflow='template-bosun-pr-watchdog';  def.metadata.pausedAt=new Date().toISOString();  fs.writeFileSync(fp,JSON.stringify(def,null,2),'utf8');paused++;}catch{}}console.log(JSON.stringify({paused}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false
-          },
-          "position": {
-            "x": 50,
-            "y": 560
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "resume-task-spawning",
-          "type": "action.run_command",
-          "label": "Resume Task Spawning",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'),path=require('path');const wfDir=path.resolve(process.env.BOSUN_CONFIG_DIR||'.bosun','workflows');if(!fs.existsSync(wfDir)){process.exit(0);}let resumed=0;for(const f of fs.readdirSync(wfDir).filter(f=>f.endsWith('.json'))){  try{const fp=path.join(wfDir,f);const def=JSON.parse(fs.readFileSync(fp,'utf8'));  if(def.metadata?.pausedByWorkflow!=='template-bosun-pr-watchdog')continue;  def.enabled=true;delete def.metadata.pausedByWorkflow;delete def.metadata.pausedAt;  fs.writeFileSync(fp,JSON.stringify(def,null,2),'utf8');resumed++;}catch{}}console.log(JSON.stringify({resumed}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false
-          },
-          "position": {
-            "x": 700,
-            "y": 560
           },
           "outputs": [
             "default"
@@ -1258,9 +880,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-needed->pause-task-spawning",
+          "id": "fix-needed->security-fix-needed",
           "source": "fix-needed",
-          "target": "pause-task-spawning",
+          "target": "security-fix-needed",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -1270,12 +892,6 @@
           "target": "review-needed",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "pause-task-spawning->security-fix-needed",
-          "source": "pause-task-spawning",
-          "target": "security-fix-needed",
-          "sourcePort": "default"
         },
         {
           "id": "security-fix-needed->programmatic-security-fix",
@@ -1298,9 +914,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "security-agent-needed->claim-unclaimed-security-prs",
+          "id": "security-agent-needed->dispatch-security-fix-agent",
           "source": "security-agent-needed",
-          "target": "claim-unclaimed-security-prs",
+          "target": "dispatch-security-fix-agent",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -1312,28 +928,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "claim-unclaimed-security-prs->has-unclaimed-security-fixes",
-          "source": "claim-unclaimed-security-prs",
-          "target": "has-unclaimed-security-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-unclaimed-security-fixes->dispatch-security-fix-agents",
-          "source": "has-unclaimed-security-fixes",
-          "target": "dispatch-security-fix-agents",
-          "sourcePort": "default",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-unclaimed-security-fixes->generic-fix-needed",
-          "source": "has-unclaimed-security-fixes",
-          "target": "generic-fix-needed",
-          "sourcePort": "default",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "dispatch-security-fix-agents->generic-fix-needed",
-          "source": "dispatch-security-fix-agents",
+          "id": "dispatch-security-fix-agent->generic-fix-needed",
+          "source": "dispatch-security-fix-agent",
           "target": "generic-fix-needed",
           "sourcePort": "default"
         },
@@ -1358,9 +954,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-agent-needed->claim-unclaimed-prs",
+          "id": "fix-agent-needed->dispatch-fix-agent",
           "source": "fix-agent-needed",
-          "target": "claim-unclaimed-prs",
+          "target": "dispatch-fix-agent",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -1372,28 +968,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "claim-unclaimed-prs->has-unclaimed-fixes",
-          "source": "claim-unclaimed-prs",
-          "target": "has-unclaimed-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-unclaimed-fixes->dispatch-fix-agents",
-          "source": "has-unclaimed-fixes",
-          "target": "dispatch-fix-agents",
-          "sourcePort": "default",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-unclaimed-fixes->review-needed",
-          "source": "has-unclaimed-fixes",
-          "target": "review-needed",
-          "sourcePort": "default",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "dispatch-fix-agents->review-needed",
-          "source": "dispatch-fix-agents",
+          "id": "dispatch-fix-agent->review-needed",
+          "source": "dispatch-fix-agent",
           "target": "review-needed",
           "sourcePort": "default"
         },
@@ -1418,20 +994,8 @@
           "sourcePort": "default"
         },
         {
-          "id": "notify->resume-task-spawning",
+          "id": "notify->cleanup-merged-branches",
           "source": "notify",
-          "target": "resume-task-spawning",
-          "sourcePort": "default"
-        },
-        {
-          "id": "no-prs->resume-task-spawning",
-          "source": "no-prs",
-          "target": "resume-task-spawning",
-          "sourcePort": "default"
-        },
-        {
-          "id": "resume-task-spawning->cleanup-merged-branches",
-          "source": "resume-task-spawning",
           "target": "cleanup-merged-branches",
           "sourcePort": "default"
         }
@@ -1548,7 +1112,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,actionableUnresolved,needsAgent:actionableUnresolved.length>0}));"
+              "const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));"
             ],
             "continueOnError": true,
             "failOnError": false,
@@ -1686,429 +1250,6 @@
       ]
     },
     {
-      "id": "template-github-check-failure",
-      "name": "GitHub Check Failure Handler",
-      "description": "Event-driven workflow that fires the moment a GitHub check run fails. Identifies the associated PR and applies the bosun-needs-fix label instantly so the PR Watchdog can dispatch a repair agent on its next sweep. Eliminates the up-to-30-minute delay between a CI failure and Bosun's response.",
-      "category": "github",
-      "categoryLabel": "GitHub",
-      "categoryIcon": ":git:",
-      "categoryOrder": 1,
-      "tags": [
-        "github",
-        "ci",
-        "check",
-        "event-driven",
-        "webhook",
-        "reliability"
-      ],
-      "nodeCount": 5,
-      "edgeCount": 4,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.event",
-      "variables": {
-        "labelNeedsFix": "bosun-needs-fix",
-        "ignoredCheckNames": "codecov,dependabot,semantic-pr-title"
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "github",
-          "ci",
-          "check",
-          "event-driven",
-          "webhook",
-          "reliability"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.event",
-          "label": "Check Run Failed",
-          "config": {
-            "eventType": "github:check_run",
-            "filter": "$event?.action === 'completed' && $event?.checkConclusion === 'failure' && !String($event?.checkName || '').split(',').some(n =>   String($data?.ignoredCheckNames || '').toLowerCase().split(',').map(s => s.trim()).includes(n.trim().toLowerCase()))"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-has-pr",
-          "type": "condition.expression",
-          "label": "Associated PR Found?",
-          "config": {
-            "expression": "Number($data?.prNumber) > 0 && Boolean($data?.repo)"
-          },
-          "position": {
-            "x": 400,
-            "y": 190
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "label-fix",
-          "type": "action.run_command",
-          "label": "Label PR: bosun-needs-fix",
-          "config": {
-            "command": "gh",
-            "args": [
-              "pr",
-              "edit",
-              "{{prNumber}}",
-              "--add-label",
-              "{{labelNeedsFix}}",
-              "--repo",
-              "{{repo}}"
-            ],
-            "continueOnError": true
-          },
-          "position": {
-            "x": 250,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-labeled",
-          "type": "notify.log",
-          "label": "Log Fix Label Applied",
-          "config": {
-            "message": ":x: Check '{{checkName}}' failed on PR #{{prNumber}} ({{repo}}). Applied label '{{labelNeedsFix}}' — PR Watchdog will dispatch repair.",
-            "level": "warn"
-          },
-          "position": {
-            "x": 250,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-pr",
-          "type": "notify.log",
-          "label": "Log No Associated PR",
-          "config": {
-            "message": "Check '{{checkName}}' failed in {{repo}} (conclusion: {{checkConclusion}}) — no associated PR found.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 620,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->check-has-pr",
-          "source": "trigger",
-          "target": "check-has-pr",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-has-pr->label-fix",
-          "source": "check-has-pr",
-          "target": "label-fix",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-has-pr->log-no-pr",
-          "source": "check-has-pr",
-          "target": "log-no-pr",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "label-fix->log-labeled",
-          "source": "label-fix",
-          "target": "log-labeled",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
-      "id": "template-github-pr-event-handler",
-      "name": "GitHub PR Event Handler",
-      "description": "Event-driven workflow that fires as soon as a PR is opened, updated, or reopened via GitHub webhook. Identifies the linked Bosun task by branch name and immediately updates its status to in-review — no polling required. Complements the PR Watchdog which runs every 30 minutes as a fallback.",
-      "category": "github",
-      "categoryLabel": "GitHub",
-      "categoryIcon": ":git:",
-      "categoryOrder": 1,
-      "tags": [
-        "github",
-        "pr",
-        "event-driven",
-        "lifecycle",
-        "webhook"
-      ],
-      "nodeCount": 9,
-      "edgeCount": 8,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.event",
-      "variables": {
-        "labelInReview": "bosun/in-review",
-        "taskBranchPrefix": "task/"
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "github",
-          "pr",
-          "event-driven",
-          "lifecycle",
-          "webhook"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.event",
-          "label": "PR Opened / Updated",
-          "config": {
-            "eventType": "github:pull_request",
-            "filter": "['opened','synchronize','reopened'].includes(String($event?.action || '').toLowerCase())"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-bosun-branch",
-          "type": "condition.expression",
-          "label": "Is a Bosun Task Branch?",
-          "config": {
-            "expression": "Boolean($data?.prBranch) && String($data?.prBranch || '').startsWith(String($data?.taskBranchPrefix || 'task/'))"
-          },
-          "position": {
-            "x": 400,
-            "y": 190
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "find-task",
-          "type": "action.run_command",
-          "label": "Find Linked Task",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        const branch = process.env.PR_BRANCH || \"\";\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, {}))\n          .then(tasks => {\n            const task = (tasks || []).find(t =>\n              (t.branch || t.metadata?.branch) === branch\n            );\n            console.log(JSON.stringify(task || null));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
-            ],
-            "env": {
-              "PR_BRANCH": "{{prBranch}}"
-            },
-            "parseJson": true
-          },
-          "position": {
-            "x": 250,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-task-found",
-          "type": "condition.expression",
-          "label": "Task Found?",
-          "config": {
-            "expression": "Boolean($ctx.getNodeOutput('find-task')?.output?.id)"
-          },
-          "position": {
-            "x": 250,
-            "y": 490
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "update-inreview",
-          "type": "action.update_task_status",
-          "label": "Mark Task In Review",
-          "config": {
-            "taskId": "{{$ctx.getNodeOutput('find-task')?.output?.id || ''}}",
-            "status": "inreview",
-            "taskTitle": "{{$ctx.getNodeOutput('find-task')?.output?.title || prTitle || ''}}",
-            "workflowEvent": "task.in_review",
-            "workflowData": {
-              "source": "github:pr_opened",
-              "prNumber": "{{prNumber}}",
-              "prUrl": "{{prUrl}}",
-              "branch": "{{prBranch}}",
-              "repo": "{{repo}}"
-            }
-          },
-          "position": {
-            "x": 250,
-            "y": 640
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "add-label-in-review",
-          "type": "action.run_command",
-          "label": "Add In-Review Label",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const n=String(process.env.PR_NUMBER||'').trim(); const repo=String(process.env.REPO||'').trim(); const label=String(process.env.LABEL_IN_REVIEW||'bosun/in-review').trim(); if(!n||!label){process.exit(0);} try{   const args=['pr','edit',n,'--add-label',label];   if(repo)args.push('--repo',repo);   execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']});   console.log(JSON.stringify({labeled:true,label,pr:n})); }catch(e){   process.stderr.write('label warn: '+String(e?.message||e)+'\\n');   console.log(JSON.stringify({labeled:false,label,pr:n,error:String(e?.message||e)})); }"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "PR_NUMBER": "{{prNumber}}",
-              "REPO": "{{repo}}",
-              "LABEL_IN_REVIEW": "{{labelInReview}}"
-            }
-          },
-          "position": {
-            "x": 250,
-            "y": 720
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-updated",
-          "type": "notify.log",
-          "label": "Log In Review",
-          "config": {
-            "message": ":rocket: Task {{$ctx.getNodeOutput('find-task')?.output?.id}} moved to in-review — PR #{{prNumber}} ({{prBranch}}) in {{repo}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 250,
-            "y": 790
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-task",
-          "type": "notify.log",
-          "label": "Log No Task Found",
-          "config": {
-            "message": "PR #{{prNumber}} opened on branch {{prBranch}} in {{repo}} — no linked Bosun task found.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 550,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-not-bosun",
-          "type": "notify.log",
-          "label": "Log Non-Bosun Branch",
-          "config": {
-            "message": "PR #{{prNumber}} on {{prBranch}} is not a Bosun task branch — skipping.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 650,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->check-bosun-branch",
-          "source": "trigger",
-          "target": "check-bosun-branch",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-bosun-branch->find-task",
-          "source": "check-bosun-branch",
-          "target": "find-task",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-bosun-branch->log-not-bosun",
-          "source": "check-bosun-branch",
-          "target": "log-not-bosun",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "find-task->check-task-found",
-          "source": "find-task",
-          "target": "check-task-found",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-task-found->update-inreview",
-          "source": "check-task-found",
-          "target": "update-inreview",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-task-found->log-no-task",
-          "source": "check-task-found",
-          "target": "log-no-task",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "update-inreview->add-label-in-review",
-          "source": "update-inreview",
-          "target": "add-label-in-review",
-          "sourcePort": "default"
-        },
-        {
-          "id": "add-label-in-review->log-updated",
-          "source": "add-label-in-review",
-          "target": "log-updated",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
       "id": "template-pr-conflict-resolver",
       "name": "PR Conflict Resolver",
       "description": ":alert: SUPERSEDED for bosun-managed repos — use the Bosun PR Watchdog (template-bosun-pr-watchdog) instead. The Watchdog consolidates conflict resolution, CI-failure repair, diff-safety review, and merge into one cycle with a single gh API call and a mandatory review gate before any merge. This template is kept for repos that do not use the assistive bosun-attached label convention. It only touches Bosun-created PRs and never auto-merges directly — it resolves conflicts and then defers to the Watchdog's review gate for the actual merge decision.",
@@ -2198,7 +1339,7 @@
           "label": "Pick Conflict PR",
           "config": {
             "key": "targetPrNumber",
-            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
+            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
             "isExpression": true
           },
           "position": {
@@ -2215,7 +1356,7 @@
           "label": "Capture Conflict Branch",
           "config": {
             "key": "targetPrBranch",
-            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
+            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
             "isExpression": true
           },
           "position": {
@@ -2232,7 +1373,7 @@
           "label": "Capture Base Branch",
           "config": {
             "key": "targetPrBase",
-            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
+            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
             "isExpression": true
           },
           "position": {
@@ -2412,448 +1553,6 @@
       ]
     },
     {
-      "id": "template-pr-fix-single",
-      "name": "PR Fix Agent (Single PR)",
-      "description": "Fixes one Bosun-attached PR using a dedicated long-running agent (up to 2 hours). Dispatched by the PR Watchdog loop for each unclaimed PR needing repair. Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease and cleans up. The agent NEVER manages git setup or push.",
-      "category": "github",
-      "categoryLabel": "GitHub",
-      "categoryIcon": ":git:",
-      "categoryOrder": 1,
-      "tags": [
-        "github",
-        "pr",
-        "ci",
-        "fix",
-        "single-pr",
-        "session-tracked",
-        "worktree-managed"
-      ],
-      "nodeCount": 15,
-      "edgeCount": 14,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.manual",
-      "variables": {},
-      "metadata": {
-        "author": "bosun",
-        "version": 8,
-        "createdAt": "2026-03-30T00:00:00Z",
-        "templateVersion": "7.0.0",
-        "tags": [
-          "github",
-          "pr",
-          "ci",
-          "fix",
-          "single-pr",
-          "session-tracked",
-          "worktree-managed"
-        ],
-        "notes": "Invoked by template-bosun-pr-watchdog via loop.for_each. Do not enable this template as a standalone scheduled workflow. v3.0: Adds detect-conflicts node for specific conflict file discovery, fix summary section with actionable items, and enhanced review signal extraction. v2.0: Programmatic worktree setup + push. Agent no longer manages git clone/push — prevents wrong-branch pushes and new-branch creation."
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start",
-          "config": {},
-          "position": {
-            "x": 100,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-task",
-          "type": "action.set_variable",
-          "label": "Setup PR Task ID",
-          "config": {
-            "key": "taskId",
-            "value": "'pr-fix-' + String($data?.item?.taskId ||   (String($data?.item?.repo || '').replace(/[^a-z0-9]/gi, '-').replace(/-+/g,'-').replace(/^-|-$/g,'') +    '-' + String($data?.item?.number || $data?.item?.n || '0'))).replace(/^-|-$/g, '')",
-            "isExpression": true
-          },
-          "position": {
-            "x": 380,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-title",
-          "type": "action.set_variable",
-          "label": "Setup PR Task Title",
-          "config": {
-            "key": "taskTitle",
-            "value": "'Fix PR #' + String($data?.item?.number || $data?.item?.n || '?') + ($data?.item?.title ? ' \\'' + String($data.item.title).slice(0,60) + '\\'' : '') + ' (' + String($data?.item?.repo || '') + ')'",
-            "isExpression": true
-          },
-          "position": {
-            "x": 660,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-claim-key",
-          "type": "action.set_variable",
-          "label": "Setup Claim Key",
-          "config": {
-            "key": "claimKey",
-            "value": "String($data?.item?.claimKey || '')",
-            "isExpression": true
-          },
-          "position": {
-            "x": 940,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "resolve-pr-params",
-          "type": "action.set_variable",
-          "label": "Resolve PR Parameters",
-          "config": {
-            "key": "prParams",
-            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0'), reason: String($data?.item?.reason || ''), mergeable: String($data?.item?.mergeable || $data?.item?.prDigest?.core?.mergeable || '')})",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1220,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-worktree",
-          "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
-            ],
-            "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
-            "env": {
-              "PR_REPO": "{{prParams.repo}}",
-              "PR_BRANCH": "{{prParams.branch}}",
-              "PR_BASE": "{{prParams.base}}",
-              "PR_NUMBER": "{{prParams.number}}"
-            }
-          },
-          "position": {
-            "x": 1500,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-worktree-path",
-          "type": "action.set_variable",
-          "label": "Set Agent Working Directory",
-          "config": {
-            "key": "worktreePath",
-            "value": "{{setup-worktree.output.worktreePath}}"
-          },
-          "position": {
-            "x": 1780,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "detect-conflicts",
-          "type": "action.run_command",
-          "label": "Detect Merge Conflict Files",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const reason=String(process.env.ITEM_REASON||'').trim(); const mergeable=String(process.env.ITEM_MERGEABLE||'').trim().toUpperCase(); if(!wt){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);} const isConflict=reason.includes('merge_conflict')||['CONFLICTING','DIRTY'].includes(mergeable); if(!isConflict){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);} let mergeOutput=''; let conflictFiles=[]; try{   try{mergeOutput=execFileSync('git',['merge','--no-commit','--no-ff','origin/'+base],{cwd:wt,encoding:'utf8',timeout:60000}).toString();}   catch(e){mergeOutput=String(e?.stderr||'')+' '+String(e?.stdout||'');}   try{     const diffFiles=execFileSync('git',['diff','--name-only','--diff-filter=U'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(diffFiles){conflictFiles=diffFiles.split(/\\r?\\n/).map(f=>f.trim()).filter(Boolean);}   }catch{}   if(conflictFiles.length===0){     const matches=mergeOutput.match(/CONFLICT[^:]*:\\s*Merge conflict in (.+)/gi)||[];     conflictFiles=matches.map(m=>{const f=m.match(/in\\s+(.+)/i);return f?f[1].trim():'';}).filter(Boolean);   }   try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{} }catch(e){   try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{}   console.log(JSON.stringify({hasConflicts:false,conflictFiles:[],error:String(e?.message||e).slice(0,500)}));   process.exit(0); } console.log(JSON.stringify({hasConflicts:conflictFiles.length>0,conflictFiles:[...new Set(conflictFiles)],mergeOutput:String(mergeOutput||'').slice(0,2000)}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 120000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}",
-              "PR_BASE": "{{prParams.base}}",
-              "ITEM_REASON": "{{prParams.reason}}",
-              "ITEM_MERGEABLE": "{{prParams.mergeable}}"
-            }
-          },
-          "position": {
-            "x": 2060,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-prompt",
-          "type": "action.set_variable",
-          "label": "Build Agent Prompt",
-          "config": {
-            "key": "agentPrompt",
-            "value": "(()=>{\n  const item = $data?.item || {};\n  const prDigest = item.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(item.repo || core.repo || '');\n  const branch = String(item.branch || core.branch || '');\n  const base = String(item.base || item.baseBranch || core.baseBranch || 'main');\n  const number = String(item.number || item.n || '');\n  const title = String(item.title || core.title || '');\n  const reason = String(item.reason || '');\n  const url = String(item.url || core.url || '');\n  const mergeable = String(item.mergeable || core.mergeable || '');\n  const failedChecks = Array.isArray(item.failedCheckNames) ? item.failedCheckNames : [];\n  const failedJobs = Array.isArray(item.failedJobs) ? item.failedJobs : [];\n  const annotations = Array.isArray(item.failedAnnotations) ? item.failedAnnotations : [];\n  const logExcerpt = String(item.failedLogExcerpt || '').trim();\n  const recentRuns = Array.isArray(item.recentRuns) ? item.recentRuns : [];\n  const ciSummary = prDigest.ciSummary || {};\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n';\n  p += '- **Fix Reason**: `' + reason + '`\\n';\n  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n  if (item.error) p += '- **Error**: ' + item.error + '\\n';\n  if (item.rerunAttempts) p += '- **Rerun Attempts**: ' + item.rerunAttempts + '\\n';\n  p += '\\n';\n  /* --- Read detected conflict files from detect-conflicts node --- */\n  const conflictDetection = (()=>{ try { const o = $ctx?.getNodeOutput?.('detect-conflicts'); if (!o) return {}; const raw = o.output; return typeof raw === 'object' ? raw : JSON.parse(String(raw||'{}')); } catch { return {}; } })();\n  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n  /* --- Build fix summary (top-line overview like a human reviewer comment) --- */\n  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n  const fixItems = [];\n  if (mergeable === 'CONFLICTING' || mergeable === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base branch `' + base + '`'));\n  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n  if (fixItems.length > 0) {\n    p += '## Fix Summary\\n\\n';\n    p += 'This PR needs the following fixes:\\n';\n    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n    p += '\\n';\n  }\n  if (failedChecks.length > 0) {\n    p += '## Failed CI Checks\\n\\n';\n    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n    p += '## CI Check Summary\\n\\n';\n    p += 'Total: ' + (ciSummary.total||0) + '  |  Failing: ' + (ciSummary.failing||0) + '  |  Pending: ' + (ciSummary.pending||0) + '  |  Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n    const failingAllChecks = allChecks.filter(c => ['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(c.state));\n    if (failingAllChecks.length > 0) {\n      p += 'Failing checks:\\n';\n      failingAllChecks.forEach(c => { p += '- `' + (c.name||c.workflow||'') + '` → ' + c.state + '\\n'; });\n      p += '\\n';\n    }\n  }\n  if (item.failedRun) {\n    const run = item.failedRun;\n    p += '## Failed Workflow Run\\n\\n';\n    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n    p += '- **Run ID**: ' + run.databaseId + '\\n';\n    p += '- **Attempt**: ' + run.attempt + '\\n';\n    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n    p += '- **URL**: ' + run.url + '\\n';\n    p += '\\n';\n  }\n  if (failedJobs.length > 0) {\n    p += '## Failed Jobs\\n\\n';\n    failedJobs.slice(0,8).forEach(job => {\n      p += '### ' + (job.name||'unknown') + '\\n';\n      p += '- Conclusion: ' + job.conclusion + '\\n';\n      if (job.url) p += '- URL: ' + job.url + '\\n';\n      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n      }\n      p += '\\n';\n    });\n  }\n  if (annotations.length > 0) {\n    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n    annotations.slice(0,6).forEach(annot => {\n      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n        p += '**Job: ' + (annot.name||'') + '**\\n';\n        annot.annotations.slice(0,15).forEach(a => {\n          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n        });\n        p += '\\n';\n      }\n    });\n  }\n  if (logExcerpt) {\n    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n  }\n  if (recentRuns.length > 0) {\n    p += '## Recent CI Runs\\n\\n';\n    recentRuns.forEach(r => { p += '- ' + (r.workflowName||r.displayTitle||'') + ' (' + r.conclusion + ') ' + (r.url||'') + '\\n'; });\n    p += '\\n';\n  }\n  if (mergeable === 'CONFLICTING' || mergeable === 'DIRTY' || detectedConflictFiles.length > 0) {\n    p += '## Merge Conflict\\n\\n';\n    p += 'This branch has conflicts that must be resolved.\\n';\n    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n    if (detectedConflictFiles.length > 0) {\n      p += '**Conflicting files:**\\n';\n      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n      p += '\\n';\n    }\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n    p += '## Reviews & Inline Comments\\n\\n';\n    reviewsWithBody.slice(0,5).forEach(r => {\n      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n    });\n    if (reviewComments.length > 0) {\n      p += 'Inline comments:\\n';\n      reviewComments.slice(0,12).forEach(c => {\n        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n      });\n      p += '\\n';\n    }\n  }\n  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n  if (issueCommentsWithBody.length > 0) {\n    p += '## Issue Comments\\n\\n';\n    issueCommentsWithBody.slice(0,5).forEach(c => {\n      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n    });\n  }\n  return p;\n})()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 2340,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-active",
-          "type": "action.set_variable",
-          "label": "Mark Agent Workflow Active",
-          "config": {
-            "key": "_agentWorkflowActive",
-            "value": "true",
-            "isExpression": true
-          },
-          "position": {
-            "x": 2620,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fix-agent",
-          "type": "action.run_agent",
-          "label": "Fix PR (Dedicated Agent)",
-          "config": {
-            "prompt": "{{agentPrompt}}\n\n## Workspace\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-worktree.output.branch}}`). The base branch (`origin/{{setup-worktree.output.base}}`) has been fetched and is available for merge/rebase operations.\n\n## CRITICAL RULES — READ BEFORE DOING ANYTHING\n\n1. **Do NOT clone or re-clone the repo** — you are already in it.\n2. **Do NOT create new branches.** Stay on the current branch.\n3. **Do NOT push.** The workflow pushes for you automatically after you finish.\n4. **Do NOT switch branches** with `git checkout` or `git switch`.\n5. **Do NOT run `cd` to change to a different directory.** Stay in the cwd.\n6. Fix ONLY the specific issue listed in the Fix Reason above.\n7. Do NOT merge, approve, or close the PR.\n8. Do NOT touch any other PRs or repos.\n\n## Fix Instructions\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\nUse the PR digest (CI diagnostics, log excerpts, annotations, reviews) above to identify the root cause and apply the MINIMAL fix.\n\n**By `reason` field:**\n- `merge_conflict_requires_code_resolution`: Run `git merge origin/{{setup-worktree.output.base}}`,   resolve *all* conflicts in code, run available tests, then `git commit`.\n- `auto_rerun_limit_reached` / `ci_rerun_failed`: Study the failed log excerpt and   job details to find the root cause. Fix the code, run tests, `git add` and `git commit`.\n- `no_rerunnable_failed_run_found`: Look at `gh pr checks` for this PR, inspect the failure,   fix the issue, and commit.\n- `branch_update_failed` / `missing_repo_or_branch`: Inspect with `gh pr view`, diagnose, fix.\n\n**After fixing:** Commit with a clear message like `fix: resolve CI failure in <check_name>`.\nThen remove the fix label:\n```\ngh pr edit {{setup-worktree.output.number}} --repo {{setup-worktree.output.repo}} --remove-label bosun-needs-fix\n```\n",
-            "sdk": "auto",
-            "timeoutMs": 7200000,
-            "maxRetries": 1,
-            "retryDelayMs": 60000,
-            "sessionRetries": 2,
-            "maxContinues": 3,
-            "continueOnSession": true,
-            "continueOnError": true,
-            "failOnError": false
-          },
-          "position": {
-            "x": 2900,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "push-fixes",
-          "type": "action.run_command",
-          "label": "Push Fixes to PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); if(!wt||!branch){console.log(JSON.stringify({pushed:false,reason:'missing_worktree_or_branch'}));process.exit(0);} const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(cur!==branch){console.log(JSON.stringify({pushed:false,reason:'wrong_branch',expected:branch,actual:cur}));process.exit(1);} const status=execFileSync('git',['status','--porcelain'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(status){   execFileSync('git',['add','-A'],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['commit','-m','bosun: commit remaining changes for PR #'+num],{cwd:wt,encoding:'utf8',timeout:30000});}catch{} } let hasDiff=false; try{const d=execFileSync('git',['rev-list','--count','origin/'+branch+'..HEAD'],{cwd:wt,encoding:'utf8',timeout:30000}).trim();hasDiff=Number(d)>0;} catch{hasDiff=true;} if(!hasDiff){console.log(JSON.stringify({pushed:false,reason:'no_new_commits'}));process.exit(0);} execFileSync('git',['push','--force-with-lease','origin','HEAD:'+branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:'inherit'}); console.log(JSON.stringify({pushed:true,branch:cur,commits:Number(execFileSync('git',['rev-list','--count','origin/'+branch+'..HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim()||0)}));"
-            ],
-            "parseJson": true,
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 300000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}",
-              "PR_BRANCH": "{{setup-worktree.output.branch}}",
-              "PR_NUMBER": "{{setup-worktree.output.number}}"
-            }
-          },
-          "position": {
-            "x": 3180,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "cleanup-worktree",
-          "type": "action.run_command",
-          "label": "Cleanup Temp Worktree",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const wt=String(process.env.WORKTREE_PATH||'').trim(); if(!wt){console.log(JSON.stringify({cleaned:false,reason:'no_path'}));process.exit(0);} try{fs.rmSync(wt,{recursive:true,force:true});console.log(JSON.stringify({cleaned:true,path:wt}));} catch(e){console.log(JSON.stringify({cleaned:false,error:String(e?.message||e)}));}"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}"
-            }
-          },
-          "position": {
-            "x": 3460,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "update-sibling-branches",
-          "type": "action.run_command",
-          "label": "Update Sibling PR Branches",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const repo=String(process.env.REPO||'').trim(); const thisPrNumber=String(process.env.THIS_PR||'').trim(); const base=String(process.env.BASE_BRANCH||'main').trim(); if(!repo){console.log(JSON.stringify({updated:0,reason:'no repo'}));process.exit(0);} let prs=[]; try{prs=JSON.parse(execFileSync('gh',['pr','list','--repo',repo,'--base',base,'--state','open','--json','number,headRefOid','--limit','50'],{encoding:'utf8',timeout:30000}));} catch(e){console.log(JSON.stringify({updated:0,error:String(e?.message||e).slice(0,200)}));process.exit(0);} let updated=0,failed=0; for(const pr of prs){   if(String(pr.number)===thisPrNumber)continue;   try{     execFileSync('gh',['api','-X','PUT','repos/'+repo+'/pulls/'+pr.number+'/update-branch','--field','expected_head_sha='+pr.headRefOid],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000});     updated++;console.log('Updated PR #'+pr.number);   }catch(e){     const msg=String(e?.stderr||e?.message||e);     if(/already up/i.test(msg)||/merge conflict/i.test(msg)){continue;}     failed++;console.log('Skip PR #'+pr.number+': '+msg.slice(0,150));   } } console.log(JSON.stringify({updated,failed,total:prs.length}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 180000,
-            "env": {
-              "REPO": "{{prParams.repo}}",
-              "THIS_PR": "{{prParams.number}}",
-              "BASE_BRANCH": "{{prParams.base}}"
-            }
-          },
-          "position": {
-            "x": 3740,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "release-claim",
-          "type": "action.run_command",
-          "label": "Release PR Claim",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const claimKey=String(process.env.PR_CLAIM_KEY||'').trim(); if(!claimKey){console.log(JSON.stringify({released:false,reason:'no_claim_key'}));process.exit(0);} const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-fix-claims.json'); try{   if(!fs.existsSync(CLAIM_FILE)){console.log(JSON.stringify({released:false,reason:'no_claim_file'}));process.exit(0);}   const data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));   if(data.claims&&data.claims[claimKey]){     delete data.claims[claimKey];     data.updatedAt=new Date().toISOString();     fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');     console.log(JSON.stringify({released:true,claimKey}));   }else{     console.log(JSON.stringify({released:false,reason:'not_found',claimKey}));   } }catch(e){   console.log(JSON.stringify({released:false,reason:'error',error:String(e?.message||e),claimKey})); }"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "PR_CLAIM_KEY": "{{claimKey}}"
-            }
-          },
-          "position": {
-            "x": 4020,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->setup-task",
-          "source": "trigger",
-          "target": "setup-task",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-task->setup-title",
-          "source": "setup-task",
-          "target": "setup-title",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-title->setup-claim-key",
-          "source": "setup-title",
-          "target": "setup-claim-key",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-claim-key->resolve-pr-params",
-          "source": "setup-claim-key",
-          "target": "resolve-pr-params",
-          "sourcePort": "default"
-        },
-        {
-          "id": "resolve-pr-params->setup-worktree",
-          "source": "resolve-pr-params",
-          "target": "setup-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-worktree->set-worktree-path",
-          "source": "setup-worktree",
-          "target": "set-worktree-path",
-          "sourcePort": "default"
-        },
-        {
-          "id": "set-worktree-path->detect-conflicts",
-          "source": "set-worktree-path",
-          "target": "detect-conflicts",
-          "sourcePort": "default"
-        },
-        {
-          "id": "detect-conflicts->setup-prompt",
-          "source": "detect-conflicts",
-          "target": "setup-prompt",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-prompt->mark-active",
-          "source": "setup-prompt",
-          "target": "mark-active",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-active->fix-agent",
-          "source": "mark-active",
-          "target": "fix-agent",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fix-agent->push-fixes",
-          "source": "fix-agent",
-          "target": "push-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-fixes->cleanup-worktree",
-          "source": "push-fixes",
-          "target": "cleanup-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "cleanup-worktree->update-sibling-branches",
-          "source": "cleanup-worktree",
-          "target": "update-sibling-branches",
-          "sourcePort": "default"
-        },
-        {
-          "id": "update-sibling-branches->release-claim",
-          "source": "update-sibling-branches",
-          "target": "release-claim",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
       "id": "template-pr-merge-strategy",
       "name": "PR Merge Strategy",
       "description": "Automated PR merge decision workflow with resilient retry paths. Analyzes CI + agent output, executes merge/prompt/close/re-attempt actions, and escalates gracefully when any branch action fails.",
@@ -2946,7 +1645,7 @@
           "type": "condition.expression",
           "label": "Bosun-Created PR?",
           "config": {
-            "expression": "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()"
+            "expression": "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
           },
           "position": {
             "x": 400,
@@ -3445,573 +2144,6 @@
       ]
     },
     {
-      "id": "template-pr-review-quality-striker",
-      "name": "PR Review Quality Striker",
-      "description": "Reactive PR review agent. Fires on review_requested events, review comment events, and a scheduled fallback. Collects PR digest + review signals, runs a quality-review agent, and comments actionable findings.",
-      "category": "github",
-      "categoryLabel": "GitHub",
-      "categoryIcon": ":git:",
-      "categoryOrder": 1,
-      "tags": [
-        "github",
-        "pr",
-        "review",
-        "quality",
-        "striker",
-        "reactive"
-      ],
-      "nodeCount": 6,
-      "edgeCount": 5,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.pr_event",
-      "variables": {
-        "intervalMs": 1800000,
-        "maxPrsPerRun": 5,
-        "timeoutMs": 1800000
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-03-31T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "github",
-          "pr",
-          "review",
-          "quality",
-          "striker",
-          "reactive"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.pr_event",
-          "label": "PR Review Requested",
-          "config": {
-            "event": "review_requested",
-            "events": [
-              "review_requested",
-              "changes_requested",
-              "approved",
-              "opened"
-            ]
-          },
-          "position": {
-            "x": 200,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "trigger-review-comment",
-          "type": "trigger.event",
-          "label": "Review Comment Posted",
-          "config": {
-            "eventType": "github:pull_request_review_comment"
-          },
-          "position": {
-            "x": 500,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "trigger-fallback",
-          "type": "trigger.schedule",
-          "label": "Scheduled Fallback",
-          "config": {
-            "intervalMs": "{{intervalMs}}"
-          },
-          "position": {
-            "x": 800,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fetch-review-signals",
-          "type": "action.run_command",
-          "label": "Fetch PR Review Signals",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim(); const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0); const DIRECT_PR_URL=String(process.env.DIRECT_PR_URL||'').trim(); const DIRECT_EVENT=String(process.env.DIRECT_EVENT||'').trim(); const sourceKind=DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'; function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}} function collectPrDigest(repo,n){   const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,mergeable,url,labels,state,author,createdAt']);   const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);   const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);   return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]}; } function collectActionableReviewSignals(repo,n){   const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);   const reviewComments=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviewDecision']);   return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]}; } function appendActionable(signals,digest){   return {...signals,digest}; } let results=[]; if(sourceKind==='event'&&DIRECT_REPO&&DIRECT_PR_NUMBER>0){   const digest=collectPrDigest(DIRECT_REPO,DIRECT_PR_NUMBER);   const signals=collectActionableReviewSignals(DIRECT_REPO,DIRECT_PR_NUMBER);   const commentFindings=[];   const qualityChecks=[];   results=[appendActionable({repo:DIRECT_REPO,number:DIRECT_PR_NUMBER,url:DIRECT_PR_URL,event:DIRECT_EVENT,commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'},digest)]; }else{   const commentFindings=[];   const qualityChecks=[];   results=[{repo:'',number:0,url:'',event:'schedule',commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'}]; } process.stdout.write(JSON.stringify({prs:results,count:results.length}));"
-            ],
-            "parseJson": true,
-            "continueOnError": true,
-            "timeoutMs": 120000,
-            "env": {
-              "DIRECT_REPO": "{{$data?.prRepo || $data?.repo || ''}}",
-              "DIRECT_PR_NUMBER": "{{$data?.prNumber || $data?.number || 0}}",
-              "DIRECT_PR_URL": "{{$data?.prUrl || $data?.url || ''}}",
-              "DIRECT_EVENT": "{{$data?.action || $data?.event || ''}}",
-              "MAX_PRS_PER_RUN": "{{maxPrsPerRun}}"
-            }
-          },
-          "position": {
-            "x": 500,
-            "y": 180
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "run-review-striker",
-          "type": "action.run_agent",
-          "label": "Run Review Quality Agent",
-          "config": {
-            "prompt": "You are a PR review quality agent. Analyse the PR review signals and produce actionable quality findings.\n\nInput data: commentFindings and qualityChecks from fetch-review-signals output.\nPR context: prDigest with the PR body, files, issue comments, reviews, review comments, and checks.\n\nFor each finding: explain what is wrong, why it matters, and how to fix it. Post findings as a single review comment on the PR.",
-            "sdk": "auto",
-            "timeoutMs": "{{timeoutMs}}",
-            "failOnError": false,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 500,
-            "y": 360
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-done",
-          "type": "notify.log",
-          "label": "Review Strike Complete",
-          "config": {
-            "message": "PR review quality striker finished for PR #{{$data?.prNumber || 0}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 500,
-            "y": 500
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->fetch-review-signals",
-          "source": "trigger",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-review-comment->fetch-review-signals",
-          "source": "trigger-review-comment",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-fallback->fetch-review-signals",
-          "source": "trigger-fallback",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fetch-review-signals->run-review-striker",
-          "source": "fetch-review-signals",
-          "target": "run-review-striker",
-          "sourcePort": "default"
-        },
-        {
-          "id": "run-review-striker->notify-done",
-          "source": "run-review-striker",
-          "target": "notify-done",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
-      "id": "template-pr-security-fix-single",
-      "name": "PR Security Fix Agent (Single PR)",
-      "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
-      "category": "github",
-      "categoryLabel": "GitHub",
-      "categoryIcon": ":git:",
-      "categoryOrder": 1,
-      "tags": [
-        "github",
-        "pr",
-        "security",
-        "codeql",
-        "fix",
-        "single-pr",
-        "session-tracked",
-        "worktree-managed"
-      ],
-      "nodeCount": 13,
-      "edgeCount": 12,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.manual",
-      "variables": {},
-      "metadata": {
-        "author": "bosun",
-        "version": 5,
-        "createdAt": "2026-03-30T00:00:00Z",
-        "templateVersion": "5.0.0",
-        "tags": [
-          "github",
-          "pr",
-          "security",
-          "codeql",
-          "fix",
-          "single-pr",
-          "session-tracked",
-          "worktree-managed"
-        ],
-        "notes": "Invoked by template-bosun-pr-watchdog via loop.for_each for security failures. Do not enable as standalone. v2.0: Programmatic worktree + push."
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start",
-          "config": {},
-          "position": {
-            "x": 100,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-task",
-          "type": "action.set_variable",
-          "label": "Setup Security PR Task ID",
-          "config": {
-            "key": "taskId",
-            "value": "'pr-secfix-' + String($data?.item?.taskId ||   (String($data?.item?.repo || '').replace(/[^a-z0-9]/gi, '-').replace(/-+/g,'-').replace(/^-|-$/g,'') +    '-' + String($data?.item?.number || $data?.item?.n || '0'))).replace(/^-|-$/g, '')",
-            "isExpression": true
-          },
-          "position": {
-            "x": 380,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-title",
-          "type": "action.set_variable",
-          "label": "Setup Security PR Task Title",
-          "config": {
-            "key": "taskTitle",
-            "value": "'Security Fix PR #' + String($data?.item?.number || $data?.item?.n || '?') + ' (' + String($data?.item?.repo || '') + ')'",
-            "isExpression": true
-          },
-          "position": {
-            "x": 660,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-claim-key",
-          "type": "action.set_variable",
-          "label": "Setup Claim Key",
-          "config": {
-            "key": "claimKey",
-            "value": "String($data?.item?.claimKey || '')",
-            "isExpression": true
-          },
-          "position": {
-            "x": 940,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "resolve-pr-params",
-          "type": "action.set_variable",
-          "label": "Resolve PR Parameters",
-          "config": {
-            "key": "prParams",
-            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0')})",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1220,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-worktree",
-          "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
-            ],
-            "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
-            "env": {
-              "PR_REPO": "{{prParams.repo}}",
-              "PR_BRANCH": "{{prParams.branch}}",
-              "PR_BASE": "{{prParams.base}}",
-              "PR_NUMBER": "{{prParams.number}}"
-            }
-          },
-          "position": {
-            "x": 1500,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-worktree-path",
-          "type": "action.set_variable",
-          "label": "Set Agent Working Directory",
-          "config": {
-            "key": "worktreePath",
-            "value": "{{setup-worktree.output.worktreePath}}"
-          },
-          "position": {
-            "x": 1780,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-prompt",
-          "type": "action.set_variable",
-          "label": "Build Security Agent Prompt",
-          "config": {
-            "key": "agentPrompt",
-            "value": "(()=>{\n  const item = $data?.item || {};\n  const prDigest = item.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(item.repo || core.repo || '');\n  const branch = String(item.branch || core.branch || '');\n  const base = String(item.base || item.baseBranch || core.baseBranch || 'main');\n  const number = String(item.number || item.n || '');\n  const title = String(item.title || core.title || '');\n  const url = String(item.url || core.url || '');\n  const securityChecks = Array.isArray(item.securityCheckNames) ? item.securityCheckNames : [];\n  const failedChecks = Array.isArray(item.failedCheckNames) ? item.failedCheckNames : [];\n  const alerts = Array.isArray(item.alerts) ? item.alerts : [];\n  const fetchError = String(item.fetchError || '').trim();\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  let p = 'You are a Bosun PR **security remediation** agent. Fix ONLY the security/CodeQL findings on this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n\\n';\n  if (securityChecks.length > 0) {\n    p += '## Failed Security Checks\\n\\n';\n    securityChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (alerts.length > 0) {\n    p += '## Code Scanning Alerts\\n\\n';\n    alerts.forEach(a => {\n      p += '### Alert #' + (a.number||'?') + ' — ' + (a.ruleName||a.ruleId||'unknown rule') + '\\n';\n      p += '- **Severity**: ' + (a.securitySeverity||a.severity||'unknown') + '\\n';\n      p += '- **Tool**: ' + (a.tool||'unknown') + '\\n';\n      p += '- **File**: `' + (a.path||'') + ':' + (a.startLine||'') + '`\\n';\n      if (a.url) p += '- **URL**: ' + a.url + '\\n';\n      p += '\\n';\n    });\n  }\n  if (fetchError) {\n    p += '## Alert Fetch Error\\n\\n' + fetchError + '\\n\\n';\n    p += 'Alert fetch failed. Inspect the PR checks and source code directly to identify the security issue.\\n\\n';\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  return p;\n})()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 2060,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-active",
-          "type": "action.set_variable",
-          "label": "Mark Agent Workflow Active",
-          "config": {
-            "key": "_agentWorkflowActive",
-            "value": "true",
-            "isExpression": true
-          },
-          "position": {
-            "x": 2340,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fix-agent",
-          "type": "action.run_agent",
-          "label": "Fix Security Issue (Dedicated Agent)",
-          "config": {
-            "prompt": "{{agentPrompt}}\n\n## Workspace\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-worktree.output.branch}}`). The base branch (`origin/{{setup-worktree.output.base}}`) has been fetched.\n\n## CRITICAL RULES — READ BEFORE DOING ANYTHING\n\n1. **Do NOT clone or re-clone the repo** — you are already in it.\n2. **Do NOT create new branches.** Stay on the current branch.\n3. **Do NOT push.** The workflow pushes for you automatically after you finish.\n4. **Do NOT switch branches** with `git checkout` or `git switch`.\n5. **Do NOT run `cd` to change to a different directory.** Stay in the cwd.\n6. Fix ONLY the listed security/CodeQL findings. No unrelated changes.\n7. Do NOT merge, approve, or close the PR.\n8. Do NOT touch any other PRs or repos.\n\n## Fix Instructions\n\n1. Read each alert's file and line number from the context above.\n2. Understand the security finding (SQL injection, XSS, path traversal, etc.).\n3. Apply the MINIMAL code change that resolves the finding.\n4. If alerts could not be fetched, run:\n   `gh api repos/{{setup-worktree.output.repo}}/code-scanning/alerts --jq '.[] | select(.state==\"open\")' -X GET`\n5. Run any available tests to validate the fix.\n6. `git add` and `git commit` with a clear message referencing the security finding.\n\n**After fixing:** Remove the fix label:\n```\ngh pr edit {{setup-worktree.output.number}} --repo {{setup-worktree.output.repo}} --remove-label bosun-needs-fix\n```\n",
-            "sdk": "auto",
-            "timeoutMs": 7200000,
-            "maxRetries": 1,
-            "retryDelayMs": 60000,
-            "sessionRetries": 2,
-            "maxContinues": 3,
-            "continueOnSession": true,
-            "continueOnError": true,
-            "failOnError": false
-          },
-          "position": {
-            "x": 2620,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "push-fixes",
-          "type": "action.run_command",
-          "label": "Push Fixes to PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); if(!wt||!branch){console.log(JSON.stringify({pushed:false,reason:'missing_worktree_or_branch'}));process.exit(0);} const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(cur!==branch){console.log(JSON.stringify({pushed:false,reason:'wrong_branch',expected:branch,actual:cur}));process.exit(1);} const status=execFileSync('git',['status','--porcelain'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(status){   execFileSync('git',['add','-A'],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['commit','-m','bosun: commit security fix changes for PR #'+num],{cwd:wt,encoding:'utf8',timeout:30000});}catch{} } let hasDiff=false; try{const d=execFileSync('git',['rev-list','--count','origin/'+branch+'..HEAD'],{cwd:wt,encoding:'utf8',timeout:30000}).trim();hasDiff=Number(d)>0;} catch{hasDiff=true;} if(!hasDiff){console.log(JSON.stringify({pushed:false,reason:'no_new_commits'}));process.exit(0);} execFileSync('git',['push','--force-with-lease','origin','HEAD:'+branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:'inherit'}); console.log(JSON.stringify({pushed:true,branch:cur}));"
-            ],
-            "parseJson": true,
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 300000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}",
-              "PR_BRANCH": "{{setup-worktree.output.branch}}",
-              "PR_NUMBER": "{{setup-worktree.output.number}}"
-            }
-          },
-          "position": {
-            "x": 2900,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "cleanup-worktree",
-          "type": "action.run_command",
-          "label": "Cleanup Temp Worktree",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const wt=String(process.env.WORKTREE_PATH||'').trim(); if(!wt){console.log(JSON.stringify({cleaned:false,reason:'no_path'}));process.exit(0);} try{fs.rmSync(wt,{recursive:true,force:true});console.log(JSON.stringify({cleaned:true,path:wt}));} catch(e){console.log(JSON.stringify({cleaned:false,error:String(e?.message||e)}));}"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}"
-            }
-          },
-          "position": {
-            "x": 3180,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "release-claim",
-          "type": "action.run_command",
-          "label": "Release Security PR Claim",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const claimKey=String(process.env.PR_CLAIM_KEY||'').trim(); if(!claimKey){console.log(JSON.stringify({released:false,reason:'no_claim_key'}));process.exit(0);} const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-security-fix-claims.json'); try{   if(!fs.existsSync(CLAIM_FILE)){console.log(JSON.stringify({released:false,reason:'no_claim_file'}));process.exit(0);}   const data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));   if(data.claims&&data.claims[claimKey]){     delete data.claims[claimKey];     data.updatedAt=new Date().toISOString();     fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');     console.log(JSON.stringify({released:true,claimKey}));   }else{     console.log(JSON.stringify({released:false,reason:'not_found',claimKey}));   } }catch(e){   console.log(JSON.stringify({released:false,reason:'error',error:String(e?.message||e),claimKey})); }"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "PR_CLAIM_KEY": "{{claimKey}}"
-            }
-          },
-          "position": {
-            "x": 3460,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->setup-task",
-          "source": "trigger",
-          "target": "setup-task",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-task->setup-title",
-          "source": "setup-task",
-          "target": "setup-title",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-title->setup-claim-key",
-          "source": "setup-title",
-          "target": "setup-claim-key",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-claim-key->resolve-pr-params",
-          "source": "setup-claim-key",
-          "target": "resolve-pr-params",
-          "sourcePort": "default"
-        },
-        {
-          "id": "resolve-pr-params->setup-worktree",
-          "source": "resolve-pr-params",
-          "target": "setup-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-worktree->set-worktree-path",
-          "source": "setup-worktree",
-          "target": "set-worktree-path",
-          "sourcePort": "default"
-        },
-        {
-          "id": "set-worktree-path->setup-prompt",
-          "source": "set-worktree-path",
-          "target": "setup-prompt",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-prompt->mark-active",
-          "source": "setup-prompt",
-          "target": "mark-active",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-active->fix-agent",
-          "source": "mark-active",
-          "target": "fix-agent",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fix-agent->push-fixes",
-          "source": "fix-agent",
-          "target": "push-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-fixes->cleanup-worktree",
-          "source": "push-fixes",
-          "target": "cleanup-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "cleanup-worktree->release-claim",
-          "source": "cleanup-worktree",
-          "target": "release-claim",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
       "id": "template-pr-triage",
       "name": "PR Triage & Labels",
       "description": "Automatically triage incoming PRs: classify by size, detect breaking changes, add labels, and assign reviewers based on CODEOWNERS.",
@@ -4162,7 +2294,7 @@
           "type": "condition.expression",
           "label": "Detect Breaking Changes",
           "config": {
-            "expression": "/* <!-- bosun-created --> */ (() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
+            "expression": "(() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
           },
           "position": {
             "x": 400,
@@ -4687,7 +2819,9 @@
         "timeoutMs": 600000,
         "cooldownMs": 1800000,
         "maxAttempts": 4,
-        "baseBranch": "main"
+        "baseBranch": "main",
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1
       },
       "metadata": {
         "author": "bosun",
@@ -5141,197 +3275,6 @@
           "id": "push-auto->notify-resolved",
           "source": "push-auto",
           "target": "notify-resolved",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
-      "id": "template-sonarqube-pr-striker",
-      "name": "SonarQube PR Striker",
-      "description": "Monitors open PRs for SonarQube quality-gate failures using GitHub-native check results. Does NOT call the SonarQube API. Collects PR digest and sonarChecks, then runs a focused repair agent.",
-      "category": "github",
-      "categoryLabel": "GitHub",
-      "categoryIcon": ":git:",
-      "categoryOrder": 1,
-      "tags": [
-        "github",
-        "pr",
-        "sonarqube",
-        "quality",
-        "striker",
-        "scheduled"
-      ],
-      "nodeCount": 6,
-      "edgeCount": 6,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.schedule",
-      "variables": {
-        "intervalMs": 1800000,
-        "maxPrsPerRun": 3,
-        "timeoutMs": 3600000
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-03-31T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "github",
-          "pr",
-          "sonarqube",
-          "quality",
-          "striker",
-          "scheduled"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.schedule",
-          "label": "Every 30 min",
-          "config": {
-            "intervalMs": "{{intervalMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fetch-sonar-signals",
-          "type": "action.run_command",
-          "label": "Fetch Sonar PR Signals",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const SONAR_CHECK_RE=/sonar/i; function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}} function collectPrDigest(repo,n){   const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,url,labels,state,author']);   const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);   const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);   return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]}; } function collectActionableReviewSignals(repo,n){   const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);   return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]}; } const repo=String(process.env.BOSUN_REPO||'').trim(); if(!repo){process.stdout.write(JSON.stringify({prs:[],count:0}));process.exit(0);} const prs=ghJson(['pr','list','--repo',repo,'--state','open','--json','number,headRefName,url','--limit','20']); const results=[]; for(const pr of (Array.isArray(prs)?prs:[])){   const digest=collectPrDigest(repo,pr.number);   const signals=collectActionableReviewSignals(repo,pr.number);   const sonarChecks=Array.isArray(digest.checks)?digest.checks.filter(c=>SONAR_CHECK_RE.test(c.name||'')):[];   const hasSonarFailure=sonarChecks.some(c=>['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(String(c.state||'').toUpperCase()));   if(!hasSonarFailure){     if(signals.sonarChecks&&signals.sonarChecks.length===0)continue;     continue;   }   const digestSummary={total:digest.checks.length,sonarFailing:sonarChecks.filter(c=>['FAILURE','ERROR'].includes(String(c.state||'').toUpperCase())).length};   results.push({repo,number:pr.number,url:pr.url,branch:pr.headRefName,sonarChecks,hasSonarFailure,digest,digestSummary,reviews:signals.reviews}); } process.stdout.write(JSON.stringify({prs:results,count:results.length}));"
-            ],
-            "parseJson": true,
-            "continueOnError": true,
-            "timeoutMs": 180000,
-            "env": {
-              "BOSUN_REPO": "{{$data?.repo || ''}}",
-              "MAX_PRS_PER_RUN": "{{maxPrsPerRun}}"
-            }
-          },
-          "position": {
-            "x": 400,
-            "y": 180
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-sonar-failures",
-          "type": "condition.expression",
-          "label": "Any Sonar Failures?",
-          "config": {
-            "expression": "Number($ctx.getNodeOutput('fetch-sonar-signals')?.prs?.length || 0) > 0"
-          },
-          "position": {
-            "x": 400,
-            "y": 320
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "run-sonar-striker",
-          "type": "action.run_agent",
-          "label": "Fix SonarQube Failures",
-          "config": {
-            "prompt": "You are a PR repair agent for Sonar quality-gate failures. Use GitHub-native Sonar checks as the source of truth. Do NOT call any external quality API directly.\n\nInput: sonarChecks plus prDigest for each failing PR.\nFor each PR with sonar failures: check out the branch, fix the issues, run tests, push fixes.",
-            "sdk": "auto",
-            "timeoutMs": "{{timeoutMs}}",
-            "failOnError": false,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 400,
-            "y": 450
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "skip-no-failures",
-          "type": "notify.log",
-          "label": "No Sonar Failures",
-          "config": {
-            "message": "SonarQube PR striker: no open PRs with Sonar failures",
-            "level": "info"
-          },
-          "position": {
-            "x": 700,
-            "y": 320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-done",
-          "type": "notify.log",
-          "label": "Sonar Strike Complete",
-          "config": {
-            "message": "SonarQube PR striker finished",
-            "level": "info"
-          },
-          "position": {
-            "x": 400,
-            "y": 590
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->fetch-sonar-signals",
-          "source": "trigger",
-          "target": "fetch-sonar-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fetch-sonar-signals->has-sonar-failures",
-          "source": "fetch-sonar-signals",
-          "target": "has-sonar-failures",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-sonar-failures->run-sonar-striker",
-          "source": "has-sonar-failures",
-          "target": "run-sonar-striker",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-sonar-failures->skip-no-failures",
-          "source": "has-sonar-failures",
-          "target": "skip-no-failures",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-sonar-striker->notify-done",
-          "source": "run-sonar-striker",
-          "target": "notify-done",
-          "sourcePort": "default"
-        },
-        {
-          "id": "skip-no-failures->notify-done",
-          "source": "skip-no-failures",
-          "target": "notify-done",
           "sourcePort": "default"
         }
       ]
@@ -6852,11 +4795,10 @@
         "task-completion",
         "test-first",
         "tdd",
-        "multi-language",
-        "multi-remediation"
+        "multi-language"
       ],
-      "nodeCount": 46,
-      "edgeCount": 48,
+      "nodeCount": 29,
+      "edgeCount": 28,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -6873,21 +4815,19 @@
         ],
         "agentSdk": "auto",
         "timeoutMs": 3600000,
-        "testTimeoutMs": 1800000,
         "autoFixTimeoutMs": 1200000
       },
       "metadata": {
         "author": "bosun",
-        "version": 4,
+        "version": 2,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "3.1.0",
+        "templateVersion": "2.0.0",
         "tags": [
           "agent",
           "task-completion",
           "test-first",
           "tdd",
-          "multi-language",
-          "multi-remediation"
+          "multi-language"
         ],
         "replaces": {
           "module": "primary-agent.mjs",
@@ -6937,9 +4877,9 @@
           "type": "action.run_agent",
           "label": "Write Tests First",
           "config": {
-            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCreate a descriptive test commit message that names the behavior or surface covered.\nExample: \"test: cover portal login validation\"",
+            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCommit with message \"test: add tests for [feature]\"",
             "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{testTimeoutMs}}"
+            "timeoutMs": "{{timeoutMs}}"
           },
           "position": {
             "x": 400,
@@ -6954,7 +4894,7 @@
           "type": "action.run_agent",
           "label": "Implement Feature",
           "config": {
-            "prompt": "# Implement Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testCommand}}` after implementation.\nCreate a descriptive feat/fix commit message that names the shipped capability.\nExample: \"feat: add portal login rate limiting\"",
+            "prompt": "# Implement Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testCommand}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{timeoutMs}}"
           },
@@ -7037,9 +4977,6 @@
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "rebaseBeforePush": true,
-            "mergeBaseBeforePush": true,
-            "autoResolveMergeConflicts": true,
-            "conflictResolverSdk": "{{agentSdk}}",
             "emptyDiffGuard": true,
             "protectedBranches": "{{protectedBranches}}"
           },
@@ -7052,28 +4989,12 @@
           ]
         },
         {
-          "id": "push-ok",
-          "type": "condition.expression",
-          "label": "Push OK?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch')?.pushed === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 1170
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Handoff PR Lifecycle",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology: tests written before implementation.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing (build, test, lint).\n\n---\nTask-ID: {{taskId}}",
+            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -7181,7 +5102,7 @@
           "label": "Summarize Validation Output",
           "config": {
             "key": "validationSummary",
-            "value": "(() => { function fmtGate(label, out) {   if (!out || !Object.keys(out).length) return label + ': (not run)';   const diag = out.outputDiagnostics || {};   const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];   if (diag.summary) lines.push('  Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('  Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('  Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('  Hint: ' + hint);   if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 5000));   return lines.join('\\n'); } const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return [   '## Validation Results',   '',   fmtGate('Build', build),   '',   fmtGate('Test', test),   '',   fmtGate('Lint', lint), ].join('\\n'); })()",
+            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -7197,7 +5118,7 @@
           "type": "action.run_agent",
           "label": "Auto-Fix Validation Failures",
           "config": {
-            "prompt": "# Fix Validation Failures — Pass 1\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\n{{validationSummary}}\n\nSTRATEGY:\n1. Look at which gates failed (Build / Test / Lint) and focus on those.\n2. Check the **Failed Targets** — these are the exact tests/files/packages that broke.\n3. Fix compilation errors first, then test failures, then lint issues.\n4. Use the **Suggested Rerun Command** (if shown) to iterate on just the failing targets.\n5. Once targeted failures pass, run all three gates to confirm everything is green.\n\nRULES:\n- Do NOT weaken, remove, or bypass tests.\n- Keep the original task scope.\n- Create a descriptive fix commit message that names the concrete failure resolved.",
+            "prompt": "# Fix Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address validation failures\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{autoFixTimeoutMs}}"
           },
@@ -7280,9 +5201,6 @@
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "rebaseBeforePush": true,
-            "mergeBaseBeforePush": true,
-            "autoResolveMergeConflicts": true,
-            "conflictResolverSdk": "{{agentSdk}}",
             "emptyDiffGuard": true,
             "protectedBranches": "{{protectedBranches}}"
           },
@@ -7295,28 +5213,12 @@
           ]
         },
         {
-          "id": "push-ok-retry",
-          "type": "condition.expression",
-          "label": "Push OK? (Retry)",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch-retry')?.pushed === true"
-          },
-          "position": {
-            "x": 450,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Handoff PR Lifecycle (After Retry)",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with one automated remediation pass.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after auto-fix remediation.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -7404,261 +5306,15 @@
           ]
         },
         {
-          "id": "set-retry2-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Retry-1 Output",
+          "id": "notify-fail",
+          "type": "notify.telegram",
+          "label": "Checks Failed",
           "config": {
-            "key": "retry2Summary",
-            "value": "(() => { function fmtGate(label, out) {   if (!out || !Object.keys(out).length) return label + ': (not run)';   const diag = out.outputDiagnostics || {};   const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];   if (diag.summary) lines.push('  Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('  Failed (' + targets.length + '):');     targets.slice(0, 15).forEach(t => lines.push('    - ' + t));     if (targets.length > 15) lines.push('    ... +' + (targets.length - 15) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('  Rerun: `' + rerun + '`');   if (diag.deltaSummary) lines.push('  Delta: ' + diag.deltaSummary);   if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 3500));   return lines.join('\\n'); } const b1 = $ctx.getNodeOutput('main-build') || {}; const t1 = $ctx.getNodeOutput('main-test') || {}; const l1 = $ctx.getNodeOutput('main-lint') || {}; const b2 = $ctx.getNodeOutput('retry-build') || {}; const t2 = $ctx.getNodeOutput('retry-test') || {}; const l2 = $ctx.getNodeOutput('retry-lint') || {}; return [   '## Validation History (both passes failed)',   '',   '### Pass 1 — Original',   fmtGate('Build', b1), fmtGate('Test', t1), fmtGate('Lint', l1),   '',   '### Pass 2 — After First Auto-Fix',   fmtGate('Build', b2), fmtGate('Test', t2), fmtGate('Lint', l2), ].join('\\n'); })()",
-            "isExpression": true
+            "message": ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
           },
           "position": {
             "x": 820,
             "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix-2",
-          "type": "action.run_agent",
-          "label": "Auto-Fix (Escalated, Pass 2)",
-          "config": {
-            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\nPlan:\n{{plan}}\n\n{{retry2Summary}}\n\nANALYSIS STEPS:\n1. Compare **Failed Targets** between Pass 1 and Pass 2.\n   - Same targets still failing → previous fix was wrong, try a different approach.\n   - New targets appearing → previous fix broke something else, fix both.\n   - Some resolved → partially right, focus on remaining.\n2. Check the **Delta** field to see what changed between runs.\n3. Use the **Rerun** command to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.\n- If build/lint/test configs are misconfigured, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun build + tests + lint locally and confirm ALL pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{autoFixTimeoutMs}}"
-          },
-          "position": {
-            "x": 820,
-            "y": 1900
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-build",
-          "type": "validation.build",
-          "label": "Build Check",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 400,
-            "y": 0
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-test",
-          "type": "validation.tests",
-          "label": "Test Run",
-          "config": {
-            "command": "{{testCommand}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 130
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-lint",
-          "type": "validation.lint",
-          "label": "Lint Check",
-          "config": {
-            "command": "{{lintCommand}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 260
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-passed",
-          "type": "condition.expression",
-          "label": "Retry-2 Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('retry2-build')?.passed === true && $ctx.getNodeOutput('retry2-test')?.passed === true && $ctx.getNodeOutput('retry2-lint')?.passed === true"
-          },
-          "position": {
-            "x": 820,
-            "y": 2400
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "push-branch-retry2",
-          "type": "action.push_branch",
-          "label": "Push Branch (Retry 2)",
-          "config": {
-            "worktreePath": "{{worktreePath}}",
-            "branch": "{{branch}}",
-            "baseBranch": "{{baseBranch}}",
-            "rebaseBeforePush": true,
-            "mergeBaseBeforePush": true,
-            "autoResolveMergeConflicts": true,
-            "conflictResolverSdk": "{{agentSdk}}",
-            "emptyDiffGuard": true,
-            "protectedBranches": "{{protectedBranches}}"
-          },
-          "position": {
-            "x": 650,
-            "y": 2470
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "push-ok-retry2",
-          "type": "condition.expression",
-          "label": "Push OK? (Retry 2)",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch-retry2')?.pushed === true"
-          },
-          "position": {
-            "x": 650,
-            "y": 2530
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr-retry2",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle (After Retry 2)",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with two automated remediation passes.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after 2nd remediation round.\n\n---\nTask-ID: {{taskId}}",
-            "branch": "{{branch}}",
-            "baseBranch": "{{baseBranch}}",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 650,
-            "y": 2530
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-pr-ok",
-          "type": "condition.expression",
-          "label": "PR Created?",
-          "config": {
-            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
-          },
-          "position": {
-            "x": 400,
-            "y": 0
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "retry2-set-inreview",
-          "type": "action.update_task_status",
-          "label": "Set In-Review",
-          "config": {
-            "taskId": "{{taskId}}",
-            "status": "inreview",
-            "taskTitle": "{{taskTitle}}"
-          },
-          "position": {
-            "x": 300,
-            "y": 130
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-handoff-progressor",
-          "type": "action.execute_workflow",
-          "label": "Handoff PR Progressor",
-          "config": {
-            "workflowId": "template-bosun-pr-progressor",
-            "mode": "dispatch",
-            "input": {
-              "taskId": "{{taskId}}",
-              "taskTitle": "{{taskTitle}}",
-              "branch": "{{branch}}",
-              "baseBranch": "{{baseBranch}}"
-            }
-          },
-          "position": {
-            "x": 300,
-            "y": 260
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-done-retry2",
-          "type": "notify.log",
-          "label": "Task Complete (After Retry 2)",
-          "config": {
-            "message": "Task completion agent finished task after 2nd retry — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 560,
-            "y": 2690
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-blocked-validation",
-          "type": "action.update_task_status",
-          "label": "Block Task (Validation Exhausted)",
-          "config": {
-            "taskId": "{{taskId}}",
-            "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "Validation failed after 2 automated remediation passes"
-          },
-          "position": {
-            "x": 1020,
-            "y": 2470
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-fail",
-          "type": "notify.telegram",
-          "label": "Checks Failed (Exhausted)",
-          "config": {
-            "message": ":alert: Backend agent: validation failed for task {{taskTitle}} even after 2 remediation passes. Task blocked — manual review needed."
-          },
-          "position": {
-            "x": 1020,
-            "y": 2560
           },
           "outputs": [
             "default"
@@ -7674,21 +5330,6 @@
           "position": {
             "x": 620,
             "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed-retry2",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Failure (Retry 2)",
-          "config": {
-            "message": ":alert: Task completion agent 2nd remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed. Manual follow-up required."
-          },
-          "position": {
-            "x": 820,
-            "y": 2690
           },
           "outputs": [
             "default"
@@ -7753,24 +5394,10 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "push-branch->push-ok",
+          "id": "push-branch->create-pr",
           "source": "push-branch",
-          "target": "push-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok->create-pr",
-          "source": "push-ok",
           "target": "create-pr",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok->notify-pr-failed",
-          "source": "push-ok",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
+          "sourcePort": "default"
         },
         {
           "id": "create-pr->main-pr-ok",
@@ -7841,31 +5468,17 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "retry-passed->set-retry2-summary",
+          "id": "retry-passed->notify-fail",
           "source": "retry-passed",
-          "target": "set-retry2-summary",
+          "target": "notify-fail",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "push-branch-retry->push-ok-retry",
+          "id": "push-branch-retry->create-pr-retry",
           "source": "push-branch-retry",
-          "target": "push-ok-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok-retry->create-pr-retry",
-          "source": "push-ok-retry",
           "target": "create-pr-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok-retry->notify-pr-failed-retry",
-          "source": "push-ok-retry",
-          "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
+          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->retry-pr-ok",
@@ -7895,107 +5508,6 @@
           "id": "retry-pr-ok->notify-pr-failed-retry",
           "source": "retry-pr-ok",
           "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-retry2-summary->auto-fix-2",
-          "source": "set-retry2-summary",
-          "target": "auto-fix-2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-2->retry2-build",
-          "source": "auto-fix-2",
-          "target": "retry2-build",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-build->retry2-test",
-          "source": "retry2-build",
-          "target": "retry2-test",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-test->retry2-lint",
-          "source": "retry2-test",
-          "target": "retry2-lint",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-lint->retry2-passed",
-          "source": "retry2-lint",
-          "target": "retry2-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-passed->push-branch-retry2",
-          "source": "retry2-passed",
-          "target": "push-branch-retry2",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry2-passed->set-blocked-validation",
-          "source": "retry2-passed",
-          "target": "set-blocked-validation",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-blocked-validation->notify-fail",
-          "source": "set-blocked-validation",
-          "target": "notify-fail",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-branch-retry2->push-ok-retry2",
-          "source": "push-branch-retry2",
-          "target": "push-ok-retry2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok-retry2->create-pr-retry2",
-          "source": "push-ok-retry2",
-          "target": "create-pr-retry2",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok-retry2->notify-pr-failed-retry2",
-          "source": "push-ok-retry2",
-          "target": "notify-pr-failed-retry2",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr-retry2->retry2-pr-ok",
-          "source": "create-pr-retry2",
-          "target": "retry2-pr-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-pr-ok->retry2-set-inreview",
-          "source": "retry2-pr-ok",
-          "target": "retry2-set-inreview",
-          "sourcePort": "yes"
-        },
-        {
-          "id": "retry2-set-inreview->retry2-handoff-progressor",
-          "source": "retry2-set-inreview",
-          "target": "retry2-handoff-progressor",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-handoff-progressor->notify-done-retry2",
-          "source": "retry2-handoff-progressor",
-          "target": "notify-done-retry2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-pr-ok->notify-pr-failed-retry2",
-          "source": "retry2-pr-ok",
-          "target": "notify-pr-failed-retry2",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         }
@@ -10862,7 +8374,7 @@
       "edgeCount": 36,
       "recommended": false,
       "enabled": true,
-      "trigger": "trigger.task_available",
+      "trigger": "trigger.manual",
       "variables": {
         "taskId": "",
         "worktreePath": "",
@@ -10898,8 +8410,8 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.task_available",
-          "label": "Task Available",
+          "type": "trigger.manual",
+          "label": "Start Continuation Loop",
           "config": {},
           "position": {
             "x": 420,
@@ -11743,7 +9255,7 @@
       "edgeCount": 36,
       "recommended": false,
       "enabled": true,
-      "trigger": "trigger.task_available",
+      "trigger": "trigger.manual",
       "variables": {
         "taskId": "",
         "worktreePath": "",
@@ -11779,8 +9291,8 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.task_available",
-          "label": "Task Available",
+          "type": "trigger.manual",
+          "label": "Start Continuation Loop",
           "config": {},
           "position": {
             "x": 420,
@@ -12618,8 +10130,8 @@
         "recovery",
         "autofix"
       ],
-      "nodeCount": 9,
-      "edgeCount": 9,
+      "nodeCount": 8,
+      "edgeCount": 8,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
@@ -12682,31 +10194,11 @@
           ]
         },
         {
-          "id": "load-recovery-strategies",
-          "type": "action.load_skillbook_strategies",
-          "label": "Load Recovery Strategies",
-          "config": {
-            "workflowId": "",
-            "category": "strategy",
-            "status": "promoted",
-            "query": "{{taskTitle}} {{lastError}}",
-            "limit": 4,
-            "outputVariable": "recoverySkillbookGuidance"
-          },
-          "position": {
-            "x": 600,
-            "y": 330
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "analyze-error",
           "type": "action.run_agent",
           "label": "Analyze Failure",
           "config": {
-            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}\n\nReusable prior strategies:\n{{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}",
+            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}",
             "timeoutMs": 300000
           },
           "position": {
@@ -12722,7 +10214,7 @@
           "type": "action.run_agent",
           "label": "Retry Task",
           "config": {
-            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n- reusableStrategies: {{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
+            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
             "timeoutMs": 3600000,
             "failOnError": true,
             "maxRetries": "{{maxRetries}}",
@@ -12810,9 +10302,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "check-retries->load-recovery-strategies",
+          "id": "check-retries->analyze-error",
           "source": "check-retries",
-          "target": "load-recovery-strategies",
+          "target": "analyze-error",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -12822,12 +10314,6 @@
           "target": "escalate",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "load-recovery-strategies->analyze-error",
-          "source": "load-recovery-strategies",
-          "target": "analyze-error",
-          "sourcePort": "default"
         },
         {
           "id": "analyze-error->retry-task",
@@ -12875,31 +10361,26 @@
         "health",
         "config",
         "doctor",
-        "monitoring",
-        "self-improvement",
-        "benchmark"
+        "monitoring"
       ],
-      "nodeCount": 17,
-      "edgeCount": 18,
+      "nodeCount": 7,
+      "edgeCount": 8,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.schedule",
       "variables": {
-        "intervalMs": 3600000,
-        "maxBenchmarkRuns": 12
+        "intervalMs": 3600000
       },
       "metadata": {
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.1.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "health",
           "config",
           "doctor",
-          "monitoring",
-          "self-improvement",
-          "benchmark"
+          "monitoring"
         ],
         "replaces": {
           "module": "config-doctor.mjs",
@@ -12978,30 +10459,6 @@
           ]
         },
         {
-          "id": "collect-recent-runs",
-          "type": "action.run_command",
-          "label": "Collect Recent Runs",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const maxRuns = Math.max(1, parseInt(process.env.MAX_BENCHMARK_RUNS || \"12\", 10) || 12);\n        const runsDir = path.resolve(process.cwd(), \".bosun\", \"workflow-runs\");\n        const indexPath = path.join(runsDir, \"index.json\");\n        let entries = [];\n        if (fs.existsSync(indexPath)) {\n          try {\n            const raw = JSON.parse(fs.readFileSync(indexPath, \"utf8\"));\n            entries = Array.isArray(raw) ? raw : (Array.isArray(raw?.runs) ? raw.runs : []);\n          } catch {}\n        }\n        const candidates = entries\n          .filter((entry) => entry && entry.runId && [\"completed\", \"failed\"].includes(String(entry.status || \"\").toLowerCase()))\n          .sort((left, right) => Number(right?.startedAt || 0) - Number(left?.startedAt || 0))\n          .slice(0, maxRuns)\n          .map((entry) => ({\n            runId: entry.runId,\n            workflowId: entry.workflowId || null,\n            workflowName: entry.workflowName || null,\n            status: entry.status || null,\n            startedAt: entry.startedAt || null,\n            score: entry.score ?? null,\n            issueAdvisorRecommendation: entry.issueAdvisorRecommendation || null,\n          }));\n        const selected = candidates[0] || null;\n        console.log(JSON.stringify({\n          count: candidates.length,\n          candidates,\n          selectedRunId: selected?.runId || null,\n          selectedWorkflowId: selected?.workflowId || null,\n        }));\n      "
-            ],
-            "env": {
-              "MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
-            },
-            "parseJson": true,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 900,
-            "y": 200
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "has-issues",
           "type": "condition.expression",
           "label": "Any Issues?",
@@ -13011,155 +10468,6 @@
           "position": {
             "x": 400,
             "y": 380
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-recent-runs",
-          "type": "condition.expression",
-          "label": "Recent Runs Available?",
-          "config": {
-            "expression": "Boolean($ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId)"
-          },
-          "position": {
-            "x": 900,
-            "y": 380
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "evaluate-latest-run",
-          "type": "action.evaluate_run",
-          "label": "Evaluate Latest Run",
-          "config": {
-            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId || ''}}",
-            "workflowId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedWorkflowId || ''}}",
-            "includeTrend": true,
-            "outputVariable": "healthCheckRunEvaluation"
-          },
-          "position": {
-            "x": 900,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "apply-ratchet",
-          "type": "action.apply_self_improvement_ratchet",
-          "label": "Apply Ratchet Decision",
-          "config": {
-            "evaluationNodeId": "evaluate-latest-run",
-            "scopeLevel": "workspace",
-            "scope": "workflow-reliability",
-            "category": "strategy",
-            "outputVariable": "healthCheckRatchet"
-          },
-          "position": {
-            "x": 900,
-            "y": 840
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "ratchet-applied",
-          "type": "condition.expression",
-          "label": "Ratchet Applied?",
-          "config": {
-            "expression": "['capture_baseline','apply_candidate'].includes($ctx.getNodeOutput('apply-ratchet')?.decision || '')"
-          },
-          "position": {
-            "x": 720,
-            "y": 980
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "ratchet-reverted",
-          "type": "condition.expression",
-          "label": "Ratchet Reverted?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('apply-ratchet')?.decision === 'revert_to_baseline'"
-          },
-          "position": {
-            "x": 1080,
-            "y": 980
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "log-ratchet-apply",
-          "type": "notify.log",
-          "label": "Log Ratchet Apply",
-          "config": {
-            "message": "Self-improvement ratchet {{$ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}} for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}; active baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 720,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-ratchet-revert",
-          "type": "notify.log",
-          "label": "Log Ratchet Revert",
-          "config": {
-            "message": "Self-improvement ratchet reverted workflow to baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}} after run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-ratchet-keep",
-          "type": "notify.log",
-          "label": "Log Ratchet Keep",
-          "config": {
-            "message": "Self-improvement ratchet kept baseline for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}: {{$ctx.getNodeOutput('apply-ratchet')?.summary || 'no baseline change'}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1320,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-runs",
-          "type": "notify.log",
-          "label": "Log No Benchmark Data",
-          "config": {
-            "message": "Health check self-improvement skipped: no recent completed or failed workflow runs available.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 1120,
-            "y": 540
           },
           "outputs": [
             "default"
@@ -13217,12 +10525,6 @@
           "sourcePort": "default"
         },
         {
-          "id": "trigger->collect-recent-runs",
-          "source": "trigger",
-          "target": "collect-recent-runs",
-          "sourcePort": "default"
-        },
-        {
           "id": "check-config->has-issues",
           "source": "check-config",
           "target": "has-issues",
@@ -13239,66 +10541,6 @@
           "source": "check-agents",
           "target": "has-issues",
           "sourcePort": "default"
-        },
-        {
-          "id": "collect-recent-runs->has-recent-runs",
-          "source": "collect-recent-runs",
-          "target": "has-recent-runs",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-recent-runs->evaluate-latest-run",
-          "source": "has-recent-runs",
-          "target": "evaluate-latest-run",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-recent-runs->log-no-runs",
-          "source": "has-recent-runs",
-          "target": "log-no-runs",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "evaluate-latest-run->apply-ratchet",
-          "source": "evaluate-latest-run",
-          "target": "apply-ratchet",
-          "sourcePort": "default"
-        },
-        {
-          "id": "apply-ratchet->ratchet-applied",
-          "source": "apply-ratchet",
-          "target": "ratchet-applied",
-          "sourcePort": "default"
-        },
-        {
-          "id": "ratchet-applied->log-ratchet-apply",
-          "source": "ratchet-applied",
-          "target": "log-ratchet-apply",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "ratchet-applied->ratchet-reverted",
-          "source": "ratchet-applied",
-          "target": "ratchet-reverted",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "ratchet-reverted->log-ratchet-revert",
-          "source": "ratchet-reverted",
-          "target": "log-ratchet-revert",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "ratchet-reverted->log-ratchet-keep",
-          "source": "ratchet-reverted",
-          "target": "log-ratchet-keep",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
         },
         {
           "id": "has-issues->alert",
@@ -14434,7 +11676,7 @@
           "label": "Handoff Lifecycle If Missing",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -15071,8 +12313,8 @@
         "resilience",
         "automation"
       ],
-      "nodeCount": 16,
-      "edgeCount": 17,
+      "nodeCount": 15,
+      "edgeCount": 16,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
@@ -15228,7 +12470,7 @@
           "label": "Handoff/Refresh Lifecycle",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -15279,26 +12521,6 @@
           "position": {
             "x": 250,
             "y": 1020
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "clear-repair-blocked-success",
-          "type": "action.bosun_function",
-          "label": "Clear Repair Block (Success)",
-          "config": {
-            "function": "tasks.clearBlocker",
-            "args": {
-              "taskId": "{{taskId}}",
-              "reason": "repair_succeeded"
-            },
-            "continueOnError": true
-          },
-          "position": {
-            "x": 250,
-            "y": 1090
           },
           "outputs": [
             "default"
@@ -15482,14 +12704,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "mark-inreview->clear-repair-blocked-success",
+          "id": "mark-inreview->handoff-pr-progressor",
           "source": "mark-inreview",
-          "target": "clear-repair-blocked-success",
-          "sourcePort": "default"
-        },
-        {
-          "id": "clear-repair-blocked-success->handoff-pr-progressor",
-          "source": "clear-repair-blocked-success",
           "target": "handoff-pr-progressor",
           "sourcePort": "default"
         },
@@ -16245,774 +13461,6 @@
       ]
     },
     {
-      "id": "template-research-evidence-agent",
-      "name": "Research Evidence Agent",
-      "description": "Evidence-backed research workflow that keeps Bosun as orchestrator, uses a local PDF-capable scientific evidence sidecar for grounded context, and only promotes reviewed findings into shared knowledge after verification.",
-      "category": "research",
-      "categoryLabel": "Research",
-      "categoryIcon": ":search:",
-      "categoryOrder": 6,
-      "tags": [
-        "research",
-        "evidence-sidecar",
-        "verification-loop",
-        "scientific-evidence"
-      ],
-      "nodeCount": 28,
-      "edgeCount": 32,
-      "recommended": false,
-      "enabled": true,
-      "trigger": "trigger.manual",
-      "variables": {
-        "repoRoot": ".",
-        "problem": "",
-        "domain": "computer-science",
-        "maxIterations": 10,
-        "searchLiterature": true,
-        "evidenceMode": "answer",
-        "maxEvidenceSources": 6,
-        "corpusPaths": [],
-        "promoteReviewedFindings": true,
-        "sidecarCommand": "",
-        "_previousFeedback": "",
-        "currentDraft": "",
-        "iterationCount": 0
-      },
-      "metadata": {
-        "createdAt": "2026-03-31T00:00:00.000Z",
-        "version": 1,
-        "author": "bosun",
-        "tags": [
-          "research",
-          "evidence-sidecar",
-          "verification-loop",
-          "scientific-evidence"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Evidence Research",
-          "config": {},
-          "position": {
-            "x": 420,
-            "y": 60
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "should-search",
-          "type": "condition.expression",
-          "label": "Search Literature?",
-          "config": {
-            "expression": "Boolean($data?.searchLiterature !== false)"
-          },
-          "position": {
-            "x": 420,
-            "y": 180
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "literature-search",
-          "type": "action.web_search",
-          "label": "Search Literature",
-          "config": {
-            "query": "{{problem}} {{domain}} peer reviewed evidence",
-            "maxResults": 6,
-            "engine": "fetch"
-          },
-          "position": {
-            "x": 200,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "run-evidence-sidecar",
-          "type": "action.run_command",
-          "label": "Build Evidence Bundle",
-          "config": {
-            "command": "node",
-            "args": [
-              "workflow/research-evidence-sidecar.mjs",
-              "run"
-            ],
-            "cwd": "{{repoRoot}}",
-            "parseJson": true,
-            "failOnError": false,
-            "timeoutMs": 300000,
-            "env": {
-              "BOSUN_RESEARCH_SIDECAR_INPUT": "{{({ problem: $data.problem, domain: $data.domain, evidenceMode: $data.evidenceMode, maxEvidenceSources: $data.maxEvidenceSources, corpusPaths: $data.corpusPaths, searchLiterature: $data.searchLiterature, literatureResults: $ctx.getNodeOutput('literature-search')?.results || [], repoRoot: $data.repoRoot, triggerSource: $data.triggerSource || 'manual', sidecarCommand: $data.sidecarCommand || '' })}}"
-            }
-          },
-          "position": {
-            "x": 420,
-            "y": 500
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "evidence-ready",
-          "type": "condition.expression",
-          "label": "Evidence Ready?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('run-evidence-sidecar')?.success === true && Boolean($ctx.getNodeOutput('run-evidence-sidecar')?.output?.artifactPath)"
-          },
-          "position": {
-            "x": 420,
-            "y": 660
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "evidence-failed-log",
-          "type": "notify.log",
-          "label": "Evidence Sidecar Failed",
-          "config": {
-            "message": "Research evidence sidecar failed for {{problem}}.\nOutput: {{$ctx.getNodeOutput('run-evidence-sidecar')?.output || ''}}",
-            "level": "error"
-          },
-          "position": {
-            "x": 760,
-            "y": 820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "evidence-failed-end",
-          "type": "flow.end",
-          "label": "End Research (Evidence Failure)",
-          "config": {
-            "status": "failed",
-            "message": "Evidence sidecar failed to prepare a research bundle.",
-            "output": {
-              "problem": "{{problem}}",
-              "domain": "{{domain}}"
-            }
-          },
-          "position": {
-            "x": 760,
-            "y": 980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "generate-solution",
-          "type": "action.run_agent",
-          "label": "Generate Solution",
-          "config": {
-            "prompt": "# Evidence-Backed Research Generation\n\n## Research Problem\n{{problem}}\n\n## Domain\n{{domain}}\n\n## Evidence Mode\n{{evidenceMode}}\n\n## Evidence Summary\n{{run-evidence-sidecar.output.bundle.summary}}\n\n## Review Hints\n{{run-evidence-sidecar.output.bundle.reviewHints}}\n\n## Uncertainty Summary\n{{run-evidence-sidecar.output.bundle.uncertaintySummary}}\n\n## Evidence Bundle\n{{run-evidence-sidecar.output.evidenceBrief}}\n\n## Artifact\n{{run-evidence-sidecar.output.artifactPath}}\n\n## Previous Critical Feedback\n{{_previousFeedback}}\n\n## Instructions\nYou are Bosun's research generation phase.\nProduce a rigorous candidate answer grounded in the supplied evidence.\nUse citation keys such as [E1], [E2] inline whenever you rely on an evidence item.\nDo not invent claims not supported by the evidence bundle.\nIf the evidence is insufficient, say exactly what remains uncertain.\n\nReturn sections in this order:\n1. Claim\n2. Evidence Synthesis\n3. Limitations\n4. Final Answer",
-            "sdk": "auto",
-            "timeoutMs": 1800000,
-            "failOnError": false
-          },
-          "position": {
-            "x": 160,
-            "y": 820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "store-generated-draft",
-          "type": "action.set_variable",
-          "label": "Store Draft",
-          "config": {
-            "key": "currentDraft",
-            "value": "{{generate-solution.output}}"
-          },
-          "position": {
-            "x": 160,
-            "y": 980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-iteration",
-          "type": "action.set_variable",
-          "label": "Increment Iteration",
-          "config": {
-            "key": "iterationCount",
-            "value": "Number($data?.iterationCount || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 160,
-            "y": 1140
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "iteration-budget",
-          "type": "condition.expression",
-          "label": "Iteration Budget Available?",
-          "config": {
-            "expression": "Number($data?.iterationCount || 0) <= Number($data?.maxIterations || 1)"
-          },
-          "position": {
-            "x": 160,
-            "y": 1300
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "iteration-limit-log",
-          "type": "notify.log",
-          "label": "Iteration Limit Reached",
-          "config": {
-            "message": "Evidence-backed research stopped after {{iterationCount}} verification cycle(s) for {{problem}} without a correct verdict.",
-            "level": "warn"
-          },
-          "position": {
-            "x": 20,
-            "y": 1460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "iteration-limit-end",
-          "type": "flow.end",
-          "label": "End Research (Iteration Limit)",
-          "config": {
-            "status": "failed",
-            "message": "Research did not converge before maxIterations was reached.",
-            "output": {
-              "problem": "{{problem}}",
-              "domain": "{{domain}}",
-              "iterationCount": "{{iterationCount}}",
-              "artifactPath": "{{run-evidence-sidecar.output.artifactPath}}"
-            }
-          },
-          "position": {
-            "x": 20,
-            "y": 1620
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "verify-solution",
-          "type": "action.run_agent",
-          "label": "Verify Solution",
-          "config": {
-            "prompt": "# Independent Evidence Verification\n\n## Problem\n{{problem}}\n\n## Candidate Solution\n{{currentDraft}}\n\n## Evidence Summary\n{{run-evidence-sidecar.output.bundle.summary}}\n\n## Evidence Bundle\n{{run-evidence-sidecar.output.evidenceBrief}}\n\n## Review Hints\n{{run-evidence-sidecar.output.bundle.reviewHints}}\n\n## Instructions\nYou are the independent verifier.\nAssess whether the candidate answer is fully supported by the evidence bundle.\nCheck citation usage, factual consistency, unsupported leaps, and contradictions.\n\nReturn exactly one verdict:\n- VERDICT: CORRECT\n- VERDICT: MINOR\n- VERDICT: CRITICAL\n\nThen explain:\n1. Whether the cited evidence is sufficient\n2. Specific flaws or missing support\n3. Whether the answer is safe to preserve as reviewed knowledge",
-            "sdk": "auto",
-            "timeoutMs": 900000,
-            "failOnError": false
-          },
-          "position": {
-            "x": 420,
-            "y": 1460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "parse-verdict",
-          "type": "transform.llm_parse",
-          "label": "Parse Verdict",
-          "config": {
-            "input": "verify-solution",
-            "field": "output",
-            "patterns": {
-              "verdict": "VERDICT:\\s*(CORRECT|MINOR|CRITICAL)"
-            },
-            "keywords": {
-              "severity": [
-                "correct",
-                "minor",
-                "critical"
-              ]
-            },
-            "outputPort": "verdict"
-          },
-          "position": {
-            "x": 420,
-            "y": 1620
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "revise-solution",
-          "type": "action.continue_session",
-          "label": "Revise Solution",
-          "config": {
-            "prompt": "The verifier found correctable issues in your evidence-backed answer.\n\n## Current Draft\n{{currentDraft}}\n\n## Verifier Feedback\n{{verify-solution.output}}\n\n## Evidence Summary\n{{run-evidence-sidecar.output.bundle.summary}}\n\n## Evidence Bundle\n{{run-evidence-sidecar.output.evidenceBrief}}\n\n## Review Hints\n{{run-evidence-sidecar.output.bundle.reviewHints}}\n\nRevise the answer to address every issue while remaining grounded in the supplied evidence.\nKeep or improve inline citation keys like [E1].",
-            "strategy": "refine",
-            "timeoutMs": 900000
-          },
-          "position": {
-            "x": 420,
-            "y": 1780
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "store-revised-draft",
-          "type": "action.set_variable",
-          "label": "Store Revised Draft",
-          "config": {
-            "key": "currentDraft",
-            "value": "{{revise-solution.output}}"
-          },
-          "position": {
-            "x": 420,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "critical-log",
-          "type": "notify.log",
-          "label": "Critical Flaw Detected",
-          "config": {
-            "message": "Critical flaw detected in evidence-backed answer for {{problem}}.\n{{verify-solution.output}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 760,
-            "y": 1780
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "store-critical-feedback",
-          "type": "action.set_variable",
-          "label": "Store Critical Feedback",
-          "config": {
-            "key": "_previousFeedback",
-            "value": "Previous answer was critically flawed. Avoid the failed path and address this feedback:\n{{verify-solution.output}}"
-          },
-          "position": {
-            "x": 760,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-promotion-candidate",
-          "type": "action.run_command",
-          "label": "Build Reviewed Finding",
-          "config": {
-            "command": "node",
-            "args": [
-              "workflow/research-evidence-sidecar.mjs",
-              "promote"
-            ],
-            "cwd": "{{repoRoot}}",
-            "parseJson": true,
-            "failOnError": false,
-            "timeoutMs": 120000,
-            "env": {
-              "BOSUN_RESEARCH_SIDECAR_INPUT": "{{({ verdict: 'correct', problem: $data.problem, domain: $data.domain, finalAnswer: $data.currentDraft, verifierOutput: $ctx.getNodeOutput('verify-solution')?.output || '', artifactPath: $ctx.getNodeOutput('run-evidence-sidecar')?.output?.artifactPath || '', evidenceMode: $data.evidenceMode, bundle: $ctx.getNodeOutput('run-evidence-sidecar')?.output?.bundle || null })}}"
-            }
-          },
-          "position": {
-            "x": 1080,
-            "y": 1620
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "should-promote",
-          "type": "condition.expression",
-          "label": "Promote Reviewed Finding?",
-          "config": {
-            "expression": "Boolean($data?.promoteReviewedFindings !== false) && $ctx.getNodeOutput('build-promotion-candidate')?.output?.promote === true"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1780
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "persist-reviewed-finding",
-          "type": "action.persist_memory",
-          "label": "Persist Reviewed Finding",
-          "config": {
-            "content": "{{build-promotion-candidate.output.content}}",
-            "scope": "{{build-promotion-candidate.output.scope}}",
-            "category": "{{build-promotion-candidate.output.category}}",
-            "scopeLevel": "workspace",
-            "tags": "{{build-promotion-candidate.output.tags}}",
-            "repoRoot": "{{repoRoot}}",
-            "targetFile": ".bosun/shared-knowledge/REVIEWED_RESEARCH.md",
-            "registryFile": ".cache/bosun/reviewed-research-memory.json",
-            "agentId": "research-evidence-workflow",
-            "agentType": "workflow",
-            "workspaceId": "{{workspaceId}}",
-            "runId": "{{runId}}",
-            "taskId": "{{taskId}}"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "persist-reviewed-finding-ok",
-          "type": "condition.expression",
-          "label": "Reviewed Finding Stored?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('persist-reviewed-finding')?.success === true"
-          },
-          "position": {
-            "x": 1080,
-            "y": 2100
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "persist-reviewed-finding-log",
-          "type": "notify.log",
-          "label": "Reviewed Finding Stored",
-          "config": {
-            "message": "Stored reviewed research finding for {{problem}} at {{persist-reviewed-finding.registryPath}}.",
-            "level": "info"
-          },
-          "position": {
-            "x": 900,
-            "y": 2260
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "persist-reviewed-finding-warning",
-          "type": "notify.log",
-          "label": "Knowledge Promotion Skipped",
-          "config": {
-            "message": "Reviewed finding promotion did not persist for {{problem}}.\nReason: {{$ctx.getNodeOutput('persist-reviewed-finding')?.reason || $ctx.getNodeOutput('persist-reviewed-finding')?.error || 'not requested'}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1260,
-            "y": 2260
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "promotion-skip-log",
-          "type": "notify.log",
-          "label": "Promotion Not Requested",
-          "config": {
-            "message": "Reviewed knowledge promotion skipped for {{problem}}. Evidence artifact remains at {{run-evidence-sidecar.output.artifactPath}}.",
-            "level": "info"
-          },
-          "position": {
-            "x": 1440,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "output-result",
-          "type": "notify.log",
-          "label": "Verified Research Complete",
-          "config": {
-            "message": "Evidence-backed research complete for {{problem}}.\nArtifact: {{run-evidence-sidecar.output.artifactPath}}\nAnswer:\n{{currentDraft}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 1080,
-            "y": 2420
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-success",
-          "type": "flow.end",
-          "label": "End Research (Success)",
-          "config": {
-            "status": "completed",
-            "message": "Evidence-backed research converged to a reviewed answer.",
-            "output": {
-              "verdict": "correct",
-              "problem": "{{problem}}",
-              "domain": "{{domain}}",
-              "iterationCount": "{{iterationCount}}",
-              "artifactPath": "{{run-evidence-sidecar.output.artifactPath}}",
-              "citations": "{{run-evidence-sidecar.output.bundle.citations}}"
-            }
-          },
-          "position": {
-            "x": 1080,
-            "y": 2580
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->should-search",
-          "source": "trigger",
-          "target": "should-search",
-          "sourcePort": "default"
-        },
-        {
-          "id": "should-search->literature-search",
-          "source": "should-search",
-          "target": "literature-search",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "should-search->run-evidence-sidecar",
-          "source": "should-search",
-          "target": "run-evidence-sidecar",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "literature-search->run-evidence-sidecar",
-          "source": "literature-search",
-          "target": "run-evidence-sidecar",
-          "sourcePort": "default"
-        },
-        {
-          "id": "run-evidence-sidecar->evidence-ready",
-          "source": "run-evidence-sidecar",
-          "target": "evidence-ready",
-          "sourcePort": "default"
-        },
-        {
-          "id": "evidence-ready->generate-solution",
-          "source": "evidence-ready",
-          "target": "generate-solution",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "evidence-ready->evidence-failed-log",
-          "source": "evidence-ready",
-          "target": "evidence-failed-log",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "evidence-failed-log->evidence-failed-end",
-          "source": "evidence-failed-log",
-          "target": "evidence-failed-end",
-          "sourcePort": "default"
-        },
-        {
-          "id": "generate-solution->store-generated-draft",
-          "source": "generate-solution",
-          "target": "store-generated-draft",
-          "sourcePort": "default"
-        },
-        {
-          "id": "store-generated-draft->increment-iteration",
-          "source": "store-generated-draft",
-          "target": "increment-iteration",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-iteration->iteration-budget",
-          "source": "increment-iteration",
-          "target": "iteration-budget",
-          "sourcePort": "default"
-        },
-        {
-          "id": "iteration-budget->verify-solution",
-          "source": "iteration-budget",
-          "target": "verify-solution",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "iteration-budget->iteration-limit-log",
-          "source": "iteration-budget",
-          "target": "iteration-limit-log",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "iteration-limit-log->iteration-limit-end",
-          "source": "iteration-limit-log",
-          "target": "iteration-limit-end",
-          "sourcePort": "default"
-        },
-        {
-          "id": "verify-solution->parse-verdict",
-          "source": "verify-solution",
-          "target": "parse-verdict",
-          "sourcePort": "default"
-        },
-        {
-          "id": "parse-verdict->build-promotion-candidate",
-          "source": "parse-verdict",
-          "target": "build-promotion-candidate",
-          "sourcePort": "correct"
-        },
-        {
-          "id": "parse-verdict->revise-solution",
-          "source": "parse-verdict",
-          "target": "revise-solution",
-          "sourcePort": "minor"
-        },
-        {
-          "id": "parse-verdict->critical-log",
-          "source": "parse-verdict",
-          "target": "critical-log",
-          "sourcePort": "critical"
-        },
-        {
-          "id": "revise-solution->store-revised-draft",
-          "source": "revise-solution",
-          "target": "store-revised-draft",
-          "sourcePort": "default"
-        },
-        {
-          "id": "store-revised-draft->increment-iteration",
-          "source": "store-revised-draft",
-          "target": "increment-iteration",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 50
-        },
-        {
-          "id": "critical-log->store-critical-feedback",
-          "source": "critical-log",
-          "target": "store-critical-feedback",
-          "sourcePort": "default"
-        },
-        {
-          "id": "store-critical-feedback->generate-solution",
-          "source": "store-critical-feedback",
-          "target": "generate-solution",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 50
-        },
-        {
-          "id": "build-promotion-candidate->should-promote",
-          "source": "build-promotion-candidate",
-          "target": "should-promote",
-          "sourcePort": "default"
-        },
-        {
-          "id": "should-promote->persist-reviewed-finding",
-          "source": "should-promote",
-          "target": "persist-reviewed-finding",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "should-promote->promotion-skip-log",
-          "source": "should-promote",
-          "target": "promotion-skip-log",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "persist-reviewed-finding->persist-reviewed-finding-ok",
-          "source": "persist-reviewed-finding",
-          "target": "persist-reviewed-finding-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "persist-reviewed-finding-ok->persist-reviewed-finding-log",
-          "source": "persist-reviewed-finding-ok",
-          "target": "persist-reviewed-finding-log",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "persist-reviewed-finding-ok->persist-reviewed-finding-warning",
-          "source": "persist-reviewed-finding-ok",
-          "target": "persist-reviewed-finding-warning",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "persist-reviewed-finding-log->output-result",
-          "source": "persist-reviewed-finding-log",
-          "target": "output-result",
-          "sourcePort": "default"
-        },
-        {
-          "id": "persist-reviewed-finding-warning->output-result",
-          "source": "persist-reviewed-finding-warning",
-          "target": "output-result",
-          "sourcePort": "default"
-        },
-        {
-          "id": "promotion-skip-log->output-result",
-          "source": "promotion-skip-log",
-          "target": "output-result",
-          "sourcePort": "default"
-        },
-        {
-          "id": "output-result->end-success",
-          "source": "output-result",
-          "target": "end-success",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
       "id": "template-research-loop",
       "name": "Research Loop (While-Based)",
       "description": "An iterative research agent using loop.while to repeatedly execute a generate→verify sub-workflow until the solution converges. Alternative to the back-edge approach — useful when you want the iteration logic centralized in a single node.",
@@ -17332,7 +13780,7 @@
           "label": "Handoff Fix Lifecycle",
           "config": {
             "title": "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
-            "body": "## Summary\n\nAutomated dependency audit fix. Resolves vulnerabilities flagged by `npm audit` at severity level **{{auditLevel}}** or higher.\n\n## What Changed\n\n- Updated vulnerable dependencies to patched versions\n- Verified no breaking changes via build and test validation",
+            "body": "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nBosun PR lifecycle handoff context included.",
             "branch": "fix/dep-audit-{{_runId}}",
             "baseBranch": "main"
           },
@@ -18774,7 +15222,7 @@
           "label": "Open Quality PR",
           "config": {
             "title": "refactor: code quality pass",
-            "body": "## Summary\n\nAutomated code-quality session. Structural refactor only — zero functional changes.\n\nSee `.bosun-monitor/code-quality-striker.md` for session details.",
+            "body": "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "labels": [
@@ -21002,7 +17450,6 @@
             "title": "research: {{query}}",
             "branch": "{{prBranch}}",
             "baseBranch": "{{prBaseBranch}}",
-            "body": "## Research\\n\\n{{query}}",
             "continueOnError": true
           },
           "position": {
@@ -21655,9 +18102,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 2,
+        "version": 1,
         "createdAt": "2026-03-15T00:00:00Z",
-        "templateVersion": "1.1.0",
+        "templateVersion": "1.0.0",
         "tags": [
           "task",
           "batch",
@@ -21800,7 +18247,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{task.taskTitle}}",
-            "body": "## Summary\n\n{{task.taskDescription}}\n\n---\nTask-ID: {{task.taskId}}",
+            "body": "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
             "base": "{{defaultBaseBranch}}",
             "branch": "{{task.branch}}",
             "draft": "{{draftPR}}"
@@ -22234,11 +18681,10 @@
         "lifecycle",
         "executor",
         "workflow-first",
-        "core",
-        "multi-remediation"
+        "core"
       ],
-      "nodeCount": 73,
-      "edgeCount": 84,
+      "nodeCount": 59,
+      "edgeCount": 67,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -22268,20 +18714,18 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 5,
+        "version": 2,
         "createdAt": "2026-03-01T00:00:00Z",
-        "templateVersion": "4.1.0",
+        "templateVersion": "2.1.0",
         "tags": [
           "task",
           "lifecycle",
           "executor",
           "workflow-first",
-          "core",
-          "multi-remediation"
+          "core"
         ],
         "requiredTemplates": [
-          "template-bosun-pr-progressor",
-          "template-task-repair-worktree"
+          "template-bosun-pr-progressor"
         ],
         "replaces": {
           "module": "task-executor.mjs",
@@ -22717,13 +19161,12 @@
           ]
         },
         {
-          "id": "set-fix-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Validation Output",
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
           "config": {
-            "key": "fixSummary",
-            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; const diag = out.outputDiagnostics || {}; const sections = []; sections.push('## Validation Result'); sections.push('- Exit code: ' + (out.exitCode ?? 'unknown')); sections.push('- Runner: ' + (diag.family || diag.runner || 'unknown')); if (diag.summary) sections.push('- Summary: ' + diag.summary); const targets = diag.failedTargets || []; if (targets.length) {   sections.push('');   sections.push('## Failed Targets (' + targets.length + ')');   targets.slice(0, 30).forEach(t => sections.push('  - ' + t));   if (targets.length > 30) sections.push('  ... and ' + (targets.length - 30) + ' more'); } const rerun = out.outputSuggestedRerun || diag.suggestedRerun || ''; if (rerun) {   sections.push('');   sections.push('## Suggested Rerun Command');   sections.push('```');   sections.push(rerun);   sections.push('```'); } const hint = out.outputHint || diag.hint || ''; if (hint) sections.push('\\nHint: ' + hint); sections.push(''); sections.push('## Full Command Output'); sections.push(String(out.output || '').slice(0, 12000)); return sections.join('\\n'); })()",
-            "isExpression": true
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+            "level": "warn"
           },
           "position": {
             "x": 300,
@@ -22734,184 +19177,17 @@
           ]
         },
         {
-          "id": "auto-fix-validation",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation (Pass 1)",
-          "config": {
-            "prompt": "# Fix Pre-PR Validation Failures — Pass 1\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Your job is to fix EVERY error so validation passes.\n\n{{fixSummary}}\n\nSTRATEGY:\n1. Start from the **Failed Targets** list above — these are the exact files/tests/packages that broke.\n2. Fix compilation and syntax errors FIRST (missing imports, typos, type errors).\n3. Then fix test failures — open each failing test file, read what it asserts, and fix your code or the test expectation.\n4. If a **Suggested Rerun Command** is shown above, use it to re-run only the failing targets and iterate faster.\n5. Once targeted failures are fixed, run the full validation command to confirm everything passes.\n\nRULES:\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
-            "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
-          },
-          "position": {
-            "x": 300,
-            "y": 2080
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-pre-pr-validation",
-          "type": "action.run_command",
-          "label": "Retry Pre-PR Validation",
-          "config": {
-            "command": "{{prePrValidationCommand}}",
-            "commandType": "qualityGate",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 300,
-            "y": 2160
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-validation-ok",
-          "type": "condition.expression",
-          "label": "Retry Validation Passed?",
-          "config": {
-            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
-          },
-          "position": {
-            "x": 300,
-            "y": 2240
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "set-fix2-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Both Validation Outputs",
-          "config": {
-            "key": "fix2Summary",
-            "value": "(() => { function summarizeRun(label, out) {   const diag = out.outputDiagnostics || {};   const lines = ['### ' + label];   lines.push('- Exit code: ' + (out.exitCode ?? 'unknown'));   lines.push('- Runner: ' + (diag.family || diag.runner || 'unknown'));   if (diag.summary) lines.push('- Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('- Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('- Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('- Hint: ' + hint);   if (diag.deltaSummary) lines.push('- Delta: ' + diag.deltaSummary);   lines.push('');   lines.push('Full output:');   lines.push(String(out.output || '').slice(0, 8000));   return lines.join('\\n'); } const v1 = $ctx.getNodeOutput('pre-pr-validation') || {}; const v2 = $ctx.getNodeOutput('retry-pre-pr-validation') || {}; return [   '## Validation History (both passes failed)',   '',   summarizeRun('Pass 1 — Original Validation', v1),   '',   summarizeRun('Pass 2 — After First Auto-Fix', v2), ].join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 500,
-            "y": 2300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix-validation-2",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation (Pass 2 — Escalated)",
-          "config": {
-            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\n{{fix2Summary}}\n\nANALYSIS STEPS:\n1. Compare the **Failed Targets** between Pass 1 and Pass 2.\n   - If the SAME targets still fail → your previous fix was wrong. Revert it and try a different approach.\n   - If NEW targets appeared → your fix broke something else. Fix both.\n   - If some targets were RESOLVED → the approach was partially right. Focus on the remaining ones.\n2. Use the **Delta** field (if present) to see exactly what changed between runs.\n3. Use the **Suggested Rerun Command** to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior your change invalidated, fix the test AND the code.\n- If the build/lint/test commands are misconfigured for your changes, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun the full validation command locally and confirm ALL checks pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
-            "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
-          },
-          "position": {
-            "x": 500,
-            "y": 2380
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-pre-pr-validation",
-          "type": "action.run_command",
-          "label": "Retry-2 Pre-PR Validation",
-          "config": {
-            "command": "{{prePrValidationCommand}}",
-            "commandType": "qualityGate",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 500,
-            "y": 2460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-validation-ok",
-          "type": "condition.expression",
-          "label": "Retry-2 Validation Passed?",
-          "config": {
-            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry2-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
-          },
-          "position": {
-            "x": 500,
-            "y": 2540
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "log-validation-failed",
-          "type": "notify.log",
-          "label": "Log Validation Failed",
-          "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after 2 auto-fix remediation passes, blocking task",
-            "level": "warn"
-          },
-          "position": {
-            "x": 700,
-            "y": 2600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-blocked-validation-failed",
+          "id": "set-todo-validation-failed",
           "type": "action.update_task_status",
-          "label": "Block Task (Validation Fail)",
+          "label": "Set Todo (Validation Fail)",
           "config": {
             "taskId": "{{taskId}}",
-            "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "Pre-PR validation failed after 2 automated remediation passes"
+            "status": "todo",
+            "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 700,
-            "y": 2680
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-validation-blocked",
-          "type": "notify.telegram",
-          "label": "Notify Validation Blocked",
-          "config": {
-            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after 2 automated remediation attempts. Manual review needed."
-          },
-          "position": {
-            "x": 700,
-            "y": 2760
+            "x": 300,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -22926,9 +19202,6 @@
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "rebaseBeforePush": true,
-            "mergeBaseBeforePush": true,
-            "autoResolveMergeConflicts": true,
-            "conflictResolverSdk": "auto",
             "emptyDiffGuard": true,
             "protectedBranches": "{{protectedBranches}}"
           },
@@ -22957,29 +19230,12 @@
           ]
         },
         {
-          "id": "build-pr-body",
-          "type": "action.set_variable",
-          "label": "Build PR Description",
-          "config": {
-            "key": "prBody",
-            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const dc = $ctx.getNodeOutput('detect-commits') || {}; const stats = dc.diffStats || {}; const msgs = Array.isArray(dc.commitMessages) ? dc.commitMessages : []; const files = Array.isArray(dc.changedFiles) ? dc.changedFiles : []; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } if (msgs.length) {   s.push('');   s.push('## Changes');   s.push('');   msgs.forEach(m => s.push('- ' + m)); } if (stats.filesChanged) {   s.push('');   s.push('**' + stats.filesChanged + ' file' + (stats.filesChanged === 1 ? '' : 's') + ' changed, ' + (stats.insertions || 0) + ' insertion' + ((stats.insertions || 0) === 1 ? '' : 's') + '(+), ' + (stats.deletions || 0) + ' deletion' + ((stats.deletions || 0) === 1 ? '' : 's') + '(-)**'); } if (files.length) {   s.push('');   s.push('<details><summary>Files touched (' + files.length + ')</summary>');   s.push('');   files.slice(0, 80).forEach(f => s.push('- `' + f + '`'));   if (files.length > 80) s.push('- ... and ' + (files.length - 80) + ' more');   s.push('');   s.push('</details>'); } s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 0,
-            "y": 2195
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "{{prBody}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -23119,63 +19375,12 @@
           ]
         },
         {
-          "id": "push-failure-blocking",
-          "type": "condition.expression",
-          "label": "Push Failure Blocks?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch')?.implementationDone === true"
-          },
-          "position": {
-            "x": 360,
-            "y": 2195
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "set-blocked-push-failed",
-          "type": "action.update_task_status",
-          "label": "Set Blocked (Push Fail)",
-          "config": {
-            "taskId": "{{taskId}}",
-            "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "{{$ctx.getNodeOutput('push-branch')?.blockedReason || $ctx.getNodeOutput('push-branch')?.error || 'implementation_done_commit_blocked'}}"
-          },
-          "position": {
-            "x": 360,
-            "y": 2325
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-pr-body-stolen",
-          "type": "action.set_variable",
-          "label": "Build PR Description (Recovered)",
-          "config": {
-            "key": "prBody",
-            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } s.push(''); s.push('> Claim was lost during agent execution — PR recovered.'); s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 400,
-            "y": 1680
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Recover PR Link",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "{{prBody}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -23307,9 +19512,8 @@
             "sourceNodeIds": [
               "log-success",
               "set-todo-push-failed",
-              "set-blocked-push-failed",
               "set-todo-cooldown",
-              "notify-validation-blocked",
+              "set-todo-validation-failed",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -23421,7 +19625,7 @@
           "type": "condition.expression",
           "label": "Non-Retryable WT Failure?",
           "config": {
-            "expression": "(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const latest = retry && retry.success === false ? retry : $ctx.getNodeOutput('acquire-worktree'); return latest?.retryable === false; })()"
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable === false"
           },
           "position": {
             "x": 600,
@@ -23439,8 +19643,7 @@
           "config": {
             "taskId": "{{taskId}}",
             "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.blockedReason || $ctx.getNodeOutput('retry-acquire-wt')?.error || '') : ($ctx.getNodeOutput('acquire-worktree')?.blockedReason || $ctx.getNodeOutput('acquire-worktree')?.error || '')}}"
+            "taskTitle": "{{taskTitle}}"
           },
           "position": {
             "x": 470,
@@ -23459,43 +19662,15 @@
             "args": {
               "taskId": "{{taskId}}",
               "fields": {
-                "cooldownUntil": "{{(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); return output.retryAt || null; })()}}",
-                "blockedReason": "{{(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); return output.blockedReason || output.error || null; })()}}",
-                "meta": "{{(() => { const current = ($data.meta && typeof $data.meta === 'object') ? $data.meta : (($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}); const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); const worktreePath = output.worktreePath || $data.worktreePath || ''; const repoRoot = $data.repoRoot || $data.workspace || current.repoRoot || current.workspace || ''; const branch = $data.branch || $data.branchName || current.branch || current.branchName || ''; const baseBranch = $data.baseBranch || current.baseBranch || ''; const defaultTargetBranch = $data.defaultTargetBranch || current.defaultTargetBranch || ''; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || output.error || '', error: output.error || '', recordedAt: output.recordedAt || null, repairArtifacts: output.repairArtifacts || null, branch, repoRoot, baseBranch, defaultTargetBranch, worktreePath } }; })()}}"
+                "cooldownUntil": "{{acquire-worktree.retryAt}}",
+                "blockedReason": "{{acquire-worktree.blockedReason}}",
+                "meta": "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null, repairArtifacts: output.repairArtifacts || null } }; })()}}"
               }
             }
           },
           "position": {
             "x": 470,
             "y": 1480
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "dispatch-wt-repair",
-          "type": "action.execute_workflow",
-          "label": "Dispatch WT Repair",
-          "config": {
-            "workflowId": "template-task-repair-worktree",
-            "mode": "dispatch",
-            "input": {
-              "taskId": "{{taskId}}",
-              "taskTitle": "{{taskTitle}}",
-              "repoRoot": "{{repoRoot}}",
-              "worktreePath": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.worktreePath || $data.worktreePath || '') : ($ctx.getNodeOutput('acquire-worktree')?.worktreePath || $data.worktreePath || '')}}",
-              "branch": "{{branch}}",
-              "baseBranch": "{{baseBranch}}",
-              "defaultTargetBranch": "{{defaultTargetBranch}}",
-              "error": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.error || $ctx.getNodeOutput('retry-acquire-wt')?.blockedReason || 'worktree acquisition failed') : ($ctx.getNodeOutput('acquire-worktree')?.error || $ctx.getNodeOutput('acquire-worktree')?.blockedReason || 'worktree acquisition failed')}}",
-              "failureKind": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.failureKind || 'branch_refresh_conflict') : ($ctx.getNodeOutput('acquire-worktree')?.failureKind || 'branch_refresh_conflict')}}",
-              "repairArtifacts": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.repairArtifacts || null) : ($ctx.getNodeOutput('acquire-worktree')?.repairArtifacts || null)}}"
-            }
-          },
-          "position": {
-            "x": 470,
-            "y": 1610
           },
           "outputs": [
             "default"
@@ -23538,7 +19713,7 @@
           "type": "notify.telegram",
           "label": "Notify WT Failed",
           "config": {
-            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.recoveryNote || '') : ($ctx.getNodeOutput('acquire-worktree')?.recoveryNote || '')}}"
+            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}"
           },
           "position": {
             "x": 600,
@@ -23773,91 +19948,21 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "pre-pr-validation-ok->set-fix-summary",
+          "id": "pre-pr-validation-ok->log-validation-failed",
           "source": "pre-pr-validation-ok",
-          "target": "set-fix-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-fix-summary->auto-fix-validation",
-          "source": "set-fix-summary",
-          "target": "auto-fix-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-validation->retry-pre-pr-validation",
-          "source": "auto-fix-validation",
-          "target": "retry-pre-pr-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-pre-pr-validation->retry-validation-ok",
-          "source": "retry-pre-pr-validation",
-          "target": "retry-validation-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-validation-ok->push-branch",
-          "source": "retry-validation-ok",
-          "target": "push-branch",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry-validation-ok->set-fix2-summary",
-          "source": "retry-validation-ok",
-          "target": "set-fix2-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-fix2-summary->auto-fix-validation-2",
-          "source": "set-fix2-summary",
-          "target": "auto-fix-validation-2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-validation-2->retry2-pre-pr-validation",
-          "source": "auto-fix-validation-2",
-          "target": "retry2-pre-pr-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-pre-pr-validation->retry2-validation-ok",
-          "source": "retry2-pre-pr-validation",
-          "target": "retry2-validation-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-validation-ok->push-branch",
-          "source": "retry2-validation-ok",
-          "target": "push-branch",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry2-validation-ok->log-validation-failed",
-          "source": "retry2-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "log-validation-failed->set-blocked-validation-failed",
+          "id": "log-validation-failed->set-todo-validation-failed",
           "source": "log-validation-failed",
-          "target": "set-blocked-validation-failed",
+          "target": "set-todo-validation-failed",
           "sourcePort": "default"
         },
         {
-          "id": "set-blocked-validation-failed->notify-validation-blocked",
-          "source": "set-blocked-validation-failed",
-          "target": "notify-validation-blocked",
-          "sourcePort": "default"
-        },
-        {
-          "id": "notify-validation-blocked->join-outcomes",
-          "source": "notify-validation-blocked",
+          "id": "set-todo-validation-failed->join-outcomes",
+          "source": "set-todo-validation-failed",
           "target": "join-outcomes",
           "sourcePort": "default"
         },
@@ -23868,17 +19973,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->build-pr-body",
+          "id": "push-ok->create-pr",
           "source": "push-ok",
-          "target": "build-pr-body",
+          "target": "create-pr",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
-        },
-        {
-          "id": "build-pr-body->create-pr",
-          "source": "build-pr-body",
-          "target": "create-pr",
-          "sourcePort": "default"
         },
         {
           "id": "create-pr->pr-created",
@@ -23919,31 +20018,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->push-failure-blocking",
+          "id": "push-ok->set-todo-push-failed",
           "source": "push-ok",
-          "target": "push-failure-blocking",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "push-failure-blocking->set-blocked-push-failed",
-          "source": "push-failure-blocking",
-          "target": "set-blocked-push-failed",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-failure-blocking->set-todo-push-failed",
-          "source": "push-failure-blocking",
           "target": "set-todo-push-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-blocked-push-failed->join-outcomes",
-          "source": "set-blocked-push-failed",
-          "target": "join-outcomes",
-          "sourcePort": "default"
         },
         {
           "id": "set-todo-push-failed->join-outcomes",
@@ -23971,17 +20050,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->build-pr-body-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "build-pr-body-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
-        },
-        {
-          "id": "build-pr-body-stolen->create-pr-retry",
-          "source": "build-pr-body-stolen",
-          "target": "create-pr-retry",
-          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->pr-created-stolen",
@@ -24144,14 +20217,8 @@
           "sourcePort": "default"
         },
         {
-          "id": "annotate-blocked-wt-failed->dispatch-wt-repair",
+          "id": "annotate-blocked-wt-failed->release-slot-wt-failed",
           "source": "annotate-blocked-wt-failed",
-          "target": "dispatch-wt-repair",
-          "sourcePort": "default"
-        },
-        {
-          "id": "dispatch-wt-repair->release-slot-wt-failed",
-          "source": "dispatch-wt-repair",
           "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },
@@ -24536,7 +20603,7 @@
       "description": "Direct per-PR progression workflow for bosun-managed tasks. Runs immediately after PR handoff, evaluates a single PR, retries simple CI failures, dispatches focused repair when needed, and performs the first merge-review pass without waiting for the periodic watchdog.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 22,
+      "nodeCount": 13,
       "trigger": "trigger.workflow_call",
       "variables": {
         "mergeMethod": "merge",
@@ -24597,7 +20664,7 @@
           "label": "Normalize PR Context",
           "config": {
             "key": "prProgressContext",
-            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
+            "value": "(() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
             "isExpression": true
           },
           "position": {
@@ -24702,223 +20769,20 @@
           ]
         },
         {
-          "id": "resolve-pr-params",
-          "type": "action.set_variable",
-          "label": "Resolve PR Parameters",
-          "config": {
-            "key": "prParams",
-            "value": "(()=>{const raw=$ctx?.getNodeOutput?.('inspect-pr')?.output||'{}';const d=typeof raw==='object'?raw:(()=>{try{return JSON.parse(raw)}catch{return {}}})();const ctx=$data?.prProgressContext||{};return {repo:String(d.repo||d.prDigest?.core?.repo||ctx.repo||''),branch:String(d.branch||d.prDigest?.core?.branch||ctx.branch||''),base:String(d.baseBranch||d.prDigest?.core?.baseBranch||ctx.baseBranch||'main'),number:String(d.prNumber||d.prDigest?.core?.number||ctx.prNumber||'0'),classification:String(d.classification||''),mergeable:String(d.mergeable||d.prDigest?.core?.mergeable||'')};})()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 220,
-            "y": 850
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-pr-worktree",
-          "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-progfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
-            ],
-            "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
-            "env": {
-              "PR_REPO": "{{prParams.repo}}",
-              "PR_BRANCH": "{{prParams.branch}}",
-              "PR_BASE": "{{prParams.base}}",
-              "PR_NUMBER": "{{prParams.number}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 880
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-pr-worktree-path",
-          "type": "action.set_variable",
-          "label": "Set Agent Working Directory",
-          "config": {
-            "key": "worktreePath",
-            "value": "{{setup-pr-worktree.output.worktreePath}}"
-          },
-          "position": {
-            "x": 220,
-            "y": 920
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "detect-pr-conflicts",
-          "type": "action.run_command",
-          "label": "Detect Merge Conflict Files",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const classification=String(process.env.CLASSIFICATION||'').trim(); const mergeable=String(process.env.MERGEABLE||'').trim().toUpperCase(); if(!wt){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);} const isConflict=classification==='conflict'||['CONFLICTING','DIRTY'].includes(mergeable); if(!isConflict){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);} let mergeOutput=''; let conflictFiles=[]; try{   try{mergeOutput=execFileSync('git',['merge','--no-commit','--no-ff','origin/'+base],{cwd:wt,encoding:'utf8',timeout:60000}).toString();}   catch(e){mergeOutput=String(e?.stderr||'')+' '+String(e?.stdout||'');}   try{     const diffFiles=execFileSync('git',['diff','--name-only','--diff-filter=U'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(diffFiles){conflictFiles=diffFiles.split(/\\r?\\n/).map(f=>f.trim()).filter(Boolean);}   }catch{}   if(conflictFiles.length===0){     const matches=mergeOutput.match(/CONFLICT[^:]*:\\s*Merge conflict in (.+)/gi)||[];     conflictFiles=matches.map(m=>{const f=m.match(/in\\s+(.+)/i);return f?f[1].trim():'';}).filter(Boolean);   }   try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{} }catch(e){   try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{}   console.log(JSON.stringify({hasConflicts:false,conflictFiles:[],error:String(e?.message||e).slice(0,500)}));   process.exit(0); } console.log(JSON.stringify({hasConflicts:conflictFiles.length>0,conflictFiles:[...new Set(conflictFiles)],mergeOutput:String(mergeOutput||'').slice(0,2000)}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 120000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-pr-worktree.output.worktreePath}}",
-              "PR_BASE": "{{prParams.base}}",
-              "CLASSIFICATION": "{{prParams.classification}}",
-              "MERGEABLE": "{{prParams.mergeable}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-fix-prompt",
-          "type": "action.set_variable",
-          "label": "Build Structured Fix Prompt",
-          "config": {
-            "key": "agentPrompt",
-            "value": "(()=>{\n  const inspectRaw = $ctx?.getNodeOutput?.('inspect-pr')?.output || '{}';\n  const fixRaw = $ctx?.getNodeOutput?.('programmatic-fix')?.output || '{}';\n  const conflictRaw = $ctx?.getNodeOutput?.('detect-pr-conflicts')?.output || '{}';\n  const inspect = (()=>{ try { return typeof inspectRaw === 'object' ? inspectRaw : JSON.parse(inspectRaw); } catch { return {}; } })();\n  const fix = (()=>{ try { return typeof fixRaw === 'object' ? fixRaw : JSON.parse(fixRaw); } catch { return {}; } })();\n  const conflictDetection = (()=>{ try { return typeof conflictRaw === 'object' ? conflictRaw : JSON.parse(conflictRaw); } catch { return {}; } })();\n  const prDigest = inspect.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(inspect.repo || core.repo || $data?.prProgressContext?.repo || '');\n  const branch = String(inspect.branch || core.branch || $data?.prProgressContext?.branch || '');\n  const base = String(inspect.baseBranch || core.baseBranch || $data?.prProgressContext?.baseBranch || 'main');\n  const number = String(inspect.prNumber || core.number || $data?.prProgressContext?.prNumber || '');\n  const title = String(inspect.title || core.title || $data?.prProgressContext?.taskTitle || '');\n  const url = String(inspect.url || core.url || $data?.prProgressContext?.prUrl || '');\n  const classification = String(inspect.classification || '');\n  const reason = String(fix.reason || classification || '');\n  const mergeable = String(inspect.mergeable || core.mergeable || '');\n  const failedChecks = Array.isArray(inspect.failedCheckNames) ? inspect.failedCheckNames : [];\n  const failedJobs = Array.isArray(fix.failedJobs) ? fix.failedJobs : [];\n  const annotations = Array.isArray(fix.failedAnnotations) ? fix.failedAnnotations : [];\n  const logExcerpt = String(fix.failedLogExcerpt || '').trim();\n  const recentRuns = Array.isArray(fix.recentRuns) ? fix.recentRuns : [];\n  const ciSummary = prDigest.ciSummary || inspect.ciSummary || {};\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n';\n  p += '- **Fix Reason**: `' + reason + '`\\n';\n  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n  if (fix.error) p += '- **Error**: ' + fix.error + '\\n';\n  p += '\\n';\n  /* --- Fix Summary --- */\n  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n  const fixItems = [];\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base `' + base + '`'));\n  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n  if (fixItems.length > 0) {\n    p += '## Fix Summary\\n\\nThis PR needs the following fixes:\\n';\n    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n    p += '\\n';\n  }\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) {\n    p += '## Merge Conflict\\n\\n';\n    p += 'This branch has conflicts that must be resolved.\\n';\n    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n    if (detectedConflictFiles.length > 0) {\n      p += '**Conflicting files:**\\n';\n      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n      p += '\\n';\n    }\n  }\n  if (failedChecks.length > 0) {\n    p += '## Failed CI Checks\\n\\n';\n    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n    p += '## CI Check Summary\\n\\n';\n    p += 'Total: ' + (ciSummary.total||0) + ' | Failing: ' + (ciSummary.failing||0) + ' | Pending: ' + (ciSummary.pending||0) + ' | Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n  }\n  if (fix.failedRun) {\n    const run = fix.failedRun;\n    p += '## Failed Workflow Run\\n\\n';\n    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n    p += '- **Run ID**: ' + run.databaseId + '\\n';\n    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n    if (run.url) p += '- **URL**: ' + run.url + '\\n';\n    p += '\\n';\n  }\n  if (failedJobs.length > 0) {\n    p += '## Failed Jobs\\n\\n';\n    failedJobs.slice(0,8).forEach(job => {\n      p += '### ' + (job.name||'unknown') + '\\n';\n      p += '- Conclusion: ' + job.conclusion + '\\n';\n      if (job.url) p += '- URL: ' + job.url + '\\n';\n      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n      }\n      p += '\\n';\n    });\n  }\n  if (annotations.length > 0) {\n    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n    annotations.slice(0,6).forEach(annot => {\n      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n        p += '**Job: ' + (annot.name||'') + '**\\n';\n        annot.annotations.slice(0,15).forEach(a => {\n          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n        });\n        p += '\\n';\n      }\n    });\n  }\n  if (logExcerpt) {\n    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n    p += '## Reviews & Inline Comments\\n\\n';\n    reviewsWithBody.slice(0,5).forEach(r => {\n      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n    });\n    if (reviewComments.length > 0) {\n      p += 'Inline comments:\\n';\n      reviewComments.slice(0,12).forEach(c => {\n        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n      });\n      p += '\\n';\n    }\n  }\n  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n  if (issueCommentsWithBody.length > 0) {\n    p += '## Issue Comments\\n\\n';\n    issueCommentsWithBody.slice(0,5).forEach(c => {\n      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n    });\n  }\n  return p;\n})()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 220,
-            "y": 950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-active",
-          "type": "action.set_variable",
-          "label": "Mark Agent Workflow Active",
-          "config": {
-            "key": "_agentWorkflowActive",
-            "value": "true",
-            "isExpression": true
-          },
-          "position": {
-            "x": 220,
-            "y": 980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "dispatch-fix-agent",
           "type": "action.run_agent",
           "label": "Dispatch Focused Fix Agent",
           "config": {
-            "prompt": "{{agentPrompt}}\n\n## Workspace\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-pr-worktree.output.branch}}`). The base branch (`origin/{{setup-pr-worktree.output.base}}`) has been fetched.\n\n## CRITICAL RULES — READ BEFORE DOING ANYTHING\n\n1. **Do NOT clone or re-clone the repo** — you are already in it.\n2. **Do NOT create new branches.** Stay on the current branch.\n3. **Do NOT push.** The workflow pushes for you automatically after you finish.\n4. **Do NOT switch branches** with `git checkout` or `git switch`.\n5. **Do NOT run `cd` to change to a different directory.** Stay in the cwd.\n6. Fix ONLY the specific issues listed in the Fix Summary above.\n7. Do NOT merge, approve, or close the PR.\n8. Do NOT touch any other PRs or repos.\n\n## Fix Instructions\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\nUse the PR digest (CI diagnostics, log excerpts, annotations, reviews) above to identify the root cause and apply the MINIMAL fix.\n\n- For merge conflicts: `git merge origin/{{setup-pr-worktree.output.base}}` and resolve.\n- For CI failures: study the error output and apply the MINIMAL code fix.\n- For review feedback: address each comment precisely.\n- After fixing, remove the label:\n  `gh pr edit {{setup-pr-worktree.output.number}} --repo {{setup-pr-worktree.output.repo}} --remove-label bosun-needs-fix`\n",
+            "prompt": "You are a Bosun PR repair fallback agent working one PR only.\n\nPR context:\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\nRepair attempt output:\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\n\nRules:\n- Only fix this PR's CI or merge-conflict issue.\n- Do not merge, approve, or close the PR.\n- Keep the patch minimal and scoped to the reported failure.\n- If you repair the PR, remove the bosun-needs-fix label.\n",
             "sdk": "auto",
             "timeoutMs": 1800000,
-            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
-            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
           },
           "position": {
             "x": 220,
-            "y": 970
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "push-pr-fixes",
-          "type": "action.run_command",
-          "label": "Push Fixes to PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const expectedBranch=String(process.env.PR_BRANCH||'').trim(); if(!wt){console.log(JSON.stringify({pushed:false,reason:'no worktree path'}));process.exit(0);} const branch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(expectedBranch&&branch!==expectedBranch){console.log(JSON.stringify({pushed:false,reason:'branch mismatch',expected:expectedBranch,actual:branch}));process.exit(1);} const status=execFileSync('git',['status','--porcelain'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); const diff=execFileSync('git',['diff','--stat','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); const ahead=execFileSync('git',['rev-list','--count','origin/'+branch+'..HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(!status&&!diff&&ahead==='0'){console.log(JSON.stringify({pushed:false,reason:'nothing to push'}));process.exit(0);} if(status){execFileSync('git',['add','-A'],{cwd:wt,timeout:30000});execFileSync('git',['commit','-m','fix: bosun PR repair (progressor)'],{cwd:wt,timeout:30000});} execFileSync('git',['push','--force-with-lease','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:'inherit'}); console.log(JSON.stringify({pushed:true,branch}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 300000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-pr-worktree.output.worktreePath}}",
-              "PR_BRANCH": "{{setup-pr-worktree.output.branch}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 1020
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "cleanup-pr-worktree",
-          "type": "action.run_command",
-          "label": "Cleanup Temp Clone",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const wt=String(process.env.WORKTREE_PATH||'').trim(); if(wt&&fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});console.log('cleaned up '+wt);}catch(e){console.warn('cleanup failed: '+e.message);}} else{console.log('nothing to clean');}"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 60000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-pr-worktree.output.worktreePath}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 1060
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "update-sibling-branches",
-          "type": "action.run_command",
-          "label": "Update Sibling PR Branches",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const repo=String(process.env.REPO||'').trim(); const thisPrNumber=String(process.env.THIS_PR||'').trim(); const base=String(process.env.BASE_BRANCH||'main').trim(); if(!repo){console.log(JSON.stringify({updated:0,reason:'no repo'}));process.exit(0);} let prs=[]; try{prs=JSON.parse(execFileSync('gh',['pr','list','--repo',repo,'--base',base,'--state','open','--json','number,headRefOid','--limit','50'],{encoding:'utf8',timeout:30000}));} catch(e){console.log(JSON.stringify({updated:0,error:String(e?.message||e).slice(0,200)}));process.exit(0);} let updated=0,failed=0; for(const pr of prs){   if(String(pr.number)===thisPrNumber)continue;   try{     execFileSync('gh',['api','-X','PUT','repos/'+repo+'/pulls/'+pr.number+'/update-branch','--field','expected_head_sha='+pr.headRefOid],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000});     updated++;console.log('Updated PR #'+pr.number);   }catch(e){     const msg=String(e?.stderr||e?.message||e);     if(/already up/i.test(msg)||/merge conflict/i.test(msg)){continue;}     failed++;console.log('Skip PR #'+pr.number+': '+msg.slice(0,150));   } } console.log(JSON.stringify({updated,failed,total:prs.length}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 180000,
-            "env": {
-              "REPO": "{{prParams.repo}}",
-              "THIS_PR": "{{prParams.number}}",
-              "BASE_BRANCH": "{{prParams.base}}"
-            }
-          },
-          "position": {
-            "x": 220,
-            "y": 1080
+            "y": 950
           },
           "outputs": [
             "default"
@@ -25066,9 +20930,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-agent-needed->resolve-pr-params",
+          "id": "fix-agent-needed->dispatch-fix-agent",
           "source": "fix-agent-needed",
-          "target": "resolve-pr-params",
+          "target": "dispatch-fix-agent",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -25080,62 +20944,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "resolve-pr-params->setup-pr-worktree",
-          "source": "resolve-pr-params",
-          "target": "setup-pr-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-pr-worktree->set-pr-worktree-path",
-          "source": "setup-pr-worktree",
-          "target": "set-pr-worktree-path",
-          "sourcePort": "default"
-        },
-        {
-          "id": "set-pr-worktree-path->detect-pr-conflicts",
-          "source": "set-pr-worktree-path",
-          "target": "detect-pr-conflicts",
-          "sourcePort": "default"
-        },
-        {
-          "id": "detect-pr-conflicts->build-fix-prompt",
-          "source": "detect-pr-conflicts",
-          "target": "build-fix-prompt",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build-fix-prompt->mark-active",
-          "source": "build-fix-prompt",
-          "target": "mark-active",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-active->dispatch-fix-agent",
-          "source": "mark-active",
-          "target": "dispatch-fix-agent",
-          "sourcePort": "default"
-        },
-        {
-          "id": "dispatch-fix-agent->push-pr-fixes",
+          "id": "dispatch-fix-agent->notify-complete",
           "source": "dispatch-fix-agent",
-          "target": "push-pr-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-pr-fixes->cleanup-pr-worktree",
-          "source": "push-pr-fixes",
-          "target": "cleanup-pr-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "cleanup-pr-worktree->update-sibling-branches",
-          "source": "cleanup-pr-worktree",
-          "target": "update-sibling-branches",
-          "sourcePort": "default"
-        },
-        {
-          "id": "update-sibling-branches->notify-complete",
-          "source": "update-sibling-branches",
           "target": "notify-complete",
           "sourcePort": "default"
         },
@@ -25179,8 +20989,8 @@
         "templateState": {
           "templateId": "template-bosun-pr-progressor",
           "templateName": "Bosun PR Progressor",
-          "templateVersion": "6.0.0",
-          "installedTemplateVersion": "6.0.0",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25192,7 +21002,7 @@
       "description": "Scans open bosun-attached PRs on a schedule. Makes one gh pr list call per target repo to fetch and classify PRs, then: labels conflicting or failing-CI PRs with bosun-needs-fix and dispatches a repair agent; sends merge candidates through a MANDATORY agent review gate that checks diff stats before any merge — preventing destructive PRs (e.g. -183k lines) from being silently auto-merged. Attached PRs that are not Bosun-created are skipped by default unless explicitly trusted in config.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 25,
+      "nodeCount": 19,
       "trigger": "trigger.schedule",
       "variables": {
         "mergeMethod": "merge",
@@ -25200,15 +21010,15 @@
         "labelNeedsReview": "bosun-needs-human-review",
         "repoScope": "auto",
         "maxPrs": 25,
-        "intervalMs": 1800000,
+        "intervalMs": 90000,
         "suspiciousDeletionRatio": 3,
         "minDestructiveDeletions": 500,
         "autoApplySuggestions": true,
         "trustedAuthors": "",
         "allowTrustedFixes": false,
         "allowTrustedMerges": false,
-        "maxConcurrentFixes": 3,
-        "prFixTtlMinutes": 120
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1
       },
       "nodes": [
         {
@@ -25234,7 +21044,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,body,author,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']); const BEHIND_MERGEABLES=new Set(['BEHIND']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; const BOSUN_CREATED_LABEL='bosun-pr-bosun-created'; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} const GH_MAX_BUFFER=25*1024*1024;const GH_CACHE_TTL_MS=30000;const ghReadCache=new Map();let ghRateLimitUntil=0;function ghSleep(ms){if(!Number.isFinite(ms)||ms<=0)return;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Math.min(ms,5000));}function ghCacheKey(args){return JSON.stringify(Array.isArray(args)?args:[]);}function isGhReadOnly(args){const list=Array.isArray(args)?args.map((item)=>String(item||'').trim().toLowerCase()):[];if(list.length===0)return false;const joined=' '+list.join(' ')+' ';return !/( edit | merge | close | reopen | rerun | delete | create | ready | cancel )/.test(joined);}function readGhMessage(error){return String(error?.stderr||error?.stdout||error?.message||error||'');}function runGh(args){const cacheable=isGhReadOnly(args);const key=cacheable?ghCacheKey(args):'';const now=Date.now();if(cacheable){const cached=ghReadCache.get(key);if(cached&&cached.expiresAt>now)return cached.output;if(now<ghRateLimitUntil&&cached)return cached.output;}let lastError=null;for(let attempt=0;attempt<2;attempt+=1){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(error){const message=readGhMessage(error);lastError=error;const retryAfter=message.match(/retry after\\s+(\\d+)\\s*second/i)||message.match(/try again in\\s+(\\d+)\\s*second/i);if(/secondary rate limit|rate limit exceeded|api rate limit/i.test(message)&&attempt===0){const waitMs=Math.max(1000,Math.min(5000,(Number(retryAfter?.[1]||0)||2)*1000));ghRateLimitUntil=Date.now()+waitMs;ghSleep(waitMs);continue;}if(/ENOBUFS|maxbuffer|stdout maxbuffer length exceeded/i.test(message)&&attempt===0){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER*2}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(innerError){lastError=innerError;}}break;}}throw lastError;}function ghJson(args){const out=runGh(args);return out?JSON.parse(out):[];}function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function normalizeList(value){if(Array.isArray(value)) return value.map((entry)=>String(entry||'').trim().toLowerCase()).filter(Boolean); return String(value||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean);} function parseBool(value,fallback){if(value===undefined||value===null||value==='') return fallback; const raw=String(value).trim().toLowerCase(); if(['1','true','yes','on'].includes(raw)) return true; if(['0','false','no','off'].includes(raw)) return false; return fallback;} function normalizeCheckKey(name){return String(name||'').trim().toLowerCase().replace(/\\s+/g,' ');} function matchesCheckPattern(name,pattern){const text=String(name||'').trim().toLowerCase();const token=String(pattern||'').trim().toLowerCase();if(!text||!token)return false;if(token==='*')return true;if(!token.includes('*'))return text.includes(token);const parts=token.split('*').filter(Boolean);if(parts.length===0)return true;let cursor=0;for(const part of parts){const idx=text.indexOf(part,cursor);if(idx===-1)return false;cursor=idx+part.length;}if(!token.startsWith('*')&&!text.startsWith(parts[0]||''))return false;if(!token.endsWith('*')&&!text.endsWith(parts[parts.length-1]||''))return false;return true;} function matchesAnyPattern(name,patterns){return (Array.isArray(patterns)?patterns:[]).some((pattern)=>matchesCheckPattern(name,pattern));} function readCheckState(check){return String(check?.conclusion||check?.state||check?.status||check?.bucket||'').trim().toUpperCase();} function isPassingCheckState(state,treatNeutralAsPass){if(!state)return true;if(['SUCCESS','PASS','PASSED','COMPLETED'].includes(state))return true;if(treatNeutralAsPass&&['NEUTRAL','SKIPPED'].includes(state))return true;return !FAIL_STATES.has(state)&&!PEND_STATES.has(state);} function evaluateCheckGates(checks,policy){const normalized=(Array.isArray(checks)?checks:[]).map((check)=>({raw:check,name:readCheckName(check),state:readCheckState(check)})).filter((check)=>check.name);const considered=normalized.filter((check)=>!matchesAnyPattern(check.name,policy.ignorePatterns));let required=considered;if(policy.mode==='required-only'){required=considered.filter((check)=>matchesAnyPattern(check.name,policy.requiredPatterns));}if((Array.isArray(policy.optionalPatterns)?policy.optionalPatterns:[]).length>0){required=required.filter((check)=>!matchesAnyPattern(check.name,policy.optionalPatterns));}const missingRequired=policy.requireAnyRequiredCheck&&required.length===0;const failedRequiredChecks=required.filter((check)=>FAIL_STATES.has(check.state));const pendingRequiredChecks=required.filter((check)=>PEND_STATES.has(check.state));const hasRequiredFailure=failedRequiredChecks.length>0;const hasBlockingPending=policy.treatPendingRequiredAsBlocking&&pendingRequiredChecks.length>0;const isReady=!missingRequired&&!hasRequiredFailure&&!hasBlockingPending&&required.every((check)=>isPassingCheckState(check.state,policy.treatNeutralAsPass));return {consideredCount:considered.length,requiredCount:required.length,failedRequiredChecks:failedRequiredChecks.map((check)=>check.raw),pendingRequiredChecks:pendingRequiredChecks.map((check)=>check.raw),hasRequiredFailure,hasBlockingPending,blocksForMissingRequired:missingRequired,isReady,shouldKickCi:considered.length===0};} function buildFailureFingerprint(names){const normalized=[...new Set((Array.isArray(names)?names:[]).map(normalizeCheckKey).filter(Boolean))].sort();return normalized.join('|');} function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];} function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);} function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function readBosunConfig(){ try { return JSON.parse(fs.readFileSync(configPath(),'utf8')); } catch { return {}; } } function collectReposFromConfig(){   const repos=[];   try{     const cfg=readBosunConfig();     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } const BOSUN_CONFIG=readBosunConfig(); const PR_AUTOMATION=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.prAutomation==='object')?BOSUN_CONFIG.prAutomation:{}; const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all'); const TRUSTED_AUTHORS=new Set([...normalizeList(PR_AUTOMATION?.trustedAuthors),...normalizeList('{{trustedAuthors}}')]); const ALLOW_TRUSTED_FIXES=parseBool(PR_AUTOMATION?.allowTrustedFixes ?? '{{allowTrustedFixes}}', false); const ALLOW_TRUSTED_MERGES=parseBool(PR_AUTOMATION?.allowTrustedMerges ?? '{{allowTrustedMerges}}', false); const CHECK_GATES=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.gates==='object'&&BOSUN_CONFIG.gates&&typeof BOSUN_CONFIG.gates.checks==='object')?BOSUN_CONFIG.gates.checks:{}; const CHECK_MODE=((String(CHECK_GATES?.mode||'all').trim().toLowerCase())||'all'); const REQUIRED_CHECK_PATTERNS=normalizeList(CHECK_GATES?.requiredPatterns); const OPTIONAL_CHECK_PATTERNS=normalizeList(CHECK_GATES?.optionalPatterns); const IGNORE_CHECK_PATTERNS=normalizeList(CHECK_GATES?.ignorePatterns); const REQUIRE_ANY_REQUIRED_CHECK=parseBool(CHECK_GATES?.requireAnyRequiredCheck, true); const TREAT_PENDING_REQUIRED_AS_BLOCKING=parseBool(CHECK_GATES?.treatPendingRequiredAsBlocking, true); const TREAT_NEUTRAL_AS_PASS=parseBool(CHECK_GATES?.treatNeutralAsPass, false); const defaultBranchFailureCache=new Map(); function collectDefaultBranchFailureNames(repo,baseBranch){const cacheKey=[repo,baseBranch].join('::');if(defaultBranchFailureCache.has(cacheKey))return defaultBranchFailureCache.get(cacheKey);const failedNames=new Set();try{const runs=safeGhJson(['run','list','--repo',repo,'--branch',baseBranch,'--json','databaseId,workflowName,displayTitle,conclusion,status','--limit','6'],[]);for(const run of (Array.isArray(runs)?runs:[])){const conclusion=String(run?.conclusion||'').trim().toUpperCase();if(!FAIL_STATES.has(conclusion))continue;const runId=Number(run?.databaseId||0)||0;if(runId>0){const view=safeGhJson(['run','view',String(runId),'--repo',repo,'--json','jobs'],{});const jobs=Array.isArray(view?.jobs)?view.jobs:[];for(const job of jobs){const jobState=String(job?.conclusion||job?.status||'').trim().toUpperCase();if(FAIL_STATES.has(jobState)){const normalized=normalizeCheckKey(job?.name);if(normalized)failedNames.add(normalized);}}}const workflowName=normalizeCheckKey(run?.workflowName||run?.displayTitle);if(workflowName)failedNames.add(workflowName);}}catch{}const resolved=[...failedNames];defaultBranchFailureCache.set(cacheKey,resolved);return resolved;} function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const taskCli=path.join(process.cwd(),'task','task-cli.mjs'); const taskRunner=fs.existsSync(taskCli)?'direct':'cli'; const taskMaxBuffer=1024*1024*8; function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:taskMaxBuffer}).trim();} let taskListCache=null; function loadTaskList(){if(taskListCache)return taskListCache;try{const raw=runTask(['list','--json']);const tasks=parseJson(raw,[]);taskListCache=Array.isArray(tasks)?tasks:[];}catch{taskListCache=[];}return taskListCache;} function normalizeTaskValue(value){return String(value||'').trim().toLowerCase();} function resolveTaskIdForPr(item){const prNumber=Number(item?.n||0)||0;const prUrl=normalizeTaskValue(item?.url);const branch=normalizeTaskValue(item?.branch);const matches=loadTaskList().filter((task)=>{if(!task||typeof task!=='object')return false;const taskPrNumber=Number(task?.prNumber||task?.pr_number||0)||0;if(prNumber>0&&taskPrNumber===prNumber)return true;const taskPrUrl=normalizeTaskValue(task?.prUrl||task?.pr_url);if(prUrl&&taskPrUrl===prUrl)return true;const taskBranch=normalizeTaskValue(task?.branchName||task?.branch||task?.meta?.branchName||task?.meta?.branch);return Boolean(branch&&taskBranch===branch);});if(matches.length===0)return null;const inReview=matches.find((task)=>normalizeTaskValue(task?.status)==='inreview');return String((inReview||matches[0])?.id||'').trim()||null;} function getTaskSnapshot(id){if(!id)return null;try{return parseJson(runTask(['get',id,'--json']),null);}catch{return null;}} function updateTaskReviewSignal(item){const taskId=resolveTaskIdForPr(item);if(!taskId)return false;const snapshot=getTaskSnapshot(taskId)||{};const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{};const existingReviewHealth=existingMeta.reviewHealth&&typeof existingMeta.reviewHealth==='object'?existingMeta.reviewHealth:{};const nextReviewHealth={...existingReviewHealth,status:String(item?.reviewStatus||'unknown'),failureScope:String(item?.failureScope||'none'),sharedIncidentId:item?.sharedIncidentId||null,failureFingerprint:item?.failureFingerprint||null,failingWorkflow:item?.failingWorkflow||null,failingJobs:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],baseBranch:String(item?.base||snapshot?.baseBranch||'').trim()||null,repo:String(item?.repo||'').trim()||null,updatedAt:new Date().toISOString(),source:'pr-watchdog'};const patch={meta:{...existingMeta,reviewHealth:nextReviewHealth}};try{runTask(['update',taskId,JSON.stringify(patch)]);return true;}catch{return false;}} const sharedFailureFingerprints=new Map(); for(const pr of prs){const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);const bosunCreated=isBosunCreated(pr);const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));const attachEligible=bosunCreated||ATTACH_MODE==='all'||(ATTACH_MODE==='trusted-only'&&trustedAuthor);const checks=pr.statusCheckRollup||[];const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});const failedCheckNames=gateVerdict.failedRequiredChecks.map(readCheckName).filter(Boolean);const hasSecurityFail=failedCheckNames.some(isSecurityCheckName);const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());const isDraft=pr.isDraft===true;const repo=String(pr.__repo||'').trim();const base=String(pr.baseRefName||'').trim()||'main';if(isDraft||!attachEligible||!gateVerdict.hasRequiredFailure||hasSecurityFail||isConflict)continue;const fingerprint=buildFailureFingerprint(failedCheckNames);if(!fingerprint)continue;const sharedKey=[repo,base,fingerprint].join('::');sharedFailureFingerprints.set(sharedKey,(sharedFailureFingerprints.get(sharedKey)||0)+1);} const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],sharedFailures=[],pending=[],drafted=[],behindBranches=[],skippedUntrusted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0,taskReviewSignalsUpdated=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const bosunCreated=isBosunCreated(pr);   const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));   const attachEligible=bosunCreated || ATTACH_MODE==='all' || (ATTACH_MODE==='trusted-only' && trustedAuthor);   const canFix=bosunCreated || (attachEligible && ALLOW_TRUSTED_FIXES && trustedAuthor);   const canMerge=bosunCreated || (attachEligible && ALLOW_TRUSTED_MERGES && trustedAuthor);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});   const failedChecks=gateVerdict.failedRequiredChecks;   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=gateVerdict.hasRequiredFailure;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=gateVerdict.hasBlockingPending;   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isBehind=BEHIND_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   const base=String(pr.baseRefName||'').trim()||'main';   const failureFingerprint=buildFailureFingerprint(failedCheckNames);   const sharedFailureKey=[repo,base,failureFingerprint].join('::');   const repeatedFailureCount=Number(sharedFailureFingerprints.get(sharedFailureKey)||0);   const defaultBranchFailureNames=repo&&base?collectDefaultBranchFailureNames(repo,base):[];   const defaultBranchFailureSet=new Set((Array.isArray(defaultBranchFailureNames)?defaultBranchFailureNames:[]).map(normalizeCheckKey).filter(Boolean));   const allFailuresOnDefaultBranch=failedCheckNames.length>0&&failedCheckNames.every((name)=>defaultBranchFailureSet.has(normalizeCheckKey(name)));   const isSharedFailure=hasFail&&!hasSecurityFail&&!isConflict&&(allFailuresOnDefaultBranch||repeatedFailureCount>=2);   const sharedIncidentId=isSharedFailure&&failureFingerprint?[repo,base,failureFingerprint].join(':'):null;   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(!bosunCreated && !attachEligible){skippedUntrusted.push({n:pr.number,repo,reason:'attach_policy_excluded'});continue;}   if(!bosunCreated && !trustedAuthor){skippedUntrusted.push({n:pr.number,repo,reason:'public_observation_only'});continue;}   if(isBehind&&!isConflict){     if(canFix) behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});   }   if(isConflict){     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'fix_not_allowed'});continue;}     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'conflict',failureScope:'pr_local',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'security_fix_not_allowed'});continue;}     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'security_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:securityCheckNames[0]||failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     if(isSharedFailure){       sharedFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,failureFingerprint,sharedIncidentId,defaultBranchFailureNames,repeatedFailureCount});       if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'shared_ci_failure',failureScope:'shared',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId}))taskReviewSignalsUpdated++;       if(hasFixLabel){         try{const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];if(repo)rmArgs.push('--repo',repo);execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});staleLabelCleared++;}         catch(e){process.stderr.write('shared-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}       }       continue;     }     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'ci_fix_not_allowed'});continue;}     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'ci_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:hasPend?'pending':gateVerdict.isReady?'ready':'idle',failureScope:'none',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(hasFixLabel&&!hasPend&&!gateVerdict.blocksForMissingRequired){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(gateVerdict.isReady&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       if(canMerge){ readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend}); } else { skippedUntrusted.push({n:pr.number,repo,reason:'merge_not_allowed'}); }     }     if(gateVerdict.shouldKickCi&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   behindBranches,   securityFailures,   ciFailures,   sharedFailures,   pending:pending.length,   drafted:drafted.length,   skippedUntrusted,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length,   sharedIncidentCount:sharedFailures.length,   taskReviewSignalsUpdated,   trustPolicy:{trustedAuthors:[...TRUSTED_AUTHORS],allowTrustedFixes:ALLOW_TRUSTED_FIXES,allowTrustedMerges:ALLOW_TRUSTED_MERGES} }));"
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,body,author,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']); const BEHIND_MERGEABLES=new Set(['BEHIND']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; const BOSUN_CREATED_LABEL='bosun-pr-bosun-created'; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function normalizeList(value){if(Array.isArray(value)) return value.map((entry)=>String(entry||'').trim().toLowerCase()).filter(Boolean); return String(value||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean);} function parseBool(value,fallback){if(value===undefined||value===null||value==='') return fallback; const raw=String(value).trim().toLowerCase(); if(['1','true','yes','on'].includes(raw)) return true; if(['0','false','no','off'].includes(raw)) return false; return fallback;} function normalizeCheckKey(name){return String(name||'').trim().toLowerCase().replace(/\\s+/g,' ');} function matchesCheckPattern(name,pattern){const text=String(name||'').trim().toLowerCase();const token=String(pattern||'').trim().toLowerCase();if(!text||!token)return false;if(token==='*')return true;if(!token.includes('*'))return text.includes(token);const parts=token.split('*').filter(Boolean);if(parts.length===0)return true;let cursor=0;for(const part of parts){const idx=text.indexOf(part,cursor);if(idx===-1)return false;cursor=idx+part.length;}if(!token.startsWith('*')&&!text.startsWith(parts[0]||''))return false;if(!token.endsWith('*')&&!text.endsWith(parts[parts.length-1]||''))return false;return true;} function matchesAnyPattern(name,patterns){return (Array.isArray(patterns)?patterns:[]).some((pattern)=>matchesCheckPattern(name,pattern));} function readCheckState(check){return String(check?.conclusion||check?.state||check?.status||check?.bucket||'').trim().toUpperCase();} function isPassingCheckState(state,treatNeutralAsPass){if(!state)return true;if(['SUCCESS','PASS','PASSED','COMPLETED'].includes(state))return true;if(treatNeutralAsPass&&['NEUTRAL','SKIPPED'].includes(state))return true;return !FAIL_STATES.has(state)&&!PEND_STATES.has(state);} function evaluateCheckGates(checks,policy){const normalized=(Array.isArray(checks)?checks:[]).map((check)=>({raw:check,name:readCheckName(check),state:readCheckState(check)})).filter((check)=>check.name);const considered=normalized.filter((check)=>!matchesAnyPattern(check.name,policy.ignorePatterns));let required=considered;if(policy.mode==='required-only'){required=considered.filter((check)=>matchesAnyPattern(check.name,policy.requiredPatterns));}if((Array.isArray(policy.optionalPatterns)?policy.optionalPatterns:[]).length>0){required=required.filter((check)=>!matchesAnyPattern(check.name,policy.optionalPatterns));}const missingRequired=policy.requireAnyRequiredCheck&&required.length===0;const failedRequiredChecks=required.filter((check)=>FAIL_STATES.has(check.state));const pendingRequiredChecks=required.filter((check)=>PEND_STATES.has(check.state));const hasRequiredFailure=failedRequiredChecks.length>0;const hasBlockingPending=policy.treatPendingRequiredAsBlocking&&pendingRequiredChecks.length>0;const isReady=!missingRequired&&!hasRequiredFailure&&!hasBlockingPending&&required.every((check)=>isPassingCheckState(check.state,policy.treatNeutralAsPass));return {consideredCount:considered.length,requiredCount:required.length,failedRequiredChecks:failedRequiredChecks.map((check)=>check.raw),pendingRequiredChecks:pendingRequiredChecks.map((check)=>check.raw),hasRequiredFailure,hasBlockingPending,blocksForMissingRequired:missingRequired,isReady,shouldKickCi:considered.length===0};} function buildFailureFingerprint(names){const normalized=[...new Set((Array.isArray(names)?names:[]).map(normalizeCheckKey).filter(Boolean))].sort();return normalized.join('|');} function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];} function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);} function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function readBosunConfig(){ try { return JSON.parse(fs.readFileSync(configPath(),'utf8')); } catch { return {}; } } function collectReposFromConfig(){   const repos=[];   try{     const cfg=readBosunConfig();     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } const BOSUN_CONFIG=readBosunConfig(); const PR_AUTOMATION=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.prAutomation==='object')?BOSUN_CONFIG.prAutomation:{}; const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all'); const TRUSTED_AUTHORS=new Set([...normalizeList(PR_AUTOMATION?.trustedAuthors),...normalizeList('{{trustedAuthors}}')]); const ALLOW_TRUSTED_FIXES=parseBool(PR_AUTOMATION?.allowTrustedFixes ?? '{{allowTrustedFixes}}', false); const ALLOW_TRUSTED_MERGES=parseBool(PR_AUTOMATION?.allowTrustedMerges ?? '{{allowTrustedMerges}}', false); const CHECK_GATES=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.gates==='object'&&BOSUN_CONFIG.gates&&typeof BOSUN_CONFIG.gates.checks==='object')?BOSUN_CONFIG.gates.checks:{}; const CHECK_MODE=((String(CHECK_GATES?.mode||'all').trim().toLowerCase())||'all'); const REQUIRED_CHECK_PATTERNS=normalizeList(CHECK_GATES?.requiredPatterns); const OPTIONAL_CHECK_PATTERNS=normalizeList(CHECK_GATES?.optionalPatterns); const IGNORE_CHECK_PATTERNS=normalizeList(CHECK_GATES?.ignorePatterns); const REQUIRE_ANY_REQUIRED_CHECK=parseBool(CHECK_GATES?.requireAnyRequiredCheck, true); const TREAT_PENDING_REQUIRED_AS_BLOCKING=parseBool(CHECK_GATES?.treatPendingRequiredAsBlocking, true); const TREAT_NEUTRAL_AS_PASS=parseBool(CHECK_GATES?.treatNeutralAsPass, false); const defaultBranchFailureCache=new Map(); function collectDefaultBranchFailureNames(repo,baseBranch){const cacheKey=[repo,baseBranch].join('::');if(defaultBranchFailureCache.has(cacheKey))return defaultBranchFailureCache.get(cacheKey);const failedNames=new Set();try{const runs=safeGhJson(['run','list','--repo',repo,'--branch',baseBranch,'--json','databaseId,workflowName,displayTitle,conclusion,status','--limit','6'],[]);for(const run of (Array.isArray(runs)?runs:[])){const conclusion=String(run?.conclusion||'').trim().toUpperCase();if(!FAIL_STATES.has(conclusion))continue;const runId=Number(run?.databaseId||0)||0;if(runId>0){const view=safeGhJson(['run','view',String(runId),'--repo',repo,'--json','jobs'],{});const jobs=Array.isArray(view?.jobs)?view.jobs:[];for(const job of jobs){const jobState=String(job?.conclusion||job?.status||'').trim().toUpperCase();if(FAIL_STATES.has(jobState)){const normalized=normalizeCheckKey(job?.name);if(normalized)failedNames.add(normalized);}}}const workflowName=normalizeCheckKey(run?.workflowName||run?.displayTitle);if(workflowName)failedNames.add(workflowName);}}catch{}const resolved=[...failedNames];defaultBranchFailureCache.set(cacheKey,resolved);return resolved;} function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const taskCli=path.join(process.cwd(),'task','task-cli.mjs'); const taskRunner=fs.existsSync(taskCli)?'direct':'cli'; const taskMaxBuffer=1024*1024*8; function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:taskMaxBuffer}).trim();} let taskListCache=null; function loadTaskList(){if(taskListCache)return taskListCache;try{const raw=runTask(['list','--json']);const tasks=parseJson(raw,[]);taskListCache=Array.isArray(tasks)?tasks:[];}catch{taskListCache=[];}return taskListCache;} function normalizeTaskValue(value){return String(value||'').trim().toLowerCase();} function resolveTaskIdForPr(item){const prNumber=Number(item?.n||0)||0;const prUrl=normalizeTaskValue(item?.url);const branch=normalizeTaskValue(item?.branch);const matches=loadTaskList().filter((task)=>{if(!task||typeof task!=='object')return false;const taskPrNumber=Number(task?.prNumber||task?.pr_number||0)||0;if(prNumber>0&&taskPrNumber===prNumber)return true;const taskPrUrl=normalizeTaskValue(task?.prUrl||task?.pr_url);if(prUrl&&taskPrUrl===prUrl)return true;const taskBranch=normalizeTaskValue(task?.branchName||task?.branch||task?.meta?.branchName||task?.meta?.branch);return Boolean(branch&&taskBranch===branch);});if(matches.length===0)return null;const inReview=matches.find((task)=>normalizeTaskValue(task?.status)==='inreview');return String((inReview||matches[0])?.id||'').trim()||null;} function getTaskSnapshot(id){if(!id)return null;try{return parseJson(runTask(['get',id,'--json']),null);}catch{return null;}} function updateTaskReviewSignal(item){const taskId=resolveTaskIdForPr(item);if(!taskId)return false;const snapshot=getTaskSnapshot(taskId)||{};const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{};const existingReviewHealth=existingMeta.reviewHealth&&typeof existingMeta.reviewHealth==='object'?existingMeta.reviewHealth:{};const nextReviewHealth={...existingReviewHealth,status:String(item?.reviewStatus||'unknown'),failureScope:String(item?.failureScope||'none'),sharedIncidentId:item?.sharedIncidentId||null,failureFingerprint:item?.failureFingerprint||null,failingWorkflow:item?.failingWorkflow||null,failingJobs:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],baseBranch:String(item?.base||snapshot?.baseBranch||'').trim()||null,repo:String(item?.repo||'').trim()||null,updatedAt:new Date().toISOString(),source:'pr-watchdog'};const patch={meta:{...existingMeta,reviewHealth:nextReviewHealth}};try{runTask(['update',taskId,JSON.stringify(patch)]);return true;}catch{return false;}} const sharedFailureFingerprints=new Map(); for(const pr of prs){const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);const bosunCreated=isBosunCreated(pr);const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));const attachEligible=bosunCreated||ATTACH_MODE==='all'||(ATTACH_MODE==='trusted-only'&&trustedAuthor);const checks=pr.statusCheckRollup||[];const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});const failedCheckNames=gateVerdict.failedRequiredChecks.map(readCheckName).filter(Boolean);const hasSecurityFail=failedCheckNames.some(isSecurityCheckName);const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());const isDraft=pr.isDraft===true;const repo=String(pr.__repo||'').trim();const base=String(pr.baseRefName||'').trim()||'main';if(isDraft||!attachEligible||!gateVerdict.hasRequiredFailure||hasSecurityFail||isConflict)continue;const fingerprint=buildFailureFingerprint(failedCheckNames);if(!fingerprint)continue;const sharedKey=[repo,base,fingerprint].join('::');sharedFailureFingerprints.set(sharedKey,(sharedFailureFingerprints.get(sharedKey)||0)+1);} const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],sharedFailures=[],pending=[],drafted=[],behindBranches=[],skippedUntrusted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0,taskReviewSignalsUpdated=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const bosunCreated=isBosunCreated(pr);   const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));   const attachEligible=bosunCreated || ATTACH_MODE==='all' || (ATTACH_MODE==='trusted-only' && trustedAuthor);   const canFix=bosunCreated || (attachEligible && ALLOW_TRUSTED_FIXES && trustedAuthor);   const canMerge=bosunCreated || (attachEligible && ALLOW_TRUSTED_MERGES && trustedAuthor);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const gateVerdict=evaluateCheckGates(checks,{mode:CHECK_MODE,requiredPatterns:REQUIRED_CHECK_PATTERNS,optionalPatterns:OPTIONAL_CHECK_PATTERNS,ignorePatterns:IGNORE_CHECK_PATTERNS,requireAnyRequiredCheck:REQUIRE_ANY_REQUIRED_CHECK,treatPendingRequiredAsBlocking:TREAT_PENDING_REQUIRED_AS_BLOCKING,treatNeutralAsPass:TREAT_NEUTRAL_AS_PASS});   const failedChecks=gateVerdict.failedRequiredChecks;   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=gateVerdict.hasRequiredFailure;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=gateVerdict.hasBlockingPending;   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isBehind=BEHIND_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   const base=String(pr.baseRefName||'').trim()||'main';   const failureFingerprint=buildFailureFingerprint(failedCheckNames);   const sharedFailureKey=[repo,base,failureFingerprint].join('::');   const repeatedFailureCount=Number(sharedFailureFingerprints.get(sharedFailureKey)||0);   const defaultBranchFailureNames=repo&&base?collectDefaultBranchFailureNames(repo,base):[];   const defaultBranchFailureSet=new Set((Array.isArray(defaultBranchFailureNames)?defaultBranchFailureNames:[]).map(normalizeCheckKey).filter(Boolean));   const allFailuresOnDefaultBranch=failedCheckNames.length>0&&failedCheckNames.every((name)=>defaultBranchFailureSet.has(normalizeCheckKey(name)));   const isSharedFailure=hasFail&&!hasSecurityFail&&!isConflict&&(allFailuresOnDefaultBranch||repeatedFailureCount>=2);   const sharedIncidentId=isSharedFailure&&failureFingerprint?[repo,base,failureFingerprint].join(':'):null;   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(!bosunCreated && !attachEligible){skippedUntrusted.push({n:pr.number,repo,reason:'attach_policy_excluded'});continue;}   if(!bosunCreated && !trustedAuthor){skippedUntrusted.push({n:pr.number,repo,reason:'public_observation_only'});continue;}   if(isBehind&&!isConflict){     if(canFix) behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});   }   if(isConflict){     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'fix_not_allowed'});continue;}     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'conflict',failureScope:'pr_local',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'security_fix_not_allowed'});continue;}     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'security_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:securityCheckNames[0]||failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     if(isSharedFailure){       sharedFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,failureFingerprint,sharedIncidentId,defaultBranchFailureNames,repeatedFailureCount});       if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'shared_ci_failure',failureScope:'shared',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId}))taskReviewSignalsUpdated++;       if(hasFixLabel){         try{const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];if(repo)rmArgs.push('--repo',repo);execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});staleLabelCleared++;}         catch(e){process.stderr.write('shared-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}       }       continue;     }     if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'ci_fix_not_allowed'});continue;}     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:'ci_failure',failureScope:'pr_local',failedCheckNames,failureFingerprint,failingWorkflow:failedCheckNames[0]||null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(updateTaskReviewSignal({n:pr.number,repo,branch:pr.headRefName,base,url:pr.url,reviewStatus:hasPend?'pending':gateVerdict.isReady?'ready':'idle',failureScope:'none',failedCheckNames:[],failureFingerprint:null,failingWorkflow:null,sharedIncidentId:null}))taskReviewSignalsUpdated++;     if(hasFixLabel&&!hasPend&&!gateVerdict.blocksForMissingRequired){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(gateVerdict.isReady&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       if(canMerge){ readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend}); } else { skippedUntrusted.push({n:pr.number,repo,reason:'merge_not_allowed'}); }     }     if(gateVerdict.shouldKickCi&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   behindBranches,   securityFailures,   ciFailures,   sharedFailures,   pending:pending.length,   drafted:drafted.length,   skippedUntrusted,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length,   sharedIncidentCount:sharedFailures.length,   taskReviewSignalsUpdated,   trustPolicy:{trustedAuthors:[...TRUSTED_AUTHORS],allowTrustedFixes:ALLOW_TRUSTED_FIXES,allowTrustedMerges:ALLOW_TRUSTED_MERGES} }));"
             ],
             "continueOnError": false,
             "failOnError": true
@@ -25368,58 +21178,22 @@
           ]
         },
         {
-          "id": "claim-unclaimed-security-prs",
-          "type": "action.run_command",
-          "label": "Claim Unclaimed Security PRs",
+          "id": "dispatch-security-fix-agent",
+          "type": "action.run_agent",
+          "label": "Dispatch Security Fix Agent",
           "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const raw=String(process.env.BOSUN_SECURITY_FIX||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const needsAgent=Array.isArray(payload.needsAgent)?payload.needsAgent:[]; const TTL_MINUTES=Math.max(5,Number(process.env.PR_FIX_TTL_MINUTES||120)); const TTL_MS=TTL_MINUTES*60*1000; const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-security-fix-claims.json'); const now=Date.now(); let data={claims:{},updatedAt:new Date().toISOString()}; try{fs.mkdirSync(path.dirname(CLAIM_FILE),{recursive:true});}catch{} try{if(fs.existsSync(CLAIM_FILE))data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));}catch{} if(!data.claims)data.claims={}; for(const[key,claim]of Object.entries(data.claims)){if(now-new Date(claim.claimedAt).getTime()>TTL_MS)delete data.claims[key];} const unclaimed=[]; const alreadyClaimed=[]; for(const item of needsAgent){   const key=String(item.repo||'')+'/'+String(item.number||'');   if(!key||key==='/'){continue;}   if(data.claims[key]){alreadyClaimed.push({key,...item});continue;}   data.claims[key]={claimedAt:new Date().toISOString(),repo:item.repo,number:item.number};   unclaimed.push({...item,claimKey:key,taskId:'pr-secfix-'+String(item.repo||'').replace(/[^a-z0-9]/gi,'-')+'-'+String(item.number||'')}); } data.updatedAt=new Date().toISOString(); try{fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');}catch{} console.log(JSON.stringify({unclaimedCount:unclaimed.length,alreadyClaimedCount:alreadyClaimed.length,unclaimed,alreadyClaimed}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "BOSUN_SECURITY_FIX": "{{$ctx.getNodeOutput('programmatic-security-fix')?.output || '{}'}}",
-              "PR_FIX_TTL_MINUTES": "{{prFixTtlMinutes}}"
-            }
+            "prompt": "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\nEach item represents a Bosun-created or explicitly trusted PR blocked by CodeQL or GitHub code scanning.\nUse the supplied alert data, prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, and prDigest.checks to make the smallest safe code change that resolves the finding.\nFor each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\nSTRICT RULES:\n- Only fix the listed code-scanning or CodeQL findings.\n- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
+            "maxRetries": 2,
+            "retryDelayMs": 30000,
+            "continueOnError": true
           },
           "position": {
             "x": 120,
-            "y": 920
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-unclaimed-security-fixes",
-          "type": "condition.expression",
-          "label": "Unclaimed Security Fixes?",
-          "config": {
-            "expression": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-security-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return (Array.isArray(d.unclaimed)?d.unclaimed:[]).length>0;}catch(e){return false;}})()"
-          },
-          "position": {
-            "x": 120,
-            "y": 1010
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "dispatch-security-fix-agents",
-          "type": "loop.for_each",
-          "label": "Dispatch Security Fix Agents (Per PR)",
-          "config": {
-            "items": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-security-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return Array.isArray(d.unclaimed)?d.unclaimed:[];}catch{return []}})()",
-            "variable": "item",
-            "maxConcurrent": "{{maxConcurrentFixes}}",
-            "workflowId": "template-pr-security-fix-single"
-          },
-          "position": {
-            "x": 120,
-            "y": 1100
+            "y": 970
           },
           "outputs": [
             "default"
@@ -25448,7 +21222,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[]; const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[]; const needsAgent=[]; let rerunRequested=0; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const MAX_AUTO_RERUN_ATTEMPT=1; const GH_MAX_BUFFER=25*1024*1024;const GH_CACHE_TTL_MS=30000;const ghReadCache=new Map();let ghRateLimitUntil=0;function ghSleep(ms){if(!Number.isFinite(ms)||ms<=0)return;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Math.min(ms,5000));}function ghCacheKey(args){return JSON.stringify(Array.isArray(args)?args:[]);}function isGhReadOnly(args){const list=Array.isArray(args)?args.map((item)=>String(item||'').trim().toLowerCase()):[];if(list.length===0)return false;const joined=' '+list.join(' ')+' ';return !/( edit | merge | close | reopen | rerun | delete | create | ready | cancel )/.test(joined);}function readGhMessage(error){return String(error?.stderr||error?.stdout||error?.message||error||'');}function runGh(args){const cacheable=isGhReadOnly(args);const key=cacheable?ghCacheKey(args):'';const now=Date.now();if(cacheable){const cached=ghReadCache.get(key);if(cached&&cached.expiresAt>now)return cached.output;if(now<ghRateLimitUntil&&cached)return cached.output;}let lastError=null;for(let attempt=0;attempt<2;attempt+=1){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(error){const message=readGhMessage(error);lastError=error;const retryAfter=message.match(/retry after\\s+(\\d+)\\s*second/i)||message.match(/try again in\\s+(\\d+)\\s*second/i);if(/secondary rate limit|rate limit exceeded|api rate limit/i.test(message)&&attempt===0){const waitMs=Math.max(1000,Math.min(5000,(Number(retryAfter?.[1]||0)||2)*1000));ghRateLimitUntil=Date.now()+waitMs;ghSleep(waitMs);continue;}if(/ENOBUFS|maxbuffer|stdout maxbuffer length exceeded/i.test(message)&&attempt===0){try{const output=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer:GH_MAX_BUFFER*2}).trim();if(cacheable)ghReadCache.set(key,{output,expiresAt:Date.now()+GH_CACHE_TTL_MS});return output;}catch(innerError){lastError=innerError;}}break;}}throw lastError;}function ghJson(args){const out=runGh(args);return out?JSON.parse(out):[];}function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}} function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||job.id||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||job.html_url||''),checkRunUrl:String(job.check_run_url||job.checkRunUrl||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=String(check?.name||check?.context||check?.workflowName||'').trim();const state=String(check?.state||check?.conclusion||'').toUpperCase();const bucket=String(check?.bucket||'').toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const path=String(file?.filename||file?.path||'').trim();return path?{path,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{});const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[]).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[]).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[]).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[]).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{});const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const failingChecks=checks.filter((check)=>['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(check.state)||check.bucket==='FAIL');const pendingChecks=checks.filter((check)=>['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED'].includes(check.state));const labels=(Array.isArray(pr.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} const CI_LOG_EXCERPT_MAX_CHARS=12000;const CI_MAX_JOB_DIAGNOSTICS=10;const CI_MAX_ANNOTATIONS=60;function safeGhJsonRunner(runner,args,fallback){try{const out=runner(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}function parseCheckRunId(value){const match=String(value||'').match(/\\/check-runs\\/(\\d+)/i);return match?Number(match[1]||0)||0:0;}function normalizeAnnotation(annotation){if(!annotation||typeof annotation!=='object')return null;const path=String(annotation.path||'').trim();const message=truncateText(annotation.message,1200);if(!path&&!message)return null;return {path:path||null,startLine:Number(annotation.start_line||0)||null,endLine:Number(annotation.end_line||0)||null,startColumn:Number(annotation.start_column||0)||null,endColumn:Number(annotation.end_column||0)||null,level:String(annotation.annotation_level||'').trim()||null,title:truncateText(annotation.title,300)||null,message,rawDetails:truncateText(annotation.raw_details,800)||null};}function collectCheckRunAnnotations(repo,checkRunId,runner){if(!repo||!checkRunId)return [];const annotations=[];for(let page=1;page<=3&&annotations.length<CI_MAX_ANNOTATIONS;page+=1){const batch=safeGhJsonRunner(runner,['api','repos/'+repo+'/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page],[]);if(!Array.isArray(batch)||batch.length===0)break;for(const entry of batch){const normalized=normalizeAnnotation(entry);if(normalized)annotations.push(normalized);if(annotations.length>=CI_MAX_ANNOTATIONS)break;}if(batch.length<50)break;}return annotations.slice(0,CI_MAX_ANNOTATIONS);}function collectCiDiagnostics(repo,run,runner){const info={failedRun:normalizeRun(run),failedJobs:[],failedAnnotations:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId||!repo)return info;let workflowJobs=[];try{const viewRaw=runner(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const apiJobs=safeGhJsonRunner(runner,['api','repos/'+repo+'/actions/runs/'+runId+'/jobs?per_page=100'],{});workflowJobs=Array.isArray(apiJobs?.jobs)?apiJobs.jobs:(Array.isArray(view.jobs)?view.jobs:[]);info.failedJobs=workflowJobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,CI_MAX_JOB_DIAGNOSTICS);}catch(e){info.diagnosticsError=String(e?.message||e);}try{for(const job of info.failedJobs){const checkRunId=parseCheckRunId(job?.checkRunUrl);const annotations=collectCheckRunAnnotations(repo,checkRunId,runner);if(annotations.length===0)continue;info.failedAnnotations.push({name:String(job?.name||''),checkRunId,annotations});if(info.failedAnnotations.length>=CI_MAX_JOB_DIAGNOSTICS)break;}}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}try{info.failedLogExcerpt=truncateText(runner(['run','view',String(runId),'--repo',repo,'--log-failed']),CI_LOG_EXCERPT_MAX_CHARS);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;} for(const item of ciFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   const failedCheckNames=Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[];   const url=String(item?.url||'').trim();   const title=String(item?.title||'').trim();   const prDigest=repo&&n?collectPrDigest(repo,n,{branch,title,url}):null;   if(!repo||!branch){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'missing_repo_or_branch',prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   let runs=[];   try{     const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);     const parsedRuns=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     runs=Array.isArray(parsedRuns)?parsedRuns:[];   }catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_run_listing_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   const failed=runs.find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));   const failedRun=normalizeRun(failed);   if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){     try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}     catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}   }   if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}   needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5),prDigest,digestSummary:String(prDigest?.digestSummary||'')}); } let branchUpdated=0; for(const item of conflicts){   const repo=String(item?.repo||'').trim();   const n=String(item?.n||'').trim();   const branch=String(item?.branch||'').trim();   const base=String(item?.base||'').trim();   const mergeable=String(item?.mergeable||'').toUpperCase();   const prDigest=repo&&n?collectPrDigest(repo,n,{branch,base,url:String(item?.url||'')}):null;   if(!repo||!n){needsAgent.push({...item,reason:'missing_repo_or_pr',prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   if(mergeable==='BEHIND'){     try{       const headSha=JSON.parse(runGh(['pr','view',n,'--repo',repo,'--json','headRefOid'])).headRefOid;       const apiArgs=['api','-X','PUT','repos/'+repo+'/pulls/'+n+'/update-branch','--field','expected_head_sha='+headSha];       runGh(apiArgs);       branchUpdated++;     }catch(e){needsAgent.push({repo,number:n,branch,base,mergeable,reason:'branch_update_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||'')});}     continue;   }   needsAgent.push({repo,number:n,branch,base,mergeable,reason:'merge_conflict_requires_code_resolution',prDigest,digestSummary:String(prDigest?.digestSummary||'')}); } const fullPayload={rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent}; const fs=require('fs');const path=require('path'); const bosunHome=String(process.env.BOSUN_HOME||'').trim(); const tmpDir=bosunHome?path.join(bosunHome,'tmp'):path.join(process.cwd(),'.cache','bosun'); try{fs.mkdirSync(tmpDir,{recursive:true})}catch{} const tmpFile=path.join(tmpDir,'programmatic-fix-output.json'); try{fs.writeFileSync(tmpFile,JSON.stringify(fullPayload),'utf8');process.stderr.write('[programmatic-fix] wrote '+tmpFile+' ('+JSON.stringify(fullPayload).length+' bytes)\\n')}catch(e){process.stderr.write('[programmatic-fix] failed to write temp file '+tmpFile+': '+String(e?.message||e)+'\\n')} console.log(JSON.stringify({rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,tmpFile}));"
+              "const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[]; const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[]; const needsAgent=[]; let rerunRequested=0; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const MAX_AUTO_RERUN_ATTEMPT=1; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function safeGhJson(args,fallback){try{const out=runGh(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}} function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||job.id||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||job.html_url||''),checkRunUrl:String(job.check_run_url||job.checkRunUrl||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=String(check?.name||check?.context||check?.workflowName||'').trim();const state=String(check?.state||check?.conclusion||'').toUpperCase();const bucket=String(check?.bucket||'').toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const path=String(file?.filename||file?.path||'').trim();return path?{path,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{});const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[]).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[]).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[]).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[]).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{});const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const failingChecks=checks.filter((check)=>['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(check.state)||check.bucket==='FAIL');const pendingChecks=checks.filter((check)=>['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED'].includes(check.state));const labels=(Array.isArray(pr.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} const CI_LOG_EXCERPT_MAX_CHARS=12000;const CI_MAX_JOB_DIAGNOSTICS=10;const CI_MAX_ANNOTATIONS=60;function safeGhJsonRunner(runner,args,fallback){try{const out=runner(args);return out?JSON.parse(out):fallback;}catch{return fallback;}}function parseCheckRunId(value){const match=String(value||'').match(/\\/check-runs\\/(\\d+)/i);return match?Number(match[1]||0)||0:0;}function normalizeAnnotation(annotation){if(!annotation||typeof annotation!=='object')return null;const path=String(annotation.path||'').trim();const message=truncateText(annotation.message,1200);if(!path&&!message)return null;return {path:path||null,startLine:Number(annotation.start_line||0)||null,endLine:Number(annotation.end_line||0)||null,startColumn:Number(annotation.start_column||0)||null,endColumn:Number(annotation.end_column||0)||null,level:String(annotation.annotation_level||'').trim()||null,title:truncateText(annotation.title,300)||null,message,rawDetails:truncateText(annotation.raw_details,800)||null};}function collectCheckRunAnnotations(repo,checkRunId,runner){if(!repo||!checkRunId)return [];const annotations=[];for(let page=1;page<=3&&annotations.length<CI_MAX_ANNOTATIONS;page+=1){const batch=safeGhJsonRunner(runner,['api','repos/'+repo+'/check-runs/'+checkRunId+'/annotations?per_page=50&page='+page],[]);if(!Array.isArray(batch)||batch.length===0)break;for(const entry of batch){const normalized=normalizeAnnotation(entry);if(normalized)annotations.push(normalized);if(annotations.length>=CI_MAX_ANNOTATIONS)break;}if(batch.length<50)break;}return annotations.slice(0,CI_MAX_ANNOTATIONS);}function collectCiDiagnostics(repo,run,runner){const info={failedRun:normalizeRun(run),failedJobs:[],failedAnnotations:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId||!repo)return info;let workflowJobs=[];try{const viewRaw=runner(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const apiJobs=safeGhJsonRunner(runner,['api','repos/'+repo+'/actions/runs/'+runId+'/jobs?per_page=100'],{});workflowJobs=Array.isArray(apiJobs?.jobs)?apiJobs.jobs:(Array.isArray(view.jobs)?view.jobs:[]);info.failedJobs=workflowJobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,CI_MAX_JOB_DIAGNOSTICS);}catch(e){info.diagnosticsError=String(e?.message||e);}try{for(const job of info.failedJobs){const checkRunId=parseCheckRunId(job?.checkRunUrl);const annotations=collectCheckRunAnnotations(repo,checkRunId,runner);if(annotations.length===0)continue;info.failedAnnotations.push({name:String(job?.name||''),checkRunId,annotations});if(info.failedAnnotations.length>=CI_MAX_JOB_DIAGNOSTICS)break;}}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}try{info.failedLogExcerpt=truncateText(runner(['run','view',String(runId),'--repo',repo,'--log-failed']),CI_LOG_EXCERPT_MAX_CHARS);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;} for(const item of ciFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   const failedCheckNames=Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[];   const url=String(item?.url||'').trim();   const title=String(item?.title||'').trim();   const prDigest=repo&&n?collectPrDigest(repo,n,{branch,title,url}):null;   if(!repo||!branch){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'missing_repo_or_branch',prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   let runs=[];   try{     const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);     const parsedRuns=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     runs=Array.isArray(parsedRuns)?parsedRuns:[];   }catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_run_listing_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   const failed=runs.find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));   const failedRun=normalizeRun(failed);   if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){     try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}     catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}   }   if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,prDigest,digestSummary:String(prDigest?.digestSummary||''),...collectCiDiagnostics(repo,failedRun,runGh)});continue;}   needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5),prDigest,digestSummary:String(prDigest?.digestSummary||'')}); } let branchUpdated=0; for(const item of conflicts){   const repo=String(item?.repo||'').trim();   const n=String(item?.n||'').trim();   const branch=String(item?.branch||'').trim();   const base=String(item?.base||'').trim();   const mergeable=String(item?.mergeable||'').toUpperCase();   const prDigest=repo&&n?collectPrDigest(repo,n,{branch,base,url:String(item?.url||'')}):null;   if(!repo||!n){needsAgent.push({...item,reason:'missing_repo_or_pr',prDigest,digestSummary:String(prDigest?.digestSummary||'')});continue;}   if(mergeable==='BEHIND'){     try{       const headSha=JSON.parse(runGh(['pr','view',n,'--repo',repo,'--json','headRefOid'])).headRefOid;       const apiArgs=['api','-X','PUT','repos/'+repo+'/pulls/'+n+'/update-branch','--field','expected_head_sha='+headSha];       runGh(apiArgs);       branchUpdated++;     }catch(e){needsAgent.push({repo,number:n,branch,base,mergeable,reason:'branch_update_failed',error:String(e?.message||e),prDigest,digestSummary:String(prDigest?.digestSummary||'')});}     continue;   }   needsAgent.push({repo,number:n,branch,base,mergeable,reason:'merge_conflict_requires_code_resolution',prDigest,digestSummary:String(prDigest?.digestSummary||'')}); } console.log(JSON.stringify({rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent}));"
             ],
             "continueOnError": true,
             "failOnError": false,
@@ -25480,57 +21254,22 @@
           ]
         },
         {
-          "id": "claim-unclaimed-prs",
-          "type": "action.run_command",
-          "label": "Claim & Filter Unclaimed PRs",
+          "id": "dispatch-fix-agent",
+          "type": "action.run_agent",
+          "label": "Dispatch Fix Agent (Fallback)",
           "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const bosunHome=String(process.env.BOSUN_HOME||'').trim(); const tmpDir=bosunHome?path.join(bosunHome,'tmp'):path.join(process.cwd(),'.cache','bosun'); const tmpFile=path.join(tmpDir,'programmatic-fix-output.json'); let raw=''; try{raw=fs.readFileSync(tmpFile,'utf8');}catch(e){process.stderr.write('[claim] cannot read temp file '+tmpFile+': '+String(e?.message||e)+'\\n');} const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const needsAgent=Array.isArray(payload.needsAgent)?payload.needsAgent:[]; const TTL_MS=Math.max(60000,Number(process.env.PR_FIX_TTL_MINUTES||'120')*60*1000); const STALE_CLAIM_MS=Math.max(10*60*1000,Math.min(TTL_MS,20*60*1000)); const CLAIM_DIR=tmpDir; const CLAIM_FILE=path.join(CLAIM_DIR,'pr-fix-claims.json'); function loadClaims(){try{const d=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));return(d&&typeof d==='object'&&d.claims&&typeof d.claims==='object')?d.claims:{};}catch{return {};}} function saveClaims(claims){try{if(!fs.existsSync(CLAIM_DIR))fs.mkdirSync(CLAIM_DIR,{recursive:true});const data={version:1,claims,updatedAt:new Date().toISOString()};const tmp=CLAIM_FILE+'.tmp'+Date.now();fs.writeFileSync(tmp,JSON.stringify(data,null,2),'utf8');fs.renameSync(tmp,CLAIM_FILE);}catch(e){process.stderr.write('[claim] save error: '+String(e?.message||e)+'\\n');}} const now=Date.now(); const claims=loadClaims(); /* Purge expired or abandoned claims so stalled repair runs do not block retries for hours. */ for(const key of Object.keys(claims)){const claim=claims[key]||{};const expiresAt=new Date(claim.expiresAt||0).getTime();const claimedAt=new Date(claim.claimedAt||0).getTime();const staleByAge=Number.isFinite(claimedAt)&&claimedAt>0&&(now-claimedAt)>=STALE_CLAIM_MS;if(now>expiresAt||staleByAge)delete claims[key];} const unclaimed=[]; const alreadyClaimed=[]; for(const item of needsAgent){   const repo=String(item?.repo||'').trim();   const number=String(item?.number||item?.n||'').trim();   if(!repo||!number){unclaimed.push({...item,taskId:'pr-fix-unknown',taskTitle:'Unknown PR',claimKey:''});continue;}   const key=repo+'#'+number;   const claim=claims[key];   if(claim&&now<new Date(claim.expiresAt||0).getTime()){     alreadyClaimed.push({key,repo,number,reason:item?.reason||'',claimedAt:claim.claimedAt,expiresAt:claim.expiresAt});     process.stderr.write('[pr-watchdog] '+key+' already claimed (claimed '+claim.claimedAt+', expires '+claim.expiresAt+'), skipping\\n');     continue;   }   const safeRepo=repo.replace(/[^a-z0-9]/gi,'-').replace(/-+/g,'-').replace(/^-|-$/g,'');   const taskId='pr-fix-'+safeRepo+'-'+number;   const taskTitle='Fix PR #'+number+(item?.title?' \\''+String(item.title).slice(0,60)+'\\'':'')+' ('+repo+')';   claims[key]={repo,number,taskId,taskTitle,claimedAt:new Date().toISOString(),expiresAt:new Date(now+TTL_MS).toISOString()};   unclaimed.push({...item,taskId,taskTitle,number,repo,claimKey:key}); } saveClaims(claims); console.log(JSON.stringify({unclaimed,alreadyClaimed,unclaimedCount:unclaimed.length,alreadyClaimedCount:alreadyClaimed.length,totalNeedsAgent:needsAgent.length}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "PR_FIX_TTL_MINUTES": "{{prFixTtlMinutes}}"
-            }
+            "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nEach unresolved item includes prDigest with the PR body, files, issue comments, reviews, review comments, review requests, and check summaries. Use that context first.\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: start from failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
+            "maxRetries": 2,
+            "retryDelayMs": 30000,
+            "continueOnError": true
           },
           "position": {
             "x": 280,
             "y": 970
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-unclaimed-fixes",
-          "type": "condition.expression",
-          "label": "Unclaimed Fixes?",
-          "config": {
-            "expression": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return (Array.isArray(d.unclaimed)?d.unclaimed:[]).length>0;}catch(e){return false;}})()"
-          },
-          "position": {
-            "x": 280,
-            "y": 1060
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "dispatch-fix-agents",
-          "type": "loop.for_each",
-          "label": "Dispatch Fix Agents (Per PR)",
-          "config": {
-            "items": "(()=>{try{const o=$ctx.getNodeOutput('claim-unclaimed-prs');const d=typeof o?.output==='object'?o.output:JSON.parse(o?.output||'{}');return Array.isArray(d.unclaimed)?d.unclaimed:[];}catch{return []}})()",
-            "variable": "item",
-            "maxConcurrent": "{{maxConcurrentFixes}}",
-            "workflowId": "template-pr-fix-single"
-          },
-          "position": {
-            "x": 280,
-            "y": 1160
           },
           "outputs": [
             "default"
@@ -25586,48 +21325,6 @@
           "position": {
             "x": 400,
             "y": 900
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pause-task-spawning",
-          "type": "action.run_command",
-          "label": "Pause Task Spawning",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'),path=require('path');const wfDir=path.resolve(process.env.BOSUN_CONFIG_DIR||'.bosun','workflows');const PAUSE_TARGETS=['template-task-lifecycle','template-task-batch-processor'];if(!fs.existsSync(wfDir)){process.exit(0);}let paused=0;for(const f of fs.readdirSync(wfDir).filter(f=>f.endsWith('.json'))){  try{const fp=path.join(wfDir,f);const def=JSON.parse(fs.readFileSync(fp,'utf8'));  const tmpl=String(def?.metadata?.installedFrom||'').trim();  if(!PAUSE_TARGETS.includes(tmpl))continue;  if(def.enabled===false&&def.metadata?.pausedByWorkflow)continue;  def.enabled=false;def.metadata=def.metadata||{};  def.metadata.pausedByWorkflow='template-bosun-pr-watchdog';  def.metadata.pausedAt=new Date().toISOString();  fs.writeFileSync(fp,JSON.stringify(def,null,2),'utf8');paused++;}catch{}}console.log(JSON.stringify({paused}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false
-          },
-          "position": {
-            "x": 50,
-            "y": 560
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "resume-task-spawning",
-          "type": "action.run_command",
-          "label": "Resume Task Spawning",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'),path=require('path');const wfDir=path.resolve(process.env.BOSUN_CONFIG_DIR||'.bosun','workflows');if(!fs.existsSync(wfDir)){process.exit(0);}let resumed=0;for(const f of fs.readdirSync(wfDir).filter(f=>f.endsWith('.json'))){  try{const fp=path.join(wfDir,f);const def=JSON.parse(fs.readFileSync(fp,'utf8'));  if(def.metadata?.pausedByWorkflow!=='template-bosun-pr-watchdog')continue;  def.enabled=true;delete def.metadata.pausedByWorkflow;delete def.metadata.pausedAt;  fs.writeFileSync(fp,JSON.stringify(def,null,2),'utf8');resumed++;}catch{}}console.log(JSON.stringify({resumed}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false
-          },
-          "position": {
-            "x": 700,
-            "y": 560
           },
           "outputs": [
             "default"
@@ -25729,9 +21426,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-needed->pause-task-spawning",
+          "id": "fix-needed->security-fix-needed",
           "source": "fix-needed",
-          "target": "pause-task-spawning",
+          "target": "security-fix-needed",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -25741,12 +21438,6 @@
           "target": "review-needed",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "pause-task-spawning->security-fix-needed",
-          "source": "pause-task-spawning",
-          "target": "security-fix-needed",
-          "sourcePort": "default"
         },
         {
           "id": "security-fix-needed->programmatic-security-fix",
@@ -25769,9 +21460,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "security-agent-needed->claim-unclaimed-security-prs",
+          "id": "security-agent-needed->dispatch-security-fix-agent",
           "source": "security-agent-needed",
-          "target": "claim-unclaimed-security-prs",
+          "target": "dispatch-security-fix-agent",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -25783,28 +21474,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "claim-unclaimed-security-prs->has-unclaimed-security-fixes",
-          "source": "claim-unclaimed-security-prs",
-          "target": "has-unclaimed-security-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-unclaimed-security-fixes->dispatch-security-fix-agents",
-          "source": "has-unclaimed-security-fixes",
-          "target": "dispatch-security-fix-agents",
-          "sourcePort": "default",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-unclaimed-security-fixes->generic-fix-needed",
-          "source": "has-unclaimed-security-fixes",
-          "target": "generic-fix-needed",
-          "sourcePort": "default",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "dispatch-security-fix-agents->generic-fix-needed",
-          "source": "dispatch-security-fix-agents",
+          "id": "dispatch-security-fix-agent->generic-fix-needed",
+          "source": "dispatch-security-fix-agent",
           "target": "generic-fix-needed",
           "sourcePort": "default"
         },
@@ -25829,9 +21500,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-agent-needed->claim-unclaimed-prs",
+          "id": "fix-agent-needed->dispatch-fix-agent",
           "source": "fix-agent-needed",
-          "target": "claim-unclaimed-prs",
+          "target": "dispatch-fix-agent",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -25843,28 +21514,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "claim-unclaimed-prs->has-unclaimed-fixes",
-          "source": "claim-unclaimed-prs",
-          "target": "has-unclaimed-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-unclaimed-fixes->dispatch-fix-agents",
-          "source": "has-unclaimed-fixes",
-          "target": "dispatch-fix-agents",
-          "sourcePort": "default",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-unclaimed-fixes->review-needed",
-          "source": "has-unclaimed-fixes",
-          "target": "review-needed",
-          "sourcePort": "default",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "dispatch-fix-agents->review-needed",
-          "source": "dispatch-fix-agents",
+          "id": "dispatch-fix-agent->review-needed",
+          "source": "dispatch-fix-agent",
           "target": "review-needed",
           "sourcePort": "default"
         },
@@ -25889,20 +21540,8 @@
           "sourcePort": "default"
         },
         {
-          "id": "notify->resume-task-spawning",
+          "id": "notify->cleanup-merged-branches",
           "source": "notify",
-          "target": "resume-task-spawning",
-          "sourcePort": "default"
-        },
-        {
-          "id": "no-prs->resume-task-spawning",
-          "source": "no-prs",
-          "target": "resume-task-spawning",
-          "sourcePort": "default"
-        },
-        {
-          "id": "resume-task-spawning->cleanup-merged-branches",
-          "source": "resume-task-spawning",
           "target": "cleanup-merged-branches",
           "sourcePort": "default"
         }
@@ -25914,8 +21553,8 @@
         "templateState": {
           "templateId": "template-bosun-pr-watchdog",
           "templateName": "Bosun PR Watchdog",
-          "templateVersion": "3.1.0",
-          "installedTemplateVersion": "3.1.0",
+          "templateVersion": "2.3.0",
+          "installedTemplateVersion": "2.3.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25993,7 +21632,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,actionableUnresolved,needsAgent:actionableUnresolved.length>0}));"
+              "const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));"
             ],
             "continueOnError": true,
             "failOnError": false,
@@ -26144,403 +21783,6 @@
       }
     },
     {
-      "id": "wf-github-check-failure",
-      "name": "GitHub Check Failure Handler",
-      "description": "Event-driven workflow that fires the moment a GitHub check run fails. Identifies the associated PR and applies the bosun-needs-fix label instantly so the PR Watchdog can dispatch a repair agent on its next sweep. Eliminates the up-to-30-minute delay between a CI failure and Bosun's response.",
-      "category": "github",
-      "enabled": true,
-      "nodeCount": 5,
-      "trigger": "trigger.event",
-      "variables": {
-        "labelNeedsFix": "bosun-needs-fix",
-        "ignoredCheckNames": "codecov,dependabot,semantic-pr-title"
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.event",
-          "label": "Check Run Failed",
-          "config": {
-            "eventType": "github:check_run",
-            "filter": "$event?.action === 'completed' && $event?.checkConclusion === 'failure' && !String($event?.checkName || '').split(',').some(n =>   String($data?.ignoredCheckNames || '').toLowerCase().split(',').map(s => s.trim()).includes(n.trim().toLowerCase()))"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-has-pr",
-          "type": "condition.expression",
-          "label": "Associated PR Found?",
-          "config": {
-            "expression": "Number($data?.prNumber) > 0 && Boolean($data?.repo)"
-          },
-          "position": {
-            "x": 400,
-            "y": 190
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "label-fix",
-          "type": "action.run_command",
-          "label": "Label PR: bosun-needs-fix",
-          "config": {
-            "command": "gh",
-            "args": [
-              "pr",
-              "edit",
-              "{{prNumber}}",
-              "--add-label",
-              "{{labelNeedsFix}}",
-              "--repo",
-              "{{repo}}"
-            ],
-            "continueOnError": true
-          },
-          "position": {
-            "x": 250,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-labeled",
-          "type": "notify.log",
-          "label": "Log Fix Label Applied",
-          "config": {
-            "message": ":x: Check '{{checkName}}' failed on PR #{{prNumber}} ({{repo}}). Applied label '{{labelNeedsFix}}' — PR Watchdog will dispatch repair.",
-            "level": "warn"
-          },
-          "position": {
-            "x": 250,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-pr",
-          "type": "notify.log",
-          "label": "Log No Associated PR",
-          "config": {
-            "message": "Check '{{checkName}}' failed in {{repo}} (conclusion: {{checkConclusion}}) — no associated PR found.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 620,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->check-has-pr",
-          "source": "trigger",
-          "target": "check-has-pr",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-has-pr->label-fix",
-          "source": "check-has-pr",
-          "target": "label-fix",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-has-pr->log-no-pr",
-          "source": "check-has-pr",
-          "target": "log-no-pr",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "label-fix->log-labeled",
-          "source": "label-fix",
-          "target": "log-labeled",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-04T12:00:00.000Z",
-        "updatedAt": "2026-03-04T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-github-check-failure",
-          "templateName": "GitHub Check Failure Handler",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-github-pr-event-handler",
-      "name": "GitHub PR Event Handler",
-      "description": "Event-driven workflow that fires as soon as a PR is opened, updated, or reopened via GitHub webhook. Identifies the linked Bosun task by branch name and immediately updates its status to in-review — no polling required. Complements the PR Watchdog which runs every 30 minutes as a fallback.",
-      "category": "github",
-      "enabled": true,
-      "nodeCount": 9,
-      "trigger": "trigger.event",
-      "variables": {
-        "labelInReview": "bosun/in-review",
-        "taskBranchPrefix": "task/"
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.event",
-          "label": "PR Opened / Updated",
-          "config": {
-            "eventType": "github:pull_request",
-            "filter": "['opened','synchronize','reopened'].includes(String($event?.action || '').toLowerCase())"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-bosun-branch",
-          "type": "condition.expression",
-          "label": "Is a Bosun Task Branch?",
-          "config": {
-            "expression": "Boolean($data?.prBranch) && String($data?.prBranch || '').startsWith(String($data?.taskBranchPrefix || 'task/'))"
-          },
-          "position": {
-            "x": 400,
-            "y": 190
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "find-task",
-          "type": "action.run_command",
-          "label": "Find Linked Task",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        const branch = process.env.PR_BRANCH || \"\";\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, {}))\n          .then(tasks => {\n            const task = (tasks || []).find(t =>\n              (t.branch || t.metadata?.branch) === branch\n            );\n            console.log(JSON.stringify(task || null));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
-            ],
-            "env": {
-              "PR_BRANCH": "{{prBranch}}"
-            },
-            "parseJson": true
-          },
-          "position": {
-            "x": 250,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-task-found",
-          "type": "condition.expression",
-          "label": "Task Found?",
-          "config": {
-            "expression": "Boolean($ctx.getNodeOutput('find-task')?.output?.id)"
-          },
-          "position": {
-            "x": 250,
-            "y": 490
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "update-inreview",
-          "type": "action.update_task_status",
-          "label": "Mark Task In Review",
-          "config": {
-            "taskId": "{{$ctx.getNodeOutput('find-task')?.output?.id || ''}}",
-            "status": "inreview",
-            "taskTitle": "{{$ctx.getNodeOutput('find-task')?.output?.title || prTitle || ''}}",
-            "workflowEvent": "task.in_review",
-            "workflowData": {
-              "source": "github:pr_opened",
-              "prNumber": "{{prNumber}}",
-              "prUrl": "{{prUrl}}",
-              "branch": "{{prBranch}}",
-              "repo": "{{repo}}"
-            }
-          },
-          "position": {
-            "x": 250,
-            "y": 640
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "add-label-in-review",
-          "type": "action.run_command",
-          "label": "Add In-Review Label",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const n=String(process.env.PR_NUMBER||'').trim(); const repo=String(process.env.REPO||'').trim(); const label=String(process.env.LABEL_IN_REVIEW||'bosun/in-review').trim(); if(!n||!label){process.exit(0);} try{   const args=['pr','edit',n,'--add-label',label];   if(repo)args.push('--repo',repo);   execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']});   console.log(JSON.stringify({labeled:true,label,pr:n})); }catch(e){   process.stderr.write('label warn: '+String(e?.message||e)+'\\n');   console.log(JSON.stringify({labeled:false,label,pr:n,error:String(e?.message||e)})); }"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "PR_NUMBER": "{{prNumber}}",
-              "REPO": "{{repo}}",
-              "LABEL_IN_REVIEW": "{{labelInReview}}"
-            }
-          },
-          "position": {
-            "x": 250,
-            "y": 720
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-updated",
-          "type": "notify.log",
-          "label": "Log In Review",
-          "config": {
-            "message": ":rocket: Task {{$ctx.getNodeOutput('find-task')?.output?.id}} moved to in-review — PR #{{prNumber}} ({{prBranch}}) in {{repo}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 250,
-            "y": 790
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-task",
-          "type": "notify.log",
-          "label": "Log No Task Found",
-          "config": {
-            "message": "PR #{{prNumber}} opened on branch {{prBranch}} in {{repo}} — no linked Bosun task found.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 550,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-not-bosun",
-          "type": "notify.log",
-          "label": "Log Non-Bosun Branch",
-          "config": {
-            "message": "PR #{{prNumber}} on {{prBranch}} is not a Bosun task branch — skipping.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 650,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->check-bosun-branch",
-          "source": "trigger",
-          "target": "check-bosun-branch",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-bosun-branch->find-task",
-          "source": "check-bosun-branch",
-          "target": "find-task",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-bosun-branch->log-not-bosun",
-          "source": "check-bosun-branch",
-          "target": "log-not-bosun",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "find-task->check-task-found",
-          "source": "find-task",
-          "target": "check-task-found",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-task-found->update-inreview",
-          "source": "check-task-found",
-          "target": "update-inreview",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-task-found->log-no-task",
-          "source": "check-task-found",
-          "target": "log-no-task",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "update-inreview->add-label-in-review",
-          "source": "update-inreview",
-          "target": "add-label-in-review",
-          "sourcePort": "default"
-        },
-        {
-          "id": "add-label-in-review->log-updated",
-          "source": "add-label-in-review",
-          "target": "log-updated",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-05T12:00:00.000Z",
-        "updatedAt": "2026-03-05T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-github-pr-event-handler",
-          "templateName": "GitHub PR Event Handler",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
       "id": "wf-pr-conflict-resolver",
       "name": "PR Conflict Resolver",
       "description": ":alert: SUPERSEDED for bosun-managed repos — use the Bosun PR Watchdog (template-bosun-pr-watchdog) instead. The Watchdog consolidates conflict resolution, CI-failure repair, diff-safety review, and merge into one cycle with a single gh API call and a mandatory review gate before any merge. This template is kept for repos that do not use the assistive bosun-attached label convention. It only touches Bosun-created PRs and never auto-merges directly — it resolves conflicts and then defers to the Watchdog's review gate for the actual merge decision.",
@@ -26591,7 +21833,7 @@
           "label": "Pick Conflict PR",
           "config": {
             "key": "targetPrNumber",
-            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
+            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);  /* Skip PRs already owned by the watchdog fix agent */  const pr = prs.find((p) =>    isBosunCreated(p) &&    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')  );  return pr?.number ? String(pr.number) : '';})()",
             "isExpression": true
           },
           "position": {
@@ -26608,7 +21850,7 @@
           "label": "Capture Conflict Branch",
           "config": {
             "key": "targetPrBranch",
-            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
+            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }  if (!Array.isArray(prs)) return '';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.headRefName || '';})()",
             "isExpression": true
           },
           "position": {
@@ -26625,7 +21867,7 @@
           "label": "Capture Base Branch",
           "config": {
             "key": "targetPrBase",
-            "value": "/* <!-- bosun-created --> */ (() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
+            "value": "(() => {  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';  let prs = [];  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }  if (!Array.isArray(prs)) return 'main';  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));  return pr?.baseRefName || 'main';})()",
             "isExpression": true
           },
           "position": {
@@ -26805,438 +22047,13 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-06T12:00:00.000Z",
-        "updatedAt": "2026-03-06T12:00:00.000Z",
+        "createdAt": "2026-03-04T12:00:00.000Z",
+        "updatedAt": "2026-03-04T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-conflict-resolver",
           "templateName": "PR Conflict Resolver",
           "templateVersion": "2.0.0",
           "installedTemplateVersion": "2.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-pr-fix-single",
-      "name": "PR Fix Agent (Single PR)",
-      "description": "Fixes one Bosun-attached PR using a dedicated long-running agent (up to 2 hours). Dispatched by the PR Watchdog loop for each unclaimed PR needing repair. Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease and cleans up. The agent NEVER manages git setup or push.",
-      "category": "github",
-      "enabled": true,
-      "nodeCount": 15,
-      "trigger": "trigger.manual",
-      "variables": {},
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start",
-          "config": {},
-          "position": {
-            "x": 100,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-task",
-          "type": "action.set_variable",
-          "label": "Setup PR Task ID",
-          "config": {
-            "key": "taskId",
-            "value": "'pr-fix-' + String($data?.item?.taskId ||   (String($data?.item?.repo || '').replace(/[^a-z0-9]/gi, '-').replace(/-+/g,'-').replace(/^-|-$/g,'') +    '-' + String($data?.item?.number || $data?.item?.n || '0'))).replace(/^-|-$/g, '')",
-            "isExpression": true
-          },
-          "position": {
-            "x": 380,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-title",
-          "type": "action.set_variable",
-          "label": "Setup PR Task Title",
-          "config": {
-            "key": "taskTitle",
-            "value": "'Fix PR #' + String($data?.item?.number || $data?.item?.n || '?') + ($data?.item?.title ? ' \\'' + String($data.item.title).slice(0,60) + '\\'' : '') + ' (' + String($data?.item?.repo || '') + ')'",
-            "isExpression": true
-          },
-          "position": {
-            "x": 660,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-claim-key",
-          "type": "action.set_variable",
-          "label": "Setup Claim Key",
-          "config": {
-            "key": "claimKey",
-            "value": "String($data?.item?.claimKey || '')",
-            "isExpression": true
-          },
-          "position": {
-            "x": 940,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "resolve-pr-params",
-          "type": "action.set_variable",
-          "label": "Resolve PR Parameters",
-          "config": {
-            "key": "prParams",
-            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0'), reason: String($data?.item?.reason || ''), mergeable: String($data?.item?.mergeable || $data?.item?.prDigest?.core?.mergeable || '')})",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1220,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-worktree",
-          "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
-            ],
-            "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
-            "env": {
-              "PR_REPO": "{{prParams.repo}}",
-              "PR_BRANCH": "{{prParams.branch}}",
-              "PR_BASE": "{{prParams.base}}",
-              "PR_NUMBER": "{{prParams.number}}"
-            }
-          },
-          "position": {
-            "x": 1500,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-worktree-path",
-          "type": "action.set_variable",
-          "label": "Set Agent Working Directory",
-          "config": {
-            "key": "worktreePath",
-            "value": "{{setup-worktree.output.worktreePath}}"
-          },
-          "position": {
-            "x": 1780,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "detect-conflicts",
-          "type": "action.run_command",
-          "label": "Detect Merge Conflict Files",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const reason=String(process.env.ITEM_REASON||'').trim(); const mergeable=String(process.env.ITEM_MERGEABLE||'').trim().toUpperCase(); if(!wt){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);} const isConflict=reason.includes('merge_conflict')||['CONFLICTING','DIRTY'].includes(mergeable); if(!isConflict){console.log(JSON.stringify({hasConflicts:false,conflictFiles:[]}));process.exit(0);} let mergeOutput=''; let conflictFiles=[]; try{   try{mergeOutput=execFileSync('git',['merge','--no-commit','--no-ff','origin/'+base],{cwd:wt,encoding:'utf8',timeout:60000}).toString();}   catch(e){mergeOutput=String(e?.stderr||'')+' '+String(e?.stdout||'');}   try{     const diffFiles=execFileSync('git',['diff','--name-only','--diff-filter=U'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(diffFiles){conflictFiles=diffFiles.split(/\\r?\\n/).map(f=>f.trim()).filter(Boolean);}   }catch{}   if(conflictFiles.length===0){     const matches=mergeOutput.match(/CONFLICT[^:]*:\\s*Merge conflict in (.+)/gi)||[];     conflictFiles=matches.map(m=>{const f=m.match(/in\\s+(.+)/i);return f?f[1].trim():'';}).filter(Boolean);   }   try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{} }catch(e){   try{execFileSync('git',['merge','--abort'],{cwd:wt,timeout:10000});}catch{}   console.log(JSON.stringify({hasConflicts:false,conflictFiles:[],error:String(e?.message||e).slice(0,500)}));   process.exit(0); } console.log(JSON.stringify({hasConflicts:conflictFiles.length>0,conflictFiles:[...new Set(conflictFiles)],mergeOutput:String(mergeOutput||'').slice(0,2000)}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 120000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}",
-              "PR_BASE": "{{prParams.base}}",
-              "ITEM_REASON": "{{prParams.reason}}",
-              "ITEM_MERGEABLE": "{{prParams.mergeable}}"
-            }
-          },
-          "position": {
-            "x": 2060,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-prompt",
-          "type": "action.set_variable",
-          "label": "Build Agent Prompt",
-          "config": {
-            "key": "agentPrompt",
-            "value": "(()=>{\n  const item = $data?.item || {};\n  const prDigest = item.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(item.repo || core.repo || '');\n  const branch = String(item.branch || core.branch || '');\n  const base = String(item.base || item.baseBranch || core.baseBranch || 'main');\n  const number = String(item.number || item.n || '');\n  const title = String(item.title || core.title || '');\n  const reason = String(item.reason || '');\n  const url = String(item.url || core.url || '');\n  const mergeable = String(item.mergeable || core.mergeable || '');\n  const failedChecks = Array.isArray(item.failedCheckNames) ? item.failedCheckNames : [];\n  const failedJobs = Array.isArray(item.failedJobs) ? item.failedJobs : [];\n  const annotations = Array.isArray(item.failedAnnotations) ? item.failedAnnotations : [];\n  const logExcerpt = String(item.failedLogExcerpt || '').trim();\n  const recentRuns = Array.isArray(item.recentRuns) ? item.recentRuns : [];\n  const ciSummary = prDigest.ciSummary || {};\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n';\n  p += '- **Fix Reason**: `' + reason + '`\\n';\n  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n  if (item.error) p += '- **Error**: ' + item.error + '\\n';\n  if (item.rerunAttempts) p += '- **Rerun Attempts**: ' + item.rerunAttempts + '\\n';\n  p += '\\n';\n  /* --- Read detected conflict files from detect-conflicts node --- */\n  const conflictDetection = (()=>{ try { const o = $ctx?.getNodeOutput?.('detect-conflicts'); if (!o) return {}; const raw = o.output; return typeof raw === 'object' ? raw : JSON.parse(String(raw||'{}')); } catch { return {}; } })();\n  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n  /* --- Build fix summary (top-line overview like a human reviewer comment) --- */\n  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n  const fixItems = [];\n  if (mergeable === 'CONFLICTING' || mergeable === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base branch `' + base + '`'));\n  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n  if (fixItems.length > 0) {\n    p += '## Fix Summary\\n\\n';\n    p += 'This PR needs the following fixes:\\n';\n    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n    p += '\\n';\n  }\n  if (failedChecks.length > 0) {\n    p += '## Failed CI Checks\\n\\n';\n    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n    p += '## CI Check Summary\\n\\n';\n    p += 'Total: ' + (ciSummary.total||0) + '  |  Failing: ' + (ciSummary.failing||0) + '  |  Pending: ' + (ciSummary.pending||0) + '  |  Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n    const failingAllChecks = allChecks.filter(c => ['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(c.state));\n    if (failingAllChecks.length > 0) {\n      p += 'Failing checks:\\n';\n      failingAllChecks.forEach(c => { p += '- `' + (c.name||c.workflow||'') + '` → ' + c.state + '\\n'; });\n      p += '\\n';\n    }\n  }\n  if (item.failedRun) {\n    const run = item.failedRun;\n    p += '## Failed Workflow Run\\n\\n';\n    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n    p += '- **Run ID**: ' + run.databaseId + '\\n';\n    p += '- **Attempt**: ' + run.attempt + '\\n';\n    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n    p += '- **URL**: ' + run.url + '\\n';\n    p += '\\n';\n  }\n  if (failedJobs.length > 0) {\n    p += '## Failed Jobs\\n\\n';\n    failedJobs.slice(0,8).forEach(job => {\n      p += '### ' + (job.name||'unknown') + '\\n';\n      p += '- Conclusion: ' + job.conclusion + '\\n';\n      if (job.url) p += '- URL: ' + job.url + '\\n';\n      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n      }\n      p += '\\n';\n    });\n  }\n  if (annotations.length > 0) {\n    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n    annotations.slice(0,6).forEach(annot => {\n      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n        p += '**Job: ' + (annot.name||'') + '**\\n';\n        annot.annotations.slice(0,15).forEach(a => {\n          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n        });\n        p += '\\n';\n      }\n    });\n  }\n  if (logExcerpt) {\n    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n  }\n  if (recentRuns.length > 0) {\n    p += '## Recent CI Runs\\n\\n';\n    recentRuns.forEach(r => { p += '- ' + (r.workflowName||r.displayTitle||'') + ' (' + r.conclusion + ') ' + (r.url||'') + '\\n'; });\n    p += '\\n';\n  }\n  if (mergeable === 'CONFLICTING' || mergeable === 'DIRTY' || detectedConflictFiles.length > 0) {\n    p += '## Merge Conflict\\n\\n';\n    p += 'This branch has conflicts that must be resolved.\\n';\n    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n    if (detectedConflictFiles.length > 0) {\n      p += '**Conflicting files:**\\n';\n      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n      p += '\\n';\n    }\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n    p += '## Reviews & Inline Comments\\n\\n';\n    reviewsWithBody.slice(0,5).forEach(r => {\n      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n    });\n    if (reviewComments.length > 0) {\n      p += 'Inline comments:\\n';\n      reviewComments.slice(0,12).forEach(c => {\n        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n      });\n      p += '\\n';\n    }\n  }\n  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n  if (issueCommentsWithBody.length > 0) {\n    p += '## Issue Comments\\n\\n';\n    issueCommentsWithBody.slice(0,5).forEach(c => {\n      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n    });\n  }\n  return p;\n})()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 2340,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-active",
-          "type": "action.set_variable",
-          "label": "Mark Agent Workflow Active",
-          "config": {
-            "key": "_agentWorkflowActive",
-            "value": "true",
-            "isExpression": true
-          },
-          "position": {
-            "x": 2620,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fix-agent",
-          "type": "action.run_agent",
-          "label": "Fix PR (Dedicated Agent)",
-          "config": {
-            "prompt": "{{agentPrompt}}\n\n## Workspace\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-worktree.output.branch}}`). The base branch (`origin/{{setup-worktree.output.base}}`) has been fetched and is available for merge/rebase operations.\n\n## CRITICAL RULES — READ BEFORE DOING ANYTHING\n\n1. **Do NOT clone or re-clone the repo** — you are already in it.\n2. **Do NOT create new branches.** Stay on the current branch.\n3. **Do NOT push.** The workflow pushes for you automatically after you finish.\n4. **Do NOT switch branches** with `git checkout` or `git switch`.\n5. **Do NOT run `cd` to change to a different directory.** Stay in the cwd.\n6. Fix ONLY the specific issue listed in the Fix Reason above.\n7. Do NOT merge, approve, or close the PR.\n8. Do NOT touch any other PRs or repos.\n\n## Fix Instructions\n\nUse prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks, failedAnnotations, and any failedLogExcerpt before making changes.\nUse the PR digest (CI diagnostics, log excerpts, annotations, reviews) above to identify the root cause and apply the MINIMAL fix.\n\n**By `reason` field:**\n- `merge_conflict_requires_code_resolution`: Run `git merge origin/{{setup-worktree.output.base}}`,   resolve *all* conflicts in code, run available tests, then `git commit`.\n- `auto_rerun_limit_reached` / `ci_rerun_failed`: Study the failed log excerpt and   job details to find the root cause. Fix the code, run tests, `git add` and `git commit`.\n- `no_rerunnable_failed_run_found`: Look at `gh pr checks` for this PR, inspect the failure,   fix the issue, and commit.\n- `branch_update_failed` / `missing_repo_or_branch`: Inspect with `gh pr view`, diagnose, fix.\n\n**After fixing:** Commit with a clear message like `fix: resolve CI failure in <check_name>`.\nThen remove the fix label:\n```\ngh pr edit {{setup-worktree.output.number}} --repo {{setup-worktree.output.repo}} --remove-label bosun-needs-fix\n```\n",
-            "sdk": "auto",
-            "timeoutMs": 7200000,
-            "maxRetries": 1,
-            "retryDelayMs": 60000,
-            "sessionRetries": 2,
-            "maxContinues": 3,
-            "continueOnSession": true,
-            "continueOnError": true,
-            "failOnError": false
-          },
-          "position": {
-            "x": 2900,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "push-fixes",
-          "type": "action.run_command",
-          "label": "Push Fixes to PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); if(!wt||!branch){console.log(JSON.stringify({pushed:false,reason:'missing_worktree_or_branch'}));process.exit(0);} const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(cur!==branch){console.log(JSON.stringify({pushed:false,reason:'wrong_branch',expected:branch,actual:cur}));process.exit(1);} const status=execFileSync('git',['status','--porcelain'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(status){   execFileSync('git',['add','-A'],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['commit','-m','bosun: commit remaining changes for PR #'+num],{cwd:wt,encoding:'utf8',timeout:30000});}catch{} } let hasDiff=false; try{const d=execFileSync('git',['rev-list','--count','origin/'+branch+'..HEAD'],{cwd:wt,encoding:'utf8',timeout:30000}).trim();hasDiff=Number(d)>0;} catch{hasDiff=true;} if(!hasDiff){console.log(JSON.stringify({pushed:false,reason:'no_new_commits'}));process.exit(0);} execFileSync('git',['push','--force-with-lease','origin','HEAD:'+branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:'inherit'}); console.log(JSON.stringify({pushed:true,branch:cur,commits:Number(execFileSync('git',['rev-list','--count','origin/'+branch+'..HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim()||0)}));"
-            ],
-            "parseJson": true,
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 300000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}",
-              "PR_BRANCH": "{{setup-worktree.output.branch}}",
-              "PR_NUMBER": "{{setup-worktree.output.number}}"
-            }
-          },
-          "position": {
-            "x": 3180,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "cleanup-worktree",
-          "type": "action.run_command",
-          "label": "Cleanup Temp Worktree",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const wt=String(process.env.WORKTREE_PATH||'').trim(); if(!wt){console.log(JSON.stringify({cleaned:false,reason:'no_path'}));process.exit(0);} try{fs.rmSync(wt,{recursive:true,force:true});console.log(JSON.stringify({cleaned:true,path:wt}));} catch(e){console.log(JSON.stringify({cleaned:false,error:String(e?.message||e)}));}"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}"
-            }
-          },
-          "position": {
-            "x": 3460,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "update-sibling-branches",
-          "type": "action.run_command",
-          "label": "Update Sibling PR Branches",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const repo=String(process.env.REPO||'').trim(); const thisPrNumber=String(process.env.THIS_PR||'').trim(); const base=String(process.env.BASE_BRANCH||'main').trim(); if(!repo){console.log(JSON.stringify({updated:0,reason:'no repo'}));process.exit(0);} let prs=[]; try{prs=JSON.parse(execFileSync('gh',['pr','list','--repo',repo,'--base',base,'--state','open','--json','number,headRefOid','--limit','50'],{encoding:'utf8',timeout:30000}));} catch(e){console.log(JSON.stringify({updated:0,error:String(e?.message||e).slice(0,200)}));process.exit(0);} let updated=0,failed=0; for(const pr of prs){   if(String(pr.number)===thisPrNumber)continue;   try{     execFileSync('gh',['api','-X','PUT','repos/'+repo+'/pulls/'+pr.number+'/update-branch','--field','expected_head_sha='+pr.headRefOid],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000});     updated++;console.log('Updated PR #'+pr.number);   }catch(e){     const msg=String(e?.stderr||e?.message||e);     if(/already up/i.test(msg)||/merge conflict/i.test(msg)){continue;}     failed++;console.log('Skip PR #'+pr.number+': '+msg.slice(0,150));   } } console.log(JSON.stringify({updated,failed,total:prs.length}));"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 180000,
-            "env": {
-              "REPO": "{{prParams.repo}}",
-              "THIS_PR": "{{prParams.number}}",
-              "BASE_BRANCH": "{{prParams.base}}"
-            }
-          },
-          "position": {
-            "x": 3740,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "release-claim",
-          "type": "action.run_command",
-          "label": "Release PR Claim",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const claimKey=String(process.env.PR_CLAIM_KEY||'').trim(); if(!claimKey){console.log(JSON.stringify({released:false,reason:'no_claim_key'}));process.exit(0);} const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-fix-claims.json'); try{   if(!fs.existsSync(CLAIM_FILE)){console.log(JSON.stringify({released:false,reason:'no_claim_file'}));process.exit(0);}   const data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));   if(data.claims&&data.claims[claimKey]){     delete data.claims[claimKey];     data.updatedAt=new Date().toISOString();     fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');     console.log(JSON.stringify({released:true,claimKey}));   }else{     console.log(JSON.stringify({released:false,reason:'not_found',claimKey}));   } }catch(e){   console.log(JSON.stringify({released:false,reason:'error',error:String(e?.message||e),claimKey})); }"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "PR_CLAIM_KEY": "{{claimKey}}"
-            }
-          },
-          "position": {
-            "x": 4020,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->setup-task",
-          "source": "trigger",
-          "target": "setup-task",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-task->setup-title",
-          "source": "setup-task",
-          "target": "setup-title",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-title->setup-claim-key",
-          "source": "setup-title",
-          "target": "setup-claim-key",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-claim-key->resolve-pr-params",
-          "source": "setup-claim-key",
-          "target": "resolve-pr-params",
-          "sourcePort": "default"
-        },
-        {
-          "id": "resolve-pr-params->setup-worktree",
-          "source": "resolve-pr-params",
-          "target": "setup-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-worktree->set-worktree-path",
-          "source": "setup-worktree",
-          "target": "set-worktree-path",
-          "sourcePort": "default"
-        },
-        {
-          "id": "set-worktree-path->detect-conflicts",
-          "source": "set-worktree-path",
-          "target": "detect-conflicts",
-          "sourcePort": "default"
-        },
-        {
-          "id": "detect-conflicts->setup-prompt",
-          "source": "detect-conflicts",
-          "target": "setup-prompt",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-prompt->mark-active",
-          "source": "setup-prompt",
-          "target": "mark-active",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-active->fix-agent",
-          "source": "mark-active",
-          "target": "fix-agent",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fix-agent->push-fixes",
-          "source": "fix-agent",
-          "target": "push-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-fixes->cleanup-worktree",
-          "source": "push-fixes",
-          "target": "cleanup-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "cleanup-worktree->update-sibling-branches",
-          "source": "cleanup-worktree",
-          "target": "update-sibling-branches",
-          "sourcePort": "default"
-        },
-        {
-          "id": "update-sibling-branches->release-claim",
-          "source": "update-sibling-branches",
-          "target": "release-claim",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-07T12:00:00.000Z",
-        "updatedAt": "2026-03-07T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-pr-fix-single",
-          "templateName": "PR Fix Agent (Single PR)",
-          "templateVersion": "7.0.0",
-          "installedTemplateVersion": "7.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -27298,7 +22115,7 @@
           "type": "condition.expression",
           "label": "Bosun-Created PR?",
           "config": {
-            "expression": "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()"
+            "expression": "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()"
           },
           "position": {
             "x": 400,
@@ -27797,547 +22614,13 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-08T12:00:00.000Z",
-        "updatedAt": "2026-03-08T12:00:00.000Z",
+        "createdAt": "2026-03-05T12:00:00.000Z",
+        "updatedAt": "2026-03-05T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-merge-strategy",
           "templateName": "PR Merge Strategy",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-pr-review-quality-striker",
-      "name": "PR Review Quality Striker",
-      "description": "Reactive PR review agent. Fires on review_requested events, review comment events, and a scheduled fallback. Collects PR digest + review signals, runs a quality-review agent, and comments actionable findings.",
-      "category": "github",
-      "enabled": true,
-      "nodeCount": 6,
-      "trigger": "trigger.pr_event",
-      "variables": {
-        "intervalMs": 1800000,
-        "maxPrsPerRun": 5,
-        "timeoutMs": 1800000
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.pr_event",
-          "label": "PR Review Requested",
-          "config": {
-            "event": "review_requested",
-            "events": [
-              "review_requested",
-              "changes_requested",
-              "approved",
-              "opened"
-            ]
-          },
-          "position": {
-            "x": 200,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "trigger-review-comment",
-          "type": "trigger.event",
-          "label": "Review Comment Posted",
-          "config": {
-            "eventType": "github:pull_request_review_comment"
-          },
-          "position": {
-            "x": 500,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "trigger-fallback",
-          "type": "trigger.schedule",
-          "label": "Scheduled Fallback",
-          "config": {
-            "intervalMs": "{{intervalMs}}"
-          },
-          "position": {
-            "x": 800,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fetch-review-signals",
-          "type": "action.run_command",
-          "label": "Fetch PR Review Signals",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim(); const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0); const DIRECT_PR_URL=String(process.env.DIRECT_PR_URL||'').trim(); const DIRECT_EVENT=String(process.env.DIRECT_EVENT||'').trim(); const sourceKind=DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'; function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}} function collectPrDigest(repo,n){   const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,mergeable,url,labels,state,author,createdAt']);   const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);   const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);   return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]}; } function collectActionableReviewSignals(repo,n){   const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);   const reviewComments=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviewDecision']);   return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]}; } function appendActionable(signals,digest){   return {...signals,digest}; } let results=[]; if(sourceKind==='event'&&DIRECT_REPO&&DIRECT_PR_NUMBER>0){   const digest=collectPrDigest(DIRECT_REPO,DIRECT_PR_NUMBER);   const signals=collectActionableReviewSignals(DIRECT_REPO,DIRECT_PR_NUMBER);   const commentFindings=[];   const qualityChecks=[];   results=[appendActionable({repo:DIRECT_REPO,number:DIRECT_PR_NUMBER,url:DIRECT_PR_URL,event:DIRECT_EVENT,commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'},digest)]; }else{   const commentFindings=[];   const qualityChecks=[];   results=[{repo:'',number:0,url:'',event:'schedule',commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'}]; } process.stdout.write(JSON.stringify({prs:results,count:results.length}));"
-            ],
-            "parseJson": true,
-            "continueOnError": true,
-            "timeoutMs": 120000,
-            "env": {
-              "DIRECT_REPO": "{{$data?.prRepo || $data?.repo || ''}}",
-              "DIRECT_PR_NUMBER": "{{$data?.prNumber || $data?.number || 0}}",
-              "DIRECT_PR_URL": "{{$data?.prUrl || $data?.url || ''}}",
-              "DIRECT_EVENT": "{{$data?.action || $data?.event || ''}}",
-              "MAX_PRS_PER_RUN": "{{maxPrsPerRun}}"
-            }
-          },
-          "position": {
-            "x": 500,
-            "y": 180
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "run-review-striker",
-          "type": "action.run_agent",
-          "label": "Run Review Quality Agent",
-          "config": {
-            "prompt": "You are a PR review quality agent. Analyse the PR review signals and produce actionable quality findings.\n\nInput data: commentFindings and qualityChecks from fetch-review-signals output.\nPR context: prDigest with the PR body, files, issue comments, reviews, review comments, and checks.\n\nFor each finding: explain what is wrong, why it matters, and how to fix it. Post findings as a single review comment on the PR.",
-            "sdk": "auto",
-            "timeoutMs": "{{timeoutMs}}",
-            "failOnError": false,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 500,
-            "y": 360
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-done",
-          "type": "notify.log",
-          "label": "Review Strike Complete",
-          "config": {
-            "message": "PR review quality striker finished for PR #{{$data?.prNumber || 0}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 500,
-            "y": 500
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->fetch-review-signals",
-          "source": "trigger",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-review-comment->fetch-review-signals",
-          "source": "trigger-review-comment",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-fallback->fetch-review-signals",
-          "source": "trigger-fallback",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fetch-review-signals->run-review-striker",
-          "source": "fetch-review-signals",
-          "target": "run-review-striker",
-          "sourcePort": "default"
-        },
-        {
-          "id": "run-review-striker->notify-done",
-          "source": "run-review-striker",
-          "target": "notify-done",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-09T12:00:00.000Z",
-        "updatedAt": "2026-03-09T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-pr-review-quality-striker",
-          "templateName": "PR Review Quality Striker",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-pr-security-fix-single",
-      "name": "PR Security Fix Agent (Single PR)",
-      "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
-      "category": "github",
-      "enabled": true,
-      "nodeCount": 13,
-      "trigger": "trigger.manual",
-      "variables": {},
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start",
-          "config": {},
-          "position": {
-            "x": 100,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-task",
-          "type": "action.set_variable",
-          "label": "Setup Security PR Task ID",
-          "config": {
-            "key": "taskId",
-            "value": "'pr-secfix-' + String($data?.item?.taskId ||   (String($data?.item?.repo || '').replace(/[^a-z0-9]/gi, '-').replace(/-+/g,'-').replace(/^-|-$/g,'') +    '-' + String($data?.item?.number || $data?.item?.n || '0'))).replace(/^-|-$/g, '')",
-            "isExpression": true
-          },
-          "position": {
-            "x": 380,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-title",
-          "type": "action.set_variable",
-          "label": "Setup Security PR Task Title",
-          "config": {
-            "key": "taskTitle",
-            "value": "'Security Fix PR #' + String($data?.item?.number || $data?.item?.n || '?') + ' (' + String($data?.item?.repo || '') + ')'",
-            "isExpression": true
-          },
-          "position": {
-            "x": 660,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-claim-key",
-          "type": "action.set_variable",
-          "label": "Setup Claim Key",
-          "config": {
-            "key": "claimKey",
-            "value": "String($data?.item?.claimKey || '')",
-            "isExpression": true
-          },
-          "position": {
-            "x": 940,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "resolve-pr-params",
-          "type": "action.set_variable",
-          "label": "Resolve PR Parameters",
-          "config": {
-            "key": "prParams",
-            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0')})",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1220,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-worktree",
-          "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
-            ],
-            "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
-            "env": {
-              "PR_REPO": "{{prParams.repo}}",
-              "PR_BRANCH": "{{prParams.branch}}",
-              "PR_BASE": "{{prParams.base}}",
-              "PR_NUMBER": "{{prParams.number}}"
-            }
-          },
-          "position": {
-            "x": 1500,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-worktree-path",
-          "type": "action.set_variable",
-          "label": "Set Agent Working Directory",
-          "config": {
-            "key": "worktreePath",
-            "value": "{{setup-worktree.output.worktreePath}}"
-          },
-          "position": {
-            "x": 1780,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "setup-prompt",
-          "type": "action.set_variable",
-          "label": "Build Security Agent Prompt",
-          "config": {
-            "key": "agentPrompt",
-            "value": "(()=>{\n  const item = $data?.item || {};\n  const prDigest = item.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(item.repo || core.repo || '');\n  const branch = String(item.branch || core.branch || '');\n  const base = String(item.base || item.baseBranch || core.baseBranch || 'main');\n  const number = String(item.number || item.n || '');\n  const title = String(item.title || core.title || '');\n  const url = String(item.url || core.url || '');\n  const securityChecks = Array.isArray(item.securityCheckNames) ? item.securityCheckNames : [];\n  const failedChecks = Array.isArray(item.failedCheckNames) ? item.failedCheckNames : [];\n  const alerts = Array.isArray(item.alerts) ? item.alerts : [];\n  const fetchError = String(item.fetchError || '').trim();\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  let p = 'You are a Bosun PR **security remediation** agent. Fix ONLY the security/CodeQL findings on this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n\\n';\n  if (securityChecks.length > 0) {\n    p += '## Failed Security Checks\\n\\n';\n    securityChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (alerts.length > 0) {\n    p += '## Code Scanning Alerts\\n\\n';\n    alerts.forEach(a => {\n      p += '### Alert #' + (a.number||'?') + ' — ' + (a.ruleName||a.ruleId||'unknown rule') + '\\n';\n      p += '- **Severity**: ' + (a.securitySeverity||a.severity||'unknown') + '\\n';\n      p += '- **Tool**: ' + (a.tool||'unknown') + '\\n';\n      p += '- **File**: `' + (a.path||'') + ':' + (a.startLine||'') + '`\\n';\n      if (a.url) p += '- **URL**: ' + a.url + '\\n';\n      p += '\\n';\n    });\n  }\n  if (fetchError) {\n    p += '## Alert Fetch Error\\n\\n' + fetchError + '\\n\\n';\n    p += 'Alert fetch failed. Inspect the PR checks and source code directly to identify the security issue.\\n\\n';\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  return p;\n})()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 2060,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-active",
-          "type": "action.set_variable",
-          "label": "Mark Agent Workflow Active",
-          "config": {
-            "key": "_agentWorkflowActive",
-            "value": "true",
-            "isExpression": true
-          },
-          "position": {
-            "x": 2340,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fix-agent",
-          "type": "action.run_agent",
-          "label": "Fix Security Issue (Dedicated Agent)",
-          "config": {
-            "prompt": "{{agentPrompt}}\n\n## Workspace\n\nYour working directory is already a git clone of the target repo, checked out on the PR's HEAD branch (`{{setup-worktree.output.branch}}`). The base branch (`origin/{{setup-worktree.output.base}}`) has been fetched.\n\n## CRITICAL RULES — READ BEFORE DOING ANYTHING\n\n1. **Do NOT clone or re-clone the repo** — you are already in it.\n2. **Do NOT create new branches.** Stay on the current branch.\n3. **Do NOT push.** The workflow pushes for you automatically after you finish.\n4. **Do NOT switch branches** with `git checkout` or `git switch`.\n5. **Do NOT run `cd` to change to a different directory.** Stay in the cwd.\n6. Fix ONLY the listed security/CodeQL findings. No unrelated changes.\n7. Do NOT merge, approve, or close the PR.\n8. Do NOT touch any other PRs or repos.\n\n## Fix Instructions\n\n1. Read each alert's file and line number from the context above.\n2. Understand the security finding (SQL injection, XSS, path traversal, etc.).\n3. Apply the MINIMAL code change that resolves the finding.\n4. If alerts could not be fetched, run:\n   `gh api repos/{{setup-worktree.output.repo}}/code-scanning/alerts --jq '.[] | select(.state==\"open\")' -X GET`\n5. Run any available tests to validate the fix.\n6. `git add` and `git commit` with a clear message referencing the security finding.\n\n**After fixing:** Remove the fix label:\n```\ngh pr edit {{setup-worktree.output.number}} --repo {{setup-worktree.output.repo}} --remove-label bosun-needs-fix\n```\n",
-            "sdk": "auto",
-            "timeoutMs": 7200000,
-            "maxRetries": 1,
-            "retryDelayMs": 60000,
-            "sessionRetries": 2,
-            "maxContinues": 3,
-            "continueOnSession": true,
-            "continueOnError": true,
-            "failOnError": false
-          },
-          "position": {
-            "x": 2620,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "push-fixes",
-          "type": "action.run_command",
-          "label": "Push Fixes to PR Branch",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const wt=String(process.env.WORKTREE_PATH||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); if(!wt||!branch){console.log(JSON.stringify({pushed:false,reason:'missing_worktree_or_branch'}));process.exit(0);} const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(cur!==branch){console.log(JSON.stringify({pushed:false,reason:'wrong_branch',expected:branch,actual:cur}));process.exit(1);} const status=execFileSync('git',['status','--porcelain'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(status){   execFileSync('git',['add','-A'],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['commit','-m','bosun: commit security fix changes for PR #'+num],{cwd:wt,encoding:'utf8',timeout:30000});}catch{} } let hasDiff=false; try{const d=execFileSync('git',['rev-list','--count','origin/'+branch+'..HEAD'],{cwd:wt,encoding:'utf8',timeout:30000}).trim();hasDiff=Number(d)>0;} catch{hasDiff=true;} if(!hasDiff){console.log(JSON.stringify({pushed:false,reason:'no_new_commits'}));process.exit(0);} execFileSync('git',['push','--force-with-lease','origin','HEAD:'+branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:'inherit'}); console.log(JSON.stringify({pushed:true,branch:cur}));"
-            ],
-            "parseJson": true,
-            "continueOnError": true,
-            "failOnError": false,
-            "timeoutMs": 300000,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}",
-              "PR_BRANCH": "{{setup-worktree.output.branch}}",
-              "PR_NUMBER": "{{setup-worktree.output.number}}"
-            }
-          },
-          "position": {
-            "x": 2900,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "cleanup-worktree",
-          "type": "action.run_command",
-          "label": "Cleanup Temp Worktree",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const wt=String(process.env.WORKTREE_PATH||'').trim(); if(!wt){console.log(JSON.stringify({cleaned:false,reason:'no_path'}));process.exit(0);} try{fs.rmSync(wt,{recursive:true,force:true});console.log(JSON.stringify({cleaned:true,path:wt}));} catch(e){console.log(JSON.stringify({cleaned:false,error:String(e?.message||e)}));}"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "WORKTREE_PATH": "{{setup-worktree.output.worktreePath}}"
-            }
-          },
-          "position": {
-            "x": 3180,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "release-claim",
-          "type": "action.run_command",
-          "label": "Release Security PR Claim",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const claimKey=String(process.env.PR_CLAIM_KEY||'').trim(); if(!claimKey){console.log(JSON.stringify({released:false,reason:'no_claim_key'}));process.exit(0);} const CLAIM_FILE=path.join(process.cwd(),'.cache','bosun','pr-security-fix-claims.json'); try{   if(!fs.existsSync(CLAIM_FILE)){console.log(JSON.stringify({released:false,reason:'no_claim_file'}));process.exit(0);}   const data=JSON.parse(fs.readFileSync(CLAIM_FILE,'utf8'));   if(data.claims&&data.claims[claimKey]){     delete data.claims[claimKey];     data.updatedAt=new Date().toISOString();     fs.writeFileSync(CLAIM_FILE,JSON.stringify(data,null,2),'utf8');     console.log(JSON.stringify({released:true,claimKey}));   }else{     console.log(JSON.stringify({released:false,reason:'not_found',claimKey}));   } }catch(e){   console.log(JSON.stringify({released:false,reason:'error',error:String(e?.message||e),claimKey})); }"
-            ],
-            "continueOnError": true,
-            "failOnError": false,
-            "env": {
-              "PR_CLAIM_KEY": "{{claimKey}}"
-            }
-          },
-          "position": {
-            "x": 3460,
-            "y": 100
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->setup-task",
-          "source": "trigger",
-          "target": "setup-task",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-task->setup-title",
-          "source": "setup-task",
-          "target": "setup-title",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-title->setup-claim-key",
-          "source": "setup-title",
-          "target": "setup-claim-key",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-claim-key->resolve-pr-params",
-          "source": "setup-claim-key",
-          "target": "resolve-pr-params",
-          "sourcePort": "default"
-        },
-        {
-          "id": "resolve-pr-params->setup-worktree",
-          "source": "resolve-pr-params",
-          "target": "setup-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-worktree->set-worktree-path",
-          "source": "setup-worktree",
-          "target": "set-worktree-path",
-          "sourcePort": "default"
-        },
-        {
-          "id": "set-worktree-path->setup-prompt",
-          "source": "set-worktree-path",
-          "target": "setup-prompt",
-          "sourcePort": "default"
-        },
-        {
-          "id": "setup-prompt->mark-active",
-          "source": "setup-prompt",
-          "target": "mark-active",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-active->fix-agent",
-          "source": "mark-active",
-          "target": "fix-agent",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fix-agent->push-fixes",
-          "source": "fix-agent",
-          "target": "push-fixes",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-fixes->cleanup-worktree",
-          "source": "push-fixes",
-          "target": "cleanup-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "cleanup-worktree->release-claim",
-          "source": "cleanup-worktree",
-          "target": "release-claim",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-10T12:00:00.000Z",
-        "updatedAt": "2026-03-10T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-pr-security-fix-single",
-          "templateName": "PR Security Fix Agent (Single PR)",
-          "templateVersion": "5.0.0",
-          "installedTemplateVersion": "5.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -28459,7 +22742,7 @@
           "type": "condition.expression",
           "label": "Detect Breaking Changes",
           "config": {
-            "expression": "/* <!-- bosun-created --> */ (() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
+            "expression": "(() => {  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';  let stats={};  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}  const title=String(stats?.title||'').toLowerCase();  const body=String(stats?.body||'').toLowerCase();  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];  const text=title+'\\n'+body;  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);  return explicit || (apiTouch && contractWords);})()"
           },
           "position": {
             "x": 400,
@@ -28595,8 +22878,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-11T12:00:00.000Z",
-        "updatedAt": "2026-03-11T12:00:00.000Z",
+        "createdAt": "2026-03-06T12:00:00.000Z",
+        "updatedAt": "2026-03-06T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-triage",
           "templateName": "PR Triage & Labels",
@@ -28771,8 +23054,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-12T12:00:00.000Z",
-        "updatedAt": "2026-03-12T12:00:00.000Z",
+        "createdAt": "2026-03-07T12:00:00.000Z",
+        "updatedAt": "2026-03-07T12:00:00.000Z",
         "templateState": {
           "templateId": "template-release-drafter",
           "templateName": "Release Drafter",
@@ -28929,8 +23212,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-13T12:00:00.000Z",
-        "updatedAt": "2026-03-13T12:00:00.000Z",
+        "createdAt": "2026-03-08T12:00:00.000Z",
+        "updatedAt": "2026-03-08T12:00:00.000Z",
         "templateState": {
           "templateId": "template-review-agent",
           "templateName": "Review Agent",
@@ -28953,7 +23236,9 @@
         "timeoutMs": 600000,
         "cooldownMs": 1800000,
         "maxAttempts": 4,
-        "baseBranch": "main"
+        "baseBranch": "main",
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1
       },
       "nodes": [
         {
@@ -29381,188 +23666,11 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-14T12:00:00.000Z",
-        "updatedAt": "2026-03-14T12:00:00.000Z",
+        "createdAt": "2026-03-09T12:00:00.000Z",
+        "updatedAt": "2026-03-09T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sdk-conflict-resolver",
           "templateName": "SDK Conflict Resolver",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-sonarqube-pr-striker",
-      "name": "SonarQube PR Striker",
-      "description": "Monitors open PRs for SonarQube quality-gate failures using GitHub-native check results. Does NOT call the SonarQube API. Collects PR digest and sonarChecks, then runs a focused repair agent.",
-      "category": "github",
-      "enabled": true,
-      "nodeCount": 6,
-      "trigger": "trigger.schedule",
-      "variables": {
-        "intervalMs": 1800000,
-        "maxPrsPerRun": 3,
-        "timeoutMs": 3600000
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.schedule",
-          "label": "Every 30 min",
-          "config": {
-            "intervalMs": "{{intervalMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fetch-sonar-signals",
-          "type": "action.run_command",
-          "label": "Fetch Sonar PR Signals",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const {execFileSync}=require('child_process'); const SONAR_CHECK_RE=/sonar/i; function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}} function collectPrDigest(repo,n){   const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,url,labels,state,author']);   const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);   const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);   return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]}; } function collectActionableReviewSignals(repo,n){   const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);   return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]}; } const repo=String(process.env.BOSUN_REPO||'').trim(); if(!repo){process.stdout.write(JSON.stringify({prs:[],count:0}));process.exit(0);} const prs=ghJson(['pr','list','--repo',repo,'--state','open','--json','number,headRefName,url','--limit','20']); const results=[]; for(const pr of (Array.isArray(prs)?prs:[])){   const digest=collectPrDigest(repo,pr.number);   const signals=collectActionableReviewSignals(repo,pr.number);   const sonarChecks=Array.isArray(digest.checks)?digest.checks.filter(c=>SONAR_CHECK_RE.test(c.name||'')):[];   const hasSonarFailure=sonarChecks.some(c=>['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(String(c.state||'').toUpperCase()));   if(!hasSonarFailure){     if(signals.sonarChecks&&signals.sonarChecks.length===0)continue;     continue;   }   const digestSummary={total:digest.checks.length,sonarFailing:sonarChecks.filter(c=>['FAILURE','ERROR'].includes(String(c.state||'').toUpperCase())).length};   results.push({repo,number:pr.number,url:pr.url,branch:pr.headRefName,sonarChecks,hasSonarFailure,digest,digestSummary,reviews:signals.reviews}); } process.stdout.write(JSON.stringify({prs:results,count:results.length}));"
-            ],
-            "parseJson": true,
-            "continueOnError": true,
-            "timeoutMs": 180000,
-            "env": {
-              "BOSUN_REPO": "{{$data?.repo || ''}}",
-              "MAX_PRS_PER_RUN": "{{maxPrsPerRun}}"
-            }
-          },
-          "position": {
-            "x": 400,
-            "y": 180
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-sonar-failures",
-          "type": "condition.expression",
-          "label": "Any Sonar Failures?",
-          "config": {
-            "expression": "Number($ctx.getNodeOutput('fetch-sonar-signals')?.prs?.length || 0) > 0"
-          },
-          "position": {
-            "x": 400,
-            "y": 320
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "run-sonar-striker",
-          "type": "action.run_agent",
-          "label": "Fix SonarQube Failures",
-          "config": {
-            "prompt": "You are a PR repair agent for Sonar quality-gate failures. Use GitHub-native Sonar checks as the source of truth. Do NOT call any external quality API directly.\n\nInput: sonarChecks plus prDigest for each failing PR.\nFor each PR with sonar failures: check out the branch, fix the issues, run tests, push fixes.",
-            "sdk": "auto",
-            "timeoutMs": "{{timeoutMs}}",
-            "failOnError": false,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 400,
-            "y": 450
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "skip-no-failures",
-          "type": "notify.log",
-          "label": "No Sonar Failures",
-          "config": {
-            "message": "SonarQube PR striker: no open PRs with Sonar failures",
-            "level": "info"
-          },
-          "position": {
-            "x": 700,
-            "y": 320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-done",
-          "type": "notify.log",
-          "label": "Sonar Strike Complete",
-          "config": {
-            "message": "SonarQube PR striker finished",
-            "level": "info"
-          },
-          "position": {
-            "x": 400,
-            "y": 590
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->fetch-sonar-signals",
-          "source": "trigger",
-          "target": "fetch-sonar-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fetch-sonar-signals->has-sonar-failures",
-          "source": "fetch-sonar-signals",
-          "target": "has-sonar-failures",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-sonar-failures->run-sonar-striker",
-          "source": "has-sonar-failures",
-          "target": "run-sonar-striker",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-sonar-failures->skip-no-failures",
-          "source": "has-sonar-failures",
-          "target": "skip-no-failures",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-sonar-striker->notify-done",
-          "source": "run-sonar-striker",
-          "target": "notify-done",
-          "sourcePort": "default"
-        },
-        {
-          "id": "skip-no-failures->notify-done",
-          "source": "skip-no-failures",
-          "target": "notify-done",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-15T12:00:00.000Z",
-        "updatedAt": "2026-03-15T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-sonarqube-pr-striker",
-          "templateName": "SonarQube PR Striker",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
@@ -29779,8 +23887,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-16T12:00:00.000Z",
-        "updatedAt": "2026-03-16T12:00:00.000Z",
+        "createdAt": "2026-03-10T12:00:00.000Z",
+        "updatedAt": "2026-03-10T12:00:00.000Z",
         "templateState": {
           "templateId": "template-stale-pr-reaper",
           "templateName": "Stale PR Reaper",
@@ -30004,8 +24112,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-17T12:00:00.000Z",
-        "updatedAt": "2026-03-17T12:00:00.000Z",
+        "createdAt": "2026-03-11T12:00:00.000Z",
+        "updatedAt": "2026-03-11T12:00:00.000Z",
         "templateState": {
           "templateId": "template-agent-session-monitor",
           "templateName": "Agent Session Monitor",
@@ -30178,8 +24286,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-18T12:00:00.000Z",
-        "updatedAt": "2026-03-18T12:00:00.000Z",
+        "createdAt": "2026-03-12T12:00:00.000Z",
+        "updatedAt": "2026-03-12T12:00:00.000Z",
         "templateState": {
           "templateId": "template-custom-agent",
           "templateName": "Custom Agent Profile",
@@ -30598,8 +24706,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-19T12:00:00.000Z",
-        "updatedAt": "2026-03-19T12:00:00.000Z",
+        "createdAt": "2026-03-13T12:00:00.000Z",
+        "updatedAt": "2026-03-13T12:00:00.000Z",
         "templateState": {
           "templateId": "template-frontend-agent",
           "templateName": "Frontend Agent",
@@ -30974,8 +25082,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-20T12:00:00.000Z",
-        "updatedAt": "2026-03-20T12:00:00.000Z",
+        "createdAt": "2026-03-14T12:00:00.000Z",
+        "updatedAt": "2026-03-14T12:00:00.000Z",
         "templateState": {
           "templateId": "template-meeting-subworkflow-chain",
           "templateName": "Meeting Orchestrator + Subworkflow Chain",
@@ -30992,7 +25100,7 @@
       "description": "General-purpose task completion agent with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR. Works with any language/framework — commands are auto-detected from your project or fully customizable.",
       "category": "agents",
       "enabled": true,
-      "nodeCount": 46,
+      "nodeCount": 29,
       "trigger": "trigger.task_assigned",
       "variables": {
         "testCommand": "npm test",
@@ -31007,7 +25115,6 @@
         ],
         "agentSdk": "auto",
         "timeoutMs": 3600000,
-        "testTimeoutMs": 1800000,
         "autoFixTimeoutMs": 1200000
       },
       "nodes": [
@@ -31047,9 +25154,9 @@
           "type": "action.run_agent",
           "label": "Write Tests First",
           "config": {
-            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCreate a descriptive test commit message that names the behavior or surface covered.\nExample: \"test: cover portal login validation\"",
+            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCommit with message \"test: add tests for [feature]\"",
             "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{testTimeoutMs}}"
+            "timeoutMs": "{{timeoutMs}}"
           },
           "position": {
             "x": 400,
@@ -31064,7 +25171,7 @@
           "type": "action.run_agent",
           "label": "Implement Feature",
           "config": {
-            "prompt": "# Implement Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testCommand}}` after implementation.\nCreate a descriptive feat/fix commit message that names the shipped capability.\nExample: \"feat: add portal login rate limiting\"",
+            "prompt": "# Implement Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testCommand}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{timeoutMs}}"
           },
@@ -31147,9 +25254,6 @@
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "rebaseBeforePush": true,
-            "mergeBaseBeforePush": true,
-            "autoResolveMergeConflicts": true,
-            "conflictResolverSdk": "{{agentSdk}}",
             "emptyDiffGuard": true,
             "protectedBranches": "{{protectedBranches}}"
           },
@@ -31162,28 +25266,12 @@
           ]
         },
         {
-          "id": "push-ok",
-          "type": "condition.expression",
-          "label": "Push OK?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch')?.pushed === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 1170
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Handoff PR Lifecycle",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology: tests written before implementation.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing (build, test, lint).\n\n---\nTask-ID: {{taskId}}",
+            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -31291,7 +25379,7 @@
           "label": "Summarize Validation Output",
           "config": {
             "key": "validationSummary",
-            "value": "(() => { function fmtGate(label, out) {   if (!out || !Object.keys(out).length) return label + ': (not run)';   const diag = out.outputDiagnostics || {};   const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];   if (diag.summary) lines.push('  Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('  Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('  Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('  Hint: ' + hint);   if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 5000));   return lines.join('\\n'); } const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return [   '## Validation Results',   '',   fmtGate('Build', build),   '',   fmtGate('Test', test),   '',   fmtGate('Lint', lint), ].join('\\n'); })()",
+            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -31307,7 +25395,7 @@
           "type": "action.run_agent",
           "label": "Auto-Fix Validation Failures",
           "config": {
-            "prompt": "# Fix Validation Failures — Pass 1\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\n{{validationSummary}}\n\nSTRATEGY:\n1. Look at which gates failed (Build / Test / Lint) and focus on those.\n2. Check the **Failed Targets** — these are the exact tests/files/packages that broke.\n3. Fix compilation errors first, then test failures, then lint issues.\n4. Use the **Suggested Rerun Command** (if shown) to iterate on just the failing targets.\n5. Once targeted failures pass, run all three gates to confirm everything is green.\n\nRULES:\n- Do NOT weaken, remove, or bypass tests.\n- Keep the original task scope.\n- Create a descriptive fix commit message that names the concrete failure resolved.",
+            "prompt": "# Fix Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address validation failures\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{autoFixTimeoutMs}}"
           },
@@ -31390,9 +25478,6 @@
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "rebaseBeforePush": true,
-            "mergeBaseBeforePush": true,
-            "autoResolveMergeConflicts": true,
-            "conflictResolverSdk": "{{agentSdk}}",
             "emptyDiffGuard": true,
             "protectedBranches": "{{protectedBranches}}"
           },
@@ -31405,28 +25490,12 @@
           ]
         },
         {
-          "id": "push-ok-retry",
-          "type": "condition.expression",
-          "label": "Push OK? (Retry)",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch-retry')?.pushed === true"
-          },
-          "position": {
-            "x": 450,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Handoff PR Lifecycle (After Retry)",
           "config": {
             "title": "feat: {{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with one automated remediation pass.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after auto-fix remediation.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "failOnError": true,
@@ -31514,261 +25583,15 @@
           ]
         },
         {
-          "id": "set-retry2-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Retry-1 Output",
+          "id": "notify-fail",
+          "type": "notify.telegram",
+          "label": "Checks Failed",
           "config": {
-            "key": "retry2Summary",
-            "value": "(() => { function fmtGate(label, out) {   if (!out || !Object.keys(out).length) return label + ': (not run)';   const diag = out.outputDiagnostics || {};   const lines = [label + ': ' + (out.passed === true ? 'PASSED' : 'FAILED')];   if (diag.summary) lines.push('  Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('  Failed (' + targets.length + '):');     targets.slice(0, 15).forEach(t => lines.push('    - ' + t));     if (targets.length > 15) lines.push('    ... +' + (targets.length - 15) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('  Rerun: `' + rerun + '`');   if (diag.deltaSummary) lines.push('  Delta: ' + diag.deltaSummary);   if (out.output) lines.push('  Output:\\n' + String(out.output).slice(0, 3500));   return lines.join('\\n'); } const b1 = $ctx.getNodeOutput('main-build') || {}; const t1 = $ctx.getNodeOutput('main-test') || {}; const l1 = $ctx.getNodeOutput('main-lint') || {}; const b2 = $ctx.getNodeOutput('retry-build') || {}; const t2 = $ctx.getNodeOutput('retry-test') || {}; const l2 = $ctx.getNodeOutput('retry-lint') || {}; return [   '## Validation History (both passes failed)',   '',   '### Pass 1 — Original',   fmtGate('Build', b1), fmtGate('Test', t1), fmtGate('Lint', l1),   '',   '### Pass 2 — After First Auto-Fix',   fmtGate('Build', b2), fmtGate('Test', t2), fmtGate('Lint', l2), ].join('\\n'); })()",
-            "isExpression": true
+            "message": ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
           },
           "position": {
             "x": 820,
             "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix-2",
-          "type": "action.run_agent",
-          "label": "Auto-Fix (Escalated, Pass 2)",
-          "config": {
-            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\nPlan:\n{{plan}}\n\n{{retry2Summary}}\n\nANALYSIS STEPS:\n1. Compare **Failed Targets** between Pass 1 and Pass 2.\n   - Same targets still failing → previous fix was wrong, try a different approach.\n   - New targets appearing → previous fix broke something else, fix both.\n   - Some resolved → partially right, focus on remaining.\n2. Check the **Delta** field to see what changed between runs.\n3. Use the **Rerun** command to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior, fix the test AND the code.\n- If build/lint/test configs are misconfigured, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun build + tests + lint locally and confirm ALL pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{autoFixTimeoutMs}}"
-          },
-          "position": {
-            "x": 820,
-            "y": 1900
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-build",
-          "type": "validation.build",
-          "label": "Build Check",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 400,
-            "y": 0
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-test",
-          "type": "validation.tests",
-          "label": "Test Run",
-          "config": {
-            "command": "{{testCommand}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 130
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-lint",
-          "type": "validation.lint",
-          "label": "Lint Check",
-          "config": {
-            "command": "{{lintCommand}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 260
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-passed",
-          "type": "condition.expression",
-          "label": "Retry-2 Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('retry2-build')?.passed === true && $ctx.getNodeOutput('retry2-test')?.passed === true && $ctx.getNodeOutput('retry2-lint')?.passed === true"
-          },
-          "position": {
-            "x": 820,
-            "y": 2400
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "push-branch-retry2",
-          "type": "action.push_branch",
-          "label": "Push Branch (Retry 2)",
-          "config": {
-            "worktreePath": "{{worktreePath}}",
-            "branch": "{{branch}}",
-            "baseBranch": "{{baseBranch}}",
-            "rebaseBeforePush": true,
-            "mergeBaseBeforePush": true,
-            "autoResolveMergeConflicts": true,
-            "conflictResolverSdk": "{{agentSdk}}",
-            "emptyDiffGuard": true,
-            "protectedBranches": "{{protectedBranches}}"
-          },
-          "position": {
-            "x": 650,
-            "y": 2470
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "push-ok-retry2",
-          "type": "condition.expression",
-          "label": "Push OK? (Retry 2)",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch-retry2')?.pushed === true"
-          },
-          "position": {
-            "x": 650,
-            "y": 2530
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr-retry2",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle (After Retry 2)",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\n## Approach\n\nTest-first methodology with two automated remediation passes.\n\n### Plan\n\n{{plan}}\n\n## Validation\n\nAll checks passing after 2nd remediation round.\n\n---\nTask-ID: {{taskId}}",
-            "branch": "{{branch}}",
-            "baseBranch": "{{baseBranch}}",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 650,
-            "y": 2530
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-pr-ok",
-          "type": "condition.expression",
-          "label": "PR Created?",
-          "config": {
-            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
-          },
-          "position": {
-            "x": 400,
-            "y": 0
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "retry2-set-inreview",
-          "type": "action.update_task_status",
-          "label": "Set In-Review",
-          "config": {
-            "taskId": "{{taskId}}",
-            "status": "inreview",
-            "taskTitle": "{{taskTitle}}"
-          },
-          "position": {
-            "x": 300,
-            "y": 130
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-handoff-progressor",
-          "type": "action.execute_workflow",
-          "label": "Handoff PR Progressor",
-          "config": {
-            "workflowId": "template-bosun-pr-progressor",
-            "mode": "dispatch",
-            "input": {
-              "taskId": "{{taskId}}",
-              "taskTitle": "{{taskTitle}}",
-              "branch": "{{branch}}",
-              "baseBranch": "{{baseBranch}}"
-            }
-          },
-          "position": {
-            "x": 300,
-            "y": 260
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-done-retry2",
-          "type": "notify.log",
-          "label": "Task Complete (After Retry 2)",
-          "config": {
-            "message": "Task completion agent finished task after 2nd retry — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 560,
-            "y": 2690
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-blocked-validation",
-          "type": "action.update_task_status",
-          "label": "Block Task (Validation Exhausted)",
-          "config": {
-            "taskId": "{{taskId}}",
-            "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "Validation failed after 2 automated remediation passes"
-          },
-          "position": {
-            "x": 1020,
-            "y": 2470
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-fail",
-          "type": "notify.telegram",
-          "label": "Checks Failed (Exhausted)",
-          "config": {
-            "message": ":alert: Backend agent: validation failed for task {{taskTitle}} even after 2 remediation passes. Task blocked — manual review needed."
-          },
-          "position": {
-            "x": 1020,
-            "y": 2560
           },
           "outputs": [
             "default"
@@ -31784,21 +25607,6 @@
           "position": {
             "x": 620,
             "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed-retry2",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Failure (Retry 2)",
-          "config": {
-            "message": ":alert: Task completion agent 2nd remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed. Manual follow-up required."
-          },
-          "position": {
-            "x": 820,
-            "y": 2690
           },
           "outputs": [
             "default"
@@ -31863,24 +25671,10 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "push-branch->push-ok",
+          "id": "push-branch->create-pr",
           "source": "push-branch",
-          "target": "push-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok->create-pr",
-          "source": "push-ok",
           "target": "create-pr",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok->notify-pr-failed",
-          "source": "push-ok",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
+          "sourcePort": "default"
         },
         {
           "id": "create-pr->main-pr-ok",
@@ -31951,31 +25745,17 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "retry-passed->set-retry2-summary",
+          "id": "retry-passed->notify-fail",
           "source": "retry-passed",
-          "target": "set-retry2-summary",
+          "target": "notify-fail",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "push-branch-retry->push-ok-retry",
+          "id": "push-branch-retry->create-pr-retry",
           "source": "push-branch-retry",
-          "target": "push-ok-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok-retry->create-pr-retry",
-          "source": "push-ok-retry",
           "target": "create-pr-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok-retry->notify-pr-failed-retry",
-          "source": "push-ok-retry",
-          "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
+          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->retry-pr-ok",
@@ -32007,118 +25787,17 @@
           "target": "notify-pr-failed-retry",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-retry2-summary->auto-fix-2",
-          "source": "set-retry2-summary",
-          "target": "auto-fix-2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-2->retry2-build",
-          "source": "auto-fix-2",
-          "target": "retry2-build",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-build->retry2-test",
-          "source": "retry2-build",
-          "target": "retry2-test",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-test->retry2-lint",
-          "source": "retry2-test",
-          "target": "retry2-lint",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-lint->retry2-passed",
-          "source": "retry2-lint",
-          "target": "retry2-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-passed->push-branch-retry2",
-          "source": "retry2-passed",
-          "target": "push-branch-retry2",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry2-passed->set-blocked-validation",
-          "source": "retry2-passed",
-          "target": "set-blocked-validation",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-blocked-validation->notify-fail",
-          "source": "set-blocked-validation",
-          "target": "notify-fail",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-branch-retry2->push-ok-retry2",
-          "source": "push-branch-retry2",
-          "target": "push-ok-retry2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok-retry2->create-pr-retry2",
-          "source": "push-ok-retry2",
-          "target": "create-pr-retry2",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok-retry2->notify-pr-failed-retry2",
-          "source": "push-ok-retry2",
-          "target": "notify-pr-failed-retry2",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr-retry2->retry2-pr-ok",
-          "source": "create-pr-retry2",
-          "target": "retry2-pr-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-pr-ok->retry2-set-inreview",
-          "source": "retry2-pr-ok",
-          "target": "retry2-set-inreview",
-          "sourcePort": "yes"
-        },
-        {
-          "id": "retry2-set-inreview->retry2-handoff-progressor",
-          "source": "retry2-set-inreview",
-          "target": "retry2-handoff-progressor",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-handoff-progressor->notify-done-retry2",
-          "source": "retry2-handoff-progressor",
-          "target": "notify-done-retry2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-pr-ok->notify-pr-failed-retry2",
-          "source": "retry2-pr-ok",
-          "target": "notify-pr-failed-retry2",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
         }
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-21T12:00:00.000Z",
-        "updatedAt": "2026-03-21T12:00:00.000Z",
+        "createdAt": "2026-03-15T12:00:00.000Z",
+        "updatedAt": "2026-03-15T12:00:00.000Z",
         "templateState": {
           "templateId": "template-backend-agent",
           "templateName": "Task Completion Agent",
-          "templateVersion": "3.1.0",
-          "installedTemplateVersion": "3.1.0",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -32404,8 +26083,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-22T12:00:00.000Z",
-        "updatedAt": "2026-03-22T12:00:00.000Z",
+        "createdAt": "2026-03-16T12:00:00.000Z",
+        "updatedAt": "2026-03-16T12:00:00.000Z",
         "templateState": {
           "templateId": "template-voice-video-parallel-rollout",
           "templateName": "Voice + Video Rollout (Parallel Lanes)",
@@ -32556,8 +26235,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-23T12:00:00.000Z",
-        "updatedAt": "2026-03-23T12:00:00.000Z",
+        "createdAt": "2026-03-17T12:00:00.000Z",
+        "updatedAt": "2026-03-17T12:00:00.000Z",
         "templateState": {
           "templateId": "template-build-deploy",
           "templateName": "Build & Deploy",
@@ -32846,8 +26525,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-24T12:00:00.000Z",
-        "updatedAt": "2026-03-24T12:00:00.000Z",
+        "createdAt": "2026-03-18T12:00:00.000Z",
+        "updatedAt": "2026-03-18T12:00:00.000Z",
         "templateState": {
           "templateId": "template-canary-deploy",
           "templateName": "Canary Deploy",
@@ -33203,8 +26882,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-25T12:00:00.000Z",
-        "updatedAt": "2026-03-25T12:00:00.000Z",
+        "createdAt": "2026-03-19T12:00:00.000Z",
+        "updatedAt": "2026-03-19T12:00:00.000Z",
         "templateState": {
           "templateId": "template-release-pipeline",
           "templateName": "Release Pipeline",
@@ -33370,8 +27049,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-26T12:00:00.000Z",
-        "updatedAt": "2026-03-26T12:00:00.000Z",
+        "createdAt": "2026-03-20T12:00:00.000Z",
+        "updatedAt": "2026-03-20T12:00:00.000Z",
         "templateState": {
           "templateId": "template-nightly-report",
           "templateName": "Nightly Report",
@@ -33630,8 +27309,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-27T12:00:00.000Z",
-        "updatedAt": "2026-03-27T12:00:00.000Z",
+        "createdAt": "2026-03-21T12:00:00.000Z",
+        "updatedAt": "2026-03-21T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sprint-retrospective",
           "templateName": "Sprint Retrospective",
@@ -33916,8 +27595,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "createdAt": "2026-03-22T12:00:00.000Z",
+        "updatedAt": "2026-03-22T12:00:00.000Z",
         "templateState": {
           "templateId": "template-task-planner",
           "templateName": "Task Planner",
@@ -34106,8 +27785,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "createdAt": "2026-03-23T12:00:00.000Z",
+        "updatedAt": "2026-03-23T12:00:00.000Z",
         "templateState": {
           "templateId": "template-task-replenish",
           "templateName": "Task Replenish (Scheduled)",
@@ -34499,8 +28178,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "createdAt": "2026-03-24T12:00:00.000Z",
+        "updatedAt": "2026-03-24T12:00:00.000Z",
         "templateState": {
           "templateId": "template-weekly-fitness-summary",
           "templateName": "Weekly Fitness Summary",
@@ -34760,8 +28439,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "createdAt": "2026-03-25T12:00:00.000Z",
+        "updatedAt": "2026-03-25T12:00:00.000Z",
         "templateState": {
           "templateId": "template-anomaly-watchdog",
           "templateName": "Anomaly Watchdog",
@@ -34779,7 +28458,7 @@
       "category": "reliability",
       "enabled": true,
       "nodeCount": 33,
-      "trigger": "trigger.task_available",
+      "trigger": "trigger.manual",
       "variables": {
         "taskId": "",
         "worktreePath": "",
@@ -34801,8 +28480,8 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.task_available",
-          "label": "Task Available",
+          "type": "trigger.manual",
+          "label": "Start Continuation Loop",
           "config": {},
           "position": {
             "x": 420,
@@ -35628,8 +29307,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "createdAt": "2026-03-26T12:00:00.000Z",
+        "updatedAt": "2026-03-26T12:00:00.000Z",
         "templateState": {
           "templateId": "template-continuation-loop",
           "templateName": "Continuation Loop",
@@ -35647,7 +29326,7 @@
       "category": "reliability",
       "enabled": true,
       "nodeCount": 33,
-      "trigger": "trigger.task_available",
+      "trigger": "trigger.manual",
       "variables": {
         "taskId": "",
         "worktreePath": "",
@@ -35669,8 +29348,8 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.task_available",
-          "label": "Task Available",
+          "type": "trigger.manual",
+          "label": "Start Continuation Loop",
           "config": {},
           "position": {
             "x": 420,
@@ -36496,8 +30175,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "createdAt": "2026-03-27T12:00:00.000Z",
+        "updatedAt": "2026-03-27T12:00:00.000Z",
         "templateState": {
           "templateId": "template-continuation-loop",
           "templateName": "Continuation Loop",
@@ -36514,7 +30193,7 @@
       "description": "Automated error recovery flow when an agent crashes or fails. Analyzes logs, attempts auto-fix, and escalates if needed.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 9,
+      "nodeCount": 8,
       "trigger": "trigger.event",
       "variables": {
         "maxRetries": 3
@@ -36551,31 +30230,11 @@
           ]
         },
         {
-          "id": "load-recovery-strategies",
-          "type": "action.load_skillbook_strategies",
-          "label": "Load Recovery Strategies",
-          "config": {
-            "workflowId": "",
-            "category": "strategy",
-            "status": "promoted",
-            "query": "{{taskTitle}} {{lastError}}",
-            "limit": 4,
-            "outputVariable": "recoverySkillbookGuidance"
-          },
-          "position": {
-            "x": 600,
-            "y": 330
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "analyze-error",
           "type": "action.run_agent",
           "label": "Analyze Failure",
           "config": {
-            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}\n\nReusable prior strategies:\n{{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}",
+            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}",
             "timeoutMs": 300000
           },
           "position": {
@@ -36591,7 +30250,7 @@
           "type": "action.run_agent",
           "label": "Retry Task",
           "config": {
-            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n- reusableStrategies: {{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'No prior promoted recovery strategies found.'}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
+            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
             "timeoutMs": 3600000,
             "failOnError": true,
             "maxRetries": "{{maxRetries}}",
@@ -36679,9 +30338,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "check-retries->load-recovery-strategies",
+          "id": "check-retries->analyze-error",
           "source": "check-retries",
-          "target": "load-recovery-strategies",
+          "target": "analyze-error",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -36691,12 +30350,6 @@
           "target": "escalate",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "load-recovery-strategies->analyze-error",
-          "source": "load-recovery-strategies",
-          "target": "analyze-error",
-          "sourcePort": "default"
         },
         {
           "id": "analyze-error->retry-task",
@@ -36751,11 +30404,10 @@
       "description": "Periodic system health check: validates config, verifies SDK availability, checks git state, and reports any issues found.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 17,
+      "nodeCount": 7,
       "trigger": "trigger.schedule",
       "variables": {
-        "intervalMs": 3600000,
-        "maxBenchmarkRuns": 12
+        "intervalMs": 3600000
       },
       "nodes": [
         {
@@ -36823,30 +30475,6 @@
           ]
         },
         {
-          "id": "collect-recent-runs",
-          "type": "action.run_command",
-          "label": "Collect Recent Runs",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const maxRuns = Math.max(1, parseInt(process.env.MAX_BENCHMARK_RUNS || \"12\", 10) || 12);\n        const runsDir = path.resolve(process.cwd(), \".bosun\", \"workflow-runs\");\n        const indexPath = path.join(runsDir, \"index.json\");\n        let entries = [];\n        if (fs.existsSync(indexPath)) {\n          try {\n            const raw = JSON.parse(fs.readFileSync(indexPath, \"utf8\"));\n            entries = Array.isArray(raw) ? raw : (Array.isArray(raw?.runs) ? raw.runs : []);\n          } catch {}\n        }\n        const candidates = entries\n          .filter((entry) => entry && entry.runId && [\"completed\", \"failed\"].includes(String(entry.status || \"\").toLowerCase()))\n          .sort((left, right) => Number(right?.startedAt || 0) - Number(left?.startedAt || 0))\n          .slice(0, maxRuns)\n          .map((entry) => ({\n            runId: entry.runId,\n            workflowId: entry.workflowId || null,\n            workflowName: entry.workflowName || null,\n            status: entry.status || null,\n            startedAt: entry.startedAt || null,\n            score: entry.score ?? null,\n            issueAdvisorRecommendation: entry.issueAdvisorRecommendation || null,\n          }));\n        const selected = candidates[0] || null;\n        console.log(JSON.stringify({\n          count: candidates.length,\n          candidates,\n          selectedRunId: selected?.runId || null,\n          selectedWorkflowId: selected?.workflowId || null,\n        }));\n      "
-            ],
-            "env": {
-              "MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
-            },
-            "parseJson": true,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 900,
-            "y": 200
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "has-issues",
           "type": "condition.expression",
           "label": "Any Issues?",
@@ -36856,155 +30484,6 @@
           "position": {
             "x": 400,
             "y": 380
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-recent-runs",
-          "type": "condition.expression",
-          "label": "Recent Runs Available?",
-          "config": {
-            "expression": "Boolean($ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId)"
-          },
-          "position": {
-            "x": 900,
-            "y": 380
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "evaluate-latest-run",
-          "type": "action.evaluate_run",
-          "label": "Evaluate Latest Run",
-          "config": {
-            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId || ''}}",
-            "workflowId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedWorkflowId || ''}}",
-            "includeTrend": true,
-            "outputVariable": "healthCheckRunEvaluation"
-          },
-          "position": {
-            "x": 900,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "apply-ratchet",
-          "type": "action.apply_self_improvement_ratchet",
-          "label": "Apply Ratchet Decision",
-          "config": {
-            "evaluationNodeId": "evaluate-latest-run",
-            "scopeLevel": "workspace",
-            "scope": "workflow-reliability",
-            "category": "strategy",
-            "outputVariable": "healthCheckRatchet"
-          },
-          "position": {
-            "x": 900,
-            "y": 840
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "ratchet-applied",
-          "type": "condition.expression",
-          "label": "Ratchet Applied?",
-          "config": {
-            "expression": "['capture_baseline','apply_candidate'].includes($ctx.getNodeOutput('apply-ratchet')?.decision || '')"
-          },
-          "position": {
-            "x": 720,
-            "y": 980
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "ratchet-reverted",
-          "type": "condition.expression",
-          "label": "Ratchet Reverted?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('apply-ratchet')?.decision === 'revert_to_baseline'"
-          },
-          "position": {
-            "x": 1080,
-            "y": 980
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "log-ratchet-apply",
-          "type": "notify.log",
-          "label": "Log Ratchet Apply",
-          "config": {
-            "message": "Self-improvement ratchet {{$ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}} for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}; active baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 720,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-ratchet-revert",
-          "type": "notify.log",
-          "label": "Log Ratchet Revert",
-          "config": {
-            "message": "Self-improvement ratchet reverted workflow to baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}} after run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-ratchet-keep",
-          "type": "notify.log",
-          "label": "Log Ratchet Keep",
-          "config": {
-            "message": "Self-improvement ratchet kept baseline for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}: {{$ctx.getNodeOutput('apply-ratchet')?.summary || 'no baseline change'}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1320,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-runs",
-          "type": "notify.log",
-          "label": "Log No Benchmark Data",
-          "config": {
-            "message": "Health check self-improvement skipped: no recent completed or failed workflow runs available.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 1120,
-            "y": 540
           },
           "outputs": [
             "default"
@@ -37062,12 +30541,6 @@
           "sourcePort": "default"
         },
         {
-          "id": "trigger->collect-recent-runs",
-          "source": "trigger",
-          "target": "collect-recent-runs",
-          "sourcePort": "default"
-        },
-        {
           "id": "check-config->has-issues",
           "source": "check-config",
           "target": "has-issues",
@@ -37084,66 +30557,6 @@
           "source": "check-agents",
           "target": "has-issues",
           "sourcePort": "default"
-        },
-        {
-          "id": "collect-recent-runs->has-recent-runs",
-          "source": "collect-recent-runs",
-          "target": "has-recent-runs",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-recent-runs->evaluate-latest-run",
-          "source": "has-recent-runs",
-          "target": "evaluate-latest-run",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-recent-runs->log-no-runs",
-          "source": "has-recent-runs",
-          "target": "log-no-runs",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "evaluate-latest-run->apply-ratchet",
-          "source": "evaluate-latest-run",
-          "target": "apply-ratchet",
-          "sourcePort": "default"
-        },
-        {
-          "id": "apply-ratchet->ratchet-applied",
-          "source": "apply-ratchet",
-          "target": "ratchet-applied",
-          "sourcePort": "default"
-        },
-        {
-          "id": "ratchet-applied->log-ratchet-apply",
-          "source": "ratchet-applied",
-          "target": "log-ratchet-apply",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "ratchet-applied->ratchet-reverted",
-          "source": "ratchet-applied",
-          "target": "ratchet-reverted",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "ratchet-reverted->log-ratchet-revert",
-          "source": "ratchet-reverted",
-          "target": "log-ratchet-revert",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "ratchet-reverted->log-ratchet-keep",
-          "source": "ratchet-reverted",
-          "target": "log-ratchet-keep",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
         },
         {
           "id": "has-issues->alert",
@@ -37167,8 +30580,8 @@
         "templateState": {
           "templateId": "template-health-check",
           "templateName": "Health Check",
-          "templateVersion": "1.1.0",
-          "installedTemplateVersion": "1.1.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -38178,7 +31591,7 @@
           "label": "Handoff Lifecycle If Missing",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -38797,7 +32210,7 @@
       "description": "Recovery workflow for tasks that fail execution or finalization. Refreshes worktree state, runs a repair agent, re-validates quality gates, and escalates only after automated repair fails.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 16,
+      "nodeCount": 15,
       "trigger": "trigger.event",
       "variables": {
         "repairTimeoutMs": 5400000,
@@ -38925,7 +32338,7 @@
           "label": "Handoff/Refresh Lifecycle",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
+            "body": "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -38976,26 +32389,6 @@
           "position": {
             "x": 250,
             "y": 1020
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "clear-repair-blocked-success",
-          "type": "action.bosun_function",
-          "label": "Clear Repair Block (Success)",
-          "config": {
-            "function": "tasks.clearBlocker",
-            "args": {
-              "taskId": "{{taskId}}",
-              "reason": "repair_succeeded"
-            },
-            "continueOnError": true
-          },
-          "position": {
-            "x": 250,
-            "y": 1090
           },
           "outputs": [
             "default"
@@ -39179,14 +32572,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "mark-inreview->clear-repair-blocked-success",
+          "id": "mark-inreview->handoff-pr-progressor",
           "source": "mark-inreview",
-          "target": "clear-repair-blocked-success",
-          "sourcePort": "default"
-        },
-        {
-          "id": "clear-repair-blocked-success->handoff-pr-progressor",
-          "source": "clear-repair-blocked-success",
           "target": "handoff-pr-progressor",
           "sourcePort": "default"
         },
@@ -39901,765 +33288,6 @@
       }
     },
     {
-      "id": "wf-research-evidence-agent",
-      "name": "Research Evidence Agent",
-      "description": "Evidence-backed research workflow that keeps Bosun as orchestrator, uses a local PDF-capable scientific evidence sidecar for grounded context, and only promotes reviewed findings into shared knowledge after verification.",
-      "category": "research",
-      "enabled": true,
-      "nodeCount": 28,
-      "trigger": "trigger.manual",
-      "variables": {
-        "repoRoot": ".",
-        "problem": "",
-        "domain": "computer-science",
-        "maxIterations": 10,
-        "searchLiterature": true,
-        "evidenceMode": "answer",
-        "maxEvidenceSources": 6,
-        "corpusPaths": [],
-        "promoteReviewedFindings": true,
-        "sidecarCommand": "",
-        "_previousFeedback": "",
-        "currentDraft": "",
-        "iterationCount": 0
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Evidence Research",
-          "config": {},
-          "position": {
-            "x": 420,
-            "y": 60
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "should-search",
-          "type": "condition.expression",
-          "label": "Search Literature?",
-          "config": {
-            "expression": "Boolean($data?.searchLiterature !== false)"
-          },
-          "position": {
-            "x": 420,
-            "y": 180
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "literature-search",
-          "type": "action.web_search",
-          "label": "Search Literature",
-          "config": {
-            "query": "{{problem}} {{domain}} peer reviewed evidence",
-            "maxResults": 6,
-            "engine": "fetch"
-          },
-          "position": {
-            "x": 200,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "run-evidence-sidecar",
-          "type": "action.run_command",
-          "label": "Build Evidence Bundle",
-          "config": {
-            "command": "node",
-            "args": [
-              "workflow/research-evidence-sidecar.mjs",
-              "run"
-            ],
-            "cwd": "{{repoRoot}}",
-            "parseJson": true,
-            "failOnError": false,
-            "timeoutMs": 300000,
-            "env": {
-              "BOSUN_RESEARCH_SIDECAR_INPUT": "{{({ problem: $data.problem, domain: $data.domain, evidenceMode: $data.evidenceMode, maxEvidenceSources: $data.maxEvidenceSources, corpusPaths: $data.corpusPaths, searchLiterature: $data.searchLiterature, literatureResults: $ctx.getNodeOutput('literature-search')?.results || [], repoRoot: $data.repoRoot, triggerSource: $data.triggerSource || 'manual', sidecarCommand: $data.sidecarCommand || '' })}}"
-            }
-          },
-          "position": {
-            "x": 420,
-            "y": 500
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "evidence-ready",
-          "type": "condition.expression",
-          "label": "Evidence Ready?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('run-evidence-sidecar')?.success === true && Boolean($ctx.getNodeOutput('run-evidence-sidecar')?.output?.artifactPath)"
-          },
-          "position": {
-            "x": 420,
-            "y": 660
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "evidence-failed-log",
-          "type": "notify.log",
-          "label": "Evidence Sidecar Failed",
-          "config": {
-            "message": "Research evidence sidecar failed for {{problem}}.\nOutput: {{$ctx.getNodeOutput('run-evidence-sidecar')?.output || ''}}",
-            "level": "error"
-          },
-          "position": {
-            "x": 760,
-            "y": 820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "evidence-failed-end",
-          "type": "flow.end",
-          "label": "End Research (Evidence Failure)",
-          "config": {
-            "status": "failed",
-            "message": "Evidence sidecar failed to prepare a research bundle.",
-            "output": {
-              "problem": "{{problem}}",
-              "domain": "{{domain}}"
-            }
-          },
-          "position": {
-            "x": 760,
-            "y": 980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "generate-solution",
-          "type": "action.run_agent",
-          "label": "Generate Solution",
-          "config": {
-            "prompt": "# Evidence-Backed Research Generation\n\n## Research Problem\n{{problem}}\n\n## Domain\n{{domain}}\n\n## Evidence Mode\n{{evidenceMode}}\n\n## Evidence Summary\n{{run-evidence-sidecar.output.bundle.summary}}\n\n## Review Hints\n{{run-evidence-sidecar.output.bundle.reviewHints}}\n\n## Uncertainty Summary\n{{run-evidence-sidecar.output.bundle.uncertaintySummary}}\n\n## Evidence Bundle\n{{run-evidence-sidecar.output.evidenceBrief}}\n\n## Artifact\n{{run-evidence-sidecar.output.artifactPath}}\n\n## Previous Critical Feedback\n{{_previousFeedback}}\n\n## Instructions\nYou are Bosun's research generation phase.\nProduce a rigorous candidate answer grounded in the supplied evidence.\nUse citation keys such as [E1], [E2] inline whenever you rely on an evidence item.\nDo not invent claims not supported by the evidence bundle.\nIf the evidence is insufficient, say exactly what remains uncertain.\n\nReturn sections in this order:\n1. Claim\n2. Evidence Synthesis\n3. Limitations\n4. Final Answer",
-            "sdk": "auto",
-            "timeoutMs": 1800000,
-            "failOnError": false
-          },
-          "position": {
-            "x": 160,
-            "y": 820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "store-generated-draft",
-          "type": "action.set_variable",
-          "label": "Store Draft",
-          "config": {
-            "key": "currentDraft",
-            "value": "{{generate-solution.output}}"
-          },
-          "position": {
-            "x": 160,
-            "y": 980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-iteration",
-          "type": "action.set_variable",
-          "label": "Increment Iteration",
-          "config": {
-            "key": "iterationCount",
-            "value": "Number($data?.iterationCount || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 160,
-            "y": 1140
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "iteration-budget",
-          "type": "condition.expression",
-          "label": "Iteration Budget Available?",
-          "config": {
-            "expression": "Number($data?.iterationCount || 0) <= Number($data?.maxIterations || 1)"
-          },
-          "position": {
-            "x": 160,
-            "y": 1300
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "iteration-limit-log",
-          "type": "notify.log",
-          "label": "Iteration Limit Reached",
-          "config": {
-            "message": "Evidence-backed research stopped after {{iterationCount}} verification cycle(s) for {{problem}} without a correct verdict.",
-            "level": "warn"
-          },
-          "position": {
-            "x": 20,
-            "y": 1460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "iteration-limit-end",
-          "type": "flow.end",
-          "label": "End Research (Iteration Limit)",
-          "config": {
-            "status": "failed",
-            "message": "Research did not converge before maxIterations was reached.",
-            "output": {
-              "problem": "{{problem}}",
-              "domain": "{{domain}}",
-              "iterationCount": "{{iterationCount}}",
-              "artifactPath": "{{run-evidence-sidecar.output.artifactPath}}"
-            }
-          },
-          "position": {
-            "x": 20,
-            "y": 1620
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "verify-solution",
-          "type": "action.run_agent",
-          "label": "Verify Solution",
-          "config": {
-            "prompt": "# Independent Evidence Verification\n\n## Problem\n{{problem}}\n\n## Candidate Solution\n{{currentDraft}}\n\n## Evidence Summary\n{{run-evidence-sidecar.output.bundle.summary}}\n\n## Evidence Bundle\n{{run-evidence-sidecar.output.evidenceBrief}}\n\n## Review Hints\n{{run-evidence-sidecar.output.bundle.reviewHints}}\n\n## Instructions\nYou are the independent verifier.\nAssess whether the candidate answer is fully supported by the evidence bundle.\nCheck citation usage, factual consistency, unsupported leaps, and contradictions.\n\nReturn exactly one verdict:\n- VERDICT: CORRECT\n- VERDICT: MINOR\n- VERDICT: CRITICAL\n\nThen explain:\n1. Whether the cited evidence is sufficient\n2. Specific flaws or missing support\n3. Whether the answer is safe to preserve as reviewed knowledge",
-            "sdk": "auto",
-            "timeoutMs": 900000,
-            "failOnError": false
-          },
-          "position": {
-            "x": 420,
-            "y": 1460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "parse-verdict",
-          "type": "transform.llm_parse",
-          "label": "Parse Verdict",
-          "config": {
-            "input": "verify-solution",
-            "field": "output",
-            "patterns": {
-              "verdict": "VERDICT:\\s*(CORRECT|MINOR|CRITICAL)"
-            },
-            "keywords": {
-              "severity": [
-                "correct",
-                "minor",
-                "critical"
-              ]
-            },
-            "outputPort": "verdict"
-          },
-          "position": {
-            "x": 420,
-            "y": 1620
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "revise-solution",
-          "type": "action.continue_session",
-          "label": "Revise Solution",
-          "config": {
-            "prompt": "The verifier found correctable issues in your evidence-backed answer.\n\n## Current Draft\n{{currentDraft}}\n\n## Verifier Feedback\n{{verify-solution.output}}\n\n## Evidence Summary\n{{run-evidence-sidecar.output.bundle.summary}}\n\n## Evidence Bundle\n{{run-evidence-sidecar.output.evidenceBrief}}\n\n## Review Hints\n{{run-evidence-sidecar.output.bundle.reviewHints}}\n\nRevise the answer to address every issue while remaining grounded in the supplied evidence.\nKeep or improve inline citation keys like [E1].",
-            "strategy": "refine",
-            "timeoutMs": 900000
-          },
-          "position": {
-            "x": 420,
-            "y": 1780
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "store-revised-draft",
-          "type": "action.set_variable",
-          "label": "Store Revised Draft",
-          "config": {
-            "key": "currentDraft",
-            "value": "{{revise-solution.output}}"
-          },
-          "position": {
-            "x": 420,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "critical-log",
-          "type": "notify.log",
-          "label": "Critical Flaw Detected",
-          "config": {
-            "message": "Critical flaw detected in evidence-backed answer for {{problem}}.\n{{verify-solution.output}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 760,
-            "y": 1780
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "store-critical-feedback",
-          "type": "action.set_variable",
-          "label": "Store Critical Feedback",
-          "config": {
-            "key": "_previousFeedback",
-            "value": "Previous answer was critically flawed. Avoid the failed path and address this feedback:\n{{verify-solution.output}}"
-          },
-          "position": {
-            "x": 760,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-promotion-candidate",
-          "type": "action.run_command",
-          "label": "Build Reviewed Finding",
-          "config": {
-            "command": "node",
-            "args": [
-              "workflow/research-evidence-sidecar.mjs",
-              "promote"
-            ],
-            "cwd": "{{repoRoot}}",
-            "parseJson": true,
-            "failOnError": false,
-            "timeoutMs": 120000,
-            "env": {
-              "BOSUN_RESEARCH_SIDECAR_INPUT": "{{({ verdict: 'correct', problem: $data.problem, domain: $data.domain, finalAnswer: $data.currentDraft, verifierOutput: $ctx.getNodeOutput('verify-solution')?.output || '', artifactPath: $ctx.getNodeOutput('run-evidence-sidecar')?.output?.artifactPath || '', evidenceMode: $data.evidenceMode, bundle: $ctx.getNodeOutput('run-evidence-sidecar')?.output?.bundle || null })}}"
-            }
-          },
-          "position": {
-            "x": 1080,
-            "y": 1620
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "should-promote",
-          "type": "condition.expression",
-          "label": "Promote Reviewed Finding?",
-          "config": {
-            "expression": "Boolean($data?.promoteReviewedFindings !== false) && $ctx.getNodeOutput('build-promotion-candidate')?.output?.promote === true"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1780
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "persist-reviewed-finding",
-          "type": "action.persist_memory",
-          "label": "Persist Reviewed Finding",
-          "config": {
-            "content": "{{build-promotion-candidate.output.content}}",
-            "scope": "{{build-promotion-candidate.output.scope}}",
-            "category": "{{build-promotion-candidate.output.category}}",
-            "scopeLevel": "workspace",
-            "tags": "{{build-promotion-candidate.output.tags}}",
-            "repoRoot": "{{repoRoot}}",
-            "targetFile": ".bosun/shared-knowledge/REVIEWED_RESEARCH.md",
-            "registryFile": ".cache/bosun/reviewed-research-memory.json",
-            "agentId": "research-evidence-workflow",
-            "agentType": "workflow",
-            "workspaceId": "{{workspaceId}}",
-            "runId": "{{runId}}",
-            "taskId": "{{taskId}}"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "persist-reviewed-finding-ok",
-          "type": "condition.expression",
-          "label": "Reviewed Finding Stored?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('persist-reviewed-finding')?.success === true"
-          },
-          "position": {
-            "x": 1080,
-            "y": 2100
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "persist-reviewed-finding-log",
-          "type": "notify.log",
-          "label": "Reviewed Finding Stored",
-          "config": {
-            "message": "Stored reviewed research finding for {{problem}} at {{persist-reviewed-finding.registryPath}}.",
-            "level": "info"
-          },
-          "position": {
-            "x": 900,
-            "y": 2260
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "persist-reviewed-finding-warning",
-          "type": "notify.log",
-          "label": "Knowledge Promotion Skipped",
-          "config": {
-            "message": "Reviewed finding promotion did not persist for {{problem}}.\nReason: {{$ctx.getNodeOutput('persist-reviewed-finding')?.reason || $ctx.getNodeOutput('persist-reviewed-finding')?.error || 'not requested'}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 1260,
-            "y": 2260
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "promotion-skip-log",
-          "type": "notify.log",
-          "label": "Promotion Not Requested",
-          "config": {
-            "message": "Reviewed knowledge promotion skipped for {{problem}}. Evidence artifact remains at {{run-evidence-sidecar.output.artifactPath}}.",
-            "level": "info"
-          },
-          "position": {
-            "x": 1440,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "output-result",
-          "type": "notify.log",
-          "label": "Verified Research Complete",
-          "config": {
-            "message": "Evidence-backed research complete for {{problem}}.\nArtifact: {{run-evidence-sidecar.output.artifactPath}}\nAnswer:\n{{currentDraft}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 1080,
-            "y": 2420
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-success",
-          "type": "flow.end",
-          "label": "End Research (Success)",
-          "config": {
-            "status": "completed",
-            "message": "Evidence-backed research converged to a reviewed answer.",
-            "output": {
-              "verdict": "correct",
-              "problem": "{{problem}}",
-              "domain": "{{domain}}",
-              "iterationCount": "{{iterationCount}}",
-              "artifactPath": "{{run-evidence-sidecar.output.artifactPath}}",
-              "citations": "{{run-evidence-sidecar.output.bundle.citations}}"
-            }
-          },
-          "position": {
-            "x": 1080,
-            "y": 2580
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->should-search",
-          "source": "trigger",
-          "target": "should-search",
-          "sourcePort": "default"
-        },
-        {
-          "id": "should-search->literature-search",
-          "source": "should-search",
-          "target": "literature-search",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "should-search->run-evidence-sidecar",
-          "source": "should-search",
-          "target": "run-evidence-sidecar",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "literature-search->run-evidence-sidecar",
-          "source": "literature-search",
-          "target": "run-evidence-sidecar",
-          "sourcePort": "default"
-        },
-        {
-          "id": "run-evidence-sidecar->evidence-ready",
-          "source": "run-evidence-sidecar",
-          "target": "evidence-ready",
-          "sourcePort": "default"
-        },
-        {
-          "id": "evidence-ready->generate-solution",
-          "source": "evidence-ready",
-          "target": "generate-solution",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "evidence-ready->evidence-failed-log",
-          "source": "evidence-ready",
-          "target": "evidence-failed-log",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "evidence-failed-log->evidence-failed-end",
-          "source": "evidence-failed-log",
-          "target": "evidence-failed-end",
-          "sourcePort": "default"
-        },
-        {
-          "id": "generate-solution->store-generated-draft",
-          "source": "generate-solution",
-          "target": "store-generated-draft",
-          "sourcePort": "default"
-        },
-        {
-          "id": "store-generated-draft->increment-iteration",
-          "source": "store-generated-draft",
-          "target": "increment-iteration",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-iteration->iteration-budget",
-          "source": "increment-iteration",
-          "target": "iteration-budget",
-          "sourcePort": "default"
-        },
-        {
-          "id": "iteration-budget->verify-solution",
-          "source": "iteration-budget",
-          "target": "verify-solution",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "iteration-budget->iteration-limit-log",
-          "source": "iteration-budget",
-          "target": "iteration-limit-log",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "iteration-limit-log->iteration-limit-end",
-          "source": "iteration-limit-log",
-          "target": "iteration-limit-end",
-          "sourcePort": "default"
-        },
-        {
-          "id": "verify-solution->parse-verdict",
-          "source": "verify-solution",
-          "target": "parse-verdict",
-          "sourcePort": "default"
-        },
-        {
-          "id": "parse-verdict->build-promotion-candidate",
-          "source": "parse-verdict",
-          "target": "build-promotion-candidate",
-          "sourcePort": "correct"
-        },
-        {
-          "id": "parse-verdict->revise-solution",
-          "source": "parse-verdict",
-          "target": "revise-solution",
-          "sourcePort": "minor"
-        },
-        {
-          "id": "parse-verdict->critical-log",
-          "source": "parse-verdict",
-          "target": "critical-log",
-          "sourcePort": "critical"
-        },
-        {
-          "id": "revise-solution->store-revised-draft",
-          "source": "revise-solution",
-          "target": "store-revised-draft",
-          "sourcePort": "default"
-        },
-        {
-          "id": "store-revised-draft->increment-iteration",
-          "source": "store-revised-draft",
-          "target": "increment-iteration",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 50
-        },
-        {
-          "id": "critical-log->store-critical-feedback",
-          "source": "critical-log",
-          "target": "store-critical-feedback",
-          "sourcePort": "default"
-        },
-        {
-          "id": "store-critical-feedback->generate-solution",
-          "source": "store-critical-feedback",
-          "target": "generate-solution",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 50
-        },
-        {
-          "id": "build-promotion-candidate->should-promote",
-          "source": "build-promotion-candidate",
-          "target": "should-promote",
-          "sourcePort": "default"
-        },
-        {
-          "id": "should-promote->persist-reviewed-finding",
-          "source": "should-promote",
-          "target": "persist-reviewed-finding",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "should-promote->promotion-skip-log",
-          "source": "should-promote",
-          "target": "promotion-skip-log",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "persist-reviewed-finding->persist-reviewed-finding-ok",
-          "source": "persist-reviewed-finding",
-          "target": "persist-reviewed-finding-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "persist-reviewed-finding-ok->persist-reviewed-finding-log",
-          "source": "persist-reviewed-finding-ok",
-          "target": "persist-reviewed-finding-log",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "persist-reviewed-finding-ok->persist-reviewed-finding-warning",
-          "source": "persist-reviewed-finding-ok",
-          "target": "persist-reviewed-finding-warning",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "persist-reviewed-finding-log->output-result",
-          "source": "persist-reviewed-finding-log",
-          "target": "output-result",
-          "sourcePort": "default"
-        },
-        {
-          "id": "persist-reviewed-finding-warning->output-result",
-          "source": "persist-reviewed-finding-warning",
-          "target": "output-result",
-          "sourcePort": "default"
-        },
-        {
-          "id": "promotion-skip-log->output-result",
-          "source": "promotion-skip-log",
-          "target": "output-result",
-          "sourcePort": "default"
-        },
-        {
-          "id": "output-result->end-success",
-          "source": "output-result",
-          "target": "end-success",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-research-evidence-agent",
-          "templateName": "Research Evidence Agent",
-          "templateVersion": 1,
-          "installedTemplateVersion": 1,
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
       "id": "wf-research-loop",
       "name": "Research Loop (While-Based)",
       "description": "An iterative research agent using loop.while to repeatedly execute a generate→verify sub-workflow until the solution converges. Alternative to the back-edge approach — useful when you want the iteration logic centralized in a single node.",
@@ -40937,7 +33565,7 @@
           "label": "Handoff Fix Lifecycle",
           "config": {
             "title": "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
-            "body": "## Summary\n\nAutomated dependency audit fix. Resolves vulnerabilities flagged by `npm audit` at severity level **{{auditLevel}}** or higher.\n\n## What Changed\n\n- Updated vulnerable dependencies to patched versions\n- Verified no breaking changes via build and test validation",
+            "body": "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nBosun PR lifecycle handoff context included.",
             "branch": "fix/dep-audit-{{_runId}}",
             "baseBranch": "main"
           },
@@ -42303,7 +34931,7 @@
           "label": "Open Quality PR",
           "config": {
             "title": "refactor: code quality pass",
-            "body": "## Summary\n\nAutomated code-quality session. Structural refactor only — zero functional changes.\n\nSee `.bosun-monitor/code-quality-striker.md` for session details.",
+            "body": "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "labels": [
@@ -44431,7 +37059,6 @@
             "title": "research: {{query}}",
             "branch": "{{prBranch}}",
             "baseBranch": "{{prBaseBranch}}",
-            "body": "## Research\\n\\n{{query}}",
             "continueOnError": true
           },
           "position": {
@@ -45191,7 +37818,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{task.taskTitle}}",
-            "body": "## Summary\n\n{{task.taskDescription}}\n\n---\nTask-ID: {{task.taskId}}",
+            "body": "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
             "base": "{{defaultBaseBranch}}",
             "branch": "{{task.branch}}",
             "draft": "{{draftPR}}"
@@ -45365,8 +37992,8 @@
         "templateState": {
           "templateId": "template-task-batch-pr",
           "templateName": "Task Batch → PR",
-          "templateVersion": "1.1.0",
-          "installedTemplateVersion": "1.1.0",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -45619,7 +38246,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 73,
+      "nodeCount": 59,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -46063,13 +38690,12 @@
           ]
         },
         {
-          "id": "set-fix-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Validation Output",
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
           "config": {
-            "key": "fixSummary",
-            "value": "(() => { const out = $ctx.getNodeOutput('pre-pr-validation') || {}; const diag = out.outputDiagnostics || {}; const sections = []; sections.push('## Validation Result'); sections.push('- Exit code: ' + (out.exitCode ?? 'unknown')); sections.push('- Runner: ' + (diag.family || diag.runner || 'unknown')); if (diag.summary) sections.push('- Summary: ' + diag.summary); const targets = diag.failedTargets || []; if (targets.length) {   sections.push('');   sections.push('## Failed Targets (' + targets.length + ')');   targets.slice(0, 30).forEach(t => sections.push('  - ' + t));   if (targets.length > 30) sections.push('  ... and ' + (targets.length - 30) + ' more'); } const rerun = out.outputSuggestedRerun || diag.suggestedRerun || ''; if (rerun) {   sections.push('');   sections.push('## Suggested Rerun Command');   sections.push('```');   sections.push(rerun);   sections.push('```'); } const hint = out.outputHint || diag.hint || ''; if (hint) sections.push('\\nHint: ' + hint); sections.push(''); sections.push('## Full Command Output'); sections.push(String(out.output || '').slice(0, 12000)); return sections.join('\\n'); })()",
-            "isExpression": true
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+            "level": "warn"
           },
           "position": {
             "x": 300,
@@ -46080,184 +38706,17 @@
           ]
         },
         {
-          "id": "auto-fix-validation",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation (Pass 1)",
-          "config": {
-            "prompt": "# Fix Pre-PR Validation Failures — Pass 1\n\nTask: **{{taskTitle}}**\n\nThe pre-PR validation command failed. Your job is to fix EVERY error so validation passes.\n\n{{fixSummary}}\n\nSTRATEGY:\n1. Start from the **Failed Targets** list above — these are the exact files/tests/packages that broke.\n2. Fix compilation and syntax errors FIRST (missing imports, typos, type errors).\n3. Then fix test failures — open each failing test file, read what it asserts, and fix your code or the test expectation.\n4. If a **Suggested Rerun Command** is shown above, use it to re-run only the failing targets and iterate faster.\n5. Once targeted failures are fixed, run the full validation command to confirm everything passes.\n\nRULES:\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n- Create a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
-            "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
-          },
-          "position": {
-            "x": 300,
-            "y": 2080
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-pre-pr-validation",
-          "type": "action.run_command",
-          "label": "Retry Pre-PR Validation",
-          "config": {
-            "command": "{{prePrValidationCommand}}",
-            "commandType": "qualityGate",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 300,
-            "y": 2160
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-validation-ok",
-          "type": "condition.expression",
-          "label": "Retry Validation Passed?",
-          "config": {
-            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
-          },
-          "position": {
-            "x": 300,
-            "y": 2240
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "set-fix2-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Both Validation Outputs",
-          "config": {
-            "key": "fix2Summary",
-            "value": "(() => { function summarizeRun(label, out) {   const diag = out.outputDiagnostics || {};   const lines = ['### ' + label];   lines.push('- Exit code: ' + (out.exitCode ?? 'unknown'));   lines.push('- Runner: ' + (diag.family || diag.runner || 'unknown'));   if (diag.summary) lines.push('- Summary: ' + diag.summary);   const targets = diag.failedTargets || [];   if (targets.length) {     lines.push('- Failed targets (' + targets.length + '):');     targets.slice(0, 20).forEach(t => lines.push('    - ' + t));     if (targets.length > 20) lines.push('    ... and ' + (targets.length - 20) + ' more');   }   const rerun = out.outputSuggestedRerun || diag.suggestedRerun || '';   if (rerun) lines.push('- Rerun: `' + rerun + '`');   const hint = out.outputHint || diag.hint || '';   if (hint) lines.push('- Hint: ' + hint);   if (diag.deltaSummary) lines.push('- Delta: ' + diag.deltaSummary);   lines.push('');   lines.push('Full output:');   lines.push(String(out.output || '').slice(0, 8000));   return lines.join('\\n'); } const v1 = $ctx.getNodeOutput('pre-pr-validation') || {}; const v2 = $ctx.getNodeOutput('retry-pre-pr-validation') || {}; return [   '## Validation History (both passes failed)',   '',   summarizeRun('Pass 1 — Original Validation', v1),   '',   summarizeRun('Pass 2 — After First Auto-Fix', v2), ].join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 500,
-            "y": 2300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix-validation-2",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation (Pass 2 — Escalated)",
-          "config": {
-            "prompt": "# Fix Validation Failures — FINAL AUTOMATED ATTEMPT\n\nThis is the SECOND and LAST automated remediation pass for task **{{taskTitle}}**.\nThe first auto-fix attempt DID NOT resolve all issues. You MUST take a different approach.\n\n{{fix2Summary}}\n\nANALYSIS STEPS:\n1. Compare the **Failed Targets** between Pass 1 and Pass 2.\n   - If the SAME targets still fail → your previous fix was wrong. Revert it and try a different approach.\n   - If NEW targets appeared → your fix broke something else. Fix both.\n   - If some targets were RESOLVED → the approach was partially right. Focus on the remaining ones.\n2. Use the **Delta** field (if present) to see exactly what changed between runs.\n3. Use the **Suggested Rerun Command** to iterate on just the failing targets.\n\nCRITICAL RULES:\n- Do NOT repeat the same fix that already failed.\n- If a test is genuinely wrong or testing stale behavior your change invalidated, fix the test AND the code.\n- If the build/lint/test commands are misconfigured for your changes, fix the config.\n- Do NOT weaken, remove, or skip tests. Do NOT add --force or --no-verify flags.\n- Keep the original task scope — do not revert the feature.\n\nRun the full validation command locally and confirm ALL checks pass before finishing.\nCreate a descriptive commit: \"fix: <concrete failure resolved>\"",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
-            "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
-          },
-          "position": {
-            "x": 500,
-            "y": 2380
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-pre-pr-validation",
-          "type": "action.run_command",
-          "label": "Retry-2 Pre-PR Validation",
-          "config": {
-            "command": "{{prePrValidationCommand}}",
-            "commandType": "qualityGate",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 500,
-            "y": 2460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry2-validation-ok",
-          "type": "condition.expression",
-          "label": "Retry-2 Validation Passed?",
-          "config": {
-            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('retry2-pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
-          },
-          "position": {
-            "x": 500,
-            "y": 2540
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "log-validation-failed",
-          "type": "notify.log",
-          "label": "Log Validation Failed",
-          "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after 2 auto-fix remediation passes, blocking task",
-            "level": "warn"
-          },
-          "position": {
-            "x": 700,
-            "y": 2600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-blocked-validation-failed",
+          "id": "set-todo-validation-failed",
           "type": "action.update_task_status",
-          "label": "Block Task (Validation Fail)",
+          "label": "Set Todo (Validation Fail)",
           "config": {
             "taskId": "{{taskId}}",
-            "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "Pre-PR validation failed after 2 automated remediation passes"
+            "status": "todo",
+            "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 700,
-            "y": 2680
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-validation-blocked",
-          "type": "notify.telegram",
-          "label": "Notify Validation Blocked",
-          "config": {
-            "message": ":alert: Task \"{{taskTitle}}\" blocked — pre-PR validation failed after 2 automated remediation attempts. Manual review needed."
-          },
-          "position": {
-            "x": 700,
-            "y": 2760
+            "x": 300,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -46272,9 +38731,6 @@
             "branch": "{{branch}}",
             "baseBranch": "{{baseBranch}}",
             "rebaseBeforePush": true,
-            "mergeBaseBeforePush": true,
-            "autoResolveMergeConflicts": true,
-            "conflictResolverSdk": "auto",
             "emptyDiffGuard": true,
             "protectedBranches": "{{protectedBranches}}"
           },
@@ -46303,29 +38759,12 @@
           ]
         },
         {
-          "id": "build-pr-body",
-          "type": "action.set_variable",
-          "label": "Build PR Description",
-          "config": {
-            "key": "prBody",
-            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const dc = $ctx.getNodeOutput('detect-commits') || {}; const stats = dc.diffStats || {}; const msgs = Array.isArray(dc.commitMessages) ? dc.commitMessages : []; const files = Array.isArray(dc.changedFiles) ? dc.changedFiles : []; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } if (msgs.length) {   s.push('');   s.push('## Changes');   s.push('');   msgs.forEach(m => s.push('- ' + m)); } if (stats.filesChanged) {   s.push('');   s.push('**' + stats.filesChanged + ' file' + (stats.filesChanged === 1 ? '' : 's') + ' changed, ' + (stats.insertions || 0) + ' insertion' + ((stats.insertions || 0) === 1 ? '' : 's') + '(+), ' + (stats.deletions || 0) + ' deletion' + ((stats.deletions || 0) === 1 ? '' : 's') + '(-)**'); } if (files.length) {   s.push('');   s.push('<details><summary>Files touched (' + files.length + ')</summary>');   s.push('');   files.slice(0, 80).forEach(f => s.push('- `' + f + '`'));   if (files.length > 80) s.push('- ... and ' + (files.length - 80) + ' more');   s.push('');   s.push('</details>'); } s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 0,
-            "y": 2195
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "{{prBody}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -46465,63 +38904,12 @@
           ]
         },
         {
-          "id": "push-failure-blocking",
-          "type": "condition.expression",
-          "label": "Push Failure Blocks?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch')?.implementationDone === true"
-          },
-          "position": {
-            "x": 360,
-            "y": 2195
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "set-blocked-push-failed",
-          "type": "action.update_task_status",
-          "label": "Set Blocked (Push Fail)",
-          "config": {
-            "taskId": "{{taskId}}",
-            "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "{{$ctx.getNodeOutput('push-branch')?.blockedReason || $ctx.getNodeOutput('push-branch')?.error || 'implementation_done_commit_blocked'}}"
-          },
-          "position": {
-            "x": 360,
-            "y": 2325
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-pr-body-stolen",
-          "type": "action.set_variable",
-          "label": "Build PR Description (Recovered)",
-          "config": {
-            "key": "prBody",
-            "value": "(() => { const title = $data.taskTitle || 'Untitled Task'; const desc = String($data.taskDescription || '').trim(); const taskId = $data.taskId || ''; const s = []; s.push('## Summary'); s.push(''); if (desc) { s.push(desc); } else { s.push(title); } s.push(''); s.push('> Claim was lost during agent execution — PR recovered.'); s.push(''); s.push('---'); s.push('Task-ID: ' + taskId); return s.join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 400,
-            "y": 1680
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Recover PR Link",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "{{prBody}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -46653,9 +39041,8 @@
             "sourceNodeIds": [
               "log-success",
               "set-todo-push-failed",
-              "set-blocked-push-failed",
               "set-todo-cooldown",
-              "notify-validation-blocked",
+              "set-todo-validation-failed",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -46767,7 +39154,7 @@
           "type": "condition.expression",
           "label": "Non-Retryable WT Failure?",
           "config": {
-            "expression": "(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const latest = retry && retry.success === false ? retry : $ctx.getNodeOutput('acquire-worktree'); return latest?.retryable === false; })()"
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable === false"
           },
           "position": {
             "x": 600,
@@ -46785,8 +39172,7 @@
           "config": {
             "taskId": "{{taskId}}",
             "status": "blocked",
-            "taskTitle": "{{taskTitle}}",
-            "blockedReason": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.blockedReason || $ctx.getNodeOutput('retry-acquire-wt')?.error || '') : ($ctx.getNodeOutput('acquire-worktree')?.blockedReason || $ctx.getNodeOutput('acquire-worktree')?.error || '')}}"
+            "taskTitle": "{{taskTitle}}"
           },
           "position": {
             "x": 470,
@@ -46805,43 +39191,15 @@
             "args": {
               "taskId": "{{taskId}}",
               "fields": {
-                "cooldownUntil": "{{(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); return output.retryAt || null; })()}}",
-                "blockedReason": "{{(() => { const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); return output.blockedReason || output.error || null; })()}}",
-                "meta": "{{(() => { const current = ($data.meta && typeof $data.meta === 'object') ? $data.meta : (($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}); const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); const worktreePath = output.worktreePath || $data.worktreePath || ''; const repoRoot = $data.repoRoot || $data.workspace || current.repoRoot || current.workspace || ''; const branch = $data.branch || $data.branchName || current.branch || current.branchName || ''; const baseBranch = $data.baseBranch || current.baseBranch || ''; const defaultTargetBranch = $data.defaultTargetBranch || current.defaultTargetBranch || ''; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || output.error || '', error: output.error || '', recordedAt: output.recordedAt || null, repairArtifacts: output.repairArtifacts || null, branch, repoRoot, baseBranch, defaultTargetBranch, worktreePath } }; })()}}"
+                "cooldownUntil": "{{acquire-worktree.retryAt}}",
+                "blockedReason": "{{acquire-worktree.blockedReason}}",
+                "meta": "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null, repairArtifacts: output.repairArtifacts || null } }; })()}}"
               }
             }
           },
           "position": {
             "x": 470,
             "y": 1480
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "dispatch-wt-repair",
-          "type": "action.execute_workflow",
-          "label": "Dispatch WT Repair",
-          "config": {
-            "workflowId": "template-task-repair-worktree",
-            "mode": "dispatch",
-            "input": {
-              "taskId": "{{taskId}}",
-              "taskTitle": "{{taskTitle}}",
-              "repoRoot": "{{repoRoot}}",
-              "worktreePath": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.worktreePath || $data.worktreePath || '') : ($ctx.getNodeOutput('acquire-worktree')?.worktreePath || $data.worktreePath || '')}}",
-              "branch": "{{branch}}",
-              "baseBranch": "{{baseBranch}}",
-              "defaultTargetBranch": "{{defaultTargetBranch}}",
-              "error": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.error || $ctx.getNodeOutput('retry-acquire-wt')?.blockedReason || 'worktree acquisition failed') : ($ctx.getNodeOutput('acquire-worktree')?.error || $ctx.getNodeOutput('acquire-worktree')?.blockedReason || 'worktree acquisition failed')}}",
-              "failureKind": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.failureKind || 'branch_refresh_conflict') : ($ctx.getNodeOutput('acquire-worktree')?.failureKind || 'branch_refresh_conflict')}}",
-              "repairArtifacts": "{{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.repairArtifacts || null) : ($ctx.getNodeOutput('acquire-worktree')?.repairArtifacts || null)}}"
-            }
-          },
-          "position": {
-            "x": 470,
-            "y": 1610
           },
           "outputs": [
             "default"
@@ -46884,7 +39242,7 @@
           "type": "notify.telegram",
           "label": "Notify WT Failed",
           "config": {
-            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('retry-acquire-wt')?.success === false ? ($ctx.getNodeOutput('retry-acquire-wt')?.recoveryNote || '') : ($ctx.getNodeOutput('acquire-worktree')?.recoveryNote || '')}}"
+            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}"
           },
           "position": {
             "x": 600,
@@ -47119,91 +39477,21 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "pre-pr-validation-ok->set-fix-summary",
+          "id": "pre-pr-validation-ok->log-validation-failed",
           "source": "pre-pr-validation-ok",
-          "target": "set-fix-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-fix-summary->auto-fix-validation",
-          "source": "set-fix-summary",
-          "target": "auto-fix-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-validation->retry-pre-pr-validation",
-          "source": "auto-fix-validation",
-          "target": "retry-pre-pr-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-pre-pr-validation->retry-validation-ok",
-          "source": "retry-pre-pr-validation",
-          "target": "retry-validation-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-validation-ok->push-branch",
-          "source": "retry-validation-ok",
-          "target": "push-branch",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry-validation-ok->set-fix2-summary",
-          "source": "retry-validation-ok",
-          "target": "set-fix2-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-fix2-summary->auto-fix-validation-2",
-          "source": "set-fix2-summary",
-          "target": "auto-fix-validation-2",
-          "sourcePort": "default"
-        },
-        {
-          "id": "auto-fix-validation-2->retry2-pre-pr-validation",
-          "source": "auto-fix-validation-2",
-          "target": "retry2-pre-pr-validation",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-pre-pr-validation->retry2-validation-ok",
-          "source": "retry2-pre-pr-validation",
-          "target": "retry2-validation-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry2-validation-ok->push-branch",
-          "source": "retry2-validation-ok",
-          "target": "push-branch",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry2-validation-ok->log-validation-failed",
-          "source": "retry2-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "log-validation-failed->set-blocked-validation-failed",
+          "id": "log-validation-failed->set-todo-validation-failed",
           "source": "log-validation-failed",
-          "target": "set-blocked-validation-failed",
+          "target": "set-todo-validation-failed",
           "sourcePort": "default"
         },
         {
-          "id": "set-blocked-validation-failed->notify-validation-blocked",
-          "source": "set-blocked-validation-failed",
-          "target": "notify-validation-blocked",
-          "sourcePort": "default"
-        },
-        {
-          "id": "notify-validation-blocked->join-outcomes",
-          "source": "notify-validation-blocked",
+          "id": "set-todo-validation-failed->join-outcomes",
+          "source": "set-todo-validation-failed",
           "target": "join-outcomes",
           "sourcePort": "default"
         },
@@ -47214,17 +39502,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->build-pr-body",
+          "id": "push-ok->create-pr",
           "source": "push-ok",
-          "target": "build-pr-body",
+          "target": "create-pr",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
-        },
-        {
-          "id": "build-pr-body->create-pr",
-          "source": "build-pr-body",
-          "target": "create-pr",
-          "sourcePort": "default"
         },
         {
           "id": "create-pr->pr-created",
@@ -47265,31 +39547,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->push-failure-blocking",
+          "id": "push-ok->set-todo-push-failed",
           "source": "push-ok",
-          "target": "push-failure-blocking",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "push-failure-blocking->set-blocked-push-failed",
-          "source": "push-failure-blocking",
-          "target": "set-blocked-push-failed",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-failure-blocking->set-todo-push-failed",
-          "source": "push-failure-blocking",
           "target": "set-todo-push-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-blocked-push-failed->join-outcomes",
-          "source": "set-blocked-push-failed",
-          "target": "join-outcomes",
-          "sourcePort": "default"
         },
         {
           "id": "set-todo-push-failed->join-outcomes",
@@ -47317,17 +39579,11 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->build-pr-body-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "build-pr-body-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
-        },
-        {
-          "id": "build-pr-body-stolen->create-pr-retry",
-          "source": "build-pr-body-stolen",
-          "target": "create-pr-retry",
-          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->pr-created-stolen",
@@ -47490,14 +39746,8 @@
           "sourcePort": "default"
         },
         {
-          "id": "annotate-blocked-wt-failed->dispatch-wt-repair",
+          "id": "annotate-blocked-wt-failed->release-slot-wt-failed",
           "source": "annotate-blocked-wt-failed",
-          "target": "dispatch-wt-repair",
-          "sourcePort": "default"
-        },
-        {
-          "id": "dispatch-wt-repair->release-slot-wt-failed",
-          "source": "dispatch-wt-repair",
           "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },
@@ -47521,8 +39771,8 @@
         "templateState": {
           "templateId": "template-task-lifecycle",
           "templateName": "Task Lifecycle",
-          "templateVersion": "4.1.0",
-          "installedTemplateVersion": "4.1.0",
+          "templateVersion": "2.1.0",
+          "installedTemplateVersion": "2.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -47880,7 +40130,7 @@
       "workflowId": "wf-bosun-pr-progressor",
       "workflowName": "Bosun PR Progressor",
       "status": "completed",
-      "nodeCount": 22,
+      "nodeCount": 13,
       "duration": 20000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -47892,7 +40142,7 @@
       "workflowId": "wf-bosun-pr-watchdog",
       "workflowName": "Bosun PR Watchdog",
       "status": "completed",
-      "nodeCount": 25,
+      "nodeCount": 19,
       "duration": 29000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -47913,10 +40163,10 @@
     },
     {
       "runId": "run-004",
-      "workflowId": "wf-github-check-failure",
-      "workflowName": "GitHub Check Failure Handler",
+      "workflowId": "wf-pr-conflict-resolver",
+      "workflowName": "PR Conflict Resolver",
       "status": "completed",
-      "nodeCount": 5,
+      "nodeCount": 11,
       "duration": 47000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -47925,10 +40175,10 @@
     },
     {
       "runId": "run-005",
-      "workflowId": "wf-github-pr-event-handler",
-      "workflowName": "GitHub PR Event Handler",
+      "workflowId": "wf-pr-merge-strategy",
+      "workflowName": "PR Merge Strategy",
       "status": "failed",
-      "nodeCount": 9,
+      "nodeCount": 20,
       "duration": 56000,
       "errorCount": 1,
       "triggerSource": "manual",
@@ -47937,10 +40187,10 @@
     },
     {
       "runId": "run-006",
-      "workflowId": "wf-pr-conflict-resolver",
-      "workflowName": "PR Conflict Resolver",
+      "workflowId": "wf-pr-triage",
+      "workflowName": "PR Triage & Labels",
       "status": "completed",
-      "nodeCount": 11,
+      "nodeCount": 10,
       "duration": 65000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -47949,10 +40199,10 @@
     },
     {
       "runId": "run-007",
-      "workflowId": "wf-pr-fix-single",
-      "workflowName": "PR Fix Agent (Single PR)",
+      "workflowId": "wf-release-drafter",
+      "workflowName": "Release Drafter",
       "status": "completed",
-      "nodeCount": 15,
+      "nodeCount": 7,
       "duration": 74000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -47961,10 +40211,10 @@
     },
     {
       "runId": "run-008",
-      "workflowId": "wf-pr-merge-strategy",
-      "workflowName": "PR Merge Strategy",
+      "workflowId": "wf-review-agent",
+      "workflowName": "Review Agent",
       "status": "completed",
-      "nodeCount": 20,
+      "nodeCount": 6,
       "duration": 83000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -48378,72 +40628,6 @@
           "type": "toggle",
           "defaultValue": true,
           "helpText": "Run a web search for relevant papers before generating a solution."
-        },
-        {
-          "id": "useEvidenceSidecar",
-          "label": "Use Evidence Sidecar",
-          "type": "toggle",
-          "defaultValue": true,
-          "helpText": "Build a structured scientific evidence bundle before generation. Bosun remains the orchestrator; only reviewed findings are promoted into shared knowledge."
-        },
-        {
-          "id": "evidenceMode",
-          "label": "Evidence Mode",
-          "type": "select",
-          "defaultValue": "answer",
-          "options": [
-            {
-              "label": "Answer Grounding",
-              "value": "answer"
-            },
-            {
-              "label": "Summarize Evidence",
-              "value": "summarize"
-            },
-            {
-              "label": "Contradiction Detection",
-              "value": "contradictions"
-            },
-            {
-              "label": "Evidence Inventory Only",
-              "value": "evidence-only"
-            }
-          ],
-          "required": true,
-          "helpText": "Controls how the scientific evidence bundle is assembled and prioritized."
-        },
-        {
-          "id": "corpusPaths",
-          "label": "Evidence Corpus Paths",
-          "type": "textarea",
-          "placeholder": "docs/research\npapers/notes.md",
-          "defaultValue": "",
-          "required": false,
-          "helpText": "Optional newline- or comma-separated local text sources. PDFs remain excluded from the Bosun context index; use sidecar-ready text or extracted notes here instead."
-        },
-        {
-          "id": "maxEvidenceSources",
-          "label": "Max Evidence Sources",
-          "type": "number",
-          "defaultValue": 6,
-          "required": false,
-          "helpText": "Maximum evidence items retained in the sidecar bundle (1-20)."
-        },
-        {
-          "id": "promoteReviewedFindings",
-          "label": "Promote Reviewed Findings",
-          "type": "toggle",
-          "defaultValue": true,
-          "helpText": "When verification returns CORRECT, write a concise reviewed finding into shared knowledge. Raw sidecar artifacts stay outside shared knowledge."
-        },
-        {
-          "id": "sidecarCommand",
-          "label": "External Sidecar Command",
-          "type": "text",
-          "placeholder": "uv run ace-sidecar --mode research",
-          "defaultValue": "",
-          "required": false,
-          "helpText": "Optional command that reads JSON from stdin and returns structured evidence JSON. Leave blank to use Bosun-local evidence bundling only."
         },
         {
           "id": "executionMode",
@@ -49705,7 +41889,7 @@
   ],
   "libraryContents": {
     "orchestrator": "# Task Orchestrator Agent\n\nYou are an autonomous task orchestrator agent. You receive implementation tasks and execute them end-to-end.\n\n## Prime Directives\n\n1. Never ask for human input for normal engineering decisions.\n2. Complete the assigned scope fully before stopping.\n3. Keep changes minimal, correct, and production-safe.\n4. Run relevant verification (tests/lint/build) before finalizing.\n5. Use conventional commit messages.\n\n## Code Quality — Hard Rules\n\nThese rules are non-negotiable. Violations cause real production crashes.\n\n- **Module-scope caching:** Variables that cache state (lazy singletons, loaded\n  flags, memoization maps) MUST be at module scope, never inside a function body\n  that runs repeatedly.\n- **Async safety:** NEVER use bare `void asyncFn()`. Every async call must be\n  `await`-ed or have a `.catch()` handler. Unhandled rejections crash Node.js.\n- **Error boundaries:** HTTP handlers, timers, and event callbacks MUST wrap async\n  work in try/catch so one failure doesn't kill the process.\n- **No over-mocking in tests:** Mock only external boundaries (network, disk, clock).\n  Never mock the module under test. If a test needs > 3 mocks, refactor the code.\n- **Deterministic tests:** No `Math.random()`, real network calls, or `setTimeout`\n  for synchronization. Tests must be reproducible and order-independent.\n- **Dynamic `import()` must be cached:** Never place `import()` inside a\n  frequently-called function without caching the result at module scope.\n\n## Completion Criteria\n\n- Implementation matches requested behavior.\n- Existing functionality is preserved.\n- Relevant checks pass.\n- Branch is pushed and ready for PR/review flow.\n\n## Skills & Knowledge Base\n\nBefore starting any task, load relevant skills to avoid known pitfalls and\napply patterns discovered by previous agents:\n\n1. Check if `.bosun/skills/index.json` exists in the workspace or bosun home.\n2. Read the index to find skills whose tags match your task's module or domain.\n3. Load and apply any matching skill files from `.bosun/skills/`.\n\nAfter completing a task, if you discovered a non-obvious pattern, workaround, or\ndomain-specific fact, write or update a skill file at `.bosun/skills/<module>.md`\nso the next agent benefits from your investigation.\n",
-    "taskexecutor": "# {{TASK_ID}} — {{TASK_TITLE}}\n\n## Description\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n\n## Environment\n- Working Directory: {{WORKTREE_PATH}}\n- Branch: {{BRANCH}}\n- Repository: {{REPO_SLUG}}\n\n## Skills — Load Before Starting\n\nCheck for relevant skills before implementing:\n1. Look for `.bosun/skills/index.json` (in workspace root or BOSUN_HOME).\n2. Read the index; load skills whose tags match this task's module/domain.\n3. Apply the patterns — especially `background-task-execution`, `error-recovery`,\n   and `pr-workflow` which apply to almost every task.\n\n## Instructions\n1. Load relevant skills as described above.\n2. Read task requirements carefully.\n3. Implement required code changes using structured edit tools first. Prefer native Codex edit tools when available; otherwise use Bosun MCP file tools. Avoid repo-root scratch files such as `.tmp-*`, `*.patch`, ad hoc `.cjs` helpers, or redirected log files for edit workflows.\n4. Run relevant tests/lint/build checks.\n5. Commit with conventional commit format.\n6. Push branch updates.\n7. After completing: if you discovered non-obvious patterns, write a skill file\n   at `.bosun/skills/<module>.md` for future agents.\n\n## Critical Rules\n- Do not ask for manual confirmation.\n- No placeholders/stubs/TODO-only output.\n- Keep behavior stable and production-safe.\n\n## Code Quality — Mandatory Checks\n\nThese patterns have caused real production crashes. Treat them as hard rules:\n\n1. **Module-scope caching:** If you declare variables that cache state (lazy\n   singletons, init flags, memoization), place them at **module scope** — never\n   inside a function body that runs per-request or per-event.\n2. **Async fire-and-forget:** Never use bare `void asyncFn()`. Always `await`\n   or append `.catch()`. Unhandled promise rejections crash Node.js (exit 1).\n3. **Error boundaries:** Wrap HTTP handlers, timers, and event callbacks in\n   top-level try/catch. One unguarded throw must not kill the process.\n4. **Dynamic imports:** Cache `import()` results at module scope. Never call\n   `import()` inside a hot path without caching — it causes repeated I/O.\n5. **Test quality:** Mock only external boundaries (network, disk, clock). Never\n   mock the module under test. No `setTimeout`/`sleep` for synchronization.\n   Tests must be deterministic and order-independent. Assert on behavior, not\n   implementation details.\n6. **No architectural shortcuts:** Don't force-enable feature flags inline. Don't\n   add config overrides that bypass safety checks. If a feature is behind a flag,\n   respect it.\n\n## Bosun Task Agent — Git & Bosun Lifecycle Workflow\n\nYou are running as a **Bosun-managed task agent**.  Environment variables\n`BOSUN_TASK_TITLE`, `BOSUN_BRANCH_NAME`, `BOSUN_TASK_ID`, and their\n`VE_*` / `VK_*` aliases are available in your environment.\n\n**Before committing:**\n- Run auto-formatting tools (gofmt, prettier, etc.) relevant to changed files.\n- Fix any lint or vet warnings introduced by your changes.\n\n**After committing:**\n- If a precommit hook auto-applies additional formatting changes, add those\n  to a follow-up commit before pushing.\n- Merge any upstream changes — BOTH from the base (module) branch AND from main:\n  `git fetch origin && git merge origin/<base-branch> --no-edit && git merge origin/main --no-edit`\n  Resolve any conflicts that arise before pushing.\n- Push: `git push --set-upstream origin {{BRANCH}}`\n- After a successful push, hand off PR lifecycle to Bosun management.\n- Do not run direct PR commands.\n{{COAUTHOR_INSTRUCTION}}\n**Do NOT:**\n- Bypass pre-push hooks (`git push --no-verify` is forbidden).\n- Use `git add .` — stage files individually.\n- Wait for user confirmation before pushing or handing off lifecycle state.\n\n## Agent Status Endpoint\n- URL: http://127.0.0.1:{{ENDPOINT_PORT}}/api/tasks/{{TASK_ID}}\n- POST /status {\"status\":\"inreview\"} after push + Bosun lifecycle handoff readiness\n- POST /heartbeat {} while running\n- POST /error {\"error\":\"...\"} on fatal failure\n- POST /complete {\"hasCommits\":true} when done\n\n## Task Reference\n{{TASK_URL_LINE}}\n\n## Repository Context\n{{REPO_CONTEXT}}\n",
+    "taskexecutor": "# {{TASK_ID}} — {{TASK_TITLE}}\n\n## Description\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n\n## Environment\n- Working Directory: {{WORKTREE_PATH}}\n- Branch: {{BRANCH}}\n- Repository: {{REPO_SLUG}}\n\n## Skills — Load Before Starting\n\nCheck for relevant skills before implementing:\n1. Look for `.bosun/skills/index.json` (in workspace root or BOSUN_HOME).\n2. Read the index; load skills whose tags match this task's module/domain.\n3. Apply the patterns — especially `background-task-execution`, `error-recovery`,\n   and `pr-workflow` which apply to almost every task.\n\n## Instructions\n1. Load relevant skills as described above.\n2. Read task requirements carefully.\n3. Implement required code changes.\n4. Run relevant tests/lint/build checks.\n5. Commit with conventional commit format.\n6. Push branch updates.\n7. After completing: if you discovered non-obvious patterns, write a skill file\n   at `.bosun/skills/<module>.md` for future agents.\n\n## Critical Rules\n- Do not ask for manual confirmation.\n- No placeholders/stubs/TODO-only output.\n- Keep behavior stable and production-safe.\n\n## Code Quality — Mandatory Checks\n\nThese patterns have caused real production crashes. Treat them as hard rules:\n\n1. **Module-scope caching:** If you declare variables that cache state (lazy\n   singletons, init flags, memoization), place them at **module scope** — never\n   inside a function body that runs per-request or per-event.\n2. **Async fire-and-forget:** Never use bare `void asyncFn()`. Always `await`\n   or append `.catch()`. Unhandled promise rejections crash Node.js (exit 1).\n3. **Error boundaries:** Wrap HTTP handlers, timers, and event callbacks in\n   top-level try/catch. One unguarded throw must not kill the process.\n4. **Dynamic imports:** Cache `import()` results at module scope. Never call\n   `import()` inside a hot path without caching — it causes repeated I/O.\n5. **Test quality:** Mock only external boundaries (network, disk, clock). Never\n   mock the module under test. No `setTimeout`/`sleep` for synchronization.\n   Tests must be deterministic and order-independent. Assert on behavior, not\n   implementation details.\n6. **No architectural shortcuts:** Don't force-enable feature flags inline. Don't\n   add config overrides that bypass safety checks. If a feature is behind a flag,\n   respect it.\n\n## Bosun Task Agent — Git & Bosun Lifecycle Workflow\n\nYou are running as a **Bosun-managed task agent**.  Environment variables\n`BOSUN_TASK_TITLE`, `BOSUN_BRANCH_NAME`, `BOSUN_TASK_ID`, and their\n`VE_*` / `VK_*` aliases are available in your environment.\n\n**Before committing:**\n- Run auto-formatting tools (gofmt, prettier, etc.) relevant to changed files.\n- Fix any lint or vet warnings introduced by your changes.\n\n**After committing:**\n- If a precommit hook auto-applies additional formatting changes, add those\n  to a follow-up commit before pushing.\n- Merge any upstream changes — BOTH from the base (module) branch AND from main:\n  `git fetch origin && git merge origin/<base-branch> --no-edit && git merge origin/main --no-edit`\n  Resolve any conflicts that arise before pushing.\n- Push: `git push --set-upstream origin {{BRANCH}}`\n- After a successful push, hand off PR lifecycle to Bosun management.\n- Do not run direct PR commands.\n{{COAUTHOR_INSTRUCTION}}\n**Do NOT:**\n- Bypass pre-push hooks (`git push --no-verify` is forbidden).\n- Use `git add .` — stage files individually.\n- Wait for user confirmation before pushing or handing off lifecycle state.\n\n## Agent Status Endpoint\n- URL: http://127.0.0.1:{{ENDPOINT_PORT}}/api/tasks/{{TASK_ID}}\n- POST /status {\"status\":\"inreview\"} after push + Bosun lifecycle handoff readiness\n- POST /heartbeat {} while running\n- POST /error {\"error\":\"...\"} on fatal failure\n- POST /complete {\"hasCommits\":true} when done\n\n## Task Reference\n{{TASK_URL_LINE}}\n\n## Repository Context\n{{REPO_CONTEXT}}\n",
     "taskexecutorretry": "# {{TASK_ID}} — ERROR RECOVERY (Attempt {{ATTEMPT_NUMBER}})\n\nYour previous attempt on task \"{{TASK_TITLE}}\" encountered an issue:\n\n```\n{{LAST_ERROR}}\n```\n\nError classification: {{CLASSIFICATION_PATTERN}} (confidence: {{CLASSIFICATION_CONFIDENCE}})\n\nPlease:\n1. Diagnose the failure root cause.\n2. Fix the issue with minimal safe changes.\n3. Re-run verification checks.\n4. Commit and push the fix.\n\nOriginal task description:\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n",
     "taskexecutorcontinuehascommits": "# {{TASK_ID}} — CONTINUE (Verify and Push)\n\nYou were working on \"{{TASK_TITLE}}\" and appear to have stopped.\nYou already made commits.\n\n1. Run tests to verify changes.\n2. If passing, push: git push origin HEAD\n3. If failing, fix issues, commit, and push.\n4. Task is not complete until push succeeds.\n{{TASK_CONTEXT}}\n",
     "taskexecutorcontinuehasedits": "# {{TASK_ID}} — CONTINUE (Commit and Push)\n\nYou were working on \"{{TASK_TITLE}}\" and appear to have stopped.\nYou made file edits but no commit yet.\n\n1. Review edits for correctness.\n2. Run relevant tests.\n3. Commit with conventional format.\n4. Push: git push origin HEAD\n{{TASK_CONTEXT}}\n",

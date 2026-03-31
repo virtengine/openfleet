@@ -33,12 +33,6 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("data?.pagination?.hasMore");
     });
 
-    it(`${label} scopes workflow run requests to the selected workspace`, () => {
-      expect(source).toContain("buildWorkflowRunApiPath");
-      expect(source).toContain("activeWorkspaceId.value");
-      expect(source).toContain("searchParams.set(\"workspace\", workspaceId)");
-    });
-
     it(`${label} keeps older workflow pagination manual-only`, () => {
       expect(source).not.toContain("tailSentinelRef");
       expect(source).not.toContain("autoLoadMoreRef");
@@ -50,84 +44,8 @@ describe("workflow run history UI pagination", () => {
     it(`${label} exposes DAG revision history in run details`, () => {
       if (label !== "ui") return;
       expect(source).toContain("DAG Revisions");
-      expect(source).toContain("Graph Before:");
-      expect(source).toContain("Graph After:");
-    });
-
-    it(`${label} exposes execution lineage detail in run details`, () => {
-      expect(source).toContain("Execution Lineage");
-      expect(source).toContain("Execution Activity");
-      expect(source).toContain("Execution Timeline");
-      expect(source).toContain("runGraph?.executions");
-      expect(source).toContain("runGraph?.timeline");
-    });
-
-    it(`${label} exposes delegated topology and run-family navigation in run details`, () => {
-      expect(source).toContain("Delegation Topology");
-      expect(source).toContain("Delegation Depth:");
-      expect(source).toContain("Task Lineage:");
-      expect(source).toContain("Session Lineage:");
-      expect(source).toContain("Child Runs:");
-      expect(source).toContain("Child Sessions:");
-      expect(source).toContain("Family Runs:");
-      expect(source).toContain("Family Sessions:");
-      expect(source).toContain("Open Child Run");
-    });
-
-    it(`${label} exposes governance and goal context in run details`, () => {
-      expect(source).toContain("Governance & Goals");
-      expect(source).toContain("Primary Goal:");
-      expect(source).toContain("Goal Ancestry:");
-      expect(source).toContain("Budget Window:");
-      expect(source).toContain("Approval Hold");
-      expect(source).toContain("Approval Pending");
-      expect(source).toContain("Heartbeat Run:");
-      expect(source).toContain("Wakeup Request:");
-      expect(source).toContain("Approve Run");
-      expect(source).toContain("Deny Run");
-    });
-
-    it(`${label} exposes workflow team coordination context in run details`, () => {
-      expect(source).toContain("workflowTeamState");
-      expect(source).toContain("teamSummary");
-      expect(source).toContain("Team Coordination");
-      expect(source).toContain("Shared Team Tasks");
-      expect(source).toContain("Team Messages");
-      expect(source).toContain("Coordination Events");
-      expect(source).toContain("Lead:");
-      expect(source).toContain("Default Channel:");
-      expect(source).toContain("summarizeWorkflowTeamTaskEntry");
-      expect(source).toContain("summarizeWorkflowTeamMessageEntry");
-    });
-
-    it(`${label} exposes complete state-ledger audit sections in run details`, () => {
-      expect(source).toContain("State Ledger Audit");
-      expect(source).toContain("Workflow Events:");
-      expect(source).toContain("Known Sessions:");
-      expect(source).toContain("Known Agents:");
-      expect(source).toContain("Session & Agent Activity");
-      expect(source).toContain("Tool Calls");
-      expect(source).toContain("Artifacts");
-      expect(source).toContain("Operator Actions");
-      expect(source).toContain("Claim Events");
-      expect(source).toContain("Promoted Strategy Events");
-      expect(source).toContain("No workflow lifecycle events recorded in the state ledger.");
-    });
-
-    it(`${label} exposes the operator approval queue in run history`, () => {
-      expect(source).toContain("Approval Queue");
-      expect(source).toContain("Pending Approvals");
-      expect(source).toContain("Approve Request");
-      expect(source).toContain("Deny Request");
-      expect(source).toContain("/api/workflows/approvals");
-    });
-
-    it(`${label} exposes scope filters and target routing for the approval queue`, () => {
-      expect(source).toContain("approvalScopeFilter");
-      expect(source).toContain("normalizeApprovalScopeType");
-      expect(source).toContain("getApprovalScopeBadgeStyles");
-      expect(source).toContain("Open Harness Monitor");
-      expect(source).toContain("No approval requests match the selected scope filter.");
+      expect(source).toContain("graphBefore");
+      expect(source).toContain("graphAfter");
     });
 
     it(`${label} exposes explicit edge port mapping controls`, () => {
@@ -136,8 +54,8 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("Source Port");
       expect(source).toContain("Target Port");
       expect(source).toContain("updateEdgePortMapping");
-      expect(source).toContain("Select source port");
-      expect(source).toContain("Select target port");
+      expect(source).toContain("Unknown output port");
+      expect(source).toContain("Unknown input port");
     });
   }
 
@@ -154,12 +72,4 @@ describe("workflow run history UI pagination", () => {
       expect(source).not.toContain("validateEdgePortMapping");
     });
   }
-
-  it("ui exposes durable session-family and ledger source context in run details", () => {
-    expect(uiSource).toContain("Durable Sessions:");
-    expect(uiSource).toContain("Durable Session Family:");
-    expect(uiSource).toContain("Source:");
-    expect(uiSource).toContain("state ledger / SQLite");
-    expect(uiSource).toContain("All Sessions:");
-  });
 });

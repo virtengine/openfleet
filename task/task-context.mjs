@@ -5,12 +5,6 @@
  * attribution behaviors can stay task-scoped by default.
  */
 
-import { getStorePath, getTask, getTaskRuns } from "./task-store.mjs";
-import {
-  normalizeTaskRunJournalRef,
-  resolveTaskRunJournalPaths,
-} from "../workspace/execution-journal.mjs";
-
 const MODE_TASK = "task";
 const MODE_ALWAYS = "always";
 const MODE_OFF = "off";
@@ -202,35 +196,4 @@ export function shouldAutoInstallGitHooks(options = {}) {
 export function shouldRunAgentHookBridge(env = process.env) {
   if (isEnvFlagEnabled(env.BOSUN_HOOKS_FORCE, false)) return true;
   return hasBosunTaskContext(env);
-}
-
-function isTaskRunActive(run = {}) {
-  const status = String(run?.status || "").trim().toLowerCase();
-  return Boolean(status) && !["done", "completed", "cancelled", "canceled"].includes(status);
-}
-
-export function getBosunTaskExecutionJournalContext(options = {}) {
-  const env = options.env || process.env;
-  const taskId = String(options.taskId || resolveBosunTaskId(env) || "").trim();
-  if (!taskId || !isBosunManagedSession(env)) return null;
-
-  const task = options.task || getTask(taskId);
-  if (!task) return null;
-
-  const runs = Array.isArray(options.runs) ? options.runs : getTaskRuns(taskId);
-  const activeRun = [...runs].reverse().find((run) => isTaskRunActive(run)) || runs.at(-1) || null;
-  const journalRef = normalizeTaskRunJournalRef(activeRun?.journal || activeRun?.meta?.journal);
-  const journal = journalRef
-    ? {
-        ...journalRef,
-        paths: resolveTaskRunJournalPaths(journalRef, { taskStorePath: getStorePath() }),
-      }
-    : null;
-
-  return {
-    taskId,
-    task,
-    activeRun,
-    journal,
-  };
 }

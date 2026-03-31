@@ -171,9 +171,6 @@ function execGitArgsSync(args, options = {}) {
     throw new Error("execGitArgsSync requires a non-empty args array");
   }
   const env = makeIsolatedGitEnv(options.env);
-  if (env.GIT_TERMINAL_PROMPT == null) env.GIT_TERMINAL_PROMPT = "0";
-  if (env.GCM_INTERACTIVE == null) env.GCM_INTERACTIVE = "never";
-  if (env.GIT_ASKPASS == null) env.GIT_ASKPASS = "echo";
   const gitArgs = args.map((arg) => String(arg));
   let lastEnoent = null;
   for (const gitBinary of resolveGitCandidates(env)) {

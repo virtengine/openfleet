@@ -46,7 +46,6 @@ describe("ui-server TUI websocket bridge", () => {
     "TELEGRAM_UI_TUNNEL",
     "BOSUN_STATS_BROADCAST_MS",
     "BOSUN_ENV_NO_OVERRIDE",
-    "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
   ];
   const ajv = new Ajv({ allErrors: true, strict: false });
   const validateStats = ajv.compile(TUI_EVENT_SCHEMAS["monitor:stats"]);
@@ -63,7 +62,6 @@ describe("ui-server TUI websocket bridge", () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_STATS_BROADCAST_MS = "25";
-    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
     configDir = mkdtempSync(join(tmpdir(), "bosun-ui-tui-ws-"));
     resetSessionTracker({ persistDir: null });
   });
@@ -140,7 +138,7 @@ describe("ui-server TUI websocket bridge", () => {
     ws.close();
   }, 10000);
 
-  it("emits canonical session snapshots for message activity", async () => {
+  it("emits canonical session events for message activity", async () => {
     const mod = await import("../server/ui-server.mjs");
     mod.injectUiDependencies({ configDir });
 
@@ -169,65 +167,39 @@ describe("ui-server TUI websocket bridge", () => {
     const tracker = getSessionTracker({ persistDir: null });
     tracker.startSession("task-1", "Task 1");
 
-    tracker.recordEvent("task-1", {
-      role: "user",
-      content: "please help",
-      timestamp: "2026-03-27T10:00:00.000Z",
-    });
-    tracker.recordEvent("task-1", {
-      role: "assistant",
-      content: "hello from tui bridge",
-      timestamp: "2026-03-27T10:00:04.000Z",
-      usage: { inputTokens: 12, outputTokens: 20, totalTokens: 32 },
-    });
+    const startedEvent = await waitFor(() => messages.find((message) => {
+      const reason = String(message.payload?.event?.reason || "");
+      return message.type === "session:event"
+        && message.payload?.taskId === "task-1"
+        && message.payload?.event?.kind === "state"
+        && (reason.includes("start") || reason.includes("create"));
+    }));
+    const startedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "active")));
 
-    tracker.endSession("task-1", "completed");
+    tracker.recordEvent("task-1", { role: "assistant", content: "hello from tui bridge" });
 
-    const endedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "completed")), { timeoutMs: 10000 });
-    const sessionsUpdate = findLatestMessage(
+    const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message"));
+    const sessionsUpdate = await waitFor(() => findLatestMessage(
       messages,
       (message) => message.type === "sessions:update"
         && Array.isArray(message.payload)
-        && message.payload.some((session) => session.taskId === "task-1" && session.turnCount === 1),
-    );
-    const sessionEvent = findLatestMessage(
-      messages,
-      (message) => message.type === "session:event"
-        && message.payload?.taskId === "task-1"
-        && message.payload?.event?.kind === "message"
-        && message.payload?.session?.turnCount === 1,
-    );
-    const rawSessionMessage = findLatestMessage(
-      messages,
-      (message) => message.type === "session-message"
-        && message.payload?.taskId === "task-1"
-        && message.payload?.message?.role === "assistant",
-    );
-    const endedEvent = findLatestMessage(
-      messages,
-      (message) => message.type === "session:event"
-        && message.payload?.taskId === "task-1"
-        && message.payload?.event?.kind === "state"
-        && String(message.payload?.event?.reason || "").includes("end"),
-    );
+        && message.payload.some((session) => session.taskId === "task-1"),
+    ));
 
-    expect(sessionsUpdate).toBeTruthy();
+    tracker.endSession("task-1", "completed");
+
+    const endedEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "state" && String(message.payload?.event?.reason || "").includes("end")));
+    const endedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "completed")));
+
+    expect(validateSessionEvent(startedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
+    expect(validateSessions(startedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
+    expect(validateSessionEvent(sessionEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
     expect(validateSessions(sessionsUpdate.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
-    expect(sessionsUpdate.payload.find((session) => session.taskId === "task-1")?.turnCount).toBe(1);
-    if (sessionEvent) {
-      expect(validateSessionEvent(sessionEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
-      expect(sessionEvent.payload?.session?.turnCount).toBe(1);
-    } else if (rawSessionMessage) {
-      expect(rawSessionMessage.payload?.session?.turnCount).toBe(1);
-      expect(rawSessionMessage.payload?.message?.content).toBe("hello from tui bridge");
-    }
-    if (endedEvent) {
-      expect(validateSessionEvent(endedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
-    }
+    expect(validateSessionEvent(endedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
     expect(validateSessions(endedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
 
     ws.close();
-  }, 20000);
+  }, 10000);
 
   it("emits canonical sessions:update snapshots for session API mutations", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -282,3 +254,4 @@ describe("ui-server TUI websocket bridge", () => {
     ws.close();
   }, 10000);
 });
+

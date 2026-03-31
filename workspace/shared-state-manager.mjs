@@ -12,12 +12,6 @@ import { readFile, writeFile, mkdir, rename, unlink, copyFile } from "node:fs/pr
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
-import {
-  acquireScopeLocks,
-  inferScopePaths,
-  releaseScopeLocks,
-  renewScopeLocks,
-} from "./scope-locks.mjs";
 
 /**
  * @typedef {Object} EventLogEntry
@@ -38,8 +32,6 @@ import {
  * @property {number} retryCount - Number of previous attempts
  * @property {string} [lastError] - Error message from last failure
  * @property {string} [ignoreReason] - Reason task should be ignored by agents
- * @property {string[]} [scopePaths] - Paths currently locked for this task
- * @property {object} [scopeLockMetadata] - Metadata used when claiming scope locks
  * @property {EventLogEntry[]} eventLog - Chronological event history
  */
 
@@ -305,90 +297,6 @@ function isHeartbeatStale(heartbeat, staleThresholdMs) {
   return now - heartbeatTime > thresholdMs;
 }
 
-function getScopeLockOptions(existingState, options = {}, repoRoot = process.cwd()) {
-  const metadata =
-    options?.metadata && typeof options.metadata === "object"
-      ? { ...options.metadata }
-      : existingState?.scopeLockMetadata && typeof existingState.scopeLockMetadata === "object"
-        ? { ...existingState.scopeLockMetadata }
-        : {};
-  const scopePaths = inferScopePaths(
-    {
-      scopePaths: options?.scopePaths || existingState?.scopePaths || [],
-      metadata,
-    },
-    repoRoot,
-  );
-  return { scopePaths, metadata };
-}
-
-async function transferScopeLocksForClaim({
-  taskId,
-  repoRoot = process.cwd(),
-  ttlSeconds = DEFAULT_TTL_SECONDS,
-  nextOwnerId,
-  nextAttemptToken,
-  nextScopePaths = [],
-  nextMetadata = {},
-  previousState = null,
-}) {
-  const previousLockOptions = previousState
-    ? getScopeLockOptions(
-        previousState,
-        {
-          metadata: previousState.scopeLockMetadata || {},
-          scopePaths: previousState.scopePaths || [],
-        },
-        repoRoot,
-      )
-    : { scopePaths: [], metadata: {} };
-
-  if (previousState?.ownerId && previousState?.attemptToken) {
-    await releaseScopeLocks({
-      taskId,
-      ownerId: previousState.ownerId,
-      attemptToken: previousState.attemptToken,
-      repoRoot,
-    });
-  }
-
-  const lockResult = await acquireScopeLocks({
-    taskId,
-    ownerId: nextOwnerId,
-    attemptToken: nextAttemptToken,
-    repoRoot,
-    ttlSeconds,
-    metadata: nextMetadata,
-    scopePaths: nextScopePaths,
-  });
-  if (lockResult.success || !previousState?.ownerId || !previousState?.attemptToken) {
-    return lockResult;
-  }
-
-  try {
-    const restoreResult = await acquireScopeLocks({
-      taskId,
-      ownerId: previousState.ownerId,
-      attemptToken: previousState.attemptToken,
-      repoRoot,
-      ttlSeconds: previousState.ttlSeconds || ttlSeconds,
-      metadata: previousLockOptions.metadata,
-      scopePaths: previousLockOptions.scopePaths,
-    });
-    if (!restoreResult.success) {
-      console.warn(
-        `[SharedStateManager] Failed to restore previous scope locks for ${taskId}: ${restoreResult.reason || "unknown"}`,
-      );
-    }
-  } catch (restoreError) {
-    console.warn(
-      `[SharedStateManager] Failed to restore previous scope locks for ${taskId}: ${restoreError?.message || restoreError}`,
-    );
-  }
-
-  return lockResult;
-}
-
 /**
  * Resolve conflict between two claims
  * @param {TaskSharedState} existing - Existing state
@@ -432,7 +340,6 @@ export async function claimTaskInSharedState(
   attemptToken,
   ttlSeconds = DEFAULT_TTL_SECONDS,
   repoRoot = process.cwd(),
-  options = {},
 ) {
   const registryPath = getRegistryPath(repoRoot);
   const staleThresholdMs = ttlSeconds * 1000;
@@ -441,7 +348,6 @@ export async function claimTaskInSharedState(
     const registry = await loadRegistry(registryPath);
     const existing = registry.tasks[taskId];
     const now = new Date().toISOString();
-    const { scopePaths, metadata } = getScopeLockOptions(existing, options, repoRoot);
 
     // Task has ignore flag - cannot claim
     if (existing?.ignoreReason) {
@@ -459,24 +365,6 @@ export async function claimTaskInSharedState(
       existing.attemptStatus === "abandoned" ||
       existing.attemptStatus === "ignored"
     ) {
-      const lockResult = await acquireScopeLocks({
-        taskId,
-        ownerId,
-        attemptToken,
-        repoRoot,
-        ttlSeconds,
-        metadata,
-        scopePaths,
-      });
-      if (!lockResult.success) {
-        return {
-          success: false,
-          reason: lockResult.reason || "scope_lock_conflict",
-          scopeLockConflict: lockResult.conflict || null,
-          scopeLockConflicts: lockResult.conflicts || [],
-        };
-      }
-
       const newState = {
         taskId,
         ownerId,
@@ -486,8 +374,6 @@ export async function claimTaskInSharedState(
         attemptStatus: "claimed",
         retryCount: existing ? existing.retryCount + 1 : 0,
         ttlSeconds,
-        scopePaths: lockResult.scopePaths,
-        scopeLockMetadata: metadata,
         eventLog: existing?.eventLog || [],
       };
 
@@ -508,25 +394,6 @@ export async function claimTaskInSharedState(
       const resolution = resolveConflict(existing, ownerId, existingStaleMs);
 
       if (resolution.winner === ownerId) {
-        const lockResult = await transferScopeLocksForClaim({
-          taskId,
-          repoRoot,
-          ttlSeconds,
-          nextOwnerId: ownerId,
-          nextAttemptToken: attemptToken,
-          nextScopePaths: scopePaths,
-          nextMetadata: metadata,
-          previousState: existing,
-        });
-        if (!lockResult.success) {
-          return {
-            success: false,
-            reason: lockResult.reason || "scope_lock_conflict",
-            scopeLockConflict: lockResult.conflict || null,
-            scopeLockConflicts: lockResult.conflicts || [],
-          };
-        }
-
         // Take over stale claim
         const newState = {
           ...existing,
@@ -537,8 +404,6 @@ export async function claimTaskInSharedState(
           attemptStatus: "claimed",
           retryCount: existing.retryCount + 1,
           ttlSeconds,
-          scopePaths: lockResult.scopePaths,
-          scopeLockMetadata: metadata,
         };
 
         logEvent(
@@ -571,29 +436,9 @@ export async function claimTaskInSharedState(
     }
 
     // Same owner reclaiming - update heartbeat
-    const lockResult = await acquireScopeLocks({
-      taskId,
-      ownerId,
-      attemptToken,
-      repoRoot,
-      ttlSeconds,
-      scopePaths,
-      metadata,
-    });
-    if (!lockResult.success) {
-      return {
-        success: false,
-        reason: lockResult.reason || "scope_lock_owner_mismatch",
-        scopeLockConflict: lockResult.mismatch || null,
-        scopeLockConflicts: lockResult.mismatches || [],
-      };
-    }
-
     existing.ownerHeartbeat = now;
     existing.attemptToken = attemptToken;
     existing.ttlSeconds = ttlSeconds;
-    existing.scopePaths = lockResult.scopePaths;
-    existing.scopeLockMetadata = metadata;
     logEvent(existing, "reclaimed", ownerId);
     registry.tasks[taskId] = existing;
     await saveRegistry(registryPath, registry);
@@ -629,33 +474,12 @@ export async function forceClaimTaskInSharedState(
   attemptToken,
   ttlSeconds = DEFAULT_TTL_SECONDS,
   repoRoot = process.cwd(),
-  options = {},
 ) {
   const registryPath = getRegistryPath(repoRoot);
   try {
     const registry = await loadRegistry(registryPath);
     const existing = registry.tasks[taskId];
     const now = new Date().toISOString();
-    const { scopePaths, metadata } = getScopeLockOptions(existing, options, repoRoot);
-
-    const lockResult = await transferScopeLocksForClaim({
-      taskId,
-      repoRoot,
-      ttlSeconds,
-      nextOwnerId: ownerId,
-      nextAttemptToken: attemptToken,
-      nextScopePaths: scopePaths,
-      nextMetadata: metadata,
-      previousState: existing,
-    });
-    if (!lockResult.success) {
-      return {
-        success: false,
-        reason: lockResult.reason || "scope_lock_conflict",
-        scopeLockConflict: lockResult.conflict || null,
-        scopeLockConflicts: lockResult.conflicts || [],
-      };
-    }
 
     const newState = {
       taskId,
@@ -666,8 +490,6 @@ export async function forceClaimTaskInSharedState(
       attemptStatus: "claimed",
       retryCount: existing ? (existing.retryCount || 0) + 1 : 0,
       ttlSeconds,
-      scopePaths: lockResult.scopePaths,
-      scopeLockMetadata: metadata,
       eventLog: existing?.eventLog || [],
     };
     if (existing?.lastError) newState.lastError = existing.lastError;
@@ -701,7 +523,6 @@ export async function renewSharedStateHeartbeat(
   ownerId,
   attemptToken,
   repoRoot = process.cwd(),
-  options = {},
 ) {
   const registryPath = getRegistryPath(repoRoot);
 
@@ -740,28 +561,8 @@ export async function renewSharedStateHeartbeat(
       };
     }
 
-    const lockResult = await renewScopeLocks({
-      taskId,
-      ownerId,
-      attemptToken,
-      repoRoot,
-      ttlSeconds: state.ttlSeconds || DEFAULT_TTL_SECONDS,
-      scopePaths: state.scopePaths || [],
-      metadata:
-        options?.metadata && typeof options.metadata === "object"
-          ? options.metadata
-          : state.scopeLockMetadata || {},
-    });
-    if (!lockResult.success) {
-      return {
-        success: false,
-        reason: "scope_lock_owner_mismatch",
-      };
-    }
-
     state.ownerHeartbeat = new Date().toISOString();
     state.attemptStatus = "working";
-    state.scopePaths = lockResult.scopePaths;
     logEvent(state, "renewed", ownerId);
 
     await saveRegistry(registryPath, registry);
@@ -826,17 +627,6 @@ export async function releaseSharedState(
     if (errorMessage) {
       state.lastError = errorMessage;
     }
-
-    const releaseAttemptToken =
-      String(state.attemptToken || "") === String(attemptToken || "")
-        ? attemptToken
-        : null;
-    await releaseScopeLocks({
-      taskId,
-      ownerId: ownerId || state.ownerId,
-      attemptToken: releaseAttemptToken,
-      repoRoot,
-    });
 
     logEvent(state, "released", state.ownerId, `status: ${status}`);
 
@@ -927,12 +717,6 @@ export async function sweepStaleSharedStates(
       if (isHeartbeatStale(state.ownerHeartbeat, staleThresholdMs)) {
         state.attemptStatus = "abandoned";
         state.lastError = `Heartbeat stale (last: ${state.ownerHeartbeat})`;
-        await releaseScopeLocks({
-          taskId,
-          ownerId: state.ownerId,
-          attemptToken: state.attemptToken,
-          repoRoot,
-        });
         logEvent(state, "abandoned", "system", "stale_heartbeat");
 
         abandonedTasks.push(taskId);

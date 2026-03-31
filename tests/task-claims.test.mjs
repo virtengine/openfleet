@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 // Mock presence.mjs before importing task-claims.mjs
 vi.mock("../infra/presence.mjs", () => ({
@@ -32,7 +31,6 @@ describe("task-claims", () => {
 
   afterEach(async () => {
     if (tempRoot) {
-      resetStateLedgerCache();
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = null;
     }

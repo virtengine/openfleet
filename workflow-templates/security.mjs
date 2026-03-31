@@ -81,7 +81,7 @@ Limit auto-generated fix PRs to {{maxAutoFixPRs}} in this run.`,
 
     node("create-fix-pr", "action.create_pr", "Handoff Fix Lifecycle", {
       title: "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
-      body: "## Summary\n\nAutomated dependency audit fix. Resolves vulnerabilities flagged by `npm audit` at severity level **{{auditLevel}}** or higher.\n\n## What Changed\n\n- Updated vulnerable dependencies to patched versions\n- Verified no breaking changes via build and test validation",
+      body: "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nBosun PR lifecycle handoff context included.",
       branch: "fix/dep-audit-{{_runId}}",
       baseBranch: "main",
     }, { x: 50, y: 900 }),

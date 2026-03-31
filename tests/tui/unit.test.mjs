@@ -22,9 +22,6 @@ describe("tui unit helpers", () => {
   it("switches tabs from numeric navigation input", () => {
     expect(getNextScreenForInput("status", "2")).toBe("tasks");
     expect(getNextScreenForInput("tasks", "3")).toBe("agents");
-    expect(getNextScreenForInput("logs", "5")).toBe("workflows");
-    expect(getNextScreenForInput("workflows", "6")).toBe("telemetry");
-    expect(getNextScreenForInput("telemetry", "7")).toBe("settings");
     expect(getNextScreenForInput("agents", "x")).toBe("agents");
   });
 

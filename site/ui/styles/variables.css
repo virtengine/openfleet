@@ -665,15 +665,6 @@
   }
 }
 
-/* ── Typography utility: tabular numerals ─────────────────────── */
-:root {
-  --font-variant-numeric-portal: tabular-nums slashed-zero;
-}
-.numeral {
-  font-variant-numeric: var(--font-variant-numeric-portal);
-  letter-spacing: 0.01em;
-}
-
 /* ─── Global keyframes ─── */
 @keyframes fadeInOut {
   0%, 100% { opacity: 0.5; }

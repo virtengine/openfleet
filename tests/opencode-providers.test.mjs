@@ -1,20 +1,51 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 
-import * as providersModule from "../shell/opencode-providers.mjs";
+const execFileMock = vi.fn();
+const execMock = vi.fn();
 
-const { discoverProviders, invalidateCache } = providersModule;
-
-afterEach(() => {
-  vi.restoreAllMocks();
-  invalidateCache();
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    execFile: execFileMock,
+    exec: execMock,
+  };
 });
 
-describe("opencode-providers", () => {
-  it("keeps provider discovery resilient", async () => {
-    vi.spyOn(process, "cwd").mockReturnValue("");
+describe("opencode provider discovery", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    execFileMock.mockReset();
+    execMock.mockReset();
+  });
 
-    const snapshot = await discoverProviders({ force: true });
-    expect(Array.isArray(snapshot.providers)).toBe(true);
-    expect(Array.isArray(snapshot.connectedIds)).toBe(true);
-  }, 15000);
+  it("falls back to basic CLI model listing after verbose 400", async () => {
+    execFileMock
+      .mockImplementationOnce((command, args, options, callback) => {
+        callback(new Error("Failed to list models: 400"));
+      })
+      .mockImplementationOnce((command, args, options, callback) => {
+        callback(null, "openai/gpt-4.1\nanthropic/claude-3-5-sonnet\n", "");
+      });
+
+    execMock
+      .mockImplementationOnce((command, options, callback) => {
+        callback(new Error("Failed to list models: 400"));
+      })
+      .mockImplementationOnce((command, options, callback) => {
+        callback(null, "openai/gpt-4.1\nanthropic/claude-3-5-sonnet\n", "");
+      });
+
+    const mod = await import("../shell/opencode-providers.mjs");
+    const snapshot = await mod.discoverProviders({ force: true });
+
+    expect(snapshot.connectedIds).toEqual(["openai", "anthropic"]);
+    expect(snapshot.allModels.map((model) => model.fullId)).toEqual([
+      "openai/gpt-4.1",
+      "anthropic/claude-3-5-sonnet",
+    ]);
+    const totalCalls = execFileMock.mock.calls.length + execMock.mock.calls.length;
+    expect(totalCalls).toBeGreaterThanOrEqual(2);
+    expect(totalCalls).toBeLessThanOrEqual(3);
+  });
 });

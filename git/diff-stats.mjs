@@ -5,10 +5,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { sanitizeGitEnv } from "./git-safety.mjs";
 
 const TAG = "[diff-stats]";
-const GIT_ENV = sanitizeGitEnv();
 
 /**
  * @typedef {Object} DiffLine
@@ -115,7 +113,7 @@ export function getRecentCommits(worktreePath, maxCommits = 10) {
     const result = spawnSync(
       "git",
       ["log", "--oneline", `--max-count=${maxCommits}`, "origin/main..HEAD"],
-      { cwd: worktreePath, encoding: "utf8", timeout: 10_000, env: GIT_ENV },
+      { cwd: worktreePath, encoding: "utf8", timeout: 10_000 },
     );
 
     if (result.status === 0 && (result.stdout || "").trim()) {
@@ -125,7 +123,7 @@ export function getRecentCommits(worktreePath, maxCommits = 10) {
     const fallback = spawnSync(
       "git",
       ["log", "--oneline", `--max-count=${maxCommits}`],
-      { cwd: worktreePath, encoding: "utf8", timeout: 10_000, env: GIT_ENV },
+      { cwd: worktreePath, encoding: "utf8", timeout: 10_000 },
     );
 
     if (fallback.status === 0 && (fallback.stdout || "").trim()) {
@@ -399,7 +397,7 @@ function tryNumstat(cwd, range, timeoutMs) {
     const result = spawnSync(
       "git",
       ["diff", "--find-renames", "--find-copies", "--numstat", range],
-      { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"], env: GIT_ENV },
+      { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"] },
     );
 
     if (result.status !== 0 || !(result.stdout || "").trim()) return null;
@@ -451,7 +449,7 @@ function tryStat(cwd, range, timeoutMs) {
     const result = spawnSync(
       "git",
       ["diff", "--find-renames", "--find-copies", "--stat", range],
-      { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"], env: GIT_ENV },
+      { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"] },
     );
 
     if (result.status !== 0 || !(result.stdout || "").trim()) return null;
@@ -513,7 +511,7 @@ function tryPatch(cwd, range, timeoutMs, contextLines = 3) {
         `--unified=${Math.max(0, Number(contextLines) || 3)}`,
         range,
       ],
-      { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"], env: GIT_ENV },
+      { cwd, encoding: "utf8", timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"] },
     );
 
     if (result.status !== 0 || !(result.stdout || "").trim()) return null;

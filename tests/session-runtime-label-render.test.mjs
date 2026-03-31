@@ -73,11 +73,11 @@ for (const relPath of appFiles) {
       expect(source).toContain("function filterSessionsByType");
       expect(source).toContain("const allSessions = sessionsData.value || [];");
       expect(source).toContain("const sessions = filterSessionsByType(allSessions, sessionType);");
+      expect(source).toContain("if (sessions.length > 0) return;");
+      expect(source).toContain("if (sessions.some((session) => session?.id === selectedSessionId.value)) return;");
       expect(source).toContain("defaultType=${sessionType}");
       expect(source).not.toContain("const sessions = sessionsData.value || [];");
       expect(source).not.toContain("defaultType=\"primary\"");
-      expect(source).not.toContain("loadSessions({ type: sessionType })");
-      expect(source).not.toContain("selectedSessionId.value = next.id");
     });
   });
 }

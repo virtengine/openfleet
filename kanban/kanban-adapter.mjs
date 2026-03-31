@@ -5,13 +5,12 @@
  *   - Internal Store          — default, source-of-truth local kanban
  *   - GitHub Issues           — native GitHub integration with shared state persistence
  *   - Jira                    — enterprise project management via Jira REST v3
- *   - GNAP (projection-only)  — optional GNAP-compatible projection registration
  *
  * This module handles TASK LIFECYCLE (tracking, status, metadata) only.
  * Code execution is handled separately by agent-pool.mjs.
  *
  * Configuration:
- *   - `KANBAN_BACKEND` env var: "internal" | "github" | "jira" | "gnap" (default: "internal")
+ *   - `KANBAN_BACKEND` env var: "internal" | "github" | "jira" (default: "internal")
  *   - `bosun.config.json` → `kanban.backend` field
  *
  * EXPORTS:
@@ -69,19 +68,6 @@ import {
   mergeTaskAttachments,
 } from "../task/task-attachments.mjs";
 import { randomUUID } from "node:crypto";
-import {
-  buildProjectedTaskDocument,
-  deleteProjectedTask,
-  ensureProjectionScaffold,
-  listProjectedMessagesForTask,
-  listProjectedRunsForTask,
-  listProjectedTaskRecords,
-  materializeProjectedTask,
-  readProjectedTaskRecord,
-  rebuildAgentsRegistry,
-  resolveGnapProjectionConfig,
-  upsertProjectedTask,
-} from "./gnap-projection-store.mjs";
 
 const TAG = "[kanban]";
 
@@ -1361,220 +1347,6 @@ function resolveTaskField(task, key, fallback = null) {
   if (task?.[key] != null) return task[key];
   if (task?.meta?.[key] != null) return task.meta[key];
   return fallback;
-}
-
-function parseTaskTimestampMs(value) {
-  const parsed = Date.parse(String(value || ""));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function pickLatestTimestamp(...values) {
-  let winner = null;
-  let winnerMs = 0;
-  for (const value of values) {
-    const normalized = normalizeTaskStringField(value);
-    if (!normalized) continue;
-    const parsed = parseTaskTimestampMs(normalized);
-    if (!winner || parsed >= winnerMs) {
-      winner = normalized;
-      winnerMs = parsed;
-    }
-  }
-  return winner;
-}
-
-function mergeTaskStringLists(...lists) {
-  const seen = new Set();
-  const merged = [];
-  for (const list of lists) {
-    for (const value of normalizeTaskStringList(list)) {
-      if (seen.has(value)) continue;
-      seen.add(value);
-      merged.push(value);
-    }
-  }
-  return merged;
-}
-
-function mergeTaskCommentCollections(...lists) {
-  const merged = new Map();
-  let sequence = 0;
-  for (const list of lists) {
-    for (const entry of Array.isArray(list) ? list : []) {
-      if (!entry || typeof entry !== "object") continue;
-      const normalized = { ...entry };
-      const key =
-        normalizeTaskStringField(normalized.id) ||
-        [
-          normalizeTaskStringField(normalized.body),
-          normalizeTaskStringField(normalized.author),
-          normalizeTaskStringField(normalized.source),
-          normalizeTaskStringField(normalized.createdAt),
-        ].join("|") ||
-        `comment-${sequence++}`;
-      const current = merged.get(key) || {};
-      merged.set(key, { ...current, ...normalized });
-    }
-  }
-  return [...merged.values()].sort((left, right) =>
-    String(left?.createdAt || "").localeCompare(String(right?.createdAt || "")),
-  );
-}
-
-function mergeTaskWorkflowRunCollections(...lists) {
-  const merged = new Map();
-  let sequence = 0;
-  for (const list of lists) {
-    for (const entry of Array.isArray(list) ? list : []) {
-      if (!entry || typeof entry !== "object") continue;
-      const normalized = { ...entry };
-      const key =
-        normalizeTaskStringField(normalized.runId) ||
-        [
-          normalizeTaskStringField(normalized.workflowId),
-          normalizeTaskStringField(normalized.startedAt),
-          normalizeTaskStringField(normalized.endedAt),
-          normalizeTaskStringField(normalized.source),
-          normalizeTaskStringField(normalized.summary),
-        ].join("|") ||
-        `run-${sequence++}`;
-      const current = merged.get(key) || {};
-      merged.set(key, { ...current, ...normalized });
-    }
-  }
-  return [...merged.values()].sort((left, right) =>
-    String(left?.startedAt || left?.endedAt || "").localeCompare(
-      String(right?.startedAt || right?.endedAt || ""),
-    ),
-  );
-}
-
-function mergeTaskTimelineCollections(...lists) {
-  const merged = new Map();
-  let sequence = 0;
-  for (const list of lists) {
-    for (const entry of Array.isArray(list) ? list : []) {
-      if (!entry || typeof entry !== "object") continue;
-      const normalized = { ...entry };
-      const key =
-        [
-          normalizeTaskStringField(normalized.type),
-          normalizeTaskStringField(normalized.status),
-          normalizeTaskStringField(normalized.to_status || normalized.toStatus),
-          normalizeTaskStringField(normalized.timestamp),
-          normalizeTaskStringField(normalized.message),
-          normalizeTaskStringField(normalized.source),
-          normalizeTaskStringField(normalized.actor),
-        ].join("|") ||
-        `timeline-${sequence++}`;
-      const current = merged.get(key) || {};
-      merged.set(key, { ...current, ...normalized });
-    }
-  }
-  return [...merged.values()].sort((left, right) =>
-    String(left?.timestamp || "").localeCompare(String(right?.timestamp || "")),
-  );
-}
-
-function mergeTaskStatusHistoryCollections(...lists) {
-  const merged = new Map();
-  let sequence = 0;
-  for (const list of lists) {
-    for (const entry of Array.isArray(list) ? list : []) {
-      if (!entry || typeof entry !== "object") continue;
-      const normalized = { ...entry };
-      const key =
-        [
-          normalizeTaskStringField(normalized.status),
-          normalizeTaskStringField(normalized.timestamp),
-          normalizeTaskStringField(normalized.source),
-          normalizeTaskStringField(normalized.actor),
-        ].join("|") ||
-        `status-history-${sequence++}`;
-      const current = merged.get(key) || {};
-      merged.set(key, { ...current, ...normalized });
-    }
-  }
-  return [...merged.values()].sort((left, right) =>
-    String(left?.timestamp || "").localeCompare(String(right?.timestamp || "")),
-  );
-}
-
-function buildProjectedStatusHistory(projectedTask = {}) {
-  const history = [];
-  const timeline = Array.isArray(projectedTask?.meta?.timeline)
-    ? projectedTask.meta.timeline
-    : [];
-  for (const entry of timeline) {
-    const rawStatus = normalizeTaskStringField(
-      entry?.to_status || entry?.toStatus || entry?.status,
-    );
-    if (!rawStatus) continue;
-    history.push({
-      status: normaliseStatus(rawStatus),
-      source: normalizeTaskStringField(entry?.source) || "gnap-projection",
-      actor: normalizeTaskStringField(entry?.actor),
-      timestamp: normalizeTaskStringField(entry?.timestamp),
-    });
-  }
-  return history;
-}
-
-function mergeProjectedTaskIntoLocal(localTask = {}, projectedTask = null) {
-  if (!projectedTask?.id) return localTask;
-  const comments = mergeTaskCommentCollections(localTask.comments, projectedTask.comments);
-  const attachments = mergeTaskAttachments(localTask.attachments, projectedTask.attachments);
-  const workflowRuns = mergeTaskWorkflowRunCollections(
-    localTask.workflowRuns,
-    projectedTask.workflowRuns,
-  );
-  const timeline = mergeTaskTimelineCollections(
-    localTask.timeline,
-    localTask.meta?.timeline,
-    projectedTask.meta?.timeline,
-  );
-  const statusHistory = mergeTaskStatusHistoryCollections(
-    localTask.statusHistory,
-    localTask.meta?.statusHistory,
-    buildProjectedStatusHistory(projectedTask),
-  );
-  const assignees = mergeTaskStringLists(localTask.assignees, projectedTask.assignees);
-  return {
-    ...localTask,
-    assignee: localTask.assignee || projectedTask.assignee || assignees[0] || null,
-    assignees,
-    projectId: localTask.projectId || projectedTask.projectId || "gnap",
-    workspace: localTask.workspace || projectedTask.workspace || null,
-    repository: localTask.repository || projectedTask.repository || null,
-    repositories: mergeTaskStringLists(localTask.repositories, projectedTask.repositories),
-    tags: mergeTaskStringLists(localTask.tags, projectedTask.tags),
-    draft: localTask.draft === true || projectedTask.draft === true,
-    baseBranch: localTask.baseBranch || projectedTask.baseBranch || null,
-    branchName: localTask.branchName || projectedTask.branchName || null,
-    prNumber: localTask.prNumber ?? projectedTask.prNumber ?? null,
-    prUrl: localTask.prUrl || projectedTask.prUrl || null,
-    updatedAt: pickLatestTimestamp(localTask.updatedAt, projectedTask.updatedAt),
-    lastActivityAt: pickLatestTimestamp(
-      localTask.lastActivityAt,
-      localTask.updatedAt,
-      projectedTask.lastActivityAt,
-      projectedTask.updatedAt,
-    ),
-    comments,
-    attachments,
-    workflowRuns,
-    timeline,
-    statusHistory,
-    meta: {
-      ...(localTask.meta || {}),
-      timeline,
-      statusHistory,
-      comments,
-      attachments,
-      workflowRuns,
-      evidence: projectedTask.meta?.evidence || localTask.meta?.evidence || {},
-    },
-  };
 }
 
 function looksLikeKanbanEntity(value) {
@@ -6066,327 +5838,10 @@ class JiraAdapter {
 // Adapter Registry & Resolution
 // ---------------------------------------------------------------------------
 
-class GnapProjectionAdapter {
-  constructor(config = {}) {
-    this.name = "gnap";
-    this.backend = "gnap";
-    this._config = resolveGnapProjectionConfig(config);
-    this._internal = new InternalAdapter();
-  }
-
-  async _ensureProjectionScaffold() {
-    await ensureProjectionScaffold(this._config);
-  }
-
-  async _projectNormalizedTask(task, rawTask = null) {
-    const normalizedTask = task || null;
-    if (!normalizedTask?.id) return null;
-    await this._ensureProjectionScaffold();
-    const sourceTask = rawTask || getInternalTask(normalizedTask.id) || normalizedTask;
-    const projectedTask = await this._loadProjectedTask(normalizedTask.id);
-    const mergedTask = mergeProjectedTaskIntoLocal(normalizedTask, projectedTask);
-    const mergedSourceTask = {
-      ...(sourceTask && typeof sourceTask === "object" ? sourceTask : {}),
-      comments: mergedTask.comments,
-      attachments: mergedTask.attachments,
-      workflowRuns: mergedTask.workflowRuns,
-      timeline: mergedTask.timeline,
-      statusHistory: mergedTask.statusHistory,
-      assignees: mergedTask.assignees,
-      repositories: mergedTask.repositories,
-      tags: mergedTask.tags,
-      meta: {
-        ...(sourceTask?.meta || {}),
-        ...(mergedTask.meta || {}),
-        comments: mergedTask.comments,
-        attachments: mergedTask.attachments,
-        workflowRuns: mergedTask.workflowRuns,
-        timeline: mergedTask.timeline,
-        statusHistory: mergedTask.statusHistory,
-      },
-    };
-    const projection = buildProjectedTaskDocument(
-      mergedTask,
-      mergedSourceTask,
-      this._config,
-    );
-    await upsertProjectedTask(
-      this._config,
-      projection.task,
-      projection.runs,
-      projection.messages,
-    );
-    await rebuildAgentsRegistry(this._config);
-    const projectedRecord = await readProjectedTaskRecord(this._config, normalizedTask.id);
-    const runDocs = await listProjectedRunsForTask(this._config, normalizedTask.id);
-    const messageDocs = await listProjectedMessagesForTask(this._config, normalizedTask.id);
-    return materializeProjectedTask(
-      projectedRecord?.doc || projection.task,
-      projectedRecord?.filePath || null,
-      runDocs,
-      messageDocs,
-    );
-  }
-
-  _buildInternalTaskPatch(projectedTask, projectedDoc = {}, filePath = null, options = {}) {
-    if (!projectedTask?.id) return null;
-    const existingTask = options.existingTask || null;
-    const preferProjectedCanonical = options.preferProjectedCanonical !== false;
-    const existingImported = existingTask?.meta?.gnap?.imported === true;
-    const imported =
-      existingImported ||
-      !existingTask ||
-      preferProjectedCanonical;
-    const canonicalTask = preferProjectedCanonical ? projectedTask : (existingTask || projectedTask);
-    const comments = mergeTaskCommentCollections(existingTask?.comments, projectedTask.comments);
-    const attachments = mergeTaskAttachments(existingTask?.attachments, projectedTask.attachments);
-    const workflowRuns = mergeTaskWorkflowRunCollections(
-      existingTask?.workflowRuns,
-      projectedTask.workflowRuns,
-    );
-    const timeline = mergeTaskTimelineCollections(
-      existingTask?.timeline,
-      existingTask?.meta?.timeline,
-      projectedTask.meta?.timeline,
-    );
-    const statusHistory = mergeTaskStatusHistoryCollections(
-      existingTask?.statusHistory,
-      existingTask?.meta?.statusHistory,
-      buildProjectedStatusHistory(projectedTask),
-    );
-    const assignees = mergeTaskStringLists(existingTask?.assignees, projectedTask.assignees);
-    const repositories = mergeTaskStringLists(
-      existingTask?.repositories,
-      projectedTask.repositories,
-    );
-    const tags = mergeTaskStringLists(existingTask?.tags, projectedTask.tags);
-    return {
-      id: projectedTask.id,
-      title: canonicalTask.title,
-      description: canonicalTask.description,
-      status: canonicalTask.status,
-      assignee: canonicalTask.assignee || assignees[0] || null,
-      assignees,
-      priority: canonicalTask.priority,
-      projectId: canonicalTask.projectId,
-      workspace: canonicalTask.workspace,
-      repository: canonicalTask.repository,
-      repositories,
-      tags,
-      draft: canonicalTask.draft === true,
-      baseBranch: canonicalTask.baseBranch,
-      branchName: canonicalTask.branchName,
-      prNumber: canonicalTask.prNumber,
-      prUrl: canonicalTask.prUrl,
-      createdAt: existingTask?.createdAt || projectedTask.createdAt,
-      updatedAt: pickLatestTimestamp(existingTask?.updatedAt, projectedTask.updatedAt),
-      lastActivityAt: pickLatestTimestamp(
-        existingTask?.lastActivityAt,
-        existingTask?.updatedAt,
-        projectedTask.lastActivityAt,
-        projectedTask.updatedAt,
-      ),
-      timeline,
-      statusHistory,
-      comments,
-      attachments,
-      workflowRuns,
-      meta: {
-        ...(existingTask?.meta || {}),
-        ...(projectedTask.meta || {}),
-        timeline,
-        statusHistory,
-        comments,
-        attachments,
-        workflowRuns,
-        evidence: projectedTask.meta?.evidence || existingTask?.meta?.evidence || {},
-        gnap: {
-          ...(existingTask?.meta?.gnap || {}),
-          ...(projectedTask.meta?.gnap || {}),
-          imported,
-          observed: true,
-          projectionOnly: true,
-          taskPath: filePath || projectedTask.meta?.gnap?.taskPath || null,
-          syncMode: this._config.syncMode,
-          upstreamUpdatedAt: String(projectedDoc?.updated_at || projectedTask.updatedAt || "").trim() || null,
-        },
-      },
-    };
-  }
-
-  async _ingestProjectedTask(doc, filePath) {
-    const taskId = String(doc?.task_id || "").trim();
-    if (!taskId) return null;
-    const runDocs = await listProjectedRunsForTask(this._config, taskId);
-    const messageDocs = await listProjectedMessagesForTask(this._config, taskId);
-    const projectedTask = materializeProjectedTask(doc, filePath, runDocs, messageDocs);
-    const existing = this._internal._normalizeTask(getInternalTask(taskId));
-    const projectedUpdatedMs = Date.parse(String(doc?.updated_at || projectedTask.updatedAt || "")) || 0;
-    const existingUpdatedMs = Date.parse(String(existing?.updatedAt || existing?.lastActivityAt || "")) || 0;
-    const existingImported =
-      existing?.meta?.gnap?.imported === true
-      || String(existing?.meta?.gnap?.taskPath || "").trim() === String(filePath || "").trim();
-    const shouldApply = !existing || existingImported || projectedUpdatedMs >= existingUpdatedMs;
-    const patch = this._buildInternalTaskPatch(projectedTask, doc, filePath, {
-      existingTask: existing,
-      preferProjectedCanonical: shouldApply,
-    });
-    if (!patch) return projectedTask;
-
-    if (!existing) {
-      addInternalTask(patch);
-    } else {
-      patchInternalTask(taskId, patch);
-    }
-    await waitForStoreWrites();
-    return this._internal.getTask(taskId);
-  }
-
-  async _syncAllInternalTasks() {
-    await this._ensureProjectionScaffold();
-    const projectedTasks = await listProjectedTaskRecords(this._config);
-    for (const { doc, filePath } of projectedTasks) {
-      const projectedTaskId = String(doc?.task_id || "").trim();
-      if (!projectedTaskId) continue;
-      await this._ingestProjectedTask(doc, filePath);
-    }
-    const internalTasks = await this._internal.listTasks("internal");
-    for (const task of internalTasks) {
-      if (!task?.id) continue;
-      await this._projectNormalizedTask(task);
-    }
-    await rebuildAgentsRegistry(this._config);
-  }
-
-  async _loadProjectedTask(taskId) {
-    const normalizedId = String(taskId || "").trim();
-    if (!normalizedId) return null;
-    const taskRecord = await readProjectedTaskRecord(this._config, normalizedId);
-    if (!taskRecord?.doc) return null;
-    const runDocs = await listProjectedRunsForTask(this._config, normalizedId);
-    const messageDocs = await listProjectedMessagesForTask(this._config, normalizedId);
-    return materializeProjectedTask(
-      taskRecord.doc,
-      taskRecord.filePath,
-      runDocs,
-      messageDocs,
-    );
-  }
-
-  async listProjects() {
-    await this._ensureProjectionScaffold();
-    return [
-      {
-        id: "gnap",
-        name: "GNAP Projection",
-        backend: "gnap",
-        meta: {
-          projectionOnly: true,
-          ...this._config,
-        },
-      },
-    ];
-  }
-
-  async listTasks(projectId, filters = {}) {
-    await this._syncAllInternalTasks();
-    const statusFilter = filters?.status ? normaliseStatus(filters.status) : null;
-    const limit = Number(filters?.limit || 0);
-    const normalizedProjectId = String(projectId || "").trim().toLowerCase();
-    const records = await listProjectedTaskRecords(this._config);
-    let tasks = [];
-    for (const { doc, filePath } of records) {
-      const taskId = String(doc?.task_id || "").trim();
-      const runDocs = await listProjectedRunsForTask(this._config, taskId);
-      const messageDocs = await listProjectedMessagesForTask(this._config, taskId);
-      tasks.push(materializeProjectedTask(doc, filePath, runDocs, messageDocs));
-    }
-    if (normalizedProjectId && normalizedProjectId !== "gnap") {
-      tasks = tasks.filter(
-        (task) =>
-          String(task.projectId || "").trim().toLowerCase() === normalizedProjectId,
-      );
-    }
-    if (statusFilter) {
-      tasks = tasks.filter((task) => normaliseStatus(task.status) === statusFilter);
-    }
-    tasks.sort((left, right) =>
-      String(right.lastActivityAt || right.updatedAt || "").localeCompare(
-        String(left.lastActivityAt || left.updatedAt || ""),
-      ),
-    );
-    if (Number.isFinite(limit) && limit > 0) {
-      tasks = tasks.slice(0, limit);
-    }
-    return tasks;
-  }
-
-  async getTask(taskId) {
-    const normalizedId = String(taskId || "").trim();
-    if (!normalizedId) return null;
-    const projectedRecord = await readProjectedTaskRecord(this._config, normalizedId);
-    if (projectedRecord?.doc) {
-      await this._ingestProjectedTask(projectedRecord.doc, projectedRecord.filePath);
-    }
-    const internalTask = await this._internal.getTask(normalizedId);
-    if (internalTask) {
-      await this._projectNormalizedTask(internalTask);
-    }
-    return this._loadProjectedTask(normalizedId);
-  }
-
-  async updateTaskStatus(taskId, status, options = {}) {
-    const updated = await this._internal.updateTaskStatus(taskId, status, options);
-    return this._projectNormalizedTask(updated);
-  }
-
-  async updateTask(taskId, patch = {}) {
-    const updated = await this._internal.updateTask(taskId, patch);
-    return this._projectNormalizedTask(updated);
-  }
-
-  async createTask(projectIdOrTaskData, taskDataArg = {}) {
-    const { taskData } = resolveCreateTaskInput(projectIdOrTaskData, taskDataArg);
-    const created = await this._internal.createTask(projectIdOrTaskData, taskDataArg);
-    let normalizedTask = created;
-    const needsLinkagePatch =
-      typeof taskData?.branchName === "string" ||
-      typeof taskData?.prUrl === "string" ||
-      taskData?.prNumber != null ||
-      Array.isArray(taskData?.prLinkage) ||
-      Array.isArray(taskData?.meta?.prLinkage);
-    if (needsLinkagePatch && created?.id) {
-      normalizedTask = await this._internal.updateTask(created.id, taskData);
-    }
-    return this._projectNormalizedTask(normalizedTask);
-  }
-
-  async deleteTask(taskId) {
-    const normalizedId = String(taskId || "").trim();
-    if (!normalizedId) return false;
-    const deleted = await this._internal.deleteTask(normalizedId);
-    if (!deleted) return false;
-    await deleteProjectedTask(this._config, normalizedId);
-    await rebuildAgentsRegistry(this._config);
-    return true;
-  }
-
-  async addComment(taskId, body) {
-    const added = await this._internal.addComment(taskId, body);
-    if (!added) return false;
-    const updatedTask = await this._internal.getTask(taskId);
-    if (updatedTask) {
-      await this._projectNormalizedTask(updatedTask);
-    }
-    return true;
-  }
-}
-
 const ADAPTERS = {
   internal: () => new InternalAdapter(),
   github: () => new GitHubIssuesAdapter(),
   jira: () => new JiraAdapter(),
-  gnap: () => new GnapProjectionAdapter(loadConfig()?.gnap || {}),
 };
 
 /** @type {Object|null} Cached adapter instance */
@@ -6427,7 +5882,7 @@ function resolveBackendName() {
 
 /**
  * Get the active kanban adapter.
- * @returns {InternalAdapter|GitHubIssuesAdapter|JiraAdapter|GnapProjectionAdapter} Adapter instance.
+ * @returns {InternalAdapter|GitHubIssuesAdapter|JiraAdapter} Adapter instance.
  */
 export function getKanbanAdapter() {
   const name = resolveBackendName();
@@ -6435,7 +5890,6 @@ export function getKanbanAdapter() {
   if (name === "internal") activeAdapter = ADAPTERS.internal();
   else if (name === "github") activeAdapter = ADAPTERS.github();
   else if (name === "jira") activeAdapter = ADAPTERS.jira();
-  else if (name === "gnap") activeAdapter = ADAPTERS.gnap();
   else throw new Error(`${TAG} unknown kanban backend: ${name}`);
   activeBackendName = name;
   console.log(`${TAG} using ${name} backend`);
@@ -6444,7 +5898,7 @@ export function getKanbanAdapter() {
 
 /**
  * Switch the kanban backend at runtime.
- * @param {string} name Backend name ("internal", "github", "jira", "gnap").
+ * @param {string} name Backend name ("internal", "github", "jira").
  */
 export function setKanbanBackend(name) {
   const normalised = (name || "").trim().toLowerCase();
@@ -6614,3 +6068,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+

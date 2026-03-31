@@ -64,30 +64,9 @@ function normalizeSession(session = {}) {
   normalized.pid = String(
     session.pid || session.processId || session.metadata?.pid || session.metadata?.processId || "",
   ).trim();
-  normalized.sdk = String(
-    session.sdk || session.metadata?.sdk || session.metadata?.agent || session.agent || "",
-  ).trim();
-  normalized.model = String(session.model || session.metadata?.model || "").trim();
   normalized.workspaceId = String(
     session.workspaceId || session.metadata?.workspaceId || "",
   ).trim();
-  normalized.workspaceDir = String(
-    session.workspaceDir || session.metadata?.workspaceDir || "",
-  ).trim();
-  normalized.branch = String(session.branch || session.metadata?.branch || "").trim();
-  normalized.recommendation = String(session.recommendation || "none").trim().toLowerCase();
-  normalized.lastToolName = String(session.lastToolName || session.runtimeHealth?.lastToolName || "").trim();
-  normalized.contextUsagePercent = Number(
-    session.contextUsagePercent ?? session.contextWindow?.percent ?? NaN,
-  );
-  normalized.contextPressure = String(
-    session.contextPressure || session.runtimeHealth?.contextPressure || "",
-  ).trim().toLowerCase();
-  normalized.runtimeHealth = session.runtimeHealth && typeof session.runtimeHealth === "object"
-    ? { ...session.runtimeHealth }
-    : {};
-  normalized.topTools = Array.isArray(session.topTools) ? session.topTools : [];
-  normalized.recentActions = Array.isArray(session.recentActions) ? session.recentActions : [];
   return normalized;
 }
 
@@ -146,14 +125,6 @@ export function getStatusColor(status) {
   return STATUS_COLOR_MAP.get(normalized) || "white";
 }
 
-export function getPressureColor(pressure) {
-  const normalized = String(pressure || "").trim().toLowerCase();
-  if (normalized === "critical") return "red";
-  if (normalized === "high") return "yellow";
-  if (normalized === "medium") return "cyan";
-  return "gray";
-}
-
 function truncateText(text, maxWidth, { ellipsis = false } = {}) {
   const value = String(text || "");
   if (!Number.isFinite(maxWidth) || maxWidth <= 0) return "";
@@ -203,52 +174,6 @@ function resolveTokenSummary(session) {
   return "-";
 }
 
-function formatContextSummary(session) {
-  const percent = Number(session?.contextUsagePercent);
-  if (!Number.isFinite(percent) || percent <= 0) {
-    return session?.contextPressure === "critical"
-      ? "crit"
-      : session?.contextPressure === "high"
-        ? "high"
-        : "-";
-  }
-  const rounded = Math.max(0, Math.min(999, Math.round(percent)));
-  const suffix = session?.contextPressure === "critical"
-    ? "!"
-    : session?.contextPressure === "high"
-      ? "*"
-      : "";
-  return `${rounded}%${suffix}`;
-}
-
-function formatRecommendation(recommendation) {
-  const normalized = String(recommendation || "").trim().toLowerCase();
-  if (!normalized || normalized === "none") return "-";
-  return normalized.replaceAll("_", "-");
-}
-
-function formatProcessSummary(session) {
-  const parts = [];
-  if (session?.pid) parts.push(session.pid);
-  if (session?.sdk) parts.push(session.sdk);
-  else if (session?.model) parts.push(session.model);
-  return parts.length ? parts.join("/") : "-";
-}
-
-function formatStateSummary(session) {
-  const runtimeState = String(session?.runtimeHealth?.state || "").trim();
-  return runtimeState || session?.stage || session?.status || "-";
-}
-
-function formatTopToolSummary(session) {
-  const topTool = Array.isArray(session?.topTools) ? session.topTools[0] : null;
-  if (topTool?.name) {
-    const count = Number(topTool.count || 0);
-    return count > 0 ? `${topTool.name}:${count}` : topTool.name;
-  }
-  return session?.lastToolName || "-";
-}
-
 export function projectSessionRow(session, now = Date.now(), eventWidth = 32) {
   const normalized = normalizeSession(session);
   const elapsedFromClock = Math.max(
@@ -257,9 +182,6 @@ export function projectSessionRow(session, now = Date.now(), eventWidth = 32) {
   );
   const elapsedMs = Math.max(normalized.elapsedMs, elapsedFromClock);
   const sessionLabel = normalized.title || normalized.workspaceId || normalized.id;
-  const stateText = truncateText(formatStateSummary(normalized), 12);
-  const pidText = truncateText(normalized.pid || "-", 8);
-  const processText = truncateText(formatProcessSummary(normalized), 12);
   return {
     id: normalized.id,
     isDimmed:
@@ -267,18 +189,12 @@ export function projectSessionRow(session, now = Date.now(), eventWidth = 32) {
       normalized.status === "idle" ||
       normalized.status === "archived",
     statusColor: getStatusColor(normalized.status),
-    pressureColor: getPressureColor(normalized.contextPressure),
     statusDot: "●",
     idText: truncateText(normalized.id.slice(0, 8), 8),
-    stateText,
-    stageText: stateText,
-    pidText,
-    processText,
-    contextText: truncateText(formatContextSummary(normalized), 9),
-    recommendationText: truncateText(formatRecommendation(normalized.recommendation), 10),
+    stageText: truncateText(normalized.stage || normalized.status || "-", 12),
+    pidText: truncateText(normalized.pid || "-", 8),
     ageTurnText: truncateText(`${formatAge(elapsedMs)}/${normalized.turnCount || 0}`, 10),
-    tokensText: truncateText(resolveTokenSummary(normalized), 11),
-    toolText: truncateText(formatTopToolSummary(normalized), 14),
+    tokensText: truncateText(resolveTokenSummary(normalized), 12),
     sessionText: truncateText(sessionLabel, 14),
     eventText: truncateText(normalized.lastMessage || normalized.title || "-", eventWidth, {
       ellipsis: true,

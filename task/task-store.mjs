@@ -17,11 +17,6 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { syncTaskStoreToStateLedger } from "../lib/state-ledger-sqlite.mjs";
-import {
-  normalizeTaskRunJournalRef,
-  persistTaskRunJournal,
-} from "../workspace/execution-journal.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -218,8 +213,6 @@ function createWorkspaceStorageCollisionError(kind, canonicalKey, existingRaw, i
 let _store = null; // { _meta: {...}, tasks: { [id]: Task } }
 let _loaded = false;
 let _writeChain = Promise.resolve(); // simple write lock
-let _writeScheduled = false;
-let _writeDirty = false;
 let _didLogInitialLoad = false;
 let _lastLoadedMtimeMs = 0;
 let _lastLoadedSizeBytes = 0;
@@ -246,8 +239,6 @@ export function configureTaskStore(options = {}) {
     _store = null;
     _loaded = false;
     _writeChain = Promise.resolve();
-    _writeScheduled = false;
-    _writeDirty = false;
     _didLogInitialLoad = false;
     _lastLoadedMtimeMs = 0;
     _lastLoadedSizeBytes = 0;
@@ -585,15 +576,9 @@ function normalizeWorkflowRunLinks(rawRuns) {
     if (!entry || typeof entry !== "object") continue;
     const runId = String(entry.runId || entry.id || "").trim();
     if (!runId) continue;
-    const meta = entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {};
-    const parseDepth = (value) => {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
-    };
     normalized.push({
       runId,
       workflowId: entry.workflowId != null ? String(entry.workflowId) : null,
-      workflowName: entry.workflowName != null ? String(entry.workflowName) : null,
       nodeId: entry.nodeId != null ? String(entry.nodeId) : null,
       status: entry.status != null ? String(entry.status) : null,
       outcome: entry.outcome != null ? String(entry.outcome) : null,
@@ -601,113 +586,12 @@ function normalizeWorkflowRunLinks(rawRuns) {
       endedAt: entry.endedAt != null ? String(entry.endedAt) : null,
       summary: entry.summary != null ? String(entry.summary) : null,
       url: entry.url != null ? String(entry.url) : null,
-      rootRunId: entry.rootRunId != null ? String(entry.rootRunId) : (meta.rootRunId != null ? String(meta.rootRunId) : null),
-      parentRunId: entry.parentRunId != null ? String(entry.parentRunId) : (meta.parentRunId != null ? String(meta.parentRunId) : null),
-      retryOf: entry.retryOf != null ? String(entry.retryOf) : (meta.retryOf != null ? String(meta.retryOf) : null),
-      retryMode: entry.retryMode != null ? String(entry.retryMode) : (meta.retryMode != null ? String(meta.retryMode) : null),
-      taskId: entry.taskId != null ? String(entry.taskId) : (meta.taskId != null ? String(meta.taskId) : null),
-      rootTaskId: entry.rootTaskId != null ? String(entry.rootTaskId) : (meta.rootTaskId != null ? String(meta.rootTaskId) : null),
-      parentTaskId: entry.parentTaskId != null ? String(entry.parentTaskId) : (meta.parentTaskId != null ? String(meta.parentTaskId) : null),
-      sessionId: entry.sessionId != null ? String(entry.sessionId) : (meta.sessionId != null ? String(meta.sessionId) : null),
-      rootSessionId: entry.rootSessionId != null ? String(entry.rootSessionId) : (meta.rootSessionId != null ? String(meta.rootSessionId) : null),
-      parentSessionId: entry.parentSessionId != null ? String(entry.parentSessionId) : (meta.parentSessionId != null ? String(meta.parentSessionId) : null),
-      delegationDepth: parseDepth(entry.delegationDepth ?? meta.delegationDepth),
       source: entry.source != null ? String(entry.source) : "workflow",
-      meta,
+      meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
     });
   }
   if (normalized.length <= MAX_WORKFLOW_RUN_LINKS) return normalized;
   return normalized.slice(-MAX_WORKFLOW_RUN_LINKS);
-}
-
-function normalizeTaskTopology(rawTopology = {}, rawTask = {}) {
-  const topology =
-    rawTopology && typeof rawTopology === "object" && !Array.isArray(rawTopology)
-      ? rawTopology
-      : {};
-  const taskId = String(rawTask?.id || topology.taskId || "").trim() || null;
-  const graphParentTaskId = String(
-    topology.graphParentTaskId ?? rawTask?.parentTaskId ?? "",
-  ).trim() || null;
-  const explicitPath = uniqueStringList(Array.isArray(topology.graphPath) ? topology.graphPath : []);
-  const graphPath = explicitPath.length > 0
-    ? [...explicitPath]
-    : [...uniqueStringList([graphParentTaskId, taskId].filter(Boolean))];
-  if (taskId && graphPath.length > 0 && graphPath[graphPath.length - 1] !== taskId) {
-    graphPath.push(taskId);
-  }
-  const parseDepth = (value, fallback = 0) => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : fallback;
-  };
-  const graphDepthFallback = graphPath.length > 0 ? Math.max(0, graphPath.length - 1) : 0;
-  const graphRootTaskId = String(
-    topology.graphRootTaskId ??
-      topology.rootTaskId ??
-      graphPath[0] ??
-      taskId ??
-      "",
-  ).trim() || taskId || null;
-  const rootTaskId = String(
-    topology.rootTaskId ??
-      graphRootTaskId ??
-      taskId ??
-      "",
-  ).trim() || taskId || null;
-  const parentTaskId = String(
-    topology.parentTaskId ??
-      graphParentTaskId ??
-      "",
-  ).trim() || null;
-  return {
-    taskId,
-    graphParentTaskId,
-    graphRootTaskId,
-    graphDepth: parseDepth(topology.graphDepth, graphDepthFallback),
-    graphPath,
-    workflowId: String(topology.workflowId || "").trim() || null,
-    workflowName: String(topology.workflowName || "").trim() || null,
-    latestNodeId: String(topology.latestNodeId || "").trim() || null,
-    latestRunId: String(topology.latestRunId ?? topology.runId ?? "").trim() || null,
-    rootRunId: String(topology.rootRunId || "").trim() || null,
-    parentRunId: String(topology.parentRunId || "").trim() || null,
-    latestSessionId: String(topology.latestSessionId ?? topology.sessionId ?? "").trim() || null,
-    sessionId: String(topology.sessionId ?? topology.latestSessionId ?? "").trim() || null,
-    rootSessionId: String(topology.rootSessionId || "").trim() || null,
-    parentSessionId: String(topology.parentSessionId || "").trim() || null,
-    rootTaskId,
-    parentTaskId,
-    delegationDepth: parseDepth(topology.delegationDepth, 0),
-  };
-}
-
-function refreshTaskTopology(task) {
-  if (!task || typeof task !== "object") return;
-  task.topology = normalizeTaskTopology(task.topology, task);
-}
-
-function refreshTaskGraphTopology(taskId, visited = new Set()) {
-  if (!taskId || visited.has(taskId) || !_store?.tasks?.[taskId]) return;
-  visited.add(taskId);
-  const task = _store.tasks[taskId];
-  const parent = task.parentTaskId ? _store.tasks[task.parentTaskId] : null;
-  const parentPath =
-    Array.isArray(parent?.topology?.graphPath) && parent.topology.graphPath.length > 0
-      ? parent.topology.graphPath
-      : (parent?.id ? [parent.id] : []);
-  task.topology = normalizeTaskTopology(
-    {
-      ...(task.topology && typeof task.topology === "object" ? task.topology : {}),
-      graphParentTaskId: parent?.id || null,
-      graphRootTaskId: parent?.topology?.graphRootTaskId || parent?.id || task.id || null,
-      graphDepth: parentPath.length,
-      graphPath: task.id ? [...parentPath, task.id] : parentPath,
-    },
-    task,
-  );
-  for (const childId of uniqueStringList(task.childTaskIds || [])) {
-    refreshTaskGraphTopology(childId, visited);
-  }
 }
 
 function summarizeTrajectoryStepText(value, maxLength = 160) {
@@ -803,47 +687,11 @@ function normalizeTaskRuns(rawRuns) {
       outcome: entry.outcome != null ? String(entry.outcome) : null,
       summary: summarizeTrajectoryStepText(entry.summary || entry.title || "") || null,
       steps: normalizeTaskRunSteps(entry.steps),
-      journal: normalizeTaskRunJournalRef(entry.journal || entry.meta?.journal),
       meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
     });
   }
   if (normalized.length <= MAX_TASK_RUNS) return normalized;
   return normalized.slice(-MAX_TASK_RUNS);
-}
-
-function persistTaskRunJournalRef(taskId, run) {
-  if (!run || typeof run !== "object") return run;
-  try {
-    const journal = persistTaskRunJournal(taskId, run, { taskStorePath: storePath });
-    const nextMeta = run.meta && typeof run.meta === "object" ? { ...run.meta } : {};
-    nextMeta.journal = journal;
-    delete nextMeta.journalError;
-    return {
-      ...run,
-      journal,
-      meta: nextMeta,
-    };
-  } catch (error) {
-    const nextMeta = run.meta && typeof run.meta === "object" ? { ...run.meta } : {};
-    nextMeta.journalError = String(error?.message || error);
-    return {
-      ...run,
-      journal: normalizeTaskRunJournalRef(run.journal || run.meta?.journal),
-      meta: nextMeta,
-    };
-  }
-}
-
-function backfillTaskRunJournalsForTask(task) {
-  if (!task || !Array.isArray(task.runs) || task.runs.length === 0) {
-    return false;
-  }
-  const nextRuns = normalizeTaskRuns(task.runs).map((run) => persistTaskRunJournalRef(task.id, run));
-  const changed = JSON.stringify(nextRuns) !== JSON.stringify(task.runs);
-  if (changed) {
-    task.runs = normalizeTaskRuns(nextRuns);
-  }
-  return changed;
 }
 
 function validateTaskTransition(currentStatus, nextStatus, options = {}) {
@@ -880,111 +728,6 @@ function taskHasReviewReference(task) {
     return true;
   }
   return false;
-}
-
-function buildTaskCompletionGuardContext(task, overrides = {}) {
-  const nextLinks = overrides.links && typeof overrides.links === "object"
-    ? {
-        ...(task?.links && typeof task.links === "object" ? task.links : {}),
-        ...overrides.links,
-      }
-    : task?.links;
-  const reviewIssues = Array.isArray(overrides.reviewIssues)
-    ? overrides.reviewIssues
-    : (Array.isArray(task?.reviewIssues) ? task.reviewIssues : []);
-  const mergedTask = {
-    ...(task && typeof task === "object" ? task : {}),
-    ...(overrides && typeof overrides === "object" ? overrides : {}),
-    links: nextLinks,
-  };
-  return {
-    hasReviewReference: taskHasReviewReference(mergedTask),
-    reviewStatus: String(
-      overrides.reviewStatus ?? task?.reviewStatus ?? "",
-    ).trim().toLowerCase() || null,
-    reviewedAt: overrides.reviewedAt ?? task?.reviewedAt ?? null,
-    reviewIssueCount: reviewIssues.length,
-  };
-}
-
-function recordLifecycleGuardBlock(task, action, guard, options = {}) {
-  if (!task || typeof task !== "object") return;
-  pushTaskTimeline(task, {
-    type: "lifecycle.blocked",
-    source: options.source || "task-store",
-    actor: options.actor != null ? String(options.actor) : null,
-    action: action || "complete",
-    fromStatus: task.status,
-    toStatus: options.targetStatus || options.status || null,
-    status: task.status,
-    message: String(
-      guard?.message || "Lifecycle action blocked by completion guard.",
-    ),
-    payload: {
-      error: guard?.error || "completion_guard_blocked",
-      reason: guard?.reason || null,
-      reviewStatus: guard?.reviewStatus || null,
-      hasReviewReference: guard?.hasReviewReference === true,
-      requiredStatus: guard?.requiredStatus || null,
-    },
-  });
-  markTaskTouched(task, options.source || "task-store");
-  saveStore();
-}
-
-export function evaluateTaskCompletionGuard(taskOrId, options = {}) {
-  ensureLoaded();
-  const task = typeof taskOrId === "string" ? _store.tasks[taskOrId] : taskOrId;
-  if (!task || typeof task !== "object") return null;
-  if (
-    options.force === true ||
-    options.manualOverride === true ||
-    options.allowCompletionOverride === true
-  ) {
-    return null;
-  }
-
-  const normalizedAction = String(options.action || "").trim().toLowerCase();
-  const requestedStatus = normalizeTaskStatus(
-    options.targetStatus ||
-      options.status ||
-      LIFECYCLE_ACTION_TARGET[normalizedAction] ||
-      "",
-  );
-  if (requestedStatus !== "done") return null;
-
-  const guardContext = buildTaskCompletionGuardContext(
-    task,
-    options.patch && typeof options.patch === "object" ? options.patch : {},
-  );
-  const hasReviewContext =
-    normalizeTaskStatus(task.status) === "inreview" ||
-    guardContext.hasReviewReference ||
-    Boolean(guardContext.reviewStatus) ||
-    Boolean(guardContext.reviewedAt) ||
-    guardContext.reviewIssueCount > 0;
-  if (!hasReviewContext) return null;
-  if (guardContext.reviewStatus === "approved") return null;
-
-  const reason =
-    guardContext.reviewStatus === "changes_requested"
-      ? "review_changes_requested"
-      : "review_not_approved";
-  const message =
-    reason === "review_changes_requested"
-      ? "Task review requested changes. Approve the review or force the completion override before marking this task done."
-      : "Task completion requires an approved review before it can be marked done.";
-
-  return {
-    error: "completion_guard_blocked",
-    reason,
-    message,
-    reviewStatus: guardContext.reviewStatus,
-    reviewedAt: guardContext.reviewedAt,
-    reviewIssueCount: guardContext.reviewIssueCount,
-    hasReviewReference: guardContext.hasReviewReference,
-    requiredStatus: "approved",
-  };
 }
 
 function shouldKeepTaskInReview(task, requestedStatus, options = {}) {
@@ -1069,7 +812,6 @@ function normalizeTaskStructure(rawTask = {}) {
           ? normalizedBase.meta.runs
           : [],
     ),
-    topology: normalizeTaskTopology(normalizedBase.topology, normalizedBase),
     stateVersion: Number.isFinite(Number(normalizedBase.stateVersion))
       ? Number(normalizedBase.stateVersion)
       : 2,
@@ -1160,7 +902,6 @@ function defaultTask(overrides = {}) {
     timeline: [],
     workflowRuns: [],
     runs: [],
-    topology: {},
     links: { branches: [], prs: [], workflows: [] },
     stateVersion: 2,
 
@@ -1488,7 +1229,6 @@ function backupCorruptStorePayload(raw, parseErr) {
  * Load store from disk. Called automatically on first access.
  */
 export function loadStore() {
-  let didBackfillTaskRunJournals = false;
   try {
     if (existsSync(storePath)) {
       const raw = readFileSync(storePath, "utf-8");
@@ -1517,18 +1257,12 @@ export function loadStore() {
         const resolvedId = String(taskValue?.id || taskId || "").trim();
         if (!resolvedId) continue;
         normalizedTasks[resolvedId] = normalizeTaskStructure({ ...taskValue, id: resolvedId });
-        if (backfillTaskRunJournalsForTask(normalizedTasks[resolvedId])) {
-          didBackfillTaskRunJournals = true;
-        }
       }
       _store = {
         _meta: { ...defaultMeta(), ...(data._meta || {}), sprintOrderMode: resolveSprintOrderMode(data && data._meta ? data._meta.sprintOrderMode : null) },
         tasks: normalizedTasks,
         sprints: {},
       };
-      for (const taskId of Object.keys(normalizedTasks)) {
-        refreshTaskGraphTopology(taskId);
-      }
       const sourceSprints = data && data.sprints && typeof data.sprints === "object" ? data.sprints : {};
       for (const [sprintId, sprintValue] of Object.entries(sourceSprints)) {
         const normalizedSprint = normalizeSprintStructure({ ...sprintValue, id: sprintId }, _store.sprints[sprintId] || null);
@@ -1558,9 +1292,6 @@ export function loadStore() {
     _lastLoadedSizeBytes = 0;
   }
   _loaded = true;
-  if (didBackfillTaskRunJournals) {
-    saveStore();
-  }
 }
 
 /**
@@ -1569,57 +1300,42 @@ export function loadStore() {
 export function saveStore() {
   ensureLoaded();
   recalcStats();
-  _writeDirty = true;
-  if (_writeScheduled) return;
-  _writeScheduled = true;
 
   _writeChain = _writeChain
     .then(() => {
-      while (_writeDirty) {
-        _writeDirty = false;
-        try {
-          const dir = dirname(storePath);
-          if (!existsSync(dir)) {
-            mkdirSync(dir, { recursive: true });
-          }
-          const json = JSON.stringify(_store, null, 2);
-          writeFileSync(storeTmpPath, json, "utf-8");
-          try {
-            renameSync(storeTmpPath, storePath);
-          } catch (renameErr) {
-            if (!ATOMIC_RENAME_FALLBACK_CODES.has(renameErr?.code)) {
-              throw renameErr;
-            }
-            writeFileSync(storePath, json, "utf-8");
-            try {
-              unlinkSync(storeTmpPath);
-            } catch {
-              /* best effort */
-            }
-            console.warn(
-              TAG,
-              `Atomic rename failed (${renameErr?.message || renameErr}); fell back to direct write.`,
-            );
-          }
-          const loadedFingerprint = getStoreFingerprint();
-          _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
-          _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
-          try {
-            syncTaskStoreToStateLedger(_store, { anchorPath: storePath });
-          } catch (ledgerErr) {
-            console.warn(TAG, "State ledger sync failed:", ledgerErr?.message || ledgerErr);
-          }
-        } catch (err) {
-          console.error(TAG, "Failed to save store:", err.message);
+      try {
+        const dir = dirname(storePath);
+        if (!existsSync(dir)) {
+          mkdirSync(dir, { recursive: true });
         }
+        const json = JSON.stringify(_store, null, 2);
+        writeFileSync(storeTmpPath, json, "utf-8");
+        try {
+          renameSync(storeTmpPath, storePath);
+        } catch (renameErr) {
+          if (!ATOMIC_RENAME_FALLBACK_CODES.has(renameErr?.code)) {
+            throw renameErr;
+          }
+          writeFileSync(storePath, json, "utf-8");
+          try {
+            unlinkSync(storeTmpPath);
+          } catch {
+            /* best effort */
+          }
+          console.warn(
+            TAG,
+            `Atomic rename failed (${renameErr?.message || renameErr}); fell back to direct write.`,
+          );
+        }
+        const loadedFingerprint = getStoreFingerprint();
+        _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
+        _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
+      } catch (err) {
+        console.error(TAG, "Failed to save store:", err.message);
       }
     })
     .catch((err) => {
       console.error(TAG, "Write chain error:", err.message);
-    })
-    .finally(() => {
-      _writeScheduled = false;
-      if (_writeDirty) saveStore();
     });
 }
 
@@ -1851,13 +1567,6 @@ export function updateTask(taskId, updates) {
     lastSyncedAt: (next) => { task.lastSyncedAt = next; },
     syncDirty: (next) => { task.syncDirty = next; },
     meta: (next) => { task.meta = next; },
-    topology: (next) => {
-      const patchValue =
-        next && typeof next === "object" && !Array.isArray(next)
-          ? next
-          : {};
-      task.topology = { ...(task.topology || {}), ...patchValue };
-    },
   };
 
   for (const [key, value] of Object.entries(patch)) {
@@ -1910,7 +1619,7 @@ export function updateTask(taskId, updates) {
       continue;
     }
     if (key === "runs") {
-      task.runs = normalizeTaskRuns(value).map((run) => persistTaskRunJournalRef(taskId, run));
+      task.runs = normalizeTaskRuns(value);
       continue;
     }
     if (key === "assignees") { task.assignees = uniqueStringList(value); continue; }
@@ -1989,9 +1698,6 @@ export function addTask(taskData) {
   }
 
   task.tags = normalizeTags(task.tags);
-  if (Array.isArray(task.runs) && task.runs.length > 0) {
-    task.runs = normalizeTaskRuns(task.runs).map((run) => persistTaskRunJournalRef(task.id, run));
-  }
   task.draft = Boolean(task.draft || task.status === "draft");
   if (task.draft) task.status = "draft";
   task.lastAgentOutput = truncate(task.lastAgentOutput, MAX_AGENT_OUTPUT);
@@ -2010,7 +1716,6 @@ export function addTask(taskData) {
     parent.childTaskIds = uniqueStringList([...(parent.childTaskIds || []), task.id]);
     markTaskTouched(parent, "task-graph");
   }
-  refreshTaskGraphTopology(task.id);
   for (const dependencyId of task.dependencyTaskIds || []) {
     const dependency = _store.tasks[dependencyId];
     if (!dependency) continue;
@@ -2206,31 +1911,6 @@ export function transitionTaskLifecycle(taskId, action, options = {}) {
     return { ok: false, error: "unknown_action", action: normalizedAction, task: { ...task } };
   }
 
-  const completionGuard = evaluateTaskCompletionGuard(task, {
-    action: normalizedAction,
-    targetStatus,
-    force: options.force === true,
-    manualOverride: options.manualOverride === true,
-    patch: options.patch && typeof options.patch === "object" ? options.patch : null,
-  });
-  if (completionGuard) {
-    recordLifecycleGuardBlock(task, normalizedAction, completionGuard, {
-      ...options,
-      targetStatus,
-    });
-    return {
-      ok: false,
-      error: completionGuard.error,
-      reason: completionGuard.reason,
-      message: completionGuard.message,
-      guard: completionGuard,
-      action: normalizedAction,
-      fromStatus: task.status,
-      toStatus: targetStatus,
-      task: { ...task },
-    };
-  }
-
   const validation = validateTaskTransition(task.status, targetStatus, options);
   if (!validation.valid) {
     return {
@@ -2334,7 +2014,7 @@ export function appendTaskRun(taskId, run = {}) {
   ensureLoaded();
   const task = _store.tasks[taskId];
   if (!task) return null;
-  const nextRun = persistTaskRunJournalRef(taskId, normalizeTaskRuns([run])[0] || null);
+  const nextRun = normalizeTaskRuns([run])[0] || null;
   if (!nextRun) return null;
   task.runs = normalizeTaskRuns([...(Array.isArray(task.runs) ? task.runs : []), nextRun]);
   markTaskTouched(task, run?.source || "task-run");
@@ -2379,24 +2059,6 @@ export function linkTaskWorkflowRun(taskId, workflowRun = {}) {
   const existing = Array.isArray(task.workflowRuns) ? task.workflowRuns : [];
   const dedup = existing.filter((entry) => String(entry?.runId || "") !== run.runId);
   task.workflowRuns = normalizeWorkflowRunLinks([...dedup, run]);
-  task.topology = normalizeTaskTopology({
-    ...(task.topology && typeof task.topology === "object" ? task.topology : {}),
-    workflowId: run.workflowId || task.topology?.workflowId || null,
-    workflowName: run.workflowName || task.topology?.workflowName || null,
-    latestNodeId: run.nodeId || task.topology?.latestNodeId || null,
-    latestRunId: run.runId,
-    rootRunId: run.rootRunId || task.topology?.rootRunId || null,
-    parentRunId: run.parentRunId || task.topology?.parentRunId || null,
-    latestSessionId: run.sessionId || task.topology?.latestSessionId || null,
-    sessionId: run.sessionId || task.topology?.sessionId || null,
-    rootSessionId: run.rootSessionId || task.topology?.rootSessionId || null,
-    parentSessionId: run.parentSessionId || task.topology?.parentSessionId || null,
-    rootTaskId: run.rootTaskId || task.topology?.rootTaskId || task.id || null,
-    parentTaskId: run.parentTaskId || task.topology?.parentTaskId || task.parentTaskId || null,
-    delegationDepth: Number.isFinite(Number(run.delegationDepth))
-      ? Math.max(0, Math.trunc(Number(run.delegationDepth)))
-      : (task.topology?.delegationDepth || 0),
-  }, task);
   task.links = {
     branches: uniqueStringList(task.links?.branches || []),
     prs: uniqueStringList(task.links?.prs || []),
@@ -2437,7 +2099,6 @@ export function setTaskParent(taskId, parentTaskId, options = {}) {
       task.type = "subtask";
     }
   }
-  refreshTaskGraphTopology(taskId);
 
   pushTaskTimeline(task, {
     type: "task.graph.parent",
@@ -2994,62 +2655,17 @@ export function recoverAutoBlockedTasks(options = {}) {
   const recoveredAt = new Date(recoveredAtMs).toISOString();
   const recoveredTaskIds = [];
 
-  const isWorkflowPlaceholder = (value) => {
-    if (typeof value !== "string") return false;
-    const trimmed = value.trim();
-    return trimmed.startsWith("{{") && trimmed.endsWith("}}");
-  };
-
-  const resolveRetryAtMs = (task, autoRecovery) => {
-    const candidates = [
-      autoRecovery?.retryAt,
-      task?.cooldownUntil,
-      task?.meta?.worktreeFailure?.retryAt,
-    ];
-    for (const candidate of candidates) {
-      if (!candidate || isWorkflowPlaceholder(candidate)) continue;
-      const parsed = Date.parse(String(candidate));
-      if (Number.isFinite(parsed)) return parsed;
-    }
-    return null;
-  };
-
-  const hasStaleWorktreePlaceholders = (task) => [
-    task?.blockedReason,
-    task?.cooldownUntil,
-    task?.meta?.autoRecovery?.retryAt,
-    task?.meta?.worktreeFailure?.retryAt,
-    task?.meta?.worktreeFailure?.blockedReason,
-  ].some((value) => isWorkflowPlaceholder(value));
-
   for (const task of Object.values(_store.tasks)) {
     if (!task || normalizeTaskStatus(task.status) !== "blocked") continue;
     const autoRecovery = task.meta?.autoRecovery;
-    const worktreeFailure = task.meta?.worktreeFailure;
-    const hasPlaceholder = hasStaleWorktreePlaceholders(task);
-    const isWorktreeRecovery = (
-      autoRecovery &&
-      typeof autoRecovery === "object" &&
-      autoRecovery.active !== false &&
-      String(autoRecovery.reason || "").trim() === "worktree_failure"
-    ) || (
-      worktreeFailure &&
-      typeof worktreeFailure === "object"
-    ) || hasPlaceholder;
-    if (!isWorktreeRecovery) continue;
-
-    const retryAtMs = resolveRetryAtMs(task, autoRecovery);
-    if (Number.isFinite(retryAtMs) && retryAtMs > recoveredAtMs) continue;
-    if (!Number.isFinite(retryAtMs) && !hasPlaceholder) continue;
+    if (!autoRecovery || typeof autoRecovery !== "object") continue;
+    if (autoRecovery.active === false) continue;
+    if (String(autoRecovery.reason || "").trim() !== "worktree_failure") continue;
+    const retryAtMs = Date.parse(String(autoRecovery.retryAt || task.cooldownUntil || ""));
+    if (!Number.isFinite(retryAtMs) || retryAtMs > recoveredAtMs) continue;
 
     const previousStatus = normalizeTaskStatus(task.status);
-    // If the task has a linked PR, recover to "inreview" instead of "todo"
-    const hasPr = Boolean(
-      task?.prNumber || task?.pr_number ||
-      task?.prUrl || task?.pr_url,
-    );
-    const recoveryStatus = hasPr ? "inreview" : "todo";
-    task.status = recoveryStatus;
+    task.status = "todo";
     task.cooldownUntil = null;
     task.blockedReason = null;
     task.meta = normalizeRecoveredTaskMeta(task, recoveredAt);
@@ -3057,7 +2673,7 @@ export function recoverAutoBlockedTasks(options = {}) {
     task.lastActivityAt = recoveredAt;
     task.syncDirty = true;
     task.statusHistory.push({
-      status: recoveryStatus,
+      status: "todo",
       timestamp: recoveredAt,
       source: "auto-recovery",
     });
@@ -3068,57 +2684,10 @@ export function recoverAutoBlockedTasks(options = {}) {
       type: "status.transition",
       source: "auto-recovery",
       fromStatus: previousStatus,
-      toStatus: recoveryStatus,
-      status: recoveryStatus,
+      toStatus: "todo",
+      status: "todo",
       action: "recover_blocked_task",
-      message: `Recovered timed blocked task back to ${recoveryStatus}`,
-    });
-    markTaskTouched(task, "auto-recovery");
-    recoveredTaskIds.push(task.id);
-  }
-
-  // --- Parent-task auto-unblock: unblock parents whose children are all done/cancelled ---
-  const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
-  for (const task of Object.values(_store.tasks)) {
-    if (!task || normalizeTaskStatus(task.status) !== "blocked") continue;
-    const childIds = task.childTaskIds || task.subtaskIds || [];
-    if (childIds.length === 0) continue;
-    const allChildrenTerminal = childIds.every((childId) => {
-      const child = _store.tasks[childId];
-      return child && TERMINAL_STATUSES.has(normalizeTaskStatus(child.status));
-    });
-    if (!allChildrenTerminal) continue;
-    // All subtasks are done or cancelled — unblock the parent
-    const previousStatus = normalizeTaskStatus(task.status);
-    const hasPr = Boolean(
-      task?.prNumber || task?.pr_number ||
-      task?.prUrl || task?.pr_url,
-    );
-    const recoveryStatus = hasPr ? "inreview" : "todo";
-    task.status = recoveryStatus;
-    task.blockedReason = null;
-    task.cooldownUntil = null;
-    task.meta = normalizeRecoveredTaskMeta(task, recoveredAt);
-    task.updatedAt = recoveredAt;
-    task.lastActivityAt = recoveredAt;
-    task.syncDirty = true;
-    task.statusHistory = task.statusHistory || [];
-    task.statusHistory.push({
-      status: recoveryStatus,
-      timestamp: recoveredAt,
-      source: "auto-recovery",
-    });
-    if (task.statusHistory.length > MAX_STATUS_HISTORY) {
-      task.statusHistory = task.statusHistory.slice(-MAX_STATUS_HISTORY);
-    }
-    pushTaskTimeline(task, {
-      type: "status.transition",
-      source: "auto-recovery",
-      fromStatus: previousStatus,
-      toStatus: recoveryStatus,
-      status: recoveryStatus,
-      action: "recover_parent_task",
-      message: `Recovered parent task — all ${childIds.length} subtasks settled`,
+      message: "Recovered timed blocked task back to todo",
     });
     markTaskTouched(task, "auto-recovery");
     recoveredTaskIds.push(task.id);
@@ -3448,13 +3017,11 @@ export function setReviewResult(taskId, { approved, issues } = {}) {
     return null;
   }
 
-  const reviewTimestamp = now();
-
   task.reviewStatus = approved ? "approved" : "changes_requested";
   task.reviewIssues = issues || null;
-  task.reviewedAt = reviewTimestamp;
-  task.updatedAt = reviewTimestamp;
-  task.lastActivityAt = reviewTimestamp;
+  task.reviewedAt = now();
+  task.updatedAt = now();
+  task.lastActivityAt = now();
   task.syncDirty = true;
 
   console.log(
@@ -3655,3 +3222,4 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
+
