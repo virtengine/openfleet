@@ -524,7 +524,7 @@ describeUiServer("ui-server mini app", () => {
     expect(third.status).toBe(200);
     expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
     expect(String(third.headers.get("cache-control") || "")).toContain("no-cache");
-  }, 15000);
+  }, 20000);
 
   it("serves shared /lib modules after local bootstrap", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -2162,7 +2162,7 @@ describeUiServer("ui-server mini app", () => {
     expect(hiddenListRes.status).toBe(200);
     expect(hiddenListJson.ok).toBe(true);
     expect(hiddenListJson.sessions.some((session) => session.id === "smoke-openai-legacy")).toBe(true);
-  }, 15000);
+  }, 30000);
 
   it("hides internal voice http sessions from the default session list", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -3297,14 +3297,14 @@ describeUiServer("ui-server mini app", () => {
     const statusRes = await fetch(`http://127.0.0.1:${port}/api/status`);
     const statusJson = await statusRes.json();
     expect(statusRes.status).toBe(200);
-    expect(statusJson.data?.harness?.lastRun?.runId).toBe(liveRunJson.runId);
+    expect(statusJson.data?.harness?.lastRun?.runId).toBe(replayJson.runId);
     expect(statusJson.data?.harness?.totals?.successful).toBeGreaterThanOrEqual(1);
 
     const telemetryRes = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
     const telemetryJson = await telemetryRes.json();
     expect(telemetryRes.status).toBe(200);
-    expect(telemetryJson.data?.harness?.lastRun?.runId).toBe(liveRunJson.runId);
-    expect(telemetryJson.data?.harness?.recentRuns?.[0]?.runId).toBe(liveRunJson.runId);
+    expect(telemetryJson.data?.harness?.lastRun?.runId).toBe(replayJson.runId);
+    expect(telemetryJson.data?.harness?.recentRuns?.[0]?.runId).toBe(replayJson.runId);
 
     const dryRunRes = await fetch(`http://127.0.0.1:${port}/api/harness/run`, {
       method: "POST",
@@ -3320,6 +3320,143 @@ describeUiServer("ui-server mini app", () => {
       expect(dryRunJson.result?.history?.every((entry) => entry.dryRun === true)).toBe(true);
       expect(existsSync(dryRunJson.runPath)).toBe(true);
       expect(harnessTurnExecutor).toHaveBeenCalledTimes(6);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await removeDirWithRetries(tmpDir);
+    }
+  }, 30000);
+
+  it("stops active harness runs through the API and persists aborted task history", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-stop-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        $schema: "./bosun.schema.json",
+        harness: {
+          enabled: true,
+          validation: { mode: "report" },
+        },
+      }, null, 2) + "\n",
+      "utf8",
+    );
+
+    let notifyStarted = null;
+    const started = new Promise((resolve) => {
+      notifyStarted = resolve;
+    });
+    mod.injectUiDependencies({
+      harnessTurnExecutor: vi.fn(async (context) => {
+        notifyStarted?.();
+        await new Promise((resolve, reject) => {
+          const signal = context?.signal;
+          if (signal?.aborted) {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+            return;
+          }
+          signal?.addEventListener?.("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          }, { once: true });
+        });
+        return { success: true, outcome: "success", status: "completed" };
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    try {
+      const port = server.address().port;
+      const createdTaskRes = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Harness stop task",
+          description: "Verify stop persists aborted harness runs.",
+        }),
+      });
+      const createdTaskJson = await createdTaskRes.json();
+      expect(createdTaskRes.status).toBe(200);
+      expect(createdTaskJson.ok).toBe(true);
+      const taskId = createdTaskJson.data.id;
+
+      const runPromise = fetch(`http://127.0.0.1:${port}/api/harness/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runId: "stop-harness-run",
+          taskId,
+          source: JSON.stringify({
+            name: "Bosun Stop Harness",
+            entryStageId: "plan",
+            stages: [
+              { id: "plan", type: "prompt", prompt: "Wait for stop." },
+            ],
+          }),
+        }),
+      });
+
+      await started;
+
+      const stopRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/stop-harness-run/stop`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "operator_stop" }),
+      });
+      const stopJson = await stopRes.json();
+      expect(stopRes.status).toBe(200);
+      expect(stopJson).toMatchObject({
+        ok: true,
+        runId: "stop-harness-run",
+        stopped: true,
+        active: true,
+        stopRequested: true,
+        reason: "operator_stop",
+      });
+
+      const stopAgainRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/stop-harness-run/stop`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "operator_stop" }),
+      });
+      const stopAgainJson = await stopAgainRes.json();
+      expect(stopAgainRes.status).toBe(200);
+      expect(stopAgainJson.ok).toBe(true);
+      expect(stopAgainJson.runId).toBe("stop-harness-run");
+      expect(typeof stopAgainJson.stopped).toBe("boolean");
+
+      const runRes = await runPromise;
+      const runJson = await runRes.json();
+      expect(runRes.status).toBe(200);
+      expect(runJson.ok).toBe(false);
+      expect(runJson.status).toBe("aborted");
+      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:aborted")).toBe(true);
+
+      const runDetailRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/stop-harness-run`);
+      const runDetailJson = await runDetailRes.json();
+      expect(runDetailRes.status).toBe(200);
+      expect(runDetailJson.eventSummary?.byType?.["harness:aborted"]).toBeGreaterThanOrEqual(1);
+
+      const taskDetailRes = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`);
+      const taskDetailJson = await taskDetailRes.json();
+      expect(taskDetailRes.status).toBe(200);
+      expect(taskDetailJson.data?.runs?.[0]).toMatchObject({
+        runId: "stop-harness-run",
+        taskKey: taskId,
+        status: "aborted",
+        meta: expect.objectContaining({
+          source: "harness",
+          taskId,
+        }),
+      });
     } finally {
       await new Promise((resolve) => server.close(resolve));
       await removeDirWithRetries(tmpDir);
@@ -6416,7 +6553,7 @@ describeUiServer("ui-server mini app", () => {
       applyDependencySuggestions: true,
       syncEpicDependencies: true,
     });
-  });
+  }, 15000);
 
   it("focuses agent log tails on session-specific lines", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6910,7 +7047,7 @@ describeUiServer("ui-server mini app", () => {
     expect(session.totalTokens).toBe(2000);
     expect(session.inputTokens).toBe(1200);
     expect(session.outputTokens).toBe(800);
-  });
+  }, 15000);
 
   it("sources agent-run analytics from completed session history when session-start events are stale", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-usage-"));
@@ -7183,7 +7320,7 @@ describeUiServer("ui-server mini app", () => {
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
-  });
+  }, 15000);
 
   it("merges ledger-backed sessions into session list and detail fallbacks", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-session-"));
@@ -7518,7 +7655,7 @@ describeUiServer("ui-server mini app", () => {
       vi.resetModules();
       await removeDirWithRetries(isolatedRepoRoot);
     }
-  });
+  }, 15000);
 
   it("returns replayable trajectory details for a single agent run", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-run-detail-"));

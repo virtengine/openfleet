@@ -4730,6 +4730,7 @@ export function createCompiledInternalHarnessSession(compiledProfile, options = 
     onEvent: options.onHarnessEvent,
     runId: options.runId,
     dryRun: options.dryRun === true,
+    abortController: options.abortController || null,
     taskKey: options.taskKey || compiledProfile.taskKey || compiledProfile.agentId,
     steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
     executeTurn: buildHarnessTurnExecutor(options),
@@ -4744,6 +4745,15 @@ export function createCompiledInternalHarnessSession(compiledProfile, options = 
     validationReport: { errors: [], warnings: [], stats: compiledProfile.metadata || {} },
     isValid: true,
     controller,
+    canSteer: () => controller.canSteer?.() === true,
+    steer: (prompt, meta = {}) => controller.steer?.(prompt, meta) || {
+      ok: false,
+      delivered: false,
+      reason: "not_steerable",
+      interventionType: String(meta?.kind || meta?.type || "nudge").trim() || "nudge",
+      stageId: null,
+      targetTaskKey: null,
+    },
     run: () => controller.run(),
   };
 }

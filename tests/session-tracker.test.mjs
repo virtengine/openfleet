@@ -487,8 +487,12 @@ describe("session-tracker", () => {
     it("backfills persisted sessions into the sqlite session_activity index on reload", () => {
       const tempDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-backfill-"));
       const repoRoot = mkdtempSync(join(tmpdir(), "bosun-session-tracker-ledger-"));
+      const sandboxLedgerDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-sandbox-ledger-"));
+      const sandboxLedgerPath = join(sandboxLedgerDir, "state-ledger.sqlite");
       const previousRepoRoot = process.env.REPO_ROOT;
+      const previousLedgerPath = process.env.BOSUN_STATE_LEDGER_PATH;
       process.env.REPO_ROOT = repoRoot;
+      process.env.BOSUN_STATE_LEDGER_PATH = sandboxLedgerPath;
       try {
         writeFileSync(join(tempDir, "persisted-session-1.json"), JSON.stringify({
           id: "persisted-session-1",
@@ -543,8 +547,11 @@ describe("session-tracker", () => {
         resetStateLedgerCache();
         if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
         else process.env.REPO_ROOT = previousRepoRoot;
+        if (previousLedgerPath === undefined) delete process.env.BOSUN_STATE_LEDGER_PATH;
+        else process.env.BOSUN_STATE_LEDGER_PATH = previousLedgerPath;
         rmSync(tempDir, { recursive: true, force: true });
         rmSync(repoRoot, { recursive: true, force: true });
+        rmSync(sandboxLedgerDir, { recursive: true, force: true });
       }
     });
 
@@ -1144,4 +1151,3 @@ describe("session-tracker", () => {
     });
   });
 });
-

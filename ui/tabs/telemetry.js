@@ -723,7 +723,7 @@ function DurableRuntimePanel({ summary = null }) {
             SQL-backed session lineage, context pressure, and lifetime execution totals.
           <//>
         <//>
-        <${Chip} size="small" variant="outlined" label="State ledger / SQL" />
+        <${Chip} size="small" variant="outlined" label="State ledger / SQLite" />
       <//>
 
       <${Stack} direction=${{ xs: "column", md: "row" }} spacing=${2}>

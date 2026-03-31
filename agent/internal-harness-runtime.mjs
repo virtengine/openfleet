@@ -113,6 +113,14 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
   const taskKey = toTrimmedString(options.taskKey || profile.taskKey || profile.agentId || profile.name || "harness");
   const runId = toTrimmedString(options.runId || "");
   let aborted = false;
+  let activeStageId = "";
+  let activeStageTaskKey = "";
+
+  function canSteerActiveTurn() {
+    if (dryRun || aborted) return false;
+    if (!activeStageId || !activeStageTaskKey) return false;
+    return typeof options.steerActiveTurn === "function";
+  }
 
   return {
     abort(reason = "aborted") {
@@ -124,6 +132,91 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
         taskKey,
         timestamp: new Date().toISOString(),
       });
+    },
+    canSteer() {
+      return canSteerActiveTurn();
+    },
+    steer(prompt, meta = {}) {
+      const instruction = toTrimmedString(prompt);
+      const stageId = activeStageId || null;
+      const targetTaskKey = activeStageTaskKey || taskKey;
+      const interventionType = toTrimmedString(meta?.kind || meta?.type || "nudge") || "nudge";
+      const timestamp = new Date().toISOString();
+      if (!instruction) {
+        emitEvent(options.onEvent, {
+          type: "harness:intervention-rejected",
+          runId,
+          taskKey,
+          stageId,
+          targetTaskKey,
+          interventionType,
+          reason: "empty_prompt",
+          timestamp,
+          meta: meta && typeof meta === "object" ? { ...meta } : {},
+        });
+        return {
+          ok: false,
+          delivered: false,
+          reason: "empty_prompt",
+          interventionType,
+          stageId,
+          targetTaskKey,
+        };
+      }
+      if (!canSteerActiveTurn()) {
+        emitEvent(options.onEvent, {
+          type: "harness:intervention-rejected",
+          runId,
+          taskKey,
+          stageId,
+          targetTaskKey,
+          interventionType,
+          reason: dryRun ? "dry_run" : "not_steerable",
+          prompt: instruction,
+          timestamp,
+          meta: meta && typeof meta === "object" ? { ...meta } : {},
+        });
+        return {
+          ok: false,
+          delivered: false,
+          reason: dryRun ? "dry_run" : "not_steerable",
+          interventionType,
+          stageId,
+          targetTaskKey,
+        };
+      }
+      emitEvent(options.onEvent, {
+        type: "harness:intervention-requested",
+        runId,
+        taskKey,
+        stageId,
+        targetTaskKey,
+        interventionType,
+        prompt: instruction,
+        timestamp,
+        meta: meta && typeof meta === "object" ? { ...meta } : {},
+      });
+      const delivered = options.steerActiveTurn(targetTaskKey, instruction) === true;
+      emitEvent(options.onEvent, {
+        type: delivered ? "harness:intervention-delivered" : "harness:intervention-rejected",
+        runId,
+        taskKey,
+        stageId,
+        targetTaskKey,
+        interventionType,
+        reason: delivered ? "steered" : "not_steerable",
+        prompt: instruction,
+        timestamp: new Date().toISOString(),
+        meta: meta && typeof meta === "object" ? { ...meta } : {},
+      });
+      return {
+        ok: delivered,
+        delivered,
+        reason: delivered ? "steered" : "not_steerable",
+        interventionType,
+        stageId,
+        targetTaskKey,
+      };
     },
     async run() {
       const history = [];
@@ -144,6 +237,8 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
 
       while (currentStageId && steps < maxSteps) {
         if (aborted) {
+          activeStageId = "";
+          activeStageTaskKey = "";
           return {
             success: false,
             status: "aborted",
@@ -156,6 +251,8 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
         }
         const stage = stageMap.get(currentStageId);
         if (!stage) {
+          activeStageId = "";
+          activeStageTaskKey = "";
           return {
             success: false,
             status: "invalid_stage",
@@ -172,6 +269,8 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
         const stageStartedAt = Date.now();
         const stageRepairAttempt = Number(repairAttempts.get(stage.id) || 0);
         const mode = history.length === 0 ? "initial" : "continue";
+        activeStageId = stage.id;
+        activeStageTaskKey = toTrimmedString(stage.taskKey || taskKey);
         emitEvent(options.onEvent, {
           type: "harness:stage-start",
           runId,
@@ -193,16 +292,55 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
           if (typeof options.executeTurn !== "function") {
             throw new Error("Harness runtime requires an executeTurn function when dryRun is false");
           }
-          rawResult = await options.executeTurn({
-            profile,
-            stage,
-            taskKey: toTrimmedString(stage.taskKey || taskKey),
-            prompt: stage.prompt,
-            mode,
+          try {
+            rawResult = await options.executeTurn({
+              profile,
+              stage,
+              taskKey: toTrimmedString(stage.taskKey || taskKey),
+              prompt: stage.prompt,
+              mode,
+              dryRun,
+              timeoutMs: toPositiveInteger(stage.timeoutMs || options.timeoutMs, 0) || undefined,
+              step: steps,
+              abortController: options.abortController || null,
+              signal: options.abortController?.signal || null,
+            });
+          } catch (error) {
+            const wasAborted =
+              aborted === true ||
+              options.abortController?.signal?.aborted === true ||
+              error?.name === "AbortError" ||
+              /abort|cancel|stop/i.test(String(error?.message || ""));
+            if (wasAborted) {
+              activeStageId = "";
+              activeStageTaskKey = "";
+              return {
+                success: false,
+                status: "aborted",
+                runId,
+                dryRun,
+                currentStageId: stage.id,
+                completedStageId: lastCompletedStageId || null,
+                history,
+                error: String(error?.message || "Harness run aborted"),
+              };
+            }
+            throw error;
+          }
+        }
+
+        if (aborted || options.abortController?.signal?.aborted === true) {
+          activeStageId = "";
+          activeStageTaskKey = "";
+          return {
+            success: false,
+            status: "aborted",
+            runId,
             dryRun,
-            timeoutMs: toPositiveInteger(stage.timeoutMs || options.timeoutMs, 0) || undefined,
-            step: steps,
-          });
+            currentStageId: stage.id,
+            completedStageId: lastCompletedStageId || null,
+            history,
+          };
         }
 
         const result = normalizeExecutionResult(rawResult, mode);
@@ -281,6 +419,8 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
               timestamp: new Date(completedAt).toISOString(),
               result: completed,
             });
+            activeStageId = "";
+            activeStageTaskKey = "";
             return completed;
           }
           historyEntry.nextStageId = nextStage.to;
@@ -393,6 +533,8 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
           timestamp: new Date(failedAt).toISOString(),
           result: failed,
         });
+        activeStageId = "";
+        activeStageTaskKey = "";
         return failed;
       }
 
@@ -417,6 +559,8 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
         timestamp: new Date(exhaustedAt).toISOString(),
         result: exhausted,
       });
+      activeStageId = "";
+      activeStageTaskKey = "";
       return exhausted;
     },
   };

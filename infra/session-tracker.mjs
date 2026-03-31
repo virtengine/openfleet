@@ -305,6 +305,9 @@ function buildSessionRecordFromPersistedData(data, idleThresholdMs) {
     turns: Array.isArray(data.turns) ? data.turns : [],
     accumulatedAt: data.accumulatedAt || null,
     lastActivityAt: lastActiveMs,
+    workspaceId: String(data.workspaceId || metadata.workspaceId || "").trim() || null,
+    workspaceDir: String(data.workspaceDir || metadata.workspaceDir || "").trim() || null,
+    workspaceRoot: String(data.workspaceRoot || metadata.workspaceRoot || "").trim() || null,
     metadata,
     insights: data.insights || buildSessionInsights({ messages }),
     trajectory: data.trajectory || { version: 1, replayable: true, steps: [] },
@@ -347,7 +350,9 @@ function normalizeTokenNumber(value) {
 
 function extractUsageFromMeta(meta) {
   if (!meta || typeof meta !== "object") return null;
-  const usage = meta.usage && typeof meta.usage === "object" ? meta.usage : meta;
+  const usage = meta.usage && typeof meta.usage === "object"
+    ? meta.usage
+    : (meta.tokenUsage && typeof meta.tokenUsage === "object" ? meta.tokenUsage : meta);
   const inputTokens = normalizeTokenNumber(
     usage.inputTokens ?? usage.prompt_tokens ?? usage.promptTokens ?? usage.input_tokens,
   );
@@ -705,9 +710,11 @@ function persistSessionRecordToStateLedger(session) {
   try {
     upsertSessionRecordToStateLedger(
       record,
-      explicitLedgerPath && isTestRuntime()
-        ? { ledgerPath: explicitLedgerPath }
-        : { repoRoot: explicitRepoRoot ? resolve(explicitRepoRoot) : SESSION_TRACKER_REPO_ROOT },
+      explicitRepoRoot
+        ? { repoRoot: resolve(explicitRepoRoot) }
+        : explicitLedgerPath && isTestRuntime()
+          ? { ledgerPath: explicitLedgerPath }
+          : { repoRoot: SESSION_TRACKER_REPO_ROOT },
     );
   } catch {
     // Best-effort persistence — session tracking should continue even if the
@@ -1110,6 +1117,7 @@ export class SessionTracker {
     this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
+    this.#flushDirty();
     persistSessionRecordToStateLedger(session);
     emitSessionStateEvent(session, "session-ended", { status: session.status });
   }

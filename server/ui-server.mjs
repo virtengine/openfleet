@@ -86,6 +86,10 @@ function invalidateApiCache(prefix) {
     if (key.startsWith(prefix)) _apiInflight.delete(key);
   }
 }
+function invalidateHarnessApiCaches() {
+  invalidateApiCache("status");
+  invalidateApiCache("infra");
+}
 async function getOrComputeCachedApiResponse(key, ttlMs, producer) {
   const cached = getCachedApiResponse(key, ttlMs);
   if (cached !== undefined) return cached;
@@ -147,12 +151,12 @@ import {
 
 import {
   addActiveSessionListener,
+  createCompiledInternalHarnessSession,
   getActiveThreads,
   launchEphemeralThread,
   launchOrResumeThread,
   execWithRetry,
   invalidateThread,
-  runCompiledInternalHarnessProfile,
 } from "../agent/agent-pool.mjs";
 import { withTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 import { resolveAgentPrompts } from "../agent/agent-prompts.mjs";
@@ -3438,12 +3442,58 @@ async function getWorkflowRequestContext(reqUrl, options = {}) {
  */
 function resolvePrimaryWorkspaceId() {
   try {
-    const configDir = resolveUiConfigDir();
-    const workspaces = listManagedWorkspaces(configDir);
+    const { listed: workspaces } = resolveManagedWorkspaceInventory();
     return String(workspaces[0]?.id || "").trim().toLowerCase();
   } catch {
     return "";
   }
+}
+
+function resolveRepoLocalWorkspaceConfigDir() {
+  if (!String(process.env.REPO_ROOT || "").trim()) return "";
+  const candidates = [
+    normalizeCandidatePath(resolve(repoRoot, ".bosun")),
+    normalizeCandidatePath(repoRoot),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(resolve(candidate, "bosun.config.json"))) return candidate;
+    } catch {
+      // Keep probing the next candidate.
+    }
+  }
+  return "";
+}
+
+function resolveManagedWorkspaceInventory() {
+  const seen = new Set();
+  const configDirs = [];
+  const pushConfigDir = (value) => {
+    const normalized = normalizeCandidatePath(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    configDirs.push(normalized);
+  };
+  pushConfigDir(resolveUiConfigDir());
+  pushConfigDir(resolveRepoLocalWorkspaceConfigDir());
+
+  for (const configDir of configDirs) {
+    try {
+      const listed = listManagedWorkspaces(configDir, { repoRoot });
+      const active = getActiveManagedWorkspace(configDir);
+      if (listed.length > 0 || active) {
+        return { configDir, listed, active };
+      }
+    } catch {
+      // Fall through to the next candidate.
+    }
+  }
+
+  return {
+    configDir: configDirs[0] || "",
+    listed: [],
+    active: null,
+  };
 }
 
 function normalizeDiffTaskRef(value) {
@@ -4885,6 +4935,8 @@ function resolveHarnessRunPlan(body = {}, harnessConfig = getHarnessRuntimeConfi
 }
 
 function buildHarnessRunPayload(runRecord, runResult, harnessConfig) {
+  const eventSummary = buildHarnessEventSummary(runRecord?.events || []);
+  const lastIntervention = getLatestHarnessIntervention(eventSummary.normalizedEvents || []);
   return {
     ok: runResult?.success === true,
     status: runResult?.status || "unknown",
@@ -4899,6 +4951,15 @@ function buildHarnessRunPayload(runRecord, runResult, harnessConfig) {
     harnessConfig,
     result: runResult,
     runRecord,
+    controls: {
+      canStop: false,
+      canNudge: false,
+      canRetry: false,
+      canReplay: true,
+    },
+    interventionQueueDepth: 0,
+    lastInterventionAt: lastIntervention?.timestamp || null,
+    lastInterventionBy: lastIntervention?.actor || null,
   };
 }
 
@@ -5021,6 +5082,9 @@ function buildHarnessActiveRunSnapshot(state = {}) {
     mode: String(state.mode || (state.dryRun === true ? "dry-run" : "run")).trim() || "run",
     dryRun: state.dryRun === true,
     active: true,
+    stopRequested: state.stopRequested === true,
+    stopRequestedAt: state.stopRequestedAt || null,
+    stopRequestedReason: state.stopRequestedReason || null,
     success: null,
     status: "running",
     startedAt: String(state.startedAt || new Date().toISOString()),
@@ -5060,6 +5124,7 @@ function setActiveHarnessRun(state = {}) {
     updatedAt: String(state.updatedAt || new Date().toISOString()),
   };
   activeHarnessRuns.set(runId, nextState);
+  invalidateHarnessApiCaches();
   return buildHarnessActiveRunSnapshot(nextState);
 }
 
@@ -5071,6 +5136,7 @@ function appendActiveHarnessRunEvent(runId, event = {}) {
   current.events.push(event && typeof event === "object" ? { ...event } : event);
   current.updatedAt = String(event?.timestamp || new Date().toISOString());
   activeHarnessRuns.set(key, current);
+  invalidateHarnessApiCaches();
   return buildHarnessActiveRunSnapshot(current);
 }
 
@@ -5087,6 +5153,7 @@ function listActiveHarnessRunSnapshots() {
 
 function removeActiveHarnessRun(runId) {
   activeHarnessRuns.delete(String(runId || "").trim());
+  invalidateHarnessApiCaches();
 }
 
 function summarizeHarnessEvent(event = {}) {
@@ -5118,6 +5185,9 @@ function summarizeHarnessEvent(event = {}) {
   if (type === "harness:completed") {
     return clampRunSummaryText(`Harness completed at stage ${stageId || "unknown"}.`);
   }
+  if (type === "harness:aborted") {
+    return clampRunSummaryText(`Harness aborted${reason ? ` (${reason})` : ""}.`);
+  }
   if (type === "harness:stage-failed") {
     return clampRunSummaryText(`Stage ${stageId || "unknown"} failed with ${formatHarnessRunStatusLabel(status || outcome || "failure")}.`);
   }
@@ -5132,7 +5202,7 @@ function classifyHarnessEventCategory(type) {
   if (normalized.includes("transition")) return "transition";
   if (normalized.includes("backoff")) return "control";
   if (normalized.includes("result")) return "result";
-  if (normalized.includes("failed") || normalized.includes("completed")) return "terminal";
+  if (normalized.includes("failed") || normalized.includes("completed") || normalized.includes("aborted")) return "terminal";
   if (normalized.includes("start")) return "stage";
   return "event";
 }
@@ -5300,10 +5370,25 @@ async function executeHarnessRunRequest(body = {}, options = {}) {
   const runId = String(body?.runId || "").trim() || `harness-run-${_genCallId()}`;
   const runEvents = [];
   const startedAt = new Date().toISOString();
-  const harnessRunner = typeof uiDeps.runCompiledInternalHarnessProfile === "function"
-    ? uiDeps.runCompiledInternalHarnessProfile
-    : runCompiledInternalHarnessProfile;
+  const harnessSessionFactory = typeof uiDeps.createCompiledInternalHarnessSession === "function"
+    ? uiDeps.createCompiledInternalHarnessSession
+    : createCompiledInternalHarnessSession;
+  const runAbortController = new AbortController();
   const effectiveTaskKey = String(body?.taskKey || "").trim() || linkedTaskId || `harness:${compiledProfile.agentId || "profile"}:${runId}`;
+  const sessionHandle = harnessSessionFactory(compiledProfile, {
+    dryRun,
+    runId,
+    taskKey: effectiveTaskKey,
+    timeoutMs: Number.isFinite(Number(body?.timeoutMs)) && Number(body.timeoutMs) > 0
+      ? Number(body.timeoutMs)
+      : undefined,
+    turnExecutor: typeof uiDeps.harnessTurnExecutor === "function" ? uiDeps.harnessTurnExecutor : undefined,
+    onHarnessEvent: (event) => {
+      runEvents.push(event);
+      appendActiveHarnessRunEvent(runId, event);
+    },
+    abortController: runAbortController,
+  });
   setActiveHarnessRun({
     runId,
     taskId: linkedTaskId || null,
@@ -5318,23 +5403,17 @@ async function executeHarnessRunRequest(body = {}, options = {}) {
     artifactPath: runPlan.artifact?.artifactPath || null,
     compiledProfile,
     events: [],
+    sessionHandle,
+    abortController: runAbortController,
   });
   let session;
   let runRecord;
   try {
-    session = await harnessRunner(compiledProfile, {
-      dryRun,
-      runId,
-      taskKey: effectiveTaskKey,
-      timeoutMs: Number.isFinite(Number(body?.timeoutMs)) && Number(body.timeoutMs) > 0
-        ? Number(body.timeoutMs)
-        : undefined,
-      turnExecutor: typeof uiDeps.harnessTurnExecutor === "function" ? uiDeps.harnessTurnExecutor : undefined,
-      onHarnessEvent: (event) => {
-        runEvents.push(event);
-        appendActiveHarnessRunEvent(runId, event);
-      },
-    });
+    const result = await sessionHandle.run();
+    session = {
+      ...sessionHandle,
+      result,
+    };
     const finishedAt = new Date().toISOString();
     runRecord = recordHarnessRun({
       runId,
@@ -5386,6 +5465,7 @@ function buildHarnessOverview(configDir = resolveUiConfigDir()) {
   try {
     const persisted = summarizeHarnessRuns(configDir, { limit: 5 });
     const activeRuns = listActiveHarnessRunSnapshots();
+    const recentRuns = mergeHarnessRunSummaries(persisted?.recentRuns || [], activeRuns, 5);
     return {
       ...persisted,
       totals: {
@@ -5394,8 +5474,8 @@ function buildHarnessOverview(configDir = resolveUiConfigDir()) {
       },
       activeRunCount: activeRuns.length,
       activeRuns,
-      lastRun: activeRuns[0] || persisted?.lastRun || null,
-      recentRuns: mergeHarnessRunSummaries(persisted?.recentRuns || [], activeRuns, 5),
+      lastRun: recentRuns[0] || persisted?.lastRun || activeRuns[0] || null,
+      recentRuns,
     };
   } catch {
     return {
@@ -5897,7 +5977,7 @@ function pickWorkspaceRepoDir(workspace) {
 
 function resolveActiveWorkspaceExecutionContext() {
   const fallback = { workspaceId: "", workspaceDir: repoRoot, workspaceRoot: repoRoot };
-  const configDir = resolveUiConfigDir();
+  const { configDir, listed, active } = resolveManagedWorkspaceInventory();
   if (!configDir) return fallback;
 
   const explicitWorkspaceDirHint = normalizeCandidatePath(
@@ -5907,8 +5987,6 @@ function resolveActiveWorkspaceExecutionContext() {
     || process.env.BOSUN_DIR,
   );
 
-  const listed = listManagedWorkspaces(configDir, { repoRoot });
-  const active = getActiveManagedWorkspace(configDir);
   const activeId = String(active?.id || "").trim();
   const workspace =
     (activeId
@@ -5939,15 +6017,14 @@ function resolveActiveWorkspaceExecutionContext() {
 }
 
 function resolveDefaultRepositoryForWorkspaceContext(workspaceContext = {}) {
-  const configDir = resolveUiConfigDir();
+  const { configDir, listed, active } = resolveManagedWorkspaceInventory();
   if (!configDir) return "";
-  const listed = listManagedWorkspaces(configDir, { repoRoot });
   const workspaceId = String(workspaceContext?.workspaceId || "").trim().toLowerCase();
   const workspace =
     (workspaceId
       ? listed.find((entry) => String(entry?.id || "").trim().toLowerCase() === workspaceId)
       : null) ||
-    getActiveManagedWorkspace(configDir) ||
+    active ||
     listed[0] ||
     null;
   if (!workspace) return "";
@@ -6022,9 +6099,8 @@ function createManualFlowTaskManager(workspaceContext = {}, opts = {}) {
 function resolveWorkspaceContextById(workspaceId = "") {
   const requestedId = String(workspaceId || "").trim().toLowerCase();
   if (!requestedId) return resolveActiveWorkspaceExecutionContext();
-  const configDir = resolveUiConfigDir();
+  const { configDir, listed } = resolveManagedWorkspaceInventory();
   if (!configDir) return null;
-  const listed = listManagedWorkspaces(configDir, { repoRoot });
   const workspace = listed.find(
     (entry) => String(entry?.id || "").trim().toLowerCase() === requestedId,
   );
@@ -6102,9 +6178,7 @@ function sessionMatchesWorkspaceContext(session, workspaceContext) {
     // explicitly selected non-primary workspaces.
     const primaryId = resolvePrimaryWorkspaceId();
     const matchesPrimaryWorkspace = !filter || !primaryId || filter === primaryId;
-    if (!matchesPrimaryWorkspace) return false;
-    if (!activeWorkspaceDir && !activeWorkspaceRoot) return true;
-    return activeWorkspaceDir === repoRoot || activeWorkspaceRoot === repoRoot;
+    return matchesPrimaryWorkspace;
   }
   if (sessionWorkspace.workspaceId) {
     const filter = String(workspaceContext.workspaceFilter || "").trim().toLowerCase();
@@ -7789,30 +7863,29 @@ function normalizeLedgerSessionDocument(activity) {
 }
 
 function resolveUiStateLedgerOptions(workspaceContext = null) {
+  const explicitRepoRoot = normalizeCandidatePath(process.env.REPO_ROOT);
+  const repoRootPath = explicitRepoRoot || normalizeCandidatePath(repoRoot);
+  const workspaceRoot = normalizeCandidatePath(workspaceContext?.workspaceRoot);
+  const workspaceDir = normalizeCandidatePath(workspaceContext?.workspaceDir);
+  const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
   if (workspaceContext?.allWorkspaces === true) {
-    const explicitRepoRoot = normalizeCandidatePath(process.env.REPO_ROOT);
-    if (explicitRepoRoot) {
-      return { repoRoot: explicitRepoRoot };
-    }
-    const repoRootPath = normalizeCandidatePath(repoRoot);
     if (repoRootPath) {
       return { repoRoot: repoRootPath };
     }
-    const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
     if (explicitLedgerPath) {
       return { ledgerPath: explicitLedgerPath };
     }
     return {};
   }
-  const workspaceDir = normalizeCandidatePath(workspaceContext?.workspaceDir);
-  if (workspaceDir) {
-    return { repoRoot: workspaceDir };
-  }
-  const repoRootPath = normalizeCandidatePath(repoRoot);
   if (repoRootPath) {
     return { repoRoot: repoRootPath };
   }
-  const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
+  if (workspaceRoot) {
+    return { repoRoot: workspaceRoot };
+  }
+  if (workspaceDir) {
+    return { repoRoot: workspaceDir };
+  }
   if (explicitLedgerPath) {
     return { ledgerPath: explicitLedgerPath };
   }
@@ -7827,6 +7900,8 @@ function mergeSessionRecords(primarySession, fallbackSession) {
   const primaryMeta = primary.metadata && typeof primary.metadata === "object" ? primary.metadata : {};
   const fallbackMeta = fallback.metadata && typeof fallback.metadata === "object" ? fallback.metadata : {};
   const primaryLifecycleStatus = String(primary.lifecycleStatus || primary.status || "").trim().toLowerCase();
+  const fallbackLifecycleStatus = String(fallback.lifecycleStatus || fallback.status || "").trim().toLowerCase();
+  const primaryIsTerminal = Boolean(primaryLifecycleStatus) && primaryLifecycleStatus !== "active";
   const primaryIsLive = primary.runtimeIsLive === true || primaryLifecycleStatus === "active";
   const pickString = (...values) => {
     for (const value of values) {
@@ -7857,21 +7932,28 @@ function mergeSessionRecords(primarySession, fallbackSession) {
     }
     return [];
   };
-  const workspaceId = pickString(fallback.workspaceId, fallbackMeta.workspaceId, primary.workspaceId, primaryMeta.workspaceId);
-  const workspaceDir = pickString(fallback.workspaceDir, fallbackMeta.workspaceDir, primary.workspaceDir, primaryMeta.workspaceDir);
-  const workspaceRoot = pickString(fallback.workspaceRoot, fallbackMeta.workspaceRoot, primary.workspaceRoot, primaryMeta.workspaceRoot, workspaceDir);
+  const preferPrimaryIfLive = (...values) => (
+    primaryIsLive ? values : [...values].reverse()
+  );
+  const workspaceId = pickString(primary.workspaceId, primaryMeta.workspaceId, fallback.workspaceId, fallbackMeta.workspaceId);
+  const workspaceDir = pickString(primary.workspaceDir, primaryMeta.workspaceDir, fallback.workspaceDir, fallbackMeta.workspaceDir);
+  const workspaceRoot = pickString(primary.workspaceRoot, primaryMeta.workspaceRoot, fallback.workspaceRoot, fallbackMeta.workspaceRoot, workspaceDir);
   const runtimeUpdatedAt = pickLatestTimestamp(
     primary.runtimeUpdatedAt,
     primary.lastActiveAt,
     fallback.runtimeUpdatedAt,
     fallback.lastActiveAt,
   );
-  const lifecycleStatus = primaryIsLive
+  const lifecycleStatus = primaryIsTerminal
     ? pickString(primary.lifecycleStatus, primary.status, fallback.lifecycleStatus, fallback.status)
-    : pickString(fallback.lifecycleStatus, fallback.status, primary.lifecycleStatus, primary.status);
-  const status = primaryIsLive
+    : (primaryIsLive
+    ? pickString(primary.lifecycleStatus, primary.status, fallback.lifecycleStatus, fallback.status)
+    : pickString(fallback.lifecycleStatus, fallback.status, primary.lifecycleStatus, primary.status));
+  const status = primaryIsTerminal
+    ? pickString(primary.status, primary.lifecycleStatus, fallback.status, fallback.runtimeState)
+    : (primaryIsLive
     ? pickString(primary.status, primary.runtimeState, fallback.status, fallback.runtimeState)
-    : pickString(fallback.status, fallback.runtimeState, primary.status, primary.runtimeState);
+    : pickString(fallback.status, fallback.runtimeState, primary.status, primary.runtimeState));
   return {
     ...fallback,
     ...primary,
@@ -7883,11 +7965,13 @@ function mergeSessionRecords(primarySession, fallbackSession) {
     type: pickString(primary.type, fallback.type),
     status,
     lifecycleStatus,
-    runtimeState: primaryIsLive
+    runtimeState: primaryIsTerminal
       ? pickString(primary.runtimeState, primary.status, fallback.runtimeState, fallback.status)
-      : pickString(fallback.runtimeState, fallback.status, primary.runtimeState, primary.status),
+      : (primaryIsLive
+      ? pickString(primary.runtimeState, primary.status, fallback.runtimeState, fallback.status)
+      : pickString(fallback.runtimeState, fallback.status, primary.runtimeState, primary.status)),
     runtimeUpdatedAt,
-    runtimeIsLive: primary.runtimeIsLive === true || fallback.runtimeIsLive === true,
+    runtimeIsLive: primaryIsTerminal ? false : (primary.runtimeIsLive === true || fallback.runtimeIsLive === true),
     workspaceId,
     workspaceDir,
     workspaceRoot,
@@ -7895,10 +7979,20 @@ function mergeSessionRecords(primarySession, fallbackSession) {
     lastActiveAt: pickLatestTimestamp(primary.lastActiveAt, fallback.lastActiveAt, runtimeUpdatedAt),
     totalEvents: Math.max(0, Number(primary.totalEvents ?? fallback.totalEvents ?? 0) || 0, Number(primary.eventCount ?? fallback.eventCount ?? 0) || 0),
     turnCount: Math.max(0, Number(primary.turnCount ?? fallback.turnCount ?? 0) || 0),
-    turns: pickList(primary.turns, fallback.turns),
-    messages: pickList(primary.messages, fallback.messages),
-    preview: pickString(primary.preview, primary.lastMessage, fallback.preview, fallback.lastMessage),
-    lastMessage: pickString(primary.lastMessage, primary.preview, fallback.lastMessage, fallback.preview),
+    turns: pickList(...preferPrimaryIfLive(primary.turns, fallback.turns)),
+    messages: pickList(...preferPrimaryIfLive(primary.messages, fallback.messages)),
+    preview: pickString(...preferPrimaryIfLive(
+      primary.preview,
+      primary.lastMessage,
+      fallback.preview,
+      fallback.lastMessage,
+    )),
+    lastMessage: pickString(...preferPrimaryIfLive(
+      primary.lastMessage,
+      primary.preview,
+      fallback.lastMessage,
+      fallback.preview,
+    )),
     metadata: {
       ...primaryMeta,
       ...fallbackMeta,
@@ -8010,10 +8104,6 @@ function resolveUiConfigDir() {
     try { mkdirSync(fromConfigPath, { recursive: true }); } catch { /* ok */ }
     return fromConfigPath;
   }
-  if (sandbox && process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG !== "1") {
-    try { mkdirSync(sandbox.configDir, { recursive: true }); } catch { /* ok */ }
-    return sandbox.configDir;
-  }
   if (String(process.env.REPO_ROOT || "").trim()) {
     const repoLocalConfigDirCandidates = [
       resolve(repoRoot, ".bosun"),
@@ -8028,6 +8118,10 @@ function resolveUiConfigDir() {
         // Fall through to the next candidate.
       }
     }
+  }
+  if (sandbox && process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG !== "1") {
+    try { mkdirSync(sandbox.configDir, { recursive: true }); } catch { /* ok */ }
+    return sandbox.configDir;
   }
   const isWslInteropRuntime = Boolean(
     process.env.WSL_DISTRO_NAME
@@ -16529,12 +16623,17 @@ function filterRelevantLogLines(lines = [], query = "", limit = 200) {
 async function resolveSessionWorktreePath(session) {
   if (!session || typeof session !== "object") return null;
   const directCandidates = [
+    session?.worktreePath,
+    session?.workspaceDir,
+    session?.workspaceRoot,
+    session?.workspacePath,
     session?.metadata?.worktreePath,
     session?.metadata?.workspaceDir,
+    session?.metadata?.workspaceRoot,
     session?.metadata?.workspacePath,
     session?.metadata?.cwd,
   ]
-    .map((value) => String(value || "").trim())
+    .map((value) => normalizeCandidatePath(value))
     .filter(Boolean);
   for (const candidate of directCandidates) {
     if (existsSync(candidate)) return candidate;
@@ -24855,6 +24954,64 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  const harnessStopMatch = path.match(/^\/api\/harness\/runs\/([^/]+)\/stop$/);
+  if (harnessStopMatch && req.method === "POST") {
+    try {
+      const runId = decodeURIComponent(harnessStopMatch[1]);
+      const activeState = activeHarnessRuns.get(runId);
+      if (!activeState) {
+        try {
+          readHarnessRunRecord(resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`));
+          jsonResponse(res, 200, { ok: true, runId, stopped: false, active: false, stopRequested: false });
+        } catch (error) {
+          jsonResponse(res, 404, { ok: false, error: error.message });
+        }
+        return;
+      }
+      if (activeState.stopRequested === true) {
+        jsonResponse(res, 200, {
+          ok: true,
+          runId,
+          stopped: false,
+          active: true,
+          stopRequested: true,
+          stopRequestedAt: activeState.stopRequestedAt || null,
+          reason: activeState.stopRequestedReason || null,
+        });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const reason = String(body?.reason || "operator_stop").trim() || "operator_stop";
+      activeState.stopRequested = true;
+      activeState.stopRequestedAt = new Date().toISOString();
+      activeState.stopRequestedReason = reason;
+      activeHarnessRuns.set(runId, activeState);
+      invalidateHarnessApiCaches();
+      try {
+        activeState.abortController?.abort?.(reason);
+      } catch {
+        // best effort
+      }
+      try {
+        activeState.sessionHandle?.controller?.abort?.(reason);
+      } catch {
+        // best effort
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        runId,
+        stopped: true,
+        active: true,
+        stopRequested: true,
+        stopRequestedAt: activeState.stopRequestedAt,
+        reason,
+      });
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/harness/compile" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
@@ -25877,10 +26034,15 @@ if (path === "/api/agent-logs/context") {
       const workspaceContext = resolveActiveWorkspaceExecutionContext();
       const requestedWorkspaceId = String(body?.workspaceId || "").trim();
       const requestedWorkspaceDir = normalizeCandidatePath(body?.workspaceDir);
+      const requestedWorkspaceRoot = normalizeCandidatePath(body?.workspaceRoot);
       const resolvedWorkspaceId =
         requestedWorkspaceId || workspaceContext.workspaceId;
       const resolvedWorkspaceDir =
         requestedWorkspaceDir || workspaceContext.workspaceDir || repoRoot;
+      const resolvedWorkspaceRoot =
+        requestedWorkspaceRoot
+        || workspaceContext.workspaceRoot
+        || resolvedWorkspaceDir;
       const requestedAgentProfileId = String(body?.agentProfileId || "").trim();
       const tracker = getSessionTracker();
       const session = tracker.createSession({
@@ -25894,6 +26056,7 @@ if (path === "/api/agent-logs/context") {
           ...(requestedAgentProfileId ? { agentProfileId: requestedAgentProfileId } : {}),
           ...(resolvedWorkspaceId ? { workspaceId: resolvedWorkspaceId } : {}),
           ...(resolvedWorkspaceDir ? { workspaceDir: resolvedWorkspaceDir } : {}),
+          ...(resolvedWorkspaceRoot ? { workspaceRoot: resolvedWorkspaceRoot } : {}),
         },
       });
       jsonResponse(res, 200, { ok: true, session: { id: session.id, type: session.type, status: session.status, metadata: session.metadata } });
@@ -26368,7 +26531,7 @@ if (path === "/api/agent-logs/context") {
 
     if (action === "diff" && req.method === "GET") {
       try {
-        const session = getScopedSessionRecord();
+        const session = getScopedSessionRecord({ includeMessages: true });
         if (!session) {
           jsonResponse(res, 200, {
             ok: true,
@@ -26389,7 +26552,14 @@ if (path === "/api/agent-logs/context") {
           jsonResponse(res, 200, { ok: true, diff: { files: [], totalFiles: 0, totalAdditions: 0, totalDeletions: 0, formatted: "(no worktree)" }, summary: "(no worktree)", commits: [] });
           return;
         }
-        const stats = collectDiffStats(worktreePath, { includePatch: true });
+        let stats = collectDiffStats(worktreePath, { includePatch: true });
+        if (
+          Number(stats?.totalFiles || 0) === 0
+          && existsSync(resolve(worktreePath, ".git"))
+        ) {
+          await new Promise((resolveRetry) => setTimeout(resolveRetry, 25));
+          stats = collectDiffStats(worktreePath, { includePatch: true });
+        }
         const summary = stats.formatted || getCompactDiffSummary(worktreePath);
         const commits = getRecentCommits(worktreePath);
         jsonResponse(res, 200, {
