@@ -1684,6 +1684,20 @@ describe("self-improvement workflow nodes", () => {
           recommendation: "Retry by running targeted validation before wider retries.",
           rationale: "This pattern recovered recent validation failures without reopening unrelated work.",
           tags: ["recovery", "validation"],
+          relatedPaths: ["src/billing/invoice-runner.mjs"],
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          strategyId: "wf-self-improvement-pass:path-matched",
+          workflowId: "wf-self-improvement-pass",
+          category: "strategy",
+          scopeLevel: "workspace",
+          status: "promoted",
+          confidence: 0.78,
+          recommendation: "Retry by validating the workflow engine path before wider retries.",
+          rationale: "This path-specific strategy should outrank generic guidance when the same file is active.",
+          tags: ["recovery", "validation"],
+          relatedPaths: ["workflow/workflow-engine.mjs"],
           updatedAt: new Date().toISOString(),
         },
         {
@@ -1705,6 +1719,7 @@ describe("self-improvement workflow nodes", () => {
     const ctx = new WorkflowContext({
       repoRoot,
       _workflowId: "wf-self-improvement-pass",
+      _changedFiles: ["workflow/workflow-engine.mjs"],
       taskTitle: "Recover validation failures",
       lastError: "validation step failed on retry",
     });
@@ -1714,15 +1729,17 @@ describe("self-improvement workflow nodes", () => {
       config: {
         repoRoot,
         query: "validation retry recovery",
+        limit: 1,
         outputVariable: "loadedGuidance",
       },
     }, ctx);
 
     expect(result.success).toBe(true);
     expect(result.matched).toBe(1);
-    expect(result.strategyIds).toEqual(["wf-self-improvement-pass:preferred"]);
-    expect(result.guidanceSummary).toContain("Retry by running targeted validation before wider retries.");
-    expect(ctx.data.loadedGuidance.strategyIds).toEqual(["wf-self-improvement-pass:preferred"]);
+    expect(result.strategyIds).toEqual(["wf-self-improvement-pass:path-matched"]);
+    expect(result.guidanceSummary).toContain("Retry by validating the workflow engine path before wider retries.");
+    expect(result.guidanceSummary).toContain("matched=workflow/workflow-engine.mjs");
+    expect(ctx.data.loadedGuidance.strategyIds).toEqual(["wf-self-improvement-pass:path-matched"]);
   });
 
   it("agent.run_planner injects reusable skillbook guidance into the planner prompt", async () => {

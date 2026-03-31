@@ -1049,6 +1049,25 @@ async function resolveReusableSkillbookGuidance(ctx, options = {}) {
   const status = String(options.status || "").trim() || "promoted";
   const query = String(options.query || "").trim();
   const tags = Array.isArray(options.tags) ? options.tags : normalizeSelfImprovementTagList(options.tags);
+  const taskPayload =
+    ctx?.data?.task && typeof ctx.data.task === "object"
+      ? ctx.data.task
+      : null;
+  const relatedPaths = collectPromptPathHints(
+    options.relatedPaths,
+    options.changedFiles,
+    ctx?.data?._taskMemoryPaths,
+    ctx?.data?._changedFiles,
+    ctx?.data?.changedFiles,
+    ctx?.data?.task?.filePaths,
+    ctx?.data?.task?.files,
+    ctx?.data?.task?.meta?.filePaths,
+    ctx?.data?.task?.metadata?.filePaths,
+    taskPayload?.filePaths,
+    taskPayload?.files,
+    taskPayload?.meta?.filePaths,
+    taskPayload?.metadata?.filePaths,
+  );
   const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.trunc(Number(options.limit))) : 5;
   const result = await findReusableSkillbookStrategies({
     repoRoot,
@@ -1059,6 +1078,7 @@ async function resolveReusableSkillbookGuidance(ctx, options = {}) {
     status: status || undefined,
     query: query || undefined,
     tags,
+    relatedPaths,
     limit,
   });
   return {
@@ -1071,6 +1091,7 @@ async function resolveReusableSkillbookGuidance(ctx, options = {}) {
     status: status || null,
     query: query || null,
     tags,
+    relatedPaths,
     total: result.total,
     matched: result.matched,
     strategies: result.strategies,
@@ -16255,6 +16276,25 @@ registerBuiltinNodeType("trigger.task_available", {
     if (activeSlotCount >= maxParallel) {
       ctx.log(node.id, `All ${maxParallel} slot(s) in use — skipping`);
       return { triggered: false, reason: "slots_full", activeSlotCount, maxParallel };
+    }
+
+    const directTaskId = pickTaskString(
+      ctx.data?.taskId,
+      ctx.data?.task?.id,
+      ctx.data?.task?.task_id,
+    );
+    if (directTaskId) {
+      return {
+        triggered: true,
+        reason: "direct_task_context",
+        status,
+        taskCount: 1,
+        tasks: [{
+          id: directTaskId,
+          title: String(ctx.data?.taskTitle || ctx.data?.task?.title || directTaskId),
+          status,
+        }],
+      };
     }
 
     // Query kanban with retry + backoff

@@ -50,6 +50,31 @@ function normalizeConfidence(value) {
   return Math.max(0, Math.min(1, parsed));
 }
 
+function normalizePathHint(value) {
+  return normalizeText(value).replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function normalizePathList(value, { maxItems = 24, maxLength = 320 } = {}) {
+  const rawValues = Array.isArray(value)
+    ? value
+    : (typeof value === "string" && value.includes(",")
+        ? value.split(",")
+        : [value]);
+  const out = [];
+  const seen = new Set();
+  for (const raw of rawValues) {
+    const normalized = normalizePathHint(raw);
+    if (!normalized) continue;
+    const clipped = normalized.length > maxLength ? normalized.slice(0, maxLength).trim() : normalized;
+    const key = clipped.toLowerCase();
+    if (!clipped || seen.has(key)) continue;
+    seen.add(key);
+    out.push(clipped);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
 function tokenizeSearchTerms(value, { maxTokens = 24 } = {}) {
   const rawValues = Array.isArray(value) ? value : [value];
   const out = [];
@@ -85,6 +110,7 @@ function buildStrategySearchBlob(entry = {}) {
     ...(Array.isArray(entry.tags) ? entry.tags : []),
     ...(Array.isArray(entry.evidence) ? entry.evidence : []),
     ...(Array.isArray(entry.provenance) ? entry.provenance : []),
+    ...(Array.isArray(entry.relatedPaths) ? entry.relatedPaths : []),
   ]
     .filter(Boolean)
     .join(" ")
@@ -116,6 +142,12 @@ function scoreSkillbookStrategy(entry = {}, options = {}) {
   const requestedTags = normalizeStringList(options.tags || [], { maxItems: 16, maxLength: 80 })
     .map((value) => value.toLowerCase());
   const entryTags = Array.isArray(entry.tags) ? entry.tags.map((value) => String(value || "").toLowerCase()) : [];
+  const requestedPaths = normalizePathList([
+    ...(Array.isArray(options.relatedPaths) ? options.relatedPaths : []),
+    ...(Array.isArray(options.changedFiles) ? options.changedFiles : []),
+  ]);
+  const entryPaths = normalizePathList(entry.relatedPaths || []);
+  const pathMatchPaths = requestedPaths.filter((path) => entryPaths.includes(path));
   const tagMatches = requestedTags.filter((tag) => entryTags.includes(tag)).length;
   const queryMatches = countMatchingTokens(blob, queryTokens);
   const confidence = normalizeConfidence(entry.confidence) ?? 0.5;
@@ -134,15 +166,20 @@ function scoreSkillbookStrategy(entry = {}, options = {}) {
     score += 12;
   }
   if (String(entry.scopeLevel || "").trim().toLowerCase() === "workspace") score += 2;
-  return score;
+  score += pathMatchPaths.length * 22;
+  return {
+    score,
+    pathMatchPaths,
+  };
 }
 
-function toRankedSkillbookEntry(entry = {}, rank = 0, score = 0) {
+function toRankedSkillbookEntry(entry = {}, rank = 0, score = 0, pathMatchPaths = []) {
   return {
     ...entry,
     rank,
     score,
     relevanceScore: score,
+    pathMatchPaths: normalizePathList(pathMatchPaths || []),
   };
 }
 
@@ -233,6 +270,7 @@ function normalizeSkillbookEntry(entry = {}, existing = null) {
     evidence: normalizeStringList(entry.evidence ?? existing?.evidence),
     provenance: normalizeStringList(entry.provenance ?? existing?.provenance),
     tags: normalizeStringList(entry.tags ?? existing?.tags, { maxItems: 32, maxLength: 80 }),
+    relatedPaths: normalizePathList(entry.relatedPaths ?? existing?.relatedPaths),
     benchmark: cloneJson(entry.benchmark ?? existing?.benchmark),
     metrics: cloneJson(entry.metrics ?? existing?.metrics),
     evaluation: cloneJson(entry.evaluation ?? existing?.evaluation),
@@ -380,9 +418,9 @@ export async function listSkillbookStrategies(options = {}) {
   }
   if (String(sort || "").trim().toLowerCase() === "ranked") {
     entries = entries
-      .map((entry) => ({ entry, score: scoreSkillbookStrategy(entry, options) }))
+      .map((entry) => ({ entry, ...scoreSkillbookStrategy(entry, options) }))
       .sort((left, right) => right.score - left.score || String(right.entry.updatedAt).localeCompare(String(left.entry.updatedAt)))
-      .map(({ entry, score }, index) => toRankedSkillbookEntry(entry, index + 1, score));
+      .map(({ entry, score, pathMatchPaths }, index) => toRankedSkillbookEntry(entry, index + 1, score, pathMatchPaths));
   }
   const limitNumber = Number(limit);
   if (Number.isFinite(limitNumber) && limitNumber > 0) {
@@ -401,11 +439,13 @@ export function buildSkillbookGuidanceSummary(strategies = [], options = {}) {
     const rationale = normalizeNullable(entry?.rationale);
     const confidence = normalizeConfidence(entry?.confidence);
     const tags = Array.isArray(entry?.tags) ? entry.tags.slice(0, 4).join(", ") : "";
+    const pathMatches = normalizePathList(entry?.pathMatchPaths || []).slice(0, 2).join(", ");
     lines.push(
       [
         `- ${recommendation}`,
         confidence != null ? `confidence=${confidence.toFixed(2)}` : "",
         tags ? `tags=${tags}` : "",
+        pathMatches ? `matched=${pathMatches}` : "",
       ].filter(Boolean).join(" | "),
     );
     if (rationale) {
