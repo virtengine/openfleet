@@ -259,7 +259,7 @@ function renderToggle(checked, onChange, disabled = false) {
 }
 
 export function GuardrailsTab() {
-  const snapshot = guardrailsData.value;
+  const snapshot = guardrailsData?.value;
   const [runtimeSaving, setRuntimeSaving] = useState("");
   const [policySaving, setPolicySaving] = useState(false);
   const [hooksLoading, setHooksLoading] = useState(false);
