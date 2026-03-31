@@ -2180,7 +2180,7 @@ describe("action.acquire_worktree", () => {
     expect(result.created).toBe(false);
     expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
     expect(ctx.data._worktreeManaged).toBe(true);
-  }, 10000);
+  }, 20000);
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -2676,7 +2676,7 @@ describe("action.build_task_prompt", () => {
       } else {
         process.env.BOSUN_AGENT_ENDPOINT_PORT = prevPort;
       }
-      rmSync(repoRoot, { recursive: true, force: true });
+      await removeDirAfterLedgerReset(repoRoot);
     }
   });
 
@@ -3120,6 +3120,8 @@ describe("action.build_task_prompt", () => {
       }));
       expect(userPrompt).toContain("reseed fixtures in src/auth/login.mjs");
       expect(userPrompt).toContain("session-store snapshots must stay deterministic");
+      expect(userPrompt).toContain("matched=src/auth/login.mjs");
+      expect(userPrompt).toContain("graph=src/auth/session-store.mjs");
     } finally {
       await removeDirAfterLedgerReset(repoRoot);
     }

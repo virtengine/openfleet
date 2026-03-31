@@ -807,6 +807,40 @@ Always use deterministic TF ops.
       expect(briefing).not.toContain("[team]");
     });
 
+    it("includes path-match reasons in briefings when graph-aware ranking is available", () => {
+      const briefing = formatKnowledgeBriefing([
+        {
+          ...buildKnowledgeEntry({
+            content: "Workspace memory: reseed auth fixtures before retrying login flows.",
+            scope: "testing",
+            scopeLevel: "workspace",
+            teamId: "team-a",
+            workspaceId: "workspace-1",
+            sessionId: "session-1",
+            runId: "run-1",
+            agentId: "agent-workspace",
+          }),
+          directPathHits: ["src/auth/login.mjs"],
+        },
+        {
+          ...buildKnowledgeEntry({
+            content: "Workspace memory: session-store snapshots must stay deterministic.",
+            scope: "testing",
+            scopeLevel: "workspace",
+            teamId: "team-a",
+            workspaceId: "workspace-1",
+            sessionId: "session-1",
+            runId: "run-1",
+            agentId: "agent-workspace",
+          }),
+          adjacentPathHits: ["src/auth/session-store.mjs"],
+        },
+      ]);
+
+      expect(briefing).toContain("matched=src/auth/login.mjs");
+      expect(briefing).toContain("graph=src/auth/session-store.mjs");
+    });
+
     it("retrieves memories from the SQL ledger even when the JSON registry is missing", async () => {
       const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
       const {

@@ -920,8 +920,15 @@ export function formatKnowledgeBriefing(entries, options = {}) {
     const topic = entry.scope ? ` (${entry.scope})` : "";
     const scopeId = getScopeIdentifier(entry, scopeLevel) || "unknown";
     const taskPart = entry.taskRef ? ` • ref: \`${entry.taskRef}\`` : "";
+    const directPaths = normalizeRelatedPaths(entry.directPathHits || []);
+    const adjacentPaths = normalizeRelatedPaths(entry.adjacentPathHits || []);
+    const pathReason = directPaths.length > 0
+      ? ` • matched=${directPaths.slice(0, 2).join(", ")}`
+      : (adjacentPaths.length > 0
+          ? ` • graph=${adjacentPaths.slice(0, 2).join(", ")}`
+          : "");
     lines.push(
-      `- [${scopeLevel}]${topic} ${truncateInline(entry.content)} • scope=${scopeId}${taskPart}`,
+      `- [${scopeLevel}]${topic} ${truncateInline(entry.content)} • scope=${scopeId}${taskPart}${pathReason}`,
     );
   }
 
