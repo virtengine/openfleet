@@ -749,9 +749,7 @@ async function runSharedHost() {
       res.end("Method not allowed");
     } catch (error) {
       res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        error: String(error?.message || error || "internal error"),
-      }));
+      res.end(JSON.stringify({ error: "Internal server error" }));
     }
   });
 

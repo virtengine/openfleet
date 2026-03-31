@@ -944,6 +944,17 @@ async function ensureWorkflowAutomationEngine() {
         configDir: repoRoot,
       });
 
+      if (!engine.__bosunWorkflowStatusBroadcastAttached) {
+        engine.__bosunWorkflowStatusBroadcastAttached = true;
+        engine.on("workflow:status", (payload) => {
+          try {
+            globalThis.__bosun_broadcastWorkflowStatusEvent?.(payload);
+          } catch {
+            // best effort; TUI clients can still read persisted history
+          }
+        });
+      }
+
       const configuredWorkflowProfile =
         config?.workflowDefaults && typeof config.workflowDefaults === "object"
           ? config.workflowDefaults.profile || "balanced"
