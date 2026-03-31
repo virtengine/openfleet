@@ -7610,6 +7610,7 @@ export function TasksTab() {
 
   const filterButton = html`
     <${Button}
+      className=${`filter-toggle tasks-filter-btn ${filtersOpen || activeFilterCount > 0 ? "active" : ""}`}
       variant="outlined" size="small"
       onClick=${handleToggleFilters}
       aria-expanded=${filtersOpen}
@@ -7623,7 +7624,7 @@ export function TasksTab() {
   `;
 
   const viewToggle = html`
-    <${ToggleButtonGroup} size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
+    <${ToggleButtonGroup} className="view-toggle tasks-view-toggle" size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
       <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
       <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
       <${ToggleButton} value="dag" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
@@ -7649,6 +7650,7 @@ export function TasksTab() {
 
   const newButton = html`
     <${Button}
+      className="tasks-new-btn"
       variant="contained" size="small"
       onClick=${() => {
         haptic();
@@ -7664,6 +7666,7 @@ export function TasksTab() {
   const actionsMenu = html`
     <div class="actions-wrap" ref=${actionsRef}>
       <${Button}
+        className="actions-btn tasks-actions-btn"
         variant="text" size="small"
         onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
         aria-haspopup="menu"
@@ -7719,12 +7722,12 @@ export function TasksTab() {
           <div class=${`tasks-toolbar-actions ${isCompact ? "compact" : ""}`}>
             ${isCompact
               ? html`
-                  <div class="tasks-toolbar-group">
+                  <div class="tasks-toolbar-group tasks-toolbar-group--primary">
                     ${filterButton}
                     ${viewToggle}
                     ${dagSprintPicker}
                   </div>
-                  <div class="tasks-toolbar-group">
+                  <div class="tasks-toolbar-group tasks-toolbar-group--secondary">
                     ${newButton}
                     ${actionsMenu}
                   </div>

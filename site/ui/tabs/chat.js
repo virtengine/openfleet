@@ -642,9 +642,7 @@ export function ChatTab() {
       return false;
     }
   });
-  const [drawerOpen, setDrawerOpen] = useState(() => {
-    return !selectedSessionId.value && (globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false);
-  });
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [focusMode, setFocusMode] = useState(() => {
     try {
       return localStorage.getItem("ve-chat-focus") === "true";
@@ -813,13 +811,8 @@ export function ChatTab() {
       setDrawerOpen(false);
       return;
     }
-    // Check signal value outside deps to avoid cascade
-    try {
-      if (!selectedSessionId.value) {
-        setDrawerOpen(true);
-      }
-    } catch { /* signal read error - ignore */ }
-  }, [isMobile]);
+    setDrawerOpen(false);
+  }, [isMobile, sessionId]);
 
   useEffect(() => {
     if (!routeSessionId) return;
@@ -1168,7 +1161,8 @@ export function ChatTab() {
 
   const handleBack = useCallback(() => {
     if (isMobile) {
-      setDrawerOpen(true);
+      selectedSessionId.value = null;
+      setDrawerOpen(false);
       return;
     }
     selectedSessionId.value = null;
@@ -1409,7 +1403,7 @@ export function ChatTab() {
           onDragLeave=${handleChatDragLeave}
           onDrop=${handleChatDrop}
         >
-          ${sessionId &&
+          ${(sessionId || isMobile) &&
           html`
             <${Paper} elevation=${1} className="chat-shell-header" sx=${{ borderRadius: 0 }}>
               <${Box} className="chat-shell-inner" sx=${{ display: "flex", alignItems: "center", gap: 1.5, px: 2, py: 1 }}>
@@ -1418,64 +1412,68 @@ export function ChatTab() {
                   ${resolveIcon("menu")}
                 <//>
                 <${Box} className="chat-shell-title" sx=${{ flex: 1, minWidth: 0 }}>
-                  <${Typography} variant="subtitle1" noWrap fontWeight=${600}>${sessionTitle}<//>
-                  <${Typography} variant="caption" color="text.secondary" noWrap>${sessionMeta || "Session"}<//>
+                  <${Typography} variant="subtitle1" noWrap fontWeight=${600}>${sessionId ? sessionTitle : "New chat"}<//>
+                  <${Typography} variant="caption" color="text.secondary" noWrap>${sessionId ? (sessionMeta || "Session") : "Open sessions or start a new chat"}<//>
                 <//>
-                <${Stack} direction="row" spacing=${0.5} className="chat-shell-actions">
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    onClick=${() => openMeetingRoom("voice")}
-                    title="Start voice meeting for this session"
-                    startIcon=${resolveIcon("phone")}
-                    sx=${{ textTransform: "none" }}
-                  >
-                    Call
-                  <//>
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    onClick=${() => openMeetingRoom("video")}
-                    title="Start video meeting for this session"
-                    startIcon=${resolveIcon("camera")}
-                    sx=${{ textTransform: "none" }}
-                  >
-                    Video
-                  <//>
-                  ${isDesktop &&
-                  html`
-                    <${Button}
-                      variant="text"
-                      size="small"
-                      onClick=${() => setFocusMode((prev) => !prev)}
-                      title=${focusMode ? "Exit focus mode" : "Enter focus mode"}
-                      sx=${{ textTransform: "none" }}
-                    >
-                      ${focusMode ? "Exit Focus" : "Focus"}
-                    <//>
-                  `}
-                  ${sessionLifecycle.key === "archived"
-                    ? html`
+                ${sessionId
+                  ? html`
+                      <${Stack} direction="row" spacing=${0.5} className="chat-shell-actions">
                         <${Button}
                           variant="text"
                           size="small"
-                          onClick=${() => resumeSession(activeSession.id)}
+                          onClick=${() => openMeetingRoom("voice")}
+                          title="Start voice meeting for this session"
+                          startIcon=${resolveIcon("phone")}
                           sx=${{ textTransform: "none" }}
                         >
-                          Restore
+                          Call
                         <//>
-                      `
-                    : html`
                         <${Button}
                           variant="text"
                           size="small"
-                          onClick=${() => archiveSession(activeSession.id)}
+                          onClick=${() => openMeetingRoom("video")}
+                          title="Start video meeting for this session"
+                          startIcon=${resolveIcon("camera")}
                           sx=${{ textTransform: "none" }}
                         >
-                          Archive
+                          Video
                         <//>
-                      `}
-                <//>
+                        ${isDesktop &&
+                        html`
+                          <${Button}
+                            variant="text"
+                            size="small"
+                            onClick=${() => setFocusMode((prev) => !prev)}
+                            title=${focusMode ? "Exit focus mode" : "Enter focus mode"}
+                            sx=${{ textTransform: "none" }}
+                          >
+                            ${focusMode ? "Exit Focus" : "Focus"}
+                          <//>
+                        `}
+                        ${sessionLifecycle.key === "archived"
+                          ? html`
+                              <${Button}
+                                variant="text"
+                                size="small"
+                                onClick=${() => resumeSession(activeSession.id)}
+                                sx=${{ textTransform: "none" }}
+                              >
+                                Restore
+                              <//>
+                            `
+                          : html`
+                              <${Button}
+                                variant="text"
+                                size="small"
+                                onClick=${() => archiveSession(activeSession.id)}
+                                sx=${{ textTransform: "none" }}
+                              >
+                                Archive
+                              <//>
+                            `}
+                      <//>
+                    `
+                  : null}
               <//>
             <//>
           `}
