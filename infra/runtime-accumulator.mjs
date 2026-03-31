@@ -123,10 +123,6 @@ function normalizeCompletedSession(session = {}) {
 	const sessionKey = String(
 		session.sessionKey || `${taskId || "task"}:${stableId}:${startedAt}:${endedAt}`,
 	).trim();
-	const turnCount = Math.max(0, toFiniteNumber(session.turnCount, 0));
-	const turns = Array.isArray(session.turns)
-		? session.turns.map((turn) => ({ ...turn }))
-		: [];
 
 	return {
 		type: "completed_session",
@@ -143,8 +139,6 @@ function normalizeCompletedSession(session = {}) {
 		tokenCount,
 		inputTokens,
 		outputTokens,
-		turnCount,
-		turns,
 		costUsd,
 		recordedAt: String(session.recordedAt || new Date().toISOString()),
 	};
@@ -363,7 +357,6 @@ export function getRuntimeStats() {
 		runtimeMs: _state.runtimeMs,
 		totalCostUsd: _state.totalCostUsd,
 		sessionCount: _state.completedSessions.length,
-		completedSessions: _state.completedSessions.map((entry) => ({ ...entry })),
 		startedAt: _state.startedAt,
 		lastUpdated: _state.lastUpdated,
 	};
@@ -504,11 +497,7 @@ export function getSessionAccumulatorLogPath() {
 }
 
 export function _resetRuntimeAccumulatorForTests(options = {}) {
-	// When no explicit cacheDir is given, prefer the test-sandbox dir set by
-	// bootstrapTestRuntime() so that bare reset calls (e.g. in finally blocks)
-	// never redirect writes back to the real workspace .cache folder.
-	const fallback = process.env.BOSUN_TEST_CACHE_DIR || DEFAULT_CACHE_DIR;
-	configureCachePaths(options.cacheDir || fallback);
+	configureCachePaths(options.cacheDir || DEFAULT_CACHE_DIR);
 	_state = cloneDefaultState();
 	_initialized = false;
 	_lastSaveTime = 0;

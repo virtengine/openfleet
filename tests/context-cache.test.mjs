@@ -1328,22 +1328,6 @@ describe("live tool compaction", () => {
     expect(second.text).toContain("Suggested rerun: vitest run");
   });
 
-  it("retains command diagnostics even when output stays inline", async () => {
-    const cacheModule = await import("../workspace/context-cache.mjs");
-    const compacted = await cacheModule.compactCommandOutputPayload({
-      command: "vitest run",
-      output: [
-        "FAIL tests/runtime/example.test.ts",
-        "Error: expected true to be false",
-      ].join("\n"),
-      exitCode: 1,
-    });
-
-    expect(compacted.compacted).toBe(false);
-    expect(compacted.commandDiagnostics?.suggestedRerun).toContain("vitest run");
-    expect(compacted.contextEnvelope?.meta?.suggestedRerun).toContain("vitest run");
-  });
-
   it("flags low-signal failures when output is large but diagnostics are weak", async () => {
     const cacheModule = await import("../workspace/context-cache.mjs");
     const compacted = await cacheModule.compactCommandOutputPayload({
@@ -1357,6 +1341,7 @@ describe("live tool compaction", () => {
     expect(compacted.text).toContain("Hint: Signal coverage is low.");
   });
 });
+
 
 
 

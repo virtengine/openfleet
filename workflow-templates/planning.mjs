@@ -577,18 +577,6 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      if (parsedLines.length > 0) return { items: parsedLines, degraded: failedLines > 0, parsedAny: true, partial: failedLines > 0 };" +
         "      return { items: [], degraded: true, parsedAny: false, partial: false };" +
         "    };" +
-        "    const detectLinewiseParseHealth = (raw) => {" +
-        "      if (typeof raw !== 'string') return { mixedValidity: false, nonJson: false };" +
-        "      const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);" +
-        "      if (lines.length === 0) return { mixedValidity: false, nonJson: false };" +
-        "      let parsedLines = 0;" +
-        "      let failedLines = 0;" +
-        "      for (const line of lines) {" +
-        "        if (parseJsonSafe(line) == null) failedLines += 1;" +
-        "        else parsedLines += 1;" +
-        "      }" +
-        "      return { mixedValidity: parsedLines > 0 && failedLines > 0, nonJson: parsedLines === 0 && failedLines > 0 };" +
-        "    };" +
         "    const getTs = (item) => {" +
         "      if (!item || typeof item !== 'object') return null;" +
         "      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date', 'completed_at', 'closed_at', 'merged_at', 'resolved_at', 'updated_at', 'created_at'];" +
@@ -646,19 +634,9 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "        }" +
         "        return true;" +
         "      })();" +
-        "      const linewiseHealth = (() => {" +
-        "        if (typeof output === 'string') return detectLinewiseParseHealth(output);" +
-        "        if (output && typeof output === 'object') {" +
-        "          const candidate = [output.stdout, output.content, output.text, output.output, output.result, output.payload, output.data].find((value) => typeof value === 'string' && value.trim() !== '');" +
-        "          return detectLinewiseParseHealth(candidate);" +
-        "        }" +
-        "        return { mixedValidity: false, nonJson: false };" +
-        "      })();" +
         "      const success = nodeOut?.success !== false;" +
         "      if (!hasPayload) return { status: 'missing', confidence: 'low' };" +
         "      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };" +
-        "      if (linewiseHealth.mixedValidity) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };" +
-        "      if (linewiseHealth.nonJson && parsedList.length === 0) return { status: 'degraded', confidence: 'low' };" +
         "      if (parsedMeta?.degraded || parsedMeta?.partial) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };" +
         "      if (!success) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };" +
         "      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };" +
@@ -1014,5 +992,6 @@ Rules:
     },
   },
 };
+
 
 

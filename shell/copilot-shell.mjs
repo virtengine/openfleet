@@ -7,12 +7,11 @@
  * as the primary executor.
  */
 
-import "../infra/windows-hidden-child-processes.mjs";
 import { existsSync, readFileSync, appendFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync as nodeExecSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { loadConfig } from "../config/config.mjs";
@@ -24,15 +23,17 @@ import {
 } from "../infra/stream-resilience.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 
-function execSync(command, options = {}) {
-  return nodeExecSync(command, {
-    ...options,
-    windowsHide: options.windowsHide ?? (process.platform === "win32"),
-  });
-}
-
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const require = createRequire(import.meta.url);
+
+// Lazy-import MCP registry — cached at module scope per AGENTS.md rules.
+let _mcpRegistry = null;
+async function getMcpRegistry() {
+  if (!_mcpRegistry) {
+    _mcpRegistry = await import("../workflow/mcp-registry.mjs");
+  }
+  return _mcpRegistry;
+}
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -73,10 +74,6 @@ function getMcpRuntimeConfig() {
   } catch {
     return {};
   }
-}
-
-function shouldAllowExternalMcpSources(mcpCfg = getMcpRuntimeConfig()) {
-  return mcpCfg?.allowExternalSources === true;
 }
 
 function resolveCopilotTransport() {
@@ -314,6 +311,33 @@ async function buildCliArgs() {
   const mcpConfigPath = process.env.COPILOT_ADDITIONAL_MCP_CONFIG;
   if (mcpConfigPath) {
     args.push("--additional-mcp-config", mcpConfigPath);
+  }
+
+  // Also write a temp MCP config from the library if installed servers exist
+  // (non-fatal: library MCP is a convenience, not a hard requirement)
+  if (!mcpConfigPath) {
+    try {
+      const registry = await getMcpRegistry();
+      const mcpCfg = getMcpRuntimeConfig();
+      const installed = await registry.listInstalledMcpServers(REPO_ROOT);
+      const ids = installed && installed.length ? installed.map((e) => e.id) : [];
+      let resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, ids);
+      if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
+        resolved = registry.wrapServersWithDiscoveryProxy(REPO_ROOT, resolved, {
+          enabled: mcpCfg.useDiscoveryProxy !== false,
+          includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
+          cacheTtlMs: mcpCfg.discoveryProxyCacheTtlMs,
+          executeTimeoutMs: mcpCfg.discoveryProxyExecuteTimeoutMs,
+        });
+      }
+      if (resolved && resolved.length) {
+        const tmpPath = registry.writeTempCopilotMcpConfig(REPO_ROOT, resolved);
+        args.push("--additional-mcp-config", tmpPath);
+        console.log(`[copilot-shell] injected ${resolved.length} library MCP server(s) via CLI args`);
+      }
+    } catch (err) {
+      console.warn(`[copilot-shell] failed to inject library MCP servers into CLI args: ${err.message}`);
+    }
   }
 
   if (args.length > 0) {
@@ -712,9 +736,6 @@ function loadMcpServersFromFile(path) {
 }
 
 function loadMcpServers(profile = null) {
-  if (!shouldAllowExternalMcpSources()) {
-    return null;
-  }
   if (profile?.mcpServers) return profile.mcpServers;
   if (profile?.mcpConfig) {
     return loadMcpServersFromFile(profile.mcpConfig);
@@ -726,6 +747,53 @@ function loadMcpServers(profile = null) {
   const configPath =
     process.env.COPILOT_MCP_CONFIG || resolve(REPO_ROOT, ".vscode", "mcp.json");
   return loadMcpServersFromFile(configPath);
+}
+
+/**
+ * Merge installed MCP library servers into an existing mcpServers map.
+ * Called during session build to inject library-managed MCP servers into
+ * the Copilot SDK session alongside any profile/env servers.
+ *
+ * Non-fatal: if the registry is unavailable or encounters errors, the
+ * original servers map is returned unchanged.
+ *
+ * @param {Object|null} existingServers — mcpServers from profile/env/config
+ * @returns {Promise<Object|null>} — merged servers map
+ */
+async function mergeLibraryMcpServers(existingServers) {
+  try {
+    const registry = await getMcpRegistry();
+    const mcpCfg = getMcpRuntimeConfig();
+    const installed = await registry.listInstalledMcpServers(REPO_ROOT);
+    const installedIds = installed && installed.length ? installed.map((e) => e.id) : [];
+
+    // Resolve all installed servers into full configs
+    let resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, installedIds);
+    if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
+      resolved = registry.wrapServersWithDiscoveryProxy(REPO_ROOT, resolved, {
+        enabled: mcpCfg.useDiscoveryProxy !== false,
+        includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
+        cacheTtlMs: mcpCfg.discoveryProxyCacheTtlMs,
+        executeTimeoutMs: mcpCfg.discoveryProxyExecuteTimeoutMs,
+      });
+    }
+    if (!resolved || !resolved.length) return existingServers;
+
+    // Convert to Copilot mcpServers format: { [id]: { command, args, env? } | { url } }
+    const copilotJson = registry.buildCopilotMcpJson(resolved);
+    const libraryServers = copilotJson?.mcpServers || {};
+    if (!Object.keys(libraryServers).length) return existingServers;
+
+    // Merge: existing servers take precedence over library ones (user overrides win)
+    const merged = { ...libraryServers, ...(existingServers || {}) };
+    console.log(
+      `[copilot-shell] Merged ${Object.keys(libraryServers).length} library MCP server(s) into session`,
+    );
+    return merged;
+  } catch (err) {
+    console.warn(`[copilot-shell] Failed to merge library MCP servers: ${err.message}`);
+    return existingServers;
+  }
 }
 
 async function buildSessionConfig() {
@@ -763,9 +831,9 @@ async function buildSessionConfig() {
     config.reasoningEffort = effort.toLowerCase();
   }
 
-  // Only explicit profile/env/config MCP sources are loaded here.
-  // Bosun-managed per-agent MCP selection is injected by the agent pool.
-  const mcpServers = loadMcpServers(profile);
+  // Load MCP servers from profile/env/config, then merge library-managed servers
+  const baseServers = loadMcpServers(profile);
+  const mcpServers = await mergeLibraryMcpServers(baseServers);
   if (mcpServers) config.mcpServers = mcpServers;
   return config;
 }

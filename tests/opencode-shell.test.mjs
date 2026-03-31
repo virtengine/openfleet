@@ -602,7 +602,6 @@ describe("initOpencodeShell()", () => {
 describe("discoverProviders()", () => {
   afterEach(() => {
     delete process.env.OPENCODE_PORT;
-    mockCreateOpencodeClient.mockReset();
     vi.clearAllMocks();
   });
 

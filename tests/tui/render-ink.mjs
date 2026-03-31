@@ -36,11 +36,8 @@ export async function renderInk(element, options = {}) {
   const stdin = options.stdin || createInputTty();
   const stdout = options.stdout || createOutputTty(options);
   let buffer = "";
-  const frames = [];
   stdout.on("data", (chunk) => {
-    const text = chunk.toString("utf8");
-    buffer += text;
-    frames.push(text);
+    buffer += chunk.toString("utf8");
   });
 
   const app = render(element, {
@@ -60,13 +57,6 @@ export async function renderInk(element, options = {}) {
       return buffer;
     },
     text() {
-      return stripAnsi(buffer).replace(/\r/g, "");
-    },
-    latestText() {
-      for (let i = frames.length - 1; i >= 0; i--) {
-        const stripped = stripAnsi(frames[i]).replace(/\r/g, "");
-        if (stripped.trim().length > 0) return stripped;
-      }
       return stripAnsi(buffer).replace(/\r/g, "");
     },
     async press(chars, waitMs = 40) {

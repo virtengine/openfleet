@@ -1256,20 +1256,6 @@ describe("task-executor", () => {
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
-    it("reuses the cached in-progress task sweep within the short recovery window", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
-      ex._running = true;
-
-      listTasks.mockResolvedValue([]);
-      getActiveThreads.mockReturnValue([]);
-
-      await ex._recoverInterruptedInProgressTasks();
-      await ex._recoverInterruptedInProgressTasks();
-
-      expect(listTasks).toHaveBeenCalledTimes(1);
-      expect(listTasks).toHaveBeenCalledWith("proj-1", { status: "inprogress" });
-    });
-
     it("resets unstarted in-progress tasks beyond slot capacity so backlog can flow", async () => {
       const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 1, workflowOwnsTaskLifecycle: false });
       ex._running = true;
@@ -1409,52 +1395,6 @@ describe("task-executor", () => {
           source: "task-executor-recovery-missing-workflow-run",
         }),
       );
-      expect(executeSpy).not.toHaveBeenCalled();
-    });
-
-    it("uses task ids from the active-runs index without opening run detail files", async () => {
-      const ex = new TaskExecutor({
-        projectId: "proj-1",
-        maxParallel: 2,
-        workflowOwnsTaskLifecycle: true,
-        workflowRunsDir: "/workflow-runs",
-      });
-      ex._running = true;
-      const executeSpy = vi
-        .spyOn(ex, "executeTask")
-        .mockResolvedValue(undefined);
-
-      listTasks.mockResolvedValueOnce([
-        {
-          id: "wf-owned-direct-1",
-          title: "Workflow-owned direct active run",
-          status: "inprogress",
-          updated_at: new Date().toISOString(),
-          agentAttempts: 0,
-        },
-      ]);
-      getActiveThreads.mockReturnValueOnce([]);
-      existsSync.mockImplementation(
-        (targetPath) => targetPath === resolve("/workflow-runs", "_active-runs.json"),
-      );
-      readFileSync.mockImplementation((targetPath) => {
-        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
-          return JSON.stringify([{ runId: "run-1", taskId: "wf-owned-direct-1" }]);
-        }
-        throw new Error(`Unexpected read: ${targetPath}`);
-      });
-
-      await ex._recoverInterruptedInProgressTasks();
-
-      expect(updateTaskStatus).not.toHaveBeenCalledWith(
-        "wf-owned-direct-1",
-        "todo",
-        expect.objectContaining({
-          source: "task-executor-recovery-missing-workflow-run",
-        }),
-      );
-      expect(readFileSync).toHaveBeenCalledWith(resolve("/workflow-runs", "_active-runs.json"), "utf8");
-      expect(readFileSync).not.toHaveBeenCalledWith(resolve("/workflow-runs", "run-1.json"), "utf8");
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -1713,35 +1653,6 @@ describe("task-executor", () => {
       );
       expect(ex._slotRuntimeState.has("blocked-err-1")).toBe(false);
       expect(executeSpy).not.toHaveBeenCalled();
-    });
-
-    it("reuses the cached planner verification sweep within the short verification window", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
-
-      listTasks.mockResolvedValue([
-        {
-          id: "planner-1",
-          title: "Planner",
-          created_at: "2026-03-27T10:00:00.000Z",
-        },
-        {
-          id: "follow-up-1",
-          title: "Follow-up",
-          status: "todo",
-          created_at: "2026-03-27T10:05:00.000Z",
-        },
-      ]);
-
-      const task = {
-        id: "planner-1",
-        created_at: "2026-03-27T10:00:00.000Z",
-      };
-
-      await ex._verifyPlannerTaskCompletion(task);
-      await ex._verifyPlannerTaskCompletion(task);
-
-      expect(listTasks).toHaveBeenCalledTimes(1);
-      expect(listTasks).toHaveBeenCalledWith("proj-1", {});
     });
 
     it("clears persisted anti-thrash state when manually reset", async () => {

@@ -13,62 +13,26 @@
  * Bosun's expanding custom tool library.
  */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import "../infra/windows-hidden-child-processes.mjs";
-import * as mcpClient from "@modelcontextprotocol/sdk/client/index.js";
-import * as mcpClientStdio from "@modelcontextprotocol/sdk/client/stdio.js";
-import * as mcpClientHttp from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import * as mcpServer from "@modelcontextprotocol/sdk/server/index.js";
-import * as mcpStdio from "@modelcontextprotocol/sdk/server/stdio.js";
-import * as mcpHttpServer from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import * as mcpTypes from "@modelcontextprotocol/sdk/types.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import {
   invokeCustomTool,
   listCustomTools,
 } from "../agent/agent-custom-tools.mjs";
 
-const Client = mcpClient.Client ?? mcpClient.default?.Client;
-const StdioClientTransport =
-  mcpClientStdio.StdioClientTransport ??
-  mcpClientStdio.default?.StdioClientTransport;
-const StreamableHTTPClientTransport =
-  mcpClientHttp.StreamableHTTPClientTransport ??
-  mcpClientHttp.default?.StreamableHTTPClientTransport;
-const Server = mcpServer.Server ?? mcpServer.default?.Server;
-const StdioServerTransport =
-  mcpStdio.StdioServerTransport ??
-  mcpStdio.default?.StdioServerTransport;
-const StreamableHTTPServerTransport =
-  mcpHttpServer.StreamableHTTPServerTransport ??
-  mcpHttpServer.default?.StreamableHTTPServerTransport;
-const CallToolRequestSchema =
-  mcpTypes.CallToolRequestSchema ??
-  mcpTypes.default?.CallToolRequestSchema;
-const CallToolResultSchema =
-  mcpTypes.CallToolResultSchema ??
-  mcpTypes.default?.CallToolResultSchema;
-const ListToolsRequestSchema =
-  mcpTypes.ListToolsRequestSchema ??
-  mcpTypes.default?.ListToolsRequestSchema;
-const ListToolsResultSchema =
-  mcpTypes.ListToolsResultSchema ??
-  mcpTypes.default?.ListToolsResultSchema;
-const isInitializeRequest =
-  mcpTypes.isInitializeRequest ??
-  mcpTypes.default?.isInitializeRequest;
-
 const TAG = "[mcp-discovery-proxy]";
-const ResolvedCallToolRequestSchema = CallToolRequestSchema ?? CallToolRequest?.schema;
-const ResolvedListToolsRequestSchema = ListToolsRequestSchema ?? ListToolsRequest?.schema;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
 const DEFAULT_EXECUTE_TIMEOUT_MS = 10_000;
-const DEFAULT_SHARED_HOST_STARTUP_TIMEOUT_MS = 5_000;
 const TOOL_KIND_MCP = "mcp";
 const TOOL_KIND_CUSTOM = "custom";
 
@@ -197,29 +161,133 @@ function normalizeDetail(detail, fallback = "brief") {
   return ["brief", "detailed", "full"].includes(value) ? value : fallback;
 }
 
-function createDefaultClientFactory({ rootDir, clientName = "bosun-discovery-proxy" } = {}) {
-  return async function createClientConnection(server) {
-    const client = new Client({
-      name: clientName,
-      version: "1.0.0",
+function createStdioRequest(server, method, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(server.command, server.args || [], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        ...(server.env || {}),
+      },
     });
 
-    const transport = server.transport === "url" && server.url
-      ? new StreamableHTTPClientTransport(new URL(server.url))
-      : new StdioClientTransport({
-          command: server.command,
-          args: Array.isArray(server.args) ? server.args : [],
-          env: {
-            ...process.env,
-            ...(server.env || {}),
-          },
-          cwd: server.cwd || rootDir,
-          stderr: "pipe",
-        });
+    let settled = false;
+    let initialized = false;
+    let buffer = "";
+    let requestId = 1;
 
-    await client.connect(transport);
-    return { client, transport };
-  };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        child.kill();
+      } catch {
+        /* best effort */
+      }
+      fn(value);
+    };
+
+    const sendJson = (payload) => {
+      child.stdin.write(`${JSON.stringify(payload)}\n`);
+    };
+
+    const timer = setTimeout(() => {
+      finish(rejectPromise, new Error(`Timed out waiting for ${method}`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let msg;
+        try {
+          msg = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        if (msg?.id === 1 && msg?.result && !initialized) {
+          initialized = true;
+          sendJson({ jsonrpc: "2.0", method: "notifications/initialized" });
+          requestId += 1;
+          sendJson({
+            jsonrpc: "2.0",
+            id: requestId,
+            method,
+            params,
+          });
+          continue;
+        }
+        if (msg?.id === requestId) {
+          if (msg.error) {
+            finish(rejectPromise, new Error(msg.error.message || `${method} failed`));
+          } else {
+            finish(resolvePromise, msg.result || {});
+          }
+        }
+      }
+    });
+
+    child.stderr.on("data", () => {
+      /* stderr is ignored; result errors are surfaced via JSON-RPC */
+    });
+
+    child.on("error", (error) => finish(rejectPromise, error));
+    child.on("exit", (code) => {
+      if (!settled && code !== 0) {
+        finish(rejectPromise, new Error(`Server exited with code ${code}`));
+      }
+    });
+
+    sendJson({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "bosun-discovery-proxy", version: "1.0.0" },
+      },
+    });
+  });
+}
+
+async function createUrlRequest(url, method, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        params,
+      }),
+      signal: controller.signal,
+    });
+    const payload = await response.json();
+    if (payload?.error) {
+      throw new Error(payload.error.message || `${method} failed`);
+    }
+    return payload?.result || {};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function requestServer(server, method, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  if (server.transport === "url" && server.url) {
+    return createUrlRequest(server.url, method, params, timeoutMs);
+  }
+  if (server.command) {
+    return createStdioRequest(server, method, params, timeoutMs);
+  }
+  throw new Error(`Server ${server.id} is missing transport details`);
 }
 
 export function buildCustomCatalog(rootDir) {
@@ -250,98 +318,20 @@ export function buildCustomCatalog(rootDir) {
   }));
 }
 
-function createCatalogRuntime(config, options = {}) {
+function createCatalogRuntime(config) {
   const rootDir = resolve(config.rootDir || process.cwd());
   const servers = Array.isArray(config.servers) ? config.servers : [];
   const toolCache = new Map();
-  const connectionCache = new Map();
   const cacheTtlMs = Number(config.cacheTtlMs) || DEFAULT_CACHE_TTL_MS;
   const executeTimeoutMs = Number(config.executeTimeoutMs) || DEFAULT_EXECUTE_TIMEOUT_MS;
   const customCatalog = buildCustomCatalog(rootDir);
-  const clientFactory =
-    typeof options.clientFactory === "function"
-      ? options.clientFactory
-      : createDefaultClientFactory({ rootDir });
-
-  async function closeConnection(serverId, expected = null) {
-    const cached = connectionCache.get(serverId);
-    if (!cached) return;
-    if (expected && cached !== expected) return;
-    connectionCache.delete(serverId);
-    const resolved = await cached.catch(() => null);
-    const transport = resolved?.transport || null;
-    if (!transport) return;
-    try {
-      if (typeof transport.terminateSession === "function") {
-        await transport.terminateSession().catch(() => {});
-      }
-      await transport.close();
-    } catch {
-      /* best effort */
-    }
-  }
-
-  async function getConnection(server) {
-    const cached = connectionCache.get(server.id);
-    if (cached) {
-      return await cached;
-    }
-    const pending = (async () => {
-      const connection = await clientFactory(server);
-      if (connection?.transport) {
-        connection.transport.onclose = () => {
-          connectionCache.delete(server.id);
-        };
-      }
-      return connection;
-    })();
-    connectionCache.set(server.id, pending);
-    try {
-      return await pending;
-    } catch (error) {
-      connectionCache.delete(server.id);
-      throw error;
-    }
-  }
-
-  async function requestServer(server, operation, timeoutMs = DEFAULT_TIMEOUT_MS) {
-    let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const connection = await getConnection(server);
-      try {
-        return await new Promise((resolvePromise, rejectPromise) => {
-          const timer = setTimeout(() => {
-            rejectPromise(new Error(`Timed out waiting for ${server.id}`));
-          }, timeoutMs);
-          if (typeof timer?.unref === "function") timer.unref();
-          Promise.resolve(operation(connection.client, timeoutMs))
-            .then((value) => {
-              clearTimeout(timer);
-              resolvePromise(value);
-            })
-            .catch((error) => {
-              clearTimeout(timer);
-              rejectPromise(error);
-            });
-        });
-      } catch (error) {
-        lastError = error;
-        await closeConnection(server.id, connectionCache.get(server.id));
-      }
-    }
-    throw lastError || new Error(`Server ${server.id} request failed`);
-  }
 
   async function getServerTools(server) {
     const cached = toolCache.get(server.id);
     if (cached && (Date.now() - cached.ts) < cacheTtlMs) {
       return cached.tools;
     }
-    const result = await requestServer(
-      server,
-      async (client) => client.listTools({}, { timeout: config.timeoutMs || DEFAULT_TIMEOUT_MS }),
-      config.timeoutMs || DEFAULT_TIMEOUT_MS,
-    );
+    const result = await requestServer(server, "tools/list", {}, config.timeoutMs || DEFAULT_TIMEOUT_MS);
     const tools = Array.isArray(result?.tools) ? result.tools : [];
     const mapped = tools.map((tool) => ({
       canonicalId: makeMcpToolCanonicalId(server.id, tool.name),
@@ -402,12 +392,8 @@ function createCatalogRuntime(config, options = {}) {
     if (!server) throw new Error(`MCP server not found: ${parsed.serverId}`);
     const result = await requestServer(
       server,
-      async (client) =>
-        client.callTool(
-          { name: parsed.toolName, arguments: args || {} },
-          CallToolResultSchema,
-          { timeout: timeoutMs },
-        ),
+      "tools/call",
+      { name: parsed.toolName, arguments: args || {} },
       timeoutMs,
     );
     return {
@@ -465,10 +451,6 @@ function createCatalogRuntime(config, options = {}) {
     getEntry,
     callEntry,
     executeCode,
-    async close() {
-      const ids = Array.from(connectionCache.keys());
-      await Promise.all(ids.map((serverId) => closeConnection(serverId)));
-    },
   };
 }
 
@@ -477,13 +459,15 @@ function buildSearchText(matches) {
   return matches.map(summarizeToolMatch).join("\n");
 }
 
-function createDiscoveryProxyServer(runtime, config = {}) {
+async function main() {
+  const config = parseProxyConfig();
+  const runtime = createCatalogRuntime(config);
   const server = new Server(
     { name: "bosun-discovery-proxy", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ResolvedListToolsRequestSchema, async () => ({
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
         name: "search",
@@ -562,7 +546,7 @@ function createDiscoveryProxyServer(runtime, config = {}) {
     ],
   }));
 
-  server.setRequestHandler(ResolvedCallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     if (name === "search" || name === "search_tools") {
       const kind = normalizeString(args?.kind || "all").toLowerCase() || "all";
@@ -623,221 +607,17 @@ function createDiscoveryProxyServer(runtime, config = {}) {
       };
     }
 
-    throw new Error(`Unknown tool: ${name}`);
+      throw new Error(`Unknown tool: ${name}`);
   });
-
-  return server;
-}
-
-function parseSharedHostArgs() {
-  const argv = process.argv.slice(2);
-  const flagIndex = argv.indexOf("--shared-host");
-  if (flagIndex === -1) {
-    return null;
-  }
-  return {
-    configPath: normalizeString(argv[flagIndex + 1]),
-    statePath: normalizeString(argv[flagIndex + 2]),
-  };
-}
-
-function writeSharedHostState(statePath, payload) {
-  if (!statePath) return;
-  writeFileSync(statePath, JSON.stringify(payload, null, 2), "utf8");
-}
-
-async function readJsonBody(req) {
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  return raw ? JSON.parse(raw) : {};
-}
-
-async function runSharedHost() {
-  const args = parseSharedHostArgs();
-  if (!args?.configPath || !args?.statePath) {
-    throw new Error(`${TAG} shared host requires config and state paths`);
-  }
-
-  const previousStatePath = process.env.BOSUN_DISCOVERY_HOST_STATE_PATH;
-  process.env.BOSUN_DISCOVERY_PROXY_CONFIG_PATH = args.configPath;
-  process.env.BOSUN_DISCOVERY_HOST_STATE_PATH = args.statePath;
-
-  const config = parseProxyConfig();
-  const runtime = createCatalogRuntime(config);
-  const sessions = new Map();
-  const host = normalizeString(process.env.BOSUN_DISCOVERY_HOST || "127.0.0.1") || "127.0.0.1";
-
-  const httpServer = createServer(async (req, res) => {
-    try {
-      const url = new URL(req.url || "/", `http://${host}`);
-      if (url.pathname === "/health") {
-        const body = JSON.stringify({
-          ok: true,
-          pid: process.pid,
-          sessionCount: sessions.size,
-        });
-        res.writeHead(200, {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body),
-          "cache-control": "no-store",
-        });
-        res.end(body);
-        return;
-      }
-
-      if (url.pathname !== "/mcp") {
-        res.writeHead(404);
-        res.end("Not found");
-        return;
-      }
-
-      const sessionId = normalizeString(req.headers["mcp-session-id"]);
-      if (req.method === "POST") {
-        const body = await readJsonBody(req);
-        let entry = sessionId ? sessions.get(sessionId) : null;
-        if (!entry) {
-          if (sessionId || !isInitializeRequest?.(body)) {
-            res.writeHead(400, { "content-type": "application/json" });
-            res.end(JSON.stringify({
-              jsonrpc: "2.0",
-              error: {
-                code: -32000,
-                message: "Bad Request: No valid session ID provided",
-              },
-              id: body?.id ?? null,
-            }));
-            return;
-          }
-
-          const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: (createdSessionId) => {
-              sessions.set(createdSessionId, { transport, proxyServer });
-            },
-          });
-          const proxyServer = createDiscoveryProxyServer(runtime, config);
-          transport.onclose = () => {
-            const currentSessionId = transport.sessionId;
-            if (currentSessionId) {
-              sessions.delete(currentSessionId);
-            }
-          };
-          await proxyServer.connect(transport);
-          await transport.handleRequest(req, res, body);
-          return;
-        }
-
-        await entry.transport.handleRequest(req, res, body);
-        return;
-      }
-
-      if ((req.method === "GET" || req.method === "DELETE") && sessionId) {
-        const entry = sessions.get(sessionId);
-        if (!entry) {
-          res.writeHead(400);
-          res.end("Invalid or missing session ID");
-          return;
-        }
-        await entry.transport.handleRequest(req, res);
-        return;
-      }
-
-      res.writeHead(405);
-      res.end("Method not allowed");
-    } catch (error) {
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        error: String(error?.message || error || "internal error"),
-      }));
-    }
-  });
-
-  await new Promise((resolvePromise, rejectPromise) => {
-    httpServer.once("error", rejectPromise);
-    httpServer.listen(0, host, resolvePromise);
-  });
-
-  const address = httpServer.address();
-  if (!address || typeof address !== "object" || !address.port) {
-    throw new Error(`${TAG} shared host failed to bind`);
-  }
-  const state = {
-    ok: true,
-    pid: process.pid,
-    host,
-    port: address.port,
-    url: `http://${host}:${address.port}/mcp`,
-    configPath: args.configPath,
-    statePath: args.statePath,
-    startedAt: new Date().toISOString(),
-  };
-  writeSharedHostState(args.statePath, state);
-
-  const shutdown = async () => {
-    try {
-      httpServer.close();
-    } catch {
-      /* best effort */
-    }
-    const entries = Array.from(sessions.values());
-    sessions.clear();
-    await Promise.all(entries.map(async ({ transport }) => {
-      try {
-        await transport.close();
-      } catch {
-        /* best effort */
-      }
-    }));
-    await runtime.close().catch(() => {});
-    if (existsSync(args.statePath)) {
-      try {
-        unlinkSync(args.statePath);
-      } catch {
-        /* best effort */
-      }
-    }
-    if (previousStatePath === undefined) {
-      delete process.env.BOSUN_DISCOVERY_HOST_STATE_PATH;
-    } else {
-      process.env.BOSUN_DISCOVERY_HOST_STATE_PATH = previousStatePath;
-    }
-  };
-
-  process.on("SIGINT", () => {
-    shutdown().finally(() => process.exit(0));
-  });
-  process.on("SIGTERM", () => {
-    shutdown().finally(() => process.exit(0));
-  });
-}
-
-async function main() {
-  const config = parseProxyConfig();
-  const runtime = createCatalogRuntime(config);
-  const server = createDiscoveryProxyServer(runtime, config);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-
-  const shutdown = async () => {
-    await runtime.close().catch(() => {});
-  };
-  process.on("SIGINT", () => {
-    shutdown().finally(() => process.exit(0));
-  });
-  process.on("SIGTERM", () => {
-    shutdown().finally(() => process.exit(0));
-  });
 }
 
 const executedAsScript = process.argv[1]
   && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (executedAsScript) {
-  const runner = process.argv.includes("--shared-host") ? runSharedHost : main;
-  runner().catch((error) => {
+  main().catch((error) => {
     console.error(`${TAG} ${error?.stack || error?.message || error}`);
     process.exit(1);
   });
@@ -845,8 +625,5 @@ if (executedAsScript) {
 
 export {
   createCatalogRuntime,
-  createDefaultClientFactory,
-  createDiscoveryProxyServer,
   main,
-  runSharedHost,
 };

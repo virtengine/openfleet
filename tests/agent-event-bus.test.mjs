@@ -269,33 +269,6 @@ describe("agent-event-bus", () => {
         "agent-event-bus",
       );
     });
-
-    it("sends a follow-up notification when review changes were implemented", () => {
-      const mockSetStatus = vi.fn();
-      const mockTelegram = vi.fn();
-      bus._setTaskStatus = mockSetStatus;
-      bus._sendTelegram = mockTelegram;
-      bus._getTask = () => ({
-        title: "Review fix task",
-        reviewStatus: "changes_requested",
-        reviewIssues: [{ severity: "major", file: "ui/app.js" }],
-        branchName: "ve/review-fix",
-      });
-
-      bus.onAgentComplete("task-1", {
-        hasCommits: true,
-        branch: "ve/review-fix",
-        prNumber: 42,
-      });
-
-      expect(mockTelegram).toHaveBeenCalledWith(
-        expect.stringContaining("Review changes implemented"),
-        expect.objectContaining({
-          dedupKey: "review-fix-complete|task-1|42",
-          exactDedup: true,
-        }),
-      );
-    });
   });
 
   describe("onAgentError", () => {

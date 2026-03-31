@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findPackageRoot,
   findVitestEntry,
-  isDirectExecution,
   resolveVitestArgs,
 } from "../tools/vitest-runner.mjs";
 
@@ -28,8 +27,8 @@ describe("vitest-runner", () => {
   it("keeps the pre-push adjacency map aligned with newer non-prefixed suites", () => {
     const prePushHook = readFileSync(resolve(process.cwd(), ".githooks", "pre-push"), "utf8");
 
-    expect(prePushHook).toContain('"workflow/|workflow-*|workflow-task-lifecycle*|workflow-write-file-encoding*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|webhook-gateway*|credential-store*|cron-scheduler*"');
-    expect(prePushHook).toContain('"infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|windows-hidden-child-processes*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"');
+    expect(prePushHook).toContain('"workflow/|workflow-*|workflow-task-lifecycle*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|webhook-gateway*|credential-store*|cron-scheduler*"');
+    expect(prePushHook).toContain('"infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"');
     expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*"');
     expect(prePushHook).toContain('"telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"');
   });
@@ -100,12 +99,5 @@ describe("vitest-runner", () => {
     expect(prePushHook).toContain("node tools/vitest-runner.mjs run --config vitest.config.mjs");
     expect(prePushHook).not.toContain("node node_modules/vitest/vitest.mjs");
   });
-
-  it("detects direct execution for Windows-style script paths", () => {
-    const scriptPath = resolve(process.cwd(), "tools", "vitest-runner.mjs");
-
-    expect(
-      isDirectExecution([process.execPath, scriptPath]),
-    ).toBe(true);
-  });
 });
+

@@ -29,9 +29,9 @@ function listTopLevelModules() {
 }
 
 /**
- * Recursively collect browser-served module files from a directory.
+ * Recursively collect *.js files from a directory.
  */
-function listBrowserModuleFilesRecursive(dir) {
+function listJsFilesRecursive(dir) {
   const results = [];
   if (!existsSync(dir)) return results;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -39,8 +39,8 @@ function listBrowserModuleFilesRecursive(dir) {
     if (entry.isDirectory()) {
       // Skip vendor directories — those are third-party bundles
       if (entry.name === "vendor" || entry.name === "node_modules") continue;
-      results.push(...listBrowserModuleFilesRecursive(fullPath));
-    } else if (entry.name.endsWith(".js") || entry.name.endsWith(".mjs")) {
+      results.push(...listJsFilesRecursive(fullPath));
+    } else if (entry.name.endsWith(".js")) {
       results.push(fullPath);
     }
   }
@@ -112,7 +112,7 @@ async function main() {
     resolve(process.cwd(), "ui"),
     resolve(process.cwd(), "site", "ui"),
   ];
-  const browserFiles = [...new Set(browserRoots.flatMap((dir) => listBrowserModuleFilesRecursive(dir)))];
+  const browserFiles = [...new Set(browserRoots.flatMap((dir) => listJsFilesRecursive(dir)))];
   let uiFailed = false;
 
   for (const filePath of browserFiles) {
@@ -150,25 +150,6 @@ async function main() {
   }
 
   console.log(`Imports OK: ${moduleCount} modules linked, 0 broken imports`);
-
-  const browserImportTargets = browserFiles
-    .map((filePath) => relative(process.cwd(), filePath).replace(/\\/g, "/"))
-    .filter(Boolean);
-  const { errors: browserImportErrors, moduleCount: browserModuleCount } = await validateImports({
-    rootDir: process.cwd(),
-    files: browserImportTargets,
-  });
-
-  if (browserImportErrors.length > 0) {
-    console.error("\nBrowser import validation failed:\n");
-    for (const { file, error } of browserImportErrors) {
-      console.error(`  \u2717 ${file}`);
-      console.error(`    ${error}\n`);
-    }
-    process.exit(1);
-  }
-
-  console.log(`Browser imports OK: ${browserModuleCount} modules linked, 0 broken imports`);
 
   const promptLintViolations = collectPromptLintViolations(process.cwd());
   if (promptLintViolations.length > 0) {

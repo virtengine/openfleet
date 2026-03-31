@@ -639,13 +639,13 @@ function ShreddingPanel({ period }) {
                     <//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption" className="numeral">${formatBytes(ev.originalChars)}<//>
+                    <${Typography} variant="caption">${formatBytes(ev.originalChars)}<//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption" className="numeral">${formatBytes(ev.compressedChars)}<//>
+                    <${Typography} variant="caption">${formatBytes(ev.compressedChars)}<//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption" color="success.main" className="numeral">
+                    <${Typography} variant="caption" color="success.main">
                       ${ev.savedChars > 0 ? `-${formatBytes(ev.savedChars)}` : "0"}
                     <//>
                   <//>
@@ -658,10 +658,10 @@ function ShreddingPanel({ period }) {
                     />
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption" className="numeral">${formatCount(ev.estimatedSavedTokens || 0)}<//>
+                    <${Typography} variant="caption">${formatCount(ev.estimatedSavedTokens || 0)}<//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption" className="numeral">
+                    <${Typography} variant="caption">
                       ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}
                     <//>
                   <//>
@@ -789,11 +789,6 @@ export function TelemetryTab() {
 
   const hasTrend = trend?.dates?.length > 0 &&
     Object.keys(trendSeriesMap || {}).length > 0;
-  const tokenTrendSeriesMap = useMemo(() => ({
-    Input: trend?.inputTokens || [],
-    Output: trend?.outputTokens || [],
-  }), [trend]);
-  const hasTokenTrend = trend?.dates?.length > 0 && ((trend?.inputTokens || []).length > 0 || (trend?.outputTokens || []).length > 0);
 
   const sinceLabel = formatSinceDate(data?.sinceAt);
 
@@ -858,10 +853,6 @@ export function TelemetryTab() {
           value=${formatCount(lifetimeTotals?.attemptsCount || 0)} />
         <${AnalyticsStat} icon="#" label="Total tokens across all attempts"
           value=${formatCount(lifetimeTotals?.tokenCount || 0)} />
-        <${AnalyticsStat} icon="↘" label="Input tokens across all attempts"
-          value=${formatCount(lifetimeTotals?.inputTokens || 0)} />
-        <${AnalyticsStat} icon="↗" label="Output tokens across all attempts"
-          value=${formatCount(lifetimeTotals?.outputTokens || 0)} />
         <${AnalyticsStat} icon="⏱" label="Total runtime across all attempts"
           value=${formatDurationMs(lifetimeTotals?.durationMs || 0)} />
       <//>
@@ -904,23 +895,6 @@ export function TelemetryTab() {
         ` : html`
           <${EmptyState} title="No activity data"
             description="Agent runs will appear here once they start." />
-        `}
-      <//>
-
-      <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
-        <${Typography} variant="h6" gutterBottom>Token Split Trend<//>
-        ${hasTokenTrend ? html`
-          <${ChartLegend}
-            label=${"TOKENS"}
-            seriesMap=${tokenTrendSeriesMap}
-            palette=${["#42a5f5", "#ab47bc"]}
-          />
-          <${Paper} variant="outlined" sx=${{ p: 1 }}>
-            <${TrendLines} dates=${trend.dates} seriesMap=${tokenTrendSeriesMap} palette=${["#42a5f5", "#ab47bc"]} />
-          <//>
-        ` : html`
-          <${EmptyState} title="No token split data"
-            description="Input and output token trends appear once sessions record usage." />
         `}
       <//>
 
@@ -986,7 +960,7 @@ function ClassicTelemetry() {
                         <${Typography} variant="body2" sx=${{ fontFamily: "monospace" }}>${err.fingerprint}<//>
                       <//>
                       <${TableCell} align="right">
-                        <${Chip} label=${String(err.count)} size="small" color="error" className="numeral" />
+                        <${Chip} label=${String(err.count)} size="small" color="error" />
                       <//>
                     </${TableRow}>
                   `)}

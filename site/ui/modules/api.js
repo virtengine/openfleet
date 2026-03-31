@@ -17,10 +17,6 @@ export const wsLatency = signal(null);
 export const wsReconnectIn = signal(null);
 /** Reactive signal: number of reconnections since last user-initiated action */
 export const wsReconnectCount = signal(0);
-/** Reactive signal: WebSocket badge status for portal header */
-export const wsStatus = signal("offline");
-/** Reactive signal: timestamp of the last successful (re)connect */
-export const wsLastReconnectAt = signal(null);
 /** Reactive signal: count of in-flight apiFetch calls (drives top loading bar) */
 export const loadingCount = signal(0);
 
@@ -253,8 +249,6 @@ export function connectWebSocket() {
   socket.addEventListener("open", () => {
     wsConnected.value = true;
     wsLatency.value = null;
-    wsStatus.value = "connected";
-    wsLastReconnectAt.value = Date.now();
     retryMs = 1000; // reset backoff on successful connect
     clearCountdown();
     startPing();
@@ -305,7 +299,6 @@ export function connectWebSocket() {
   socket.addEventListener("close", () => {
     wsConnected.value = false;
     wsLatency.value = null;
-    wsStatus.value = "reconnecting";
     ws = null;
     stopPing();
     wsReconnectCount.value += 1;
@@ -321,10 +314,6 @@ export function connectWebSocket() {
 
   socket.addEventListener("error", () => {
     wsConnected.value = false;
-    wsLatency.value = null;
-    if (!reconnectTimer && (!ws || ws.readyState !== WebSocket.CONNECTING)) {
-      wsStatus.value = "offline";
-    }
   });
 }
 
@@ -332,7 +321,6 @@ export function connectWebSocket() {
  * Disconnect the WebSocket and cancel any pending reconnect.
  */
 export function disconnectWebSocket() {
-  wsStatus.value = "offline";
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -349,7 +337,6 @@ export function disconnectWebSocket() {
   }
   wsConnected.value = false;
   wsLatency.value = null;
-  wsStatus.value = "offline";
 }
 
 /**

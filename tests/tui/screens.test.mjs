@@ -73,9 +73,9 @@ describe("tui screen rendering", () => {
       { columns: 220 },
     );
 
-    expect(view.latestText()).toContain("Runtime Snapshot");
-    expect(view.latestText()).toContain("Active Sessions: 1");
-    expect(view.latestText()).toContain("Investigate failing build");
+    expect(view.text()).toContain("Runtime Snapshot");
+    expect(view.text()).toContain("Active Sessions: 1");
+    expect(view.text()).toContain("Investigate failing build");
 
     await view.unmount();
   });
@@ -86,10 +86,10 @@ describe("tui screen rendering", () => {
       { columns: 220 },
     );
 
-    expect(view.latestText()).toContain("[F]ilter: (title, tag, id)");
-    expect(view.latestText()).toContain("TODO (1)");
-    expect(view.latestText()).toContain("Review PR #404");
-    expect(view.latestText()).toContain("DONE (1)");
+    expect(view.text()).toContain("[F]ilter: (title, tag, id)");
+    expect(view.text()).toContain("TODO (1)");
+    expect(view.text()).toContain("Review PR #404");
+    expect(view.text()).toContain("DONE (1)");
 
     await view.unmount();
   });
@@ -107,126 +107,15 @@ describe("tui screen rendering", () => {
       { columns: 220 },
     );
 
-    await waitFor(() => view.latestText().includes("Backoff queue (1)"));
-    expect(view.latestText()).toContain("Investigate fa");
+    await waitFor(() => view.text().includes("Backoff queue (1)"));
+    expect(view.text()).toContain("Investigate fa");
 
     await view.press("l");
-    await waitFor(() => view.latestText().includes("Logs"));
+    await waitFor(() => view.text().includes("Logs"));
 
-    expect(view.latestText()).toContain("Loaded logs for session-");
-    expect(view.latestText()).toContain("assistant");
+    expect(view.text()).toContain("Loaded logs for session-");
+    expect(view.text()).toContain("assistant");
 
-    await view.unmount();
-  });
-
-  it("opens a session detail modal on enter and renders timeline, diff, and logs", async () => {
-    const bridge = createMockBridge();
-    const view = await renderInk(
-      React.createElement(AgentsScreen, {
-        wsBridge: bridge,
-        host: "127.0.0.1",
-        port: 3080,
-        sessions: sessionsFixture,
-        stats: monitorStatsFixture,
-      }),
-      { columns: 220, rows: 60 },
-    );
-
-    await waitFor(() => view.text().includes("Backoff queue (1)"));
-    await view.press("`r", 80);
-    await waitFor(() => view.text().includes("Session Detail"));
-
-    expect(view.text()).toContain("Task ID");
-    expect(view.text()).toContain("Turn Timeline");
-    expect(view.text()).toContain("Latest Diff");
-    expect(view.text()).toContain("Stdout");
-    expect(view.text()).toContain("[S]teer");
-
-    await view.unmount();
-  });
-
-  it("sends a steer message from session detail and shows confirmation", async () => {
-    const bridge = createMockBridge();
-    const view = await renderInk(
-      React.createElement(AgentsScreen, {
-        wsBridge: bridge,
-        host: "127.0.0.1",
-        port: 3080,
-        sessions: sessionsFixture,
-        stats: monitorStatsFixture,
-      }),
-      { columns: 220, rows: 60 },
-    );
-
-    await waitFor(() => view.text().includes("Backoff queue (1)"));
-    await view.press("`r", 80);
-    await waitFor(() => view.text().includes("Session Detail"));
-
-    await view.press("s", 40);
-    await waitFor(() => view.text().includes("Steer message:"));
-    await view.press("Please continue with focused logging", 50);
-    await view.press("`r", 100);
-
-    await waitFor(() => view.text().includes("Steer sent ✓"));
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/sessions/session-active-1/message?workspace=all"),
-      expect.objectContaining({ method: "POST" }),
-    );
-
-    await view.unmount();
-  });
-
-  it("scrolls the turn timeline independently inside session detail", async () => {
-    const bridge = createMockBridge();
-    const view = await renderInk(
-      React.createElement(AgentsScreen, {
-        wsBridge: bridge,
-        host: "127.0.0.1",
-        port: 3080,
-        sessions: sessionsFixture,
-        stats: monitorStatsFixture,
-      }),
-      { columns: 220, rows: 60 },
-    );
-
-    await waitFor(() => view.text().includes("Backoff queue (1)"));
-    await view.press("`r", 80);
-    await waitFor(() => view.text().includes("| 2026-03-23 00:00:00.000 |"));
-    expect(view.text()).not.toContain("| 2026-03-23 00:00:17.000 |");
-
-    await view.press("\u001b[6~", 80);
-    await waitFor(() => view.text().includes("| 2026-03-23 00:00:17.000 |"));
-
-    await view.unmount();
-  });
-
-  it("streams live stdout into the right panel while detail is open", async () => {
-    const bridge = createMockBridge();
-    const view = await renderInk(
-      React.createElement(AgentsScreen, {
-        wsBridge: bridge,
-        host: "127.0.0.1",
-        port: 3080,
-        sessions: sessionsFixture,
-        stats: monitorStatsFixture,
-      }),
-      { columns: 220, rows: 60 },
-    );
-
-    await waitFor(() => view.text().includes("Backoff queue (1)"));
-    await view.press("`r", 80);
-    await waitFor(() => view.text().includes("Session Detail"));
-
-    bridge.emit("logs:stream", {
-      logType: "stdout",
-      raw: "Steer message accepted by running session",
-      line: "Steer message accepted by running session",
-      level: "info",
-      timestamp: "2026-03-23T00:00:31.000Z",
-      filePath: "",
-    });
-
-    await waitFor(() => view.text().includes("00:00:31"));
     await view.unmount();
   });
 
@@ -249,82 +138,16 @@ describe("tui screen rendering", () => {
     bridge.emit("sessions:update", { sessions: sessionsFixture });
     bridge.emit("task:create", tasksFixture[0]);
     await view.press(" ", 40);
-    await waitFor(() => view.latestText().includes("Runtime Snapshot"));
+    await waitFor(() => view.text().includes("Runtime Snapshot"));
 
     await view.press("2");
-    await waitFor(() => view.latestText().includes("[F]ilter: (title, tag, id)"));
+    await waitFor(() => view.text().includes("[F]ilter: (title, tag, id)"));
 
     await view.press("3");
-    await waitFor(() => view.latestText().includes("Backoff queue"));
+    await waitFor(() => view.text().includes("Backoff queue"));
 
     await view.unmount();
     expect(bridge.connect).toHaveBeenCalled();
     expect(bridge.disconnect).toHaveBeenCalled();
-  });
-  it("shows the always-visible footer help and toggles the help overlay", async () => {
-    const bridge = createMockBridge();
-    const view = await renderInk(
-      React.createElement(App, {
-        host: "127.0.0.1",
-        port: 3080,
-        connectOnly: true,
-        initialScreen: "status",
-        refreshMs: 2000,
-        wsClient: bridge,
-      }),
-      { columns: 220, rows: 20 },
-    );
-
-    bridge.emit("connect", {});
-    bridge.emit("stats", monitorStatsFixture);
-    bridge.emit("sessions:update", { sessions: sessionsFixture });
-    bridge.emit("task:create", tasksFixture[0]);
-    await view.press(" ", 40);
-    await waitFor(() => view.text().includes("? Help"));
-    expect(view.text()).toContain("[1] Status");
-
-    await view.press("?");
-    await waitFor(() => view.text().includes("Keyboard Shortcuts"), { timeoutMs: 3000 });
-    expect(view.text()).toContain("Global");
-    expect(view.text()).toContain("Agents screen");
-    expect(view.text()).toContain("Modals");
-
-    await view.press("?");
-    await view.press(" ", 40);
-    await waitFor(() => view.text().includes("? Help"));
-
-    await view.unmount();
-  });
-
-  it("updates footer hints when task form focus changes", async () => {
-    const bridge = createMockBridge();
-    const view = await renderInk(
-      React.createElement(App, {
-        host: "127.0.0.1",
-        port: 3080,
-        connectOnly: true,
-        initialScreen: "tasks",
-        refreshMs: 2000,
-        wsClient: bridge,
-      }),
-      { columns: 220, rows: 20 },
-    );
-
-    bridge.emit("connect", {});
-    bridge.emit("task:create", tasksFixture[0]);
-    await view.press(" ", 40);
-    await waitFor(() => view.latestText().includes("[F]ilter: (title, tag, id)"));
-    expect(view.latestText()).toContain("N New");
-    expect(view.latestText()).toContain("? Help");
-
-    const baseline = view.latestText();
-    await view.press("n");
-    await waitFor(() => view.latestText().includes("New Task"));
-    const updated = view.latestText().slice(baseline.length);
-    expect(updated).toContain("Ctrl+S Save");
-    expect(updated).toContain("Esc Cancel");
-    expect(updated).not.toContain("N New  |  E Edit  |  D Delete");
-
-    await view.unmount();
   });
 });

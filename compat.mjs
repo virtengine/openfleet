@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * compat.mjs — Backward compatibility for users migrating from codex-monitor
  *

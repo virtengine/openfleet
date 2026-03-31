@@ -1,13 +1,5 @@
 import { spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-} from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { scaffoldAgentHookFiles, normalizeHookTargets } from "../agent/hook-profiles.mjs";
 import { CONFIG_FILES } from "../config/config-file-names.mjs";
@@ -74,7 +66,7 @@ function getGitConfigValue(worktreePath, key) {
   return String(result.stdout || "").trim();
 }
 
-export function ensureGitHooksPath(worktreePath) {
+function ensureGitHooksPath(worktreePath) {
   const current = getGitConfigValue(worktreePath, "core.hooksPath");
   if (current.replace(/\\/g, "/") === ".githooks") {
     return { changed: false, hooksPath: current || ".githooks" };
@@ -90,50 +82,6 @@ export function ensureGitHooksPath(worktreePath) {
     changed: result.status === 0,
     hooksPath: result.status === 0 ? ".githooks" : current,
     error: result.status === 0 ? "" : String(result.stderr || result.stdout || "").trim(),
-  };
-}
-
-function syncRepoGitHooks(repoRoot, worktreePath) {
-  const resolvedRepoRoot = resolve(repoRoot || process.cwd());
-  const resolvedWorktreePath = resolve(worktreePath || resolvedRepoRoot);
-  if (resolvedRepoRoot === resolvedWorktreePath) {
-    return { changed: false, copiedFiles: [] };
-  }
-
-  const sourceDir = resolve(resolvedRepoRoot, ".githooks");
-  if (!existsSync(sourceDir)) {
-    return { changed: false, copiedFiles: [], skipped: true };
-  }
-
-  const targetDir = resolve(resolvedWorktreePath, ".githooks");
-  const copiedFiles = [];
-
-  const copyTree = (sourcePath, targetPath, relativePath = "") => {
-    mkdirSync(targetPath, { recursive: true });
-    for (const entry of readdirSync(sourcePath, { withFileTypes: true })) {
-      const sourceEntryPath = resolve(sourcePath, entry.name);
-      const targetEntryPath = resolve(targetPath, entry.name);
-      const entryRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        copyTree(sourceEntryPath, targetEntryPath, entryRelativePath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      copyFileSync(sourceEntryPath, targetEntryPath);
-      copiedFiles.push(entryRelativePath.replace(/\\/g, "/"));
-      try {
-        const mode = statSync(sourceEntryPath).mode;
-        chmodSync(targetEntryPath, mode);
-      } catch {
-        // Best-effort only; Windows and some filesystems may ignore chmod.
-      }
-    }
-  };
-
-  copyTree(sourceDir, targetDir);
-  return {
-    changed: copiedFiles.length > 0,
-    copiedFiles,
   };
 }
 
@@ -176,7 +124,6 @@ export function ensureWorktreeRuntimeSetup(repoRoot, worktreePath) {
   const resolvedRepoRoot = resolve(repoRoot || process.cwd());
   const resolvedWorktreePath = resolve(worktreePath || resolvedRepoRoot);
   const hookSettings = resolveWorktreeHookProfileSettings(resolvedRepoRoot);
-  const repoHookSync = syncRepoGitHooks(resolvedRepoRoot, resolvedWorktreePath);
   const repoConfigResult = ensureRepoConfigs(resolvedWorktreePath);
   const gitHooks = ensureGitHooksPath(resolvedWorktreePath);
   const hookResult = scaffoldAgentHookFiles(resolvedWorktreePath, {
@@ -188,7 +135,6 @@ export function ensureWorktreeRuntimeSetup(repoRoot, worktreePath) {
   });
 
   return {
-    repoHookSync,
     repoConfigResult,
     gitHooks,
     hookResult,

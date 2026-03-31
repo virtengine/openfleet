@@ -1,9 +1,4 @@
-import * as ReactModule from "react";
-
-const React = ReactModule.default ?? ReactModule;
-const useCallback = ReactModule.useCallback ?? React.useCallback;
-const useEffect = ReactModule.useEffect ?? React.useEffect;
-const useState = ReactModule.useState ?? React.useState;
+import { useCallback, useEffect, useState } from "react";
 
 import { listWorkflowSummaries } from "../../workflow/workflow-cli.mjs";
 

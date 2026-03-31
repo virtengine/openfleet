@@ -25,13 +25,11 @@ const ROUTE_TABS = new Set([
   "fleet-sessions",
   "control",
   "infra",
-  "guardrails",
   "logs",
   "library",
   "marketplace",
   "telemetry",
   "settings",
-  "integrations",
 ]);
 
 function getParentTab(tabId) {
@@ -259,7 +257,6 @@ export const TAB_CONFIG = [
   { id: "fleet-sessions", label: "Sessions", icon: "chat", parent: "agents" },
   { id: "control", label: "Control", icon: "sliders" },
   { id: "infra", label: "Infra", icon: "server" },
-  { id: "guardrails", label: "Guardrails", icon: "shield" },
   { id: "logs", label: "Logs", icon: "terminal" },
   { id: "library", label: "Library", icon: "book" },
   { id: "marketplace", label: "Market", icon: "box" },
@@ -267,7 +264,6 @@ export const TAB_CONFIG = [
   { id: "telemetry", label: "Telemetry", icon: "chart" },
   { id: "benchmarks", label: "Bench", icon: "chart" },
   { id: "settings", label: "Settings", icon: "settings" },
-  { id: "integrations", label: "Vault", icon: "lock" },
 ];
 
 if (typeof window !== "undefined") {

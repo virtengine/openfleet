@@ -9,28 +9,6 @@ function clean(value) {
   return String(value ?? "").trim();
 }
 
-function trimTrailingSlashes(value) {
-  let normalized = String(value ?? "");
-  let end = normalized.length;
-  while (end > 0 && normalized[end - 1] === "/") {
-    end -= 1;
-  }
-  return end === normalized.length ? normalized : normalized.slice(0, end);
-}
-
-export function resolveCodexHomeDir(envInput = process.env) {
-  const home =
-    clean(envInput?.HOME) ||
-    clean(envInput?.USERPROFILE) ||
-    (
-      clean(envInput?.HOMEDRIVE) && clean(envInput?.HOMEPATH)
-        ? `${clean(envInput.HOMEDRIVE)}${clean(envInput.HOMEPATH)}`
-        : ""
-    ) ||
-    clean(homedir());
-  return home;
-}
-
 function isAzureOpenAIBaseUrl(value) {
   try {
     const parsed = value instanceof URL ? value : new URL(String(value || ""));
@@ -52,19 +30,10 @@ function normalizeAzureOpenAIBaseUrl(value) {
     parsed.pathname = "/openai/v1";
     parsed.search = "";
     parsed.hash = "";
-    return trimTrailingSlashes(parsed.toString());
+    return parsed.toString().replace(/\/+$/, "");
   } catch {
     return raw;
   }
-}
-
-function normalizeProviderBaseUrlForComparison(value, providerKind = "openai") {
-  const raw = clean(value);
-  if (!raw) return "";
-  if (providerKind === "azure") {
-    return normalizeAzureOpenAIBaseUrl(raw);
-  }
-  return trimTrailingSlashes(raw);
 }
 
 function normalizeProfileName(value, fallback = DEFAULT_ACTIVE_PROFILE) {
@@ -96,7 +65,7 @@ function hasEnvValue(env, key) {
   return Boolean(key && clean(env?.[key]));
 }
 
-export function getProviderEndpointEnvKeys(sectionName, providerKind) {
+function getProviderEndpointEnvKeys(sectionName, providerKind) {
   const normalizedName = clean(sectionName).toUpperCase().replace(/[^A-Z0-9]+/g, "_");
   if (providerKind === "azure") {
     const keys = ["AZURE_OPENAI_ENDPOINT"];
@@ -161,9 +130,9 @@ function profileRecord(env, profileName, globalProvider) {
   };
 }
 
-export function readCodexConfigRuntimeDefaults(envInput = process.env) {
+export function readCodexConfigRuntimeDefaults() {
   try {
-    const configPath = resolve(resolveCodexHomeDir(envInput), ".codex", "config.toml");
+    const configPath = resolve(homedir(), ".codex", "config.toml");
     if (!existsSync(configPath)) {
       return { model: "", modelProvider: "", providers: {} };
     }
@@ -195,8 +164,8 @@ export function readCodexConfigRuntimeDefaults(envInput = process.env) {
   }
 }
 
-function readCodexConfigTopLevelModel(envInput = process.env) {
-  return readCodexConfigRuntimeDefaults(envInput).model;
+function readCodexConfigTopLevelModel() {
+  return readCodexConfigRuntimeDefaults().model;
 }
 
 function selectConfigProviderForRuntime(configDefaults, env, preferredProvider = "") {
@@ -210,18 +179,12 @@ function selectConfigProviderForRuntime(configDefaults, env, preferredProvider =
   const matchingEntries = preferred
     ? entries.filter((section) => section.provider === preferred)
     : entries;
-  const normalizedRuntimeBaseUrl = normalizeProviderBaseUrlForComparison(
-    runtimeBaseUrl,
-    preferred || inferProviderKindFromSection("", { baseUrl: runtimeBaseUrl }, "openai"),
-  );
   const baseUrlMatchedEntries = runtimeBaseUrl
-    ? matchingEntries.filter((section) =>
-      normalizeProviderBaseUrlForComparison(section.baseUrl, section.provider) === normalizedRuntimeBaseUrl)
+    ? matchingEntries.filter((section) => clean(section.baseUrl) === runtimeBaseUrl)
     : [];
   const envBackedEntries = matchingEntries.filter((section) => providerRuntimeConfigured(env, section));
   const baseUrlMatchedEnvBackedEntries = runtimeBaseUrl
-    ? envBackedEntries.filter((section) =>
-      normalizeProviderBaseUrlForComparison(section.baseUrl, section.provider) === normalizedRuntimeBaseUrl)
+    ? envBackedEntries.filter((section) => clean(section.baseUrl) === runtimeBaseUrl)
     : [];
   const preferredNames = preferred === "azure"
     ? ["azure"]
@@ -245,9 +208,7 @@ function selectConfigProviderForRuntime(configDefaults, env, preferredProvider =
         ),
       };
       const preferredMatches = !preferred || configured.provider === preferred;
-      const baseUrlMatches = !runtimeBaseUrl ||
-        normalizeProviderBaseUrlForComparison(configured.baseUrl, configured.provider)
-          === normalizedRuntimeBaseUrl;
+      const baseUrlMatches = !runtimeBaseUrl || clean(configured.baseUrl) === runtimeBaseUrl;
       if (preferredMatches && baseUrlMatches && providerRuntimeConfigured(env, configured)) {
         return configured;
       }
@@ -266,21 +227,8 @@ function selectConfigProviderForRuntime(configDefaults, env, preferredProvider =
 }
 
 function inferGlobalProvider(env, configDefaults = null) {
-  const baseUrl = clean(env.OPENAI_BASE_URL);
-  if (baseUrl) {
-    if (isAzureOpenAIBaseUrl(baseUrl)) return "azure";
-    const configured = selectConfigProviderForRuntime(configDefaults, env);
-    if (configured && clean(configured.baseUrl) === baseUrl) {
-      return configured.provider;
-    }
-    return "openai";
-  }
-  if (hasEnvValue(env, "AZURE_OPENAI_API_KEY")) {
-    return "azure";
-  }
-  if (hasEnvValue(env, "OPENAI_API_KEY")) {
-    return "openai";
-  }
+  const baseUrl = clean(env.OPENAI_BASE_URL).toLowerCase();
+  if (isAzureOpenAIBaseUrl(baseUrl)) return "azure";
   const configured = selectConfigProviderForRuntime(configDefaults, env);
   return configured?.provider || "openai";
 }
@@ -293,7 +241,7 @@ function inferGlobalProvider(env, configDefaults = null) {
  */
 export function resolveCodexProfileRuntime(envInput = process.env) {
   const sourceEnv = { ...envInput };
-  const configDefaults = readCodexConfigRuntimeDefaults(sourceEnv);
+  const configDefaults = readCodexConfigRuntimeDefaults();
   const activeProfile = normalizeProfileName(
     sourceEnv.CODEX_MODEL_PROFILE,
     DEFAULT_ACTIVE_PROFILE,
@@ -309,7 +257,7 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
 
   const env = { ...sourceEnv };
 
-  const configModel = readCodexConfigTopLevelModel(sourceEnv);
+  const configModel = readCodexConfigTopLevelModel();
 
   if (active.model) {
     env.CODEX_MODEL = active.model;
