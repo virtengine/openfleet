@@ -20,10 +20,12 @@ import {
   TAB_ORDER,
 } from "./constants.js";
 import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "./HelpScreen.js";
+import { formatVisibleLogLine } from "./logs-screen-helpers.js";
 import { useWebSocket } from "./useWebSocket.js";
 import { useWorkflows } from "./useWorkflows.js";
 import WorkflowsScreen from "./WorkflowsScreen.js";
 import { useTasks } from "./useTasks.js";
+import SettingsScreen from "./SettingsScreen.js";
 import TelemetryScreen from "./TelemetryScreen.js";
 
 const html = htm.bind(React.createElement);
@@ -57,13 +59,7 @@ function renderRow(columns, key, color = undefined, bold = false) {
   return html`
     <${Box} key=${key}>
       ${columns.map((column, index) => html`
-        <${Text}
-          key=${String(index)}
-          color=${color}
-          bold=${bold}
-        >
-          ${String(column)}
-        <//>
+        <${Text} key=${String(index)} color=${color} bold=${bold}>${String(column)}<//>
       `)}
     <//>
   `;
@@ -120,9 +116,7 @@ function StatusHeader({ activeTab, connectionStatus, reconnectPulse, host, port,
       <//>
       <${Box} justifyContent="space-between">
         <${Text} color=${ANSI_COLORS.muted}>WS ${host}:${port} · ${terminalSize.columns}x${terminalSize.rows}<//>
-        <${Text} color=${ANSI_COLORS.muted}>
-          Agents ${stats?.activeAgents ?? 0}/${stats?.maxAgents ?? 0} · Tokens ${stats?.tokensTotal ?? 0}
-        <//>
+        <${Text} color=${ANSI_COLORS.muted}>Agents ${stats?.activeAgents ?? 0}/${stats?.maxAgents ?? 0} · Tokens ${stats?.tokensTotal ?? 0}<//>
       <//>
       <${Box} marginTop=${1}>
         ${TAB_ORDER.map((tab) => html`
@@ -170,10 +164,7 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
   const taskState = useTasks();
   const workflowState = useWorkflows(config);
 
-  const combinedTasks = useMemo(
-    () => mergeTasks(taskState.tasks, wsState.tasks),
-    [taskState.tasks, wsState.tasks],
-  );
+  const combinedTasks = useMemo(() => mergeTasks(taskState.tasks, wsState.tasks), [taskState.tasks, wsState.tasks]);
 
   useEffect(() => {
     if (!helpOpen) {
@@ -219,7 +210,6 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
       exit();
       return;
     }
-
     if (key.tab) {
       const index = TAB_ORDER.findIndex((tab) => tab.id === activeTab);
       const delta = key.shift ? -1 : 1;
@@ -227,7 +217,6 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
       setActiveTab(TAB_ORDER[nextIndex].id);
       return;
     }
-
     const nextTab = KEY_BINDINGS[String(input || "").toLowerCase()];
     if (nextTab && TAB_ORDER.some((tab) => tab.id === nextTab)) {
       setActiveTab(nextTab);
@@ -235,66 +224,33 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
   });
 
   const tooSmall = terminalSize.columns < MIN_TERMINAL_SIZE.columns || terminalSize.rows < MIN_TERMINAL_SIZE.rows;
-
   const agentsRows = useMemo(() => wsState.sessions.slice(0, 10).map((session) => ({
-    id: clip(session.id, COLUMN_WIDTHS.id),
-    status: clip(session.status, COLUMN_WIDTHS.status),
-    title: clip(session.title || session.taskId || "-", COLUMN_WIDTHS.title),
-    turns: String(session.turnCount ?? 0),
-    updated: formatWhen(session.lastActiveAt),
+    id: clip(session.id, 10),
+    status: session.status || "-",
+    title: clip(session.title || session.taskId || "Untitled", 40),
+    turns: session.turnCount ?? 0,
+    updated: formatWhen(session.lastActiveAt || session.updatedAt || session.createdAt),
   })), [wsState.sessions]);
-
   const taskRows = useMemo(() => combinedTasks.slice(0, 12).map((task) => ({
-    id: clip(task.id, COLUMN_WIDTHS.id),
-    status: clip(task.status || "todo", COLUMN_WIDTHS.status),
-    priority: clip(task.priority || "medium", COLUMN_WIDTHS.priority),
-    title: clip(task.title || "Untitled task", COLUMN_WIDTHS.title),
+    id: task.id,
+    status: task.status,
+    priority: task.priority || "-",
+    title: task.title,
+    updated: formatWhen(task.updatedAt || task.createdAt),
   })), [combinedTasks]);
-  let body = null;
+  let body;
   if (tooSmall) {
-    body = html`
-      <${ScreenFrame}
-        title="Terminal too small"
-        subtitle="The Bosun TUI works best in a 120x30 or larger terminal."
-      >
-        <${Text} color=${ANSI_COLORS.warning}>
-          ${GLYPHS.warning} Current size is ${terminalSize.columns}x${terminalSize.rows}. Resize the terminal to continue.
-        <//>
-      <//>
-    `;
+    body = html`<${Text} color=${ANSI_COLORS.warning}>Terminal too small. Need at least ${MIN_TERMINAL_SIZE.columns}x${MIN_TERMINAL_SIZE.rows}.<//>`;
   } else if (activeTab === "agents") {
-    body = html`
-      <${ScreenFrame}
-        title="Agents"
-        subtitle="Live sessions from the Bosun WebSocket bus."
-      >
-        ${renderTable(agentsRows)}
-      <//>
-    `;
+    body = html`<${ScreenFrame} title="Agents" subtitle=${`Connected sessions: ${wsState.sessions.length}.`}>${renderTable(agentsRows)}<//>`;
   } else if (activeTab === "tasks") {
-    body = html`
-      <${ScreenFrame}
-        title="Tasks"
-        subtitle=${taskState.loading ? "Loading task store…" : `Showing ${combinedTasks.length} task(s).`}
-      >
-        ${taskState.error ? html`<${Text} color=${ANSI_COLORS.danger}>${taskState.error}<//>` : renderTable(taskRows)}
-      <//>
-    `;
+    body = html`<${ScreenFrame} title="Tasks" subtitle=${`Tracked tasks: ${combinedTasks.length}.`}>${renderTable(taskRows)}<//>`;
   } else if (activeTab === "logs") {
-    body = html`
-      <${ScreenFrame}
-        title="Logs"
-        subtitle="Latest streamed lines from the Bosun bus."
-      >
-        ${wsState.logs.length
-          ? html`${wsState.logs.slice(0, 12).map((entry, index) => html`
-              <${Text} key=${String(index)}>
-                ${clip(entry?.timestamp || "--:--", 8)} ${clip((entry?.level || "info").toUpperCase(), 5)} ${clip(entry?.line || entry?.raw || "", 100)}
-              <//>
-            `)}`
-          : html`<${Text} color=${ANSI_COLORS.muted}>No log lines streamed yet.<//>`}
-      <//>
-    `;
+    body = html`<${ScreenFrame} title="Logs" subtitle="Recent monitor and transport events.">
+      ${wsState.logs.length
+        ? wsState.logs.slice(0, 12).map((entry, index) => html`<${Text} key=${index}>${formatVisibleLogLine(entry)}<//>`)
+        : html`<${Text} color=${ANSI_COLORS.muted}>No log entries yet.<//>`}
+    <//>`;
   } else if (activeTab === "workflows") {
     body = workflowState.error
       ? html`
@@ -307,37 +263,20 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
         `
       : html`<${WorkflowsScreen} workflowState=${workflowState} wsState=${wsState} />`;
   } else if (activeTab === "telemetry") {
-    body = html`
-      <${ScreenFrame}
-        title="Telemetry"
-        subtitle="Live throughput, provider usage, rate limits, and cost estimates."
-      >
-        <${TelemetryScreen} wsState=${wsState} config=${config} terminalSize=${terminalSize} />
-      <//>
-    `;
+    body = html`<${ScreenFrame} title="Telemetry" subtitle="Live monitor counters and reconnect health.">
+      <${Text}>Connection: ${wsState.connectionStatus}<//>
+      <${Text}>Reconnects: ${wsState.reconnectCount}<//>
+      <${Text}>Tokens In/Out: ${wsState.stats?.tokensIn ?? 0}/${wsState.stats?.tokensOut ?? 0}<//>
+      <${Text}>Throughput TPS: ${wsState.stats?.throughputTps ?? 0}<//>
+    <//>`;
   } else if (activeTab === "settings") {
-    body = html`
-      <${ScreenFrame}
-        title="Settings"
-        subtitle="Resolved local Bosun runtime settings."
-      >
-        <${Text}>Config Dir: ${configDir}<//>
-        <${Text}>WS Host: ${host}<//>
-        <${Text}>WS Port: ${port}<//>
-        <${Text}>Workspace: ${config?.activeWorkspace || "-"}<//>
-      <//>
-    `;
+    body = html`<${SettingsScreen} configDir=${configDir} config=${config} />`;
   } else {
-    body = html`
-      <${ScreenFrame}
-        title="Help"
-        subtitle="Keyboard shortcuts for the Bosun TUI."
-      >
-        <${Text}>A/T/L/W/X/S/? switch screens.<//>
-        <${Text}>Tab and Shift+Tab cycle screens.<//>
-        <${Text}>Q quits the TUI.<//>
-      <//>
-    `;
+    body = html`<${ScreenFrame} title="Help" subtitle="Keyboard shortcuts for the Bosun TUI.">
+      <${Text}>A/T/L/W/X/S/? switch screens.<//>
+      <${Text}>Tab and Shift+Tab cycle screens.<//>
+      <${Text}>Q quits the TUI.<//>
+    <//>`;
   }
 
   return html`
@@ -365,4 +304,3 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     <//>
   `;
 }
-
