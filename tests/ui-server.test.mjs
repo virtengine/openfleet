@@ -2248,25 +2248,27 @@ describeUiServer("ui-server mini app", () => {
     tracker.createSession({
       id: "meeting-1",
       type: "primary",
-      workspaceDir: join(tmpdir(), "bosun-meeting-fixture"),
       metadata: {
         source: "workflow-meeting",
         title: "Synthetic Meeting Session",
+        workspaceDir: join(tmpdir(), "bosun-meeting-fixture"),
       },
     });
     tracker.createSession({
       id: "workspace-scope-test-1234",
       type: "workspace-scope-test",
-      workspaceDir: join(tmpdir(), "bosun-workspace-scope-test"),
       metadata: {
         title: "Workspace Scope Fixture",
+        workspaceDir: join(tmpdir(), "bosun-workspace-scope-test"),
       },
     });
     tracker.createSession({
       id: "manual-visible-session",
       type: "primary",
-      workspaceDir: join(process.cwd(), "fixtures", "manual-visible-session"),
-      metadata: { title: "Visible Session" },
+      metadata: {
+        title: "Visible Session",
+        hiddenInLists: true,
+      },
     });
 
     const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);

@@ -10110,11 +10110,14 @@ function shouldHideSessionFromDefaultList(session) {
   if (internalTransportSession) return true;
   const hasSmokeIdentifier = identifiers.some((value) => /^smoke(?:-vision)?-/i.test(String(value || "").trim()));
   if (hasSmokeIdentifier) return true;
+  const normalizedWorkspaceId = String(session.workspaceId || metadata.workspaceId || "").trim();
   const tempWorkspacePattern = /(?:\\|\/)(?:temp|tmp)(?:\\|\/)/i;
   const looksTemporaryWorkspace =
     tempWorkspacePattern.test(normalizedWorkspaceDir)
     || tempWorkspacePattern.test(normalizedWorkspaceRoot);
   if (!looksTemporaryWorkspace) return false;
+  // Sessions with an explicit workspace assignment are intentional, not leaked fixtures.
+  if (normalizedWorkspaceId) return false;
   const fixturePattern = /^(?:meeting-(?:1|vision)|session-linked-task-1|workspace-scope-test(?:-.+)?|task-\d+)$/i;
   const hasFixtureIdentifier = identifiers.some((value) => fixturePattern.test(String(value || "").trim()));
   const looksLikeSyntheticType =
