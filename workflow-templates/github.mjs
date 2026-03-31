@@ -16,6 +16,7 @@
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
 
+const BOSUN_CREATED_HTML_MARKER = "<!-- bosun-created -->";
 const GITHUB_CI_DIAGNOSTICS_SNIPPET = [
   "const CI_LOG_EXCERPT_MAX_CHARS=12000;",
   "const CI_MAX_JOB_DIAGNOSTICS=10;",
@@ -95,7 +96,7 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
 
     node("automation-eligible", "condition.expression", "Bosun-Created PR?", {
       expression:
-        "/* <!-- bosun-created --> auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()",
+        `/* ${BOSUN_CREATED_HTML_MARKER} auto-created by bosun */ (() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; const body = String(pr?.body || ''); return labels.includes('bosun-pr-bosun-created') || body.includes('${BOSUN_CREATED_HTML_MARKER}') || /auto-created by bosun/i.test(body); })()`,
     }, { x: 400, y: 230, outputs: ["yes", "no"] }),
 
     node("check-ci", "validation.build", "Check CI Status", {
