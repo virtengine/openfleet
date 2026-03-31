@@ -13900,7 +13900,7 @@ const workflowStartupRecoveryStepDelayMs = Math.max(
 );
 const workflowStartupHistoryRecoveryDelayMs = Math.max(
   0,
-  Number(process.env.WORKFLOW_STARTUP_HISTORY_RECOVERY_DELAY_MS || 30_000),
+  Number(process.env.WORKFLOW_STARTUP_HISTORY_RECOVERY_DELAY_MS || 120_000),
 );
 
 function scheduleStartupWorkflowRecovery(name, handler, step = 0, extraDelayMs = 0) {

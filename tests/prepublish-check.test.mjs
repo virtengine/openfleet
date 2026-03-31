@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   expandPublishedFiles,
+  findMissingPublishedFiles,
   findLocalImportSpecifiers,
   validatePublishedLocalImports,
 } from "../tools/prepublish-check.mjs";
@@ -72,6 +73,24 @@ describe("prepublish-check", () => {
     ]);
   });
 
+  it("reports required published asset files that are missing from the manifest expansion", () => {
+    const publishedFiles = new Set([
+      "agent/skills/skill-codebase-audit.md",
+      "agent/skills/pr-workflow.md",
+    ]);
+
+    expect(
+      findMissingPublishedFiles(publishedFiles, [
+        "agent/skills/background-task-execution.md",
+        "agent/skills/pr-workflow.md",
+        "agent/skills/background-task-execution.md",
+      ]),
+    ).toEqual([
+      "agent/skills/background-task-execution.md",
+      "agent/skills/background-task-execution.md",
+    ]);
+  });
+
   it("fails when a published module imports a non-published parent-relative file", async () => {
     const root = createFixture({
       "package.json": JSON.stringify({
@@ -125,8 +144,10 @@ describe("prepublish-check", () => {
     const pkg = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
     expect(pkg.files).toEqual(
       expect.arrayContaining([
+        "agent/internal-harness-control-plane.mjs",
         "agent/internal-harness-profile.mjs",
         "agent/internal-harness-runtime.mjs",
+        "shell/codex-sdk-import.mjs",
         "workspace/execution-journal.mjs",
         "workspace/scope-locks.mjs",
       ]),

@@ -904,6 +904,14 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         setTimelineOffset((current) => clampOffset(current + PAGE_SCROLL, timeline.length, visibleTimelineRows));
         return;
       }
+      if (input === "\u001b[5~") {
+        setTimelineOffset((current) => clampOffset(current - PAGE_SCROLL, timeline.length, visibleTimelineRows));
+        return;
+      }
+      if (input === "\u001b[6~") {
+        setTimelineOffset((current) => clampOffset(current + PAGE_SCROLL, timeline.length, visibleTimelineRows));
+        return;
+      }
       if (input === "s" || input === "S") {
         setSteerMode(true);
         setSteerValue("");

@@ -375,7 +375,7 @@ function InboxDetail({ item }) {
   return html`
     <${Box} flexDirection="column" paddingY=${1}>
       <${Text} bold>Workflow Inbox Detail<//>
-      ${lines.map((line) => html`<${Text} key=${line} wrap="truncate-end">${line}<//>`)}
+      ${lines.map((line, index) => html`<${Text} key=${`line-${index}`} wrap="truncate-end">${line}<//>`)}
       <${Box} marginTop=${1} flexDirection="column">
         <${Text} dimColor>[A]pprove  [X] deny  [Esc] close<//>
       <//>
@@ -404,7 +404,7 @@ function WorkflowRunDetail({ run, evaluation, forensics, snapshots, snapshotStat
   return html`
     <${Box} flexDirection="column" paddingY=${1}>
       <${Text} bold>Workflow Run Detail<//>
-      ${detailLines.map((line) => html`<${Text} key=${line} wrap="truncate-end">${line}<//>`)}
+      ${detailLines.map((line, index) => html`<${Text} key=${`detail-${index}`} wrap="truncate-end">${line}<//>`)}
       <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
         <${Text} bold>Recent Ledger Events<//>
         ${ledgerEvents.length
@@ -417,20 +417,20 @@ function WorkflowRunDetail({ run, evaluation, forensics, snapshots, snapshotStat
       <//>
       <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
         <${Text} bold>Run Evaluation<//>
-        ${extractEvaluationLines(evaluation).map((line) => html`
-          <${Text} key=${`evaluation-${line}`} wrap="truncate-end">${line}<//>
+        ${extractEvaluationLines(evaluation).map((line, index) => html`
+          <${Text} key=${`evaluation-${index}`} wrap="truncate-end">${line}<//>
         `)}
       <//>
       <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
         <${Text} bold>Run Forensics<//>
-        ${extractForensicsLines(forensics).map((line) => html`
-          <${Text} key=${`forensics-${line}`} wrap="truncate-end">${line}<//>
+        ${extractForensicsLines(forensics).map((line, index) => html`
+          <${Text} key=${`forensics-${index}`} wrap="truncate-end">${line}<//>
         `)}
       <//>
       <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
         <${Text} bold>Run Snapshots<//>
-        ${extractSnapshotLines(snapshots).map((line) => html`
-          <${Text} key=${`snapshot-${line}`} wrap="truncate-end">${line}<//>
+        ${extractSnapshotLines(snapshots).map((line, index) => html`
+          <${Text} key=${`snapshot-${index}`} wrap="truncate-end">${line}<//>
         `)}
         ${snapshotStatusLine ? html`<${Text} color="yellow">${snapshotStatusLine}<//>` : null}
       <//>

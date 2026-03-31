@@ -64,6 +64,44 @@ describe("repo-map", () => {
     expect(repoMap.files[0].adjacentPaths).toContain("workflow/workflow-nodes.mjs");
   });
 
+  it("builds a query-scoped repo map from the indexed graph database when the json projection is absent", async () => {
+    const { rm } = await import("node:fs/promises");
+    const { runContextIndex } = await import("../workspace/context-indexer.mjs");
+
+    mkdirSync(resolve(testRoot, "agent"), { recursive: true });
+    mkdirSync(resolve(testRoot, "workflow"), { recursive: true });
+    writeFileSync(
+      resolve(testRoot, "agent", "primary-agent.mjs"),
+      "import { runWorkflowNode } from '../workflow/workflow-nodes.mjs';\nexport function buildArchitectEditorFrame(options) { return runWorkflowNode(options); }\n",
+      "utf8",
+    );
+    writeFileSync(
+      resolve(testRoot, "workflow", "workflow-nodes.mjs"),
+      "export function runWorkflowNode(options) { return options; }\n",
+      "utf8",
+    );
+
+    await runContextIndex({
+      rootDir: testRoot,
+      includeTests: true,
+      useTreeSitter: false,
+      useZoekt: false,
+    });
+    await rm(resolve(testRoot, ".bosun", "context-index", "agent-index.json"), { force: true });
+
+    const repoMap = buildRepoMap({
+      repoRoot: testRoot,
+      query: "architect editor frame",
+      repoMapFileLimit: 2,
+    });
+
+    expect(repoMap.root).toBe(testRoot.replace(/\\/g, "/"));
+    expect(repoMap.files).toHaveLength(2);
+    expect(repoMap.files[0].path).toBe("agent/primary-agent.mjs");
+    expect(repoMap.files[0].symbols).toContain("buildArchitectEditorFrame");
+    expect(repoMap.files[0].adjacentPaths).toContain("workflow/workflow-nodes.mjs");
+  });
+
   it("prepends architect/editor framing with explicit repo maps", () => {
     const frame = buildArchitectEditorFrame({
       executionRole: "editor",
