@@ -324,7 +324,9 @@ export function GuardrailsTab() {
     try {
       const res = await apiFetch(`/api/guardrails?repo=${encodeURIComponent(repoPath)}`, { _silent: true });
       if (res?.snapshot) {
-        guardrailsData.value = res.snapshot;
+        if (guardrailsData) {
+          guardrailsData.value = res.snapshot;
+        }
       }
     } catch (err) {
       showToast(err?.message || "Failed to load repo guardrails", "error");
