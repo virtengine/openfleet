@@ -12460,8 +12460,8 @@ async function readJsonBody(req, maxBytes = 1_000_000) {
       if (!data) return resolveBody(null);
       try {
         resolveBody(JSON.parse(data));
-      } catch (err) {
-        rejectBody(err);
+      } catch {
+        rejectBody(new Error("Invalid JSON body"));
       }
     });
   });
@@ -24448,7 +24448,7 @@ export async function startTelegramUiServer(options = {}) {
         }
         return;
       }
-      jsonResponse(res, 500, err);
+      jsonResponse(res, 500, { ok: false, error: "Internal server error" });
     }
   };
 
