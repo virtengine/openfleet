@@ -5563,7 +5563,7 @@
             return {
               ok: true,
               data: buildFallbackCommitSummaries(repoName, count),
-              error: String(error?.message || error || 'Failed to fetch live commits'),
+              error: 'Failed to fetch live commits',
             };
           }
         }
@@ -5582,7 +5582,7 @@
               return {
                 ok: true,
                 data: fallback,
-                error: String(error?.message || error || 'Failed to fetch commit detail'),
+                error: 'Failed to fetch commit detail',
               };
             }
             return {

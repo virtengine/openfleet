@@ -37,7 +37,7 @@ const {
 } = nodeCrypto;
 const argon2 = typeof nodeArgon2 === "function" ? nodeArgon2 : null;
 
-// ── Response compression + caching helpers ──────────────────────────────────
+// Response compression + caching helpers
 const GZIP_MIN_BYTES = 1024;
 const COMPRESSIBLE_TYPES = /^(text\/|application\/json|application\/javascript|image\/svg)/;
 
@@ -51,10 +51,12 @@ async function compressAndSend(req, res, statusCode, headers, body) {
   if (buf.length >= GZIP_MIN_BYTES && COMPRESSIBLE_TYPES.test(ct) && acceptsGzip(req)) {
     try {
       const compressed = await gzipAsync(buf);
-      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
       res.end(compressed);
       return;
-    } catch { /* fall through to uncompressed */ }
+    } catch {
+      // Fall through to the uncompressed response path.
+    }
   }
   res.writeHead(statusCode, headers);
   res.end(buf);
@@ -150,6 +152,7 @@ import {
   launchOrResumeThread,
   execWithRetry,
   invalidateThread,
+  runCompiledInternalHarnessProfile,
 } from "../agent/agent-pool.mjs";
 import { withTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 import { resolveAgentPrompts } from "../agent/agent-prompts.mjs";
@@ -321,8 +324,11 @@ import { loadConfig, resolveTrustedAuthorList } from "../config/config.mjs";
 import {
   activateHarnessArtifact,
   compileHarnessSourceToArtifact,
+  listHarnessRuns,
+  recordHarnessRun,
   readActiveHarnessState,
   readHarnessArtifact,
+  readHarnessRunRecord,
   readHarnessSourceFromPath,
   shouldEnforceHarnessValidation,
 } from "../agent/internal-harness-control-plane.mjs";
@@ -4780,6 +4786,13 @@ function getHarnessRuntimeConfig() {
 }
 
 function resolveHarnessCompileSource(body = {}, harnessConfig = getHarnessRuntimeConfig()) {
+  if (body?.source && typeof body.source === "object" && !Array.isArray(body.source)) {
+    return {
+      source: body.source,
+      sourceOrigin: "inline",
+      sourcePath: null,
+    };
+  }
   if (typeof body?.source === "string" && body.source.trim()) {
     return {
       source: body.source,
@@ -4815,6 +4828,75 @@ function buildHarnessCompilePayload(compiled, harnessConfig) {
     harnessConfig,
     sourceOrigin: compiled.artifact?.sourceOrigin || null,
     sourcePath: compiled.artifact?.sourcePath || null,
+  };
+}
+
+function resolveHarnessRunPlan(body = {}, harnessConfig = getHarnessRuntimeConfig()) {
+  const configDir = resolveUiConfigDir();
+  const validationMode = String(body?.validationMode || harnessConfig.validationMode || "report")
+    .trim()
+    .toLowerCase() || "report";
+
+  if (typeof body?.artifactPath === "string" && body.artifactPath.trim()) {
+    const artifact = readHarnessArtifact(body.artifactPath);
+    return {
+      validationMode,
+      artifact,
+      compiled: null,
+      sourceOrigin: "artifact",
+      sourcePath: artifact.sourcePath || null,
+    };
+  }
+
+  const prefersExplicitSource =
+    (typeof body?.source === "string" && body.source.trim()) ||
+    (typeof body?.sourcePath === "string" && body.sourcePath.trim());
+  if (!prefersExplicitSource) {
+    const activeState = readActiveHarnessState(configDir);
+    if (activeState?.artifactPath) {
+      const artifact = readHarnessArtifact(activeState.artifactPath);
+      return {
+        validationMode,
+        artifact,
+        compiled: null,
+        sourceOrigin: "active-artifact",
+        sourcePath: artifact.sourcePath || null,
+      };
+    }
+  }
+
+  const sourceInfo = resolveHarnessCompileSource(body, harnessConfig);
+  const compiled = compileHarnessSourceToArtifact(sourceInfo.source, {
+    configDir,
+    repoRoot,
+    sourceOrigin: sourceInfo.sourceOrigin,
+    sourcePath: sourceInfo.sourcePath,
+    validationMode,
+  });
+  return {
+    validationMode,
+    artifact: compiled.artifact,
+    compiled,
+    sourceOrigin: sourceInfo.sourceOrigin,
+    sourcePath: sourceInfo.sourcePath,
+  };
+}
+
+function buildHarnessRunPayload(runRecord, runResult, harnessConfig) {
+  return {
+    ok: runResult?.success === true,
+    status: runResult?.status || "unknown",
+    success: runResult?.success === true,
+    dryRun: runRecord?.dryRun === true,
+    runId: runRecord?.runId || null,
+    runPath: runRecord?.runPath || null,
+    artifactId: runRecord?.artifactId || null,
+    artifactPath: runRecord?.artifactPath || null,
+    sourceOrigin: runRecord?.sourceOrigin || null,
+    sourcePath: runRecord?.sourcePath || null,
+    harnessConfig,
+    result: runResult,
+    runRecord,
   };
 }
 
@@ -14520,8 +14602,8 @@ async function readJsonBody(req, maxBytes = 1_000_000) {
       if (!data) return resolveBody(null);
       try {
         resolveBody(JSON.parse(data));
-      } catch (err) {
-        rejectBody(err);
+      } catch {
+        rejectBody(new Error("Invalid JSON body"));
       }
     });
   });
@@ -24104,6 +24186,35 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  if (path === "/api/harness/runs" && req.method === "GET") {
+    try {
+      const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+      const limit = Number(url.searchParams.get("limit") || 25);
+      jsonResponse(res, 200, {
+        ok: true,
+        items: listHarnessRuns(resolveUiConfigDir(), { limit }),
+      });
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  const harnessRunMatch = path.match(/^\/api\/harness\/runs\/([^/]+)$/);
+  if (harnessRunMatch && req.method === "GET") {
+    try {
+      const runId = decodeURIComponent(harnessRunMatch[1]);
+      const runPath = resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`);
+      jsonResponse(res, 200, {
+        ok: true,
+        run: readHarnessRunRecord(runPath),
+      });
+    } catch (err) {
+      jsonResponse(res, 404, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/harness/compile" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
@@ -24174,6 +24285,75 @@ if (path === "/api/agent-logs/context") {
         validationReport: artifact.validationReport,
         compiledProfileJson: compiled?.compiledProfileJson || artifact.compiledProfileJson || null,
       });
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/harness/run" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const harnessConfig = getHarnessRuntimeConfig();
+      const runPlan = resolveHarnessRunPlan(body || {}, harnessConfig);
+      if (runPlan.artifact?.isValid !== true && shouldEnforceHarnessValidation(runPlan.validationMode)) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "Harness validation failed in enforce mode",
+          validationReport: runPlan.artifact?.validationReport || null,
+          artifactPath: runPlan.artifact?.artifactPath || null,
+        });
+        return;
+      }
+
+      const compiledProfile = runPlan.artifact?.compiledProfile;
+      if (!compiledProfile || typeof compiledProfile !== "object") {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "Harness artifact is missing a compiled profile",
+        });
+        return;
+      }
+
+      const dryRun = body?.dryRun === true || String(body?.mode || "").trim().toLowerCase() === "dry-run";
+      const runId = String(body?.runId || "").trim() || `harness-run-${_genCallId()}`;
+      const runEvents = [];
+      const startedAt = new Date().toISOString();
+      const harnessRunner = typeof uiDeps.runCompiledInternalHarnessProfile === "function"
+        ? uiDeps.runCompiledInternalHarnessProfile
+        : runCompiledInternalHarnessProfile;
+      const session = await harnessRunner(compiledProfile, {
+        dryRun,
+        runId,
+        taskKey: String(body?.taskKey || "").trim() || `harness:${compiledProfile.agentId || "profile"}:${runId}`,
+        timeoutMs: Number.isFinite(Number(body?.timeoutMs)) && Number(body.timeoutMs) > 0
+          ? Number(body.timeoutMs)
+          : undefined,
+        turnExecutor: typeof uiDeps.harnessTurnExecutor === "function" ? uiDeps.harnessTurnExecutor : undefined,
+        onHarnessEvent: (event) => {
+          runEvents.push(event);
+        },
+      });
+      const finishedAt = new Date().toISOString();
+      const runRecord = recordHarnessRun({
+        runId,
+        mode: dryRun ? "dry-run" : "run",
+        dryRun,
+        startedAt,
+        finishedAt,
+        sourceOrigin: runPlan.sourceOrigin,
+        sourcePath: runPlan.sourcePath,
+        artifactId: runPlan.artifact?.artifactId || null,
+        artifactPath: runPlan.artifact?.artifactPath || null,
+        compiledProfile,
+        result: session?.result || null,
+        events: runEvents,
+      }, {
+        configDir: resolveUiConfigDir(),
+        actor: "api",
+      });
+      const payload = buildHarnessRunPayload(runRecord, session?.result || null, harnessConfig);
+      jsonResponse(res, 200, payload);
     } catch (err) {
       jsonResponse(res, 400, { ok: false, error: err.message });
     }
@@ -27541,7 +27721,7 @@ export async function startTelegramUiServer(options = {}) {
         }
         return;
       }
-      jsonResponse(res, 500, err);
+      jsonResponse(res, 500, { ok: false, error: "Internal server error" });
     }
   };
 
@@ -27656,6 +27836,12 @@ export async function startTelegramUiServer(options = {}) {
     function broadcastTaskEvent(type, task) {
       broadcastUiEvent(["tasks", "tui"], type, task);
     }
+
+    function broadcastWorkflowStatusEvent(payload) {
+      broadcastUiEvent(["workflows", "tui"], "workflow:status", payload);
+    }
+
+    globalThis.__bosun_broadcastWorkflowStatusEvent = broadcastWorkflowStatusEvent;
 
     wsServer.on("connection", (socket, req) => {
       socket.__channels = new Set(["*"]);

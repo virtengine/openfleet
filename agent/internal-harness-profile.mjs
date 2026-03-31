@@ -159,7 +159,7 @@ function normalizeStage(stage, index, defaults = {}) {
     sdk: toTrimmedString(stage?.sdk || defaults.defaultSdk || ""),
     model: toTrimmedString(stage?.model || defaults.defaultModel || ""),
     taskKey: toTrimmedString(stage?.taskKey || defaults.defaultTaskKey || defaults.defaultAgentId || ""),
-    timeoutMs: normalizeOptionalPositiveInteger(stage?.timeoutMs),
+    timeoutMs: normalizeOptionalInteger(stage?.timeoutMs),
     maxRetries: normalizeOptionalInteger(stage?.maxRetries),
     maxContinues: normalizeOptionalInteger(stage?.maxContinues),
     tools,

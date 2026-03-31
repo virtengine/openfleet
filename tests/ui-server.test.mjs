@@ -828,6 +828,11 @@ describeUiServer("ui-server mini app", () => {
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+      dependencies: {
+        harnessTurnExecutor,
+      },
     });
     const port = server.address().port;
 
@@ -1739,6 +1744,7 @@ describeUiServer("ui-server mini app", () => {
       expect(opts.cwd).toBe(workspaceRepo);
     } finally {
       await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
       await removeDirWithRetries(tmpDir);
     }
   }, 15000);
@@ -1896,6 +1902,7 @@ describeUiServer("ui-server mini app", () => {
       );
     } finally {
       await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
       await removeDirWithRetries(tmpDir);
     }
   });
@@ -2989,6 +2996,123 @@ describeUiServer("ui-server mini app", () => {
     expect(activeJson.ok).toBe(true);
     expect(activeJson.activeState?.artifactPath).toBe(compileJson.artifactPath);
     expect(activeJson.artifact?.compiledProfile?.name).toBe("Bosun API Harness");
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 15000);
+
+  it("runs harness profiles through the API with dry-run and persisted run records", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-run-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        $schema: "./bosun.schema.json",
+        harness: {
+          enabled: true,
+          validation: {
+            mode: "report",
+          },
+        },
+      }, null, 2) + "\n",
+      "utf8",
+    );
+
+    const harnessTurnExecutor = vi.fn(async ({ stage }) => {
+      if (stage.id === "plan") {
+        return {
+          success: false,
+          outcome: "needs-repair",
+          status: "needs_repair",
+          error: "lint failure",
+        };
+      }
+      return {
+        success: true,
+        outcome: "success",
+        status: "completed",
+      };
+    });
+    mod.injectUiDependencies({
+      harnessTurnExecutor,
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+    const source = {
+      name: "Bosun API Harness Runner",
+      entryStageId: "plan",
+      stages: [
+        {
+          id: "plan",
+          type: "prompt",
+          prompt: "Plan the work.",
+          transitions: [{ on: "needs-repair", to: "repair" }],
+          repairLoop: {
+            maxAttempts: 1,
+            targetStageId: "repair",
+            backoffMs: 1,
+          },
+        },
+        {
+          id: "repair",
+          type: "repair",
+          prompt: "Repair the issue.",
+          transitions: [{ on: "success", to: "done" }],
+        },
+        {
+          id: "done",
+          type: "finalize",
+          prompt: "Summarize the finished work.",
+        },
+      ],
+    };
+
+    const runRes = await fetch(`http://127.0.0.1:${port}/api/harness/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: JSON.stringify(source) }),
+    });
+    const runJson = await runRes.json();
+
+    expect(runRes.status).toBe(200);
+    expect(runJson.ok).toBe(true);
+    expect(runJson.status).toBe("completed");
+    expect(runJson.result?.history?.map((entry) => entry.stageId)).toEqual(["plan", "repair", "done"]);
+    expect(runJson.runRecord?.events?.some((event) => event.type === "harness:stage-transition" && event.reason === "needs-repair")).toBe(true);
+    expect(existsSync(runJson.runPath)).toBe(true);
+    expect(harnessTurnExecutor).toHaveBeenCalledTimes(3);
+
+    const runsRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs?limit=5`);
+    const runsJson = await runsRes.json();
+    expect(runsRes.status).toBe(200);
+    expect(runsJson.items?.[0]?.runId).toBe(runJson.runId);
+
+    const runDetailRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/${encodeURIComponent(runJson.runId)}`);
+    const runDetailJson = await runDetailRes.json();
+    expect(runDetailRes.status).toBe(200);
+    expect(runDetailJson.run?.runId).toBe(runJson.runId);
+    expect(runDetailJson.run?.result?.history?.map((entry) => entry.stageId)).toEqual(["plan", "repair", "done"]);
+
+    const dryRunRes = await fetch(`http://127.0.0.1:${port}/api/harness/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: JSON.stringify(source), dryRun: true }),
+    });
+    const dryRunJson = await dryRunRes.json();
+
+    expect(dryRunRes.status).toBe(200);
+    expect(dryRunJson.ok).toBe(true);
+    expect(dryRunJson.dryRun).toBe(true);
+    expect(dryRunJson.result?.dryRun).toBe(true);
+    expect(dryRunJson.result?.history?.every((entry) => entry.dryRun === true)).toBe(true);
+    expect(existsSync(dryRunJson.runPath)).toBe(true);
+    expect(harnessTurnExecutor).toHaveBeenCalledTimes(3);
 
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15000);
@@ -5167,30 +5291,34 @@ describeUiServer("ui-server mini app", () => {
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/comment?taskId=T-123`);
-    const json = await response.json();
+      const response = await fetch(`http://127.0.0.1:${port}/api/tasks/comment?taskId=T-123`);
+      const json = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(json.ok).toBe(true);
-    expect(json.taskId).toBe("T-123");
-    expect(Array.isArray(json.comments)).toBe(true);
-    expect(json.comments).toEqual([
-      expect.objectContaining({
-        id: "c1",
-        body: "first",
-        author: "qa",
-        createdAt: "2026-03-08T00:00:00.000Z",
-      }),
-      expect.objectContaining({
-        id: "c2",
-        body: "second",
-        author: "dev",
-        createdAt: "2026-03-08T01:00:00.000Z",
-      }),
-    ]);
-  });
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.taskId).toBe("T-123");
+      expect(Array.isArray(json.comments)).toBe(true);
+      expect(json.comments).toEqual([
+        expect.objectContaining({
+          id: "c1",
+          body: "first",
+          author: "qa",
+          createdAt: "2026-03-08T00:00:00.000Z",
+        }),
+        expect.objectContaining({
+          id: "c2",
+          body: "second",
+          author: "dev",
+          createdAt: "2026-03-08T01:00:00.000Z",
+        }),
+      ]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }, 15000);
 
   it("keeps legacy tasks without workspace metadata in the active workspace task list", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

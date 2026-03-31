@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
 
@@ -68,6 +68,14 @@ export function readActiveHarnessState(configDir) {
   const { activeStatePath } = resolveHarnessControlPlanePaths(configDir);
   if (!existsSync(activeStatePath)) return null;
   return JSON.parse(readFileSync(activeStatePath, "utf8"));
+}
+
+export function readHarnessRunRecord(runPath) {
+  const resolvedPath = resolve(String(runPath || ""));
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`Harness run record not found: ${runPath}`);
+  }
+  return JSON.parse(readFileSync(resolvedPath, "utf8"));
 }
 
 function buildHarnessRunSummary(runRecord) {
@@ -202,6 +210,34 @@ export function recordHarnessRun(runInput, options = {}) {
     ...runRecord,
     runPath,
   };
+}
+
+export function listHarnessRuns(configDir, options = {}) {
+  const { runsDir } = resolveHarnessControlPlanePaths(configDir);
+  if (!existsSync(runsDir)) return [];
+  const limit = Number.isFinite(Number(options.limit)) && Number(options.limit) > 0
+    ? Math.trunc(Number(options.limit))
+    : 25;
+  const records = [];
+  for (const fileName of readdirSync(runsDir)) {
+    if (!fileName.endsWith(".json")) continue;
+    const runPath = resolve(runsDir, fileName);
+    try {
+      const record = readHarnessRunRecord(runPath);
+      records.push({
+        ...buildHarnessRunSummary(record),
+        runPath,
+      });
+    } catch {
+      // Ignore malformed run records so one bad file does not break the control plane.
+    }
+  }
+  records.sort((left, right) => {
+    const rightTime = Date.parse(right.finishedAt || right.startedAt || 0);
+    const leftTime = Date.parse(left.finishedAt || left.startedAt || 0);
+    return rightTime - leftTime;
+  });
+  return records.slice(0, limit);
 }
 
 export function shouldEnforceHarnessValidation(validationMode) {

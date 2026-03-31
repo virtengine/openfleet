@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { compileInternalHarnessProfile } from "../agent/internal-harness-profile.mjs";
+import { createInternalHarnessSession as createHarnessRuntimeSession } from "../agent/internal-harness-runtime.mjs";
 
 describe("internal harness profile compiler", () => {
   it("compiles valid markdown-fenced JSON and returns topology metadata", () => {
@@ -86,5 +87,188 @@ describe("internal harness profile compiler", () => {
     expect(errorCodes).toContain("repair_loop_target_unknown");
     expect(warningCodes).toContain("prompt_injection_phrase");
     expect(warningCodes).toContain("stage_unreachable");
+  });
+
+  it("preserves stage runtime execution settings and validates numeric policy fields", () => {
+    const compiled = compileInternalHarnessProfile({
+      entryStageId: "plan",
+      cwd: "/repo",
+      sessionType: "workflow",
+      sdk: "codex",
+      model: "gpt-5.4",
+      taskKey: "harness-task",
+      stages: [
+        {
+          id: "plan",
+          type: "prompt",
+          prompt: "Plan.",
+          timeoutMs: 1200,
+          maxRetries: 2,
+          maxContinues: 1,
+          transitions: [{ on: "success", to: "done" }],
+        },
+        {
+          id: "done",
+          type: "finalize",
+          prompt: "Finish.",
+        },
+      ],
+    });
+
+    expect(compiled.isValid).toBe(true);
+    expect(compiled.compiledProfile.cwd).toBe("/repo");
+    expect(compiled.compiledProfile.sessionType).toBe("workflow");
+    expect(compiled.compiledProfile.sdk).toBe("codex");
+    expect(compiled.compiledProfile.model).toBe("gpt-5.4");
+    expect(compiled.compiledProfile.taskKey).toBe("harness-task");
+    expect(compiled.compiledProfile.stages[0].timeoutMs).toBe(1200);
+    expect(compiled.compiledProfile.stages[0].maxRetries).toBe(2);
+    expect(compiled.compiledProfile.stages[0].maxContinues).toBe(1);
+
+    const invalid = compileInternalHarnessProfile({
+      entryStageId: "bad",
+      stages: [
+        {
+          id: "bad",
+          prompt: "Broken.",
+          timeoutMs: -1,
+          maxRetries: -2,
+          maxContinues: -3,
+        },
+      ],
+    });
+    const invalidCodes = invalid.validationReport.errors.map((issue) => issue.code);
+    expect(invalidCodes).toContain("stage_timeout_invalid");
+    expect(invalidCodes).toContain("stage_max_retries_invalid");
+    expect(invalidCodes).toContain("stage_max_continues_invalid");
+  });
+});
+
+describe("internal harness runtime", () => {
+  it("supports outcome-aware transitions without forcing repair loops", async () => {
+    const events = [];
+    const executeTurn = async ({ stage }) => {
+      if (stage.id === "plan") {
+        return {
+          success: false,
+          outcome: "needs-repair",
+          status: "needs_repair",
+          error: "lint failure",
+        };
+      }
+      return {
+        success: true,
+        outcome: "success",
+        status: "completed",
+      };
+    };
+    const session = createHarnessRuntimeSession({
+      agentId: "bosun-harness",
+      entryStageId: "plan",
+      stages: [
+        {
+          id: "plan",
+          type: "prompt",
+          prompt: "Plan.",
+          transitions: [{ on: "needs-repair", to: "repair" }],
+          repairLoop: {
+            maxAttempts: 2,
+            targetStageId: "repair",
+            backoffMs: 1,
+          },
+        },
+        {
+          id: "repair",
+          type: "repair",
+          prompt: "Repair.",
+          transitions: [{ on: "success", to: "done" }],
+        },
+        {
+          id: "done",
+          type: "finalize",
+          prompt: "Finish.",
+        },
+      ],
+    }, {
+      executeTurn,
+      onEvent: (event) => events.push(event),
+    });
+
+    const result = await session.run();
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe("completed");
+    expect(result.history.map((entry) => entry.stageId)).toEqual(["plan", "repair", "done"]);
+    expect(result.history[0].outcome).toBe("needs-repair");
+    expect(result.history[0].transitionReason).toBe("needs-repair");
+    expect(events.some((event) => event.type === "harness:stage-transition" && event.reason === "needs-repair")).toBe(true);
+  });
+
+  it("supports repair exhaustion transitions and dry-run execution", async () => {
+    const executeTurn = async ({ stage }) => {
+      if (stage.id === "plan") {
+        return {
+          success: false,
+          outcome: "failure",
+          status: "failed",
+          error: "still broken",
+        };
+      }
+      return {
+        success: true,
+        outcome: "success",
+        status: "completed",
+      };
+    };
+    const profile = {
+      agentId: "bosun-harness",
+      entryStageId: "plan",
+      stages: [
+        {
+          id: "plan",
+          type: "prompt",
+          prompt: "Plan.",
+          transitions: [{ on: "repair-exhausted", to: "fallback" }],
+          repairLoop: {
+            maxAttempts: 1,
+            targetStageId: "repair",
+            backoffMs: 1,
+          },
+        },
+        {
+          id: "repair",
+          type: "repair",
+          prompt: "Repair.",
+          transitions: [{ on: "success", to: "plan" }],
+        },
+        {
+          id: "fallback",
+          type: "finalize",
+          prompt: "Fallback.",
+        },
+      ],
+    };
+    const runtimeSession = createHarnessRuntimeSession(profile, {
+      executeTurn,
+    });
+    const runtimeResult = await runtimeSession.run();
+
+    expect(runtimeResult.success).toBe(true);
+    expect(runtimeResult.history.map((entry) => entry.stageId)).toEqual(["plan", "repair", "plan", "fallback"]);
+    expect(runtimeResult.history[2].transitionReason).toBe("repair-exhausted");
+
+    const dryRunExecuteTurn = async () => {
+      throw new Error("dry-run should not execute turns");
+    };
+    const dryRunSession = createHarnessRuntimeSession(profile, {
+      executeTurn: dryRunExecuteTurn,
+      dryRun: true,
+    });
+    const dryRunResult = await dryRunSession.run();
+
+    expect(dryRunResult.success).toBe(true);
+    expect(dryRunResult.status).toBe("completed");
+    expect(dryRunResult.dryRun).toBe(true);
+    expect(dryRunResult.history.every((entry) => entry.dryRun === true)).toBe(true);
   });
 });

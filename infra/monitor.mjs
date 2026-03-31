@@ -253,6 +253,7 @@ import {
 } from "../task/task-store.mjs";
 import { createAgentEndpoint } from "../agent/agent-endpoint.mjs";
 import { createAgentEventBus } from "../agent/agent-event-bus.mjs";
+import { onConfigReload } from "../ui/tui/config-events.js";
 import { createReviewAgent } from "../agent/review-agent.mjs";
 
 import { createErrorDetector } from "./error-detector.mjs";
@@ -944,6 +945,17 @@ async function ensureWorkflowAutomationEngine() {
         runsDir: resolve(repoRoot, ".bosun", "workflow-runs"),
         configDir: repoRoot,
       });
+
+      if (!engine.__bosunWorkflowStatusBroadcastAttached) {
+        engine.__bosunWorkflowStatusBroadcastAttached = true;
+        engine.on("workflow:status", (payload) => {
+          try {
+            globalThis.__bosun_broadcastWorkflowStatusEvent?.(payload);
+          } catch {
+            // best effort; TUI clients can still read persisted history
+          }
+        });
+      }
 
       const configuredWorkflowProfile =
         config?.workflowDefaults && typeof config.workflowDefaults === "object"
@@ -13681,6 +13693,7 @@ process.on("SIGINT", async () => {
 
 // Windows: closing the terminal window doesn't send SIGINT/SIGTERM reliably.
 process.on("exit", () => {
+  try { stopTuiConfigReloadListener?.(); } catch { /* best effort */ }
   shuttingDown = true;
   stopWorkspaceSyncTimers();
   stopHeartbeatMonitor();

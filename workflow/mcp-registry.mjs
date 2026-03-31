@@ -569,7 +569,7 @@ function writeDiscoveryProxyConfig(rootDir, payload) {
   if (!normalizedRootDir) {
     throw new Error(`${TAG} discovery proxy rootDir is required`);
   }
-  if (/\{\{[^}]+\}\}/.test(normalizedRootDir)) {
+  if (containsUnresolvedTemplate(normalizedRootDir)) {
     throw new Error(`${TAG} discovery proxy rootDir contains an unresolved template: ${normalizedRootDir}`);
   }
   const resolvedRootDir = resolve(normalizedRootDir);
@@ -586,6 +586,20 @@ function writeDiscoveryProxyConfig(rootDir, payload) {
     writeFileSync(filePath, serialized, "utf8");
   }
   return filePath;
+}
+
+function containsUnresolvedTemplate(value) {
+  const text = String(value || "");
+  let cursor = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf("{{", cursor);
+    if (open === -1) return false;
+    const close = text.indexOf("}}", open + 2);
+    if (close === -1) return false;
+    if (close > open + 2) return true;
+    cursor = open + 2;
+  }
+  return false;
 }
 
 function envFlagEnabled(value, fallback = false) {

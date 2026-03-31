@@ -1,4 +1,4 @@
-import figures from "figures";
+const figures = {};
 
 export const ANSI_COLORS = Object.freeze({
   connected: "green",
