@@ -884,6 +884,50 @@ Always use deterministic TF ops.
       ]);
     });
 
+    it("rewrites the JSON registry from the SQL ledger instead of preserving stale projection entries", async () => {
+      const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
+      const staleEntry = buildKnowledgeEntry({
+        content: "Workspace memory: stale projected entry that should not survive projection rebuild.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-stale",
+        sessionId: "session-stale",
+        runId: "run-stale",
+        agentId: "agent-stale",
+      });
+      await mkdir(resolve(tempRoot, ".cache", "bosun"), { recursive: true });
+      await writeFile(registryPath, JSON.stringify({
+        version: "1.0.0",
+        updatedAt: staleEntry.timestamp,
+        entries: [staleEntry],
+      }, null, 2), "utf8");
+
+      const result = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: canonical ledger entry for auth retry fixtures.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        agentId: "agent-workspace",
+      }));
+      expect(result.success).toBe(true);
+
+      const registry = JSON.parse(await readFile(registryPath, "utf8"));
+      expect(Array.isArray(registry.entries)).toBe(true);
+      expect(registry.entries).toEqual([
+        expect.objectContaining({
+          content: "Workspace memory: canonical ledger entry for auth retry fixtures.",
+          workspaceId: "workspace-1",
+        }),
+      ]);
+      expect(registry.entries.map((entry) => entry.content)).not.toContain(
+        "Workspace memory: stale projected entry that should not survive projection rebuild.",
+      );
+    });
+
     it("backfills legacy JSON registry memories into the SQL ledger on retrieval", async () => {
       const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
       const {

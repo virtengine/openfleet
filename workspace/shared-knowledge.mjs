@@ -299,7 +299,7 @@ async function backfillLedgerEntries(repoRoot, entries = []) {
   }
 }
 
-async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
+function loadLedgerRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
   try {
     const entries = listKnowledgeEntriesFromStateLedger({ repoRoot, limit: 5000 })
       .map((entry) => normalizeRegistryEntry(entry))
@@ -312,8 +312,14 @@ async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process
       };
     }
   } catch {
-    // fall back to legacy registry
+    // fall through to null
   }
+  return null;
+}
+
+async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
+  const ledgerRegistry = loadLedgerRegistryEntries(repoRoot);
+  if (ledgerRegistry) return ledgerRegistry;
 
   const legacyRegistry = await loadLegacyRegistryEntries(repoRoot);
   if (legacyRegistry.entries.length > 0) {
@@ -335,9 +341,18 @@ async function saveRegistryEntries(repoRoot, registry) {
   await writeFile(registryPath, JSON.stringify(payload, null, 2), "utf8");
 }
 
+async function syncRegistryProjectionFromLedger(repoRoot = knowledgeState.repoRoot || process.cwd()) {
+  const registry = loadLedgerRegistryEntries(repoRoot) || createEmptyRegistry();
+  await saveRegistryEntries(repoRoot, registry);
+  return registry;
+}
+
 async function ensureEntryHashesLoaded() {
   knowledgeState.entryHashes.clear();
-  const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
+  const repoRoot = knowledgeState.repoRoot || process.cwd();
+  const registry =
+    loadLedgerRegistryEntries(repoRoot)
+    || await loadLegacyRegistryEntries(repoRoot);
   for (const entry of registry.entries) {
     if (entry?.hash) knowledgeState.entryHashes.add(entry.hash);
   }
@@ -793,12 +808,11 @@ export async function appendKnowledgeEntry(entry, options = {}) {
       }
     }
 
-    const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
-    registry.entries.push(normalizedEntry);
-    await saveRegistryEntries(knowledgeState.repoRoot || process.cwd(), registry);
+    const effectiveRepoRoot = knowledgeState.repoRoot || process.cwd();
     const ledgerResult = appendKnowledgeEntryToStateLedger(normalizedEntry, {
-      repoRoot: knowledgeState.repoRoot || process.cwd(),
+      repoRoot: effectiveRepoRoot,
     });
+    await syncRegistryProjectionFromLedger(effectiveRepoRoot);
 
     knowledgeState.entryHashes.add(normalizedEntry.hash);
     knowledgeState.entriesWritten++;
@@ -808,9 +822,9 @@ export async function appendKnowledgeEntry(entry, options = {}) {
     return {
       success: true,
       hash: normalizedEntry.hash,
-      registryPath: getRegistryPath(knowledgeState.repoRoot || process.cwd()),
+      registryPath: getRegistryPath(effectiveRepoRoot),
       ledgerPath: ledgerResult?.path || resolveStateLedgerPath({
-        repoRoot: knowledgeState.repoRoot || process.cwd(),
+        repoRoot: effectiveRepoRoot,
       }),
     };
   } catch (err) {
