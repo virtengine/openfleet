@@ -1,0 +1,364 @@
+﻿2026-03-31T08:12:08.7635919Z Current runner version: '2.333.1'
+2026-03-31T08:12:08.7671200Z ##[group]Runner Image Provisioner
+2026-03-31T08:12:08.7672694Z Hosted Compute Agent
+2026-03-31T08:12:08.7673638Z Version: 20260213.493
+2026-03-31T08:12:08.7674578Z Commit: 5c115507f6dd24b8de37d8bbe0bb4509d0cc0fa3
+2026-03-31T08:12:08.7675762Z Build Date: 2026-02-13T00:28:41Z
+2026-03-31T08:12:08.7676710Z Worker ID: {d0d7f692-3925-4ee4-9d83-cbe3f08b228f}
+2026-03-31T08:12:08.7677835Z Azure Region: centralus
+2026-03-31T08:12:08.7678828Z ##[endgroup]
+2026-03-31T08:12:08.7681764Z ##[group]Operating System
+2026-03-31T08:12:08.7682711Z Ubuntu
+2026-03-31T08:12:08.7683547Z 24.04.4
+2026-03-31T08:12:08.7684308Z LTS
+2026-03-31T08:12:08.7684995Z ##[endgroup]
+2026-03-31T08:12:08.7686001Z ##[group]Runner Image
+2026-03-31T08:12:08.7687016Z Image: ubuntu-24.04
+2026-03-31T08:12:08.7687938Z Version: 20260323.65.1
+2026-03-31T08:12:08.7690082Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260323.65/images/ubuntu/Ubuntu2404-Readme.md
+2026-03-31T08:12:08.7692789Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260323.65
+2026-03-31T08:12:08.7694411Z ##[endgroup]
+2026-03-31T08:12:08.7696019Z ##[group]GITHUB_TOKEN Permissions
+2026-03-31T08:12:08.7698765Z Contents: read
+2026-03-31T08:12:08.7699697Z Metadata: read
+2026-03-31T08:12:08.7701250Z ##[endgroup]
+2026-03-31T08:12:08.7704098Z Secret source: Actions
+2026-03-31T08:12:08.7705832Z Prepare workflow directory
+2026-03-31T08:12:08.8076240Z Prepare all required actions
+2026-03-31T08:12:08.8115858Z Getting action download info
+2026-03-31T08:12:09.2126029Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+2026-03-31T08:12:09.3683029Z Download action repository 'actions/setup-node@v4' (SHA:49933ea5288caeca8642d1e84afbd3f7d6820020)
+2026-03-31T08:12:09.5526638Z Complete job name: 📋 Template Integrity
+2026-03-31T08:12:09.6244453Z ##[group]Run actions/checkout@v4
+2026-03-31T08:12:09.6245388Z with:
+2026-03-31T08:12:09.6245773Z   repository: virtengine/bosun
+2026-03-31T08:12:09.6246451Z   token: ***
+2026-03-31T08:12:09.6246826Z   ssh-strict: true
+2026-03-31T08:12:09.6247210Z   ssh-user: git
+2026-03-31T08:12:09.6247603Z   persist-credentials: true
+2026-03-31T08:12:09.6248043Z   clean: true
+2026-03-31T08:12:09.6248428Z   sparse-checkout-cone-mode: true
+2026-03-31T08:12:09.6248900Z   fetch-depth: 1
+2026-03-31T08:12:09.6249271Z   fetch-tags: false
+2026-03-31T08:12:09.6249659Z   show-progress: true
+2026-03-31T08:12:09.6250062Z   lfs: false
+2026-03-31T08:12:09.6250425Z   submodules: false
+2026-03-31T08:12:09.6251027Z   set-safe-directory: true
+2026-03-31T08:12:09.6251737Z ##[endgroup]
+2026-03-31T08:12:09.7367292Z Syncing repository: virtengine/bosun
+2026-03-31T08:12:09.7369040Z ##[group]Getting Git version info
+2026-03-31T08:12:09.7369709Z Working directory is '/home/runner/work/bosun/bosun'
+2026-03-31T08:12:09.7371039Z [command]/usr/bin/git version
+2026-03-31T08:12:09.7419451Z git version 2.53.0
+2026-03-31T08:12:09.7447910Z ##[endgroup]
+2026-03-31T08:12:09.7464710Z Temporarily overriding HOME='/home/runner/work/_temp/25cbb6fc-3adb-49fd-b50d-49c157cab713' before making global git config changes
+2026-03-31T08:12:09.7467090Z Adding repository directory to the temporary git global config as a safe directory
+2026-03-31T08:12:09.7471641Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/bosun/bosun
+2026-03-31T08:12:09.7506362Z Deleting the contents of '/home/runner/work/bosun/bosun'
+2026-03-31T08:12:09.7510784Z ##[group]Initializing the repository
+2026-03-31T08:12:09.7515648Z [command]/usr/bin/git init /home/runner/work/bosun/bosun
+2026-03-31T08:12:09.7605487Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-03-31T08:12:09.7607076Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-03-31T08:12:09.7608018Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-03-31T08:12:09.7608751Z hint: call:
+2026-03-31T08:12:09.7609311Z hint:
+2026-03-31T08:12:09.7610073Z hint: 	git config --global init.defaultBranch <name>
+2026-03-31T08:12:09.7610934Z hint:
+2026-03-31T08:12:09.7611516Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-03-31T08:12:09.7612880Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-03-31T08:12:09.7613572Z hint:
+2026-03-31T08:12:09.7613944Z hint: 	git branch -m <name>
+2026-03-31T08:12:09.7614364Z hint:
+2026-03-31T08:12:09.7614945Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-03-31T08:12:09.7616046Z Initialized empty Git repository in /home/runner/work/bosun/bosun/.git/
+2026-03-31T08:12:09.7617948Z [command]/usr/bin/git remote add origin https://github.com/virtengine/bosun
+2026-03-31T08:12:09.7649051Z ##[endgroup]
+2026-03-31T08:12:09.7649772Z ##[group]Disabling automatic garbage collection
+2026-03-31T08:12:09.7653702Z [command]/usr/bin/git config --local gc.auto 0
+2026-03-31T08:12:09.7681842Z ##[endgroup]
+2026-03-31T08:12:09.7682524Z ##[group]Setting up auth
+2026-03-31T08:12:09.7688862Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-03-31T08:12:09.7717680Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-03-31T08:12:09.8029205Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-03-31T08:12:09.8064494Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-03-31T08:12:09.8305684Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-03-31T08:12:09.8355840Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-03-31T08:12:09.8584890Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-03-31T08:12:09.8618305Z ##[endgroup]
+2026-03-31T08:12:09.8619569Z ##[group]Fetching the repository
+2026-03-31T08:12:09.8628032Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +543c25292a12f88977efc9bfa17079cec051e390:refs/remotes/pull/437/merge
+2026-03-31T08:12:11.1701723Z From https://github.com/virtengine/bosun
+2026-03-31T08:12:11.1704885Z  * [new ref]         543c25292a12f88977efc9bfa17079cec051e390 -> pull/437/merge
+2026-03-31T08:12:11.1732244Z ##[endgroup]
+2026-03-31T08:12:11.1734327Z ##[group]Determining the checkout info
+2026-03-31T08:12:11.1736343Z ##[endgroup]
+2026-03-31T08:12:11.1740758Z [command]/usr/bin/git sparse-checkout disable
+2026-03-31T08:12:11.1778612Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-03-31T08:12:11.1804995Z ##[group]Checking out the ref
+2026-03-31T08:12:11.1808904Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/437/merge
+2026-03-31T08:12:11.3085252Z Note: switching to 'refs/remotes/pull/437/merge'.
+2026-03-31T08:12:11.3086221Z 
+2026-03-31T08:12:11.3086921Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-03-31T08:12:11.3088582Z changes and commit them, and you can discard any commits you make in this
+2026-03-31T08:12:11.3090192Z state without impacting any branches by switching back to a branch.
+2026-03-31T08:12:11.3092097Z 
+2026-03-31T08:12:11.3093189Z If you want to create a new branch to retain commits you create, you may
+2026-03-31T08:12:11.3095531Z do so (now or later) by using -c with the switch command. Example:
+2026-03-31T08:12:11.3096859Z 
+2026-03-31T08:12:11.3097399Z   git switch -c <new-branch-name>
+2026-03-31T08:12:11.3098337Z 
+2026-03-31T08:12:11.3098942Z Or undo this operation with:
+2026-03-31T08:12:11.3099840Z 
+2026-03-31T08:12:11.3100378Z   git switch -
+2026-03-31T08:12:11.3101485Z 
+2026-03-31T08:12:11.3102996Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-03-31T08:12:11.3104858Z 
+2026-03-31T08:12:11.3106817Z HEAD is now at 543c252 Merge d5665d1854745adf838443c2b0162cc67673514e into 66f9a9e4fbb9b3e822f4d36a49e0d6537379e769
+2026-03-31T08:12:11.3112988Z ##[endgroup]
+2026-03-31T08:12:11.3141208Z [command]/usr/bin/git log -1 --format=%H
+2026-03-31T08:12:11.3166052Z 543c25292a12f88977efc9bfa17079cec051e390
+2026-03-31T08:12:11.3507670Z ##[group]Run actions/setup-node@v4
+2026-03-31T08:12:11.3508868Z with:
+2026-03-31T08:12:11.3509677Z   node-version: 24
+2026-03-31T08:12:11.3510797Z   cache: npm
+2026-03-31T08:12:11.3511812Z   cache-dependency-path: package-lock.json
+2026-03-31T08:12:11.3513049Z   always-auth: false
+2026-03-31T08:12:11.3513964Z   check-latest: false
+2026-03-31T08:12:11.3515213Z   token: ***
+2026-03-31T08:12:11.3516033Z ##[endgroup]
+2026-03-31T08:12:11.5321303Z Found in cache @ /opt/hostedtoolcache/node/24.14.0/x64
+2026-03-31T08:12:11.5328475Z ##[group]Environment details
+2026-03-31T08:12:14.9034761Z node: v24.14.0
+2026-03-31T08:12:14.9035286Z npm: 11.9.0
+2026-03-31T08:12:14.9035519Z yarn: 1.22.22
+2026-03-31T08:12:14.9036356Z ##[endgroup]
+2026-03-31T08:12:14.9062084Z [command]/opt/hostedtoolcache/node/24.14.0/x64/bin/npm config get cache
+2026-03-31T08:12:15.1207183Z /home/runner/.npm
+2026-03-31T08:12:15.2761741Z Cache hit for: node-cache-Linux-x64-npm-a4608dccb002348567ca67ca7fbaf89f2377543f3855fd295b180ae8cd05f22a
+2026-03-31T08:12:16.4463466Z Received 62914560 of 469488352 (13.4%), 60.0 MBs/sec
+2026-03-31T08:12:17.4442171Z Received 243269632 of 469488352 (51.8%), 115.9 MBs/sec
+2026-03-31T08:12:18.4449787Z Received 381681664 of 469488352 (81.3%), 121.3 MBs/sec
+2026-03-31T08:12:19.2565859Z Received 469488352 of 469488352 (100.0%), 117.4 MBs/sec
+2026-03-31T08:12:19.2573098Z Cache Size: ~448 MB (469488352 B)
+2026-03-31T08:12:19.2705841Z [command]/usr/bin/tar -xf /home/runner/work/_temp/1f237839-d261-4c2b-a79c-3fed6d12f91d/cache.tzst -P -C /home/runner/work/bosun/bosun --use-compress-program unzstd
+2026-03-31T08:12:20.4083715Z Cache restored successfully
+2026-03-31T08:12:20.4315921Z Cache restored from key: node-cache-Linux-x64-npm-a4608dccb002348567ca67ca7fbaf89f2377543f3855fd295b180ae8cd05f22a
+2026-03-31T08:12:20.4544981Z ##[group]Run npm ci
+2026-03-31T08:12:20.4545419Z [36;1mnpm ci[0m
+2026-03-31T08:12:20.4593325Z shell: /usr/bin/bash -e {0}
+2026-03-31T08:12:20.4593751Z ##[endgroup]
+2026-03-31T08:12:26.3879045Z npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+2026-03-31T08:12:31.7905958Z 
+2026-03-31T08:12:31.7906607Z > bosun@0.42.5 preinstall
+2026-03-31T08:12:31.7911009Z > node -e "try{var r=require('child_process').execSync('npm ls -g codex-monitor --json --depth=0',{encoding:'utf8',stdio:['pipe','pipe','pipe']});var d=JSON.parse(r).dependencies;if(d&&d['codex-monitor']){console.log('\n  Removing old codex-monitor package...');require('child_process').execSync('npm uninstall -g codex-monitor',{stdio:'inherit',timeout:30000});console.log('  \u2705 Migrated to bosun. codex-monitor aliases still work.\n')}}catch(e){}"
+2026-03-31T08:12:31.7913981Z 
+2026-03-31T08:12:32.3120339Z 
+2026-03-31T08:12:32.3123383Z > bosun@0.42.5 postinstall
+2026-03-31T08:12:32.3125136Z > node postinstall.mjs
+2026-03-31T08:12:32.3125472Z 
+2026-03-31T08:12:32.3738332Z 
+2026-03-31T08:12:32.3739462Z > bosun@0.42.5 prepare
+2026-03-31T08:12:32.3740027Z > node tools/vendor-sync.mjs
+2026-03-31T08:12:32.3740342Z 
+2026-03-31T08:12:32.4290097Z [vendor-sync] Syncing vendor files to ui/vendor/ …
+2026-03-31T08:12:32.4329604Z [vendor-sync] ✓ node_modules → preact.js
+2026-03-31T08:12:32.4341038Z [vendor-sync] ✓ node_modules → preact-hooks.js
+2026-03-31T08:12:32.4347003Z [vendor-sync] ✓ node_modules → preact-compat.js
+2026-03-31T08:12:32.4353199Z [vendor-sync] ✓ node_modules → htm.js
+2026-03-31T08:12:32.4359694Z [vendor-sync] ✓ node_modules → preact-signals-core.js
+2026-03-31T08:12:32.4367506Z [vendor-sync] ✓ node_modules → preact-signals.js
+2026-03-31T08:12:32.4372753Z [vendor-sync] ✓ node_modules → es-module-shims.js
+2026-03-31T08:12:32.4375905Z [vendor-sync] Done — 7 vendor files ready in ui/vendor/
+2026-03-31T08:12:32.4554380Z 
+2026-03-31T08:12:32.4555245Z added 391 packages, and audited 392 packages in 12s
+2026-03-31T08:12:32.4555735Z 
+2026-03-31T08:12:32.4556160Z 108 packages are looking for funding
+2026-03-31T08:12:32.4557004Z   run `npm fund` for details
+2026-03-31T08:12:32.4591999Z 
+2026-03-31T08:12:32.4592383Z 2 vulnerabilities (1 moderate, 1 high)
+2026-03-31T08:12:32.4592735Z 
+2026-03-31T08:12:32.4592877Z To address all issues, run:
+2026-03-31T08:12:32.4593164Z   npm audit fix
+2026-03-31T08:12:32.4593300Z 
+2026-03-31T08:12:32.4593431Z Run `npm audit` for details.
+2026-03-31T08:12:32.5833747Z ##[group]Run node --input-type=module <<'EOF'
+2026-03-31T08:12:32.5834125Z [36;1mnode --input-type=module <<'EOF'[0m
+2026-03-31T08:12:32.5834539Z [36;1mimport { WORKFLOW_TEMPLATES } from "./workflow/workflow-templates.mjs";[0m
+2026-03-31T08:12:32.5835053Z [36;1mconsole.log(`✅ Loaded ${WORKFLOW_TEMPLATES.length} templates`);[0m
+2026-03-31T08:12:32.5835524Z [36;1mif (!WORKFLOW_TEMPLATES.length) process.exit(1);[0m
+2026-03-31T08:12:32.5835818Z [36;1mEOF[0m
+2026-03-31T08:12:32.5864148Z shell: /usr/bin/bash -e {0}
+2026-03-31T08:12:32.5864392Z ##[endgroup]
+2026-03-31T08:12:32.6468330Z ✅ Loaded 63 templates
+2026-03-31T08:12:32.6557364Z ##[group]Run node tests/sandbox/validate-template-nodes.mjs
+2026-03-31T08:12:32.6557799Z [36;1mnode tests/sandbox/validate-template-nodes.mjs[0m
+2026-03-31T08:12:32.6586251Z shell: /usr/bin/bash -e {0}
+2026-03-31T08:12:32.6586493Z ##[endgroup]
+2026-03-31T08:12:32.7847480Z 
+2026-03-31T08:12:32.7848388Z 📋 Template Integrity Report
+2026-03-31T08:12:32.7849841Z    Templates : 63
+2026-03-31T08:12:32.7850272Z    Nodes     : 675
+2026-03-31T08:12:32.7850928Z    Edges     : 699
+2026-03-31T08:12:32.7851149Z 
+2026-03-31T08:12:32.7851481Z ⚠️  Warnings (133):
+2026-03-31T08:12:32.7852661Z    [template-release-drafter] Node "draft-notes" references "{{prList}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7855344Z    [template-release-drafter] Node "draft-notes" references "{{commitLog}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7857279Z    [template-release-drafter] Node "draft-notes" references "{{lastTag}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7859112Z    [template-release-drafter] Node "save-draft" references "{{releaseNotes}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7861220Z    [template-sdk-conflict-resolver] Node "launch-agent" references "{{manualFiles}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7863060Z    [template-backend-agent] Node "write-tests" references "{{plan}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7864314Z    [template-backend-agent] Node "create-pr" references "{{plan}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7865348Z    [template-backend-agent] Node "auto-fix" references "{{plan}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7866222Z    [template-backend-agent] Node "create-pr-retry" references "{{plan}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7867238Z    [template-meeting-subworkflow-chain] Node "execute-child-workflow" references "{{_workflowId}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7868398Z    [template-meeting-subworkflow-chain] Node "execute-child-workflow" references "{{_workflowRunId}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7869491Z    [template-nightly-report] Node "generate-report" references "{{taskStats}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7870719Z    [template-nightly-report] Node "generate-report" references "{{prStats}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7871961Z    [template-nightly-report] Node "generate-report" references "{{agentStats}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7873343Z    [template-nightly-report] Node "send-report" references "{{reportOutput}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7874364Z    [template-sprint-retrospective] Node "generate-retro" references "{{taskMetrics}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7875417Z    [template-sprint-retrospective] Node "generate-retro" references "{{prMetrics}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7876693Z    [template-sprint-retrospective] Node "generate-retro" references "{{errorAnalysis}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7877780Z    [template-sprint-retrospective] Node "generate-retro" references "{{agentStats}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7878837Z    [template-sprint-retrospective] Node "send-report" references "{{retroOutput}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7879880Z    [template-error-recovery] Node "analyze-error" references "{{lastError}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7881461Z    [template-error-recovery] Node "retry-task" references "{{taskExecutorRetryPrompt}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7882613Z    [template-error-recovery] Node "retry-task" references "{{lastError}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7883580Z    [template-error-recovery] Node "escalate" references "{{lastError}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7884592Z    [template-anomaly-watchdog] Node "log-intervention" references "{{anomalyType}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7885641Z    [template-anomaly-watchdog] Node "alert-telegram" references "{{anomalyType}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7886693Z    [template-task-finalization-guard] Node "mark-inreview" references "{{prUrl}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7887826Z    [template-task-status-transition-manager] Node "unknown-status" references "{{targetStatus}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7888935Z    [template-incident-response] Node "classify-incident" references "{{evidence}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7890031Z    [template-incident-response] Node "create-incident-task" references "{{incidentCategory}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7891359Z    [template-incident-response] Node "create-incident-task" references "{{evidence}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7892462Z    [template-incident-response] Node "create-incident-task" references "{{classification}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7893578Z    [template-incident-response] Node "assign-agent" references "{{classification}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7894630Z    [template-incident-response] Node "assign-agent" references "{{evidence}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7895728Z    [template-incident-response] Node "alert-critical" references "{{incidentCategory}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7896726Z    [template-incident-response] Node "alert-critical" references "{{rootCause}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7898024Z    [template-incident-response] Node "alert-standard" references "{{incidentCategory}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7899968Z    [template-task-archiver] Node "archive-to-file" references "{{taskJson}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7901531Z    [template-task-archiver] Node "cleanup-sessions" references "{{attemptId}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7902458Z    [template-sync-engine] Node "pull-external" references "{{projectId}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7903356Z    [template-sync-engine] Node "push-internal" references "{{projectId}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7904278Z    [template-sync-engine] Node "alert-failures" references "{{lastSyncErrors}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7905181Z    [template-sync-engine] Node "log-success" references "{{pullCount}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7906563Z    [template-sync-engine] Node "log-success" references "{{pushCount}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7908200Z    [template-sync-engine] Node "log-success" references "{{conflictCount}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7910064Z    [template-sync-engine] Node "log-partial" references "{{lastSyncErrors}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7911997Z    [template-dependency-audit] Node "create-fix-pr" references "{{_runId}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7913697Z    [template-secret-scanner] Node "classify-secret" references "{{scanOutput}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7915600Z    [template-task-fullstack] Node "plan-architecture" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7917368Z    [template-task-fullstack] Node "plan-architecture" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7919335Z    [template-task-fullstack] Node "plan-architecture" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7921261Z    [template-task-fullstack] Node "implement-backend" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7923145Z    [template-task-fullstack] Node "implement-backend" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7924804Z    [template-task-fullstack] Node "implement-backend" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7926497Z    [template-task-fullstack] Node "implement-frontend" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7928370Z    [template-task-fullstack] Node "implement-frontend" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7930203Z    [template-task-fullstack] Node "implement-frontend" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7932220Z    [template-task-fullstack] Node "integration-test" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7933671Z    [template-task-fullstack] Node "integration-test" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7934660Z    [template-task-fullstack] Node "integration-test" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7935560Z    [template-task-backend] Node "plan" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7937307Z    [template-task-backend] Node "plan" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7938784Z    [template-task-backend] Node "plan" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7939858Z    [template-task-backend] Node "implement-tdd" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7941081Z    [template-task-backend] Node "implement-tdd" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7942058Z    [template-task-backend] Node "implement-tdd" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7942994Z    [template-task-backend] Node "verify" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7943877Z    [template-task-backend] Node "verify" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7944765Z    [template-task-backend] Node "verify" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7945677Z    [template-task-frontend] Node "analyse-design" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7946750Z    [template-task-frontend] Node "analyse-design" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7947716Z    [template-task-frontend] Node "analyse-design" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7948647Z    [template-task-frontend] Node "implement-ui" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7949560Z    [template-task-frontend] Node "implement-ui" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7950702Z    [template-task-frontend] Node "implement-ui" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7951860Z    [template-task-frontend] Node "verify-visual" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7952950Z    [template-task-frontend] Node "verify-visual" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7953907Z    [template-task-frontend] Node "verify-visual" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7954804Z    [template-task-debug] Node "reproduce" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7955690Z    [template-task-debug] Node "reproduce" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7956563Z    [template-task-debug] Node "reproduce" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7957437Z    [template-task-debug] Node "fix-and-test" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7958591Z    [template-task-debug] Node "fix-and-test" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7959493Z    [template-task-debug] Node "fix-and-test" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7960362Z    [template-task-debug] Node "verify" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7961498Z    [template-task-debug] Node "verify" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7962348Z    [template-task-debug] Node "verify" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7963233Z    [template-task-cicd] Node "plan-pipeline" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7964332Z    [template-task-cicd] Node "plan-pipeline" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7965232Z    [template-task-cicd] Node "plan-pipeline" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7966152Z    [template-task-cicd] Node "implement-pipeline" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7967092Z    [template-task-cicd] Node "implement-pipeline" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7968030Z    [template-task-cicd] Node "implement-pipeline" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7968951Z    [template-task-cicd] Node "verify-pipeline" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7969859Z    [template-task-cicd] Node "verify-pipeline" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7971021Z    [template-task-cicd] Node "verify-pipeline" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7972112Z    [template-task-design] Node "analyse-requirements" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7973113Z    [template-task-design] Node "analyse-requirements" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7974088Z    [template-task-design] Node "analyse-requirements" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7975034Z    [template-task-design] Node "implement-design" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7975972Z    [template-task-design] Node "implement-design" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7976919Z    [template-task-design] Node "implement-design" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7977849Z    [template-task-design] Node "verify-design" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7978754Z    [template-task-design] Node "verify-design" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7979664Z    [template-task-design] Node "verify-design" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7980883Z    [template-task-lifecycle] Node "acquire-worktree" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7981969Z    [template-task-lifecycle] Node "resolve-executor" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7982925Z    [template-task-lifecycle] Node "resolve-executor" references "{{workspace}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7983902Z    [template-task-lifecycle] Node "read-workflow-contract" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7984922Z    [template-task-lifecycle] Node "workflow-contract-validation" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7985892Z    [template-task-lifecycle] Node "build-prompt" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7986785Z    [template-task-lifecycle] Node "build-prompt" references "{{repoSlug}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7987689Z    [template-task-lifecycle] Node "build-prompt" references "{{workspace}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7988741Z    [template-task-lifecycle] Node "build-prompt" references "{{repository}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7989662Z    [template-task-lifecycle] Node "build-prompt" references "{{repositories}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7990858Z    [template-task-lifecycle] Node "run-agent-plan" references "{{_taskPrompt}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7991833Z    [template-task-lifecycle] Node "run-agent-plan" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7992778Z    [template-task-lifecycle] Node "run-agent-plan" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7993730Z    [template-task-lifecycle] Node "run-agent-plan" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7994687Z    [template-task-lifecycle] Node "run-agent-tests" references "{{_taskPrompt}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7995622Z    [template-task-lifecycle] Node "run-agent-tests" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7996746Z    [template-task-lifecycle] Node "run-agent-tests" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7997710Z    [template-task-lifecycle] Node "run-agent-tests" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7998675Z    [template-task-lifecycle] Node "run-agent-implement" references "{{_taskPrompt}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.7999647Z    [template-task-lifecycle] Node "run-agent-implement" references "{{resolvedSdk}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8000832Z    [template-task-lifecycle] Node "run-agent-implement" references "{{resolvedModel}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8001842Z    [template-task-lifecycle] Node "run-agent-implement" references "{{agentProfile}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8002803Z    [template-task-lifecycle] Node "release-worktree" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8003729Z    [template-task-lifecycle] Node "recover-worktree" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8004641Z    [template-task-lifecycle] Node "retry-acquire-wt" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8005555Z    [template-task-lifecycle] Node "sweep-task-wts" references "{{repoRoot}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8006482Z    [template-research-agent] Node "generator" references "{{_previousFeedback}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8007419Z    [template-mcp-iterative-research] Node "research" references "{{topic}}" which is not in template.variables or well-known inputs
+2026-03-31T08:12:32.8007893Z 
+2026-03-31T08:12:32.8008317Z ✅ All integrity checks passed — 63 templates are well-formed.
+2026-03-31T08:12:32.8034640Z ##[group]Run node tools/prepublish-check.mjs
+2026-03-31T08:12:32.8034993Z [36;1mnode tools/prepublish-check.mjs[0m
+2026-03-31T08:12:32.8062261Z shell: /usr/bin/bash -e {0}
+2026-03-31T08:12:32.8062505Z ##[endgroup]
+2026-03-31T08:12:33.2224505Z :close: Published local imports missing from package.json files array:
+2026-03-31T08:12:33.2226615Z    workflow/mcp-discovery-proxy.mjs -> ../infra/windows-hidden-child-processes.mjs (infra/windows-hidden-child-processes.mjs)
+2026-03-31T08:12:33.2228312Z    workflow/mcp-registry.mjs -> ../infra/windows-hidden-child-processes.mjs (infra/windows-hidden-child-processes.mjs)
+2026-03-31T08:12:33.2229376Z 
+2026-03-31T08:12:33.2229722Z Add the resolved targets to the 'files' array in package.json.
+2026-03-31T08:12:33.2303212Z ##[error]Process completed with exit code 1.
+2026-03-31T08:12:33.2428187Z Post job cleanup.
+2026-03-31T08:12:33.3398613Z [command]/usr/bin/git version
+2026-03-31T08:12:33.3435700Z git version 2.53.0
+2026-03-31T08:12:33.3488520Z Temporarily overriding HOME='/home/runner/work/_temp/397ed9d9-2487-4844-8a86-8fa8bb3f07d9' before making global git config changes
+2026-03-31T08:12:33.3490110Z Adding repository directory to the temporary git global config as a safe directory
+2026-03-31T08:12:33.3495149Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/bosun/bosun
+2026-03-31T08:12:33.3531427Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-03-31T08:12:33.3564667Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-03-31T08:12:33.3795280Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-03-31T08:12:33.3817424Z http.https://github.com/.extraheader
+2026-03-31T08:12:33.3830243Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-03-31T08:12:33.3861748Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-03-31T08:12:33.4081848Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-03-31T08:12:33.4113545Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-03-31T08:12:33.4485684Z Cleaning up orphan processes
+2026-03-31T08:12:33.4896334Z ##[warning]Node.js 20 actions are deprecated. The following actions are running on Node.js 20 and may not work as expected: actions/checkout@v4, actions/setup-node@v4. Actions will be forced to run with Node.js 24 by default starting June 2nd, 2026. Node.js 20 will be removed from the runner on September 16th, 2026. Please check if updated versions of these actions are available that support Node.js 24. To opt into Node.js 24 now, set the FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true environment variable on the runner or in your workflow file. Once Node.js 24 becomes the default, you can temporarily opt out by setting ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
