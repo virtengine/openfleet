@@ -21,10 +21,11 @@ import {
 } from "./constants.js";
 import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "./HelpScreen.js";
 import { formatVisibleLogLine } from "./logs-screen-helpers.js";
-import SettingsScreen from "./SettingsScreen.js";
 import { useWebSocket } from "./useWebSocket.js";
-import { useTasks } from "./useTasks.js";
 import { useWorkflows } from "./useWorkflows.js";
+import WorkflowsScreen from "./WorkflowsScreen.js";
+import { useTasks } from "./useTasks.js";
+import SettingsScreen from "./SettingsScreen.js";
 import TelemetryScreen from "./TelemetryScreen.js";
 
 const html = htm.bind(React.createElement);
@@ -237,13 +238,6 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     title: task.title,
     updated: formatWhen(task.updatedAt || task.createdAt),
   })), [combinedTasks]);
-  const workflowRows = useMemo(() => (workflowState.workflows || []).slice(0, 12).map((workflow) => ({
-    id: workflow.id || workflow.name || workflow.type || "workflow",
-    workflow: workflow.name || workflow.type || "workflow",
-    status: workflow.enabled === false ? "disabled" : "enabled",
-    updated: formatWhen(workflow.updatedAt || workflow.createdAt),
-  })), [workflowState.workflows]);
-
   let body;
   if (tooSmall) {
     body = html`<${Text} color=${ANSI_COLORS.warning}>Terminal too small. Need at least ${MIN_TERMINAL_SIZE.columns}x${MIN_TERMINAL_SIZE.rows}.<//>`;
@@ -258,9 +252,16 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
         : html`<${Text} color=${ANSI_COLORS.muted}>No log entries yet.<//>`}
     <//>`;
   } else if (activeTab === "workflows") {
-    body = html`<${ScreenFrame} title="Workflows" subtitle=${workflowState.loading ? "Loading configured workflows…" : `Loaded ${workflowState.workflows.length} workflow(s).`}>
-      ${workflowState.error ? html`<${Text} color=${ANSI_COLORS.danger}>${workflowState.error}<//>` : renderTable(workflowRows)}
-    <//>`;
+    body = workflowState.error
+      ? html`
+          <${ScreenFrame}
+            title="Workflows"
+            subtitle="Workflow screen failed to load."
+          >
+            <${Text} color=${ANSI_COLORS.danger}>${workflowState.error}<//>
+          <//>
+        `
+      : html`<${WorkflowsScreen} workflowState=${workflowState} wsState=${wsState} />`;
   } else if (activeTab === "telemetry") {
     body = html`<${ScreenFrame} title="Telemetry" subtitle="Live throughput, provider usage, rate limits, and cost estimates.">
       <${TelemetryScreen} wsState=${wsState} config=${config} terminalSize=${terminalSize} />

@@ -607,17 +607,218 @@ async function main() {
       };
     }
 
-      throw new Error(`Unknown tool: ${name}`);
+    throw new Error(`Unknown tool: ${name}`);
   });
 
+  return server;
+}
+
+function parseSharedHostArgs() {
+  const argv = process.argv.slice(2);
+  const flagIndex = argv.indexOf("--shared-host");
+  if (flagIndex === -1) {
+    return null;
+  }
+  return {
+    configPath: normalizeString(argv[flagIndex + 1]),
+    statePath: normalizeString(argv[flagIndex + 2]),
+  };
+}
+
+function writeSharedHostState(statePath, payload) {
+  if (!statePath) return;
+  writeFileSync(statePath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  return raw ? JSON.parse(raw) : {};
+}
+
+async function runSharedHost() {
+  const args = parseSharedHostArgs();
+  if (!args?.configPath || !args?.statePath) {
+    throw new Error(`${TAG} shared host requires config and state paths`);
+  }
+
+  const previousStatePath = process.env.BOSUN_DISCOVERY_HOST_STATE_PATH;
+  process.env.BOSUN_DISCOVERY_PROXY_CONFIG_PATH = args.configPath;
+  process.env.BOSUN_DISCOVERY_HOST_STATE_PATH = args.statePath;
+
+  const config = parseProxyConfig();
+  const runtime = createCatalogRuntime(config);
+  const sessions = new Map();
+  const host = normalizeString(process.env.BOSUN_DISCOVERY_HOST || "127.0.0.1") || "127.0.0.1";
+
+  const httpServer = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || "/", `http://${host}`);
+      if (url.pathname === "/health") {
+        const body = JSON.stringify({
+          ok: true,
+          pid: process.pid,
+          sessionCount: sessions.size,
+        });
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+          "cache-control": "no-store",
+        });
+        res.end(body);
+        return;
+      }
+
+      if (url.pathname !== "/mcp") {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+
+      const sessionId = normalizeString(req.headers["mcp-session-id"]);
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        let entry = sessionId ? sessions.get(sessionId) : null;
+        if (!entry) {
+          if (sessionId || !isInitializeRequest?.(body)) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({
+              jsonrpc: "2.0",
+              error: {
+                code: -32000,
+                message: "Bad Request: No valid session ID provided",
+              },
+              id: body?.id ?? null,
+            }));
+            return;
+          }
+
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (createdSessionId) => {
+              sessions.set(createdSessionId, { transport, proxyServer });
+            },
+          });
+          const proxyServer = createDiscoveryProxyServer(runtime, config);
+          transport.onclose = () => {
+            const currentSessionId = transport.sessionId;
+            if (currentSessionId) {
+              sessions.delete(currentSessionId);
+            }
+          };
+          await proxyServer.connect(transport);
+          await transport.handleRequest(req, res, body);
+          return;
+        }
+
+        await entry.transport.handleRequest(req, res, body);
+        return;
+      }
+
+      if ((req.method === "GET" || req.method === "DELETE") && sessionId) {
+        const entry = sessions.get(sessionId);
+        if (!entry) {
+          res.writeHead(400);
+          res.end("Invalid or missing session ID");
+          return;
+        }
+        await entry.transport.handleRequest(req, res);
+        return;
+      }
+
+      res.writeHead(405);
+      res.end("Method not allowed");
+    } catch (error) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Internal server error" }));
+    }
+  });
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    httpServer.once("error", rejectPromise);
+    httpServer.listen(0, host, resolvePromise);
+  });
+
+  const address = httpServer.address();
+  if (!address || typeof address !== "object" || !address.port) {
+    throw new Error(`${TAG} shared host failed to bind`);
+  }
+  const state = {
+    ok: true,
+    pid: process.pid,
+    host,
+    port: address.port,
+    url: `http://${host}:${address.port}/mcp`,
+    configPath: args.configPath,
+    statePath: args.statePath,
+    startedAt: new Date().toISOString(),
+  };
+  writeSharedHostState(args.statePath, state);
+
+  const shutdown = async () => {
+    try {
+      httpServer.close();
+    } catch {
+      /* best effort */
+    }
+    const entries = Array.from(sessions.values());
+    sessions.clear();
+    await Promise.all(entries.map(async ({ transport }) => {
+      try {
+        await transport.close();
+      } catch {
+        /* best effort */
+      }
+    }));
+    await runtime.close().catch(() => {});
+    if (existsSync(args.statePath)) {
+      try {
+        unlinkSync(args.statePath);
+      } catch {
+        /* best effort */
+      }
+    }
+    if (previousStatePath === undefined) {
+      delete process.env.BOSUN_DISCOVERY_HOST_STATE_PATH;
+    } else {
+      process.env.BOSUN_DISCOVERY_HOST_STATE_PATH = previousStatePath;
+    }
+  };
+
+  process.on("SIGINT", () => {
+    shutdown().finally(() => process.exit(0));
+  });
+  process.on("SIGTERM", () => {
+    shutdown().finally(() => process.exit(0));
+  });
+}
+
+async function main() {
+  const config = parseProxyConfig();
+  const runtime = createCatalogRuntime(config);
+  const server = createDiscoveryProxyServer(runtime, config);
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  const shutdown = async () => {
+    await runtime.close().catch(() => {});
+  };
+  process.on("SIGINT", () => {
+    shutdown().finally(() => process.exit(0));
+  });
+  process.on("SIGTERM", () => {
+    shutdown().finally(() => process.exit(0));
+  });
 }
 
 const executedAsScript = process.argv[1]
   && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (executedAsScript) {
-  main().catch((error) => {
+  const runner = process.argv.includes("--shared-host") ? runSharedHost : main;
+  runner().catch((error) => {
     console.error(`${TAG} ${error?.stack || error?.message || error}`);
     process.exit(1);
   });
@@ -625,5 +826,8 @@ if (executedAsScript) {
 
 export {
   createCatalogRuntime,
+  createDefaultClientFactory,
+  createDiscoveryProxyServer,
   main,
+  runSharedHost,
 };

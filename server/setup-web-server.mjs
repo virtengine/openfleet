@@ -2251,8 +2251,8 @@ async function handleTelegramChatIdLookup(body) {
   try {
     const { chats, message } = await discoverTelegramChats(token);
     return { ok: true, status: 200, chats, message };
-  } catch (err) {
-    return { ok: false, status: 500, error: err.message || String(err) };
+  } catch {
+    return { ok: false, status: 500, error: "Failed to discover Telegram chats" };
   }
 }
 
