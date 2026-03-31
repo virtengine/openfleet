@@ -5411,14 +5411,22 @@ async function safeRecoverTask(taskId, taskTitle, reason) {
       return false;
     }
 
-    const success = await updateTaskStatus(taskId, "todo");
+    // If the task has a linked PR, recover to "inreview" instead of "todo"
+    const taskData = getInternalTask(taskId);
+    const hasPr = Boolean(
+      taskData?.prNumber || taskData?.pr_number ||
+      taskData?.prUrl || taskData?.pr_url,
+    );
+    const targetStatus = hasPr ? "inreview" : "todo";
+
+    const success = await updateTaskStatus(taskId, targetStatus);
     if (success) {
       console.log(
-        `[monitor] :repeat: Recovered "${taskTitle}" from ${localStatus || "inprogress"} → todo (${reason}) [${activeBackend} backend]`,
+        `[monitor] :repeat: Recovered "${taskTitle}" from ${localStatus || "inprogress"} → ${targetStatus} (${reason}) [${activeBackend} backend]`,
       );
     } else {
       console.warn(
-        `[monitor] safeRecover: failed to move "${taskTitle}" to todo (${reason}) [${activeBackend} backend]`,
+        `[monitor] safeRecover: failed to move "${taskTitle}" to ${targetStatus} (${reason}) [${activeBackend} backend]`,
       );
     }
     return success;
@@ -6105,6 +6113,7 @@ async function checkMergedPRsAndUpdateTasks() {
       ...(getInternalTasksByStatus("todo") || []),
       ...(getInternalTasksByStatus("inprogress") || []),
       ...(getInternalTasksByStatus("inreview") || []),
+      ...(getInternalTasksByStatus("blocked") || []),
     ].filter((task) => {
       const status = String(task?.status || "").trim().toLowerCase();
       if (!status || status === "done") return false;
@@ -6130,7 +6139,7 @@ async function checkMergedPRsAndUpdateTasks() {
       if (!taskId) continue;
       const taskStatus = String(task?.status || "").trim().toLowerCase();
       const allowsMergedRecovery =
-        taskStatus === "todo" || taskStatus === "inprogress";
+        taskStatus === "todo" || taskStatus === "inprogress" || taskStatus === "blocked";
       const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
       const nowMs = Date.now();
       const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");

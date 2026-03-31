@@ -3043,7 +3043,13 @@ export function recoverAutoBlockedTasks(options = {}) {
     if (!Number.isFinite(retryAtMs) && !hasPlaceholder) continue;
 
     const previousStatus = normalizeTaskStatus(task.status);
-    task.status = "todo";
+    // If the task has a linked PR, recover to "inreview" instead of "todo"
+    const hasPr = Boolean(
+      task?.prNumber || task?.pr_number ||
+      task?.prUrl || task?.pr_url,
+    );
+    const recoveryStatus = hasPr ? "inreview" : "todo";
+    task.status = recoveryStatus;
     task.cooldownUntil = null;
     task.blockedReason = null;
     task.meta = normalizeRecoveredTaskMeta(task, recoveredAt);
@@ -3051,7 +3057,7 @@ export function recoverAutoBlockedTasks(options = {}) {
     task.lastActivityAt = recoveredAt;
     task.syncDirty = true;
     task.statusHistory.push({
-      status: "todo",
+      status: recoveryStatus,
       timestamp: recoveredAt,
       source: "auto-recovery",
     });
@@ -3062,10 +3068,10 @@ export function recoverAutoBlockedTasks(options = {}) {
       type: "status.transition",
       source: "auto-recovery",
       fromStatus: previousStatus,
-      toStatus: "todo",
-      status: "todo",
+      toStatus: recoveryStatus,
+      status: recoveryStatus,
       action: "recover_blocked_task",
-      message: "Recovered timed blocked task back to todo",
+      message: `Recovered timed blocked task back to ${recoveryStatus}`,
     });
     markTaskTouched(task, "auto-recovery");
     recoveredTaskIds.push(task.id);

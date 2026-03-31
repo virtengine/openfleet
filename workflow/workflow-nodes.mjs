@@ -3023,8 +3023,14 @@ async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }
     if (Number.isFinite(retryAtMs) && retryAtMs > nowMs) continue;
     if (!Number.isFinite(retryAtMs) && !hasPlaceholder) continue;
 
+    // If the task has a linked PR, recover to "inreview" instead of "todo"
+    const hasPr = Boolean(
+      task?.prNumber || task?.pr_number || task?.prUrl || task?.pr_url,
+    );
+    const recoveryStatus = hasPr ? "inreview" : "todo";
+
     await kanban.updateTask(task.id, {
-      status: "todo",
+      status: recoveryStatus,
       cooldownUntil: null,
       blockedReason: null,
       meta: {
@@ -3033,7 +3039,7 @@ async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }
           ...autoRecovery,
           active: false,
           recoveredAt: new Date(nowMs).toISOString(),
-          recoveredStatus: "todo",
+          recoveredStatus: recoveryStatus,
         },
       },
     });
