@@ -585,7 +585,7 @@ describeUiServer("ui-server mini app", () => {
     expect(setCookie).not.toContain("ve_session=");
     const location = response.headers.get("location") || "";
     expect(location).not.toContain("localBootstrap=1");
-  });
+  }, 15000);
 
   it("prefers persisted desktop API key over stale env key during desktop bootstrap", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -1209,7 +1209,7 @@ describeUiServer("ui-server mini app", () => {
     expect(response.status).toBe(400);
     expect(json.ok).toBe(false);
     expect(json.fieldErrors?.BOSUN_HOOK_TARGETS).toBeTruthy();
-  });
+  }, 15000);
 
   it("writes supported settings into config file", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -3185,6 +3185,10 @@ describeUiServer("ui-server mini app", () => {
         runId: "live-visibility-run",
         active: true,
         status: "running",
+        health: expect.objectContaining({
+          state: "working",
+          waitingForOperator: false,
+        }),
       });
 
       const activeDetailRes = await fetch(
@@ -3196,6 +3200,10 @@ describeUiServer("ui-server mini app", () => {
         runId: "live-visibility-run",
         active: true,
         status: "running",
+        health: expect.objectContaining({
+          state: "working",
+          waitingForOperator: false,
+        }),
       });
       expect(activeDetailJson.eventSummary?.counts?.stage).toBeGreaterThanOrEqual(1);
 
@@ -3205,12 +3213,14 @@ describeUiServer("ui-server mini app", () => {
       expect(activeStatusJson.data?.harness?.activeRunCount).toBeGreaterThanOrEqual(1);
       expect(activeStatusJson.data?.harness?.totals?.active).toBeGreaterThanOrEqual(1);
       expect(activeStatusJson.data?.harness?.lastRun?.runId).toBe("live-visibility-run");
+      expect(activeStatusJson.data?.harness?.lastRun?.health?.state).toBe("working");
 
       const activeTelemetryRes = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
       const activeTelemetryJson = await activeTelemetryRes.json();
       expect(activeTelemetryRes.status).toBe(200);
       expect(activeTelemetryJson.data?.harness?.activeRunCount).toBeGreaterThanOrEqual(1);
       expect(activeTelemetryJson.data?.harness?.lastRun?.runId).toBe("live-visibility-run");
+      expect(activeTelemetryJson.data?.harness?.lastRun?.health?.state).toBe("working");
 
       const liveRunRes = await liveRunPromise;
       const liveRunJson = await liveRunRes.json();
@@ -3227,6 +3237,7 @@ describeUiServer("ui-server mini app", () => {
     expect(runDetailRes.status).toBe(200);
     expect(runDetailJson.run?.runId).toBe(runJson.runId);
     expect(runDetailJson.run?.result?.history?.map((entry) => entry.stageId)).toEqual(["plan", "repair", "done"]);
+    expect(runDetailJson.run?.health?.state).toBe("completed");
     expect(runDetailJson.eventSummary).toMatchObject({
       counts: expect.objectContaining({
         total: expect.any(Number),
@@ -3456,6 +3467,291 @@ describeUiServer("ui-server mini app", () => {
           source: "harness",
           taskId,
         }),
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await removeDirWithRetries(tmpDir);
+    }
+  }, 30000);
+
+  it("nudges active harness runs and resolves approval interventions through the API", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-nudge-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        $schema: "./bosun.schema.json",
+        harness: {
+          enabled: true,
+          validation: { mode: "report" },
+        },
+      }, null, 2) + "\n",
+      "utf8",
+    );
+
+    let sessionState = null;
+    mod.injectUiDependencies({
+      createCompiledInternalHarnessSession: vi.fn((compiledProfile, options = {}) => {
+        sessionState = {
+          events: [],
+          runStarted: false,
+          released: false,
+          nudges: [],
+          resolveRun: null,
+        };
+        return {
+          agentId: compiledProfile.agentId || "test-harness",
+          compiledProfile,
+          compiledProfileJson: JSON.stringify(compiledProfile),
+          validationReport: { errors: [], warnings: [], stats: compiledProfile.metadata || {} },
+          isValid: true,
+          canSteer: () => sessionState.runStarted && !sessionState.released,
+          steer: (prompt, meta = {}) => {
+            sessionState.nudges.push({ prompt, meta });
+            const baseEvent = {
+              runId: options.runId,
+              taskKey: options.taskKey,
+              stageId: "plan",
+              interventionType: String(meta?.kind || meta?.type || "nudge").trim() || "nudge",
+              timestamp: new Date().toISOString(),
+              meta: { ...(meta && typeof meta === "object" ? meta : {}) },
+            };
+            options.onHarnessEvent?.({
+              ...baseEvent,
+              type: "harness:intervention-requested",
+              prompt,
+            });
+            options.onHarnessEvent?.({
+              ...baseEvent,
+              type: "harness:intervention-delivered",
+              prompt,
+              reason: "steered",
+            });
+            return {
+              ok: true,
+              delivered: true,
+              reason: "steered",
+              interventionType: baseEvent.interventionType,
+              stageId: "plan",
+              targetTaskKey: options.taskKey,
+            };
+          },
+          run: () => new Promise((resolve) => {
+            sessionState.resolveRun = resolve;
+            sessionState.runStarted = true;
+            options.onHarnessEvent?.({
+              type: "harness:session-start",
+              runId: options.runId,
+              taskKey: options.taskKey,
+              entryStageId: "plan",
+              timestamp: new Date().toISOString(),
+            });
+            options.onHarnessEvent?.({
+              type: "harness:stage-start",
+              runId: options.runId,
+              taskKey: options.taskKey,
+              stageId: "plan",
+              stageType: "prompt",
+              mode: "initial",
+              step: 1,
+              maxSteps: 8,
+              timestamp: new Date().toISOString(),
+            });
+          }),
+          controller: {
+            canSteer: () => sessionState.runStarted && !sessionState.released,
+          },
+        };
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+
+    try {
+      const port = server.address().port;
+      const runPromise = fetch(`http://127.0.0.1:${port}/api/harness/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runId: "nudge-harness-run",
+          source: JSON.stringify({
+            name: "Bosun Nudge Harness",
+            entryStageId: "plan",
+            stages: [
+              { id: "plan", type: "prompt", prompt: "Wait for operator intervention." },
+            ],
+          }),
+        }),
+      });
+
+      await vi.waitFor(() => {
+        expect(sessionState?.runStarted).toBe(true);
+      });
+
+      const activeDetail = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run`).then((r) => r.json());
+      expect(activeDetail.run?.controls).toMatchObject({
+        canStop: true,
+        canNudge: true,
+      });
+
+      const nudgeRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run/nudge`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          prompt: "Inspect the failing harness test before continuing.",
+          mode: "steer",
+          actor: "operator",
+          reason: "new_evidence",
+        }),
+      });
+      const nudgeJson = await nudgeRes.json();
+      expect(nudgeRes.status).toBe(200);
+      expect(nudgeJson).toMatchObject({
+        ok: true,
+        runId: "nudge-harness-run",
+        delivered: true,
+        mode: "steer",
+        actor: "operator",
+        stageId: "plan",
+      });
+
+      const approvalRequestRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run/approval`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: "reviewer",
+          reason: "Manual approval required before continuing.",
+          preview: "Wait for reviewer signoff before applying the final patch.",
+        }),
+      });
+      const approvalRequestJson = await approvalRequestRes.json();
+      expect(approvalRequestRes.status).toBe(200);
+      expect(approvalRequestJson).toMatchObject({
+        ok: true,
+        runId: "nudge-harness-run",
+        approvalPending: true,
+        active: true,
+        request: expect.objectContaining({
+          requestId: "harness-run:nudge-harness-run",
+          scopeType: "harness-run",
+          scopeId: "nudge-harness-run",
+          status: "pending",
+          stageId: "plan",
+          requestedBy: "reviewer",
+        }),
+      });
+
+      const approvalStatusJson = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run/approval`).then((r) => r.json());
+      expect(approvalStatusJson).toMatchObject({
+        ok: true,
+        approvalPending: true,
+        request: expect.objectContaining({
+          requestId: "harness-run:nudge-harness-run",
+          status: "pending",
+        }),
+      });
+
+      const waitingRunDetail = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run`).then((r) => r.json());
+      expect(waitingRunDetail.run?.controls).toMatchObject({
+        canApprove: true,
+      });
+      expect(waitingRunDetail.run?.health).toMatchObject({
+        state: "waiting",
+        waitingForOperator: true,
+      });
+
+      const waitingRuns = await fetch(`http://127.0.0.1:${port}/api/harness/runs?state=waiting&waitingForOperator=true&limit=10`).then((r) => r.json());
+      expect(waitingRuns.ok).toBe(true);
+      expect(waitingRuns.items.some((item) => item?.runId === "nudge-harness-run")).toBe(true);
+
+      const approvalListJson = await fetch(`http://127.0.0.1:${port}/api/harness/approvals?status=pending`).then((r) => r.json());
+      expect(approvalListJson.ok).toBe(true);
+      expect(approvalListJson.requests).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          requestId: "harness-run:nudge-harness-run",
+          scopeType: "harness-run",
+          status: "pending",
+        }),
+      ]));
+
+      const approvalRes = await fetch(`http://127.0.0.1:${port}/api/harness/approvals/${encodeURIComponent("harness-run:nudge-harness-run")}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          decision: "approved",
+          actor: "reviewer",
+          note: "Ship after the focused test passes.",
+        }),
+      });
+      const approvalJson = await approvalRes.json();
+      expect(approvalRes.status).toBe(200);
+      expect(approvalJson).toMatchObject({
+        ok: true,
+        active: true,
+        request: expect.objectContaining({
+          requestId: "harness-run:nudge-harness-run",
+          status: "approved",
+          resolution: expect.objectContaining({
+            actorId: "reviewer",
+            note: "Ship after the focused test passes.",
+          }),
+        }),
+        wake: expect.objectContaining({
+          ok: true,
+          delivered: true,
+          interventionType: "approval",
+          stageId: "plan",
+        }),
+      });
+
+      sessionState.released = true;
+      sessionState.resolveRun?.({
+        success: true,
+        status: "completed",
+        runId: "nudge-harness-run",
+        currentStageId: "plan",
+        completedStageId: "plan",
+        history: [],
+      });
+
+      const runRes = await runPromise;
+      const runJson = await runRes.json();
+      expect(runRes.status).toBe(200);
+      expect(runJson.ok).toBe(true);
+      expect(runJson.health?.state).toBe("completed");
+      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:intervention-delivered")).toBe(true);
+      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:approval-requested")).toBe(true);
+      expect(runJson.runRecord?.events?.some((event) => event.type === "harness:approval-resolved")).toBe(true);
+      expect(runJson.lastInterventionBy).toBe("reviewer");
+
+      const eventRes = await fetch(`http://127.0.0.1:${port}/api/harness/runs/nudge-harness-run/events?category=control`).then((r) => r.json());
+      expect(eventRes.ok).toBe(true);
+      expect(eventRes.events.some((event) => event.type === "harness:approval-requested")).toBe(true);
+      expect(eventRes.events.some((event) => event.type === "harness:approval-resolved")).toBe(true);
+      expect(eventRes.events.some((event) => event.type === "harness:intervention-requested")).toBe(true);
+      expect(eventRes.events.some((event) => event.type === "harness:intervention-delivered")).toBe(true);
+
+      expect(sessionState.nudges).toHaveLength(2);
+      expect(sessionState.nudges[0]).toMatchObject({
+        prompt: "Inspect the failing harness test before continuing.",
+        meta: expect.objectContaining({
+          kind: "steer",
+          actor: "operator",
+          reason: "new_evidence",
+        }),
+      });
+      expect(sessionState.nudges[1].meta).toMatchObject({
+        kind: "approval",
+        actor: "reviewer",
+        reason: "approved",
+        decision: "approved",
+        note: "Ship after the focused test passes.",
       });
     } finally {
       await new Promise((resolve) => server.close(resolve));

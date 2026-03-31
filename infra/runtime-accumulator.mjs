@@ -37,9 +37,14 @@ const MAX_COMPLETED_SESSIONS = (() => {
 	// Hard cap to avoid unbounded memory use even if misconfigured.
 	return Math.min(parsed, DEFAULT_MAX_COMPLETED_SESSIONS);
 })();
+const RUNTIME_CACHE_DIR_GLOBAL_KEY = "__bosun_runtimeAccumulatorCacheDir";
 
 function resolveConfiguredCacheDir() {
-	return resolve(process.env.BOSUN_TEST_CACHE_DIR || DEFAULT_CACHE_DIR);
+	return resolve(
+		process.env.BOSUN_TEST_CACHE_DIR
+		|| globalThis[RUNTIME_CACHE_DIR_GLOBAL_KEY]
+		|| DEFAULT_CACHE_DIR,
+	);
 }
 
 let _cacheDir = resolveConfiguredCacheDir();
@@ -86,6 +91,7 @@ function configureCachePaths(cacheDir = resolveConfiguredCacheDir()) {
 	_cacheDir = resolve(cacheDir || resolveConfiguredCacheDir());
 	_runtimeFile = resolve(_cacheDir, SNAPSHOT_FILE_NAME);
 	_sessionLogFile = resolve(_cacheDir, SESSION_LOG_FILE_NAME);
+	globalThis[RUNTIME_CACHE_DIR_GLOBAL_KEY] = _cacheDir;
 }
 
 function ensureCacheDir() {

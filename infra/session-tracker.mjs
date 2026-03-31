@@ -16,7 +16,7 @@ import { resolve, dirname, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
-import { upsertSessionRecordToStateLedger } from "../lib/state-ledger-sqlite.mjs";
+import { getSessionActivityFromStateLedger, upsertSessionRecordToStateLedger } from "../lib/state-ledger-sqlite.mjs";
 import { isTestRuntime } from "./test-runtime.mjs";
 import { addCompletedSession } from "./runtime-accumulator.mjs";
 
@@ -702,19 +702,99 @@ function buildStateLedgerSessionRecord(session) {
   };
 }
 
+function mergeSessionLedgerRecordWithExisting(record, existingActivity) {
+  if (!record || !existingActivity || typeof existingActivity !== "object") {
+    return record;
+  }
+  const currentDoc = record.document && typeof record.document === "object" ? record.document : {};
+  const existingDoc = existingActivity.document && typeof existingActivity.document === "object"
+    ? existingActivity.document
+    : {};
+  const currentMeta = currentDoc.metadata && typeof currentDoc.metadata === "object" ? currentDoc.metadata : {};
+  const existingMeta = existingDoc.metadata && typeof existingDoc.metadata === "object" ? existingDoc.metadata : {};
+  const pickString = (...values) => {
+    for (const value of values) {
+      const normalized = String(value || "").trim();
+      if (normalized) return normalized;
+    }
+    return null;
+  };
+  const pickArray = (currentValue, fallbackValue) => {
+    if (Array.isArray(currentValue) && currentValue.length > 0) {
+      return currentValue.map((entry) => ({ ...entry }));
+    }
+    if (Array.isArray(fallbackValue) && fallbackValue.length > 0) {
+      return fallbackValue.map((entry) => ({ ...entry }));
+    }
+    return Array.isArray(currentValue) ? [] : currentValue;
+  };
+  const currentStatus = String(record.status || currentDoc.lifecycleStatus || currentDoc.status || "").trim().toLowerCase();
+  const existingStatus = String(existingActivity.latestStatus || existingDoc.lifecycleStatus || existingDoc.status || "").trim().toLowerCase();
+  const currentIsLiveShell = currentStatus === "active" && (!currentDoc.messages || currentDoc.messages.length === 0);
+  const existingIsDurable = Boolean(existingDoc.taskId || existingDoc.title || existingDoc.taskTitle || existingStatus && existingStatus !== "active");
+  const preferExistingIdentity = existingIsDurable && currentIsLiveShell;
+  const document = {
+    ...existingDoc,
+    ...currentDoc,
+    taskId: preferExistingIdentity
+      ? pickString(existingDoc.taskId, currentDoc.taskId)
+      : pickString(currentDoc.taskId, existingDoc.taskId),
+    taskTitle: preferExistingIdentity
+      ? pickString(existingDoc.taskTitle, existingDoc.title, currentDoc.taskTitle, currentDoc.title)
+      : pickString(currentDoc.taskTitle, currentDoc.title, existingDoc.taskTitle, existingDoc.title),
+    title: preferExistingIdentity
+      ? pickString(existingDoc.title, existingDoc.taskTitle, currentDoc.title, currentDoc.taskTitle)
+      : pickString(currentDoc.title, currentDoc.taskTitle, existingDoc.title, existingDoc.taskTitle),
+    workspaceId: pickString(currentDoc.workspaceId, existingDoc.workspaceId, existingMeta.workspaceId),
+    workspaceDir: pickString(currentDoc.workspaceDir, existingDoc.workspaceDir, existingMeta.workspaceDir),
+    workspaceRoot: pickString(currentDoc.workspaceRoot, existingDoc.workspaceRoot, existingMeta.workspaceRoot),
+    preview: pickString(currentDoc.preview, currentDoc.lastMessage, existingDoc.preview, existingDoc.lastMessage),
+    lastMessage: pickString(currentDoc.lastMessage, currentDoc.preview, existingDoc.lastMessage, existingDoc.preview),
+    turns: pickArray(currentDoc.turns, existingDoc.turns),
+    messages: pickArray(currentDoc.messages, existingDoc.messages),
+    trajectory: currentDoc.trajectory || existingDoc.trajectory || null,
+    summary: currentDoc.summary || existingDoc.summary || null,
+    metadata: {
+      ...existingMeta,
+      ...currentMeta,
+      ...(pickString(currentMeta.workspaceId, existingMeta.workspaceId, existingDoc.workspaceId) ? { workspaceId: pickString(currentMeta.workspaceId, existingMeta.workspaceId, existingDoc.workspaceId) } : {}),
+      ...(pickString(currentMeta.workspaceDir, existingMeta.workspaceDir, existingDoc.workspaceDir) ? { workspaceDir: pickString(currentMeta.workspaceDir, existingMeta.workspaceDir, existingDoc.workspaceDir) } : {}),
+      ...(pickString(currentMeta.workspaceRoot, existingMeta.workspaceRoot, existingDoc.workspaceRoot) ? { workspaceRoot: pickString(currentMeta.workspaceRoot, existingMeta.workspaceRoot, existingDoc.workspaceRoot) } : {}),
+    },
+  };
+  return {
+    ...existingActivity,
+    ...record,
+    workspaceId: pickString(record.workspaceId, existingActivity.workspaceId, document.workspaceId, document.metadata?.workspaceId),
+    taskId: preferExistingIdentity
+      ? pickString(existingActivity.latestTaskId, document.taskId, record.taskId)
+      : pickString(record.taskId, existingActivity.latestTaskId, document.taskId),
+    taskTitle: preferExistingIdentity
+      ? pickString(existingActivity.latestTaskTitle, document.taskTitle, document.title, record.taskTitle)
+      : pickString(record.taskTitle, existingActivity.latestTaskTitle, document.taskTitle, document.title),
+    preview: pickString(record.preview, existingDoc.preview, document.preview),
+    status: preferExistingIdentity
+      ? pickString(existingActivity.latestStatus, existingDoc.lifecycleStatus, existingDoc.status, record.status)
+      : pickString(record.status, existingActivity.latestStatus, currentDoc.lifecycleStatus, currentDoc.status),
+    document,
+  };
+}
+
 function persistSessionRecordToStateLedger(session) {
   const record = buildStateLedgerSessionRecord(session);
   if (!record) return;
   const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
   const explicitRepoRoot = String(process.env.REPO_ROOT || "").trim();
+  const ledgerOptions = explicitRepoRoot
+    ? { repoRoot: resolve(explicitRepoRoot) }
+    : explicitLedgerPath && isTestRuntime()
+      ? { ledgerPath: explicitLedgerPath }
+      : { repoRoot: SESSION_TRACKER_REPO_ROOT };
   try {
+    const existing = getSessionActivityFromStateLedger(record.sessionId, ledgerOptions);
     upsertSessionRecordToStateLedger(
-      record,
-      explicitRepoRoot
-        ? { repoRoot: resolve(explicitRepoRoot) }
-        : explicitLedgerPath && isTestRuntime()
-          ? { ledgerPath: explicitLedgerPath }
-          : { repoRoot: SESSION_TRACKER_REPO_ROOT },
+      mergeSessionLedgerRecordWithExisting(record, existing),
+      ledgerOptions,
     );
   } catch {
     // Best-effort persistence — session tracking should continue even if the
