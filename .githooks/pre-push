@@ -325,18 +325,40 @@ run_vitest_batches() {
 
   local -a runner_args=(run --config vitest.config.mjs)
   local -a bounded_runner_args=("${runner_args[@]}" --maxWorkers 1)
-  local batch_size=18
-  if [ "${#tests[@]}" -le "$batch_size" ]; then
-    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${tests[@]}"
+  local -a isolated_tests=()
+  local -a regular_tests=()
+  local test_file
+  for test_file in "${tests[@]}"; do
+    case "$test_file" in
+      tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs|tests/*workflow*e2e*.test.mjs)
+        isolated_tests+=("$test_file")
+        ;;
+      *)
+        regular_tests+=("$test_file")
+        ;;
+    esac
+  done
+
+  local isolated
+  for isolated in "${isolated_tests[@]}"; do
+    echo "[hooks] isolated vitest file: ${isolated}"
+    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "$isolated" || return $?
+  done
+
+  [ "${#regular_tests[@]}" -eq 0 ] && return 0
+
+  local batch_size=12
+  if [ "${#regular_tests[@]}" -le "$batch_size" ]; then
+    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${regular_tests[@]}"
     return $?
   fi
 
   echo "[hooks] splitting vitest target set into batches to keep local memory bounded"
-  local total="${#tests[@]}"
+  local total="${#regular_tests[@]}"
   local offset=0
   local batch=1
   while [ "$offset" -lt "$total" ]; do
-    local -a slice=("${tests[@]:offset:batch_size}")
+    local -a slice=("${regular_tests[@]:offset:batch_size}")
     echo "[hooks] vitest batch ${batch}: ${#slice[@]} files"
     node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${slice[@]}" || return $?
     offset=$((offset + batch_size))
