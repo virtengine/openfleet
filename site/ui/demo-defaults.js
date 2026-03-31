@@ -2428,8 +2428,8 @@
         "session-tracked",
         "worktree-managed"
       ],
-      "nodeCount": 15,
-      "edgeCount": 14,
+      "nodeCount": 16,
+      "edgeCount": 16,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.manual",
@@ -2533,18 +2533,19 @@
           ]
         },
         {
-          "id": "setup-worktree",
+          "id": "validate-pr-state",
           "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
+          "label": "Validate PR Is Still Open",
           "config": {
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
             "env": {
               "PR_REPO": "{{prParams.repo}}",
               "PR_BRANCH": "{{prParams.branch}}",
@@ -2561,6 +2562,34 @@
           ]
         },
         {
+          "id": "setup-worktree",
+          "type": "action.run_command",
+          "label": "Clone & Checkout PR Branch",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+            ],
+            "parseJson": true,
+            "failOnError": true,
+            "timeoutMs": 600000,
+            "env": {
+              "PR_REPO": "{{validate-pr-state.output.repo || prParams.repo}}",
+              "PR_BRANCH": "{{validate-pr-state.output.branch || prParams.branch}}",
+              "PR_BASE": "{{validate-pr-state.output.base || prParams.base}}",
+              "PR_NUMBER": "{{validate-pr-state.output.number || prParams.number}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-worktree-path",
           "type": "action.set_variable",
           "label": "Set Agent Working Directory",
@@ -2569,7 +2598,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 1780,
+            "x": 2060,
             "y": 100
           },
           "outputs": [
@@ -2597,7 +2626,7 @@
             }
           },
           "position": {
-            "x": 2060,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -2614,7 +2643,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -2631,7 +2660,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2620,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -2655,7 +2684,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2900,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -2683,7 +2712,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -2707,7 +2736,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -2734,7 +2763,7 @@
             }
           },
           "position": {
-            "x": 3740,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -2758,7 +2787,7 @@
             }
           },
           "position": {
-            "x": 4020,
+            "x": 4300,
             "y": 100
           },
           "outputs": [
@@ -2792,10 +2821,24 @@
           "sourcePort": "default"
         },
         {
-          "id": "resolve-pr-params->setup-worktree",
+          "id": "resolve-pr-params->validate-pr-state",
           "source": "resolve-pr-params",
-          "target": "setup-worktree",
+          "target": "validate-pr-state",
           "sourcePort": "default"
+        },
+        {
+          "id": "validate-pr-state->setup-worktree",
+          "source": "validate-pr-state",
+          "target": "setup-worktree",
+          "sourcePort": "default",
+          "condition": "$output?.open === true"
+        },
+        {
+          "id": "validate-pr-state->release-claim",
+          "source": "validate-pr-state",
+          "target": "release-claim",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
@@ -3644,8 +3687,8 @@
         "session-tracked",
         "worktree-managed"
       ],
-      "nodeCount": 13,
-      "edgeCount": 12,
+      "nodeCount": 14,
+      "edgeCount": 14,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.manual",
@@ -3750,18 +3793,19 @@
           ]
         },
         {
-          "id": "setup-worktree",
+          "id": "validate-pr-state",
           "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
+          "label": "Validate PR Is Still Open",
           "config": {
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
             "env": {
               "PR_REPO": "{{prParams.repo}}",
               "PR_BRANCH": "{{prParams.branch}}",
@@ -3778,6 +3822,34 @@
           ]
         },
         {
+          "id": "setup-worktree",
+          "type": "action.run_command",
+          "label": "Clone & Checkout PR Branch",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+            ],
+            "parseJson": true,
+            "failOnError": true,
+            "timeoutMs": 600000,
+            "env": {
+              "PR_REPO": "{{validate-pr-state.output.repo || prParams.repo}}",
+              "PR_BRANCH": "{{validate-pr-state.output.branch || prParams.branch}}",
+              "PR_BASE": "{{validate-pr-state.output.base || prParams.base}}",
+              "PR_NUMBER": "{{validate-pr-state.output.number || prParams.number}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-worktree-path",
           "type": "action.set_variable",
           "label": "Set Agent Working Directory",
@@ -3786,7 +3858,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 1780,
+            "x": 2060,
             "y": 100
           },
           "outputs": [
@@ -3803,7 +3875,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2060,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -3820,7 +3892,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -3844,7 +3916,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2620,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -3872,7 +3944,7 @@
             }
           },
           "position": {
-            "x": 2900,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -3896,7 +3968,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -3920,7 +3992,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -3954,10 +4026,24 @@
           "sourcePort": "default"
         },
         {
-          "id": "resolve-pr-params->setup-worktree",
+          "id": "resolve-pr-params->validate-pr-state",
           "source": "resolve-pr-params",
-          "target": "setup-worktree",
+          "target": "validate-pr-state",
           "sourcePort": "default"
+        },
+        {
+          "id": "validate-pr-state->setup-worktree",
+          "source": "validate-pr-state",
+          "target": "setup-worktree",
+          "sourcePort": "default",
+          "condition": "$output?.open === true"
+        },
+        {
+          "id": "validate-pr-state->release-claim",
+          "source": "validate-pr-state",
+          "target": "release-claim",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
@@ -26762,7 +26848,7 @@
       "description": "Fixes one Bosun-attached PR using a dedicated long-running agent (up to 2 hours). Dispatched by the PR Watchdog loop for each unclaimed PR needing repair. Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease and cleans up. The agent NEVER manages git setup or push.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 15,
+      "nodeCount": 16,
       "trigger": "trigger.manual",
       "variables": {},
       "nodes": [
@@ -26848,18 +26934,19 @@
           ]
         },
         {
-          "id": "setup-worktree",
+          "id": "validate-pr-state",
           "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
+          "label": "Validate PR Is Still Open",
           "config": {
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
             "env": {
               "PR_REPO": "{{prParams.repo}}",
               "PR_BRANCH": "{{prParams.branch}}",
@@ -26876,6 +26963,34 @@
           ]
         },
         {
+          "id": "setup-worktree",
+          "type": "action.run_command",
+          "label": "Clone & Checkout PR Branch",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+            ],
+            "parseJson": true,
+            "failOnError": true,
+            "timeoutMs": 600000,
+            "env": {
+              "PR_REPO": "{{validate-pr-state.output.repo || prParams.repo}}",
+              "PR_BRANCH": "{{validate-pr-state.output.branch || prParams.branch}}",
+              "PR_BASE": "{{validate-pr-state.output.base || prParams.base}}",
+              "PR_NUMBER": "{{validate-pr-state.output.number || prParams.number}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-worktree-path",
           "type": "action.set_variable",
           "label": "Set Agent Working Directory",
@@ -26884,7 +26999,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 1780,
+            "x": 2060,
             "y": 100
           },
           "outputs": [
@@ -26912,7 +27027,7 @@
             }
           },
           "position": {
-            "x": 2060,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -26929,7 +27044,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -26946,7 +27061,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2620,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -26970,7 +27085,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2900,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -26998,7 +27113,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -27022,7 +27137,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -27049,7 +27164,7 @@
             }
           },
           "position": {
-            "x": 3740,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -27073,7 +27188,7 @@
             }
           },
           "position": {
-            "x": 4020,
+            "x": 4300,
             "y": 100
           },
           "outputs": [
@@ -27107,10 +27222,24 @@
           "sourcePort": "default"
         },
         {
-          "id": "resolve-pr-params->setup-worktree",
+          "id": "resolve-pr-params->validate-pr-state",
           "source": "resolve-pr-params",
-          "target": "setup-worktree",
+          "target": "validate-pr-state",
           "sourcePort": "default"
+        },
+        {
+          "id": "validate-pr-state->setup-worktree",
+          "source": "validate-pr-state",
+          "target": "setup-worktree",
+          "sourcePort": "default",
+          "condition": "$output?.open === true"
+        },
+        {
+          "id": "validate-pr-state->release-claim",
+          "source": "validate-pr-state",
+          "target": "release-claim",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
@@ -27924,7 +28053,7 @@
       "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 13,
+      "nodeCount": 14,
       "trigger": "trigger.manual",
       "variables": {},
       "nodes": [
@@ -28010,18 +28139,19 @@
           ]
         },
         {
-          "id": "setup-worktree",
+          "id": "validate-pr-state",
           "type": "action.run_command",
-          "label": "Clone & Checkout PR Branch",
+          "label": "Validate PR Is Still Open",
           "config": {
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
-            "failOnError": true,
-            "timeoutMs": 600000,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
             "env": {
               "PR_REPO": "{{prParams.repo}}",
               "PR_BRANCH": "{{prParams.branch}}",
@@ -28038,6 +28168,34 @@
           ]
         },
         {
+          "id": "setup-worktree",
+          "type": "action.run_command",
+          "label": "Clone & Checkout PR Branch",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+            ],
+            "parseJson": true,
+            "failOnError": true,
+            "timeoutMs": 600000,
+            "env": {
+              "PR_REPO": "{{validate-pr-state.output.repo || prParams.repo}}",
+              "PR_BRANCH": "{{validate-pr-state.output.branch || prParams.branch}}",
+              "PR_BASE": "{{validate-pr-state.output.base || prParams.base}}",
+              "PR_NUMBER": "{{validate-pr-state.output.number || prParams.number}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-worktree-path",
           "type": "action.set_variable",
           "label": "Set Agent Working Directory",
@@ -28046,7 +28204,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 1780,
+            "x": 2060,
             "y": 100
           },
           "outputs": [
@@ -28063,7 +28221,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2060,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -28080,7 +28238,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -28104,7 +28262,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2620,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -28132,7 +28290,7 @@
             }
           },
           "position": {
-            "x": 2900,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -28156,7 +28314,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -28180,7 +28338,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -28214,10 +28372,24 @@
           "sourcePort": "default"
         },
         {
-          "id": "resolve-pr-params->setup-worktree",
+          "id": "resolve-pr-params->validate-pr-state",
           "source": "resolve-pr-params",
-          "target": "setup-worktree",
+          "target": "validate-pr-state",
           "sourcePort": "default"
+        },
+        {
+          "id": "validate-pr-state->setup-worktree",
+          "source": "validate-pr-state",
+          "target": "setup-worktree",
+          "sourcePort": "default",
+          "condition": "$output?.open === true"
+        },
+        {
+          "id": "validate-pr-state->release-claim",
+          "source": "validate-pr-state",
+          "target": "release-claim",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
@@ -47834,7 +48006,7 @@
       "workflowId": "wf-pr-fix-single",
       "workflowName": "PR Fix Agent (Single PR)",
       "status": "completed",
-      "nodeCount": 15,
+      "nodeCount": 16,
       "duration": 74000,
       "errorCount": 0,
       "triggerSource": "manual",
