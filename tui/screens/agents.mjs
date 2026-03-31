@@ -270,6 +270,22 @@ function SessionDetail({
   `;
 }
 
+function HarnessDetail({ run, events, terminalColumns }) {
+  if (!run) return html`<${Text} dimColor>No harness run selected<//>`;
+  const runId = run.runId || run.id || "unknown";
+  const state = run.state || run.status || "unknown";
+  const evts = Array.isArray(events) ? events : [];
+  return html`
+    <${Box} flexDirection="column" borderStyle="single" paddingX=${1}>
+      <${Text} bold>Harness Run: ${runId}<//>
+      <${Text}>State: ${state}<//>
+      ${evts.slice(0, 10).map((evt, i) => html`
+        <${Text} key=${i} dimColor>${evt.type || "event"}: ${evt.message || JSON.stringify(evt).slice(0, terminalColumns - 20)}<//>
+      `)}
+    <//>
+  `;
+}
+
 export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null, onFooterHintsChange }) {
   const resolvedHost = wsBridge?.host || host;
   const resolvedPort = wsBridge?.port || port;
@@ -289,6 +305,11 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const [timelineOffset, setTimelineOffset] = React.useState(0);
   const [steerMode, setSteerMode] = React.useState(false);
   const [steerValue, setSteerValue] = React.useState("");
+  const [harnessNudgeMode, setHarnessNudgeMode] = React.useState(false);
+  const [harnessRuns, setHarnessRuns] = React.useState([]);
+  const [harnessDetailView, setHarnessDetailView] = React.useState(null);
+  const [harnessEvents, setHarnessEvents] = React.useState([]);
+  const [harnessSelectedIndex, setHarnessSelectedIndex] = React.useState(0);
 
   const terminalColumns = stdout?.columns || 120;
   const terminalRows = stdout?.rows || 40;
@@ -448,6 +469,57 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   }, [applyRetryQueue, applySessionSnapshot, detailView, wsBridge]);
 
   React.useEffect(() => () => clearDetailPoll(), [clearDetailPoll]);
+
+  const loadHarnessRuns = React.useCallback(async () => {
+    try {
+      const payload = await fetchJson(resolvedHost, resolvedPort, "/api/harness/runs?limit=8");
+      setHarnessRuns(Array.isArray(payload?.runs) ? payload.runs : Array.isArray(payload) ? payload : []);
+    } catch (_) { /* ignore */ }
+  }, [resolvedHost, resolvedPort]);
+
+  const loadHarnessRunDetail = React.useCallback(async (runId) => {
+    try {
+      const payload = await fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}`);
+      setHarnessDetailView(payload);
+      const evtsPayload = await fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/events?limit=40&direction=desc`);
+      setHarnessEvents(Array.isArray(evtsPayload?.events) ? evtsPayload.events : Array.isArray(evtsPayload) ? evtsPayload : []);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [resolvedHost, resolvedPort]);
+
+  const resolveHarnessApproval = React.useCallback(async (requestId, decision) => {
+    try {
+      await fetchJson(resolvedHost, resolvedPort, `/api/harness/approvals/${encodeURIComponent(requestId)}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      setStatusLine(`Approval ${decision} sent ✓`);
+      await loadHarnessRuns();
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [loadHarnessRuns, resolvedHost, resolvedPort]);
+
+  const nudgeHarnessRun = React.useCallback(async (runId) => {
+    try {
+      await fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/nudge`, {
+        method: "POST",
+      });
+      setStatusLine("Nudge sent ✓");
+      setHarnessNudgeMode(false);
+      await loadHarnessRuns();
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [loadHarnessRuns, resolvedHost, resolvedPort]);
+
+  React.useEffect(() => {
+    void loadHarnessRuns();
+    const id = setInterval(() => void loadHarnessRuns(), 5000);
+    return () => clearInterval(id);
+  }, [loadHarnessRuns]);
 
   const moveSelection = React.useCallback((delta) => {
     if (!entries.length) return;
@@ -646,6 +718,39 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       setShowBackoff((current) => !current);
       return;
     }
+    if (input === "h" || input === "H") {
+      if (harnessDetailView) {
+        setHarnessDetailView(null);
+        setHarnessEvents([]);
+      } else if (harnessRuns.length > 0) {
+        const run = harnessRuns[harnessSelectedIndex] || harnessRuns[0];
+        if (run?.runId || run?.id) void loadHarnessRunDetail(run.runId || run.id);
+      }
+      return;
+    }
+    if (input === "[") {
+      setHarnessSelectedIndex((i) => Math.max(0, i - 1));
+      return;
+    }
+    if (input === "]") {
+      setHarnessSelectedIndex((i) => Math.min(harnessRuns.length - 1, i + 1));
+      return;
+    }
+    if ((input === "a" || input === "A") && harnessDetailView) {
+      const requestId = harnessDetailView?.approvalRequestId || harnessDetailView?.approval?.requestId;
+      if (requestId) void resolveHarnessApproval(requestId, "approve");
+      return;
+    }
+    if ((input === "x" || input === "X") && harnessDetailView) {
+      const requestId = harnessDetailView?.approvalRequestId || harnessDetailView?.approval?.requestId;
+      if (requestId) void resolveHarnessApproval(requestId, "reject");
+      return;
+    }
+    if ((input === "n" || input === "N") && harnessDetailView) {
+      const runId = harnessDetailView?.runId || harnessDetailView?.id;
+      if (runId) void nudgeHarnessRun(runId);
+      return;
+    }
     if (key.escape) {
       closeModal();
     }
@@ -801,6 +906,20 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
                 `
               : null}
           `}
+
+      ${harnessRuns.length > 0 ? html`
+        <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+          <${Text} bold>Harness monitor (${harnessRuns.length} runs) [H detail · [ / ] select]<//>
+          ${harnessDetailView
+            ? html`<${HarnessDetail} run=${harnessDetailView} events=${harnessEvents} terminalColumns=${terminalColumns} />`
+            : harnessRuns.map((run, i) => html`
+                <${Text} key=${run.runId || run.id || i} inverse=${i === harnessSelectedIndex}>
+                  ${pad(String(run.runId || run.id || "?").slice(0, 8), 10)} ${run.state || run.status || "unknown"}
+                <//>
+              `)}
+        <//>
+      ` : null}
+
       ${statusLine
         ? html`
             <${Box} marginTop=${1}>

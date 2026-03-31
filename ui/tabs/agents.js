@@ -1632,7 +1632,7 @@ export function AgentsTab() {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task", workspace: "all" });
+      loadSessions({ type: "task", workspace: "current" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
@@ -3134,7 +3134,7 @@ export function FleetSessionsTab() {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task", workspace: "all" });
+      loadSessions({ type: "task", workspace: "current" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
