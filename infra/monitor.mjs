@@ -225,6 +225,7 @@ import {
 } from "../task/task-store.mjs";
 import { createAgentEndpoint } from "../agent/agent-endpoint.mjs";
 import { createAgentEventBus } from "../agent/agent-event-bus.mjs";
+import { onConfigReload } from "../ui/tui/config-events.js";
 import { createReviewAgent } from "../agent/review-agent.mjs";
 
 import { createErrorDetector } from "./error-detector.mjs";
@@ -13286,6 +13287,10 @@ async function reloadConfig(reason) {
   }
 }
 
+const stopTuiConfigReloadListener = onConfigReload((payload = {}) => {
+  runDetached("config-reload:tui", () => reloadConfig(payload.reason || "tui-settings"));
+});
+
 process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
@@ -13334,6 +13339,7 @@ process.on("SIGINT", async () => {
 
 // Windows: closing the terminal window doesn't send SIGINT/SIGTERM reliably.
 process.on("exit", () => {
+  try { stopTuiConfigReloadListener?.(); } catch { /* best effort */ }
   shuttingDown = true;
   stopWorkspaceSyncTimers();
   stopAgentAlertTailer();
