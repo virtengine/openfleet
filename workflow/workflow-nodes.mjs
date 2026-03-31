@@ -4372,8 +4372,8 @@ registerBuiltinNodeType("condition.expression", {
     if (!expr) throw new Error("Expression is required");
     const normalizedExpr = String(expr).trim();
     const blockedPatterns = [
-      /(?:^|[^\\w$.])(globalThis|global|window|document|process|require|module|exports)(?:[^\\w$]|$)/,
-      /(?:^|[^\\w$.])(Function|eval)(?:[^\\w$]|$)/,
+      /(?:^|[^\w$.])(globalThis|global|window|document|process|require|module|exports)(?:[^\w$]|$)/,
+      /(?:^|[^\w$.])(Function|eval)(?:[^\w$]|$)/,
     ];
     if (blockedPatterns.some((pattern) => pattern.test(normalizedExpr))) {
       throw new Error("Expression contains unsupported syntax");
@@ -15135,6 +15135,37 @@ function pickTaskString(...values) {
   }
   return "";
 }
+function collectTaskBranchBindingCandidates(task = {}) {
+  const candidates = {};
+  const fields = [
+    ["baseBranch", task?.baseBranch],
+    ["base_branch", task?.base_branch],
+    ["targetBranch", task?.targetBranch],
+    ["target_branch", task?.target_branch],
+    ["target", task?.target],
+    ["base", task?.base],
+    ["upstreamBranch", task?.upstreamBranch],
+    ["upstream_branch", task?.upstream_branch],
+    ["upstream", task?.upstream],
+    ["meta.baseBranch", task?.meta?.baseBranch],
+    ["meta.base_branch", task?.meta?.base_branch],
+    ["meta.targetBranch", task?.meta?.targetBranch],
+    ["meta.target_branch", task?.meta?.target_branch],
+    ["meta.target", task?.meta?.target],
+    ["meta.base", task?.meta?.base],
+    ["metadata.baseBranch", task?.metadata?.baseBranch],
+    ["metadata.base_branch", task?.metadata?.base_branch],
+    ["metadata.targetBranch", task?.metadata?.targetBranch],
+    ["metadata.target_branch", task?.metadata?.target_branch],
+    ["metadata.target", task?.metadata?.target],
+    ["metadata.base", task?.metadata?.base],
+  ];
+  for (const [key, value] of fields) {
+    const normalized = String(value || "").trim();
+    if (normalized) candidates[key] = normalized;
+  }
+  return candidates;
+}
 function deriveTaskBranch(task = {}) {
   const explicit = pickTaskString(
     task?.branch,
@@ -16836,6 +16867,15 @@ registerBuiltinNodeType("trigger.task_available", {
       if (baseBranch) ctx.data.baseBranch = baseBranch;
       const branch = deriveTaskBranch(primaryTask);
       if (branch) ctx.data.branch = branch;
+      const branchBinding = {
+        taskId: taskId || null,
+        resolvedBaseBranch: baseBranch || null,
+        resolvedBranch: branch || null,
+        candidates: collectTaskBranchBindingCandidates(primaryTask),
+        capturedAt: new Date().toISOString(),
+      };
+      ctx.data._taskBranchBinding = branchBinding;
+      ctx.log(node.id, "Task branch binding: " + JSON.stringify(branchBinding));
       ctx.data.taskMeta = primaryTask?.meta && typeof primaryTask.meta === "object"
         ? { ...primaryTask.meta }
         : {};

@@ -2330,6 +2330,16 @@ describeUiServer("ui-server mini app", () => {
       },
     });
     tracker.createSession({
+      id: "task-1774940903138-4lzrda",
+      type: "task",
+      status: "no_output",
+      runtimeState: "no_output",
+      metadata: {
+        title: "Synthetic Task Fixture",
+        workspaceDir: join(tmpdir(), "bosun-task-fixture"),
+      },
+    });
+    tracker.createSession({
       id: "manual-visible-session",
       type: "primary",
       metadata: {
@@ -2344,7 +2354,14 @@ describeUiServer("ui-server mini app", () => {
     expect(listJson.ok).toBe(true);
     expect(listJson.sessions.some((session) => session.id === "meeting-1")).toBe(false);
     expect(listJson.sessions.some((session) => session.id === "workspace-scope-test-1234")).toBe(false);
+    expect(listJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(false);
     expect(listJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
+
+    const filteredTaskListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?type=task`);
+    const filteredTaskListJson = await filteredTaskListRes.json();
+    expect(filteredTaskListRes.status).toBe(200);
+    expect(filteredTaskListJson.ok).toBe(true);
+    expect(filteredTaskListJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(false);
 
     const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
     const hiddenListJson = await hiddenListRes.json();
@@ -2352,6 +2369,7 @@ describeUiServer("ui-server mini app", () => {
     expect(hiddenListJson.ok).toBe(true);
     expect(hiddenListJson.sessions.some((session) => session.id === "meeting-1")).toBe(true);
     expect(hiddenListJson.sessions.some((session) => session.id === "workspace-scope-test-1234")).toBe(true);
+    expect(hiddenListJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(true);
     expect(hiddenListJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
 
     server.close();

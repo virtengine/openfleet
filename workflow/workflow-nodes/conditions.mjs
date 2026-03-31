@@ -91,8 +91,8 @@ registerNodeType("condition.expression", {
     if (!expr) throw new Error("Expression is required");
     const normalizedExpr = String(expr).trim();
     const blockedPatterns = [
-      /(?:^|[^\\w$.])(globalThis|global|window|document|process|require|module|exports)(?:[^\\w$]|$)/,
-      /(?:^|[^\\w$.])(Function|eval)(?:[^\\w$]|$)/,
+      /(?:^|[^\w$.])(globalThis|global|window|document|process|require|module|exports)(?:[^\w$]|$)/,
+      /(?:^|[^\w$.])(Function|eval)(?:[^\w$]|$)/,
     ];
     if (blockedPatterns.some((pattern) => pattern.test(normalizedExpr))) {
       throw new Error("Expression contains unsupported syntax");

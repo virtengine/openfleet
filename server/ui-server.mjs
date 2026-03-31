@@ -10385,7 +10385,7 @@ function shouldHideSessionFromDefaultList(session) {
   if (!looksTemporaryWorkspace) return false;
   // Sessions with an explicit workspace assignment are intentional, not leaked fixtures.
   if (normalizedWorkspaceId) return false;
-  const fixturePattern = /^(?:meeting-(?:1|vision)|session-linked-task-1|workspace-scope-test(?:-.+)?|task-\d+)$/i;
+  const fixturePattern = /^(?:meeting-(?:1|vision)|nonexistent|session-linked-task-1|workspace-scope-test(?:-.+)?|task-\d+(?:-[a-z0-9]+)?)$/i;
   const hasFixtureIdentifier = identifiers.some((value) => fixturePattern.test(String(value || "").trim()));
   const looksLikeSyntheticType =
     normalizedType.includes("scope-test")
@@ -27092,7 +27092,7 @@ if (path === "/api/agent-logs/context") {
       let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions(), workspaceContext, {
         allowLegacyWithoutWorkspace,
       });
-      const applyDefaultListHiding = !includeHidden && !typeFilter && !statusFilter;
+      const applyDefaultListHiding = !includeHidden;
       if (applyDefaultListHiding) {
         sessions = sessions.filter((session) => !shouldHideSessionFromDefaultList(session));
       }

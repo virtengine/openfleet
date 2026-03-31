@@ -69,6 +69,21 @@ function envFlagEnabled(value) {
   return ["1", "true", "yes", "on", "y"].includes(raw);
 }
 
+function normalizePrimaryExpectation(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw.includes("opencode")) return "opencode";
+  if (raw.includes("codex") || raw.includes("gpt")) return "codex";
+  if (raw.includes("copilot")) return "copilot";
+  if (raw.includes("claude")) return "claude";
+  if (raw.includes("gemini")) return "gemini";
+  return raw;
+}
+
+function shouldBypassAgentSdkPrimaryGuard(expectedPrimary = null) {
+  return normalizePrimaryExpectation(expectedPrimary) === "opencode";
+}
+
 /**
  * Parse "provider/modelId" or just "modelId" into { providerID, modelID }.
  * Accepts optional executor-level overrides that take highest priority.
@@ -509,6 +524,7 @@ function sanitizeAndTruncatePrompt(text) {
  * @param {AbortController} [options.abortController] - External abort signal
  * @param {object}  [options.providerConfig]  - Per-executor provider config from bosun.config.json
  * @param {string}  [options.provider]        - Provider name for this executor
+ * @param {string}  [options.expectedPrimary] - Bosun-selected primary adapter name, when known
  * @returns {Promise<{finalResponse: string, items: Array, usage: null}>}
  */
 export async function execOpencodePrompt(userMessage, options = {}) {
@@ -523,6 +539,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
     mode = null,
     providerConfig = null,
     provider = null,
+    expectedPrimary = null,
   } = options;
 
   // Build executor-level overrides from provider config
@@ -532,7 +549,10 @@ export async function execOpencodePrompt(userMessage, options = {}) {
 
   // Re-read config in case it changed hot
   agentSdk = resolveAgentSdkConfig({ reload: true });
-  if (agentSdk.primary !== "opencode") {
+  if (
+    agentSdk.primary !== "opencode" &&
+    !shouldBypassAgentSdkPrimaryGuard(expectedPrimary)
+  ) {
     return {
       finalResponse: `:close: Agent SDK set to "${agentSdk.primary}" — OpenCode disabled.`,
       items: [],
@@ -812,10 +832,13 @@ export async function execOpencodePrompt(userMessage, options = {}) {
  * @param {string} _message - Steering message (for logging; will be surfaced to caller)
  * @returns {Promise<{ok: boolean, reason?: string, mode?: string}>}
  */
-export async function steerOpencodePrompt(_message) {
+export async function steerOpencodePrompt(_message, options = {}) {
   try {
     agentSdk = resolveAgentSdkConfig({ reload: true });
-    if (agentSdk.primary !== "opencode") {
+    if (
+      agentSdk.primary !== "opencode" &&
+      !shouldBypassAgentSdkPrimaryGuard(options?.expectedPrimary)
+    ) {
       return { ok: false, reason: "agent_sdk_not_opencode" };
     }
     if (!agentSdk.capabilities?.steering) {

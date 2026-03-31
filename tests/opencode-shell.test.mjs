@@ -283,6 +283,22 @@ describe("execOpencodePrompt() — happy path", () => {
     const body = mockSessionPrompt.mock.calls[0][0]?.body;
     expect(body).not.toHaveProperty("model");
   });
+
+  it("allows Bosun-selected OpenCode runs even when agent-sdk primary is codex", async () => {
+    const { resolveAgentSdkConfig } = await import("../agent/agent-sdk.mjs");
+    resolveAgentSdkConfig.mockReturnValueOnce({
+      primary: "codex",
+      capabilities: { steering: true, subagents: true, vscodeTools: false },
+    });
+
+    const result = await execOpencodePrompt("do something", {
+      sessionId: "bosun-opencode-primary",
+      expectedPrimary: "opencode",
+    });
+
+    expect(result.finalResponse).toContain("done!");
+    expect(result.items).toBeInstanceOf(Array);
+  });
 });
 
 describe("execOpencodePrompt() — busy guard", () => {
@@ -422,6 +438,28 @@ describe("steerOpencodePrompt()", () => {
     const result = await steerOpencodePrompt("steer");
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("not_opencode");
+  });
+
+  it("allows steering when Bosun selected OpenCode despite agent-sdk primary mismatch", async () => {
+    setupHappyPath();
+    mockSessionCreate.mockResolvedValue({ data: { id: "uuid-steer-bypass" } });
+    mockSessionGet.mockResolvedValue({ data: { id: "uuid-steer-bypass" } });
+    await execOpencodePrompt("establish session", {
+      sessionId: "steer-bypass-session",
+      expectedPrimary: "opencode",
+    });
+
+    const { resolveAgentSdkConfig } = await import("../agent/agent-sdk.mjs");
+    resolveAgentSdkConfig.mockReturnValueOnce({
+      primary: "codex",
+      capabilities: { steering: true, subagents: true, vscodeTools: false },
+    });
+
+    const result = await steerOpencodePrompt("steer", {
+      expectedPrimary: "opencode",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.mode).toBe("abort");
   });
 });
 
@@ -797,4 +835,3 @@ describe("discoverProviders()", () => {
     );
   });
 });
-

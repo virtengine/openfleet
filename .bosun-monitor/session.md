@@ -211,3 +211,60 @@
     1. run `npm test -- tests/session-api.test.mjs`, `npm run syntax:check`, `npm test`, and `npm run build`.
     2. refresh the authenticated Fleet tab and verify the Dispatch picker now shows backlog/draft tasks beyond the previous first-page cap.
     3. continue deeper runtime triage on the still-stranded `no_output` / `stalled` task sessions after the UI loader fix is live.
+- Follow-up on 2026-04-01 (Fleet session-list hide filter for synthetic task fixtures):
+  - Confirmed the remaining Fleet “12 session-only agents active” inflation was server-side:
+    - `/api/sessions?type=task&workspace=all` includes hidden synthetic/stale task sessions because `/api/sessions` only applied `shouldHideSessionFromDefaultList(session)` when no `type`/`status` filters were present.
+    - the stale task ids observed in the live daemon session list included:
+      - `nonexistent`
+      - `session-linked-task-1`
+      - `task-1774940903138-4lzrda`
+      - `task-1774940641127-qpcjry`
+    - many of these reported `turnCount=0` and `runtimeState/status=lifecycleStatus` combinations such as `no_output/no_output/no_output` or bogus `active/active/active`.
+  - Source fix applied:
+    - `server/ui-server.mjs`
+    - `tests/ui-server.test.mjs`
+  - Behavioral change:
+    - `/api/sessions` now applies default hidden-session filtering whenever `includeHidden` is not set, including filtered list views like `type=task`.
+    - the synthetic fixture matcher was extended to catch generated stale task ids of the form `task-<digits>-<suffix>` and explicit `nonexistent` placeholders while still staying inside the existing temp-workspace/no-workspace guard.
+  - Focused validation passed:
+    - `npm test -- tests/ui-server.test.mjs -t "hides leaked synthetic fixture sessions from the default session list"`
+    - `npm test -- tests/ui-server.test.mjs -t "scopes session listing to the active workspace by default|hides leaked synthetic fixture sessions from the default session list|filters ledger-only sessions to the active workspace using durable workspace metadata"`
+    - `npm run build`
+  - Full-suite blocker discovered and repaired during validation:
+    - `npm test` failed in `tests/demo-defaults-sync.test.mjs` because checked-in generated demo defaults were stale relative to current workflow source-of-truth.
+    - regenerated synced bundles with `node tools/generate-demo-defaults.mjs`.
+    - `npm test -- tests/demo-defaults-sync.test.mjs` then passed.
+  - Important live-runtime note:
+    - current daemon source watcher does **not** watch `server/`, so the `/api/sessions` fix is not live until a pinned daemon restart.
+    - a mid-verification request to `https://127.0.0.1:4400/api/sessions?...` briefly hit `connection refused`, but `--daemon-status` still reported the daemon running afterward; treat as transient UI listener instability until the controlled restart/recheck is done.
+  - Current status at handoff:
+    - full `npm test` rerun restarted after the demo-default regeneration and was still progressing cleanly through grouped batches at the time of this checkpoint.
+  - Next concrete actions:
+    1. wait for the current full `npm test` rerun to complete.
+    2. restart Bosun on pinned roots with `node cli.mjs --stop-daemon --config-dir .bosun --repo-root .` then `node cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-auto-update`.
+    3. re-query `https://127.0.0.1:4400/api/sessions?type=task&workspace=all&token=...` and confirm the stale synthetic ids above are absent.
+    4. use Playwright against the authenticated Fleet tab to confirm the session-only active count drops and the Dispatch picker still shows the expanded backlog/draft task list.
+- Follow-up on 2026-04-01 (kanban base-branch alias regression reappeared during full suite):
+  - The resumed full `npm test` rerun progressed past the earlier demo-default sync failure but then failed in `tests/kanban-adapter.test.mjs`:
+    - failing case: `does not treat generic target payload fields as a base-branch alias`
+    - symptom: internal adapter was again persisting `baseBranch: "entire"` when payload-only task creation used `target: "entire"`.
+  - Root cause:
+    - `kanban/kanban-adapter.mjs` `resolveBaseBranchInput(payload)` still accepted generic payload aliases `base` and `target`, not just explicit branch fields.
+    - `InternalAdapter.updateTask()` also treated those same generic keys as `baseBranchProvided`, which could clear/set canonical base-branch metadata on unrelated generic target updates.
+  - Source fix applied:
+    - `kanban/kanban-adapter.mjs`
+  - Behavioral change:
+    - base-branch inference from payload fields is now limited to explicit branch-specific keys:
+      - `baseBranch`
+      - `base_branch`
+      - `upstream`
+      - `upstreamBranch`
+      - `upstream_branch`
+      - `targetBranch`
+      - `target_branch`
+    - generic payload keys like `target` and `base` no longer alias into branch metadata.
+  - Validation passed:
+    - `npm test -- tests/kanban-adapter.test.mjs -t "does not infer a base branch from health-check target prose|still infers a base branch from explicit branch markers in task text|does not treat generic target payload fields as a base-branch alias|clears persisted base branch metadata when explicitly unset"`
+    - `npm test -- tests/kanban-adapter.test.mjs`
+  - Immediate next action:
+    1. restart the pinned daemon so both the session-list filter fix and this adapter fix are live in runtime before further API/Playwright verification.

@@ -2608,11 +2608,15 @@ export class WorkflowEngine extends EventEmitter {
     const completionEvidence = nodes.flatMap((node) => Array.isArray(node?.completionEvidence) ? node.completionEvidence : []);
     const firstFinding = issueFindings[0] || null;
     const terminalCompleted = dagState.status === WorkflowStatus.COMPLETED;
+    const completedWithInactivePending =
+      terminalCompleted && failedNodes.length === 0 && pendingNodes.length > 0;
 
     let recommendedAction = "continue";
-    let summary = terminalCompleted
-      ? "Workflow completed successfully."
-      : "Workflow is ready to continue.";
+    let summary = completedWithInactivePending
+      ? `Workflow completed on the executed path; ${pendingNodes.length} node(s) remained pending on inactive branches.`
+      : (terminalCompleted
+          ? "Workflow completed successfully."
+          : "Workflow is ready to continue.");
     if (failedNodes.length > 0) {
       const preferredAction = firstFinding?.recommendedAction || null;
       recommendedAction = preferredAction;
@@ -2647,9 +2651,11 @@ export class WorkflowEngine extends EventEmitter {
           "Preserve completed work and continue from the next pending node.",
           firstPending?.label ? `Next step: ${firstPending.label}.` : null,
         ].filter(Boolean).join(" ")
-        : (terminalCompleted
-            ? "Workflow reached a terminal completed state; no further action is required."
-            : "Plan is healthy; continue executing the remaining graph."));
+        : (completedWithInactivePending
+            ? "Workflow reached a terminal completed state; pending nodes remained on inactive or skipped branches, so no further action is required."
+            : (terminalCompleted
+                ? "Workflow reached a terminal completed state; no further action is required."
+                : "Plan is healthy; continue executing the remaining graph.")));
 
     const issueAdvisor = {
       status: dagState.status,
@@ -7433,3 +7439,4 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+

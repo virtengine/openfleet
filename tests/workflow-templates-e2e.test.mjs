@@ -335,6 +335,9 @@ function ensureExperimentalNodeTypes() {
     if (getNodeType(type)) return;
     registerNodeType(type, handler);
   };
+  const registerForE2E = (type, handler) => {
+    registerNodeType(type, handler, { source: "test-e2e" });
+  };
 
   registerIfMissing("meeting.start", {
     describe: () => "Start a meeting session",
@@ -403,6 +406,87 @@ function ensureExperimentalNodeTypes() {
       const phrase = String(ctx.resolve(node.config?.wakePhrase || "")).toLowerCase();
       const text = String(ctx.resolve(node.config?.text || "")).toLowerCase();
       return { triggered: Boolean(phrase) && text.includes(phrase) };
+    },
+  });
+
+  // These nodes have real implementations that read/write workflow history and
+  // skillbook state. Override them for e2e template coverage so every template
+  // executes deterministically inside the tmp test sandbox.
+  registerForE2E("action.load_skillbook_strategies", {
+    describe: () => "Load canned skillbook strategies",
+    schema: { type: "object", properties: {} },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        workflowId: ctx.resolve(node.config?.workflowId || ctx.data?._workflowId || ""),
+        strategies: [
+          {
+            id: "strategy-test-recovery",
+            title: "Retry with narrower verification scope",
+            score: 0.92,
+          },
+        ],
+        guidanceSummary: "Retry with narrower verification scope and preserve current worktree state.",
+      };
+    },
+  });
+
+  registerForE2E("agent.run_planner", {
+    describe: () => "Generate deterministic planner output for e2e tests",
+    schema: { type: "object", properties: {} },
+    async execute(node, ctx) {
+      const taskCount = Number(ctx.resolve(node.config?.taskCount || 2)) || 2;
+      const tasks = Array.from({ length: Math.max(1, Math.min(taskCount, 3)) }, (_, index) => ({
+        title: `Mock planned task ${index + 1}`,
+        description: "Auto-generated placeholder task",
+        acceptance_criteria: ["Planner output is parseable"],
+        verification: ["npm test -- tests"],
+        repo_areas: ["workflow"],
+        impact: 0.8,
+        confidence: 0.85,
+        risk: 0.2,
+      }));
+      return {
+        success: true,
+        output: JSON.stringify({ tasks }),
+        taskCount: tasks.length,
+        threadId: `planner-${Date.now()}`,
+        sdk: "mock",
+      };
+    },
+  });
+
+  registerForE2E("action.evaluate_run", {
+    describe: () => "Evaluate a run with deterministic test output",
+    schema: { type: "object", properties: {} },
+    async execute(node, ctx) {
+      const runId = String(ctx.resolve(node.config?.runId || "") || ctx.id || "test-run");
+      return {
+        success: true,
+        runId,
+        workflowId: String(ctx.data?._workflowId || ctx.workflowId || "test-workflow"),
+        evaluation: {
+          summary: "Stable test evaluation",
+          status: "healthy",
+        },
+        promotion: {
+          decision: "hold",
+          reason: "E2E harness uses deterministic mock evaluation output.",
+        },
+      };
+    },
+  });
+
+  registerForE2E("action.apply_self_improvement_ratchet", {
+    describe: () => "Apply a no-op ratchet decision for tests",
+    schema: { type: "object", properties: {} },
+    async execute() {
+      return {
+        success: true,
+        decision: "hold",
+        applied: false,
+        reason: "E2E harness keeps self-improvement state immutable.",
+      };
     },
   });
 }
@@ -1173,9 +1257,13 @@ describe("workflow-templates E2E execution", () => {
 
       const results = [];
       for (const wf of engine.list()) {
+        const installedFrom = wf.metadata?.installedFrom || wf.id;
+        if (process.env.BOSUN_DEBUG_TEMPLATE_E2E === "1") {
+          console.log(`[template-e2e] executing ${installedFrom}`);
+        }
         const ctx = await engine.execute(wf.id, {}, { force: true });
         results.push({
-          id: wf.metadata?.installedFrom || wf.id,
+          id: installedFrom,
           status: ctx.errors.length > 0 ? "failed" : "completed",
           errorCount: ctx.errors.length,
           nodeCount: ctx.nodeStatuses.size,

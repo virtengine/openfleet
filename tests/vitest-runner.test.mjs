@@ -110,8 +110,10 @@ describe("vitest-runner", () => {
     const { groupedSuites, heavySuites } = buildVitestFullSuitePlan({ startDir: repoRoot });
 
     expect(heavySuites).toContain("tests/workflow-engine.test.mjs");
+    expect(heavySuites).toContain("tests/workflow-guaranteed.test.mjs");
     expect(heavySuites).toContain("tests/workflow-templates-e2e.test.mjs");
     expect(groupedSuites).not.toContain("tests/workflow-engine.test.mjs");
+    expect(groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");
     expect(groupedSuites).not.toContain("tests/workflow-templates-e2e.test.mjs");
     expect(groupedSuites.length + heavySuites.length).toBeGreaterThan(0);
   });
@@ -133,6 +135,8 @@ describe("vitest-runner", () => {
     const source = readFileSync(resolve(repoRoot, "tools", "vitest-full-suite.mjs"), "utf8");
     expect(source).toContain('process.env.BOSUN_VITEST_MAX_WORKERS || (process.platform === "win32" ? "4" : "")');
     expect(source).toContain('process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "12" : "0")');
+    expect(source).toContain('process.env.BOSUN_VITEST_WORKFLOW_GUARANTEED_SHARDS || ""');
+    expect(source).toContain('VITEST_TOTAL_SHARDS');
   });
 
   it("routes the pre-push hook through the worktree-safe runner", () => {

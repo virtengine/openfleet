@@ -7,6 +7,7 @@ import { findPackageRoot, runVitest } from "./vitest-runner.mjs";
 const DEFAULT_HEAVY_SUITES = [
   "tests/ui-server.test.mjs",
   "tests/workflow-engine.test.mjs",
+  "tests/workflow-guaranteed.test.mjs",
   "tests/workflow-task-lifecycle.test.mjs",
   "tests/workflow-templates.test.mjs",
   "tests/agent-pool.test.mjs",
@@ -59,25 +60,44 @@ export function buildVitestBatchArgs(files, { maxWorkers } = {}) {
   return args;
 }
 
-function runBatch(files, { startDir = process.cwd(), maxWorkers, label, heapMb } = {}) {
+function withTemporaryEnv(envOverrides = {}, fn) {
+  const previous = new Map();
+  for (const [key, value] of Object.entries(envOverrides)) {
+    previous.set(key, Object.prototype.hasOwnProperty.call(process.env, key) ? process.env[key] : undefined);
+    if (value == null) delete process.env[key];
+    else process.env[key] = String(value);
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function resolveSuiteShardCount(suite) {
+  if (suite !== "tests/workflow-guaranteed.test.mjs") return 1;
+  const configured = Number.parseInt(
+    String(process.env.BOSUN_VITEST_WORKFLOW_GUARANTEED_SHARDS || ""),
+    10,
+  );
+  if (Number.isFinite(configured) && configured > 1) return configured;
+  return process.platform === "win32" ? 8 : 1;
+}
+
+function runBatch(files, { startDir = process.cwd(), maxWorkers, label, heapMb, envOverrides } = {}) {
   const args = buildVitestBatchArgs(files, { maxWorkers });
   if (args.length === 0) return 0;
   if (label) {
     console.log(`[vitest-full-suite] ${label}: ${files.length} file(s)`);
   }
-  const previousHeap = process.env.BOSUN_VITEST_HEAP_MB;
+  const effectiveEnvOverrides = { ...(envOverrides || {}) };
   if (Number.isFinite(heapMb) && heapMb >= 2048) {
-    process.env.BOSUN_VITEST_HEAP_MB = String(heapMb);
+    effectiveEnvOverrides.BOSUN_VITEST_HEAP_MB = String(heapMb);
   }
-  try {
-    return runVitest(args, { startDir });
-  } finally {
-    if (previousHeap == null) {
-      delete process.env.BOSUN_VITEST_HEAP_MB;
-    } else {
-      process.env.BOSUN_VITEST_HEAP_MB = previousHeap;
-    }
-  }
+  return withTemporaryEnv(effectiveEnvOverrides, () => runVitest(args, { startDir }));
 }
 
 function runFullSuite({ startDir = process.cwd() } = {}) {
@@ -125,11 +145,33 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
   }
 
   for (const suite of heavySuites) {
+    const suiteShardCount = resolveSuiteShardCount(suite);
+    if (suiteShardCount > 1) {
+      for (let shard = 1; shard <= suiteShardCount; shard += 1) {
+        const code = runBatch([suite], {
+          startDir,
+          maxWorkers: Number.isFinite(isolatedMaxWorkers) && isolatedMaxWorkers > 0 ? isolatedMaxWorkers : 1,
+          label: `isolated suite ${suite} shard ${shard}/${suiteShardCount}`,
+          heapMb: Number.isFinite(isolatedHeapMb) && isolatedHeapMb >= 2048 ? isolatedHeapMb : undefined,
+          envOverrides: {
+            VITEST_SHARD: String(shard),
+            VITEST_TOTAL_SHARDS: String(suiteShardCount),
+          },
+        });
+        if (code !== 0) return code;
+      }
+      continue;
+    }
+
     const code = runBatch([suite], {
       startDir,
       maxWorkers: Number.isFinite(isolatedMaxWorkers) && isolatedMaxWorkers > 0 ? isolatedMaxWorkers : 1,
       label: `isolated suite ${suite}`,
       heapMb: Number.isFinite(isolatedHeapMb) && isolatedHeapMb >= 2048 ? isolatedHeapMb : undefined,
+      envOverrides: {
+        VITEST_SHARD: null,
+        VITEST_TOTAL_SHARDS: null,
+      },
     });
     if (code !== 0) return code;
   }

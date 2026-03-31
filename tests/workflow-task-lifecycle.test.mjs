@@ -322,6 +322,10 @@ describe("trigger.task_available", () => {
         repository: "virtengine/bosun",
         repositories: ["virtengine/bosun"],
         baseBranch: "main",
+        target: "entire",
+        meta: {
+          targetBranch: "release/ignored-for-now",
+        },
       },
     ]);
     const ctx = makeCtx({ activeSlotCount: 0 });
@@ -349,6 +353,15 @@ describe("trigger.task_available", () => {
     expect(ctx.data.repository).toBe("virtengine/bosun");
     expect(ctx.data.baseBranch).toBe("main");
     expect(ctx.data.branch.startsWith("task/abc123-")).toBe(true);
+    expect(ctx.data._taskBranchBinding).toEqual(expect.objectContaining({
+      taskId: "abc-123",
+      resolvedBaseBranch: "main",
+      candidates: expect.objectContaining({
+        baseBranch: "main",
+        target: "entire",
+        "meta.targetBranch": "release/ignored-for-now",
+      }),
+    }));
   });
 
   it("resolves repoRoot to matching sibling repository when task repository differs", async () => {

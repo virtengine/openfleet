@@ -485,8 +485,12 @@ const ADAPTERS = {
     name: "opencode-sdk",
     provider: "OPENCODE",
     displayName: "OpenCode",
-    exec: (msg, opts) => execOpencodePrompt(msg, { persistent: true, ...opts }),
-    steer: steerOpencodePrompt,
+    exec: (msg, opts) => execOpencodePrompt(msg, {
+      persistent: true,
+      expectedPrimary: "opencode",
+      ...opts,
+    }),
+    steer: (message) => steerOpencodePrompt(message, { expectedPrimary: "opencode" }),
     isBusy: isOpencodeBusy,
     getInfo: () => getOpencodeSessionInfo(),
     reset: resetOpencodeSession,
@@ -508,6 +512,7 @@ const ADAPTERS = {
       const fullCmd = args ? `${cmd} ${args}` : cmd;
       return execOpencodePrompt(fullCmd, {
         persistent: true,
+        expectedPrimary: "opencode",
         cwd: options.cwd,
         sessionId: options.sessionId || null,
       });
@@ -1507,7 +1512,6 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
-
 
 
 

@@ -2428,8 +2428,8 @@
         "session-tracked",
         "worktree-managed"
       ],
-      "nodeCount": 16,
-      "edgeCount": 16,
+      "nodeCount": 17,
+      "edgeCount": 19,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.manual",
@@ -2540,7 +2540,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const mergedAt=String(view?.mergedAt||'').trim()||null;   const closedAt=String(view?.closedAt||'').trim()||null;   const merged=state==='MERGED'||Boolean(mergedAt);   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);   const shouldResolveTask=Boolean(targetTaskStatus);   const reason=open?'open':(merged?'pr_merged':(state==='CLOSED'?'pr_closed':(isDraft?'draft_pr':'pr_not_open')));   console.log(JSON.stringify({ok:open,open,skip:!open,reason,state,isDraft,merged,mergedAt,closedAt,shouldResolveTask,targetTaskStatus,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
             "continueOnError": true,
@@ -2562,6 +2562,41 @@
           ]
         },
         {
+          "id": "resolve-pr-task",
+          "type": "action.run_command",
+          "label": "Resolve Task For Closed or Merged PR",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const taskId=String(process.env.TASK_ID||'').trim(); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const url=String(process.env.PR_URL||'').trim(); const state=String(process.env.PR_STATE||'').trim().toUpperCase(); const mergedAt=String(process.env.PR_MERGED_AT||'').trim()||null; const closedAt=String(process.env.PR_CLOSED_AT||'').trim()||null; const reason=String(process.env.PR_REASON||'').trim(); const explicitStatus=String(process.env.TARGET_TASK_STATUS||'').trim().toLowerCase(); const targetTaskStatus=explicitStatus||(state==='MERGED'||mergedAt?'done':(state==='CLOSED'?'cancelled':'')); const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); const maxBuffer=25*1024*1024; function parseJson(raw,fallback){try{return JSON.parse(String(raw||''));}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} if(!taskRunner){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_command_missing',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} if(!taskId||!targetTaskStatus){console.log(JSON.stringify({resolved:false,skipped:true,reason:'missing_task_or_status',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} let snapshot=null; try{snapshot=parseJson(runTask(['get',taskId,'--json']),null);}catch(err){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_lookup_failed',taskId,targetTaskStatus,error:String(err?.message||err)}));process.exit(0);} if(!snapshot||typeof snapshot!=='object'){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_not_found',taskId,targetTaskStatus}));process.exit(0);} const previousStatus=String(snapshot?.status||'').trim().toLowerCase()||null; const existingComments=Array.isArray(snapshot?.comments)?snapshot.comments:(Array.isArray(snapshot?.meta?.comments)?snapshot.meta.comments:[]); const resolutionKey='pr-resolution:'+repo+'#'+num+':'+targetTaskStatus; const alreadyCommented=existingComments.some((comment)=>String(comment?.meta?.resolutionKey||'').trim()===resolutionKey); const timestamp=new Date().toISOString(); const prLabel=num?'PR #'+num:'associated PR'; let message=''; if(targetTaskStatus==='done'){message=prLabel+(url?' ('+url+')':'')+' was merged'+(mergedAt?' at '+mergedAt:'')+'. Bosun marked this task done because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else if(targetTaskStatus==='cancelled'){message=prLabel+(url?' ('+url+')':'')+' was closed without merge'+(closedAt?' at '+closedAt:'')+'. Bosun cancelled this task because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else{message=prLabel+(url?' ('+url+')':'')+' changed state to '+(state||'unknown')+'.';} if(reason) message+=' Resolution trigger: '+reason+'.'; const nextComments=alreadyCommented?existingComments:[...existingComments,{body:message,author:'bosun',source:'workflow',kind:'pr-resolution',createdAt:timestamp,meta:{resolutionKey,repo,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null}}]; const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{}; const patch={status:targetTaskStatus,comments:nextComments,meta:{...existingMeta,lastPrResolution:{repo:repo||null,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null,mergedAt,closedAt,resolvedAt:timestamp}}}; runTask(['update',taskId,JSON.stringify(patch)]); console.log(JSON.stringify({resolved:true,taskId,targetTaskStatus,previousStatus,commentAdded:!alreadyCommented,repo,number:num,url:url||null,state:state||null,reason:reason||null}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
+            "env": {
+              "TASK_ID": "{{taskId}}",
+              "PR_REPO": "{{setup-worktree.output.repo || validate-pr-state.output.repo || prParams.repo}}",
+              "PR_NUMBER": "{{setup-worktree.output.number || validate-pr-state.output.number || prParams.number}}",
+              "PR_BRANCH": "{{setup-worktree.output.branch || validate-pr-state.output.branch || prParams.branch}}",
+              "PR_URL": "{{setup-worktree.output.url || validate-pr-state.output.url || data.item.url || data.item.prDigest.core.url || ''}}",
+              "PR_STATE": "{{setup-worktree.output.state || validate-pr-state.output.state || ''}}",
+              "PR_MERGED_AT": "{{setup-worktree.output.mergedAt || validate-pr-state.output.mergedAt || ''}}",
+              "PR_CLOSED_AT": "{{setup-worktree.output.closedAt || validate-pr-state.output.closedAt || ''}}",
+              "TARGET_TASK_STATUS": "{{setup-worktree.output.targetTaskStatus || validate-pr-state.output.targetTaskStatus || ''}}",
+              "PR_REASON": "{{setup-worktree.output.reason || validate-pr-state.output.reason || ''}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "setup-worktree",
           "type": "action.run_command",
           "label": "Clone & Checkout PR Branch",
@@ -2569,7 +2604,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); function readErr(err){return [String(err?.message||''),String(err?.stderr||''),String(err?.stdout||'')].filter(Boolean).join(' ');} function isMissingBranchError(err){const text=readErr(err);return /remote branch .* not found|couldn't find remote ref|remote ref does not exist|invalid reference: origin\\//i.test(text);} function viewPrState(){   try{     const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();     const view=JSON.parse(raw||'{}');     const state=String(view?.state||'').trim().toUpperCase();     const mergedAt=String(view?.mergedAt||'').trim()||null;     const closedAt=String(view?.closedAt||'').trim()||null;     const merged=state==='MERGED'||Boolean(mergedAt);     const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);     return {state,merged,mergedAt,closedAt,targetTaskStatus,shouldResolveTask:Boolean(targetTaskStatus),url:String(view?.url||'').trim()||null,branch:String(view?.headRefName||branch||'').trim()||branch,base:String(view?.baseRefName||base||'main').trim()||base||'main'};   }catch(err){     return {state:null,merged:false,mergedAt:null,closedAt:null,targetTaskStatus:null,shouldResolveTask:false,url:null,branch,base,error:String(err?.message||err)};   } } try{   let reused=false;   if(fs.existsSync(path.join(wt,'.git'))){     try{       const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();       if(cur===branch){         execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});         execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});         execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});         try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}         reused=true;       }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}     }catch(err){       if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}       try{fs.rmSync(wt,{recursive:true,force:true});}catch{}       throw err;     }   }   if(!reused){     if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}     execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});     execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});     execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});     try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}   }   const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();   if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);}   console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused,skip:false})); }catch(err){   if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}   console.error(readErr(err)||String(err?.message||err));   process.exit(1); }"
             ],
             "parseJson": true,
             "failOnError": true,
@@ -2582,7 +2617,7 @@
             }
           },
           "position": {
-            "x": 1780,
+            "x": 2060,
             "y": 100
           },
           "outputs": [
@@ -2598,7 +2633,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 2060,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -2626,7 +2661,7 @@
             }
           },
           "position": {
-            "x": 2340,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -2643,7 +2678,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2620,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -2660,7 +2695,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2900,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -2684,7 +2719,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 3180,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -2712,7 +2747,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -2736,7 +2771,7 @@
             }
           },
           "position": {
-            "x": 3740,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -2763,7 +2798,7 @@
             }
           },
           "position": {
-            "x": 4020,
+            "x": 4300,
             "y": 100
           },
           "outputs": [
@@ -2787,7 +2822,7 @@
             }
           },
           "position": {
-            "x": 4300,
+            "x": 4580,
             "y": 100
           },
           "outputs": [
@@ -2834,11 +2869,25 @@
           "condition": "$output?.open === true"
         },
         {
+          "id": "validate-pr-state->resolve-pr-task",
+          "source": "validate-pr-state",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask === true"
+        },
+        {
           "id": "validate-pr-state->release-claim",
           "source": "validate-pr-state",
           "target": "release-claim",
           "sourcePort": "default",
-          "condition": "$output?.open !== true"
+          "condition": "$output?.open !== true && $output?.shouldResolveTask !== true"
+        },
+        {
+          "id": "setup-worktree->resolve-pr-task",
+          "source": "setup-worktree",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.skip === true && $output?.shouldResolveTask === true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
@@ -3694,8 +3743,8 @@
         "session-tracked",
         "worktree-managed"
       ],
-      "nodeCount": 14,
-      "edgeCount": 14,
+      "nodeCount": 15,
+      "edgeCount": 17,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.manual",
@@ -3807,7 +3856,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const mergedAt=String(view?.mergedAt||'').trim()||null;   const closedAt=String(view?.closedAt||'').trim()||null;   const merged=state==='MERGED'||Boolean(mergedAt);   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);   const shouldResolveTask=Boolean(targetTaskStatus);   const reason=open?'open':(merged?'pr_merged':(state==='CLOSED'?'pr_closed':(isDraft?'draft_pr':'pr_not_open')));   console.log(JSON.stringify({ok:open,open,skip:!open,reason,state,isDraft,merged,mergedAt,closedAt,shouldResolveTask,targetTaskStatus,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
             "continueOnError": true,
@@ -3829,6 +3878,41 @@
           ]
         },
         {
+          "id": "resolve-pr-task",
+          "type": "action.run_command",
+          "label": "Resolve Task For Closed or Merged PR",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const taskId=String(process.env.TASK_ID||'').trim(); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const url=String(process.env.PR_URL||'').trim(); const state=String(process.env.PR_STATE||'').trim().toUpperCase(); const mergedAt=String(process.env.PR_MERGED_AT||'').trim()||null; const closedAt=String(process.env.PR_CLOSED_AT||'').trim()||null; const reason=String(process.env.PR_REASON||'').trim(); const explicitStatus=String(process.env.TARGET_TASK_STATUS||'').trim().toLowerCase(); const targetTaskStatus=explicitStatus||(state==='MERGED'||mergedAt?'done':(state==='CLOSED'?'cancelled':'')); const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); const maxBuffer=25*1024*1024; function parseJson(raw,fallback){try{return JSON.parse(String(raw||''));}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} if(!taskRunner){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_command_missing',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} if(!taskId||!targetTaskStatus){console.log(JSON.stringify({resolved:false,skipped:true,reason:'missing_task_or_status',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} let snapshot=null; try{snapshot=parseJson(runTask(['get',taskId,'--json']),null);}catch(err){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_lookup_failed',taskId,targetTaskStatus,error:String(err?.message||err)}));process.exit(0);} if(!snapshot||typeof snapshot!=='object'){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_not_found',taskId,targetTaskStatus}));process.exit(0);} const previousStatus=String(snapshot?.status||'').trim().toLowerCase()||null; const existingComments=Array.isArray(snapshot?.comments)?snapshot.comments:(Array.isArray(snapshot?.meta?.comments)?snapshot.meta.comments:[]); const resolutionKey='pr-resolution:'+repo+'#'+num+':'+targetTaskStatus; const alreadyCommented=existingComments.some((comment)=>String(comment?.meta?.resolutionKey||'').trim()===resolutionKey); const timestamp=new Date().toISOString(); const prLabel=num?'PR #'+num:'associated PR'; let message=''; if(targetTaskStatus==='done'){message=prLabel+(url?' ('+url+')':'')+' was merged'+(mergedAt?' at '+mergedAt:'')+'. Bosun marked this task done because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else if(targetTaskStatus==='cancelled'){message=prLabel+(url?' ('+url+')':'')+' was closed without merge'+(closedAt?' at '+closedAt:'')+'. Bosun cancelled this task because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else{message=prLabel+(url?' ('+url+')':'')+' changed state to '+(state||'unknown')+'.';} if(reason) message+=' Resolution trigger: '+reason+'.'; const nextComments=alreadyCommented?existingComments:[...existingComments,{body:message,author:'bosun',source:'workflow',kind:'pr-resolution',createdAt:timestamp,meta:{resolutionKey,repo,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null}}]; const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{}; const patch={status:targetTaskStatus,comments:nextComments,meta:{...existingMeta,lastPrResolution:{repo:repo||null,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null,mergedAt,closedAt,resolvedAt:timestamp}}}; runTask(['update',taskId,JSON.stringify(patch)]); console.log(JSON.stringify({resolved:true,taskId,targetTaskStatus,previousStatus,commentAdded:!alreadyCommented,repo,number:num,url:url||null,state:state||null,reason:reason||null}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
+            "env": {
+              "TASK_ID": "{{taskId}}",
+              "PR_REPO": "{{setup-worktree.output.repo || validate-pr-state.output.repo || prParams.repo}}",
+              "PR_NUMBER": "{{setup-worktree.output.number || validate-pr-state.output.number || prParams.number}}",
+              "PR_BRANCH": "{{setup-worktree.output.branch || validate-pr-state.output.branch || prParams.branch}}",
+              "PR_URL": "{{setup-worktree.output.url || validate-pr-state.output.url || data.item.url || data.item.prDigest.core.url || ''}}",
+              "PR_STATE": "{{setup-worktree.output.state || validate-pr-state.output.state || ''}}",
+              "PR_MERGED_AT": "{{setup-worktree.output.mergedAt || validate-pr-state.output.mergedAt || ''}}",
+              "PR_CLOSED_AT": "{{setup-worktree.output.closedAt || validate-pr-state.output.closedAt || ''}}",
+              "TARGET_TASK_STATUS": "{{setup-worktree.output.targetTaskStatus || validate-pr-state.output.targetTaskStatus || ''}}",
+              "PR_REASON": "{{setup-worktree.output.reason || validate-pr-state.output.reason || ''}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "setup-worktree",
           "type": "action.run_command",
           "label": "Clone & Checkout PR Branch",
@@ -3836,7 +3920,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); function readErr(err){return [String(err?.message||''),String(err?.stderr||''),String(err?.stdout||'')].filter(Boolean).join(' ');} function isMissingBranchError(err){const text=readErr(err);return /remote branch .* not found|couldn't find remote ref|remote ref does not exist|invalid reference: origin\\//i.test(text);} function viewPrState(){   try{     const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();     const view=JSON.parse(raw||'{}');     const state=String(view?.state||'').trim().toUpperCase();     const mergedAt=String(view?.mergedAt||'').trim()||null;     const closedAt=String(view?.closedAt||'').trim()||null;     const merged=state==='MERGED'||Boolean(mergedAt);     const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);     return {state,merged,mergedAt,closedAt,targetTaskStatus,shouldResolveTask:Boolean(targetTaskStatus),url:String(view?.url||'').trim()||null,branch:String(view?.headRefName||branch||'').trim()||branch,base:String(view?.baseRefName||base||'main').trim()||base||'main'};   }catch(err){     return {state:null,merged:false,mergedAt:null,closedAt:null,targetTaskStatus:null,shouldResolveTask:false,url:null,branch,base,error:String(err?.message||err)};   } } try{   let reused=false;   if(fs.existsSync(path.join(wt,'.git'))){     try{       const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();       if(cur===branch){         execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});         execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});         execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});         try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}         reused=true;       }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}     }catch(err){       if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}       try{fs.rmSync(wt,{recursive:true,force:true});}catch{}       throw err;     }   }   if(!reused){     if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}     execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});     execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});     execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});     try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}   }   const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();   if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);}   console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused,skip:false})); }catch(err){   if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}   console.error(readErr(err)||String(err?.message||err));   process.exit(1); }"
             ],
             "parseJson": true,
             "failOnError": true,
@@ -3849,7 +3933,7 @@
             }
           },
           "position": {
-            "x": 1780,
+            "x": 2060,
             "y": 100
           },
           "outputs": [
@@ -3865,7 +3949,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 2060,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -3882,7 +3966,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -3899,7 +3983,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2620,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -3923,7 +4007,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2900,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -3951,7 +4035,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -3975,7 +4059,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -3999,7 +4083,7 @@
             }
           },
           "position": {
-            "x": 3740,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -4046,11 +4130,25 @@
           "condition": "$output?.open === true"
         },
         {
+          "id": "validate-pr-state->resolve-pr-task",
+          "source": "validate-pr-state",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask === true"
+        },
+        {
           "id": "validate-pr-state->release-claim",
           "source": "validate-pr-state",
           "target": "release-claim",
           "sourcePort": "default",
-          "condition": "$output?.open !== true"
+          "condition": "$output?.open !== true && $output?.shouldResolveTask !== true"
+        },
+        {
+          "id": "setup-worktree->resolve-pr-task",
+          "source": "setup-worktree",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.skip === true && $output?.shouldResolveTask === true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
@@ -13066,6 +13164,9 @@
           "label": "Collect Recent Runs",
           "config": {
             "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const base=path.join(process.cwd(),'.bosun','workflow-runs');const entries=fs.existsSync(base)?fs.readdirSync(base).filter((name)=>name.endsWith('.json')).sort().slice(-Number(process.env.BOSUN_HEALTH_MAX_BENCHMARK_RUNS||12)):[];const runIds=entries.map((name)=>path.basename(name,'.json'));process.stdout.write(JSON.stringify({runIds,latestRunId:runIds.at(-1)||''}));\"",
+            "env": {
+              "BOSUN_HEALTH_MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
+            },
             "continueOnError": true
           },
           "position": {
@@ -14265,8 +14366,8 @@
         "automation",
         "scheduled"
       ],
-      "nodeCount": 7,
-      "edgeCount": 6,
+      "nodeCount": 8,
+      "edgeCount": 7,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -14327,6 +14428,23 @@
           "position": {
             "x": 400,
             "y": 190
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "count-blocked",
+          "type": "action.set_variable",
+          "label": "Count Blocked Tasks",
+          "config": {
+            "key": "blockedTaskCount",
+            "value": "$ctx.getNodeOutput('query-blocked')?.output?.length || 0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 250,
+            "y": 280
           },
           "outputs": [
             "default"
@@ -14394,7 +14512,7 @@
           "type": "notify.log",
           "label": "Log Recovery Summary",
           "config": {
-            "message": ":broom: Blocked worktree recovery sweep dispatched for {{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
+            "message": ":broom: Blocked worktree recovery sweep dispatched for {{blockedTaskCount}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
             "level": "info"
           },
           "position": {
@@ -14430,8 +14548,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "query-blocked->check-has-tasks",
+          "id": "query-blocked->count-blocked",
           "source": "query-blocked",
+          "target": "count-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "count-blocked->check-has-tasks",
+          "source": "count-blocked",
           "target": "check-has-tasks",
           "sourcePort": "default"
         },
@@ -23176,7 +23300,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -23201,7 +23327,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -23226,7 +23354,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -27437,7 +27567,7 @@
       "description": "Fixes one Bosun-attached PR using a dedicated long-running agent (up to 2 hours). Dispatched by the PR Watchdog loop for each unclaimed PR needing repair. Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease and cleans up. The agent NEVER manages git setup or push.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 16,
+      "nodeCount": 17,
       "trigger": "trigger.manual",
       "variables": {},
       "nodes": [
@@ -27530,7 +27660,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const mergedAt=String(view?.mergedAt||'').trim()||null;   const closedAt=String(view?.closedAt||'').trim()||null;   const merged=state==='MERGED'||Boolean(mergedAt);   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);   const shouldResolveTask=Boolean(targetTaskStatus);   const reason=open?'open':(merged?'pr_merged':(state==='CLOSED'?'pr_closed':(isDraft?'draft_pr':'pr_not_open')));   console.log(JSON.stringify({ok:open,open,skip:!open,reason,state,isDraft,merged,mergedAt,closedAt,shouldResolveTask,targetTaskStatus,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
             "continueOnError": true,
@@ -27552,6 +27682,41 @@
           ]
         },
         {
+          "id": "resolve-pr-task",
+          "type": "action.run_command",
+          "label": "Resolve Task For Closed or Merged PR",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const taskId=String(process.env.TASK_ID||'').trim(); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const url=String(process.env.PR_URL||'').trim(); const state=String(process.env.PR_STATE||'').trim().toUpperCase(); const mergedAt=String(process.env.PR_MERGED_AT||'').trim()||null; const closedAt=String(process.env.PR_CLOSED_AT||'').trim()||null; const reason=String(process.env.PR_REASON||'').trim(); const explicitStatus=String(process.env.TARGET_TASK_STATUS||'').trim().toLowerCase(); const targetTaskStatus=explicitStatus||(state==='MERGED'||mergedAt?'done':(state==='CLOSED'?'cancelled':'')); const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); const maxBuffer=25*1024*1024; function parseJson(raw,fallback){try{return JSON.parse(String(raw||''));}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} if(!taskRunner){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_command_missing',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} if(!taskId||!targetTaskStatus){console.log(JSON.stringify({resolved:false,skipped:true,reason:'missing_task_or_status',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} let snapshot=null; try{snapshot=parseJson(runTask(['get',taskId,'--json']),null);}catch(err){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_lookup_failed',taskId,targetTaskStatus,error:String(err?.message||err)}));process.exit(0);} if(!snapshot||typeof snapshot!=='object'){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_not_found',taskId,targetTaskStatus}));process.exit(0);} const previousStatus=String(snapshot?.status||'').trim().toLowerCase()||null; const existingComments=Array.isArray(snapshot?.comments)?snapshot.comments:(Array.isArray(snapshot?.meta?.comments)?snapshot.meta.comments:[]); const resolutionKey='pr-resolution:'+repo+'#'+num+':'+targetTaskStatus; const alreadyCommented=existingComments.some((comment)=>String(comment?.meta?.resolutionKey||'').trim()===resolutionKey); const timestamp=new Date().toISOString(); const prLabel=num?'PR #'+num:'associated PR'; let message=''; if(targetTaskStatus==='done'){message=prLabel+(url?' ('+url+')':'')+' was merged'+(mergedAt?' at '+mergedAt:'')+'. Bosun marked this task done because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else if(targetTaskStatus==='cancelled'){message=prLabel+(url?' ('+url+')':'')+' was closed without merge'+(closedAt?' at '+closedAt:'')+'. Bosun cancelled this task because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else{message=prLabel+(url?' ('+url+')':'')+' changed state to '+(state||'unknown')+'.';} if(reason) message+=' Resolution trigger: '+reason+'.'; const nextComments=alreadyCommented?existingComments:[...existingComments,{body:message,author:'bosun',source:'workflow',kind:'pr-resolution',createdAt:timestamp,meta:{resolutionKey,repo,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null}}]; const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{}; const patch={status:targetTaskStatus,comments:nextComments,meta:{...existingMeta,lastPrResolution:{repo:repo||null,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null,mergedAt,closedAt,resolvedAt:timestamp}}}; runTask(['update',taskId,JSON.stringify(patch)]); console.log(JSON.stringify({resolved:true,taskId,targetTaskStatus,previousStatus,commentAdded:!alreadyCommented,repo,number:num,url:url||null,state:state||null,reason:reason||null}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
+            "env": {
+              "TASK_ID": "{{taskId}}",
+              "PR_REPO": "{{setup-worktree.output.repo || validate-pr-state.output.repo || prParams.repo}}",
+              "PR_NUMBER": "{{setup-worktree.output.number || validate-pr-state.output.number || prParams.number}}",
+              "PR_BRANCH": "{{setup-worktree.output.branch || validate-pr-state.output.branch || prParams.branch}}",
+              "PR_URL": "{{setup-worktree.output.url || validate-pr-state.output.url || data.item.url || data.item.prDigest.core.url || ''}}",
+              "PR_STATE": "{{setup-worktree.output.state || validate-pr-state.output.state || ''}}",
+              "PR_MERGED_AT": "{{setup-worktree.output.mergedAt || validate-pr-state.output.mergedAt || ''}}",
+              "PR_CLOSED_AT": "{{setup-worktree.output.closedAt || validate-pr-state.output.closedAt || ''}}",
+              "TARGET_TASK_STATUS": "{{setup-worktree.output.targetTaskStatus || validate-pr-state.output.targetTaskStatus || ''}}",
+              "PR_REASON": "{{setup-worktree.output.reason || validate-pr-state.output.reason || ''}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "setup-worktree",
           "type": "action.run_command",
           "label": "Clone & Checkout PR Branch",
@@ -27559,7 +27724,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-prfix-'+num.replace(/[^0-9a-z]/gi,'-')); function readErr(err){return [String(err?.message||''),String(err?.stderr||''),String(err?.stdout||'')].filter(Boolean).join(' ');} function isMissingBranchError(err){const text=readErr(err);return /remote branch .* not found|couldn't find remote ref|remote ref does not exist|invalid reference: origin\\//i.test(text);} function viewPrState(){   try{     const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();     const view=JSON.parse(raw||'{}');     const state=String(view?.state||'').trim().toUpperCase();     const mergedAt=String(view?.mergedAt||'').trim()||null;     const closedAt=String(view?.closedAt||'').trim()||null;     const merged=state==='MERGED'||Boolean(mergedAt);     const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);     return {state,merged,mergedAt,closedAt,targetTaskStatus,shouldResolveTask:Boolean(targetTaskStatus),url:String(view?.url||'').trim()||null,branch:String(view?.headRefName||branch||'').trim()||branch,base:String(view?.baseRefName||base||'main').trim()||base||'main'};   }catch(err){     return {state:null,merged:false,mergedAt:null,closedAt:null,targetTaskStatus:null,shouldResolveTask:false,url:null,branch,base,error:String(err?.message||err)};   } } try{   let reused=false;   if(fs.existsSync(path.join(wt,'.git'))){     try{       const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();       if(cur===branch){         execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});         execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});         execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});         try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}         reused=true;       }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}     }catch(err){       if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}       try{fs.rmSync(wt,{recursive:true,force:true});}catch{}       throw err;     }   }   if(!reused){     if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}     execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});     execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});     execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});     try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}   }   const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();   if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);}   console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused,skip:false})); }catch(err){   if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}   console.error(readErr(err)||String(err?.message||err));   process.exit(1); }"
             ],
             "parseJson": true,
             "failOnError": true,
@@ -27572,7 +27737,7 @@
             }
           },
           "position": {
-            "x": 1780,
+            "x": 2060,
             "y": 100
           },
           "outputs": [
@@ -27588,7 +27753,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 2060,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -27616,7 +27781,7 @@
             }
           },
           "position": {
-            "x": 2340,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -27633,7 +27798,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2620,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -27650,7 +27815,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2900,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -27674,7 +27839,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 3180,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -27702,7 +27867,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -27726,7 +27891,7 @@
             }
           },
           "position": {
-            "x": 3740,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -27753,7 +27918,7 @@
             }
           },
           "position": {
-            "x": 4020,
+            "x": 4300,
             "y": 100
           },
           "outputs": [
@@ -27777,7 +27942,7 @@
             }
           },
           "position": {
-            "x": 4300,
+            "x": 4580,
             "y": 100
           },
           "outputs": [
@@ -27824,11 +27989,25 @@
           "condition": "$output?.open === true"
         },
         {
+          "id": "validate-pr-state->resolve-pr-task",
+          "source": "validate-pr-state",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask === true"
+        },
+        {
           "id": "validate-pr-state->release-claim",
           "source": "validate-pr-state",
           "target": "release-claim",
           "sourcePort": "default",
-          "condition": "$output?.open !== true"
+          "condition": "$output?.open !== true && $output?.shouldResolveTask !== true"
+        },
+        {
+          "id": "setup-worktree->resolve-pr-task",
+          "source": "setup-worktree",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.skip === true && $output?.shouldResolveTask === true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
@@ -28649,7 +28828,7 @@
       "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 14,
+      "nodeCount": 15,
       "trigger": "trigger.manual",
       "variables": {},
       "nodes": [
@@ -28742,7 +28921,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
+              "const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); const fallbackBranch=String(process.env.PR_BRANCH||'').trim(); const fallbackBase=String(process.env.PR_BASE||'main').trim(); if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);} try{   const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();   const view=JSON.parse(raw||'{}');   const state=String(view?.state||'').trim().toUpperCase();   const isDraft=view?.isDraft===true;   const mergedAt=String(view?.mergedAt||'').trim()||null;   const closedAt=String(view?.closedAt||'').trim()||null;   const merged=state==='MERGED'||Boolean(mergedAt);   const open=state==='OPEN'&&!isDraft;   const branch=String(view?.headRefName||fallbackBranch||'').trim();   const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';   const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);   const shouldResolveTask=Boolean(targetTaskStatus);   const reason=open?'open':(merged?'pr_merged':(state==='CLOSED'?'pr_closed':(isDraft?'draft_pr':'pr_not_open')));   console.log(JSON.stringify({ok:open,open,skip:!open,reason,state,isDraft,merged,mergedAt,closedAt,shouldResolveTask,targetTaskStatus,repo,number:num,branch,base,url:String(view?.url||'').trim()||null})); }catch(err){   console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase})); }"
             ],
             "parseJson": true,
             "continueOnError": true,
@@ -28764,6 +28943,41 @@
           ]
         },
         {
+          "id": "resolve-pr-task",
+          "type": "action.run_command",
+          "label": "Resolve Task For Closed or Merged PR",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const taskId=String(process.env.TASK_ID||'').trim(); const repo=String(process.env.PR_REPO||'').trim(); const num=String(process.env.PR_NUMBER||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const url=String(process.env.PR_URL||'').trim(); const state=String(process.env.PR_STATE||'').trim().toUpperCase(); const mergedAt=String(process.env.PR_MERGED_AT||'').trim()||null; const closedAt=String(process.env.PR_CLOSED_AT||'').trim()||null; const reason=String(process.env.PR_REASON||'').trim(); const explicitStatus=String(process.env.TARGET_TASK_STATUS||'').trim().toLowerCase(); const targetTaskStatus=explicitStatus||(state==='MERGED'||mergedAt?'done':(state==='CLOSED'?'cancelled':'')); const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); const maxBuffer=25*1024*1024; function parseJson(raw,fallback){try{return JSON.parse(String(raw||''));}catch{return fallback;}} function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} if(!taskRunner){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_command_missing',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} if(!taskId||!targetTaskStatus){console.log(JSON.stringify({resolved:false,skipped:true,reason:'missing_task_or_status',taskId,targetTaskStatus,repo,number:num}));process.exit(0);} let snapshot=null; try{snapshot=parseJson(runTask(['get',taskId,'--json']),null);}catch(err){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_lookup_failed',taskId,targetTaskStatus,error:String(err?.message||err)}));process.exit(0);} if(!snapshot||typeof snapshot!=='object'){console.log(JSON.stringify({resolved:false,skipped:true,reason:'task_not_found',taskId,targetTaskStatus}));process.exit(0);} const previousStatus=String(snapshot?.status||'').trim().toLowerCase()||null; const existingComments=Array.isArray(snapshot?.comments)?snapshot.comments:(Array.isArray(snapshot?.meta?.comments)?snapshot.meta.comments:[]); const resolutionKey='pr-resolution:'+repo+'#'+num+':'+targetTaskStatus; const alreadyCommented=existingComments.some((comment)=>String(comment?.meta?.resolutionKey||'').trim()===resolutionKey); const timestamp=new Date().toISOString(); const prLabel=num?'PR #'+num:'associated PR'; let message=''; if(targetTaskStatus==='done'){message=prLabel+(url?' ('+url+')':'')+' was merged'+(mergedAt?' at '+mergedAt:'')+'. Bosun marked this task done because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else if(targetTaskStatus==='cancelled'){message=prLabel+(url?' ('+url+')':'')+' was closed without merge'+(closedAt?' at '+closedAt:'')+'. Bosun cancelled this task because head branch `'+(branch||'?')+'` is no longer available on GitHub.';} else{message=prLabel+(url?' ('+url+')':'')+' changed state to '+(state||'unknown')+'.';} if(reason) message+=' Resolution trigger: '+reason+'.'; const nextComments=alreadyCommented?existingComments:[...existingComments,{body:message,author:'bosun',source:'workflow',kind:'pr-resolution',createdAt:timestamp,meta:{resolutionKey,repo,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null}}]; const existingMeta=snapshot?.meta&&typeof snapshot.meta==='object'?snapshot.meta:{}; const patch={status:targetTaskStatus,comments:nextComments,meta:{...existingMeta,lastPrResolution:{repo:repo||null,number:num||null,url:url||null,state:state||null,targetTaskStatus,branch:branch||null,reason:reason||null,mergedAt,closedAt,resolvedAt:timestamp}}}; runTask(['update',taskId,JSON.stringify(patch)]); console.log(JSON.stringify({resolved:true,taskId,targetTaskStatus,previousStatus,commentAdded:!alreadyCommented,repo,number:num,url:url||null,state:state||null,reason:reason||null}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "failOnError": false,
+            "timeoutMs": 60000,
+            "env": {
+              "TASK_ID": "{{taskId}}",
+              "PR_REPO": "{{setup-worktree.output.repo || validate-pr-state.output.repo || prParams.repo}}",
+              "PR_NUMBER": "{{setup-worktree.output.number || validate-pr-state.output.number || prParams.number}}",
+              "PR_BRANCH": "{{setup-worktree.output.branch || validate-pr-state.output.branch || prParams.branch}}",
+              "PR_URL": "{{setup-worktree.output.url || validate-pr-state.output.url || data.item.url || data.item.prDigest.core.url || ''}}",
+              "PR_STATE": "{{setup-worktree.output.state || validate-pr-state.output.state || ''}}",
+              "PR_MERGED_AT": "{{setup-worktree.output.mergedAt || validate-pr-state.output.mergedAt || ''}}",
+              "PR_CLOSED_AT": "{{setup-worktree.output.closedAt || validate-pr-state.output.closedAt || ''}}",
+              "TARGET_TASK_STATUS": "{{setup-worktree.output.targetTaskStatus || validate-pr-state.output.targetTaskStatus || ''}}",
+              "PR_REASON": "{{setup-worktree.output.reason || validate-pr-state.output.reason || ''}}"
+            }
+          },
+          "position": {
+            "x": 1780,
+            "y": 100
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "setup-worktree",
           "type": "action.run_command",
           "label": "Clone & Checkout PR Branch",
@@ -28771,7 +28985,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); let reused=false; if(fs.existsSync(path.join(wt,'.git'))){   try{     const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();     if(cur===branch){       execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});       execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});       execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});       try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}       reused=true;     }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}   }catch{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}} } if(!reused){   if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}   execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});   execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});   execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});   try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{} } const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim(); if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);} console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused}));"
+              "const os=require('os'); const path=require('path'); const fs=require('fs'); const {execFileSync}=require('child_process'); const repo=String(process.env.PR_REPO||'').trim(); const branch=String(process.env.PR_BRANCH||'').trim(); const base=String(process.env.PR_BASE||'main').trim(); const num=String(process.env.PR_NUMBER||'0').trim(); if(!repo||!branch){console.log(JSON.stringify({error:'missing repo or branch',repo,branch}));process.exit(1);} let wt=path.join(os.tmpdir(),'bosun-secfix-'+num.replace(/[^0-9a-z]/gi,'-')); function readErr(err){return [String(err?.message||''),String(err?.stderr||''),String(err?.stdout||'')].filter(Boolean).join(' ');} function isMissingBranchError(err){const text=readErr(err);return /remote branch .* not found|couldn't find remote ref|remote ref does not exist|invalid reference: origin\\//i.test(text);} function viewPrState(){   try{     const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url,mergedAt,closedAt'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();     const view=JSON.parse(raw||'{}');     const state=String(view?.state||'').trim().toUpperCase();     const mergedAt=String(view?.mergedAt||'').trim()||null;     const closedAt=String(view?.closedAt||'').trim()||null;     const merged=state==='MERGED'||Boolean(mergedAt);     const targetTaskStatus=merged?'done':(state==='CLOSED'?'cancelled':null);     return {state,merged,mergedAt,closedAt,targetTaskStatus,shouldResolveTask:Boolean(targetTaskStatus),url:String(view?.url||'').trim()||null,branch:String(view?.headRefName||branch||'').trim()||branch,base:String(view?.baseRefName||base||'main').trim()||base||'main'};   }catch(err){     return {state:null,merged:false,mergedAt:null,closedAt:null,targetTaskStatus:null,shouldResolveTask:false,url:null,branch,base,error:String(err?.message||err)};   } } try{   let reused=false;   if(fs.existsSync(path.join(wt,'.git'))){     try{       const cur=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();       if(cur===branch){         execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});         execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});         execFileSync('git',['clean','-fd','-e','.bosun/'],{cwd:wt,encoding:'utf8',timeout:30000});         try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}         reused=true;       }else{try{fs.rmSync(wt,{recursive:true,force:true});}catch{}}     }catch(err){       if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}       try{fs.rmSync(wt,{recursive:true,force:true});}catch{}       throw err;     }   }   if(!reused){     if(fs.existsSync(wt)){try{fs.rmSync(wt,{recursive:true,force:true});}catch{wt=wt+'-'+Date.now().toString(36);}}     execFileSync('gh',['repo','clone',repo,wt,'--','--branch',branch],{encoding:'utf8',timeout:300000,stdio:'inherit'});     execFileSync('git',['fetch','origin',branch],{cwd:wt,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']});     execFileSync('git',['reset','--hard','origin/'+branch],{cwd:wt,encoding:'utf8',timeout:30000});     try{execFileSync('git',['fetch','origin',base],{cwd:wt,encoding:'utf8',timeout:60000,stdio:['ignore','pipe','pipe']});}catch{}   }   const finalBranch=execFileSync('git',['rev-parse','--abbrev-ref','HEAD'],{cwd:wt,encoding:'utf8',timeout:10000}).trim();   if(finalBranch!==branch){console.error('Branch mismatch: expected '+branch+' got '+finalBranch);process.exit(1);}   console.log(JSON.stringify({worktreePath:wt,branch:finalBranch,base,repo,number:num,reused,skip:false})); }catch(err){   if(isMissingBranchError(err)){const prState=viewPrState();if(prState.shouldResolveTask){console.log(JSON.stringify({skip:true,reason:'head_branch_missing_after_pr_resolution',repo,number:num,...prState}));process.exit(0);}}   console.error(readErr(err)||String(err?.message||err));   process.exit(1); }"
             ],
             "parseJson": true,
             "failOnError": true,
@@ -28784,7 +28998,7 @@
             }
           },
           "position": {
-            "x": 1780,
+            "x": 2060,
             "y": 100
           },
           "outputs": [
@@ -28800,7 +29014,7 @@
             "value": "{{setup-worktree.output.worktreePath}}"
           },
           "position": {
-            "x": 2060,
+            "x": 2340,
             "y": 100
           },
           "outputs": [
@@ -28817,7 +29031,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2340,
+            "x": 2620,
             "y": 100
           },
           "outputs": [
@@ -28834,7 +29048,7 @@
             "isExpression": true
           },
           "position": {
-            "x": 2620,
+            "x": 2900,
             "y": 100
           },
           "outputs": [
@@ -28858,7 +29072,7 @@
             "failOnError": false
           },
           "position": {
-            "x": 2900,
+            "x": 3180,
             "y": 100
           },
           "outputs": [
@@ -28886,7 +29100,7 @@
             }
           },
           "position": {
-            "x": 3180,
+            "x": 3460,
             "y": 100
           },
           "outputs": [
@@ -28910,7 +29124,7 @@
             }
           },
           "position": {
-            "x": 3460,
+            "x": 3740,
             "y": 100
           },
           "outputs": [
@@ -28934,7 +29148,7 @@
             }
           },
           "position": {
-            "x": 3740,
+            "x": 4020,
             "y": 100
           },
           "outputs": [
@@ -28981,11 +29195,25 @@
           "condition": "$output?.open === true"
         },
         {
+          "id": "validate-pr-state->resolve-pr-task",
+          "source": "validate-pr-state",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.open !== true && $output?.shouldResolveTask === true"
+        },
+        {
           "id": "validate-pr-state->release-claim",
           "source": "validate-pr-state",
           "target": "release-claim",
           "sourcePort": "default",
-          "condition": "$output?.open !== true"
+          "condition": "$output?.open !== true && $output?.shouldResolveTask !== true"
+        },
+        {
+          "id": "setup-worktree->resolve-pr-task",
+          "source": "setup-worktree",
+          "target": "resolve-pr-task",
+          "sourcePort": "default",
+          "condition": "$output?.skip === true && $output?.shouldResolveTask === true"
         },
         {
           "id": "setup-worktree->set-worktree-path",
@@ -37533,6 +37761,9 @@
           "label": "Collect Recent Runs",
           "config": {
             "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const base=path.join(process.cwd(),'.bosun','workflow-runs');const entries=fs.existsSync(base)?fs.readdirSync(base).filter((name)=>name.endsWith('.json')).sort().slice(-Number(process.env.BOSUN_HEALTH_MAX_BENCHMARK_RUNS||12)):[];const runIds=entries.map((name)=>path.basename(name,'.json'));process.stdout.write(JSON.stringify({runIds,latestRunId:runIds.at(-1)||''}));\"",
+            "env": {
+              "BOSUN_HEALTH_MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
+            },
             "continueOnError": true
           },
           "position": {
@@ -38675,7 +38906,7 @@
       "description": "Scheduled operator-assist workflow that finds all tasks blocked due to worktree failures, sweeps their stale worktrees, and re-queues each as todo. Works across every repo in the workspace — repo context is read from each task's own metadata, so no repo configuration is needed here.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 7,
+      "nodeCount": 8,
       "trigger": "trigger.schedule",
       "variables": {
         "scheduleIntervalMs": 1800000,
@@ -38717,6 +38948,23 @@
           "position": {
             "x": 400,
             "y": 190
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "count-blocked",
+          "type": "action.set_variable",
+          "label": "Count Blocked Tasks",
+          "config": {
+            "key": "blockedTaskCount",
+            "value": "$ctx.getNodeOutput('query-blocked')?.output?.length || 0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 250,
+            "y": 280
           },
           "outputs": [
             "default"
@@ -38784,7 +39032,7 @@
           "type": "notify.log",
           "label": "Log Recovery Summary",
           "config": {
-            "message": ":broom: Blocked worktree recovery sweep dispatched for {{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
+            "message": ":broom: Blocked worktree recovery sweep dispatched for {{blockedTaskCount}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
             "level": "info"
           },
           "position": {
@@ -38820,8 +39068,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "query-blocked->check-has-tasks",
+          "id": "query-blocked->count-blocked",
           "source": "query-blocked",
+          "target": "count-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "count-blocked->check-has-tasks",
+          "source": "count-blocked",
           "target": "check-has-tasks",
           "sourcePort": "default"
         },
@@ -47117,7 +47371,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -47142,7 +47398,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -47167,7 +47425,9 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}"
           },
           "position": {
             "x": 200,
@@ -49161,7 +49421,7 @@
       "workflowId": "wf-pr-fix-single",
       "workflowName": "PR Fix Agent (Single PR)",
       "status": "completed",
-      "nodeCount": 16,
+      "nodeCount": 17,
       "duration": 74000,
       "errorCount": 0,
       "triggerSource": "manual",

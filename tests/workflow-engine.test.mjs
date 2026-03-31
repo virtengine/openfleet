@@ -142,6 +142,21 @@ describe("WorkflowContext", () => {
     expect(numericResult).toEqual({ result: false, value: false });
   });
 
+  it("condition.expression allows benign identifiers that contain eval as a substring", async () => {
+    const nt = getNodeType("condition.expression");
+    const ctx = new WorkflowContext({ createFollowupTasks: true });
+    ctx.setNodeOutput("evaluate-fitness", { output: "FOLLOW_UP_ACTION: tighten queue telemetry" });
+
+    const result = await nt.execute({
+      id: "followup-guard",
+      config: {
+        expression: "($data?.createFollowupTasks === true) && (($ctx.getNodeOutput('evaluate-fitness')?.output || '').includes('FOLLOW_UP_ACTION:'))",
+      },
+    }, ctx, engine);
+
+    expect(result).toEqual({ result: true, value: true });
+  });
+
   it("resolve() interpolates templates from data and node outputs", () => {
     const ctx = new WorkflowContext({ name: "Alice" });
     ctx.setNodeOutput("step1", { count: 5 });
@@ -1139,9 +1154,11 @@ describe("WorkflowEngine - run history details", () => {
 
     expect(advisor?.status).toBe(WorkflowStatus.COMPLETED);
     expect(advisor?.recommendedAction).toBe("continue");
-    expect(advisor?.summary).toBe("Workflow completed successfully.");
+    expect(advisor?.summary).toBe(
+      "Workflow completed on the executed path; 1 node(s) remained pending on inactive branches.",
+    );
     expect(advisor?.nextStepGuidance).toBe(
-      "Workflow reached a terminal completed state; no further action is required.",
+      "Workflow reached a terminal completed state; pending nodes remained on inactive or skipped branches, so no further action is required.",
     );
   });
 
