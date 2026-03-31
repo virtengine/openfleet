@@ -430,6 +430,40 @@ describe("action.build_task_prompt", () => {
 describe("action.continue_session", () => {
   it("prepends issue-advisor guidance to continuation prompts", async () => {
     const handler = getNodeType("action.continue_session");
+    const repoRoot = makeTmpDir();
+    const {
+      initSharedKnowledge,
+      buildKnowledgeEntry,
+      appendKnowledgeEntry,
+    } = await import("../workspace/shared-knowledge.mjs");
+    initSharedKnowledge({ repoRoot, targetFile: "AGENTS.md" });
+    mkdirSync(join(repoRoot, ".bosun", "context-index"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, ".bosun", "context-index", "agent-index.json"),
+      JSON.stringify({
+        relations: [
+          {
+            relationType: "file_imports_file",
+            fromPath: "src/auth/login.mjs",
+            toPath: "src/auth/session-store.mjs",
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    const memoryResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+      content: "Workspace memory: reseed fixtures in src/auth/login.mjs before resuming retry work.",
+      scope: "testing",
+      scopeLevel: "workspace",
+      teamId: "team-a",
+      workspaceId: "workspace-1",
+      sessionId: "session-0",
+      runId: "run-0",
+      agentId: "agent-memory",
+      relatedPaths: ["src/auth/login.mjs"],
+    }));
+    expect(memoryResult.success).toBe(true);
+
     const continueSession = vi.fn().mockResolvedValue({
       success: true,
       output: "continued",
@@ -440,7 +474,17 @@ describe("action.continue_session", () => {
         agentPool: { continueSession },
       },
     };
-    const ctx = new WorkflowContext({ sessionId: "thread-1" });
+    const ctx = new WorkflowContext({
+      sessionId: "thread-1",
+      repoRoot,
+      taskId: "TASK-CONT-1",
+      taskTitle: "Resume auth retry work",
+      taskDescription: "Resume retry work without losing fixture state.",
+      workspaceId: "workspace-1",
+      runId: "run-1",
+    });
+    ctx.data.teamId = "team-a";
+    ctx.data._changedFiles = ["src/auth/login.mjs"];
     ctx.data._issueAdvisor = {
       recommendedAction: "spawn_fix_step",
       summary: "Review feedback requested a targeted patch before resuming.",
@@ -460,6 +504,12 @@ describe("action.continue_session", () => {
     expect(continueSession).toHaveBeenCalledTimes(1);
     expect(continueSession.mock.calls[0][1]).toContain("Issue-advisor continuation context");
     expect(continueSession.mock.calls[0][1]).toContain("spawn_fix_step");
+    expect(continueSession.mock.calls[0][1]).toContain("## Persistent Memory Briefing");
+    expect(continueSession.mock.calls[0][1]).toContain("reseed fixtures in src/auth/login.mjs");
+    expect(continueSession.mock.calls[0][1]).toContain("matched=src/auth/login.mjs");
+    expect(ctx.data._continuedSessionRetrievedMemory?.[0]).toEqual(expect.objectContaining({
+      directPathHits: ["src/auth/login.mjs"],
+    }));
   });
 });
 

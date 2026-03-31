@@ -12801,6 +12801,30 @@ registerBuiltinNodeType("action.continue_session", {
     const prompt = ctx.resolve(node.config?.prompt || "Continue working on the current task.");
     const timeout = node.config?.timeoutMs || 1800000;
     const strategy = node.config?.strategy || "continue";
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
+    const taskPayload =
+      ctx.data?.task && typeof ctx.data.task === "object"
+        ? ctx.data.task
+        : null;
+    const taskMeta =
+      taskPayload?.meta && typeof taskPayload.meta === "object"
+        ? taskPayload.meta
+        : null;
+    const taskMemoryPaths = resolveTaskMemoryPathHints(node, ctx, taskPayload);
+    const taskTitle = String(
+      ctx.data?.taskTitle ||
+      taskPayload?.title ||
+      taskPayload?.name ||
+      "",
+    ).trim();
+    const taskDescription = String(
+      ctx.data?.taskDescription ||
+      taskPayload?.description ||
+      taskPayload?.body ||
+      taskPayload?.details ||
+      taskMeta?.taskDescription ||
+      "",
+    ).trim();
     const issueAdvisor =
       ctx.data?._issueAdvisor && typeof ctx.data._issueAdvisor === "object"
         ? ctx.data._issueAdvisor
@@ -12818,7 +12842,39 @@ registerBuiltinNodeType("action.continue_session", {
         dagStateSummary?.counts ? `- DAG counts: completed=${Number(dagStateSummary.counts.completed ?? 0) || 0}, failed=${Number(dagStateSummary.counts.failed ?? 0) || 0}, pending=${Number(dagStateSummary.counts.pending ?? 0) || 0}` : null,
       ].filter(Boolean).join("\n") + "\n\n"
       : "";
-    const enrichedPrompt = continuationPrefix ? `${continuationPrefix}${prompt}` : prompt;
+    let memoryBriefing = "";
+    try {
+      const retrievedMemory = await retrieveKnowledgeEntries({
+        repoRoot,
+        teamId: String(ctx.data?.teamId || taskPayload?.teamId || taskMeta?.teamId || "").trim() || null,
+        workspaceId: String(ctx.data?.workspaceId || ctx.data?._workspaceId || taskPayload?.workspaceId || taskMeta?.workspaceId || "").trim() || null,
+        sessionId: String(ctx.data?.sessionId || taskPayload?.sessionId || taskMeta?.sessionId || sessionId || "").trim() || null,
+        runId: String(ctx.data?.runId || taskPayload?.runId || taskMeta?.runId || ctx.id || "").trim() || null,
+        taskId: String(ctx.data?.taskId || taskPayload?.id || taskPayload?.taskId || taskMeta?.taskId || "").trim() || null,
+        taskTitle: taskTitle || null,
+        taskDescription: taskDescription || null,
+        query: [
+          prompt,
+          taskTitle,
+          taskDescription,
+          issueAdvisor?.summary,
+          issueAdvisor?.nextStepGuidance,
+        ].filter(Boolean).join(" "),
+        changedFiles: taskMemoryPaths,
+        relatedPaths: taskMemoryPaths,
+        limit: 4,
+      });
+      memoryBriefing = formatKnowledgeBriefing(retrievedMemory, { maxEntries: 4 });
+      if (memoryBriefing) {
+        ctx.data._continuedSessionRetrievedMemory = retrievedMemory;
+        ctx.data._taskMemoryPaths = taskMemoryPaths;
+      }
+    } catch (err) {
+      ctx.log(node.id, `Continuation memory retrieval failed (non-fatal): ${err.message}`);
+    }
+    const enrichedPrompt = [continuationPrefix.trim(), memoryBriefing.trim(), prompt]
+      .filter(Boolean)
+      .join("\n\n");
 
     ctx.log(node.id, `Continuing session ${sessionId} (strategy: ${strategy})`);
 
