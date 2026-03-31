@@ -2370,9 +2370,17 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramBotEnabled,
     telegramCommandEnabled,
     telegramVerbosity,
-
+    telemetry: Object.freeze({
+      costPer1kTokensUsd: Object.freeze({
+        claude: Number.isFinite(Number(configData.telemetry?.costPer1kTokensUsd?.claude)) ? Number(configData.telemetry.costPer1kTokensUsd.claude) : 0.003,
+        codex: Number.isFinite(Number(configData.telemetry?.costPer1kTokensUsd?.codex)) ? Number(configData.telemetry.costPer1kTokensUsd.codex) : 0.002,
+        gemini: Number.isFinite(Number(configData.telemetry?.costPer1kTokensUsd?.gemini)) ? Number(configData.telemetry.costPer1kTokensUsd.gemini) : 0.0001,
+        copilot: Number.isFinite(Number(configData.telemetry?.costPer1kTokensUsd?.copilot)) ? Number(configData.telemetry.costPer1kTokensUsd.copilot) : 0,
+      }),
+    }),
     triggerSystem,
-    workflowWorktreeRecoveryCooldownMin,
+    workflows,
+  workflowWorktreeRecoveryCooldownMin,
     worktreeBootstrap,
 
     // GitHub Reconciler
@@ -2417,7 +2425,6 @@ export function loadConfig(argv = process.argv, options = {}) {
     workspacesDir,
     activeWorkspace,
     agentRepoRoot,
-    workflows,
 
     // Agent prompts
     agentPrompts,
@@ -2520,5 +2527,4 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
-
 

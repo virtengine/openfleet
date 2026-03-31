@@ -9,6 +9,7 @@ import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
 import LogsScreen from "./screens/logs.mjs";
 import StatusScreen from "./screens/status.mjs";
+import TelemetryScreen from "./screens/telemetry.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
 import CommandPalette from "./CommandPalette.js";
@@ -28,6 +29,7 @@ const SCREENS = {
   status: StatusScreen,
   tasks: TasksScreen,
   agents: AgentsScreen,
+  telemetry: TelemetryScreen,
   logs: LogsScreen,
 };
 
@@ -36,7 +38,8 @@ function ScreenTabs({ screen }) {
     { key: "status", num: "1", label: "Status" },
     { key: "tasks", num: "2", label: "Tasks" },
     { key: "agents", num: "3", label: "Agents" },
-    { key: "logs", num: "4", label: "Logs" },
+    { key: "telemetry", num: "4", label: "Telemetry" },
+    { key: "logs", num: "5", label: "Logs" },
   ];
 
   return html`
