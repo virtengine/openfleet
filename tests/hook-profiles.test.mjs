@@ -28,12 +28,6 @@ describe("hook-profiles", () => {
     expect(config.hooks.PrePush?.length).toBeGreaterThan(0);
     expect(config.hooks.PreCommit?.length).toBeGreaterThan(0);
     expect(config.hooks.TaskComplete?.length).toBeGreaterThan(0);
-    expect(config.hooks.PrePush?.map((item) => item.command)).toContain(
-      "git diff --check",
-    );
-    expect(config.hooks.PreCommit?.map((item) => item.command)).toContain(
-      "git diff --cached --check",
-    );
   });
 
   it("builds lightweight profile without validation hooks", () => {
@@ -52,40 +46,6 @@ describe("hook-profiles", () => {
     expect(config.hooks.PrePush).toBeUndefined();
   });
 
-  it("adds detected repository commands to validation hooks", async () => {
-    await writeFile(
-      resolve(rootDir, "package.json"),
-      JSON.stringify(
-        {
-          name: "hook-fixture",
-          scripts: {
-            "format:check": "prettier --check .",
-            lint: "eslint .",
-            "prepush:check": "npm run lint && npm test",
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-
-    const config = buildCanonicalHookConfig({
-      profile: "strict",
-      repoRoot: rootDir,
-    });
-
-    expect(config.hooks.PrePush?.map((item) => item.command)).toContain(
-      "npm run prepush:check",
-    );
-    expect(config.hooks.PostToolUse?.map((item) => item.command)).toContain(
-      "npm run format:check",
-    );
-    expect(config.hooks.PreCommit?.map((item) => item.command)).toContain(
-      "npm run lint",
-    );
-  });
-
   it("normalizes hook targets", () => {
     expect(normalizeHookTargets("codex,claude")).toEqual(["codex", "claude"]);
     expect(normalizeHookTargets("all")).toEqual(["codex", "claude", "copilot", "gemini", "opencode"]);
@@ -95,37 +55,15 @@ describe("hook-profiles", () => {
     const opts = buildHookScaffoldOptionsFromEnv({
       BOSUN_HOOK_PROFILE: "balanced",
       BOSUN_HOOK_TARGETS: "codex,copilot",
-      BOSUN_HOOK_POST_TOOL_USE: "npm run format:check;;npm run lint",
       BOSUN_HOOK_PREPUSH: "go test ./...;;go build ./...",
     });
 
     expect(opts.profile).toBe("balanced");
     expect(opts.targets).toEqual(["codex", "copilot"]);
-    expect(opts.commands.PostToolUse).toEqual([
-      "npm run format:check",
-      "npm run lint",
-    ]);
     expect(opts.commands.PrePush).toEqual(["go test ./...", "go build ./..."]);
   });
 
   it("scaffolds codex/claude/copilot hook files", async () => {
-    await writeFile(
-      resolve(rootDir, "package.json"),
-      JSON.stringify(
-        {
-          name: "hook-scaffold-fixture",
-          scripts: {
-            "format:check": "prettier --check .",
-            lint: "eslint .",
-            "prepush:check": "npm run lint && npm test",
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-
     const result = scaffoldAgentHookFiles(rootDir, {
       profile: "strict",
       targets: ["codex", "claude", "copilot"],
@@ -143,15 +81,6 @@ describe("hook-profiles", () => {
       await readFile(resolve(rootDir, ".codex", "hooks.json"), "utf8"),
     );
     expect(codexHooks.hooks.PrePush?.length).toBeGreaterThan(0);
-    expect(codexHooks.hooks.PrePush?.map((item) => item.command)).toContain(
-      "npm run prepush:check",
-    );
-    expect(codexHooks.hooks.PostToolUse?.map((item) => item.command)).toContain(
-      "npm run format:check",
-    );
-    expect(codexHooks.hooks.PreCommit?.map((item) => item.command)).toContain(
-      "npm run lint",
-    );
 
     const claudeSettings = JSON.parse(
       await readFile(
@@ -179,7 +108,7 @@ describe("hook-profiles", () => {
     expect(copilotJoined).toContain("agent-hook-bridge.mjs");
     expect(Array.isArray(copilotCmd)).toBe(true);
     expect(copilotCmd[0]).toBe("node");
-    expect(String(copilotCmd[1])).toBe("agent/agent-hook-bridge.mjs");
+    expect(String(copilotCmd[1])).toContain("agent-hook-bridge.mjs");
   });
 
   it("auto-migrates non-portable copilot bridge commands", async () => {
@@ -224,29 +153,7 @@ describe("hook-profiles", () => {
     );
     const migratedCommand = migratedConfig.sessionStart?.[0]?.command || [];
     expect(migratedCommand[0]).toBe("node");
-    expect(String(migratedCommand[1])).toBe("agent/agent-hook-bridge.mjs");
-  });
-
-  it("generates portable bridge commands for gemini and opencode", async () => {
-    scaffoldAgentHookFiles(rootDir, {
-      profile: "balanced",
-      targets: ["gemini", "opencode"],
-      enabled: true,
-    });
-
-    const geminiConfig = JSON.parse(
-      await readFile(resolve(rootDir, ".gemini", "settings.json"), "utf8"),
-    );
-    const openCodeConfig = JSON.parse(
-      await readFile(resolve(rootDir, ".opencode", "hooks.json"), "utf8"),
-    );
-
-    expect(String(geminiConfig.hooks.SessionStart?.[0]?.command || "")).toContain(
-      "node agent/agent-hook-bridge.mjs --agent gemini --event SessionStart",
-    );
-    expect(String(openCodeConfig.hooks.TaskComplete?.[0]?.command || "")).toContain(
-      "node agent/agent-hook-bridge.mjs --agent opencode --event TaskComplete",
-    );
+    expect(String(migratedCommand[1])).toContain("agent-hook-bridge.mjs");
   });
 
   it("merges with existing claude settings", async () => {

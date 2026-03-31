@@ -144,16 +144,6 @@ Set `primaryAgent` in `.bosun/bosun.config.json` or choose an executor preset du
 - `bosun --daemon --sentinel` starts daemon + sentinel together (recommended for unattended operation).
 - `bosun --terminate` is the clean reset command when you suspect stale/ghost processes.
 
-## VS Code debugging
-
-Bosun now includes workspace debug entries in `.vscode/launch.json` and helper tasks in `.vscode/tasks.json`.
-
-- `Debug Bosun CLI` launches `cli.mjs` with the repo-local `.bosun` config and attaches the debugger to the real CLI entry path.
-- `Debug Bosun Monitor Direct` launches `infra/monitor.mjs` directly when you want to debug monitor logic without stepping through the CLI worker bootstrap.
-- `Debug Bosun Daemon Child (foreground)` runs the daemon-child path without detaching, which is useful for restart-loop and daemon-specific behavior.
-- `Attach to Bosun CLI Startup (9229)` and `Attach to Bosun Monitor Startup (9230)` start Bosun under `--inspect-brk` so you can catch startup failures before normal breakpoints would bind.
-- `Bosun: Terminate Runtime` is the cleanup task to use if a stale monitor/daemon is holding the lock before a debug session.
-
 Telegram operators can pull the weekly agent work summary with `/weekly [days]` or `/report weekly [days]`. To post it automatically once per week, set `TELEGRAM_WEEKLY_REPORT_ENABLED=true` together with `TELEGRAM_WEEKLY_REPORT_DAY`, `TELEGRAM_WEEKLY_REPORT_HOUR`, and optional `TELEGRAM_WEEKLY_REPORT_DAYS`.
 
 ## Documentation

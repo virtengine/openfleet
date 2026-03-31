@@ -7108,12 +7108,6 @@
         globalThis.removeEventListener('bosun:app-mounted', handleMounted);
       });
 
-      // If app.js already mounted before this listener was registered, clear the timeout now
-      if (globalThis.__bosunAppMounted) {
-        bootReady = true;
-        clearTimeout(bootTimeoutId);
-      }
-
       var appModuleScript = document.getElementById('app-module');
       appModuleScript?.addEventListener('error', function () {
         clearTimeout(bootTimeoutId);

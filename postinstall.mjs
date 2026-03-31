@@ -38,10 +38,6 @@ const BUNDLED_PWSH_PATH = resolve(BUNDLED_PWSH_DIR, "pwsh");
 const FALLBACK_PWSH_VERSION = "7.4.6";
 const require = createRequire(import.meta.url);
 
-function resolveNpmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function commandExists(cmd) {
@@ -408,7 +404,7 @@ async function main() {
       console.log("");
       console.log("  ▸ Installing desktop dependencies (Electron)...");
       try {
-        execSync(`${resolveNpmCommand()} install`, {
+        execSync("npm install", {
           cwd: desktopDir,
           stdio: "inherit",
           timeout: 0,
@@ -479,6 +475,5 @@ async function main() {
 main().catch((err) => {
   console.error(`  :alert:  postinstall failed: ${err.message}`);
 });
-
 
 

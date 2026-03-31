@@ -20,23 +20,6 @@ import { spawn, spawnSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, basename, join } from "node:path";
 
-function resolveProcessCommand(command) {
-  const normalizedCommand = String(command || "").trim();
-  if (!normalizedCommand || process.platform !== "win32") {
-    return { command: normalizedCommand, needsShell: false };
-  }
-
-  if (/^[A-Za-z]:[\\/]|^[\\/]{2}|[\\/]/.test(normalizedCommand)) {
-    return { command: normalizedCommand, needsShell: false };
-  }
-
-  if (/\.(?:cmd|bat|exe|com)$/i.test(normalizedCommand)) {
-    return { command: normalizedCommand, needsShell: false };
-  }
-
-  return { command: `${normalizedCommand}.cmd`, needsShell: true };
-}
-
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const containerEnabled = ["1", "true", "yes"].includes(
@@ -344,17 +327,15 @@ async function runIsolatedProcess(options = {}) {
   } = options;
 
   return new Promise((resolvePromise) => {
-    const { command: resolvedCommand, needsShell } = resolveProcessCommand(command);
     const useArgv = Array.isArray(args) && args.length > 0;
     const proc = useArgv
-      ? spawn(String(resolvedCommand || ""), args.map((arg) => String(arg)), {
+      ? spawn(String(command || ""), args.map((arg) => String(arg)), {
           cwd,
           env: { ...process.env, ...env },
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
-          shell: needsShell,
         })
-      : spawn(String(resolvedCommand || ""), {
+      : spawn(String(command || ""), {
           cwd,
           env: { ...process.env, ...env },
           stdio: ["ignore", "pipe", "pipe"],

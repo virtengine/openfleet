@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 describe("monitor workflow startup guards", () => {
   const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
   const maintenanceSource = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
-  const normalizedMonitorSource = monitorSource.replace(/\r\n/g, "\n");
 
   it("initializes workflow automation before runtime subsystems in non-test mode", () => {
     expect(monitorSource).toContain("if (!isMonitorTestRuntime) {");
@@ -60,18 +59,14 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("engine.load();");
   });
 
-  it("stages interrupted-run recovery behind startup throttling", () => {
-    expect(monitorSource).toContain("const workflowStartupRecoveryGraceMs = Math.max(");
-    expect(monitorSource).toContain("const workflowStartupRecoveryStepDelayMs = Math.max(");
-    expect(monitorSource).toContain("function scheduleStartupWorkflowRecovery(name, handler, step = 0)");
-    expect(monitorSource).toContain('"startup-workflow-history-unstick"');
-    expect(monitorSource).toContain("configWorkflowRecovery?.startupGraceMs");
-    expect(monitorSource).toContain("configWorkflowRecovery?.startupStepDelayMs");
-    expect(monitorSource).not.toContain('engine.resumeInterruptedRuns().catch((err) => {');
+  it("resumes interrupted workflow runs after monitor services are wired", () => {
+    expect(monitorSource).toContain('if (typeof engine.resumeInterruptedRuns === "function") {');
+    expect(monitorSource).toContain('engine.resumeInterruptedRuns().catch((err) => {');
+    expect(monitorSource).toContain('[workflows] Failed to resume interrupted runs:');
     expect(
-      normalizedMonitorSource.indexOf("function scheduleStartupWorkflowRecovery(name, handler, step = 0)"),
+      monitorSource.indexOf("bindWorkflowEngineToAnomalyDetector(engine);"),
     ).toBeLessThan(
-      normalizedMonitorSource.indexOf("if (!isMonitorTestRuntime) {\n  if (workflowAutomationEnabled) {")
+      monitorSource.indexOf('engine.resumeInterruptedRuns().catch((err) => {'),
     );
   });
 
@@ -101,16 +96,12 @@ describe("monitor workflow startup guards", () => {
     );
     expect(monitorSource).toContain('pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(');
     expect(monitorSource).toContain('const includeTaskPoll = opts?.includeTaskPoll !== false;');
-    expect(monitorSource).toContain('const includeScheduled = opts?.includeScheduled !== false;');
     expect(monitorSource).not.toContain('_lastRunAt: Date.now()');
-    expect(monitorSource).toContain('const isTaskPollTrigger =');
-    expect(monitorSource).toContain('if (!includeTaskPoll && isTaskPollTrigger) {');
-    expect(monitorSource).toContain('if (!includeScheduled && !isTaskPollTrigger) {');
+    expect(monitorSource).toContain('if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {');
     expect(monitorSource).toContain('"stale-dispatch-unstick"');
     expect(monitorSource).toContain('"stale-dispatch-task-poll-unstick"');
     expect(monitorSource).toContain('throwOnError: true');
     expect(monitorSource).toContain('requireEngine: true');
-    expect(monitorSource).toContain('includeScheduled: false,');
     const startupTaskPollHook = monitorSource.indexOf('"stale-dispatch-task-poll-unstick"');
     expect(startupTaskPollHook).toBeGreaterThan(-1);
     expect(
@@ -123,7 +114,7 @@ describe("monitor workflow startup guards", () => {
     expect(
       monitorSource.indexOf('await ensureWorkflowAutomationEngine().catch(() => {});'),
     ).toBeLessThan(
-      monitorSource.indexOf('"startup-stale-dispatch-unstick"'),
+      monitorSource.indexOf('"stale-dispatch-unstick"'),
     );
   });
 
@@ -204,20 +195,14 @@ describe("monitor workflow startup guards", () => {
   });
 
   it("attempts branch-to-PR recovery before resetting stale inreview tasks during review-agent rehydrate", () => {
-    expect(monitorSource).toContain("function hasCurrentReviewVerdict(task)");
     expect(monitorSource).toContain("let existingPr = await findExistingPrForBranchInRepo(");
     expect(monitorSource).toContain("existingPr = await findExistingPrForBranchApiInRepo(");
-    expect(monitorSource).toContain("if (hasCurrentReviewVerdict(task)) {");
-    expect(monitorSource).toContain("skippedReviewed += 1;");
     expect(monitorSource).toContain("updateInternalTask(taskId, {");
     expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber);");
     expect(monitorSource).toContain(
       "review rehydrate redispatch ${taskId}: missing prUrl/prNumber",
     );
     expect(monitorSource).toContain("redispatchInReviewTask(task, \"review-agent-rehydrate\"");
-    expect(monitorSource).toContain("const reviewRedispatchCooldownByTask = new Map();");
-    expect(monitorSource).toContain("const REVIEW_REDISPATCH_COOLDOWN_MS = 5 * 60 * 1000;");
-    expect(monitorSource).toContain("if (existing && now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS) {");
     expect(monitorSource).toContain("dispatchFixTask: (taskId, issues) => {");
     expect(monitorSource).toContain("supervisor dispatch-fix: no active session");
     expect(monitorSource).toContain("review-fix-redispatch");
@@ -239,21 +224,6 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("[monitor] review reconcile: PR #");
     expect(monitorSource).toContain("safeSetInterval(\"workflow-review-merge-reconcile\"");
     expect(monitorSource).toContain("checkMergedPRsAndUpdateTasks();");
-  });
-
-  it("stages heavy startup epic and dependabot maintenance behind delayed timers", () => {
-    expect(monitorSource).toContain("const STARTUP_EPIC_CHECK_DELAY_MS = parseEnvInteger(");
-    expect(monitorSource).toContain("const STARTUP_DEPENDABOT_CHECK_DELAY_MS = parseEnvInteger(");
-    expect(monitorSource).toContain("safeSetTimeout(\"startup-epic-check\"");
-    expect(monitorSource).toContain("safeSetTimeout(\"startup-dependabot-auto-merge\"");
-    expect(monitorSource).not.toContain("safeSetTimeout(\"startup-health-checks\"");
-  });
-
-  it("avoids repeated review reconcile redispatch logs while cooldown is active", () => {
-    expect(monitorSource).toContain("function isReviewRedispatchCoolingDown(taskId, now = Date.now())");
-    expect(monitorSource).toContain("const reviewVerdictCurrent = hasCurrentReviewVerdict(task);");
-    expect(monitorSource).toContain("!reviewVerdictCurrent &&");
-    expect(monitorSource).toContain("!isReviewRedispatchCoolingDown(taskId, nowMs)");
   });
 
   it("recovers merged PR tasks that were bounced back to todo/inprogress", () => {

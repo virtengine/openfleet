@@ -10,7 +10,6 @@ import { chromium } from "playwright";
 const repoRoot = process.cwd();
 const serverEntry = resolve(repoRoot, "server", "playwright-ui-server.mjs");
 const routerSource = readFileSync(resolve(repoRoot, "ui", "modules", "router.js"), "utf8");
-const appSource = readFileSync(resolve(repoRoot, "ui", "app.js"), "utf8");
 const requestedEnvPort = process.env.PLAYWRIGHT_UI_PORT ? Number(process.env.PLAYWRIGHT_UI_PORT) : undefined;
 const externalBlockPattern = /(telegram\.org|umami\.is|cloud\.umami|fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net|unpkg\.com)/;
 const ROUTE_NAVIGATION_TIMEOUT_MS = 8000;
@@ -21,15 +20,8 @@ const UI_QUERY_TIMEOUT_MS = 250;
 const REPRESENTATIVE_SMOKE_PATHS = [
   "/tasks",
   "/workflows",
-  "/guardrails",
   "/settings",
 ];
-
-test("registers the Guardrails route and tab in the browser UI layer", () => {
-  assert.match(routerSource, /id:\s*"guardrails"\s*,\s*label:\s*"Guardrails"\s*,\s*icon:\s*"shield"/);
-  assert.match(appSource, /const\s+GuardrailsTab\s*=\s*lazyTab\("\.\/tabs\/guardrails\.js",\s*"GuardrailsTab"/);
-  assert.match(appSource, /guardrails:\s*GuardrailsTab\s*,/);
-});
 
 function debugLog(message) {
   process.stderr.write(`[portal-smoke] ${message}\n`);

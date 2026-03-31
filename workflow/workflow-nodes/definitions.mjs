@@ -21,7 +21,6 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { registerNodeType as registerEngineNodeType } from "../workflow-engine.mjs";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
@@ -50,7 +49,6 @@ function registerNodeType(type, handler) {
     throw new Error(`${TAG} Node type "${type}" must have an execute function`);
   }
   _builtinNodeDefinitions.set(type, handler);
-  registerEngineNodeType(type, handler, { source: "builtin" });
 }
 
 export function getBuiltinNodeDefinition(type) {
@@ -184,7 +182,6 @@ function execGitArgsSync(args, options = {}) {
       return execFileSync(gitBinary, gitArgs, {
         ...options,
         env: buildGitExecutionEnv(env, gitBinary),
-        windowsHide: options.windowsHide ?? true,
       });
     } catch (error) {
       if (error?.code === "ENOENT") {
@@ -253,9 +250,7 @@ function normalizePrEventName(value) {
 }
 
 function evaluateTaskAssignedTriggerConfig(config = {}, eventData = {}) {
-  let triggered =
-    eventData?.eventType === "task.assigned"
-    || eventData?.eventType === "task.review_fix_requested";
+  let triggered = eventData?.eventType === "task.assigned";
   if (!triggered) return false;
 
   const task = eventData?.task || eventData || {};
@@ -554,18 +549,6 @@ function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
 
   if (task && typeof task === "object") {
     ctx.data.task = task;
-    const taskWorktreePath = String(
-      task.worktreePath ||
-      task.workspacePath ||
-      task.meta?.worktreePath ||
-      task.meta?.workspacePath ||
-      task.metadata?.worktreePath ||
-      task.metadata?.workspacePath ||
-      "",
-    ).trim();
-    if (taskWorktreePath && !String(ctx.data.worktreePath || "").trim()) {
-      ctx.data.worktreePath = taskWorktreePath;
-    }
   }
 }
 async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue = "") {
@@ -1171,32 +1154,12 @@ function formatCommentLine(comment) {
   return `- ${author}${when}: ${comment.body}`;
 }
 
-function formatReviewIssueLine(issue) {
-  const severity = String(issue?.severity || "major").trim() || "major";
-  const category = String(issue?.category || "review").trim() || "review";
-  const file = String(issue?.file || "(unknown file)").trim() || "(unknown file)";
-  const line = Number.isFinite(Number(issue?.line)) ? `:${Number(issue.line)}` : "";
-  const description = String(issue?.description || "").trim();
-  const suffix = description ? ` - ${description}` : "";
-  return `- [${severity}/${category}] ${file}${line}${suffix}`;
-}
-
 function buildTaskContextBlock(task) {
   if (!task) return "";
   const comments = normalizeTaskComments(task);
   const attachments = normalizeTaskAttachments(task);
-  const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
-  const reviewIssues = Array.isArray(task?.reviewIssues) ? task.reviewIssues : [];
-  if (!comments.length && !attachments.length && reviewStatus !== "changes_requested") return "";
+  if (!comments.length && !attachments.length) return "";
   const lines = ["## Task Context"];
-  if (reviewStatus === "changes_requested") {
-    lines.push("### Review Findings");
-    if (reviewIssues.length > 0) {
-      for (const issue of reviewIssues) lines.push(formatReviewIssueLine(issue));
-    } else {
-      lines.push("- Review requested changes, but no structured issue list was recorded.");
-    }
-  }
   if (comments.length) {
     lines.push("### Comments");
     for (const comment of comments) lines.push(formatCommentLine(comment));

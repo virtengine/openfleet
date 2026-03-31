@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * bosun-skills — Agent Skills Knowledge-Base
  *

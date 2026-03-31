@@ -816,7 +816,6 @@ async function main() {
   const config = parseProxyConfig();
   const runtime = createCatalogRuntime(config);
   const server = createDiscoveryProxyServer(runtime, config);
-
   const transport = new StdioServerTransport();
   await server.connect(transport);
 

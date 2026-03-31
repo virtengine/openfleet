@@ -535,44 +535,6 @@ function inferShowInChatDropdown(entry, parsedContent) {
   return entry?.showInChatDropdown === true;
 }
 
-function buildAgentStarterContent(agentCategory, interactiveMode, name = "", description = "") {
-  const cat = normalizeAgentCategory(agentCategory);
-  const obj = {
-    name: name || "My Agent",
-    description: description || "",
-    titlePatterns: [],
-    scopes: [],
-    sdk: null,
-    model: null,
-    promptOverride: null,
-    skills: [],
-    agentType: deriveAgentTypeFromCategory(cat),
-    agentCategory: cat,
-    tags: [],
-  };
-  if (cat === "interactive") {
-    obj.interactiveMode = normalizeInteractiveMode(interactiveMode, cat) || "agent";
-    obj.showInChatDropdown = true;
-  } else if (cat === "voice") {
-    obj.voiceAgent = true;
-    obj.interactiveMode = "voice";
-  }
-  return JSON.stringify(obj, null, 2);
-}
-
-const BUILTIN_CHAT_AGENTS = Object.freeze(
-  [
-    { value: "ask",     label: "Ask",     description: "Precise Q&A mode — answers questions without making autonomous changes." },
-    { value: "agent",   label: "Agent",   description: "Autonomous agent mode — executes tasks, writes and runs code." },
-    { value: "plan",    label: "Plan",    description: "Planning mode — creates structured plans before execution." },
-    { value: "web",     label: "Web",     description: "Web mode — online research, browsing, and information retrieval." },
-    { value: "instant", label: "Instant", description: "Instant mode — fast, lightweight responses without deep reasoning." },
-  ].map((b) => ({
-    ...b,
-    defaultContent: buildAgentStarterContent("interactive", b.value, b.label, b.description),
-  })),
-);
-
 const AUDIO_AGENT_TEMPLATES = Object.freeze({
   female: {
     type: "agent",
@@ -687,9 +649,7 @@ function LibraryCard({ entry, onSelect }) {
   return html`
     <${Card} variant="outlined" sx=${{ cursor: "pointer", transition: "all 0.15s", "&:hover": { borderColor: "primary.main", transform: "translateY(-1px)", boxShadow: 3 }, position: "relative", bgcolor: "background.paper" }} onClick=${() => onSelect(entry)}>
       <${CardContent}>
-        <${Box} sx=${{ position: "absolute", top: 8, right: 8, display: "flex", gap: 0.5 }}>
-          ${entry.builtinDefault && html`<${Chip} label="Default" size="small" sx=${{ bgcolor: "#ffffff18", color: "text.secondary", fontWeight: 500 }} />`}
-          ${entry.builtinChatMode && !entry.builtinDefault && html`<${Chip} label="Built-in" size="small" sx=${{ bgcolor: "primary.main", color: "#fff", fontWeight: 500, opacity: 0.85 }} />`}
+        <${Box} sx=${{ position: "absolute", top: 8, right: 8 }}>
           <${Chip} label=${typeLabel} size="small" sx=${{ bgcolor: typeColor + "22", color: typeColor, fontWeight: 500 }} />
         <//>
         <${Stack} direction="row" spacing=${1} alignItems="flex-start" sx=${{ mb: 1 }}>
@@ -700,15 +660,13 @@ function LibraryCard({ entry, onSelect }) {
           <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1, WebkitLineClamp: 2, WebkitBoxOrient: "vertical", display: "-webkit-box", overflow: "hidden", fontSize: "0.82em" }}>${entry.description}<//>
         `}
         <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" alignItems="center">
-          ${!entry.builtinDefault && html`
-            <${Chip}
-              label=${STORAGE_SCOPE_LABELS[normalizeStorageScope(entry.storageScope, "repo")] || "Repo"}
-              size="small"
-              variant="outlined"
-              color=${STORAGE_SCOPE_COLORS[normalizeStorageScope(entry.storageScope, "repo")] || "default"}
-              sx=${{ fontSize: "0.74em" }}
-            />
-          `}
+          <${Chip}
+            label=${STORAGE_SCOPE_LABELS[normalizeStorageScope(entry.storageScope, "repo")] || "Repo"}
+            size="small"
+            variant="outlined"
+            color=${STORAGE_SCOPE_COLORS[normalizeStorageScope(entry.storageScope, "repo")] || "default"}
+            sx=${{ fontSize: "0.74em" }}
+          />
           ${entry.type === "agent" && entry.agentType && html`
             <${Chip} label=${String(entry.agentCategory || entry.agentType).replace(/(^.|\s+.)/g, (m) => m.toUpperCase())} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
           `}
@@ -721,9 +679,6 @@ function LibraryCard({ entry, onSelect }) {
           ${entry.scope && entry.scope !== "global" && html`
             <${Typography} variant="caption" color="text.secondary" sx=${{ ml: "auto !important" }}>${iconText(`:pin: ${entry.scope}`)}<//>
           `}
-          ${entry.builtinDefault && html`
-            <${Typography} variant="caption" color="text.disabled" sx=${{ fontSize: "0.75em", fontStyle: "italic" }}>Click to customize<//>
-          `}
         <//>
       <//>
     <//>
@@ -734,21 +689,6 @@ function LibraryCard({ entry, onSelect }) {
 
 function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const isNew = !entry?.id;
-  const isBuiltinChatSlot = !!entry?.builtinChatMode;
-
-  function seedAgentContent(entryObj, category, mode) {
-    if (typeof entryObj?.content === "string" && entryObj.content.trim()) return entryObj.content;
-    if (isNew && (entryObj?.type === "agent" || category === "interactive")) {
-      return buildAgentStarterContent(
-        category || inferAgentCategoryFromEntry(entryObj, null),
-        mode || inferInteractiveModeFromEntry(entryObj, null),
-        entryObj?.name || "",
-        entryObj?.description || "",
-      );
-    }
-    return "";
-  }
-
   const initialFormSnapshot = {
     id: entry?.id || "",
     type: entry?.type || "prompt",
@@ -761,7 +701,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     interactiveMode: inferInteractiveModeFromEntry(entry, null),
     interactiveLabel: inferInteractiveLabelFromEntry(entry, null),
     showInChatDropdown: inferShowInChatDropdown(entry, null),
-    content: seedAgentContent(entry, inferAgentCategoryFromEntry(entry, null), inferInteractiveModeFromEntry(entry, null)),
+    content: typeof entry?.content === "string" ? entry.content : "",
   };
   const [form, setForm] = useState(initialFormSnapshot);
   const [baseline, setBaseline] = useState(initialFormSnapshot);
@@ -778,8 +718,6 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   );
 
   useEffect(() => {
-    const cat = inferAgentCategoryFromEntry(entry, null);
-    const mode = inferInteractiveModeFromEntry(entry, null);
     const next = {
       id: entry?.id || "",
       type: entry?.type || "prompt",
@@ -788,11 +726,11 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       tags: normalizeTags(entry?.tags).join(", "),
       scope: entry?.scope || "global",
       storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
-      agentCategory: cat,
-      interactiveMode: mode,
+      agentCategory: inferAgentCategoryFromEntry(entry, null),
+      interactiveMode: inferInteractiveModeFromEntry(entry, null),
       interactiveLabel: inferInteractiveLabelFromEntry(entry, null),
       showInChatDropdown: inferShowInChatDropdown(entry, null),
-      content: seedAgentContent(entry, cat, mode),
+      content: "",
     };
     setForm(next);
     setBaseline(next);
@@ -829,13 +767,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     return () => { cancelled = true; };
   }, [entry?.id]);
 
-  const updateField = (key) => (e) => setForm((f) => {
-    const next = { ...f, [key]: e.target.value };
-    if (isNew && key === "type" && e.target.value === "agent" && !f.content.trim()) {
-      next.content = buildAgentStarterContent(f.agentCategory, f.interactiveMode, f.name, f.description);
-    }
-    return next;
-  });
+  const updateField = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const changeCount = useMemo(
     () => countChangedFields(baseline, form),
     [baseline, form],
@@ -962,9 +894,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
 
   return html`
     <${Modal}
-      title=${isBuiltinChatSlot
-        ? `Customize: ${BUILTIN_CHAT_AGENTS.find((b) => b.value === entry.builtinChatMode)?.label || "Chat Agent"}`
-        : isNew ? "New Resource" : `Edit: ${entry.name}`}
+      title=${isNew ? "New Resource" : `Edit: ${entry.name}`}
       onClose=${onClose}
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
@@ -975,7 +905,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       activeOperationLabel=${loading ? "Save/Delete request is still running" : ""}
     >
       <${Stack} spacing=${2}>
-        ${isNew && !isBuiltinChatSlot && html`
+        ${isNew && html`
           <${FormControl} fullWidth size="small">
             <${InputLabel}>Type<//>
             <${Select} value=${form.type} onChange=${updateField("type")} label="Type">
@@ -1046,7 +976,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         }
 
         <${Stack} direction="row" spacing=${1} justifyContent="flex-end" sx=${{ mt: 1 }}>
-          ${!isNew && !isBuiltinChatSlot && html`
+          ${!isNew && html`
             <${Button} color="error" onClick=${() => setConfirmDelete(true)} disabled=${loading}>Delete<//>
           `}
           <${Box} sx=${{ flex: 1 }} />
@@ -3175,22 +3105,7 @@ export function LibraryTab() {
 
   const handleSelect = useCallback((entry) => {
     haptic("light");
-    if (entry.builtinDefault) {
-      // No library customization yet — open editor pre-seeded with builtin defaults
-      const builtin = BUILTIN_CHAT_AGENTS.find((b) => b.value === entry.builtinChatMode);
-      setEditing({
-        type: "agent",
-        name: builtin?.label || entry.name,
-        description: builtin?.description || entry.description,
-        agentCategory: "interactive",
-        interactiveMode: entry.interactiveMode,
-        showInChatDropdown: true,
-        content: builtin?.defaultContent || "",
-        builtinChatMode: entry.builtinChatMode,
-      });
-    } else {
-      setEditing(entry);
-    }
+    setEditing(entry);
   }, []);
 
   const handleCreateAudioAgent = useCallback((templateKey) => {
@@ -3221,43 +3136,14 @@ export function LibraryTab() {
 
   const groupedAgentSections = useMemo(() => {
     if (filterType.value !== "agent") return [];
-    const interactiveEntries = displayed.filter((entry) => entry.agentCategory === "interactive");
-
-    // Build the Chat Agents section: always show all 5 builtin slots
-    const chatAgentSlots = BUILTIN_CHAT_AGENTS.map((builtin) => {
-      const match = interactiveEntries.find(
-        (e) => normalizeInteractiveMode(e.interactiveMode, "interactive") === builtin.value,
-      );
-      if (match) return { ...match, builtinChatMode: builtin.value };
-      return {
-        id: `__builtin_chat_${builtin.value}`,
-        type: "agent",
-        name: builtin.label,
-        description: builtin.description,
-        agentCategory: "interactive",
-        agentType: "chat",
-        interactiveMode: builtin.value,
-        storageScope: "repo",
-        tags: [],
-        builtinChatMode: builtin.value,
-        builtinDefault: true,
-      };
-    });
-
-    // Manual Chat Agents: interactive entries not covered by a builtin slot
-    const manualInteractive = interactiveEntries.filter(
-      (e) => !BUILTIN_CHAT_AGENTS.some(
-        (b) => normalizeInteractiveMode(e.interactiveMode, "interactive") === b.value,
-      ),
-    );
+    const interactive = displayed.filter((entry) => entry.agentCategory === "interactive");
     const voice = displayed.filter((entry) => entry.agentCategory === "voice");
     const task = displayed.filter((entry) => !entry.agentCategory || entry.agentCategory === "task");
     return [
-      { key: "chat", title: "Chat Agents", items: chatAgentSlots, alwaysShow: true },
-      { key: "interactive", title: "Manual Chat Agents", items: manualInteractive },
+      { key: "interactive", title: "Manual Chat Agents", items: interactive },
       { key: "voice", title: "Voice Agents", items: voice },
       { key: "task", title: "Task Templates", items: task },
-    ].filter((section) => section.alwaysShow || section.items.length > 0);
+    ].filter((section) => section.items.length > 0);
   }, [displayed, filterType.value]);
 
   return html`
@@ -3312,7 +3198,7 @@ export function LibraryTab() {
         <div style="text-align:center;padding:40px;"><${Spinner} /> Loading library...</div>
       `}
 
-      ${filterType.value !== "mcp" && !loading && displayed.length === 0 && initialized.value && filterType.value !== "agent" && html`
+      ${filterType.value !== "mcp" && !loading && displayed.length === 0 && initialized.value && html`
         <${EmptyState}
           icon="book"
           title="No resources found"
@@ -3324,33 +3210,30 @@ export function LibraryTab() {
             : { label: "➕ New Resource", onClick: () => setEditing({}) }} />
       `}
 
-      ${/* Agent view: always show Chat Agents section + any other sections */
-        filterType.value === "agent" && !loading && html`
-          ${groupedAgentSections.map((section) => html`
-            <${Box} key=${section.key} sx=${{ display: "flex", flexDirection: "column", gap: 1.25, mb: 2 }}>
-              <${Stack} direction="row" alignItems="center" spacing=${1}>
-                <${Typography} variant="subtitle2">${section.title}<//>
-                <${Chip} label=${section.items.length} size="small" variant="outlined" />
-                ${section.key === "chat" && html`
-                  <${Typography} variant="caption" color="text.disabled" sx=${{ fontSize: "0.78em" }}>Built-in defaults — click any to customize<//>
-                `}
-              <//>
-              <div class="library-grid">
-                ${section.items.map((e) => html`
-                  <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
-                `)}
-              </div>
-            </${Box}>
-          `)}
-        `
-      }
-
-      ${filterType.value !== "mcp" && filterType.value !== "agent" && !loading && displayed.length > 0 && html`
-        <div class="library-grid">
-          ${displayed.map((e) => html`
-            <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
-          `)}
-        </div>
+      ${filterType.value !== "mcp" && !loading && displayed.length > 0 && html`
+        ${filterType.value === "agent"
+          ? html`
+            ${groupedAgentSections.map((section) => html`
+              <${Box} key=${section.key} sx=${{ display: "flex", flexDirection: "column", gap: 1.25, mb: 2 }}>
+                <${Stack} direction="row" alignItems="center" spacing=${1}>
+                  <${Typography} variant="subtitle2">${section.title}<//>
+                  <${Chip} label=${section.items.length} size="small" variant="outlined" />
+                <//>
+                <div class="library-grid">
+                  ${section.items.map((e) => html`
+                    <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
+                  `)}
+                </div>
+              </${Box}>
+            `)}
+          `
+          : html`
+            <div class="library-grid">
+              ${displayed.map((e) => html`
+                <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
+              `)}
+            </div>
+          `}
       `}
 
       ${editing && html`

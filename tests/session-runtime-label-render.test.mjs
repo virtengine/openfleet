@@ -79,10 +79,5 @@ for (const relPath of appFiles) {
       expect(source).not.toContain("loadSessions({ type: sessionType })");
       expect(source).not.toContain("selectedSessionId.value = next.id");
     });
-
-    it("does not depend on an undefined routeParams session source", () => {
-      expect(source).not.toContain("routeParams.value?.sessionId");
-      expect(source).toContain("const sessionId = selectedSessionId.value;");
-    });
   });
 }

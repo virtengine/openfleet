@@ -225,81 +225,12 @@ function parseContextBreakdown(text) {
 function normalizeUsage(value) {
   if (!value || typeof value !== "object") return null;
   const input =
-    Number(value.input_tokens ?? value.prompt_tokens ?? value.inputTokens ?? value.promptTokens ?? value.input ?? value.prompt ?? 0) || 0;
+    Number(value.input_tokens ?? value.prompt_tokens ?? value.input ?? value.prompt ?? 0) || 0;
   const output =
-    Number(value.output_tokens ?? value.completion_tokens ?? value.outputTokens ?? value.completionTokens ?? value.output ?? value.completion ?? 0) || 0;
-  const total = Number(value.total_tokens ?? value.totalTokens ?? value.total ?? input + output) || 0;
+    Number(value.output_tokens ?? value.completion_tokens ?? value.output ?? value.completion ?? 0) || 0;
+  const total = Number(value.total_tokens ?? value.total ?? input + output) || 0;
   if (input <= 0 && output <= 0 && total <= 0) return null;
   return { input, output, total };
-}
-
-function normalizeTokenUsageMeta(meta) {
-  if (!meta || typeof meta !== "object") return null;
-  return normalizeUsage(
-    meta.tokenUsage
-    || meta.usage
-    || meta.tokens
-    || (meta.inputTokens != null || meta.outputTokens != null || meta.totalTokens != null ? meta : null),
-  );
-}
-
-function toTimestampMs(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const ms = new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : null;
-}
-
-function buildTurnTimeline(messages = []) {
-  const turns = new Map();
-  for (const msg of Array.isArray(messages) ? messages : []) {
-    if (!msg || !Number.isFinite(Number(msg.turnIndex))) continue;
-    const turnIndex = Number(msg.turnIndex);
-    const timestamp = String(msg.timestamp || "");
-    const tsMs = toTimestampMs(timestamp);
-    const entry = turns.get(turnIndex) || {
-      turn: turnIndex + 1,
-      turnIndex,
-      startedAt: null,
-      endedAt: null,
-      durationMs: null,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      toolCalls: 0,
-      assistantPreview: "",
-    };
-    if (tsMs !== null) {
-      const startedMs = toTimestampMs(entry.startedAt);
-      const endedMs = toTimestampMs(entry.endedAt);
-      if (startedMs === null || tsMs < startedMs) entry.startedAt = timestamp;
-      if (endedMs === null || tsMs > endedMs) entry.endedAt = timestamp;
-    }
-    const type = String(msg.type || "").toLowerCase();
-    const role = String(msg.role || "").toLowerCase();
-    if (type === "tool_call" && String(msg?.meta?.lifecycle || "").toLowerCase() !== "started") {
-      entry.toolCalls += 1;
-    }
-    const usage = normalizeTokenUsageMeta(msg?.meta) || normalizeUsage(msg?.usage) || null;
-    if (usage) {
-      entry.inputTokens += usage.input;
-      entry.outputTokens += usage.output;
-      entry.totalTokens += usage.total;
-    }
-    if ((role === "assistant" || type === "agent_message" || type === "assistant_message") && !entry.assistantPreview) {
-      entry.assistantPreview = toText(msg.content).replace(/\s+/g, " ").trim().slice(0, 180);
-    }
-    turns.set(turnIndex, entry);
-  }
-  return Array.from(turns.values())
-    .sort((a, b) => a.turnIndex - b.turnIndex)
-    .map((entry) => {
-      const startedMs = toTimestampMs(entry.startedAt);
-      const endedMs = toTimestampMs(entry.endedAt);
-      return {
-        ...entry,
-        durationMs: startedMs !== null && endedMs !== null ? Math.max(0, endedMs - startedMs) : null,
-      };
-    });
 }
 
 export function formatCompactCount(value) {
@@ -357,7 +288,7 @@ export function buildSessionInsights(fullSession = null) {
       });
     }
 
-    const usage = normalizeTokenUsageMeta(msg?.meta) || normalizeUsage(msg?.usage) || null;
+    const usage = normalizeUsage(msg?.meta?.usage) || normalizeUsage(msg?.usage) || null;
     if (usage) {
       tokenUsage.inputTokens += usage.input;
       tokenUsage.outputTokens += usage.output;
@@ -458,7 +389,6 @@ export function buildSessionInsights(fullSession = null) {
     contextWindow,
     contextBreakdown,
     tokenUsage,
-    turnTimeline: buildTurnTimeline(messages),
     activityDiff: {
       files: edited.map((entry) => ({
         path: entry.path,
@@ -487,7 +417,6 @@ export function buildSessionInsights(fullSession = null) {
       ? persisted.contextBreakdown
       : derived.contextBreakdown,
     tokenUsage: persisted.tokenUsage || derived.tokenUsage,
-    turnTimeline: Array.isArray(persisted.turnTimeline) ? persisted.turnTimeline : derived.turnTimeline,
     activityDiff: persisted.activityDiff || derived.activityDiff,
     generatedAt: persisted.generatedAt || derived.generatedAt,
   };

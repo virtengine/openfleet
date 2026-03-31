@@ -5,13 +5,10 @@
  *   1. Start the mock UI server:  node playwright-ui-server.mjs
  *   2. Run this:                  npx playwright test playwright-ui-inspect.mjs --headed
  */
-import * as playwrightTest from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { resolve, dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-
-const test = playwrightTest.test ?? playwrightTest.default?.test;
-const expect = playwrightTest.expect ?? playwrightTest.default?.expect;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCREENSHOTS_DIR = resolve(__dirname, "playwright-screenshots");

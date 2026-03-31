@@ -6,7 +6,7 @@ import {
   loadWorkflowInputFromFile,
   runConfiguredWorkflow,
 } from "./declarative-workflows.mjs";
-import { inspectCustomWorkflowNodePlugins } from "./workflow-nodes/custom-loader.mjs";
+import { inspectCustomWorkflowNodePlugins } from "./workflow-nodes.mjs";
 
 function hasFlag(args, ...flags) {
   return flags.some((flag) => args.includes(flag));

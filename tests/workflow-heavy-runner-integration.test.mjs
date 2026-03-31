@@ -15,10 +15,6 @@ async function loadWorkflowHarness() {
   return { WorkflowContext, getNodeType };
 }
 
-function makeCtx(data = {}) {
-  throw new Error("makeCtx requires WorkflowContext and should not be called directly");
-}
-
 function buildCtx(WorkflowContext, data = {}) {
   const ctx = new WorkflowContext(data);
   ctx.log = vi.fn();
@@ -95,5 +91,5 @@ describe("workflow heavy runner integration", () => {
     expect(result.executionLane).toBe("runner-pool");
     expect(result.runnerLease?.status).toBe("blocked");
     expect(result.output).toContain("runner lease");
-  }, process.platform === "win32" ? 30000 : 5000);
+  });
 });

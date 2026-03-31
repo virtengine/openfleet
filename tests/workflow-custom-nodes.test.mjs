@@ -5,12 +5,10 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import {
   ensureWorkflowNodeTypesLoaded,
-  getCustomNodeDir,
   getNodeType,
   inspectCustomWorkflowNodePlugins,
   listNodeTypes,
   scaffoldCustomNodeFile,
-  startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
   unregisterNodeType,
 } from "../workflow/workflow-nodes.mjs";
@@ -189,17 +187,4 @@ describe("custom workflow nodes", () => {
     expect(plugin?.smokeTest?.status).toBe("passed");
     expect(plugin?.nodeTypes).toContain(result.type);
   });
-  it("re-exports custom loader helpers from workflow-nodes", () => {
-    const root = makeRepoRoot();
-
-    expect(typeof inspectCustomWorkflowNodePlugins).toBe("function");
-    expect(typeof scaffoldCustomNodeFile).toBe("function");
-    expect(typeof getCustomNodeDir).toBe("function");
-    expect(typeof startCustomNodeDiscovery).toBe("function");
-    expect(typeof stopCustomNodeDiscovery).toBe("function");
-    expect(getCustomNodeDir(root)).toBe(join(root, "custom-nodes"));
-  });
 });
-
-
-

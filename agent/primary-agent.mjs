@@ -10,7 +10,7 @@ import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs
 import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
-import { getAgentToolConfig, getEffectiveTools, refreshToolOverheadReport } from "./agent-tool-config.mjs";
+import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { buildContextEnvelope } from "../workspace/context-cache.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
@@ -68,25 +68,6 @@ import {
   createSession as createGeminiSession,
 } from "../shell/gemini-shell.mjs";
 import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
-
-const toolOverheadRefreshCache = new Map();
-
-function scheduleToolOverheadRefresh(rootDir, agentProfileId, enabledMcpServers = []) {
-  if (!agentProfileId) return;
-  const normalizedServerIds = Array.from(new Set(
-    enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean),
-  )).sort();
-  const cacheKey = [rootDir, agentProfileId].join("::");
-  const signature = JSON.stringify(normalizedServerIds);
-  const cached = toolOverheadRefreshCache.get(cacheKey);
-  if (cached?.signature === signature) return;
-  const promise = refreshToolOverheadReport(rootDir, agentProfileId, { serverIds: normalizedServerIds })
-    .catch((error) => {
-      toolOverheadRefreshCache.delete(cacheKey);
-      console.warn("[primary-agent] failed to refresh tool overhead report:", error?.message || error);
-    });
-  toolOverheadRefreshCache.set(cacheKey, { signature, promise });
-}
 
 /** Valid agent interaction modes */
 const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
@@ -253,9 +234,6 @@ function buildPrimaryToolCapabilityContract(options = {}) {
   const enabledMcpServers = Array.isArray(rawCfg?.enabledMcpServers)
     ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
     : [];
-  if (agentProfileId) {
-    scheduleToolOverheadRefresh(rootDir, agentProfileId, enabledMcpServers);
-  }
   const manifest = {
     agentProfileId: agentProfileId || null,
     enabledBuiltinTools,
@@ -1040,17 +1018,6 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     : userMessage;
   const architectEditorFrame = buildArchitectEditorFrame(options, effectiveMode);
   const toolContract = buildPrimaryToolCapabilityContract(options);
-  const selectedAgentToolConfig = options.agentProfileId
-    ? getAgentToolConfig(rootDir, options.agentProfileId)
-    : null;
-  const selectedMcpServers = Array.isArray(selectedAgentToolConfig?.enabledMcpServers)
-    ? selectedAgentToolConfig.enabledMcpServers
-        .map((id) => String(id || "").trim())
-        .filter(Boolean)
-    : [];
-  const selectedMcpServerSelection = selectedAgentToolConfig
-    ? selectedMcpServers
-    : undefined;
   const messageWithToolContract = [selectedProfile.block, architectEditorFrame, toolContract, messageWithAttachments]
     .filter(Boolean)
     .join("\n\n");
@@ -1074,7 +1041,6 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       cwd: options.cwd,
       model: effectiveModel,
       sdk: mapAdapterToPoolSdk(activeAdapter.name),
-      mcpServers: selectedMcpServerSelection,
       sessionType,
     });
     const pooledText =
@@ -1163,13 +1129,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         }
       }
       const result = await withTimeout(
-        adapter.exec(framedMessage, {
-          ...options,
-          sessionId,
-          model: effectiveModel,
-          abortController: timeoutAbort,
-          mcpServers: selectedMcpServerSelection,
-        }),
+        adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
         timeoutMs,
         `${adapterName}.exec`,
         timeoutAbort,
@@ -1238,13 +1198,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               }
             }
             const retryResult = await withTimeout(
-              adapter.exec(framedMessage, {
-                ...options,
-                sessionId,
-                model: effectiveModel,
-                abortController: timeoutAbort,
-                mcpServers: selectedMcpServerSelection,
-              }),
+              adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
               timeoutMs,
               `${adapterName}.exec.retry`,
               timeoutAbort,
@@ -1551,5 +1505,7 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
+
+
 
 

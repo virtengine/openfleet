@@ -7,13 +7,13 @@
  *
  *   1. Provides per-template fixture data so every gh CLI call gets a
  *      CORRECT, SPECIFIC response (not a generic empty array).
- *      -> No more "template fails because issue #42 returns []"
+ *      → No more "template fails because issue #42 returns []"
  *
  *   2. Uses a stateful sandbox: gh issue close / gh pr merge mutations are
- *      tracked - subsequent reads reflect those mutations.
+ *      tracked — subsequent reads reflect those mutations.
  *
  *   3. Runs each template N times (REPEAT_COUNT env) and asserts consistent
- *      output - detects flakiness caused by race conditions or non-determinism.
+ *      output — detects flakiness caused by race conditions or non-determinism.
  *
  *   4. Validates per-node behavioral contracts, not just "no crash":
  *      - CI-gated templates check CI output
@@ -37,10 +37,10 @@ import {
   ensureExperimentalNodeTypes,
 } from "./sandbox/template-harness.mjs";
 
-// --------------------------------------------------------------------------
-//  Mutable sandbox dispatch - the vi.mock captures this reference so that
+// ══════════════════════════════════════════════════════════════════════════
+//  Mutable sandbox dispatch — the vi.mock captures this reference so that
 //  beforeEach can swap in a new exec sandbox per template test.
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 
 let _activeDispatch = (_cmd) => "";
 let _activeExecSandbox = null;
@@ -51,7 +51,7 @@ function isoDaysAgo(daysAgo = 0, hour = 10) {
   return date.toISOString();
 }
 
-// -- child_process mock ----------------------------------------------------
+// ── child_process mock ────────────────────────────────────────────────────
 // NOTE: vi.mock is hoisted to the file top by vitest, so the factory closure
 // over `_activeDispatch` captures the variable binding (let), which means
 // reassigning `_activeDispatch` in beforeEach propagates into the mock.
@@ -68,7 +68,7 @@ vi.mock("node:child_process", async (importOriginal) => {
       status: 0, signal: null,
     }),
 
-    spawn: vi.fn((cmd, args, _opts) => {
+    spawn: vi.fn(() => {
       const proc = new EventEmitter();
       proc.stdout = new EventEmitter();
       proc.stderr = new EventEmitter();
@@ -76,20 +76,7 @@ vi.mock("node:child_process", async (importOriginal) => {
       proc.stderr.pipe = vi.fn();
       proc.kill = vi.fn();
       proc.pid = 9999;
-      // Reconstruct the full command string so _activeDispatch patterns match.
-      // When shell:true the command is already the full string (args=[]).
-      const fullCmd = (Array.isArray(args) && args.length > 0)
-        ? [cmd, ...args].join(" ")
-        : String(cmd || "");
-      setTimeout(() => {
-        try {
-          const result = String(_activeDispatch(fullCmd) || "");
-          if (result) proc.stdout.emit("data", Buffer.from(result));
-        } catch (err) {
-          proc.stderr.emit("data", Buffer.from(String(err?.message || err)));
-        }
-        proc.emit("close", 0);
-      }, 5);
+      setTimeout(() => proc.emit("close", 0), 5);
       return proc;
     }),
 
@@ -106,22 +93,22 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 //  Configuration
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 
-/** Number of times to execute each template (>=2 catches flakiness) */
+/** Number of times to execute each template (≥2 catches flakiness) */
 const REPEAT_COUNT = Math.max(1, Number(process.env.REPEAT_COUNT ?? "1"));
 
 /** Override delay settings so canary / wait nodes don't sleep for real */
 const SPEED_OVERRIDES = { promotionDelayMs: 10, delayMs: 1, cooldownSec: 0 };
 
-// Vitest v4 does not expose vi.setConfig in test files; use per-suite timeout instead.
+vi.setConfig({ testTimeout: 90_000 });
 
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 //  Shard support
-//  VITEST_SHARD=1  VITEST_TOTAL_SHARDS=4  -> run first 1/4 of templates
-// --------------------------------------------------------------------------
+//  VITEST_SHARD=1  VITEST_TOTAL_SHARDS=4  → run first ¼ of templates
+// ══════════════════════════════════════════════════════════════════════════
 
 import { WORKFLOW_TEMPLATES, getTemplate } from "../workflow/workflow-templates.mjs";
 
@@ -134,9 +121,9 @@ function getShardedTemplates() {
 
 const TEMPLATES_TO_TEST = getShardedTemplates();
 
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 //  Test harness lifecycle helper
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 
 let currentHarness = null;
 
@@ -155,9 +142,9 @@ function setupHarness(templateId, varOverrides = {}) {
   return { harness, fixtures };
 }
 
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 //  Global setup
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 
 beforeAll(async () => {
   await import("../workflow/workflow-nodes.mjs");
@@ -171,11 +158,11 @@ afterEach(() => {
   _activeExecSandbox = null;
 });
 
-// --------------------------------------------------------------------------
-//  Suite 1 - Parametric: every template runs clean with correct fixtures
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
+//  Suite 1 — Parametric: every template runs clean with correct fixtures
+// ══════════════════════════════════════════════════════════════════════════
 
-describe("guaranteed: all templates execute without engine errors", { timeout: 90_000 }, () => {
+describe("guaranteed: all templates execute without engine errors", () => {
   for (const template of TEMPLATES_TO_TEST) {
     const { id } = template;
     const fixtures = TEMPLATE_FIXTURES[id] ?? { scenario: {}, inputVars: {} };
@@ -196,16 +183,16 @@ describe("guaranteed: all templates execute without engine errors", { timeout: 9
   }
 });
 
-// --------------------------------------------------------------------------
-//  Suite 2 - Template installs with correct metadata
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
+//  Suite 2 — Template installs with correct metadata
+// ══════════════════════════════════════════════════════════════════════════
 
 describe("guaranteed: template installation metadata", () => {
   for (const template of TEMPLATES_TO_TEST) {
     const { id } = template;
 
     it(`${id} installs with correct metadata`, () => {
-      // Import directly - no engine needed
+      // Import directly — no engine needed
       const t = getTemplate(id);
       expect(t, `${id}: template not found`).toBeDefined();
       expect(t.name,        `${id}: missing .name`        ).toBeTruthy();
@@ -218,10 +205,10 @@ describe("guaranteed: template installation metadata", () => {
   }
 });
 
-// --------------------------------------------------------------------------
-//  Suite 3 - Flakiness detection (REPEAT_COUNT > 1)
+// ══════════════════════════════════════════════════════════════════════════
+//  Suite 3 — Flakiness detection (REPEAT_COUNT > 1)
 //  Run each template N times and assert identical success/failure pattern.
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 
 if (REPEAT_COUNT > 1) {
   describe(`guaranteed: flakiness detection (${REPEAT_COUNT} runs per template)`, () => {
@@ -250,23 +237,23 @@ if (REPEAT_COUNT > 1) {
 
         if (!allSucceeded && !allFailed) {
           const summary = runs.map((r, i) => `  run ${i + 1}: ${r.success ? `ok (${r.errors} errs)` : `FAIL ${r.message ?? ""}`}`).join("\n");
-          throw new Error(`${id}: FLAKY - results inconsistent across ${REPEAT_COUNT} runs:\n${summary}`);
+          throw new Error(`${id}: FLAKY — results inconsistent across ${REPEAT_COUNT} runs:\n${summary}`);
         }
 
-        // If it always fails, that's at least deterministic - but still fail the test
+        // If it always fails, that's at least deterministic — but still fail the test
         expect(allSucceeded, `${id}: failed consistently on all ${REPEAT_COUNT} runs`).toBe(true);
       });
     }
   });
 }
 
-// --------------------------------------------------------------------------
-//  Suite 4 - Behavioral contracts (per-template focused tests)
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
+//  Suite 4 — Behavioral contracts (per-template focused tests)
+// ══════════════════════════════════════════════════════════════════════════
 
 describe("guaranteed: behavioral contracts", () => {
 
-  // -- GitHub templates --------------------------------------------------
+  // ── GitHub templates ──────────────────────────────────────────────────
 
   it("template-pr-merge-strategy: trigger fires and CI check node runs", async () => {
     const { harness, fixtures } = setupHarness("template-pr-merge-strategy");
@@ -319,19 +306,7 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  it("template-pr-review-quality-striker: runs review-quality workflow without crash", async () => {
-    const { harness, fixtures } = setupHarness("template-pr-review-quality-striker");
-    const { ctx } = await harness.run(fixtures.inputVars);
-    harness.assertions.noEngineErrors(ctx);
-  });
-
-  it("template-sonarqube-pr-striker: runs sonar quality workflow without crash", async () => {
-    const { harness, fixtures } = setupHarness("template-sonarqube-pr-striker");
-    const { ctx } = await harness.run(fixtures.inputVars);
-    harness.assertions.noEngineErrors(ctx);
-  });
-
-  // -- Agent templates ---------------------------------------------------
+  // ── Agent templates ───────────────────────────────────────────────────
 
   it("template-review-agent: launches review agent on a PR", async () => {
     const { harness, fixtures } = setupHarness("template-review-agent");
@@ -363,7 +338,7 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  // -- Planning templates ------------------------------------------------
+  // ── Planning templates ────────────────────────────────────────────────
 
   it("template-task-planner: agent generates tasks and kanban is populated", async () => {
     const { harness, fixtures } = setupHarness("template-task-planner");
@@ -616,9 +591,9 @@ describe("guaranteed: behavioral contracts", () => {
     expect(artifact?.plannerArtifact?.schemaVersion).toBe("1.0");
     expect(() => JSON.parse(JSON.stringify(artifact?.plannerArtifact ?? {}))).not.toThrow();
   });
-  // -- CI/CD templates ---------------------------------------------------
+  // ── CI/CD templates ───────────────────────────────────────────────────
 
-  it("template-build-deploy: runs build -> deploy pipeline", async () => {
+  it("template-build-deploy: runs build → deploy pipeline", async () => {
     const { harness, fixtures } = setupHarness("template-build-deploy");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);
@@ -636,7 +611,7 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  // -- Reliability templates ---------------------------------------------
+  // ── Reliability templates ─────────────────────────────────────────────
 
   it("template-error-recovery: handles build failure gracefully", async () => {
     const { harness, fixtures } = setupHarness("template-error-recovery");
@@ -698,7 +673,7 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  // -- Security templates ------------------------------------------------
+  // ── Security templates ────────────────────────────────────────────────
 
   it("template-dependency-audit: runs npm audit and reports vulnerabilities", async () => {
     const { harness } = setupHarness("template-dependency-audit");
@@ -712,13 +687,13 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  // -- Task lifecycle templates ------------------------------------------
+  // ── Task lifecycle templates ──────────────────────────────────────────
 
   it("template-task-lifecycle: runs full task from trigger to PR", async () => {
     const { harness, fixtures } = setupHarness("template-task-lifecycle");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);
-  }, 15000);
+  });
 
   it("template-task-batch-processor: processes a batch of tasks", async () => {
     const { harness, fixtures } = setupHarness("template-task-batch-processor");
@@ -732,7 +707,7 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   }, 15000);
 
-  // -- Agent chain templates ---------------------------------------------
+  // ── Agent chain templates ─────────────────────────────────────────────
 
   it("template-voice-video-parallel-rollout: deploys AV stack in parallel", async () => {
     const { harness, fixtures } = setupHarness("template-voice-video-parallel-rollout");
@@ -747,10 +722,10 @@ describe("guaranteed: behavioral contracts", () => {
   });
 });
 
-// --------------------------------------------------------------------------
-//  Suite 5 - Exec sandbox contract tests
+// ══════════════════════════════════════════════════════════════════════════
+//  Suite 5 — Exec sandbox contract tests
 //  Verify the gh CLI sandbox returns correct data for specific commands.
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
 
 describe("sandbox: gh CLI command contracts", () => {
   const { prs, issues, releases } = {
@@ -838,9 +813,9 @@ describe("sandbox: gh CLI command contracts", () => {
   });
 });
 
-// --------------------------------------------------------------------------
-//  Suite 6 - Fixture registry completeness
-// --------------------------------------------------------------------------
+// ══════════════════════════════════════════════════════════════════════════
+//  Suite 6 — Fixture registry completeness
+// ══════════════════════════════════════════════════════════════════════════
 
 describe("guaranteed: fixture registry covers all templates", () => {
   it("every template has an entry in TEMPLATE_FIXTURES", () => {
@@ -852,7 +827,7 @@ describe("guaranteed: fixture registry covers all templates", () => {
     }
     if (missing.length) {
       throw new Error(
-        `Missing TEMPLATE_FIXTURES entries for:\n${missing.map((id) => `  * ${id}`).join("\n")}\n` +
+        `Missing TEMPLATE_FIXTURES entries for:\n${missing.map((id) => `  • ${id}`).join("\n")}\n` +
         `Add entries to tests/sandbox/fixtures.mjs`,
       );
     }

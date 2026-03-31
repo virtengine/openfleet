@@ -8,11 +8,6 @@
  * Capability flags: steering, subagents, vscode_tools
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { resolveAgentRepoRoot, resolveRepoRoot } from "../config/repo-root.mjs";
 import { readCodexConfig } from "../shell/codex-config.mjs";
 
 const SUPPORTED_PRIMARY = new Set([
@@ -59,34 +54,6 @@ const DEFAULT_CAPABILITIES = {
 };
 
 let cachedConfig = null;
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-const CODEX_PLATFORM_PACKAGE_MAP = Object.freeze({
-  "darwin-arm64": {
-    packageDir: "@openai/codex-darwin-arm64",
-    binaryPath: "vendor/aarch64-apple-darwin/codex/codex",
-  },
-  "darwin-x64": {
-    packageDir: "@openai/codex-darwin-x64",
-    binaryPath: "vendor/x86_64-apple-darwin/codex/codex",
-  },
-  "linux-arm64": {
-    packageDir: "@openai/codex-linux-arm64",
-    binaryPath: "vendor/aarch64-unknown-linux-musl/codex/codex",
-  },
-  "linux-x64": {
-    packageDir: "@openai/codex-linux-x64",
-    binaryPath: "vendor/x86_64-unknown-linux-musl/codex/codex",
-  },
-  "win32-arm64": {
-    packageDir: "@openai/codex-win32-arm64",
-    binaryPath: "vendor/aarch64-pc-windows-msvc/codex/codex.exe",
-  },
-  "win32-x64": {
-    packageDir: "@openai/codex-win32-x64",
-    binaryPath: "vendor/x86_64-pc-windows-msvc/codex/codex.exe",
-  },
-});
 
 function normalizePrimary(value) {
   const primary = String(value || "").trim().toLowerCase();
@@ -143,106 +110,6 @@ function parseCapabilities(section) {
     subagents,
     vscodeTools,
   };
-}
-
-function normalizeRootCandidate(rootDir) {
-  const raw = String(rootDir || "").trim();
-  if (!raw) return null;
-  try {
-    const resolved = resolve(raw);
-    return existsSync(resolved) ? resolved : null;
-  } catch {
-    return null;
-  }
-}
-
-function uniqueRoots(roots) {
-  const seen = new Set();
-  const ordered = [];
-  for (const root of roots) {
-    const normalized = normalizeRootCandidate(root);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    ordered.push(normalized);
-  }
-  return ordered;
-}
-
-function createRequireForRoot(rootDir) {
-  const packageJson = resolve(rootDir, "package.json");
-  if (existsSync(packageJson)) {
-    return createRequire(packageJson);
-  }
-  return createRequire(resolve(rootDir, "__bosun_agent_sdk__.cjs"));
-}
-
-function resolveModuleEntryFromPackageDir(packageDir) {
-  const packageJsonPath = resolve(packageDir, "package.json");
-  if (!existsSync(packageJsonPath)) return null;
-  try {
-    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-    const exportRoot = pkg?.exports?.["."] ?? pkg?.exports;
-    const candidate =
-      (typeof exportRoot === "string" && exportRoot) ||
-      (exportRoot && typeof exportRoot.import === "string" && exportRoot.import) ||
-      (typeof pkg?.module === "string" && pkg.module) ||
-      (typeof pkg?.main === "string" && pkg.main) ||
-      null;
-    return candidate ? resolve(packageDir, candidate) : packageJsonPath;
-  } catch {
-    return null;
-  }
-}
-
-function resolveModuleEntryFromRoot(specifier, rootDir) {
-  try {
-    return createRequireForRoot(rootDir).resolve(specifier);
-  } catch {
-    const packageDir = resolve(rootDir, "node_modules", ...specifier.split("/"));
-    return resolveModuleEntryFromPackageDir(packageDir);
-  }
-}
-
-export function getAgentSdkModuleRoots(options = {}) {
-  const extraRoots = Array.isArray(options.extraRoots) ? options.extraRoots : [];
-  return uniqueRoots([
-    ...extraRoots,
-    options.rootDir,
-    process.env.BOSUN_AGENT_REPO_ROOT,
-    resolveAgentRepoRoot(),
-    resolveRepoRoot({ cwd: process.cwd() }),
-    process.cwd(),
-    resolve(__dirname, ".."),
-  ]);
-}
-
-export function resolveAgentSdkModuleEntry(specifier, options = {}) {
-  for (const rootDir of getAgentSdkModuleRoots(options)) {
-    const entryPath = resolveModuleEntryFromRoot(specifier, rootDir);
-    if (entryPath && existsSync(entryPath)) {
-      return { entryPath, rootDir };
-    }
-  }
-  return null;
-}
-
-export function hasCodexCliBinary(rootDir, options = {}) {
-  const platform = String(options.platform || process.platform).trim().toLowerCase();
-  const arch = String(options.arch || process.arch).trim().toLowerCase();
-  const platformEntry = CODEX_PLATFORM_PACKAGE_MAP[`${platform}-${arch}`];
-  if (!platformEntry) return true;
-  const packageRoot = resolve(rootDir, "node_modules", ...platformEntry.packageDir.split("/"));
-  return existsSync(resolve(packageRoot, platformEntry.binaryPath));
-}
-
-export function resolveCodexSdkInstall(options = {}) {
-  for (const rootDir of getAgentSdkModuleRoots(options)) {
-    const entryPath = resolveModuleEntryFromRoot("@openai/codex-sdk", rootDir);
-    if (!entryPath || !existsSync(entryPath)) continue;
-    if (!hasCodexCliBinary(rootDir, options)) continue;
-    return { entryPath, rootDir };
-  }
-  return null;
 }
 
 export function parseAgentSdkConfig(toml) {

@@ -8538,7 +8538,7 @@ export function TasksTab() {
                       html`<${MenuItem} key=${o.value} value=${o.value}>${o.label}</${MenuItem}>`,
                   )}
                 </${Select}>
-                <span class="pill"><span class="numeral">${visible.length}</span> shown</span>
+                <span class="pill">${visible.length} shown</span>
               </div>
             </div>
             <div class="tasks-filter-section">
@@ -8700,7 +8700,7 @@ export function TasksTab() {
             }}
           >
             <span class="snapshot-dot" style="background:${m.color};" />
-            <strong class="snapshot-val numeral">${m.value}</strong>
+            <strong class="snapshot-val">${m.value}</strong>
             <span class="snapshot-lbl">${m.label}</span>
           <//><//>
         `)}
@@ -8717,12 +8717,12 @@ export function TasksTab() {
             class=${`snapshot-pill-btn ${dagFocusMode === option.id ? "snapshot-pill-active" : ""}`}
             onClick=${() => setDagFocusMode(option.id)}
           >
-            ${option.label} · <span class="numeral">${option.count}</span>
+            ${option.label} · ${option.count}
           </button>
         `)}
-        <span class="pill">Sprint nodes: <span class="numeral">${dagSprintGraphView.nodes.length}</span></span>
-        <span class="pill">Global nodes: <span class="numeral">${dagGlobalGraphView.nodes.length}</span></span>
-        <span class="pill">Epic nodes: <span class="numeral">${dagEpicGraphView.nodes.length}</span></span>
+        <span class="pill">Sprint nodes: ${dagSprintGraphView.nodes.length}</span>
+        <span class="pill">Global nodes: ${dagGlobalGraphView.nodes.length}</span>
+        <span class="pill">Epic nodes: ${dagEpicGraphView.nodes.length}</span>
       </div>
     `}
 
@@ -9057,7 +9057,7 @@ export function TasksTab() {
                   </td>
                   <td class="task-td task-td-updated">
                     ${(task.updated_at || task.updated)
-                      ? html`<span class="task-td-date numeral">${formatRelative(task.updated_at || task.updated)}</span>`
+                      ? html`<span class="task-td-date">${formatRelative(task.updated_at || task.updated)}</span>`
                       : html`<span class="task-td-empty">—</span>`}
                   </td>
                 </tr>
@@ -9087,7 +9087,7 @@ export function TasksTab() {
         >
           ← Prev
         <//>
-        <span class="pager-info">Page <span class="numeral">${page + 1}</span> / <span class="numeral">${totalPages}</span></span>
+        <span class="pager-info">Page ${page + 1} / ${totalPages}</span>
         <${Button}
           variant="outlined" size="small"
           onClick=${handleNext}

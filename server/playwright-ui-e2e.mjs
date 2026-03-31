@@ -24,10 +24,7 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import * as playwrightTest from "@playwright/test";
-
-const test = playwrightTest.test ?? playwrightTest.default?.test;
-const expect = playwrightTest.expect ?? playwrightTest.default?.expect;
+import { test, expect } from "@playwright/test";
 
 const ROUTER_SOURCE = readFileSync(resolve(process.cwd(), "ui/modules/router.js"), "utf8");
 

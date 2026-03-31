@@ -385,11 +385,6 @@ export class AgentEventBus {
    * @param {object} body — { hasCommits, branch, prUrl, prNumber, output }
    */
   onAgentComplete(taskId, body = {}) {
-    const task = this._resolveTask(taskId);
-    const reviewStatus = String(task?.reviewStatus || "").trim().toLowerCase();
-    const reviewIssueCount = Array.isArray(task?.reviewIssues)
-      ? task.reviewIssues.length
-      : 0;
     this.emit(AGENT_EVENT.AGENT_COMPLETE, taskId, {
       hasCommits: !!body.hasCommits,
       branch: body.branch || null,
@@ -403,34 +398,8 @@ export class AgentEventBus {
       } catch { /* best-effort */ }
     }
 
-    if (
-      body.hasCommits &&
-      reviewStatus === "changes_requested" &&
-      typeof this._sendTelegram === "function"
-    ) {
-      const branch = String(body.branch || task?.branchName || "").trim();
-      const prNumber = Number.isFinite(Number(body.prNumber))
-        ? Number(body.prNumber)
-        : null;
-      const prUrl = String(body.prUrl || task?.prUrl || "").trim();
-      const title = task?.title || taskId;
-      const lines = [
-        ":check: Review changes implemented",
-        `Task: ${title}`,
-        "Summary: Bosun completed a remediation pass and moved the task back into review.",
-        reviewIssueCount ? `Issues addressed: ${reviewIssueCount}` : "",
-        branch ? `Branch: ${branch}` : "",
-        prNumber ? `PR: #${prNumber}` : prUrl ? `PR: ${prUrl}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
-      this._sendTelegram(lines, {
-        dedupKey: `review-fix-complete|${taskId}|${prNumber || prUrl || branch || "unknown"}`,
-        exactDedup: true,
-      });
-    }
-
     if (this._reviewAgent) {
+      const task = this._resolveTask(taskId);
       if (task) this._triggerAutoReview(task, body);
     }
   }

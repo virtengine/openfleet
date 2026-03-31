@@ -1,9 +1,6 @@
 import React from "react";
 import htm from "htm";
-import * as ink from "ink";
-
-const Box = ink.Box ?? ink.default?.Box;
-const Text = ink.Text ?? ink.default?.Text;
+import { Box, Text } from "ink";
 
 const html = htm.bind(React.createElement);
 

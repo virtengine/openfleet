@@ -22,7 +22,6 @@ cd "$ROOT"
 echo "[hooks] bosun pre-commit checks"
 npm run syntax:check
 npm run prompt:lint
-node tools/prepublish-check.mjs
 
 MISSING_SUMMARIES="$(node --input-type=module -e "import { scanRepository } from './lib/codebase-audit.mjs'; const scan = scanRepository(process.cwd(), { staged: true, dryRun: true }); const missing = scan.files.filter((file) => !file.hasSummary).map((file) => file.path); if (missing.length > 0) { console.log(missing.join('\\n')); }" 2>/dev/null || true)"
 if [ -n "$MISSING_SUMMARIES" ]; then

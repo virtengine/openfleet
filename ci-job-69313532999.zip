@@ -1,0 +1,210 @@
+﻿2026-03-31T08:12:08.4575442Z Current runner version: '2.333.1'
+2026-03-31T08:12:08.4599605Z ##[group]Runner Image Provisioner
+2026-03-31T08:12:08.4600458Z Hosted Compute Agent
+2026-03-31T08:12:08.4600994Z Version: 20260213.493
+2026-03-31T08:12:08.4601659Z Commit: 5c115507f6dd24b8de37d8bbe0bb4509d0cc0fa3
+2026-03-31T08:12:08.4602713Z Build Date: 2026-02-13T00:28:41Z
+2026-03-31T08:12:08.4603397Z Worker ID: {182b776f-e7ef-4259-b14d-df52dbeda612}
+2026-03-31T08:12:08.4604194Z Azure Region: westus2
+2026-03-31T08:12:08.4604745Z ##[endgroup]
+2026-03-31T08:12:08.4606193Z ##[group]Operating System
+2026-03-31T08:12:08.4606770Z Ubuntu
+2026-03-31T08:12:08.4607567Z 24.04.4
+2026-03-31T08:12:08.4608047Z LTS
+2026-03-31T08:12:08.4608575Z ##[endgroup]
+2026-03-31T08:12:08.4609146Z ##[group]Runner Image
+2026-03-31T08:12:08.4609708Z Image: ubuntu-24.04
+2026-03-31T08:12:08.4610219Z Version: 20260323.65.1
+2026-03-31T08:12:08.4611430Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260323.65/images/ubuntu/Ubuntu2404-Readme.md
+2026-03-31T08:12:08.4613154Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260323.65
+2026-03-31T08:12:08.4614151Z ##[endgroup]
+2026-03-31T08:12:08.4615163Z ##[group]GITHUB_TOKEN Permissions
+2026-03-31T08:12:08.4617066Z Contents: read
+2026-03-31T08:12:08.4617608Z Metadata: read
+2026-03-31T08:12:08.4618183Z ##[endgroup]
+2026-03-31T08:12:08.4620186Z Secret source: Actions
+2026-03-31T08:12:08.4620936Z Prepare workflow directory
+2026-03-31T08:12:08.4947407Z Prepare all required actions
+2026-03-31T08:12:08.4985382Z Getting action download info
+2026-03-31T08:12:08.9687692Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+2026-03-31T08:12:09.0876793Z Download action repository 'actions/setup-node@v4' (SHA:49933ea5288caeca8642d1e84afbd3f7d6820020)
+2026-03-31T08:12:09.3616121Z Complete job name: Build + Tests
+2026-03-31T08:12:09.4337813Z ##[group]Run actions/checkout@v4
+2026-03-31T08:12:09.4338634Z with:
+2026-03-31T08:12:09.4339038Z   repository: virtengine/bosun
+2026-03-31T08:12:09.4339686Z   token: ***
+2026-03-31T08:12:09.4340075Z   ssh-strict: true
+2026-03-31T08:12:09.4340503Z   ssh-user: git
+2026-03-31T08:12:09.4340908Z   persist-credentials: true
+2026-03-31T08:12:09.4341349Z   clean: true
+2026-03-31T08:12:09.4341747Z   sparse-checkout-cone-mode: true
+2026-03-31T08:12:09.4342542Z   fetch-depth: 1
+2026-03-31T08:12:09.4342932Z   fetch-tags: false
+2026-03-31T08:12:09.4343321Z   show-progress: true
+2026-03-31T08:12:09.4343713Z   lfs: false
+2026-03-31T08:12:09.4344083Z   submodules: false
+2026-03-31T08:12:09.4344475Z   set-safe-directory: true
+2026-03-31T08:12:09.4345209Z ##[endgroup]
+2026-03-31T08:12:09.5447704Z Syncing repository: virtengine/bosun
+2026-03-31T08:12:09.5449411Z ##[group]Getting Git version info
+2026-03-31T08:12:09.5450071Z Working directory is '/home/runner/work/bosun/bosun'
+2026-03-31T08:12:09.5451073Z [command]/usr/bin/git version
+2026-03-31T08:12:09.5487284Z git version 2.53.0
+2026-03-31T08:12:09.5515730Z ##[endgroup]
+2026-03-31T08:12:09.5531109Z Temporarily overriding HOME='/home/runner/work/_temp/d64d0500-892f-42a3-bbf0-bc662c36db8d' before making global git config changes
+2026-03-31T08:12:09.5533824Z Adding repository directory to the temporary git global config as a safe directory
+2026-03-31T08:12:09.5536005Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/bosun/bosun
+2026-03-31T08:12:09.5568111Z Deleting the contents of '/home/runner/work/bosun/bosun'
+2026-03-31T08:12:09.5571966Z ##[group]Initializing the repository
+2026-03-31T08:12:09.5576162Z [command]/usr/bin/git init /home/runner/work/bosun/bosun
+2026-03-31T08:12:09.5649597Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-03-31T08:12:09.5651278Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-03-31T08:12:09.5654293Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-03-31T08:12:09.5655656Z hint: call:
+2026-03-31T08:12:09.5656438Z hint:
+2026-03-31T08:12:09.5657676Z hint: 	git config --global init.defaultBranch <name>
+2026-03-31T08:12:09.5658723Z hint:
+2026-03-31T08:12:09.5659678Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-03-31T08:12:09.5661313Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-03-31T08:12:09.5663277Z hint:
+2026-03-31T08:12:09.5664000Z hint: 	git branch -m <name>
+2026-03-31T08:12:09.5664798Z hint:
+2026-03-31T08:12:09.5665875Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-03-31T08:12:09.5667561Z Initialized empty Git repository in /home/runner/work/bosun/bosun/.git/
+2026-03-31T08:12:09.5670303Z [command]/usr/bin/git remote add origin https://github.com/virtengine/bosun
+2026-03-31T08:12:09.5688771Z ##[endgroup]
+2026-03-31T08:12:09.5690322Z ##[group]Disabling automatic garbage collection
+2026-03-31T08:12:09.5693493Z [command]/usr/bin/git config --local gc.auto 0
+2026-03-31T08:12:09.5725737Z ##[endgroup]
+2026-03-31T08:12:09.5727523Z ##[group]Setting up auth
+2026-03-31T08:12:09.5732757Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-03-31T08:12:09.5766915Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-03-31T08:12:09.6070882Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-03-31T08:12:09.6099212Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-03-31T08:12:09.6315060Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-03-31T08:12:09.6344907Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-03-31T08:12:09.6565425Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-03-31T08:12:09.6598867Z ##[endgroup]
+2026-03-31T08:12:09.6599843Z ##[group]Fetching the repository
+2026-03-31T08:12:09.6607025Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +543c25292a12f88977efc9bfa17079cec051e390:refs/remotes/pull/437/merge
+2026-03-31T08:12:10.7984052Z From https://github.com/virtengine/bosun
+2026-03-31T08:12:10.7985901Z  * [new ref]         543c25292a12f88977efc9bfa17079cec051e390 -> pull/437/merge
+2026-03-31T08:12:10.8014904Z ##[endgroup]
+2026-03-31T08:12:10.8016264Z ##[group]Determining the checkout info
+2026-03-31T08:12:10.8017814Z ##[endgroup]
+2026-03-31T08:12:10.8023063Z [command]/usr/bin/git sparse-checkout disable
+2026-03-31T08:12:10.8061174Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-03-31T08:12:10.8088130Z ##[group]Checking out the ref
+2026-03-31T08:12:10.8092963Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/437/merge
+2026-03-31T08:12:10.9353869Z Note: switching to 'refs/remotes/pull/437/merge'.
+2026-03-31T08:12:10.9354672Z 
+2026-03-31T08:12:10.9355278Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-03-31T08:12:10.9356611Z changes and commit them, and you can discard any commits you make in this
+2026-03-31T08:12:10.9357937Z state without impacting any branches by switching back to a branch.
+2026-03-31T08:12:10.9358713Z 
+2026-03-31T08:12:10.9359240Z If you want to create a new branch to retain commits you create, you may
+2026-03-31T08:12:10.9360544Z do so (now or later) by using -c with the switch command. Example:
+2026-03-31T08:12:10.9361326Z 
+2026-03-31T08:12:10.9361655Z   git switch -c <new-branch-name>
+2026-03-31T08:12:10.9362533Z 
+2026-03-31T08:12:10.9362916Z Or undo this operation with:
+2026-03-31T08:12:10.9363417Z 
+2026-03-31T08:12:10.9363889Z   git switch -
+2026-03-31T08:12:10.9364647Z 
+2026-03-31T08:12:10.9365649Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-03-31T08:12:10.9366724Z 
+2026-03-31T08:12:10.9367868Z HEAD is now at 543c252 Merge d5665d1854745adf838443c2b0162cc67673514e into 66f9a9e4fbb9b3e822f4d36a49e0d6537379e769
+2026-03-31T08:12:10.9371466Z ##[endgroup]
+2026-03-31T08:12:10.9402998Z [command]/usr/bin/git log -1 --format=%H
+2026-03-31T08:12:10.9423936Z 543c25292a12f88977efc9bfa17079cec051e390
+2026-03-31T08:12:10.9762391Z ##[group]Run actions/setup-node@v4
+2026-03-31T08:12:10.9763579Z with:
+2026-03-31T08:12:10.9764407Z   node-version: 24
+2026-03-31T08:12:10.9765295Z   cache: npm
+2026-03-31T08:12:10.9766252Z   cache-dependency-path: package-lock.json
+2026-03-31T08:12:10.9767520Z   always-auth: false
+2026-03-31T08:12:10.9768472Z   check-latest: false
+2026-03-31T08:12:10.9769741Z   token: ***
+2026-03-31T08:12:10.9770611Z ##[endgroup]
+2026-03-31T08:12:11.1666438Z Found in cache @ /opt/hostedtoolcache/node/24.14.0/x64
+2026-03-31T08:12:11.1672677Z ##[group]Environment details
+2026-03-31T08:12:14.0311664Z node: v24.14.0
+2026-03-31T08:12:14.0313142Z npm: 11.9.0
+2026-03-31T08:12:14.0313526Z yarn: 1.22.22
+2026-03-31T08:12:14.0314849Z ##[endgroup]
+2026-03-31T08:12:14.0333939Z [command]/opt/hostedtoolcache/node/24.14.0/x64/bin/npm config get cache
+2026-03-31T08:12:14.2385682Z /home/runner/.npm
+2026-03-31T08:12:14.5738325Z Cache hit for: node-cache-Linux-x64-npm-a4608dccb002348567ca67ca7fbaf89f2377543f3855fd295b180ae8cd05f22a
+2026-03-31T08:12:15.8836801Z Received 4194304 of 469488352 (0.9%), 4.0 MBs/sec
+2026-03-31T08:12:16.8847347Z Received 92274688 of 469488352 (19.7%), 44.0 MBs/sec
+2026-03-31T08:12:17.8842506Z Received 239075328 of 469488352 (50.9%), 76.0 MBs/sec
+2026-03-31T08:12:18.8840424Z Received 390070272 of 469488352 (83.1%), 93.0 MBs/sec
+2026-03-31T08:12:19.6795226Z Received 469488352 of 469488352 (100.0%), 93.3 MBs/sec
+2026-03-31T08:12:19.6796556Z Cache Size: ~448 MB (469488352 B)
+2026-03-31T08:12:19.6837895Z [command]/usr/bin/tar -xf /home/runner/work/_temp/53b2b0ee-e3b8-4c12-a2b4-314fe5d2c1b3/cache.tzst -P -C /home/runner/work/bosun/bosun --use-compress-program unzstd
+2026-03-31T08:12:20.5315683Z Cache restored successfully
+2026-03-31T08:12:20.5535097Z Cache restored from key: node-cache-Linux-x64-npm-a4608dccb002348567ca67ca7fbaf89f2377543f3855fd295b180ae8cd05f22a
+2026-03-31T08:12:20.5735170Z ##[group]Run npm ci
+2026-03-31T08:12:20.5735456Z [36;1mnpm ci[0m
+2026-03-31T08:12:20.6929401Z shell: /usr/bin/bash -e {0}
+2026-03-31T08:12:20.6929678Z ##[endgroup]
+2026-03-31T08:12:26.2340834Z npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+2026-03-31T08:12:31.7581361Z 
+2026-03-31T08:12:31.7581937Z > bosun@0.42.5 preinstall
+2026-03-31T08:12:31.7586657Z > node -e "try{var r=require('child_process').execSync('npm ls -g codex-monitor --json --depth=0',{encoding:'utf8',stdio:['pipe','pipe','pipe']});var d=JSON.parse(r).dependencies;if(d&&d['codex-monitor']){console.log('\n  Removing old codex-monitor package...');require('child_process').execSync('npm uninstall -g codex-monitor',{stdio:'inherit',timeout:30000});console.log('  \u2705 Migrated to bosun. codex-monitor aliases still work.\n')}}catch(e){}"
+2026-03-31T08:12:31.7589495Z 
+2026-03-31T08:12:32.2983466Z 
+2026-03-31T08:12:32.2984165Z > bosun@0.42.5 postinstall
+2026-03-31T08:12:32.2984824Z > node postinstall.mjs
+2026-03-31T08:12:32.2985074Z 
+2026-03-31T08:12:32.3562572Z 
+2026-03-31T08:12:32.3563212Z > bosun@0.42.5 prepare
+2026-03-31T08:12:32.3563747Z > node tools/vendor-sync.mjs
+2026-03-31T08:12:32.3564035Z 
+2026-03-31T08:12:32.4074105Z [vendor-sync] Syncing vendor files to ui/vendor/ …
+2026-03-31T08:12:32.4116197Z [vendor-sync] ✓ node_modules → preact.js
+2026-03-31T08:12:32.4125956Z [vendor-sync] ✓ node_modules → preact-hooks.js
+2026-03-31T08:12:32.4132263Z [vendor-sync] ✓ node_modules → preact-compat.js
+2026-03-31T08:12:32.4139036Z [vendor-sync] ✓ node_modules → htm.js
+2026-03-31T08:12:32.4145444Z [vendor-sync] ✓ node_modules → preact-signals-core.js
+2026-03-31T08:12:32.4151867Z [vendor-sync] ✓ node_modules → preact-signals.js
+2026-03-31T08:12:32.4158737Z [vendor-sync] ✓ node_modules → es-module-shims.js
+2026-03-31T08:12:32.4161599Z [vendor-sync] Done — 7 vendor files ready in ui/vendor/
+2026-03-31T08:12:32.4327295Z 
+2026-03-31T08:12:32.4327846Z added 391 packages, and audited 392 packages in 12s
+2026-03-31T08:12:32.4328282Z 
+2026-03-31T08:12:32.4329634Z 108 packages are looking for funding
+2026-03-31T08:12:32.4331033Z   run `npm fund` for details
+2026-03-31T08:12:32.4366689Z 
+2026-03-31T08:12:32.4367130Z 2 vulnerabilities (1 moderate, 1 high)
+2026-03-31T08:12:32.4367470Z 
+2026-03-31T08:12:32.4367620Z To address all issues, run:
+2026-03-31T08:12:32.4367915Z   npm audit fix
+2026-03-31T08:12:32.4368054Z 
+2026-03-31T08:12:32.4368212Z Run `npm audit` for details.
+2026-03-31T08:12:32.5692860Z ##[group]Run node tools/prepublish-check.mjs
+2026-03-31T08:12:32.5693262Z [36;1mnode tools/prepublish-check.mjs[0m
+2026-03-31T08:12:32.5721515Z shell: /usr/bin/bash -e {0}
+2026-03-31T08:12:32.5721752Z ##[endgroup]
+2026-03-31T08:12:32.9446678Z :close: Published local imports missing from package.json files array:
+2026-03-31T08:12:32.9448762Z    workflow/mcp-discovery-proxy.mjs -> ../infra/windows-hidden-child-processes.mjs (infra/windows-hidden-child-processes.mjs)
+2026-03-31T08:12:32.9450974Z    workflow/mcp-registry.mjs -> ../infra/windows-hidden-child-processes.mjs (infra/windows-hidden-child-processes.mjs)
+2026-03-31T08:12:32.9452428Z 
+2026-03-31T08:12:32.9453130Z Add the resolved targets to the 'files' array in package.json.
+2026-03-31T08:12:32.9520563Z ##[error]Process completed with exit code 1.
+2026-03-31T08:12:32.9654164Z Post job cleanup.
+2026-03-31T08:12:33.0591186Z [command]/usr/bin/git version
+2026-03-31T08:12:33.0626911Z git version 2.53.0
+2026-03-31T08:12:33.0670828Z Temporarily overriding HOME='/home/runner/work/_temp/e93284f7-796c-4965-a717-4cff07902629' before making global git config changes
+2026-03-31T08:12:33.0672738Z Adding repository directory to the temporary git global config as a safe directory
+2026-03-31T08:12:33.0684143Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/bosun/bosun
+2026-03-31T08:12:33.0716596Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-03-31T08:12:33.0747736Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-03-31T08:12:33.0966113Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-03-31T08:12:33.0986125Z http.https://github.com/.extraheader
+2026-03-31T08:12:33.0998635Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-03-31T08:12:33.1029099Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-03-31T08:12:33.1243130Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-03-31T08:12:33.1273387Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-03-31T08:12:33.1593290Z Cleaning up orphan processes
+2026-03-31T08:12:33.1895738Z ##[warning]Node.js 20 actions are deprecated. The following actions are running on Node.js 20 and may not work as expected: actions/checkout@v4, actions/setup-node@v4. Actions will be forced to run with Node.js 24 by default starting June 2nd, 2026. Node.js 20 will be removed from the runner on September 16th, 2026. Please check if updated versions of these actions are available that support Node.js 24. To opt into Node.js 24 now, set the FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true environment variable on the runner or in your workflow file. Once Node.js 24 becomes the default, you can temporarily opt out by setting ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

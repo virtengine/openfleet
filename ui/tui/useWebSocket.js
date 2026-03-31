@@ -1,10 +1,4 @@
-import * as ReactModule from "react";
-
-const React = ReactModule.default ?? ReactModule;
-const useEffect = ReactModule.useEffect ?? React.useEffect;
-const useMemo = ReactModule.useMemo ?? React.useMemo;
-const useRef = ReactModule.useRef ?? React.useRef;
-const useState = ReactModule.useState ?? React.useState;
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { TuiWsBridge, buildTuiWebSocketUrl } from "../../tui/lib/ws-bridge.mjs";
 
