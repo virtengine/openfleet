@@ -30,9 +30,9 @@ function pad(text, width, align = "left") {
   return `${value}${" ".repeat(width - value.length)}`;
 }
 
-function renderCell(value, width, { color, inverse, dimColor, align = "left" } = {}) {
+function renderCell(value, width, { keyName, color, inverse, dimColor, align = "left" } = {}) {
   return html`
-    <${Box} width=${width}>
+    <${Box} key=${keyName} width=${width}>
       <${Text} color=${color} inverse=${inverse} dimColor=${dimColor}>
         ${pad(value, width, align)}
       <//>
@@ -681,14 +681,14 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
             />`
         : html`
             <${Box} borderStyle="single" paddingX=${1}>
-              ${renderCell("", 2, {})}
-              ${renderCell("ID", 8, { dimColor: true })}
-              ${renderCell("STAGE", 12, { dimColor: true })}
-              ${renderCell("PID", 8, { dimColor: true })}
-              ${renderCell("AGE/TURN", 10, { dimColor: true })}
-              ${renderCell("TOKENS", 12, { dimColor: true })}
-              ${renderCell("SESSION", 14, { dimColor: true })}
-              ${renderCell("EVENT", eventWidth, { dimColor: true })}
+              ${renderCell("", 2, { keyName: "header-status" })}
+              ${renderCell("ID", 8, { keyName: "header-id", dimColor: true })}
+              ${renderCell("STAGE", 12, { keyName: "header-stage", dimColor: true })}
+              ${renderCell("PID", 8, { keyName: "header-pid", dimColor: true })}
+              ${renderCell("AGE/TURN", 10, { keyName: "header-age-turn", dimColor: true })}
+              ${renderCell("TOKENS", 12, { keyName: "header-tokens", dimColor: true })}
+              ${renderCell("SESSION", 14, { keyName: "header-session", dimColor: true })}
+              ${renderCell("EVENT", eventWidth, { keyName: "header-event", dimColor: true })}
             <//>
             ${(entries.length ? entries : [{ id: "empty", session: null }]).map((entry) => {
               if (!entry.session) {
@@ -703,21 +703,47 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
               return html`
                 <${Box} key=${entry.id} paddingX=${1}>
                   ${renderCell(row.statusDot, 2, {
+                    keyName: `${entry.id}-status`,
                     color: row.statusColor,
                     inverse: selected,
                     dimColor: row.isDimmed || entry.isRetained,
                   })}
-                  ${renderCell(row.idText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+                  ${renderCell(row.idText, 8, {
+                    keyName: `${entry.id}-id`,
+                    inverse: selected,
+                    dimColor: row.isDimmed || entry.isRetained,
+                  })}
                   ${renderCell(row.stageText, 12, {
+                    keyName: `${entry.id}-stage`,
                     inverse: selected,
                     color: row.statusColor,
                     dimColor: row.isDimmed || entry.isRetained,
                   })}
-                  ${renderCell(row.pidText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-                  ${renderCell(row.ageTurnText, 10, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-                  ${renderCell(row.tokensText, 12, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-                  ${renderCell(row.sessionText, 14, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-                  ${renderCell(row.eventText, eventWidth, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+                  ${renderCell(row.pidText, 8, {
+                    keyName: `${entry.id}-pid`,
+                    inverse: selected,
+                    dimColor: row.isDimmed || entry.isRetained,
+                  })}
+                  ${renderCell(row.ageTurnText, 10, {
+                    keyName: `${entry.id}-age-turn`,
+                    inverse: selected,
+                    dimColor: row.isDimmed || entry.isRetained,
+                  })}
+                  ${renderCell(row.tokensText, 12, {
+                    keyName: `${entry.id}-tokens`,
+                    inverse: selected,
+                    dimColor: row.isDimmed || entry.isRetained,
+                  })}
+                  ${renderCell(row.sessionText, 14, {
+                    keyName: `${entry.id}-session`,
+                    inverse: selected,
+                    dimColor: row.isDimmed || entry.isRetained,
+                  })}
+                  ${renderCell(row.eventText, eventWidth, {
+                    keyName: `${entry.id}-event`,
+                    inverse: selected,
+                    dimColor: row.isDimmed || entry.isRetained,
+                  })}
                 <//>
               `;
             })}

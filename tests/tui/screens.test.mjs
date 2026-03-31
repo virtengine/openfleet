@@ -103,6 +103,7 @@ describe("tui screen rendering", () => {
   });
 
   it("renders the telemetry screen with durable runtime counters", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const view = await renderInk(
       React.createElement(TelemetryScreen, {
         stats: monitorStatsFixture,
@@ -116,6 +117,9 @@ describe("tui screen rendering", () => {
     expect(view.latestText()).toContain("State ledger / SQL");
     expect(view.latestText()).toContain("Top tools");
     expect(view.latestText()).toContain("apply_patch:1");
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('Each child in a list should have a unique "key" prop'),
+    );
 
     await view.unmount();
   });
@@ -136,6 +140,7 @@ describe("tui screen rendering", () => {
 
   it("renders the agents screen and loads the selected session logs", async () => {
     const bridge = createMockBridge();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const view = await renderInk(
       React.createElement(AgentsScreen, {
         wsBridge: bridge,
@@ -149,6 +154,9 @@ describe("tui screen rendering", () => {
 
     await waitFor(() => view.latestText().includes("Backoff queue (1)"));
     expect(view.latestText()).toContain("Investigate fa");
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('Each child in a list should have a unique "key" prop'),
+    );
 
     await view.press("l");
     await waitFor(() => view.latestText().includes("Logs"));
