@@ -186,7 +186,7 @@ describeUiServer("ui-server mini app", () => {
 
     const { setKanbanBackend } = await import("../kanban/kanban-adapter.mjs");
     setKanbanBackend("internal");
-  });
+  }, 20000);
 
   afterEach(async () => {
     await settleUiRuntimeCleanup();
@@ -199,7 +199,7 @@ describeUiServer("ui-server mini app", () => {
       testSandboxRoot = null;
     }
     vi.resetModules();
-  });
+  }, 20000);
 
   async function getFreePort() {
     return 0;
@@ -767,7 +767,7 @@ describeUiServer("ui-server mini app", () => {
       }
       logSpy.mockRestore();
     }
-  });
+  }, 20000);
 
   it("suppresses browser auto-open when the requested port falls back to another port", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

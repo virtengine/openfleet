@@ -325,13 +325,17 @@ run_vitest_batches() {
 
   local -a runner_args=(run --config vitest.config.mjs)
   local -a bounded_runner_args=("${runner_args[@]}" --maxWorkers 1)
-  local -a isolated_tests=()
+  local -a standalone_serialized_tests=()
+  local -a serialized_tests=()
   local -a regular_tests=()
   local test_file
   for test_file in "${tests[@]}"; do
     case "$test_file" in
+      tests/bosun-mcp-server.test.mjs|tests/ui-server.test.mjs|tests/ui-server-session-actions.test.mjs|tests/*workflow*e2e*.test.mjs)
+        standalone_serialized_tests+=("$test_file")
+        ;;
       tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs|tests/*workflow*e2e*.test.mjs)
-        isolated_tests+=("$test_file")
+        serialized_tests+=("$test_file")
         ;;
       *)
         regular_tests+=("$test_file")
@@ -339,10 +343,30 @@ run_vitest_batches() {
     esac
   done
 
-  local isolated
-  for isolated in "${isolated_tests[@]}"; do
-    echo "[hooks] isolated vitest file: ${isolated}"
-    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "$isolated" || return $?
+  if [ "${#serialized_tests[@]}" -gt 0 ]; then
+    local serialized_batch_size="${BOSUN_PREPUSH_SERIAL_BATCH_SIZE:-4}"
+    if [ "${#serialized_tests[@]}" -le "$serialized_batch_size" ]; then
+      echo "[hooks] serialized vitest batch: ${#serialized_tests[@]} file(s)"
+      node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${serialized_tests[@]}" || return $?
+    else
+      echo "[hooks] splitting serialized vitest tests into batches to reduce process churn"
+      local serialized_total="${#serialized_tests[@]}"
+      local serialized_offset=0
+      local serialized_batch=1
+      while [ "$serialized_offset" -lt "$serialized_total" ]; do
+        local -a serialized_slice=("${serialized_tests[@]:serialized_offset:serialized_batch_size}")
+        echo "[hooks] serialized vitest batch ${serialized_batch}: ${#serialized_slice[@]} files"
+        node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${serialized_slice[@]}" || return $?
+        serialized_offset=$((serialized_offset + serialized_batch_size))
+        serialized_batch=$((serialized_batch + 1))
+      done
+    fi
+  fi
+
+  local standalone_serialized
+  for standalone_serialized in "${standalone_serialized_tests[@]}"; do
+    echo "[hooks] standalone serialized vitest file: ${standalone_serialized}"
+    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "$standalone_serialized" || return $?
   done
 
   [ "${#regular_tests[@]}" -eq 0 ] && return 0
