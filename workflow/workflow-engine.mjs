@@ -3270,13 +3270,20 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _releaseRunSlot(slotLease = null) {
+    if (slotLease?._released) {
+      return;
+    }
+    if (slotLease && typeof slotLease === "object") {
+      slotLease._released = true;
+    }
+
     if (slotLease?.rootRunId && this._rootRunSlotRefs.has(slotLease.rootRunId)) {
       const remainingRefs = (this._rootRunSlotRefs.get(slotLease.rootRunId) || 0) - 1;
       if (remainingRefs > 0) {
         this._rootRunSlotRefs.set(slotLease.rootRunId, remainingRefs);
-        return;
+      } else {
+        this._rootRunSlotRefs.delete(slotLease.rootRunId);
       }
-      this._rootRunSlotRefs.delete(slotLease.rootRunId);
     }
 
     if (slotLease?.shared) {

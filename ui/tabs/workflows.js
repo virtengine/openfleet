@@ -50,6 +50,7 @@ import {
   Tabs, Tab, Fab, Menu as MuiMenu,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
 } from "@mui/material";
+import { activeWorkspaceId } from "../components/workspace-switcher.js";
 
 /* ═══════════════════════════════════════════════════════════════
  *  State
@@ -112,6 +113,18 @@ function getWorkflowNameById(workflowId) {
   const id = String(workflowId || "").trim();
   if (!id) return "";
   return (workflows.value || []).find((workflow) => workflow?.id === id)?.name || id;
+}
+
+function buildWorkflowRunApiPath(pathname, workspaceId = activeWorkspaceId.value) {
+  const text = String(pathname || "").trim();
+  if (!text) return "/api/workflows/runs";
+  const [basePath, queryString = ""] = text.split("?");
+  const searchParams = new URLSearchParams(queryString);
+  if (workspaceId) {
+    searchParams.set("workspace", workspaceId);
+  }
+  const nextQuery = searchParams.toString();
+  return nextQuery ? `${basePath}?${nextQuery}` : basePath;
 }
 
 function resetWorkflowRunsState(scopeWorkflowId = null) {
@@ -4720,21 +4733,23 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
               <div style="display: grid; gap: 12px; margin-bottom: 16px;">
                 <div>
                   <label style="display: block; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 6px;">Source Port</label>
-                  <select
-                    class="wf-input"
-                    value=${binding.requestedSourcePort}
-                    onChange=${(e) => updateEdgePortMapping(binding.edge.id, { sourcePort: e.target.value })}
-                  >
+                    <select
+                      aria-label="Select source port"
+                      class="wf-input"
+                      value=${binding.requestedSourcePort}
+                      onChange=${(e) => updateEdgePortMapping(binding.edge.id, { sourcePort: e.target.value })}
+                    >
                     ${sourceOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
                   </select>
                 </div>
                 <div>
                   <label style="display: block; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 6px;">Target Port</label>
-                  <select
-                    class="wf-input"
-                    value=${binding.requestedTargetPort}
-                    onChange=${(e) => updateEdgePortMapping(binding.edge.id, { targetPort: e.target.value })}
-                  >
+                    <select
+                      aria-label="Select target port"
+                      class="wf-input"
+                      value=${binding.requestedTargetPort}
+                      onChange=${(e) => updateEdgePortMapping(binding.edge.id, { targetPort: e.target.value })}
+                    >
                     ${targetOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
                   </select>
                 </div>

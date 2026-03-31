@@ -454,8 +454,12 @@ describe("worktree-manager", () => {
 
       bootstrapWorktreeForPath(REPO_ROOT, worktreePath);
 
-      expect(ensureWorktreeRuntimeSetupMock).toHaveBeenCalledWith(REPO_ROOT, worktreePath);
-      expect(inspectWorktreeRuntimeSetupMock).toHaveBeenCalledWith(REPO_ROOT, worktreePath);
+      const [ensureRepoRoot, ensureWorktreePath] = ensureWorktreeRuntimeSetupMock.mock.calls[0] || [];
+      expect(String(ensureRepoRoot).replace(/\\/g, "/")).toMatch(/\/fake\/repo$/);
+      expect(String(ensureWorktreePath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123$/);
+      const [inspectRepoRoot, inspectWorktreePath] = inspectWorktreeRuntimeSetupMock.mock.calls[0] || [];
+      expect(String(inspectRepoRoot).replace(/\\/g, "/")).toMatch(/\/fake\/repo$/);
+      expect(String(inspectWorktreePath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123$/);
       expect(symlinkSync).toHaveBeenCalledTimes(1);
       const [targetPath, linkPath] = symlinkSync.mock.calls[0];
       expect(String(targetPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/node_modules$/);
@@ -1185,19 +1189,19 @@ describe("worktree-manager", () => {
           { path: mgr.repoRoot, branch: "refs/heads/main" },
         ]),
         stderr: "",
-      });
-      existsSync.mockImplementation((p) => {
-        const normalized = String(p).replace(/\\/g, "/");
-        return normalized === `/fake/repo/${DEFAULT_MANAGED_TASK_BASE_DIR}`;
-      });
-      readdirSync.mockImplementation((dirPath) => {
-        if (String(dirPath).replace(/\\/g, "/") === `/fake/repo/${DEFAULT_MANAGED_TASK_BASE_DIR}`) {
+        });
+        existsSync.mockImplementation((p) => {
+          const normalized = String(p).replace(/\\/g, "/");
+          return normalized.endsWith(`/${DEFAULT_MANAGED_TASK_BASE_DIR}`);
+        });
+        readdirSync.mockImplementation((dirPath) => {
+        if (String(dirPath).replace(/\\/g, "/").endsWith(`/${DEFAULT_MANAGED_TASK_BASE_DIR}`)) {
           return [{ name: "task-abc123-deadbeef", isDirectory: () => true }];
         }
         return [];
       });
       statSync.mockImplementation((targetPath) => ({
-        mtimeMs: String(targetPath).replace(/\\/g, "/") === orphanPath
+        mtimeMs: String(targetPath).replace(/\\/g, "/").endsWith("/.bosun/worktrees/task-abc123-deadbeef")
           ? Date.now() - MAX_WORKTREE_AGE_MS - 10_000
           : Date.now(),
         isDirectory: () => true,

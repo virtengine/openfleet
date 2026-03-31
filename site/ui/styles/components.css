@@ -2347,6 +2347,8 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  width: 100%;
+  min-width: 0;
   max-width: 1200px;
   margin: 0 auto;
   padding: 16px;
@@ -3014,6 +3016,64 @@ select.input {
   }
 }
 
+@media (max-width: 599px) {
+  .dashboard-shell {
+    gap: 16px;
+    padding: 8px 0 16px;
+  }
+
+  .dashboard-header {
+    padding: 22px 20px;
+    border-radius: 20px;
+    gap: 14px;
+  }
+
+  .dashboard-title {
+    font-size: 22px;
+    line-height: 1.1;
+  }
+
+  .dashboard-subtitle {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .dashboard-header-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+    margin-top: 0;
+  }
+
+  .dashboard-chip {
+    display: flex;
+    align-items: center;
+    min-height: 38px;
+    padding: 6px 10px;
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
+  }
+
+  .dashboard-chip-clock {
+    grid-column: 1 / -1;
+    justify-content: space-between;
+  }
+
+  .dashboard-chip-tz {
+    flex-shrink: 0;
+  }
+
+  .dashboard-grid {
+    gap: 16px;
+  }
+
+  .dashboard-card {
+    border-radius: 18px;
+  }
+}
+
 @media (min-width: 760px) {
   .dashboard-grid {
     grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
@@ -3060,6 +3120,56 @@ select.input {
 
 .cmd-history-item:not(:last-child) {
   border-bottom: 1px solid var(--border);
+}
+
+.dashboard-harness-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.dashboard-harness-summary-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.dashboard-harness-summary-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.dashboard-harness-summary-value {
+  font-size: 24px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.dashboard-harness-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dashboard-harness-item {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  background: var(--surface-1);
+}
+
+.dashboard-harness-item:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.dashboard-harness-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ─── Health Dot (Infra) ─── */

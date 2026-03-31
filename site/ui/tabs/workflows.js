@@ -40,6 +40,7 @@ import {
   Dialog, DialogTitle, DialogContent, DialogActions,
   Tabs, Tab, Fab, Menu as MuiMenu,
 } from "@mui/material";
+import { activeWorkspaceId } from "../components/workspace-switcher.js";
 
 /* ═══════════════════════════════════════════════════════════════
  *  State
@@ -100,6 +101,18 @@ function getWorkflowNameById(workflowId) {
   const id = String(workflowId || "").trim();
   if (!id) return "";
   return (workflows.value || []).find((workflow) => workflow?.id === id)?.name || id;
+}
+
+function buildWorkflowRunApiPath(pathname, workspaceId = activeWorkspaceId.value) {
+  const text = String(pathname || "").trim();
+  if (!text) return "/api/workflows/runs";
+  const [basePath, queryString = ""] = text.split("?");
+  const searchParams = new URLSearchParams(queryString);
+  if (workspaceId) {
+    searchParams.set("workspace", workspaceId);
+  }
+  const nextQuery = searchParams.toString();
+  return nextQuery ? `${basePath}?${nextQuery}` : basePath;
 }
 
 function resetWorkflowRunsState(scopeWorkflowId = null) {

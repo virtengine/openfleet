@@ -274,6 +274,170 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  PR Review Quality Striker
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const PR_REVIEW_QUALITY_STRIKER_TEMPLATE = {
+  id: "template-pr-review-quality-striker",
+  name: "PR Review Quality Striker",
+  description:
+    "Reactive PR review sweeper that consolidates actionable review signals " +
+    "from reviews, comments, and failing quality checks, then dispatches an " +
+    "agent to propose or apply fixes.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.pr_event",
+  variables: {
+    intervalMs: 1800000,
+  },
+  nodes: [
+    node("trigger", "trigger.pr_event", "PR Review Requested", {
+      event: "review_requested",
+      events: ["review_requested", "changes_requested", "approved", "opened"],
+    }, { x: 220, y: 60 }),
+
+    node("trigger-review-comment", "trigger.event", "Review Comment Event", {
+      eventType: "github:pull_request_review_comment",
+    }, { x: 520, y: 60 }),
+
+    node("trigger-fallback", "trigger.schedule", "Fallback Sweep", {
+      intervalMs: "{{intervalMs}}",
+    }, { x: 820, y: 60 }),
+
+    node("fetch-review-signals", "action.run_command", "Fetch Review Signals", {
+      command: "node",
+      args: ["-e", [
+        "const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0);",
+        "const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim();",
+        "const DIRECT_PR_URL=String(process.env.DIRECT_PR_URL||'').trim();",
+        "const DIRECT_EVENT=String(process.env.DIRECT_EVENT||'').trim();",
+        PR_QUALITY_SIGNAL_SNIPPET,
+        "function appendActionable(target,items,sourceKind){for(const item of Array.isArray(items)?items:[]){target.push({...item,sourceKind});}}",
+        "const modeExpression=\"mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'\";",
+        "const mode=DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule';",
+        "const repo=DIRECT_REPO;",
+        "const prNumber=DIRECT_PR_NUMBER;",
+        "const prDigest=repo&&prNumber>0?collectPrDigest(repo,prNumber,{url:DIRECT_PR_URL},runGh):{core:{number:prNumber||null,url:DIRECT_PR_URL||null},body:'',files:[],issueComments:[],reviews:[],reviewComments:[],checks:[],digestSummary:''};",
+        "const signals=collectActionableReviewSignals(prDigest);",
+        "const actionable=[];",
+        "appendActionable(actionable,signals.commentFindings,'comment');",
+        "appendActionable(actionable,signals.qualityChecks,'quality');",
+        "const sourceKind=DIRECT_EVENT?'review_event':'schedule';",
+        "process.stdout.write(JSON.stringify({mode,sourceKind,repo,prNumber,prUrl:DIRECT_PR_URL,prDigest,signals,commentFindings:signals.commentFindings,qualityChecks:signals.qualityChecks,actionable}));",
+      ].join(" ")],
+      env: {
+        DIRECT_PR_NUMBER: "{{$data?.prNumber || 0}}",
+        DIRECT_REPO: "{{$data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+        DIRECT_PR_URL: "{{$data?.prUrl || ''}}",
+        DIRECT_EVENT: "{{$data?.event || $data?.eventType || ''}}",
+      },
+      parseJson: true,
+    }, { x: 520, y: 230 }),
+
+    node("run-review-striker", "action.run_agent", "Run Review Striker", {
+      prompt: "Use commentFindings and qualityChecks to identify the smallest actionable repair set. Use prDigest with the PR body, files, issue comments, reviews, review comments, and checks to ground the response. Prioritize concrete review feedback over speculative cleanup.",
+      sdk: "auto",
+      timeoutMs: 1800000,
+      failOnError: false,
+    }, { x: 520, y: 380 }),
+
+    node("end", "flow.end", "End Review Striker", {
+      status: "completed",
+      message: "PR review quality striker finished for PR {{prNumber}}.",
+    }, { x: 520, y: 520 }),
+  ],
+  edges: [
+    edge("trigger", "fetch-review-signals"),
+    edge("trigger-review-comment", "fetch-review-signals"),
+    edge("trigger-fallback", "fetch-review-signals"),
+    edge("fetch-review-signals", "run-review-striker"),
+    edge("run-review-striker", "end"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-31T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "review", "quality", "automation"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SonarQube PR Striker
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const SONARQUBE_PR_STRIKER_TEMPLATE = {
+  id: "template-sonarqube-pr-striker",
+  name: "SonarQube PR Striker",
+  description:
+    "Scheduled PR quality sweep that reacts to failing GitHub-native Sonar " +
+    "checks and prepares a repair packet grounded in the shared PR digest.",
+  category: "github",
+  enabled: true,
+  recommended: false,
+  trigger: "trigger.schedule",
+  variables: {
+    intervalMs: 1800000,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Scheduled Sonar Sweep", {
+      intervalMs: "{{intervalMs}}",
+    }, { x: 420, y: 60 }),
+
+    node("fetch-sonar-signals", "action.run_command", "Fetch Sonar Signals", {
+      command: "node",
+      args: ["-e", [
+        "const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0);",
+        "const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim();",
+        PR_QUALITY_SIGNAL_SNIPPET,
+        "function hasSonarFailure(signals){return Array.isArray(signals?.sonarChecks)&&signals.sonarChecks.length>0;}",
+        "const repo=DIRECT_REPO;",
+        "const prNumber=DIRECT_PR_NUMBER;",
+        "const prDigest=repo&&prNumber>0?collectPrDigest(repo,prNumber,{},runGh):{core:{number:prNumber||null},body:'',files:[],issueComments:[],reviews:[],reviewComments:[],checks:[],digestSummary:''};",
+        "const signals=collectActionableReviewSignals(prDigest);",
+        "const hasFailure=hasSonarFailure(signals);",
+        "if(signals.sonarChecks.length===0){process.stdout.write(JSON.stringify({repo,prNumber,hasSonarFailure:hasFailure,sonarChecks:signals.sonarChecks,prDigest,signals}));process.exit(0);}",
+        "process.stdout.write(JSON.stringify({repo,prNumber,hasSonarFailure:hasFailure,sonarChecks:signals.sonarChecks,prDigest,signals}));",
+      ].join(" ")],
+      env: {
+        DIRECT_PR_NUMBER: "{{$data?.prNumber || 0}}",
+        DIRECT_REPO: "{{$data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+      },
+      parseJson: true,
+    }, { x: 420, y: 210 }),
+
+    node("run-sonar-striker", "action.run_agent", "Run Sonar Striker", {
+      prompt: "Use GitHub-native Sonar checks as the source of truth. Analyze sonarChecks plus prDigest to decide whether the PR needs a Sonar-focused repair pass and summarize the actionable issues.",
+      sdk: "auto",
+      timeoutMs: 1800000,
+      failOnError: false,
+    }, { x: 420, y: 360 }),
+
+    node("end", "flow.end", "End Sonar Striker", {
+      status: "completed",
+      message: "Sonar striker finished for PR {{prNumber}}.",
+    }, { x: 420, y: 500 }),
+  ],
+  edges: [
+    edge("trigger", "fetch-sonar-signals"),
+    edge("fetch-sonar-signals", "run-sonar-striker"),
+    edge("run-sonar-striker", "end"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-31T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "sonar", "quality", "automation"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  PR Triage & Labels
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -19,6 +19,18 @@ vi.mock("@openai/codex-sdk", () => ({
   },
 }));
 
+vi.mock("../shell/codex-sdk-import.mjs", () => ({
+  Codex: class MockCodex {
+    constructor(options) {
+      mockCodexCtor(options);
+    }
+
+    startThread(...args) {
+      return mockStartThread(...args);
+    }
+  },
+}));
+
 vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: vi.fn(() => ({
     primary: "codex",
@@ -791,4 +803,3 @@ describe("codex-shell stream safeguards", () => {
   });
 
 });
-

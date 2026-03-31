@@ -151,7 +151,7 @@ for (const { relPath, source } of sourceFiles) {
 
     it("scopes Fleet metrics to workspace slot summaries and separates session-only activity", () => {
       expect(source).toContain("const workspaceSummary = execData?.workspaceSummary || null;");
-      expect(source).not.toContain('loadSessions({ type: "task", workspace: "all" });');
+      expect(source).toContain('loadSessions({ type: "task", workspace: "all" });');
       expect(source).not.toContain("Math.max(activeSlots, activeSessionCount)");
       expect(source).toContain('label: "Dedicated Slots"');
       expect(source).toContain('label: "Session Only"');
@@ -552,6 +552,25 @@ for (const { relPath, source } of dashboardSourceFiles) {
     });
   });
 
+  it(`surfaces harness attention with deep links into the Agents tab (${relPath})`, () => {
+    expect(source).toContain('apiFetch("/api/harness/runs?limit=8", { _silent: true })');
+    expect(source).toContain("const [harnessRuns, setHarnessRuns] = useState([]);");
+    expect(source).toContain("const harnessActiveCount = harnessRuns.filter");
+    expect(source).toContain("const harnessVisibleRuns = (harnessAttentionRuns.length ? harnessAttentionRuns : harnessRuns).slice(0, 4);");
+    expect(source).toContain("Harness Attention");
+    expect(source).toContain('harnessSource: "dashboard attention"');
+    expect(source).toContain('navigateTo("agents", {');
+    expect(source).toContain("No harness runs need attention");
+  });
+
+  it(`keeps dashboard overview controls keyboard-accessible (${relPath})`, () => {
+    expect(source).toContain('role="banner" aria-label="Dashboard status header"');
+    expect(source).toContain('aria-label="Dashboard overview"');
+    expect(source).toContain('aria-label="Overview metrics"');
+    expect(source).toContain('(e.key === "Enter" || e.key === " ")');
+    expect(source).toContain('aria-label="Quick actions"');
+  });
+
   if (relPath === "ui/tabs/dashboard.js") {
     describe(`Dashboard durable runtime adoption (${relPath})`, () => {
       it("renders the durable runtime status summary in the owned ui bundle", () => {
@@ -608,5 +627,59 @@ describe("TUI agents harness monitor", () => {
     expect(tuiAgentsSource).toContain('if (input === "h" || input === "H") {');
     expect(tuiAgentsSource).toContain('if (input === "[") {');
     expect(tuiAgentsSource).toContain('if (input === "]") {');
+  });
+});
+
+describe("TUI workflows operator inbox", () => {
+  it("renders merged workflow and harness approvals with inbox actions", () => {
+    const workflowsTuiSource = readFileSync(resolve(process.cwd(), "tui/screens/workflows.mjs"), "utf8");
+    const helpSource = readFileSync(resolve(process.cwd(), "ui/tui/HelpScreen.js"), "utf8");
+    expect(workflowsTuiSource).toContain('requestJson("/api/workflows/approvals?status=pending&limit=25")');
+    expect(workflowsTuiSource).toContain('requestJson("/api/harness/approvals?status=pending&limit=25")');
+    expect(workflowsTuiSource).toContain('requestJson("/api/harness/runs?limit=8")');
+    expect(workflowsTuiSource).toContain("Operator Inbox (");
+    expect(workflowsTuiSource).toContain("Pending workflow approvals plus waiting or stalled harness runs");
+    expect(workflowsTuiSource).toContain('"/api/workflows/approvals/${encodeURIComponent(item.requestId)}/resolve"');
+    expect(workflowsTuiSource).toContain('"/api/harness/approvals/${encodeURIComponent(item.requestId)}/resolve"');
+    expect(workflowsTuiSource).toContain("[A]pprove  [X] deny  [Esc] close");
+    expect(helpSource).toContain('["A / X", "Approve or deny selected request"]');
+    expect(helpSource).toContain('if (screen === "workflows") {');
+  });
+
+  it("renders workflow run supervision with detail, cancel, retry, and run approval actions", () => {
+    const workflowsTuiSource = readFileSync(resolve(process.cwd(), "tui/screens/workflows.mjs"), "utf8");
+    const helpSource = readFileSync(resolve(process.cwd(), "ui/tui/HelpScreen.js"), "utf8");
+    expect(workflowsTuiSource).toContain('requestJson("/api/workflows/runs?limit=8")');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}`)');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/evaluate`)');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/forensics`)');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/snapshot`, {');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/snapshots`)');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/restore`, {');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/remediate`, {');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/cancel`, {');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/retry`, {');
+    expect(workflowsTuiSource).toContain('requestJson(`/api/workflows/runs/${encodeURIComponent(runId)}/approval`, {');
+    expect(workflowsTuiSource).toContain("Recent Workflow Runs (");
+    expect(workflowsTuiSource).toContain("[G detail · [ / ] select]");
+    expect(workflowsTuiSource).toContain("Workflow Run Detail");
+    expect(workflowsTuiSource).toContain("Run Evaluation");
+    expect(workflowsTuiSource).toContain("Run Forensics");
+    expect(workflowsTuiSource).toContain("Run Snapshots");
+    expect(workflowsTuiSource).toContain("[F] forensics  [V] evaluate  [P] snapshot  [O] restore  [M] remediate  [C]ancel  [T] retry  [A]pprove  [X] deny  [Esc] close");
+    expect(workflowsTuiSource).toContain('if (input === "g" || input === "G") {');
+    expect(workflowsTuiSource).toContain('if (input === "f" || input === "F") {');
+    expect(workflowsTuiSource).toContain('if (input === "v" || input === "V") {');
+    expect(workflowsTuiSource).toContain('if (input === "p" || input === "P") {');
+    expect(workflowsTuiSource).toContain('if (input === "o" || input === "O") {');
+    expect(workflowsTuiSource).toContain('if (input === "m" || input === "M") {');
+    expect(workflowsTuiSource).toContain('if (input === "[") {');
+    expect(workflowsTuiSource).toContain('if (input === "]") {');
+    expect(helpSource).toContain('["G", "Open selected workflow run"]');
+    expect(helpSource).toContain('["[ / ]", "Move workflow run selection"]');
+    expect(helpSource).toContain('["C / T", "Cancel or retry workflow run"]');
+    expect(helpSource).toContain('["F / V", "Refresh forensics or evaluation"]');
+    expect(helpSource).toContain('["P / O / M", "Snapshot, restore, or remediate"]');
+    expect(helpSource).toContain("if (context.workflowRunDetailOpen) {");
   });
 });

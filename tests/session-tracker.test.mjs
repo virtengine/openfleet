@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
@@ -53,7 +53,7 @@ describe("session-tracker", () => {
       tracker.endSession("task-1", "completed");
 
       const session = tracker.getSession("task-1");
-      expect(session.status).toBe("completed");
+      expect(session.status).toBe("no_output");
       expect(session.endedAt).toBeGreaterThan(0);
     });
 

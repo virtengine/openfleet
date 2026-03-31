@@ -20,6 +20,8 @@ export const SHORTCUT_GROUPS = [
     items: [
       ["↑ / ↓", "Move session selection"],
       ["Enter", "Open session detail"],
+      ["H", "Open selected harness run"],
+      ["[ / ]", "Move harness selection"],
       ["L", "Open session logs"],
       ["D", "Open session diff"],
       ["K", "Queue session termination"],
@@ -56,8 +58,15 @@ export const SHORTCUT_GROUPS = [
   {
     title: "Workflows screen",
     items: [
-      ["1", "Open workflow snapshot"],
-      ["2", "Open tasks"],
+      ["↑ / ↓", "Move inbox selection"],
+      ["Enter", "Open inbox detail"],
+      ["A / X", "Approve or deny selected request"],
+      ["G", "Open selected workflow run"],
+      ["[ / ]", "Move workflow run selection"],
+      ["C / T", "Cancel or retry workflow run"],
+      ["F / V", "Refresh forensics or evaluation"],
+      ["P / O / M", "Snapshot, restore, or remediate"],
+      ["R", "Refresh operator inbox"],
     ],
   },
   {
@@ -106,10 +115,26 @@ export function getFooterHints(screen, context = {}) {
     if (context.confirmKill) {
       return [["Y", "Kill session"], ["N", "Keep session"], ["Esc", "Cancel"], ["?", "Help"]];
     }
+    if (context.harnessNudgeMode) {
+      return [["Type", "Compose nudge"], ["Enter", "Send nudge"], ["Backspace", "Delete char"], ["Esc", "Cancel"], ["?", "Help"]];
+    }
+    if (context.harnessDetailOpen) {
+      return [["A", "Approve"], ["X", "Deny"], ["N", "Nudge"], ["Esc", "Close"], ["?", "Help"]];
+    }
     if (context.detailOpen || context.logsOpen || context.diffOpen) {
       return [["Esc", "Close pane"], ["↑/↓", "Change session"], ["L", "Logs"], ["D", "Diff"], ["?", "Help"]];
     }
-    return [["↑/↓", "Move"], ["Enter", "Detail"], ["L", "Logs"], ["K", "Kill"], ["?", "Help"]];
+    return [["↑/↓", "Move"], ["Enter", "Detail"], ["H", "Harness"], ["[ / ]", "Select harness"], ["?", "Help"]];
+  }
+
+  if (screen === "workflows") {
+    if (context.workflowRunDetailOpen) {
+      return [["F/V", "Diagnostics"], ["P/O/M", "Recovery"], ["C", "Cancel"], ["T", "Retry"], ["Esc", "Close"]];
+    }
+    if (context.workflowInboxDetailOpen) {
+      return [["A", "Approve"], ["X", "Deny"], ["Esc", "Close"], ["?", "Help"]];
+    }
+    return [["↑/↓", "Move"], ["Enter", "Inbox detail"], ["G", "Run detail"], ["[ / ]", "Select run"], ["?", "Help"]];
   }
 
   return [["1/2/3", "Switch screens"], ["?", "Help"], ["Q", "Quit"]];

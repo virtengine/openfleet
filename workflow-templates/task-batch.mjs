@@ -23,6 +23,51 @@
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
 
+function requireNonEmptyBatchString(item, index, key) {
+  const value = typeof item?.[key] === "string" ? item[key].trim() : "";
+  if (!value) {
+    throw new Error(`Invalid task-batch payload: item[${index}].${key} must be a non-empty string`);
+  }
+  return value;
+}
+
+function normalizeOptionalBatchString(value, maxLength = 128) {
+  if (value == null) return value;
+  const normalized = String(value).trim();
+  if (!normalized) return "";
+  return normalized.slice(0, maxLength);
+}
+
+export function validateTaskBatchPayload(payload) {
+  if (!Array.isArray(payload)) {
+    throw new Error("Invalid task-batch payload: expected an array of task batch items");
+  }
+
+  return payload.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`Invalid task-batch payload: item[${index}] must be an object`);
+    }
+
+    const normalized = {
+      ...item,
+      taskId: requireNonEmptyBatchString(item, index, "taskId"),
+      taskTitle: requireNonEmptyBatchString(item, index, "taskTitle"),
+      status: requireNonEmptyBatchString(item, index, "status"),
+      repository: requireNonEmptyBatchString(item, index, "repository"),
+      workspace: requireNonEmptyBatchString(item, index, "workspace"),
+    };
+
+    if (Object.prototype.hasOwnProperty.call(item, "branch")) {
+      normalized.branch = normalizeOptionalBatchString(item.branch, 128);
+    }
+    if (Object.prototype.hasOwnProperty.call(item, "scope")) {
+      normalized.scope = normalizeOptionalBatchString(item.scope, 128);
+    }
+
+    return normalized;
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Task Batch Processor — Parallel Task Dispatch
 // ═══════════════════════════════════════════════════════════════════════════

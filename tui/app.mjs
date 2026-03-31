@@ -492,6 +492,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           wsBridge=${bridge}
           host=${host}
           port=${port}
+          requestJson=${requestJson}
           connectOnly=${connectOnly}
           refreshMs=${effectiveRefreshMs}
           onTasksChange=${setTasks}

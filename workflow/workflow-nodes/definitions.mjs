@@ -26,6 +26,7 @@ import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
+import { registerNodeType as registerWorkflowEngineNodeType } from "../workflow-engine.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -49,6 +50,7 @@ function registerNodeType(type, handler) {
     throw new Error(`${TAG} Node type "${type}" must have an execute function`);
   }
   _builtinNodeDefinitions.set(type, handler);
+  registerWorkflowEngineNodeType(type, handler, { source: "builtin" });
 }
 
 export function getBuiltinNodeDefinition(type) {
@@ -1264,4 +1266,3 @@ export {
   summarizePathListingBlock,
   trimLogText,
 };
-

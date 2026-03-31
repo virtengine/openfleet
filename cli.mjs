@@ -925,7 +925,7 @@ function stopDaemon() {
   }
 }
 
-function daemonStatus() {
+async function daemonStatus() {
   const pid = getDaemonPid();
   if (pid) {
     console.log(`  bosun daemon is running (PID ${pid})`);
@@ -941,7 +941,8 @@ function daemonStatus() {
       }
       console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
-      const existingMonitorOwner = detectExistingMonitorLockOwner();
+      const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+      const existingMonitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
       if (existingMonitorOwner) {
         console.log(
           `  bosun daemon is not running in daemon mode, but bosun monitor is active (PID ${existingMonitorOwner.pid}).`,
@@ -1687,7 +1688,7 @@ async function main() {
     return;
   }
   if (args.includes("--daemon-status")) {
-    daemonStatus();
+    await daemonStatus();
     return;
   }
 
@@ -2319,7 +2320,8 @@ async function main() {
     process.exit(0);
   }
 
-  const existingOwner = detectExistingMonitorLockOwner();
+  const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+  const existingOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
   if (existingOwner) {
     console.log(
       `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,
@@ -2495,9 +2497,9 @@ function shouldPauseDaemonRestartStorm(options) {
   return { pause: true, reasons: signals.reasons };
 }
 
-function detectExistingMonitorLockOwner(excludePid = null) {
+function detectExistingMonitorLockOwner(excludePid = null, extraCacheDirs = []) {
   try {
-    for (const pidFile of getMonitorPidFileCandidates()) {
+    for (const pidFile of getMonitorPidFileCandidates(extraCacheDirs)) {
       let ownerPid = null;
       try {
         ownerPid = readAlivePid(pidFile);

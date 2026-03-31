@@ -556,7 +556,7 @@ Use the project's test command: {{testCommand}}
 Create a descriptive test commit message that names the behavior or surface covered.
 Example: "test: cover portal login validation"`,
         sdk: "{{agentSdk}}",
-        timeoutMs: "{{timeoutMs}}",
+  timeoutMs: "{{testTimeoutMs}}",
       }, { x: 400, y: 330 }),
 
       node("implement", "action.run_agent", "Implement Feature", {

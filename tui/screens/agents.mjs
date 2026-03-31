@@ -74,6 +74,116 @@ function formatDuration(ms) {
   return `${seconds}s`;
 }
 
+function formatMsDuration(ms) {
+  const value = Number(ms || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0s";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return formatDuration(value);
+}
+
+function getHarnessRunState(run) {
+  return String(
+    run?.health?.state
+    || run?.status
+    || run?.outcome
+    || run?.result?.status
+    || run?.result?.outcome
+    || "unknown",
+  ).trim().toLowerCase();
+}
+
+function getHarnessStateColor(state) {
+  if (state === "working") return "blue";
+  if (state === "waiting") return "yellow";
+  if (state === "stalled" || state === "failed" || state === "aborted") return "red";
+  if (state === "completed") return "green";
+  return undefined;
+}
+
+function getHarnessStateLabel(state) {
+  if (!state) return "unknown";
+  return state.replace(/[_-]+/g, " ");
+}
+
+function getHarnessRunTimestamp(run) {
+  const value = run?.updatedAt || run?.endedAt || run?.startedAt || run?.createdAt || 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function normalizeHarnessRuns(items) {
+  const deduped = new Map();
+  for (const run of Array.isArray(items) ? items : []) {
+    if (!run || typeof run !== "object") continue;
+    const runId = String(run?.runId || "").trim();
+    if (!runId) continue;
+    const existing = deduped.get(runId);
+    if (!existing || getHarnessRunTimestamp(run) >= getHarnessRunTimestamp(existing)) {
+      deduped.set(runId, run);
+    }
+  }
+  return Array.from(deduped.values()).sort((a, b) => getHarnessRunTimestamp(b) - getHarnessRunTimestamp(a));
+}
+
+function formatHarnessStage(run) {
+  return String(
+    run?.currentStageId
+    || run?.health?.approvalStageId
+    || run?.stageId
+    || run?.completedStageId
+    || run?.result?.completedStageId
+    || "—",
+  ).trim() || "—";
+}
+
+function getHarnessApprovalRequestId(run) {
+  return String(
+    run?.health?.approvalRequestId
+    || run?.approvalRequestId
+    || run?.requestId
+    || run?.latestApproval?.requestId
+    || "",
+  ).trim();
+}
+
+function getHarnessLatestEventSummary(run) {
+  return String(
+    run?.health?.lastEventSummary
+    || run?.latestEvent?.summary
+    || run?.summary
+    || "",
+  ).trim();
+}
+
+function getHarnessAttentionDetail(run) {
+  const state = getHarnessRunState(run);
+  const approvalRequestId = getHarnessApprovalRequestId(run);
+  const detail = String(run?.health?.attentionReason || run?.summary || "").trim();
+  if (state === "waiting") {
+    const base = detail || "Awaiting operator approval.";
+    return approvalRequestId ? `${base} · ${approvalRequestId}` : base;
+  }
+  return detail || getHarnessLatestEventSummary(run) || "No summary yet";
+}
+
+function projectHarnessRow(run, isSelected, width = 72) {
+  const runId = String(run?.runId || "").trim();
+  const state = getHarnessRunState(run);
+  const stage = formatHarnessStage(run);
+  const idleMs = Number(run?.health?.idleMs || 0) || 0;
+  const summary = getHarnessLatestEventSummary(run) || getHarnessAttentionDetail(run);
+  const left = `${runId.slice(0, 8) || "unknown"} ${stage} ${getHarnessStateLabel(state)}`;
+  const right = idleMs > 0 ? `idle ${formatMsDuration(idleMs)}` : (run?.active ? "live" : "history");
+  const head = `${left} ${right}`.trim();
+  const text = `${head} · ${summary}`.trim();
+  return {
+    key: runId || head,
+    color: getHarnessStateColor(state),
+    inverse: isSelected,
+    text: pad(text, width),
+  };
+}
+
 function summarizeDiff(diffPayload) {
   const diff = diffPayload?.diff || {};
   const files = Array.isArray(diff.files) ? diff.files : [];
@@ -191,6 +301,58 @@ function clampOffset(next, size, visible) {
   return Math.max(0, Math.min(next, Math.max(0, size - visible)));
 }
 
+function HarnessDetail({
+  harnessPayload,
+  harnessEvents,
+  harnessNudgeMode,
+  harnessNudgeValue,
+}) {
+  const run = harnessPayload?.run || harnessPayload || {};
+  const state = getHarnessRunState(run);
+  const approvalRequestId = getHarnessApprovalRequestId(run);
+  const canApprove = run?.health?.waitingForOperator === true || run?.approvalPending === true;
+  const lines = [
+    `Run ID        ${run?.runId || "-"}`,
+    `Name          ${run?.name || "-"}`,
+    `State         ${getHarnessStateLabel(state)}`,
+    `Stage         ${formatHarnessStage(run)}`,
+    `Started       ${formatTimestamp(run?.startedAt)}`,
+    `Updated       ${formatTimestamp(run?.updatedAt || run?.endedAt)}`,
+    `Approval      ${approvalRequestId || "none"}`,
+    `Summary       ${getHarnessAttentionDetail(run)}`,
+  ];
+  const visibleEvents = (Array.isArray(harnessEvents) ? harnessEvents : []).slice(0, 10);
+
+  return html`
+    <${Box} flexDirection="column" paddingY=${1}>
+      <${Text} bold>Harness Detail<//>
+      ${lines.map((line) => html`<${Text} key=${line}>${line}<//>`)}
+      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} bold>Recent Events<//>
+        ${visibleEvents.length
+          ? visibleEvents.map((event, index) => {
+              const eventLine = `${formatTimestamp(event?.timestamp || event?.createdAt)}  ${String(event?.type || event?.kind || "event")}  ${String(event?.summary || event?.message || event?.label || "").replace(/\s+/g, " ").trim()}`;
+              return html`<${Text} key=${event?.id || `${index}-${eventLine}`} wrap="truncate-end">${eventLine}<//>`;
+            })
+          : html`<${Text} dimColor>No harness events yet<//>`}
+      <//>
+      <${Box} marginTop=${1} flexDirection="column">
+        <${Text} dimColor>
+          ${canApprove
+            ? "[A]pprove  [X] deny  [N] nudge  [Esc] close"
+            : "[N] nudge  [Esc] close"}
+        <//>
+        ${harnessNudgeMode
+          ? html`
+              <${Text}>Nudge: ${harnessNudgeValue || ""}<//>
+              <${Text} dimColor>[Enter] send  [Esc] cancel<//>
+            `
+          : null}
+      <//>
+    <//>
+  `;
+}
+
 function SessionDetail({
   sessionPayload,
   diffView,
@@ -289,6 +451,12 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const [timelineOffset, setTimelineOffset] = React.useState(0);
   const [steerMode, setSteerMode] = React.useState(false);
   const [steerValue, setSteerValue] = React.useState("");
+  const [harnessRuns, setHarnessRuns] = React.useState([]);
+  const [selectedHarnessRunId, setSelectedHarnessRunId] = React.useState("");
+  const [harnessDetailView, setHarnessDetailView] = React.useState(null);
+  const [harnessEvents, setHarnessEvents] = React.useState([]);
+  const [harnessNudgeMode, setHarnessNudgeMode] = React.useState(false);
+  const [harnessNudgeValue, setHarnessNudgeValue] = React.useState("");
 
   const terminalColumns = stdout?.columns || 120;
   const terminalRows = stdout?.rows || 40;
@@ -297,6 +465,10 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const selectedSession = React.useMemo(
     () => entries.find((entry) => entry.id === selectedId)?.session || entries[0]?.session || null,
     [entries, selectedId],
+  );
+  const selectedHarnessRun = React.useMemo(
+    () => harnessRuns.find((run) => String(run?.runId || "").trim() === selectedHarnessRunId) || harnessRuns[0] || null,
+    [harnessRuns, selectedHarnessRunId],
   );
 
   const applyRetryQueue = React.useCallback((payload) => {
@@ -353,17 +525,28 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     setTimelineOffset(0);
     setSteerMode(false);
     setSteerValue("");
+    setHarnessDetailView(null);
+    setHarnessEvents([]);
+    setHarnessNudgeMode(false);
+    setHarnessNudgeValue("");
   }, [clearDetailPoll]);
 
   const refreshData = React.useCallback(async () => {
     try {
-      const [sessionsPayload, retryPayload] = await Promise.all([
+      const [sessionsPayload, retryPayload, harnessPayload] = await Promise.all([
         fetchJson(resolvedHost, resolvedPort, "/api/sessions?workspace=all"),
         fetchJson(resolvedHost, resolvedPort, "/api/retry-queue"),
+        fetchJson(resolvedHost, resolvedPort, "/api/harness/runs?limit=8"),
       ]);
       const now = Date.now();
       applyRetryQueue(retryPayload);
       applySessionSnapshot(sessionsPayload.sessions || [], now);
+      const nextHarnessRuns = normalizeHarnessRuns(harnessPayload?.items || harnessPayload?.runs || []);
+      setHarnessRuns(nextHarnessRuns);
+      setSelectedHarnessRunId((current) => {
+        if (current && nextHarnessRuns.some((run) => String(run?.runId || "").trim() === current)) return current;
+        return String(nextHarnessRuns[0]?.runId || "").trim();
+      });
       setStatusLine("");
     } catch (error) {
       setStatusLine(error.message || String(error));
@@ -536,12 +719,122 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }
   }, [loadDetail, resolvedHost, resolvedPort, selectedSession, steerValue]);
 
+  const loadHarnessDetail = React.useCallback(async (runId) => {
+    if (!runId) return;
+    const [runPayload, eventPayload] = await Promise.all([
+      fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}`),
+      fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/events?limit=40&direction=desc`),
+    ]);
+    setHarnessDetailView(runPayload);
+    setHarnessEvents(Array.isArray(eventPayload?.items) ? eventPayload.items : Array.isArray(eventPayload?.events) ? eventPayload.events : []);
+  }, [resolvedHost, resolvedPort]);
+
+  const openHarnessDetail = React.useCallback(async () => {
+    const runId = String(selectedHarnessRun?.runId || "").trim();
+    if (!runId) return;
+    setHarnessDetailView({ run: selectedHarnessRun });
+    setHarnessEvents([]);
+    setHarnessNudgeMode(false);
+    setHarnessNudgeValue("");
+    try {
+      await loadHarnessDetail(runId);
+      setStatusLine("");
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [loadHarnessDetail, selectedHarnessRun]);
+
+  const resolveHarnessApproval = React.useCallback(async (decision) => {
+    const run = harnessDetailView?.run || harnessDetailView || selectedHarnessRun;
+    const runId = String(run?.runId || "").trim();
+    const requestId = getHarnessApprovalRequestId(run);
+    if (!runId || !requestId) {
+      setStatusLine("Harness approval request is missing metadata.");
+      return;
+    }
+    try {
+      await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        `/api/harness/approvals/${encodeURIComponent(requestId)}/resolve`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            decision,
+            actor: "operator",
+            note: decision === "approved"
+              ? `Approved from harness monitor for stage ${formatHarnessStage(run)}.`
+              : `Denied from harness monitor for stage ${formatHarnessStage(run)}.`,
+          }),
+        },
+      );
+      setStatusLine(decision === "approved" ? "Harness approval granted." : "Harness approval denied.");
+      await refreshData();
+      await loadHarnessDetail(runId);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [harnessDetailView, loadHarnessDetail, refreshData, resolvedHost, resolvedPort, selectedHarnessRun]);
+
+  const sendHarnessNudge = React.useCallback(async () => {
+    const run = harnessDetailView?.run || harnessDetailView || selectedHarnessRun;
+    const runId = String(run?.runId || "").trim();
+    const prompt = harnessNudgeValue.trim();
+    if (!runId || !prompt) return;
+    try {
+      await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        `/api/harness/runs/${encodeURIComponent(runId)}/nudge`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            prompt,
+            actor: "operator",
+            mode: "steer",
+            reason: "manual_intervention",
+            stageId: formatHarnessStage(run),
+          }),
+        },
+      );
+      setHarnessNudgeMode(false);
+      setHarnessNudgeValue("");
+      setStatusLine("Harness nudge sent.");
+      await refreshData();
+      await loadHarnessDetail(runId);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [harnessDetailView, harnessNudgeValue, loadHarnessDetail, refreshData, resolvedHost, resolvedPort, selectedHarnessRun]);
+
   useInput((input, key) => {
     if (confirmKill) {
       if (input === "y" || input === "Y") {
         void runAction("kill");
       } else if (key.escape || input === "n" || input === "N" || key.return) {
         setConfirmKill(false);
+      }
+      return;
+    }
+
+    if (harnessNudgeMode) {
+      if (key.escape) {
+        setHarnessNudgeMode(false);
+        setHarnessNudgeValue("");
+        return;
+      }
+      if (key.return || input === "`r") {
+        void sendHarnessNudge();
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setHarnessNudgeValue((current) => current.slice(0, -1));
+        return;
+      }
+      if (input) {
+        setHarnessNudgeValue((current) => current + input);
       }
       return;
     }
@@ -562,6 +855,29 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       }
       if (input) {
         setSteerValue((current) => current + input);
+      }
+      return;
+    }
+
+    if (harnessDetailView) {
+      const run = harnessDetailView?.run || harnessDetailView;
+      const canApprove = run?.health?.waitingForOperator === true || run?.approvalPending === true;
+      if (key.escape) {
+        closeModal();
+        return;
+      }
+      if ((input === "a" || input === "A") && canApprove) {
+        void resolveHarnessApproval("approved");
+        return;
+      }
+      if ((input === "x" || input === "X") && canApprove) {
+        void resolveHarnessApproval("denied");
+        return;
+      }
+      if ((input === "n" || input === "N")) {
+        setHarnessNudgeMode(true);
+        setHarnessNudgeValue("");
+        return;
       }
       return;
     }
@@ -646,9 +962,29 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       setShowBackoff((current) => !current);
       return;
     }
+    if (input === "h" || input === "H") {
+      void openHarnessDetail();
+      return;
+    }
+    if (input === "[") {
+      if (!harnessRuns.length) return;
+      const index = harnessRuns.findIndex((run) => String(run?.runId || "").trim() === String(selectedHarnessRun?.runId || "").trim());
+      const nextIndex = index <= 0 ? harnessRuns.length - 1 : index - 1;
+      setSelectedHarnessRunId(String(harnessRuns[nextIndex]?.runId || "").trim());
+      return;
+    }
+    if (input === "]") {
+      if (!harnessRuns.length) return;
+      const index = harnessRuns.findIndex((run) => String(run?.runId || "").trim() === String(selectedHarnessRun?.runId || "").trim());
+      const nextIndex = index === -1 || index >= harnessRuns.length - 1 ? 0 : index + 1;
+      setSelectedHarnessRunId(String(harnessRuns[nextIndex]?.runId || "").trim());
+      return;
+    }
     if (key.escape) {
       closeModal();
     }
+  }, {
+    isActive: true,
   });
 
   const eventWidth = Math.max(12, terminalColumns - FIXED_TABLE_WIDTH);
@@ -659,10 +995,12 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     onFooterHintsChange(getFooterHints("agents", {
       confirmKill,
       detailOpen: Boolean(detailView),
+      harnessDetailOpen: Boolean(harnessDetailView),
+      harnessNudgeMode,
       logsOpen: logLines.length > 0,
       diffOpen: Boolean(diffView),
     }));
-  }, [confirmKill, detailView, diffView, logLines.length, onFooterHintsChange]);
+  }, [confirmKill, detailView, diffView, harnessDetailView, harnessNudgeMode, logLines.length, onFooterHintsChange]);
 
 
   return html`
@@ -675,10 +1013,18 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
               logLines=${logLines}
               timelineOffset=${timelineOffset}
               visibleTimelineRows=${visibleTimelineRows}
-              steerMode=${steerMode}
-              steerValue=${steerValue}
-              terminalColumns=${terminalColumns}
+               steerMode=${steerMode}
+               steerValue=${steerValue}
+               terminalColumns=${terminalColumns}
             />`
+        : harnessDetailView
+          ? html`
+              <${HarnessDetail}
+                harnessPayload=${harnessDetailView}
+                harnessEvents=${harnessEvents}
+                harnessNudgeMode=${harnessNudgeMode}
+                harnessNudgeValue=${harnessNudgeValue}
+              />`
         : html`
             <${Box} borderStyle="single" paddingX=${1}>
               ${renderCell("", 2, { keyName: "header-status" })}
@@ -761,13 +1107,27 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
                     <//>
                   `)
                 : null}
-              ${showBackoff && !(retryQueue.items || []).length
-                ? html`<${Text} dimColor>No tasks cooling down<//>`
-                : null}
-            <//>
+             ${showBackoff && !(retryQueue.items || []).length
+                 ? html`<${Text} dimColor>No tasks cooling down<//>`
+                 : null}
+             <//>
 
-            ${confirmKill && selectedSession
-              ? html`
+             <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+               <${Text} bold>Harness monitor (${harnessRuns.length})<//>
+               <${Text} dimColor>[H detail · [ / ] select]<//>
+               ${harnessRuns.length
+                 ? harnessRuns.slice(0, 6).map((run) => {
+                     const isSelected = String(run?.runId || "").trim() === String(selectedHarnessRun?.runId || "").trim();
+                     const row = projectHarnessRow(run, isSelected, Math.max(40, terminalColumns - 4));
+                     return html`
+                       <${Text} key=${row.key} color=${row.color} inverse=${row.inverse}>${row.text}<//>
+                     `;
+                   })
+                 : html`<${Text} dimColor>No harness runs reported yet<//>`}
+             <//>
+
+             ${confirmKill && selectedSession
+               ? html`
                   <${Box} marginTop=${1}>
                     <${Text} color="red">Kill ${describeSelection(selectedSession)}? [y/N]<//>
                   <//>
