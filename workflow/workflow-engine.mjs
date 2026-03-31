@@ -2557,7 +2557,7 @@ export class WorkflowEngine extends EventEmitter {
     delete originalData._workflowId;
     delete originalData._workflowName;
     const retryData = this._applyResumeInputMigrations(def, originalData);
-    const shouldAdvanceDelegationWatchdog = decisionReason.startsWith("delegation_watchdog:");
+    const shouldAdvanceDelegationWatchdog = decisionReason?.startsWith("delegation_watchdog:") ?? false;
     if (
       shouldAdvanceDelegationWatchdog &&
       retryData?._delegationWatchdog &&

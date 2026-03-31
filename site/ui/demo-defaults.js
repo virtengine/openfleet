@@ -639,6 +639,8 @@
             "prompt": "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\nEach item represents a Bosun-created or explicitly trusted PR blocked by CodeQL or GitHub code scanning.\nUse the supplied alert data, prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, and prDigest.checks to make the smallest safe code change that resolves the finding.\nFor each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\nSTRICT RULES:\n- Only fix the listed code-scanning or CodeQL findings.\n- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
             "sdk": "auto",
             "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
@@ -713,6 +715,8 @@
             "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nEach unresolved item includes prDigest with the PR body, files, issue comments, reviews, review comments, review requests, and check summaries. Use that context first.\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: start from failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
             "sdk": "auto",
             "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
@@ -21181,6 +21185,8 @@
             "prompt": "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\nEach item represents a Bosun-created or explicitly trusted PR blocked by CodeQL or GitHub code scanning.\nUse the supplied alert data, prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, and prDigest.checks to make the smallest safe code change that resolves the finding.\nFor each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\nSTRICT RULES:\n- Only fix the listed code-scanning or CodeQL findings.\n- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
             "sdk": "auto",
             "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
@@ -21255,6 +21261,8 @@
             "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nEach unresolved item includes prDigest with the PR body, files, issue comments, reviews, review comments, review requests, and check summaries. Use that context first.\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: start from failedCheckNames, failedRun, failedJobs, failedAnnotations, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
             "sdk": "auto",
             "timeoutMs": 1800000,
+            "delegationWatchdogTimeoutMs": "{{delegationWatchdogTimeoutMs}}",
+            "delegationWatchdogMaxRecoveries": "{{delegationWatchdogMaxRecoveries}}",
             "maxRetries": 2,
             "retryDelayMs": 30000,
             "continueOnError": true
