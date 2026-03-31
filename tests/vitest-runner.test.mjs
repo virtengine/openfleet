@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -11,6 +12,7 @@ import {
 } from "../tools/vitest-runner.mjs";
 
 const tempDirs = [];
+const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function createFixture() {
   const root = mkdtempSync(resolve(tmpdir(), "bosun-vitest-runner-"));
@@ -26,7 +28,7 @@ afterEach(() => {
 
 describe("vitest-runner", () => {
   it("keeps the pre-push adjacency map aligned with newer non-prefixed suites", () => {
-    const prePushHook = readFileSync(resolve(process.cwd(), ".githooks", "pre-push"), "utf8");
+    const prePushHook = readFileSync(resolve(repoRoot, ".githooks", "pre-push"), "utf8");
 
     expect(prePushHook).toContain('"workflow/|workflow-*|workflow-task-lifecycle*|workflow-write-file-encoding*|workflow-pipeline-primitives*|workflow-research-evidence-sidecar*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|state-ledger-sqlite*|webhook-gateway*|credential-store*|cron-scheduler*"');
     expect(prePushHook).toContain('"infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|windows-hidden-child-processes*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"');
@@ -93,7 +95,7 @@ describe("vitest-runner", () => {
   });
 
   it("routes package test scripts through the worktree-safe runner", () => {
-    const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
+    const packageJson = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
 
     expect(packageJson.scripts.test).toContain("tools/vitest-runner.mjs");
     expect(packageJson.scripts["test:vitest"]).toContain("tools/vitest-runner.mjs");
@@ -102,14 +104,16 @@ describe("vitest-runner", () => {
   });
 
   it("routes the pre-push hook through the worktree-safe runner", () => {
-    const prePushHook = readFileSync(resolve(process.cwd(), ".githooks", "pre-push"), "utf8");
+    const prePushHook = readFileSync(resolve(repoRoot, ".githooks", "pre-push"), "utf8");
 
-    expect(prePushHook).toContain("node tools/vitest-runner.mjs run --config vitest.config.mjs");
+    expect(prePushHook).toContain('local -a runner_args=(run --config vitest.config.mjs)');
+    expect(prePushHook).toContain('local -a bounded_runner_args=("${runner_args[@]}" --maxWorkers 1)');
+    expect(prePushHook).toContain('node tools/vitest-runner.mjs "${bounded_runner_args[@]}"');
     expect(prePushHook).not.toContain("node node_modules/vitest/vitest.mjs");
   });
 
   it("detects direct execution for Windows-style script paths", () => {
-    const scriptPath = resolve(process.cwd(), "tools", "vitest-runner.mjs");
+    const scriptPath = resolve(repoRoot, "tools", "vitest-runner.mjs");
 
     expect(
       isDirectExecution([process.execPath, scriptPath]),
@@ -149,13 +153,13 @@ describe("vitest-runner", () => {
   });
 
   it("includes the Windows realpath shim for Vitest child processes", () => {
-    const source = readFileSync(resolve(process.cwd(), "tools", "vitest-runner.mjs"), "utf8");
+    const source = readFileSync(resolve(repoRoot, "tools", "vitest-runner.mjs"), "utf8");
     expect(source).toContain("vite-windows-realpath-shim.mjs");
     expect(source).toContain('nodeArgs.push("--import"');
   });
 
   it("patches net use probes for Windows realpath handling", () => {
-    const source = readFileSync(resolve(process.cwd(), "tools", "vite-windows-realpath-shim.mjs"), "utf8");
+    const source = readFileSync(resolve(repoRoot, "tools", "vite-windows-realpath-shim.mjs"), "utf8");
     expect(source).toContain("childProcess.exec = function patchedExec");
     expect(source).toContain('normalizedCommand === "net use"');
     expect(source).toContain("syncBuiltinESMExports()");

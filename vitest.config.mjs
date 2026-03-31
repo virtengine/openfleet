@@ -6,6 +6,20 @@ const defineConfig =
   vitestConfig.default?.defineConfig ??
   ((config) => config);
 
+function parseWorkerCount(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const windowsDefaultMaxWorkers = parseWorkerCount(
+  process.env.BOSUN_VITEST_MAX_WORKERS,
+  2,
+);
+const windowsDefaultMinWorkers = Math.min(
+  parseWorkerCount(process.env.BOSUN_VITEST_MIN_WORKERS, 1),
+  windowsDefaultMaxWorkers,
+);
+
 const stripShebangPlugin = {
   name: "strip-shebang",
   enforce: "pre",
@@ -46,8 +60,8 @@ export default defineConfig({
     // other singleton runtime state. Run files in isolated worker processes so
     // cross-file leakage does not cause nondeterministic timeouts.
     pool: "forks",
-    minWorkers: process.platform === "win32" ? 1 : undefined,
-    maxWorkers: process.platform === "win32" ? 4 : undefined,
+    minWorkers: process.platform === "win32" ? windowsDefaultMinWorkers : undefined,
+    maxWorkers: process.platform === "win32" ? windowsDefaultMaxWorkers : undefined,
     setupFiles: ["tests/setup.mjs"],
   },
 });

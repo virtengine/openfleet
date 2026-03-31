@@ -324,9 +324,10 @@ run_vitest_batches() {
   [ "${#tests[@]}" -eq 0 ] && return 0
 
   local -a runner_args=(run --config vitest.config.mjs)
+  local -a bounded_runner_args=("${runner_args[@]}" --maxWorkers 1)
   local batch_size=18
   if [ "${#tests[@]}" -le "$batch_size" ]; then
-    node tools/vitest-runner.mjs "${runner_args[@]}" "${tests[@]}"
+    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${tests[@]}"
     return $?
   fi
 
@@ -337,7 +338,7 @@ run_vitest_batches() {
   while [ "$offset" -lt "$total" ]; do
     local -a slice=("${tests[@]:offset:batch_size}")
     echo "[hooks] vitest batch ${batch}: ${#slice[@]} files"
-    node tools/vitest-runner.mjs "${runner_args[@]}" --maxWorkers 1 "${slice[@]}" || return $?
+    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${slice[@]}" || return $?
     offset=$((offset + batch_size))
     batch=$((batch + 1))
   done
