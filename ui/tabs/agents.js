@@ -465,7 +465,9 @@ function getFleetEntryStatus(entry) {
 }
 
 function isFleetEntryActive(entry) {
-  return getFleetEntryStatusMeta(entry).isActive;
+  if (!entry || typeof entry !== "object") return false;
+  const status = getFleetEntryStatus(entry);
+  return status === "active" || status === "running" || status === "busy" || status === "inprogress";
 }
 
 function getFleetEntryStatusMeta(entry) {
