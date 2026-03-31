@@ -3138,12 +3138,14 @@ describe("action.persist_memory", () => {
         repoSlug: "virtengine/bosun",
         workspace: repoRoot,
         _workspaceId: "workspace-1",
+        _changedFiles: ["src/auth/login.mjs"],
         sessionId: "session-1",
         runId: "run-1",
         task: {
           id: "MEM-2",
           title: "Stabilize login retries",
           description: "Reset browser fixtures between retries.",
+          filePaths: ["src/auth/login.mjs"],
           workspace: repoRoot,
           repository: "virtengine/bosun",
           meta: {
@@ -3151,6 +3153,7 @@ describe("action.persist_memory", () => {
             workspaceId: "workspace-1",
             sessionId: "session-1",
             runId: "run-1",
+            filePaths: ["src/auth/login.mjs"],
           },
         },
       });
@@ -3169,6 +3172,7 @@ describe("action.persist_memory", () => {
       expect(persistResult.success).toBe(true);
       expect(persistResult.persisted).toBe(true);
       expect(persistResult.scopeLevel).toBe("workspace");
+      expect(persistResult.entry.relatedPaths).toEqual(["src/auth/login.mjs"]);
 
       const { retrieveKnowledgeEntries } = await import("../workspace/shared-knowledge.mjs");
       const retrieved = await retrieveKnowledgeEntries({
@@ -3178,9 +3182,13 @@ describe("action.persist_memory", () => {
         sessionId: "session-99",
         runId: "run-99",
         query: "browser login fixtures retries",
+        changedFiles: ["src/auth/login.mjs"],
         limit: 10,
       });
-      expect(retrieved.some((entry) => entry.content.includes("seed auth fixtures"))).toBe(true);
+      expect(retrieved).toContainEqual(expect.objectContaining({
+        content: "Workspace memory: seed auth fixtures before browser login retries.",
+        directPathHits: ["src/auth/login.mjs"],
+      }));
 
       const hidden = await retrieveKnowledgeEntries({
         repoRoot,

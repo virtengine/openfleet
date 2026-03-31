@@ -418,7 +418,7 @@ function isEntryVisibleForContext(entry, context) {
 async function loadContextPathAdjacency(repoRoot) {
   const indexPath = resolve(repoRoot, CONTEXT_INDEX_FILE);
   if (!existsSync(indexPath)) {
-    return { directPaths: new Set(), adjacentPaths: new Set() };
+    return new Map();
   }
   try {
     const payload = JSON.parse(await readFile(indexPath, "utf8"));

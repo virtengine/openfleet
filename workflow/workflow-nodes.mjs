@@ -2541,6 +2541,7 @@ function resolveTaskMemoryPathHints(node, ctx, taskPayload = null) {
     node?.config?.changedFiles,
     node?.config?.relatedPaths,
     node?.config?.filePaths,
+    ctx?.data?._taskMemoryPaths,
     ctx?.data?._changedFiles,
     ctx?.data?.changedFiles,
     ctx?.data?.task?.filePaths,
@@ -19390,6 +19391,7 @@ registerBuiltinNodeType("action.persist_memory", {
       agentId: pickFirstString(resolveValue("agentId"), `workflow:${node.id}`) || `workflow:${node.id}`,
       agentType: pickFirstString(resolveValue("agentType"), "workflow") || "workflow",
       tags: normalizeStringArray(resolveValue("tags")),
+      relatedPaths: resolveTaskMemoryPathHints(node, ctx, taskPayload),
     });
 
     try {

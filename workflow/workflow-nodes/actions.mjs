@@ -653,6 +653,7 @@ function resolveTaskMemoryPathHints(node, ctx, taskPayload = null) {
     node?.config?.changedFiles,
     node?.config?.relatedPaths,
     node?.config?.filePaths,
+    ctx?.data?._taskMemoryPaths,
     ctx?.data?._changedFiles,
     ctx?.data?.changedFiles,
     ctx?.data?.task?.filePaths,
@@ -6667,16 +6668,34 @@ registerNodeType("action.acquire_worktree", {
         return true;
       };
 
-      // Ensure base branch ref is fresh
+      const hasOriginRemote = () => {
+        try {
+          execGitArgsSync(["config", "--get", "remote.origin.url"], {
+            cwd: repoRoot,
+            encoding: "utf8",
+            timeout: 5000,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const shouldSyncFromOrigin = () => /^origin\//.test(baseBranch) && hasOriginRemote();
+
+      // Ensure remote-tracking base refs are fresh when the repo actually has that remote.
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
-      try {
-        execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
-          cwd: repoRoot, encoding: "utf8",
-          timeout: fetchTimeout,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-      } catch {
-        // Best-effort fetch — offline or transient issue is OK
+      if (shouldSyncFromOrigin()) {
+        try {
+          execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
+            cwd: repoRoot, encoding: "utf8",
+            timeout: fetchTimeout,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch {
+          // Best-effort fetch — offline or transient issue is OK
+        }
       }
 
       const worktreesDir = resolve(repoRoot, ".bosun", "worktrees");
@@ -6723,14 +6742,16 @@ registerNodeType("action.acquire_worktree", {
           } catch {
             /* best-effort — dirty state handled by post-pull invalidity check below */
           }
-          try {
-            execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
-              cwd: worktreePath, encoding: "utf8",
-              timeout: fetchTimeout,
-              stdio: ["ignore", "pipe", "pipe"],
-            });
-          } catch {
-            /* rebase failures are non-fatal only if the worktree remains reusable */
+          if (shouldSyncFromOrigin()) {
+            try {
+              execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
+                cwd: worktreePath, encoding: "utf8",
+                timeout: fetchTimeout,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+            } catch {
+              /* rebase failures are non-fatal only if the worktree remains reusable */
+            }
           }
           recreatedManagedWorktree = invalidateBrokenReusableWorktree(worktreePath, "post-pull");
         }
@@ -6751,6 +6772,35 @@ registerNodeType("action.acquire_worktree", {
 
       // Create fresh worktree
       const branchExistsLocally = localBranchExists();
+      const attachedPath =
+        branchExistsLocally && !existsSync(worktreePath)
+          ? await findAttachedWorktreeForBranch()
+          : "";
+      if (attachedPath && existsSync(attachedPath)) {
+        if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
+          fixGitConfigCorruption(repoRoot);
+        } else {
+          fixGitConfigCorruption(repoRoot);
+          ctx.data.worktreePath = attachedPath;
+          ctx.data.baseBranch = baseBranch;
+          ctx.data._worktreeCreated = false;
+          ctx.data._worktreeManaged = true;
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath: attachedPath,
+          });
+          ctx.log(node.id, `Reusing existing branch worktree: ${attachedPath}`);
+          return {
+            success: true,
+            worktreePath: attachedPath,
+            created: false,
+            reused: true,
+            reusedExistingBranch: true,
+            branch,
+            baseBranch,
+          };
+        }
+      }
       try {
         execGitArgsSync(
           branchExistsLocally
@@ -7489,7 +7539,10 @@ registerNodeType("action.build_task_prompt", {
       }
     }
 
-    if (includeMemory) {
+    if (
+      includeMemory
+      && (existsSync(resolve(normalizedRepoRoot, ".git")) || existsSync(resolve(normalizedRepoRoot, ".bosun")))
+    ) {
       try {
         const taskMemoryPaths = resolveTaskMemoryPathHints(node, ctx, taskPayload);
         const retrievedMemory = await retrieveKnowledgeEntries({
@@ -7778,6 +7831,7 @@ registerNodeType("action.persist_memory", {
       agentId: pickFirstString(resolveValue("agentId"), `workflow:${node.id}`) || `workflow:${node.id}`,
       agentType: pickFirstString(resolveValue("agentType"), "workflow") || "workflow",
       tags: normalizeStringArray(resolveValue("tags")),
+      relatedPaths: resolveTaskMemoryPathHints(node, ctx, taskPayload),
     });
 
     try {
