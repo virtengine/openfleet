@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -99,6 +99,9 @@ describe("context-indexer", () => {
     expect(status.graph.nodeCount).toBeGreaterThan(0);
     expect(status.graph.edgeCount).toBeGreaterThan(0);
     expect(status.graph.relationTypes.some((entry) => entry.relationType === "file_imports_file")).toBe(true);
+    expect(status.stale).toBe(false);
+    expect(status.staleReasons).toEqual([]);
+    expect(status.latestSourcePath).toBeTruthy();
   });
 
   it("returns a graph neighborhood for seed symbols and imported files", async () => {
@@ -165,6 +168,37 @@ describe("context-indexer", () => {
       limit: 10,
     });
     expect(graph.edges.some((edge) => edge.relationType === "file_imports_file" && String(edge.toPath || "").endsWith("src/helper.mjs"))).toBe(true);
+  });
+
+  it("reports stale context indexes when workspace source files changed after indexing", async () => {
+    mkdirSync(resolve(testRoot, "src"), { recursive: true });
+
+    const alphaPath = resolve(testRoot, "src", "alpha.mjs");
+    writeFileSync(alphaPath, "export function greetUser(name) { return name; }\n", "utf8");
+
+    await runContextIndex({
+      rootDir: testRoot,
+      includeTests: true,
+      useTreeSitter: false,
+      useZoekt: false,
+    });
+
+    writeFileSync(alphaPath, "export function greetUser(name) { return `${name}!`; }\n", "utf8");
+    const futureDate = new Date(Date.now() + 5000);
+    utimesSync(alphaPath, futureDate, futureDate);
+
+    const status = await getContextIndexStatus({
+      rootDir: testRoot,
+      includeTests: true,
+      maxAgeMs: 60 * 60 * 1000,
+    });
+
+    expect(status.ready).toBe(true);
+    expect(status.stale).toBe(true);
+    expect(status.staleBecauseWorkspaceChanged).toBe(true);
+    expect(status.staleBecauseAge).toBe(false);
+    expect(status.staleReasons).toContain("workspace-changed");
+    expect(status.latestSourcePath).toBe("src/alpha.mjs");
   });
 
   it("supports task-type scoped search with optional fallback", async () => {

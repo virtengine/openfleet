@@ -251,6 +251,29 @@ function haveHintedFilesChangedSince(rootDir, changedFiles = [], lastIndexedAt =
   return false;
 }
 
+function computeWorkspaceSourceFreshness(rootDir, opts = {}) {
+  const includeTests = opts.includeTests !== false;
+  const maxFileBytes = Number.isFinite(Number(opts.maxFileBytes))
+    ? Math.max(1024, Number(opts.maxFileBytes))
+    : 800000;
+  const paths = resolvePaths(rootDir);
+  const scannedFiles = collectSourceFiles(paths.rootDir, { includeTests, maxFileBytes }, paths.docsPath);
+  let latestSourceMtimeMs = 0;
+  let latestSourcePath = "";
+  for (const file of scannedFiles) {
+    const mtimeMs = Number(file?.mtimeMs || 0);
+    if (mtimeMs > latestSourceMtimeMs) {
+      latestSourceMtimeMs = mtimeMs;
+      latestSourcePath = String(file?.relPath || "").replace(/\\/g, "/");
+    }
+  }
+  return {
+    sourceFileCount: scannedFiles.length,
+    latestSourceMtimeMs: latestSourceMtimeMs || null,
+    latestSourcePath: latestSourcePath || null,
+  };
+}
+
 async function openDb(rootDir) {
   const paths = resolvePaths(rootDir);
   ensureIndexDirs(paths);
@@ -1438,20 +1461,27 @@ export async function ensureContextIndexFresh(opts = {}) {
     rootDir,
   );
   const force = opts.force === true;
-  const status = await getContextIndexStatus({ rootDir });
+  const status = await getContextIndexStatus({
+    rootDir,
+    includeTests: opts.includeTests,
+    maxFileBytes: opts.maxFileBytes,
+    maxAgeMs,
+  });
   const lastIndexedAt = String(status?.lastIndexedAt || "");
   const lastIndexedMs = Date.parse(lastIndexedAt);
   const missing = status?.ready !== true;
-  const staleByAge =
-    !missing
-    && maxAgeMs >= 0
-    && (!Number.isFinite(lastIndexedMs) || (Date.now() - lastIndexedMs) > maxAgeMs);
-  const staleByChangedFiles =
-    !missing
-    && changedFiles.length > 0
-    && haveHintedFilesChangedSince(rootDir, changedFiles, lastIndexedAt);
+  const staleByAge = status?.staleBecauseAge === true
+    || (
+      !missing
+      && maxAgeMs >= 0
+      && (!Number.isFinite(lastIndexedMs) || (Date.now() - lastIndexedMs) > maxAgeMs)
+    );
+  const staleByWorkspace = status?.staleBecauseWorkspaceChanged === true;
+  const staleByChangedFiles = changedFiles.length > 0
+    ? haveHintedFilesChangedSince(rootDir, changedFiles, lastIndexedAt)
+    : false;
 
-  if (!force && !missing && !staleByAge && !staleByChangedFiles) {
+  if (!force && !missing && !staleByAge && !staleByWorkspace && !staleByChangedFiles) {
     return {
       refreshed: false,
       reason: "fresh",
@@ -1476,6 +1506,8 @@ export async function ensureContextIndexFresh(opts = {}) {
         ? "missing"
         : staleByChangedFiles
           ? "changed-files"
+          : staleByWorkspace
+            ? "workspace-changed"
           : "stale",
     rootDir: resolve(rootDir),
     result,
@@ -1673,6 +1705,25 @@ export async function getContextIndexStatus(opts = {}) {
     const fileCount = db.prepare("SELECT COUNT(*) AS c FROM files").get()?.c || 0;
     const symbolCount = db.prepare("SELECT COUNT(*) AS c FROM symbols").get()?.c || 0;
     const lastIndexedAt = getMeta(db, "last_indexed_at");
+    const lastIndexedMs = Date.parse(String(lastIndexedAt || ""));
+    const maxAgeMs = resolveContextIndexMaxAgeMs(
+      opts.maxAgeMs
+      ?? process.env.BOSUN_CONTEXT_INDEX_MAX_AGE_MS,
+    );
+    const workspaceFreshness = computeWorkspaceSourceFreshness(paths.rootDir, opts);
+    const staleBecauseWorkspaceChanged =
+      workspaceFreshness.latestSourceMtimeMs != null
+      && Number.isFinite(lastIndexedMs)
+      && workspaceFreshness.latestSourceMtimeMs > lastIndexedMs + 1000;
+    const staleBecauseAge =
+      fileCount > 0
+      && maxAgeMs >= 0
+      && (!Number.isFinite(lastIndexedMs) || (Date.now() - lastIndexedMs) > maxAgeMs);
+    const ready = existsSync(paths.dbPath) && fileCount > 0;
+    const staleReasons = [];
+    if (!ready) staleReasons.push("missing");
+    if (staleBecauseWorkspaceChanged) staleReasons.push("workspace-changed");
+    if (staleBecauseAge) staleReasons.push("age");
     let zoekt = null;
     const zoektRaw = getMeta(db, "zoekt_status");
     if (zoektRaw) {
@@ -1684,12 +1735,21 @@ export async function getContextIndexStatus(opts = {}) {
     }
 
     return {
-      ready: existsSync(paths.dbPath) && fileCount > 0,
+      ready,
       dbPath: paths.dbPath,
       fileCount,
       symbolCount,
       graph: buildGraphSummary(db),
       lastIndexedAt,
+      ageMs: Number.isFinite(lastIndexedMs) ? Math.max(0, Date.now() - lastIndexedMs) : null,
+      maxAgeMs,
+      sourceFileCount: workspaceFreshness.sourceFileCount,
+      latestSourceMtimeMs: workspaceFreshness.latestSourceMtimeMs,
+      latestSourcePath: workspaceFreshness.latestSourcePath,
+      staleBecauseWorkspaceChanged,
+      staleBecauseAge,
+      stale: staleReasons.length > 0,
+      staleReasons,
       zoekt,
     };
   } finally {
