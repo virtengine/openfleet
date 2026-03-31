@@ -3211,6 +3211,70 @@ describe("action.build_task_prompt", () => {
       await removeDirAfterLedgerReset(repoRoot);
     }
   });
+
+  it("injects reusable strategy guidance from the sql ledger into task prompts", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-skillbook-ledger-"));
+    try {
+      const { appendPromotedStrategyToStateLedger } = await import("../lib/state-ledger-sqlite.mjs");
+      appendPromotedStrategyToStateLedger({
+        strategyId: "wf-auth:ledger-retry",
+        workflowId: "wf-auth",
+        scopeLevel: "workspace",
+        category: "strategy",
+        decision: "promote_strategy",
+        status: "promoted",
+        verificationStatus: "promote_strategy",
+        confidence: 0.91,
+        recommendation: "Use the ledger-backed auth retry sequence before broader validation.",
+        rationale: "This promoted strategy previously recovered the exact login path now being edited.",
+        tags: ["auth", "retry"],
+        updatedAt: new Date().toISOString(),
+        strategy: {
+          strategyId: "wf-auth:ledger-retry",
+          workflowId: "wf-auth",
+          recommendation: "Use the ledger-backed auth retry sequence before broader validation.",
+          rationale: "This promoted strategy previously recovered the exact login path now being edited.",
+          confidence: 0.91,
+          tags: ["auth", "retry"],
+          relatedPaths: ["src/auth/login.mjs"],
+        },
+        knowledge: {
+          entry: {
+            relatedPaths: ["src/auth/login.mjs"],
+          },
+        },
+      }, { repoRoot });
+
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({
+        _workflowId: "wf-auth",
+        _changedFiles: ["src/auth/login.mjs"],
+      });
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "SKILL-LEDGER-1",
+        taskTitle: "Recover auth retries",
+        taskDescription: "Use the best prior recovery strategy for the active login path.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-skill-ledger-1"),
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      });
+
+      const result = await nt.execute(node, ctx);
+      const userPrompt = result.userPrompt || result.prompt;
+      const guidance = ctx.data._taskSkillbookGuidance;
+
+      expect(userPrompt).toContain("Reusable strategy guidance:");
+      expect(userPrompt).toContain("Use the ledger-backed auth retry sequence before broader validation.");
+      expect(userPrompt).toContain("matched=src/auth/login.mjs");
+      expect(guidance?.strategies?.[0]).toEqual(expect.objectContaining({
+        strategyId: "wf-auth:ledger-retry",
+        pathMatchPaths: ["src/auth/login.mjs"],
+      }));
+    } finally {
+      await removeDirAfterLedgerReset(repoRoot);
+    }
+  });
 });
 
 

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { listPromotedStrategiesFromStateLedger } from "../lib/state-ledger-sqlite.mjs";
 
 const DEFAULT_SKILLBOOK_FILE = ".bosun/skillbook/strategies.json";
 const SKILLBOOK_VERSION = "1.0.0";
@@ -191,6 +192,106 @@ function createEmptySkillbook() {
   };
 }
 
+function mapLedgerStrategyToSkillbookEntry(record = {}) {
+  if (!record || typeof record !== "object") return null;
+  const document = record.document && typeof record.document === "object" && !Array.isArray(record.document)
+    ? record.document
+    : {};
+  const strategy = document.strategy && typeof document.strategy === "object" && !Array.isArray(document.strategy)
+    ? document.strategy
+    : {};
+  const knowledgeEntry =
+    document.knowledge?.entry && typeof document.knowledge.entry === "object" && !Array.isArray(document.knowledge.entry)
+      ? document.knowledge.entry
+      : {};
+  try {
+    return normalizeSkillbookEntry({
+      ...document,
+      ...strategy,
+      strategyId:
+        normalizeNullable(record.strategyId)
+        || normalizeNullable(document.strategyId)
+        || normalizeNullable(strategy.strategyId),
+      workflowId:
+        normalizeNullable(record.workflowId)
+        || normalizeNullable(document.workflowId)
+        || normalizeNullable(strategy.workflowId),
+      runId:
+        normalizeNullable(record.runId)
+        || normalizeNullable(document.runId)
+        || normalizeNullable(strategy.runId),
+      category:
+        normalizeNullable(record.category)
+        || normalizeNullable(document.category)
+        || normalizeNullable(strategy.category),
+      decision:
+        normalizeNullable(record.decision)
+        || normalizeNullable(document.decision)
+        || normalizeNullable(strategy.decision),
+      status:
+        normalizeNullable(record.status)
+        || normalizeNullable(document.status)
+        || normalizeNullable(strategy.status),
+      verificationStatus:
+        normalizeNullable(record.verificationStatus)
+        || normalizeNullable(document.verificationStatus)
+        || normalizeNullable(strategy.verificationStatus),
+      confidence:
+        record.confidence ?? document.confidence ?? strategy.confidence ?? null,
+      recommendation:
+        normalizeNullable(record.recommendation)
+        || normalizeNullable(document.recommendation)
+        || normalizeNullable(strategy.recommendation),
+      rationale:
+        normalizeNullable(record.rationale)
+        || normalizeNullable(document.rationale)
+        || normalizeNullable(strategy.rationale),
+      relatedPaths:
+        document.relatedPaths
+        || strategy.relatedPaths
+        || knowledgeEntry.relatedPaths
+        || strategy?.knowledge?.entry?.relatedPaths
+        || [],
+      updatedAt:
+        normalizeNullable(record.updatedAt)
+        || normalizeNullable(document.updatedAt)
+        || normalizeNullable(strategy.updatedAt)
+        || normalizeNullable(record.promotedAt),
+      firstPromotedAt:
+        normalizeNullable(document.firstPromotedAt)
+        || normalizeNullable(strategy.firstPromotedAt)
+        || normalizeNullable(record.promotedAt),
+      history:
+        Array.isArray(document.history)
+          ? document.history
+          : (Array.isArray(strategy.history) ? strategy.history : []),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function loadSkillbookFromStateLedger(options = {}) {
+  try {
+    const rows = listPromotedStrategiesFromStateLedger({
+      repoRoot: options.repoRoot,
+    });
+    const strategies = rows
+      .map((row) => mapLedgerStrategyToSkillbookEntry(row))
+      .filter(Boolean);
+    if (strategies.length === 0) return null;
+    strategies.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    return {
+      version: SKILLBOOK_VERSION,
+      updatedAt: normalizeTimestamp(strategies[0]?.updatedAt),
+      strategies,
+      source: "state-ledger",
+    };
+  } catch {
+    return null;
+  }
+}
+
 function normalizeHistoryEntry(entry = {}) {
   if (!entry || typeof entry !== "object") return null;
   const timestamp = normalizeTimestamp(entry.timestamp || entry.updatedAt || entry.createdAt);
@@ -295,6 +396,10 @@ export function resolveSkillbookPath(options = {}) {
 }
 
 export async function loadSkillbook(options = {}) {
+  const ledgerSkillbook = loadSkillbookFromStateLedger(options);
+  if (ledgerSkillbook?.strategies?.length) {
+    return ledgerSkillbook;
+  }
   const skillbookPath = resolveSkillbookPath(options);
   if (!existsSync(skillbookPath)) {
     return createEmptySkillbook();
