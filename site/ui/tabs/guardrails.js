@@ -392,7 +392,9 @@ export function GuardrailsTab() {
         body: JSON.stringify(patch),
       });
       if (res?.snapshot) {
-        guardrailsData.value = res.snapshot;
+        if (guardrailsData && "value" in guardrailsData) {
+          guardrailsData.value = res.snapshot;
+        }
       } else {
         await refreshTab("guardrails", { force: true });
       }
@@ -423,7 +425,9 @@ export function GuardrailsTab() {
         body: JSON.stringify(payload),
       });
       if (res?.snapshot) {
-        guardrailsData.value = res.snapshot;
+        if (guardrailsData && "value" in guardrailsData) {
+          guardrailsData.value = res.snapshot;
+        }
       } else {
         await refreshTab("guardrails", { force: true });
       }
