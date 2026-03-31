@@ -101,6 +101,10 @@ describe("command palette integration", () => {
     await waitFor(() => lockedView.text().includes("Tasks"));
     await lockedView.press("n");
     await waitFor(() => lockedView.lastFrame()?.includes("New Task"));
+    // Wait for the input-lock effect to propagate: footer shows Ctrl+S when locked
+    await waitFor(() => lockedView.text().includes("Ctrl+S"));
+    // Extra delay for useInput handler re-registration (React useEffect timing)
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await lockedView.press(":");
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(lockedView.text().includes("Command Palette")).toBe(false);
