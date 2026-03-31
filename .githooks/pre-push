@@ -138,6 +138,17 @@ merge_base_for_new_branch() {
     || true
 }
 
+add_changed_paths_from_range() {
+  local range="$1"
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    CHANGED_MAP["$path"]=1
+    if is_broad_impact_file "$path"; then
+      BROAD_IMPACT_MAP["$path"]=1
+    fi
+  done < <(git diff --name-only "$range" 2>/dev/null || true)
+}
+
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   LOCAL_SHA=$(printf '%s' "$line" | awk '{print $2}')
@@ -160,14 +171,23 @@ while IFS= read -r line; do
     RANGE="${REMOTE_SHA}..${LOCAL_SHA}"
   fi
 
-  while IFS= read -r path; do
-    [ -z "$path" ] && continue
-    CHANGED_MAP["$path"]=1
-    if is_broad_impact_file "$path"; then
-      BROAD_IMPACT_MAP["$path"]=1
-    fi
-  done < <(git diff --name-only "$RANGE" 2>/dev/null || true)
+  add_changed_paths_from_range "$RANGE"
 done <<< "$PUSH_INPUT"
+
+if [ "${#CHANGED_MAP[@]}" -eq 0 ]; then
+  TRACKING_BRANCH="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  if [ -n "$TRACKING_BRANCH" ]; then
+    add_changed_paths_from_range "${TRACKING_BRANCH}..HEAD"
+  fi
+fi
+
+if [ "${#CHANGED_MAP[@]}" -eq 0 ] && git rev-parse --verify origin/main >/dev/null 2>&1; then
+  add_changed_paths_from_range "$(git merge-base HEAD origin/main 2>/dev/null || printf 'origin/main')..HEAD"
+fi
+
+if [ "${#CHANGED_MAP[@]}" -eq 0 ] && git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+  add_changed_paths_from_range "HEAD~1..HEAD"
+fi
 
 # ── Classify changed files ──────────────────────────────────────────────────
 declare -a CHANGED_FILES=()
