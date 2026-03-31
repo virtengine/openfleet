@@ -30,11 +30,21 @@ function toTrimmedString(value) {
 }
 
 function slugify(value) {
-  return toTrimmedString(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "") || "harness";
+  const lower = toTrimmedString(value).slice(0, 200).toLowerCase();
+  let slug = "";
+  let prevDash = true; // suppress leading dash
+  for (const ch of lower) {
+    if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) {
+      slug += ch;
+      prevDash = false;
+    } else if (!prevDash) {
+      slug += "-";
+      prevDash = true;
+    }
+  }
+  // Remove trailing dash
+  if (slug.endsWith("-")) slug = slug.slice(0, -1);
+  return slug || "harness";
 }
 
 function safeClone(value) {
