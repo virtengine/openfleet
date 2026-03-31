@@ -23,6 +23,8 @@ import StatusScreen from "./screens/status.mjs";
 import TelemetryScreen from "./screens/telemetry.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
+import CommandPalette from "./CommandPalette.js";
+import { buildCommandPaletteActions, createCommandPaletteHistoryAdapter } from "./lib/command-palette.mjs";
 import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "../ui/tui/HelpScreen.js";
 import {
   appendLogEntry,
@@ -31,8 +33,7 @@ import {
 } from "../ui/tui/logs-screen-helpers.js";
 
 const CLI_SHORTCUT_TITLES = new Set(["Global", "Tasks screen", "Agents screen", "Modals"]);
-const CLI_SHORTCUT_GROUPS = SHORTCUT_GROUPS.filter((g) => CLI_SHORTCUT_TITLES.has(g.title));
-
+const CLI_SHORTCUT_GROUPS = SHORTCUT_GROUPS.filter((group) => CLI_SHORTCUT_TITLES.has(group.title));
 const html = htm.bind(React.createElement);
 
 const SCREENS = {
@@ -62,7 +63,7 @@ function ScreenTabs({ screen }) {
           ${index < navItems.length - 1 ? html`<${Text} dimColor>  <//>` : null}
         <//>
       `)}
-      <${Text} dimColor>  [q] Quit<//>
+      <${Text} dimColor>  [Ctrl+P] Palette  [:] Command  [?] Help  [q] Quit<//>
     <//>
   `;
 }
@@ -76,7 +77,38 @@ function upsertById(items = [], nextItem) {
   return next;
 }
 
-export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient }) {
+function toRefreshSeconds(value) {
+  return Math.max(0, Math.ceil(Number(value || 2000) / 1000));
+}
+
+function isCtrlPaletteShortcut(input, key) {
+  // In Ink 5, Ctrl+P arrives as input='p' with key.ctrl=true (not as '\u0010')
+  return key?.ctrl === true && input === "p";
+}
+
+function isPaletteShortcut(input, key) {
+  return input === ":" || isCtrlPaletteShortcut(input, key);
+}
+
+async function fallbackRequestJson(host, port, path, options = {}) {
+  const headers = {
+    Accept: "application/json",
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(options.headers || {}),
+  };
+  const response = await fetch(new URL(path, `http://${host}:${port}`).toString(), {
+    method: options.method || (options.body ? "POST" : "GET"),
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || payload?.message || `Request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient, historyAdapter }) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [screen, setScreen] = useState(initialScreen || "status");
@@ -85,6 +117,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [stats, setStats] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [workflows, setWorkflows] = useState([]);
   const [logs, setLogs] = useState([]);
   const [logsFilterState, setLogsFilterState] = useState(createDefaultLogsFilterState());
   const [error, setError] = useState(null);
@@ -92,9 +125,10 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpScrollOffset, setHelpScrollOffset] = useState(0);
   const [footerHints, setFooterHints] = useState(() => getFooterHints(initialScreen || "status"));
-  const [refreshCountdownSec, setRefreshCountdownSec] = useState(
-    Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)),
-  );
+  const [effectiveRefreshMs, setEffectiveRefreshMs] = useState(Number(refreshMs || 2000));
+  const [refreshCountdownSec, setRefreshCountdownSec] = useState(toRefreshSeconds(refreshMs));
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [recentActionIds, setRecentActionIds] = useState([]);
 
   const bridge = useMemo(
     () => wsClient || wsBridgeFactory({ host, port }),
@@ -104,13 +138,33 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     () => readTuiHeaderConfig(bridge?.configDir),
     [bridge?.configDir],
   );
+  const resolvedHistory = useMemo(
+    () => historyAdapter || createCommandPaletteHistoryAdapter(),
+    [historyAdapter],
+  );
+  const requestJson = useCallback((path, options = {}) => {
+    if (typeof bridge?.requestJson === "function") {
+      return bridge.requestJson(path, options);
+    }
+    return fallbackRequestJson(host, port, path, options);
+  }, [bridge, host, port]);
+
+  useEffect(() => {
+    const nextRefreshMs = Number(refreshMs || 2000);
+    setEffectiveRefreshMs(nextRefreshMs);
+    setRefreshCountdownSec(toRefreshSeconds(nextRefreshMs));
+  }, [refreshMs]);
+
+  useEffect(() => {
+    void resolvedHistory.load().then(setRecentActionIds).catch(() => {});
+  }, [resolvedHistory]);
 
   useEffect(() => {
     let active = true;
     const unsubscribes = [];
 
     const resetRefreshCountdown = () => {
-      setRefreshCountdownSec(Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)));
+      setRefreshCountdownSec(toRefreshSeconds(effectiveRefreshMs));
     };
     const on = (eventName, handler) => {
       const unsubscribe = bridge.on(eventName, handler);
@@ -124,13 +178,23 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         if (active) setError(String(err?.message || err || "Failed to load tasks"));
       }
     };
+    const refreshWorkflows = async () => {
+      try {
+        const payload = await requestJson("/api/workflows/templates");
+        const nextWorkflows = Array.isArray(payload) ? payload : Array.isArray(payload?.templates) ? payload.templates : [];
+        if (active) setWorkflows(nextWorkflows);
+      } catch {
+        if (active) setWorkflows([]);
+      }
+    };
 
     on("connect", () => {
       setConnected(true);
       setConnectionState("connected");
       setError(null);
       resetRefreshCountdown();
-      void refreshTasks();
+      void refreshTasks().catch(() => {});
+      void refreshWorkflows().catch(() => {});
     });
     on("disconnect", () => {
       setConnected(false);
@@ -178,7 +242,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       setSessions((previous) => previous.filter((candidate) => candidate.id !== session?.id));
     });
     on("tasks:update", () => {
-      void refreshTasks();
+      void refreshTasks().catch(() => {});
     });
     on("task:update", (task) => {
       setTasks((previous) => upsertById(previous, task));
@@ -216,7 +280,8 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     if (typeof bridge.connect === "function") {
       bridge.connect();
     }
-    void refreshTasks();
+    void refreshTasks().catch(() => {});
+    void refreshWorkflows().catch(() => {});
 
     return () => {
       active = false;
@@ -227,7 +292,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         bridge.disconnect();
       }
     };
-  }, [bridge, refreshMs]);
+  }, [bridge, effectiveRefreshMs, requestJson]);
 
   useEffect(() => {
     if (helpOpen) {
@@ -244,6 +309,60 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     return () => clearInterval(intervalId);
   }, []);
 
+  const paletteActions = useMemo(
+    () => buildCommandPaletteActions({
+      sessions,
+      tasks,
+      workflows,
+      currentScreen: screen,
+      recentActionIds,
+    }),
+    [recentActionIds, screen, sessions, tasks, workflows],
+  );
+
+  const executePaletteAction = useCallback(async (action) => {
+    try {
+      if (action.type === "navigation") {
+        setScreen(action.payload.screen);
+      } else if (action.type === "session") {
+        await requestJson(`/api/sessions/${encodeURIComponent(action.payload.sessionId)}/${action.command}?workspace=all`, {
+          method: "POST",
+        });
+      } else if (action.type === "task") {
+        if (action.command === "create") {
+          await requestJson("/api/tasks/create", {
+            method: "POST",
+            body: { title: "New task from palette" },
+          });
+        } else if (action.command === "update") {
+          await requestJson("/api/tasks/update", {
+            method: "POST",
+            body: { id: action.payload.taskId, status: "inprogress" },
+          });
+        } else if (action.command === "delete") {
+          await requestJson(`/api/tasks/${encodeURIComponent(action.payload.taskId)}`, { method: "DELETE" });
+        }
+      } else if (action.type === "workflow") {
+        await requestJson(`/api/workflows/${encodeURIComponent(action.payload.workflowId)}/execute`, {
+          method: "POST",
+          body: {},
+        });
+      } else if (action.type === "config" && action.id.startsWith("config:refresh:")) {
+        const nextSeconds = Number(action.id.split(":").at(-1) || 2);
+        const nextRefreshMs = nextSeconds * 1000;
+        setEffectiveRefreshMs(nextRefreshMs);
+        setRefreshCountdownSec(nextSeconds);
+      }
+      const nextRecent = await resolvedHistory.save({ actionId: action.id, recentActionIds });
+      setRecentActionIds(nextRecent);
+      setPaletteOpen(false);
+      setError(null);
+    } catch (err) {
+      setError(String(err?.message || err || "Command failed"));
+      setPaletteOpen(false);
+    }
+  }, [recentActionIds, requestJson, resolvedHistory]);
+
   const helpRows = Math.max(6, (stdout?.rows || 24) - 5);
   const helpRowCount = CLI_SHORTCUT_GROUPS.reduce((totalRows, group, index, groups) => {
     if (index % 2 === 1) return totalRows;
@@ -254,6 +373,10 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const maxHelpScrollOffset = Math.max(0, helpRowCount - helpRows);
 
   const handleInput = useCallback((input, key) => {
+    if (isPaletteShortcut(input, key)) {
+      setPaletteOpen(true);
+      return;
+    }
     if (input === "?") {
       setHelpOpen((current) => {
         const opening = !current;
@@ -292,7 +415,14 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [exit, helpOpen, maxHelpScrollOffset, screen]);
 
   useInput((input, key) => {
-    if (screenInputLocked && !helpOpen && input !== "?") return;
+    if (paletteOpen) return;
+    if (screenInputLocked && !helpOpen) {
+      if (isCtrlPaletteShortcut(input, key)) {
+        setPaletteOpen(true);
+        return;
+      }
+      if (input !== "?") return;
+    }
     handleInput(input, key);
   });
 
@@ -302,6 +432,14 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
+      ${paletteOpen
+        ? html`<${CommandPalette}
+            visible=${paletteOpen}
+            actions=${paletteActions}
+            onClose=${() => setPaletteOpen(false)}
+            onExecute=${executePaletteAction}
+          />`
+        : null}
       <${StatusHeader}
         stats=${stats}
         connected=${connected}
@@ -329,7 +467,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           host=${host}
           port=${port}
           connectOnly=${connectOnly}
-          refreshMs=${refreshMs}
+          refreshMs=${effectiveRefreshMs}
           onTasksChange=${setTasks}
           onLogsFilterStateChange=${setLogsFilterState}
           onInputCaptureChange=${setScreenInputLocked}
