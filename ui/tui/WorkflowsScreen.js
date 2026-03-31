@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import * as ReactModule from "react";
 import htm from "htm";
-import { Box, Text, useInput } from "ink";
+import * as ink from "ink";
 import TextInput from "ink-text-input";
 
 import { ANSI_COLORS } from "./constants.js";
@@ -14,9 +14,17 @@ import {
   workflowResultColor,
 } from "./workflows-screen-helpers.js";
 
+const React = ReactModule.default ?? ReactModule;
+const useEffect = ReactModule.useEffect ?? React.useEffect;
+const useMemo = ReactModule.useMemo ?? React.useMemo;
+const useState = ReactModule.useState ?? React.useState;
 const html = htm.bind(React.createElement);
 
-const MAX_TREE_LINES = 200;
+const Box = ink.Box ?? ink.default?.Box;
+const Text = ink.Text ?? ink.default?.Text;
+const useInput = ink.useInput ?? ink.default?.useInput;
+
+const MAX_TREE_LINES = 24;
 const MAX_TREE_DEPTH = 8;
 
 function renderTreeLines(value, expandedPaths, path = "root", depth = 0, lines = []) {
@@ -85,6 +93,16 @@ function TriggerForm({ template, formState, activeFieldIndex, onChange }) {
 function clampIndex(index, length) {
   if (!length) return 0;
   return Math.max(0, Math.min(index, length - 1));
+}
+
+function resolveRunIdForInspect(focusArea, selectedHistory, selectedTemplate, historyRows) {
+  if (selectedHistory?.runId && focusArea === "history") return selectedHistory.runId;
+  if (!selectedTemplate) return null;
+  const matchingRun = (Array.isArray(historyRows) ? historyRows : []).find((row) => {
+    if (!row?.runId) return false;
+    return row.workflowId === selectedTemplate.id || row.workflowName === selectedTemplate.id;
+  });
+  return matchingRun?.runId || selectedHistory?.runId || null;
 }
 
 export default function WorkflowsScreen({ workflowState, wsState }) {
@@ -245,8 +263,10 @@ export default function WorkflowsScreen({ workflowState, wsState }) {
         .catch((error) => setStatusLine(String(error?.message || error || `Failed to toggle ${selectedTemplate.id}.`)));
       return;
     }
-    if ((input?.toLowerCase() === "i" || key.return) && focusArea === "history" && selectedHistory?.runId) {
-      setInspectingRunId(selectedHistory.runId);
+    if (input?.toLowerCase() === "i" || key.return) {
+      const runId = resolveRunIdForInspect(focusArea, selectedHistory, selectedTemplate, historyRows);
+      if (!runId) return;
+      setInspectingRunId(runId);
       setSelectedTreePath("root");
       return;
     }

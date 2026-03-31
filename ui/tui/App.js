@@ -3,6 +3,7 @@ import htm from "htm";
 import * as ink from "ink";
 
 const React = ReactModule.default ?? ReactModule;
+const useEffect = ReactModule.useEffect ?? React.useEffect;
 const useMemo = ReactModule.useMemo ?? React.useMemo;
 const useState = ReactModule.useState ?? React.useState;
 const Box = ink.Box ?? ink.default?.Box;
@@ -364,5 +365,4 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     <//>
   `;
 }
-
 

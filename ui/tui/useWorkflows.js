@@ -11,7 +11,7 @@ const useState = ReactModule.useState ?? React.useState;
 import { loadConfig } from "../../config/config.mjs";
 import { CONFIG_FILES } from "../../config/config-file-names.mjs";
 import { parseWorkflowInput } from "../../workflow/workflow-cli.mjs";
-import { WorkflowEngine } from "../../workflow/workflow-engine.mjs";
+import { getWorkflowEngine } from "../../workflow/workflow-engine.mjs";
 
 function resolveConfigFilePath(config) {
   const configDir = String(config?.configDir || "").trim();
@@ -53,10 +53,10 @@ function summarizeWorkflowDefinition(entry = {}) {
 function createEngine(config) {
   const configPath = resolveConfigFilePath(config);
   const configDir = dirname(configPath);
-  return new WorkflowEngine({
+  return getWorkflowEngine({
+    configDir,
     workflowDir: resolve(configDir, "workflows"),
     runsDir: resolve(configDir, "workflow-runs"),
-    services: {},
   });
 }
 
