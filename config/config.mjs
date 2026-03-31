@@ -2489,7 +2489,6 @@ export function loadConfig(argv = process.argv, options = {}) {
     workspacesDir,
     activeWorkspace,
     agentRepoRoot,
-    workflows,
 
     // Agent prompts
     agentPrompts,
