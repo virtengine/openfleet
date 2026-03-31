@@ -22,7 +22,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
   category: "reliability",
   enabled: true,
   recommended: false,
-  trigger: "trigger.manual",
+  trigger: "trigger.task_available",
   variables: {
     taskId: "",
     worktreePath: "",
@@ -41,7 +41,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     timeoutMs: 1800000,
   },
   nodes: [
-    node("trigger", "trigger.manual", "Start Continuation Loop", {}, { x: 420, y: 60 }),
+    node("trigger", "trigger.task_available", "Task Available", {}, { x: 420, y: 60 }),
 
     node("init-turn", "action.set_variable", "Initialize Turn Counter", {
       key: "continuationTurn",

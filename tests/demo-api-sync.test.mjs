@@ -186,6 +186,22 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/hooks/state",
   "/api/hooks/core",
   "/api/hooks/defaults",
+  // Guardrails — server-only (requires guardrails runtime + policy store)
+  "/api/guardrails",
+  "/api/guardrails/policy",
+  "/api/guardrails/runtime",
+  "/api/guardrails/assess",
+  // Environment detection — server-only (requires filesystem + project detection)
+  "/api/env/detect",
+  "/api/repos/environment",
+  "/api/env/templates",
+  // Vault — server-only (requires encrypted credential store)
+  "/api/vault/status",
+  "/api/vault/init",
+  "/api/vault/integrations",
+  "/api/vault/secrets",
+  "/api/vault/env",
+  "/api/vault\\/:id",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────

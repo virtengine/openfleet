@@ -311,3 +311,240 @@ A small, clean, tested PR is always better than nothing.`,
     sessionLog: ".bosun-monitor/code-quality-striker.md",
   },
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PR Review Quality Striker
+//  Fires on review events + review comments + scheduled fallback.
+//  Collects PR signals, runs a focused review agent, comments findings.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const PR_REVIEW_QUALITY_STRIKER_TEMPLATE = {
+  id: "template-pr-review-quality-striker",
+  name: "PR Review Quality Striker",
+  description:
+    "Reactive PR review agent. Fires on review_requested events, review " +
+    "comment events, and a scheduled fallback. Collects PR digest + review " +
+    "signals, runs a quality-review agent, and comments actionable findings.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.pr_event",
+  variables: {
+    intervalMs: 1800000,
+    maxPrsPerRun: 5,
+    timeoutMs: 1800000,
+  },
+  nodes: [
+    node("trigger", "trigger.pr_event", "PR Review Requested", {
+      event: "review_requested",
+      events: ["review_requested", "changes_requested", "approved", "opened"],
+    }, { x: 200, y: 50 }),
+
+    node("trigger-review-comment", "trigger.event", "Review Comment Posted", {
+      eventType: "github:pull_request_review_comment",
+    }, { x: 500, y: 50 }),
+
+    node("trigger-fallback", "trigger.schedule", "Scheduled Fallback", {
+      intervalMs: "{{intervalMs}}",
+    }, { x: 800, y: 50 }),
+
+    node("fetch-review-signals", "action.run_command", "Fetch PR Review Signals", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim();",
+        "const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0);",
+        "const DIRECT_PR_URL=String(process.env.DIRECT_PR_URL||'').trim();",
+        "const DIRECT_EVENT=String(process.env.DIRECT_EVENT||'').trim();",
+        "const sourceKind=DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule';",
+        "function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}}",
+        "function collectPrDigest(repo,n){",
+        "  const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,mergeable,url,labels,state,author,createdAt']);",
+        "  const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);",
+        "  const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);",
+        "  return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]};",
+        "}",
+        "function collectActionableReviewSignals(repo,n){",
+        "  const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);",
+        "  const reviewComments=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviewDecision']);",
+        "  return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]};",
+        "}",
+        "function appendActionable(signals,digest){",
+        "  return {...signals,digest};",
+        "}",
+        "let results=[];",
+        "if(sourceKind==='event'&&DIRECT_REPO&&DIRECT_PR_NUMBER>0){",
+        "  const digest=collectPrDigest(DIRECT_REPO,DIRECT_PR_NUMBER);",
+        "  const signals=collectActionableReviewSignals(DIRECT_REPO,DIRECT_PR_NUMBER);",
+        "  const commentFindings=[];",
+        "  const qualityChecks=[];",
+        "  results=[appendActionable({repo:DIRECT_REPO,number:DIRECT_PR_NUMBER,url:DIRECT_PR_URL,event:DIRECT_EVENT,commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'},digest)];",
+        "}else{",
+        "  const commentFindings=[];",
+        "  const qualityChecks=[];",
+        "  results=[{repo:'',number:0,url:'',event:'schedule',commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'}];",
+        "}",
+        "process.stdout.write(JSON.stringify({prs:results,count:results.length}));",
+      ].join(" ")],
+      parseJson: true,
+      continueOnError: true,
+      timeoutMs: 120000,
+      env: {
+        DIRECT_REPO:      "{{$data?.prRepo || $data?.repo || ''}}",
+        DIRECT_PR_NUMBER: "{{$data?.prNumber || $data?.number || 0}}",
+        DIRECT_PR_URL:    "{{$data?.prUrl || $data?.url || ''}}",
+        DIRECT_EVENT:     "{{$data?.action || $data?.event || ''}}",
+        MAX_PRS_PER_RUN:  "{{maxPrsPerRun}}",
+      },
+    }, { x: 500, y: 180 }),
+
+    node("run-review-striker", "action.run_agent", "Run Review Quality Agent", {
+      prompt:
+        "You are a PR review quality agent. Analyse the PR review signals and produce " +
+        "actionable quality findings.\n\n" +
+        "Input data: commentFindings and qualityChecks from fetch-review-signals output.\n" +
+        "PR context: prDigest with the PR body, files, issue comments, reviews, review comments, and checks.\n\n" +
+        "For each finding: explain what is wrong, why it matters, and how to fix it. " +
+        "Post findings as a single review comment on the PR.",
+      sdk: "auto",
+      timeoutMs: "{{timeoutMs}}",
+      failOnError: false,
+      continueOnError: true,
+    }, { x: 500, y: 360 }),
+
+    node("notify-done", "notify.log", "Review Strike Complete", {
+      message: "PR review quality striker finished for PR #{{$data?.prNumber || 0}}",
+      level: "info",
+    }, { x: 500, y: 500 }),
+  ],
+  edges: [
+    edge("trigger",               "fetch-review-signals"),
+    edge("trigger-review-comment","fetch-review-signals"),
+    edge("trigger-fallback",      "fetch-review-signals"),
+    edge("fetch-review-signals",  "run-review-striker"),
+    edge("run-review-striker",    "notify-done"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-31T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "review", "quality", "striker", "reactive"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SonarQube PR Striker
+//  Uses GitHub-native Sonar check results (not the SonarQube API).
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const SONARQUBE_PR_STRIKER_TEMPLATE = {
+  id: "template-sonarqube-pr-striker",
+  name: "SonarQube PR Striker",
+  description:
+    "Monitors open PRs for SonarQube quality-gate failures using GitHub-native " +
+    "check results. Does NOT call the SonarQube API. Collects PR digest and " +
+    "sonarChecks, then runs a focused repair agent.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    intervalMs: 1800000,
+    maxPrsPerRun: 3,
+    timeoutMs: 3600000,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Every 30 min", {
+      intervalMs: "{{intervalMs}}",
+    }, { x: 400, y: 50 }),
+
+    node("fetch-sonar-signals", "action.run_command", "Fetch Sonar PR Signals", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const SONAR_CHECK_RE=/sonar/i;",
+        "function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}}",
+        "function collectPrDigest(repo,n){",
+        "  const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,url,labels,state,author']);",
+        "  const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);",
+        "  const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);",
+        "  return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]};",
+        "}",
+        "function collectActionableReviewSignals(repo,n){",
+        "  const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);",
+        "  return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]};",
+        "}",
+        "const repo=String(process.env.BOSUN_REPO||'').trim();",
+        "if(!repo){process.stdout.write(JSON.stringify({prs:[],count:0}));process.exit(0);}",
+        "const prs=ghJson(['pr','list','--repo',repo,'--state','open','--json','number,headRefName,url','--limit','20']);",
+        "const results=[];",
+        "for(const pr of (Array.isArray(prs)?prs:[])){",
+        "  const digest=collectPrDigest(repo,pr.number);",
+        "  const signals=collectActionableReviewSignals(repo,pr.number);",
+        "  const sonarChecks=Array.isArray(digest.checks)?digest.checks.filter(c=>SONAR_CHECK_RE.test(c.name||'')):[];",
+        "  const hasSonarFailure=sonarChecks.some(c=>['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(String(c.state||'').toUpperCase()));",
+        "  if(!hasSonarFailure){",
+        "    if(signals.sonarChecks&&signals.sonarChecks.length===0)continue;",
+        "    continue;",
+        "  }",
+        "  const digestSummary={total:digest.checks.length,sonarFailing:sonarChecks.filter(c=>['FAILURE','ERROR'].includes(String(c.state||'').toUpperCase())).length};",
+        "  results.push({repo,number:pr.number,url:pr.url,branch:pr.headRefName,sonarChecks,hasSonarFailure,digest,digestSummary,reviews:signals.reviews});",
+        "}",
+        "process.stdout.write(JSON.stringify({prs:results,count:results.length}));",
+      ].join(" ")],
+      parseJson: true,
+      continueOnError: true,
+      timeoutMs: 180000,
+      env: {
+        BOSUN_REPO: "{{$data?.repo || ''}}",
+        MAX_PRS_PER_RUN: "{{maxPrsPerRun}}",
+      },
+    }, { x: 400, y: 180 }),
+
+    node("has-sonar-failures", "condition.expression", "Any Sonar Failures?", {
+      expression: "Number($ctx.getNodeOutput('fetch-sonar-signals')?.prs?.length || 0) > 0",
+    }, { x: 400, y: 320, outputs: ["yes", "no"] }),
+
+    node("run-sonar-striker", "action.run_agent", "Fix SonarQube Failures", {
+      prompt:
+        "You are a PR repair agent for Sonar quality-gate failures. Use GitHub-native Sonar checks as the source of truth. " +
+        "Do NOT call any external quality API directly.\n\n" +
+        "Input: sonarChecks plus prDigest for each failing PR.\n" +
+        "For each PR with sonar failures: check out the branch, fix the issues, run tests, push fixes.",
+      sdk: "auto",
+      timeoutMs: "{{timeoutMs}}",
+      failOnError: false,
+      continueOnError: true,
+    }, { x: 400, y: 450 }),
+
+    node("skip-no-failures", "notify.log", "No Sonar Failures", {
+      message: "SonarQube PR striker: no open PRs with Sonar failures",
+      level: "info",
+    }, { x: 700, y: 320 }),
+
+    node("notify-done", "notify.log", "Sonar Strike Complete", {
+      message: "SonarQube PR striker finished",
+      level: "info",
+    }, { x: 400, y: 590 }),
+  ],
+  edges: [
+    edge("trigger",              "fetch-sonar-signals"),
+    edge("fetch-sonar-signals",  "has-sonar-failures"),
+    edge("has-sonar-failures",   "run-sonar-striker",  { condition: "$output?.result === true", port: "yes" }),
+    edge("has-sonar-failures",   "skip-no-failures",   { condition: "$output?.result !== true", port: "no" }),
+    edge("run-sonar-striker",    "notify-done"),
+    edge("skip-no-failures",     "notify-done"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-31T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "sonarqube", "quality", "striker", "scheduled"],
+  },
+};

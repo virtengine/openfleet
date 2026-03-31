@@ -3445,6 +3445,196 @@
       ]
     },
     {
+      "id": "template-pr-review-quality-striker",
+      "name": "PR Review Quality Striker",
+      "description": "Reactive PR review agent. Fires on review_requested events, review comment events, and a scheduled fallback. Collects PR digest + review signals, runs a quality-review agent, and comments actionable findings.",
+      "category": "github",
+      "categoryLabel": "GitHub",
+      "categoryIcon": ":git:",
+      "categoryOrder": 1,
+      "tags": [
+        "github",
+        "pr",
+        "review",
+        "quality",
+        "striker",
+        "reactive"
+      ],
+      "nodeCount": 6,
+      "edgeCount": 5,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.pr_event",
+      "variables": {
+        "intervalMs": 1800000,
+        "maxPrsPerRun": 5,
+        "timeoutMs": 1800000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-31T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "github",
+          "pr",
+          "review",
+          "quality",
+          "striker",
+          "reactive"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.pr_event",
+          "label": "PR Review Requested",
+          "config": {
+            "event": "review_requested",
+            "events": [
+              "review_requested",
+              "changes_requested",
+              "approved",
+              "opened"
+            ]
+          },
+          "position": {
+            "x": 200,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "trigger-review-comment",
+          "type": "trigger.event",
+          "label": "Review Comment Posted",
+          "config": {
+            "eventType": "github:pull_request_review_comment"
+          },
+          "position": {
+            "x": 500,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "trigger-fallback",
+          "type": "trigger.schedule",
+          "label": "Scheduled Fallback",
+          "config": {
+            "intervalMs": "{{intervalMs}}"
+          },
+          "position": {
+            "x": 800,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fetch-review-signals",
+          "type": "action.run_command",
+          "label": "Fetch PR Review Signals",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const {execFileSync}=require('child_process'); const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim(); const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0); const DIRECT_PR_URL=String(process.env.DIRECT_PR_URL||'').trim(); const DIRECT_EVENT=String(process.env.DIRECT_EVENT||'').trim(); const sourceKind=DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'; function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}} function collectPrDigest(repo,n){   const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,mergeable,url,labels,state,author,createdAt']);   const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);   const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);   return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]}; } function collectActionableReviewSignals(repo,n){   const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);   const reviewComments=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviewDecision']);   return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]}; } function appendActionable(signals,digest){   return {...signals,digest}; } let results=[]; if(sourceKind==='event'&&DIRECT_REPO&&DIRECT_PR_NUMBER>0){   const digest=collectPrDigest(DIRECT_REPO,DIRECT_PR_NUMBER);   const signals=collectActionableReviewSignals(DIRECT_REPO,DIRECT_PR_NUMBER);   const commentFindings=[];   const qualityChecks=[];   results=[appendActionable({repo:DIRECT_REPO,number:DIRECT_PR_NUMBER,url:DIRECT_PR_URL,event:DIRECT_EVENT,commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'},digest)]; }else{   const commentFindings=[];   const qualityChecks=[];   results=[{repo:'',number:0,url:'',event:'schedule',commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'}]; } process.stdout.write(JSON.stringify({prs:results,count:results.length}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "timeoutMs": 120000,
+            "env": {
+              "DIRECT_REPO": "{{$data?.prRepo || $data?.repo || ''}}",
+              "DIRECT_PR_NUMBER": "{{$data?.prNumber || $data?.number || 0}}",
+              "DIRECT_PR_URL": "{{$data?.prUrl || $data?.url || ''}}",
+              "DIRECT_EVENT": "{{$data?.action || $data?.event || ''}}",
+              "MAX_PRS_PER_RUN": "{{maxPrsPerRun}}"
+            }
+          },
+          "position": {
+            "x": 500,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-review-striker",
+          "type": "action.run_agent",
+          "label": "Run Review Quality Agent",
+          "config": {
+            "prompt": "You are a PR review quality agent. Analyse the PR review signals and produce actionable quality findings.\n\nInput data: commentFindings and qualityChecks from fetch-review-signals output.\nPR context: prDigest with the PR body, files, issue comments, reviews, review comments, and checks.\n\nFor each finding: explain what is wrong, why it matters, and how to fix it. Post findings as a single review comment on the PR.",
+            "sdk": "auto",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 500,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done",
+          "type": "notify.log",
+          "label": "Review Strike Complete",
+          "config": {
+            "message": "PR review quality striker finished for PR #{{$data?.prNumber || 0}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 500,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->fetch-review-signals",
+          "source": "trigger",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger-review-comment->fetch-review-signals",
+          "source": "trigger-review-comment",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger-fallback->fetch-review-signals",
+          "source": "trigger-fallback",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fetch-review-signals->run-review-striker",
+          "source": "fetch-review-signals",
+          "target": "run-review-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-review-striker->notify-done",
+          "source": "run-review-striker",
+          "target": "notify-done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-pr-security-fix-single",
       "name": "PR Security Fix Agent (Single PR)",
       "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
@@ -4951,6 +5141,197 @@
           "id": "push-auto->notify-resolved",
           "source": "push-auto",
           "target": "notify-resolved",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-sonarqube-pr-striker",
+      "name": "SonarQube PR Striker",
+      "description": "Monitors open PRs for SonarQube quality-gate failures using GitHub-native check results. Does NOT call the SonarQube API. Collects PR digest and sonarChecks, then runs a focused repair agent.",
+      "category": "github",
+      "categoryLabel": "GitHub",
+      "categoryIcon": ":git:",
+      "categoryOrder": 1,
+      "tags": [
+        "github",
+        "pr",
+        "sonarqube",
+        "quality",
+        "striker",
+        "scheduled"
+      ],
+      "nodeCount": 6,
+      "edgeCount": 6,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "intervalMs": 1800000,
+        "maxPrsPerRun": 3,
+        "timeoutMs": 3600000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-31T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "github",
+          "pr",
+          "sonarqube",
+          "quality",
+          "striker",
+          "scheduled"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Every 30 min",
+          "config": {
+            "intervalMs": "{{intervalMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fetch-sonar-signals",
+          "type": "action.run_command",
+          "label": "Fetch Sonar PR Signals",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const {execFileSync}=require('child_process'); const SONAR_CHECK_RE=/sonar/i; function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}} function collectPrDigest(repo,n){   const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,url,labels,state,author']);   const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);   const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);   return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]}; } function collectActionableReviewSignals(repo,n){   const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);   return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]}; } const repo=String(process.env.BOSUN_REPO||'').trim(); if(!repo){process.stdout.write(JSON.stringify({prs:[],count:0}));process.exit(0);} const prs=ghJson(['pr','list','--repo',repo,'--state','open','--json','number,headRefName,url','--limit','20']); const results=[]; for(const pr of (Array.isArray(prs)?prs:[])){   const digest=collectPrDigest(repo,pr.number);   const signals=collectActionableReviewSignals(repo,pr.number);   const sonarChecks=Array.isArray(digest.checks)?digest.checks.filter(c=>SONAR_CHECK_RE.test(c.name||'')):[];   const hasSonarFailure=sonarChecks.some(c=>['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(String(c.state||'').toUpperCase()));   if(!hasSonarFailure){     if(signals.sonarChecks&&signals.sonarChecks.length===0)continue;     continue;   }   const digestSummary={total:digest.checks.length,sonarFailing:sonarChecks.filter(c=>['FAILURE','ERROR'].includes(String(c.state||'').toUpperCase())).length};   results.push({repo,number:pr.number,url:pr.url,branch:pr.headRefName,sonarChecks,hasSonarFailure,digest,digestSummary,reviews:signals.reviews}); } process.stdout.write(JSON.stringify({prs:results,count:results.length}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "timeoutMs": 180000,
+            "env": {
+              "BOSUN_REPO": "{{$data?.repo || ''}}",
+              "MAX_PRS_PER_RUN": "{{maxPrsPerRun}}"
+            }
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-sonar-failures",
+          "type": "condition.expression",
+          "label": "Any Sonar Failures?",
+          "config": {
+            "expression": "Number($ctx.getNodeOutput('fetch-sonar-signals')?.prs?.length || 0) > 0"
+          },
+          "position": {
+            "x": 400,
+            "y": 320
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "run-sonar-striker",
+          "type": "action.run_agent",
+          "label": "Fix SonarQube Failures",
+          "config": {
+            "prompt": "You are a PR repair agent for Sonar quality-gate failures. Use GitHub-native Sonar checks as the source of truth. Do NOT call any external quality API directly.\n\nInput: sonarChecks plus prDigest for each failing PR.\nFor each PR with sonar failures: check out the branch, fix the issues, run tests, push fixes.",
+            "sdk": "auto",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "skip-no-failures",
+          "type": "notify.log",
+          "label": "No Sonar Failures",
+          "config": {
+            "message": "SonarQube PR striker: no open PRs with Sonar failures",
+            "level": "info"
+          },
+          "position": {
+            "x": 700,
+            "y": 320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done",
+          "type": "notify.log",
+          "label": "Sonar Strike Complete",
+          "config": {
+            "message": "SonarQube PR striker finished",
+            "level": "info"
+          },
+          "position": {
+            "x": 400,
+            "y": 590
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->fetch-sonar-signals",
+          "source": "trigger",
+          "target": "fetch-sonar-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fetch-sonar-signals->has-sonar-failures",
+          "source": "fetch-sonar-signals",
+          "target": "has-sonar-failures",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-sonar-failures->run-sonar-striker",
+          "source": "has-sonar-failures",
+          "target": "run-sonar-striker",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-sonar-failures->skip-no-failures",
+          "source": "has-sonar-failures",
+          "target": "skip-no-failures",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-sonar-striker->notify-done",
+          "source": "run-sonar-striker",
+          "target": "notify-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "skip-no-failures->notify-done",
+          "source": "skip-no-failures",
+          "target": "notify-done",
           "sourcePort": "default"
         }
       ]
@@ -6558,7 +6939,7 @@
           "config": {
             "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCreate a descriptive test commit message that names the behavior or surface covered.\nExample: \"test: cover portal login validation\"",
             "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
+            "timeoutMs": "{{testTimeoutMs}}"
           },
           "position": {
             "x": 400,
@@ -6606,8 +6987,7 @@
           "type": "validation.tests",
           "label": "Test Run",
           "config": {
-            "command": "{{testCommand}}",
-            "timeoutMs": "{{testTimeoutMs}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
@@ -6850,8 +7230,7 @@
           "type": "validation.tests",
           "label": "Test Run",
           "config": {
-            "command": "{{testCommand}}",
-            "timeoutMs": "{{testTimeoutMs}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
@@ -7079,8 +7458,7 @@
           "type": "validation.tests",
           "label": "Test Run",
           "config": {
-            "command": "{{testCommand}}",
-            "timeoutMs": "{{testTimeoutMs}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
@@ -9904,7 +10282,7 @@
           "label": "Summarize Fitness Metrics",
           "config": {
             "key": "fitnessSummary",
-            "value": "(() => {  try {    const now = Date.now();    const lookbackDays = Math.max(1, Number($data?.lookbackDays || 7));    const windowMs = lookbackDays * 24 * 60 * 60 * 1000;    const currentStart = now - windowMs;    const previousStart = currentStart - windowMs;    const previousEnd = currentStart;    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };    const toIso = (ms) => new Date(ms).toISOString();    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };    const extractCanonicalItems = (value) => {      if (!value || typeof value !== 'object') return null;      const keys = ['items', 'tasks', 'entries', 'records', 'results', 'data'];      for (const key of keys) {        if (Array.isArray(value[key])) return value[key].filter(Boolean);      }      return null;    };    const parseSource = (raw, depth = 0) => {      if (depth > 3) return { items: [], degraded: true, parsedAny: false, partial: false };      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false, parsedAny: raw.length > 0, partial: false };      if (raw && typeof raw === 'object') {        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output) ?? extractCanonicalItems(raw.result) ?? extractCanonicalItems(raw.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: canonical.length > 0, partial: false };        const wrappedCandidates = [raw.output, raw.result, raw.payload, raw.data, raw.stdout, raw.content, raw.text, raw.json];        for (const candidate of wrappedCandidates) {          if (candidate == null) continue;          const parsedCandidate = parseSource(candidate, depth + 1);          if (parsedCandidate.items.length > 0 || parsedCandidate.parsedAny || parsedCandidate.degraded === false) return parsedCandidate;        }        return { items: [], degraded: Object.keys(raw).length > 0, parsedAny: false, partial: false };      }      if (typeof raw !== 'string') return { items: [], degraded: true, parsedAny: false, partial: false };      const trimmed = raw.trim();      if (!trimmed) return { items: [], degraded: false, parsedAny: false, partial: false };      const parsed = parseJsonSafe(trimmed);      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false, parsedAny: true, partial: false };      if (parsed && typeof parsed === 'object') {        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output) ?? extractCanonicalItems(parsed.result) ?? extractCanonicalItems(parsed.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: true, partial: false };      }      const lines = trimmed.split(/\\r?\\n/).filter((line) => line.trim() !== '');      const parsedLines = [];      let failedLines = 0;      for (const line of lines) {        const parsedLine = parseJsonSafe(line);        if (parsedLine == null) { failedLines += 1; continue; }        if (Array.isArray(parsedLine)) parsedLines.push(...parsedLine.filter(Boolean));        else parsedLines.push(parsedLine);      }      if (parsedLines.length > 0) return { items: parsedLines, degraded: failedLines > 0, parsedAny: true, partial: failedLines > 0 };      return { items: [], degraded: true, parsedAny: false, partial: false };    };    const detectLinewiseParseHealth = (raw) => {      if (typeof raw !== 'string') return { mixedValidity: false, nonJson: false };      const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);      if (lines.length === 0) return { mixedValidity: false, nonJson: false };      let parsedLines = 0;      let failedLines = 0;      for (const line of lines) {        if (parseJsonSafe(line) == null) failedLines += 1;        else parsedLines += 1;      }      return { mixedValidity: parsedLines > 0 && failedLines > 0, nonJson: parsedLines === 0 && failedLines > 0 };    };    const getTs = (item) => {      if (!item || typeof item !== 'object') return null;      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date', 'completed_at', 'closed_at', 'merged_at', 'resolved_at', 'updated_at', 'created_at'];      for (const key of fields) {        const value = item[key];        if (!value) continue;        const ms = Date.parse(String(value));        if (Number.isFinite(ms)) return ms;        if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;      }      return null;    };    const normalizeBucket = (items) => {      const stamped = [];      const unstamped = [];      for (const item of items) {        const ts = getTs(item);        if (ts == null) unstamped.push(item); else stamped.push({ item, ts });      }      return { stamped, unstamped };    };    const splitWindows = (items) => {      const { stamped, unstamped } = normalizeBucket(items);      const current = stamped.filter((entry) => entry.ts >= currentStart && entry.ts <= now).map((entry) => entry.item);      const previous = stamped.filter((entry) => entry.ts >= previousStart && entry.ts < previousEnd).map((entry) => entry.item);      const usedFallbackWindow = stamped.length === 0 && unstamped.length > 0;      if (usedFallbackWindow) return { current: unstamped, previous: [], usedFallbackWindow };      return { current, previous, usedFallbackWindow };    };    const metric = (name, value, previous, direction, unit, confidence, status, notes = []) => {      const hasCurrent = typeof value === 'number' && Number.isFinite(value);      const hasPrevious = typeof previous === 'number' && Number.isFinite(previous);      return {        name,        value: hasCurrent ? value : null,        previous: hasPrevious ? previous : null,        delta: hasCurrent && hasPrevious ? Number((value - previous).toFixed(2)) : null,        direction,        unit,        confidence,        status,        notes: notes.filter(Boolean),      };    };    const sourceStatus = (nodeOut, parsedList, parsedMeta = {}) => {      const output = nodeOut?.output;      const hasPayload = (() => {        if (output == null) return false;        if (Array.isArray(output)) return true;        if (typeof output === 'string') return output.trim() !== '';        if (typeof output === 'object') {          const wrapped = [output.stdout, output.content, output.text, output.json, output.output, output.result, output.payload, output.data];          if (wrapped.some((v) => (typeof v === 'string' ? v.trim() !== '' : v != null))) return true;          return Object.keys(output).length > 0;        }        return true;      })();      const linewiseHealth = (() => {        if (typeof output === 'string') return detectLinewiseParseHealth(output);        if (output && typeof output === 'object') {          const candidate = [output.stdout, output.content, output.text, output.output, output.result, output.payload, output.data].find((value) => typeof value === 'string' && value.trim() !== '');          return detectLinewiseParseHealth(candidate);        }        return { mixedValidity: false, nonJson: false };      })();      const success = nodeOut?.success !== false;      if (!hasPayload) return { status: 'missing', confidence: 'low' };      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };      if (linewiseHealth.mixedValidity) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      if (linewiseHealth.nonJson && parsedList.length === 0) return { status: 'degraded', confidence: 'low' };      if (parsedMeta?.degraded || parsedMeta?.partial) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      if (!success) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };    };    const taskNode = $ctx.getNodeOutput('task-metrics') || {};    const prNode = $ctx.getNodeOutput('pr-metrics') || {};    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};    const taskParsed = parseSource(taskNode.output);    const prParsed = parseSource(prNode.output);    const debtParsed = parseSource(debtNode.output);    const tasks = taskParsed.items;    const prs = prParsed.items;    const debt = debtParsed.items;    const taskHealth = sourceStatus(taskNode, tasks, taskParsed);    const prHealth = sourceStatus(prNode, prs, prParsed);    const debtHealth = sourceStatus(debtNode, debt, debtParsed);    const taskSplit = splitWindows(tasks);    const prSplit = splitWindows(prs);    const debtSplit = splitWindows(debt);    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);    const isDone = (item) => doneStatuses.has(String(item?.status ?? item?.state ?? '').toLowerCase());    const taskTelemetryUnavailable = taskHealth.status === 'missing' || (taskHealth.status === 'degraded' && tasks.length === 0);    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;    const reopenedCount = (items) => items.filter((item) => {      if (!item || typeof item !== 'object') return false;      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount ?? item.reopen_count ?? item.reopened_count, 0);      if (reopenCount > 0) return true;      if (item.reopened === true) return true;      const status = String(item.status ?? item.state ?? '').toLowerCase();      return status.includes('reopen');    }).length;    const reopenedCurrent = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.current);    const reopenedPrevious = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.previous);    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at) || pr?.merged === true).length;    const closedCount = (items) => items.filter((pr) => {      const state = String(pr?.state || '').toLowerCase();      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.closed_at) || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at);    }).length;    const mergeClosedCurrent = closedCount(prSplit.current);    const mergeClosedPrevious = closedCount(prSplit.previous);    const mergeSuccessCurrent = mergeClosedCurrent > 0 ? Number(((mergedCount(prSplit.current) / mergeClosedCurrent) * 100).toFixed(2)) : null;    const mergeSuccessPrevious = mergeClosedPrevious > 0 ? Number(((mergedCount(prSplit.previous) / mergeClosedPrevious) * 100).toFixed(2)) : null;    const debtDelta = (entries) => {      let total = 0;      for (const entry of entries) {        if (entry == null) continue;        if (typeof entry === 'number') { total += entry; continue; }        if (typeof entry !== 'object') continue;        if (Number.isFinite(Number(entry.debtDelta))) { total += Number(entry.debtDelta); continue; }        if (Number.isFinite(Number(entry.delta))) { total += Number(entry.delta); continue; }        if (Number.isFinite(Number(entry.netChange))) { total += Number(entry.netChange); continue; }        const amt = Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 1;        const kind = String(entry.type || entry.event || entry.action || '').toLowerCase();        if (/resolved|burn|paydown|decrease|closed/.test(kind)) total -= amt;        else if (/created|added|increase|opened|new/.test(kind)) total += amt;      }      return Number(total.toFixed(2));    };    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;    const priorRaw = prevNode?.success === true ? (parseSource(prevNode.content).items?.[0] ?? parseJsonSafe(prevNode.content)) : null;    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : (priorRaw && typeof priorRaw === 'object' ? priorRaw : null);    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {      if (!hasValue) return 'low';      if (primaryHealth.status === 'missing') return 'low';      if (primaryHealth.status === 'degraded') return 'low';      if (usedFallbackWindow) return 'medium';      return primaryHealth.confidence || 'medium';    };    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, throughputCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [throughputCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, reopenedCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [reopenedCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };    const metricKeys = ['throughput', 'regression_rate', 'merge_success', 'reopened_tasks', 'debt_growth'];    const trendDeltas = metricKeys.reduce((acc, key) => { const d = metrics?.[key]?.delta; acc[key] = Number.isFinite(d) ? d : null; return acc; }, {});    const normalizePriorTrendDelta = (metricName) => {      const direct = priorParsed?.priorWeekTrendDeltas?.[metricName];      if (Number.isFinite(Number(direct))) return Number(Number(direct).toFixed(2));      const trend = priorParsed?.trendDeltas?.[metricName];      if (Number.isFinite(Number(trend))) return Number(Number(trend).toFixed(2));      const metricDelta = priorParsed?.metrics?.[metricName]?.delta;      if (Number.isFinite(Number(metricDelta))) return Number(Number(metricDelta).toFixed(2));      return null;    };    const priorWeekTrendDeltas = metricKeys.reduce((acc, key) => { acc[key] = normalizePriorTrendDelta(key); return acc; }, {});    const priorWeekDeltas = priorWeekTrendDeltas;    const priorWeekMetrics = priorParsed?.metrics && typeof priorParsed.metrics === 'object' ? priorParsed.metrics : null;    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };    const metricTrendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {      if (m == null || m.delta == null) return [];      if (String(m.confidence || '').toLowerCase() === 'low') return [];      const delta = Number(m.delta);      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);      if (!isRegression) return [];      const absDelta = Math.abs(delta);      const threshold = alertThresholds[metricName] ?? 1;      const severity = absDelta >= threshold * 2 ? 'high' : absDelta >= threshold ? 'medium' : 'low';      return [{ metric: metricName, severity, delta, reason: `${metricName} moved in a negative direction by ${delta} ${m.unit}.` }];    });    const sourceHealth = {      tasks: { ...taskHealth, count: tasks.length },      prs: { ...prHealth, count: prs.length },      debt: { ...debtHealth, count: debt.length },    };    const sourceTelemetryAlerts = Object.entries(sourceHealth).flatMap(([sourceName, health]) => {      if (health?.status === 'ok') return [];      const severity = health?.status === 'missing' ? 'high' : 'medium';      const reason = health?.status === 'missing' ? `${sourceName} telemetry missing; metric interpretation may be limited.` : `${sourceName} telemetry partially parsed; confidence reduced.`;      return [{ metric: `telemetry:${sourceName}`, severity, delta: null, reason }];    });    const trendAlerts = [...metricTrendAlerts, ...sourceTelemetryAlerts];    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';    const plannerSignals = {      schemaVersion: '1.0',      overallConfidence,      trendAlertCount: trendAlerts.length,      highSeverityAlertCount: trendAlerts.filter((a) => a?.severity === 'high').length,      sourceStatus: Object.fromEntries(Object.entries(sourceHealth).map(([k, v]) => [k, v?.status || 'missing'])),      metricStatus: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.status || 'missing'])),      metricConfidence: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.confidence || 'low'])),      metricValues: Object.fromEntries(metricKeys.map((k) => [k, Number.isFinite(metrics?.[k]?.value) ? Number(metrics[k].value) : null])),      trendDeltas,      priorWeekTrendDeltas,    };    const plannerArtifact = {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      sourceStatus: plannerSignals.sourceStatus,      metricConfidence: plannerSignals.metricConfidence,      metricValues: plannerSignals.metricValues,      trendDeltas,      priorWeekTrendDeltas,      trendAlertCount: plannerSignals.trendAlertCount,      highSeverityAlertCount: plannerSignals.highSeverityAlertCount,      trendAlerts,    };    return {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) },      sourceHealth,      metrics,      trendDeltas,      trendAlerts,      priorWeekTrendDeltas,      priorWeekDeltas,      priorWeekMetrics,      plannerSignals,      plannerArtifact,      dataQuality: {        overallConfidence,        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k),        degradedSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'degraded').map(([k]) => k),      },    };  } catch (error) {    return {      schemaVersion: '1.0',      generatedAt: new Date().toISOString(),      lookbackDays: Number($data?.lookbackDays || 7),      sourceHealth: {        tasks: { status: 'missing', confidence: 'low', count: 0 },        prs: { status: 'missing', confidence: 'low', count: 0 },        debt: { status: 'missing', confidence: 'low', count: 0 },      },      metrics: {        throughput: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        regression_rate: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        merge_success: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },      },      trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekMetrics: null,      plannerSignals: {        schemaVersion: '1.0',        overallConfidence: 'low',        trendAlertCount: 1,        highSeverityAlertCount: 1,        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricStatus: { throughput: 'missing', regression_rate: 'missing', merge_success: 'missing', reopened_tasks: 'missing', debt_growth: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      },      plannerArtifact: {        schemaVersion: '1.0',        generatedAt: new Date().toISOString(),        lookbackDays: Number($data?.lookbackDays || 7),        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendAlertCount: 1,        highSeverityAlertCount: 1,        trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      },      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] },    };  }})()",
+            "value": "(() => {  try {    const now = Date.now();    const lookbackDays = Math.max(1, Number($data?.lookbackDays || 7));    const windowMs = lookbackDays * 24 * 60 * 60 * 1000;    const currentStart = now - windowMs;    const previousStart = currentStart - windowMs;    const previousEnd = currentStart;    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };    const toIso = (ms) => new Date(ms).toISOString();    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };    const extractCanonicalItems = (value) => {      if (!value || typeof value !== 'object') return null;      const keys = ['items', 'tasks', 'entries', 'records', 'results', 'data'];      for (const key of keys) {        if (Array.isArray(value[key])) return value[key].filter(Boolean);      }      return null;    };    const parseSource = (raw, depth = 0) => {      if (depth > 3) return { items: [], degraded: true, parsedAny: false, partial: false };      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false, parsedAny: raw.length > 0, partial: false };      if (raw && typeof raw === 'object') {        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output) ?? extractCanonicalItems(raw.result) ?? extractCanonicalItems(raw.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: canonical.length > 0, partial: false };        const wrappedCandidates = [raw.output, raw.result, raw.payload, raw.data, raw.stdout, raw.content, raw.text, raw.json];        for (const candidate of wrappedCandidates) {          if (candidate == null) continue;          const parsedCandidate = parseSource(candidate, depth + 1);          if (parsedCandidate.items.length > 0 || parsedCandidate.parsedAny || parsedCandidate.degraded === false) return parsedCandidate;        }        return { items: [], degraded: Object.keys(raw).length > 0, parsedAny: false, partial: false };      }      if (typeof raw !== 'string') return { items: [], degraded: true, parsedAny: false, partial: false };      const trimmed = raw.trim();      if (!trimmed) return { items: [], degraded: false, parsedAny: false, partial: false };      const parsed = parseJsonSafe(trimmed);      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false, parsedAny: true, partial: false };      if (parsed && typeof parsed === 'object') {        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output) ?? extractCanonicalItems(parsed.result) ?? extractCanonicalItems(parsed.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: true, partial: false };      }      const lines = trimmed.split(/\\r?\\n/).filter((line) => line.trim() !== '');      const parsedLines = [];      let failedLines = 0;      for (const line of lines) {        const parsedLine = parseJsonSafe(line);        if (parsedLine == null) { failedLines += 1; continue; }        if (Array.isArray(parsedLine)) parsedLines.push(...parsedLine.filter(Boolean));        else parsedLines.push(parsedLine);      }      if (parsedLines.length > 0) return { items: parsedLines, degraded: failedLines > 0, parsedAny: true, partial: failedLines > 0 };      return { items: [], degraded: true, parsedAny: false, partial: false };    };    const getTs = (item) => {      if (!item || typeof item !== 'object') return null;      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date', 'completed_at', 'closed_at', 'merged_at', 'resolved_at', 'updated_at', 'created_at'];      for (const key of fields) {        const value = item[key];        if (!value) continue;        const ms = Date.parse(String(value));        if (Number.isFinite(ms)) return ms;        if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;      }      return null;    };    const normalizeBucket = (items) => {      const stamped = [];      const unstamped = [];      for (const item of items) {        const ts = getTs(item);        if (ts == null) unstamped.push(item); else stamped.push({ item, ts });      }      return { stamped, unstamped };    };    const splitWindows = (items) => {      const { stamped, unstamped } = normalizeBucket(items);      const current = stamped.filter((entry) => entry.ts >= currentStart && entry.ts <= now).map((entry) => entry.item);      const previous = stamped.filter((entry) => entry.ts >= previousStart && entry.ts < previousEnd).map((entry) => entry.item);      const usedFallbackWindow = stamped.length === 0 && unstamped.length > 0;      if (usedFallbackWindow) return { current: unstamped, previous: [], usedFallbackWindow };      return { current, previous, usedFallbackWindow };    };    const metric = (name, value, previous, direction, unit, confidence, status, notes = []) => {      const hasCurrent = typeof value === 'number' && Number.isFinite(value);      const hasPrevious = typeof previous === 'number' && Number.isFinite(previous);      return {        name,        value: hasCurrent ? value : null,        previous: hasPrevious ? previous : null,        delta: hasCurrent && hasPrevious ? Number((value - previous).toFixed(2)) : null,        direction,        unit,        confidence,        status,        notes: notes.filter(Boolean),      };    };    const sourceStatus = (nodeOut, parsedList, parsedMeta = {}) => {      const output = nodeOut?.output;      const hasPayload = (() => {        if (output == null) return false;        if (Array.isArray(output)) return true;        if (typeof output === 'string') return output.trim() !== '';        if (typeof output === 'object') {          const wrapped = [output.stdout, output.content, output.text, output.json, output.output, output.result, output.payload, output.data];          if (wrapped.some((v) => (typeof v === 'string' ? v.trim() !== '' : v != null))) return true;          return Object.keys(output).length > 0;        }        return true;      })();      const success = nodeOut?.success !== false;      if (!hasPayload) return { status: 'missing', confidence: 'low' };      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };      if (parsedMeta?.degraded || parsedMeta?.partial) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      if (!success) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };    };    const taskNode = $ctx.getNodeOutput('task-metrics') || {};    const prNode = $ctx.getNodeOutput('pr-metrics') || {};    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};    const taskParsed = parseSource(taskNode.output);    const prParsed = parseSource(prNode.output);    const debtParsed = parseSource(debtNode.output);    const tasks = taskParsed.items;    const prs = prParsed.items;    const debt = debtParsed.items;    const taskHealth = sourceStatus(taskNode, tasks, taskParsed);    const prHealth = sourceStatus(prNode, prs, prParsed);    const debtHealth = sourceStatus(debtNode, debt, debtParsed);    const taskSplit = splitWindows(tasks);    const prSplit = splitWindows(prs);    const debtSplit = splitWindows(debt);    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);    const isDone = (item) => doneStatuses.has(String(item?.status ?? item?.state ?? '').toLowerCase());    const taskTelemetryUnavailable = taskHealth.status === 'missing' || (taskHealth.status === 'degraded' && tasks.length === 0);    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;    const reopenedCount = (items) => items.filter((item) => {      if (!item || typeof item !== 'object') return false;      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount ?? item.reopen_count ?? item.reopened_count, 0);      if (reopenCount > 0) return true;      if (item.reopened === true) return true;      const status = String(item.status ?? item.state ?? '').toLowerCase();      return status.includes('reopen');    }).length;    const reopenedCurrent = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.current);    const reopenedPrevious = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.previous);    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at) || pr?.merged === true).length;    const closedCount = (items) => items.filter((pr) => {      const state = String(pr?.state || '').toLowerCase();      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.closed_at) || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at);    }).length;    const mergeClosedCurrent = closedCount(prSplit.current);    const mergeClosedPrevious = closedCount(prSplit.previous);    const mergeSuccessCurrent = mergeClosedCurrent > 0 ? Number(((mergedCount(prSplit.current) / mergeClosedCurrent) * 100).toFixed(2)) : null;    const mergeSuccessPrevious = mergeClosedPrevious > 0 ? Number(((mergedCount(prSplit.previous) / mergeClosedPrevious) * 100).toFixed(2)) : null;    const debtDelta = (entries) => {      let total = 0;      for (const entry of entries) {        if (entry == null) continue;        if (typeof entry === 'number') { total += entry; continue; }        if (typeof entry !== 'object') continue;        if (Number.isFinite(Number(entry.debtDelta))) { total += Number(entry.debtDelta); continue; }        if (Number.isFinite(Number(entry.delta))) { total += Number(entry.delta); continue; }        if (Number.isFinite(Number(entry.netChange))) { total += Number(entry.netChange); continue; }        const amt = Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 1;        const kind = String(entry.type || entry.event || entry.action || '').toLowerCase();        if (/resolved|burn|paydown|decrease|closed/.test(kind)) total -= amt;        else if (/created|added|increase|opened|new/.test(kind)) total += amt;      }      return Number(total.toFixed(2));    };    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;    const priorRaw = prevNode?.success === true ? (parseSource(prevNode.content).items?.[0] ?? parseJsonSafe(prevNode.content)) : null;    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : (priorRaw && typeof priorRaw === 'object' ? priorRaw : null);    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {      if (!hasValue) return 'low';      if (primaryHealth.status === 'missing') return 'low';      if (primaryHealth.status === 'degraded') return 'low';      if (usedFallbackWindow) return 'medium';      return primaryHealth.confidence || 'medium';    };    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, throughputCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [throughputCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, reopenedCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [reopenedCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };    const metricKeys = ['throughput', 'regression_rate', 'merge_success', 'reopened_tasks', 'debt_growth'];    const trendDeltas = metricKeys.reduce((acc, key) => { const d = metrics?.[key]?.delta; acc[key] = Number.isFinite(d) ? d : null; return acc; }, {});    const normalizePriorTrendDelta = (metricName) => {      const direct = priorParsed?.priorWeekTrendDeltas?.[metricName];      if (Number.isFinite(Number(direct))) return Number(Number(direct).toFixed(2));      const trend = priorParsed?.trendDeltas?.[metricName];      if (Number.isFinite(Number(trend))) return Number(Number(trend).toFixed(2));      const metricDelta = priorParsed?.metrics?.[metricName]?.delta;      if (Number.isFinite(Number(metricDelta))) return Number(Number(metricDelta).toFixed(2));      return null;    };    const priorWeekTrendDeltas = metricKeys.reduce((acc, key) => { acc[key] = normalizePriorTrendDelta(key); return acc; }, {});    const priorWeekDeltas = priorWeekTrendDeltas;    const priorWeekMetrics = priorParsed?.metrics && typeof priorParsed.metrics === 'object' ? priorParsed.metrics : null;    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };    const metricTrendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {      if (m == null || m.delta == null) return [];      if (String(m.confidence || '').toLowerCase() === 'low') return [];      const delta = Number(m.delta);      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);      if (!isRegression) return [];      const absDelta = Math.abs(delta);      const threshold = alertThresholds[metricName] ?? 1;      const severity = absDelta >= threshold * 2 ? 'high' : absDelta >= threshold ? 'medium' : 'low';      return [{ metric: metricName, severity, delta, reason: `${metricName} moved in a negative direction by ${delta} ${m.unit}.` }];    });    const sourceHealth = {      tasks: { ...taskHealth, count: tasks.length },      prs: { ...prHealth, count: prs.length },      debt: { ...debtHealth, count: debt.length },    };    const sourceTelemetryAlerts = Object.entries(sourceHealth).flatMap(([sourceName, health]) => {      if (health?.status === 'ok') return [];      const severity = health?.status === 'missing' ? 'high' : 'medium';      const reason = health?.status === 'missing' ? `${sourceName} telemetry missing; metric interpretation may be limited.` : `${sourceName} telemetry partially parsed; confidence reduced.`;      return [{ metric: `telemetry:${sourceName}`, severity, delta: null, reason }];    });    const trendAlerts = [...metricTrendAlerts, ...sourceTelemetryAlerts];    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';    const plannerSignals = {      schemaVersion: '1.0',      overallConfidence,      trendAlertCount: trendAlerts.length,      highSeverityAlertCount: trendAlerts.filter((a) => a?.severity === 'high').length,      sourceStatus: Object.fromEntries(Object.entries(sourceHealth).map(([k, v]) => [k, v?.status || 'missing'])),      metricStatus: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.status || 'missing'])),      metricConfidence: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.confidence || 'low'])),      metricValues: Object.fromEntries(metricKeys.map((k) => [k, Number.isFinite(metrics?.[k]?.value) ? Number(metrics[k].value) : null])),      trendDeltas,      priorWeekTrendDeltas,    };    const plannerArtifact = {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      sourceStatus: plannerSignals.sourceStatus,      metricConfidence: plannerSignals.metricConfidence,      metricValues: plannerSignals.metricValues,      trendDeltas,      priorWeekTrendDeltas,      trendAlertCount: plannerSignals.trendAlertCount,      highSeverityAlertCount: plannerSignals.highSeverityAlertCount,      trendAlerts,    };    return {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) },      sourceHealth,      metrics,      trendDeltas,      trendAlerts,      priorWeekTrendDeltas,      priorWeekDeltas,      priorWeekMetrics,      plannerSignals,      plannerArtifact,      dataQuality: {        overallConfidence,        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k),        degradedSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'degraded').map(([k]) => k),      },    };  } catch (error) {    return {      schemaVersion: '1.0',      generatedAt: new Date().toISOString(),      lookbackDays: Number($data?.lookbackDays || 7),      sourceHealth: {        tasks: { status: 'missing', confidence: 'low', count: 0 },        prs: { status: 'missing', confidence: 'low', count: 0 },        debt: { status: 'missing', confidence: 'low', count: 0 },      },      metrics: {        throughput: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        regression_rate: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        merge_success: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },      },      trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekMetrics: null,      plannerSignals: {        schemaVersion: '1.0',        overallConfidence: 'low',        trendAlertCount: 1,        highSeverityAlertCount: 1,        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricStatus: { throughput: 'missing', regression_rate: 'missing', merge_success: 'missing', reopened_tasks: 'missing', debt_growth: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      },      plannerArtifact: {        schemaVersion: '1.0',        generatedAt: new Date().toISOString(),        lookbackDays: Number($data?.lookbackDays || 7),        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendAlertCount: 1,        highSeverityAlertCount: 1,        trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      },      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] },    };  }})()",
             "isExpression": true
           },
           "position": {
@@ -10468,7 +10846,7 @@
     {
       "id": "template-continuation-loop",
       "name": "Continuation Loop",
-      "description": "Issue-state continuation loop. Fires automatically for any available task (trigger.task_available), drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause. taskId and worktreePath are auto-populated from the picked task — no manual input required.",
+      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
       "category": "reliability",
       "categoryLabel": "Reliability",
       "categoryIcon": ":shield:",
@@ -10480,13 +10858,12 @@
         "external-status",
         "stuck-detection"
       ],
-      "nodeCount": 34,
-      "edgeCount": 37,
+      "nodeCount": 33,
+      "edgeCount": 36,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.task_available",
       "variables": {
-        "maxParallel": 1,
         "taskId": "",
         "worktreePath": "",
         "maxTurns": 8,
@@ -10508,7 +10885,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-03-10T00:00:00Z",
-        "templateVersion": "1.3.0",
+        "templateVersion": "1.1.0",
         "tags": [
           "continuation",
           "loop",
@@ -10522,1848 +10899,7 @@
         {
           "id": "trigger",
           "type": "trigger.task_available",
-          "label": "Pick Available Task",
-          "config": {
-            "maxParallel": "{{maxParallel}}",
-            "status": "inprogress",
-            "statuses": [
-              "inprogress",
-              "todo"
-            ],
-            "filterCodexScoped": true,
-            "filterDrafts": true
-          },
-          "position": {
-            "x": 420,
-            "y": 60
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-turn",
-          "type": "action.set_variable",
-          "label": "Initialize Turn Counter",
-          "config": {
-            "key": "continuationTurn",
-            "value": "0",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-progress-at",
-          "type": "action.set_variable",
-          "label": "Initialize Progress Clock",
-          "config": {
-            "key": "lastProgressAt",
-            "value": "Date.now()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 280
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-signature",
-          "type": "action.set_variable",
-          "label": "Initialize Progress Signature",
-          "config": {
-            "key": "lastProgressSignature",
-            "value": "''",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 390
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Initialize Stuck Retry Count",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "0",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 450
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "poll-task",
-          "type": "action.bosun_function",
-          "label": "Poll External Task State",
-          "config": {
-            "function": "tasks.get",
-            "args": {
-              "taskId": "{{taskId}}"
-            },
-            "outputVariable": "continuationTask"
-          },
-          "position": {
-            "x": 420,
-            "y": 500
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-status",
-          "type": "action.set_variable",
-          "label": "Derive External Status",
-          "config": {
-            "key": "currentExternalStatus",
-            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 610
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "terminal-check",
-          "type": "condition.expression",
-          "label": "Terminal State Reached?",
-          "config": {
-            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
-          },
-          "position": {
-            "x": 420,
-            "y": 720
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "end-terminal",
-          "type": "flow.end",
-          "label": "End: Terminal State",
-          "config": {
-            "status": "completed",
-            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
-            "output": {
-              "reason": "terminal_state",
-              "taskId": "{{taskId}}",
-              "externalStatus": "{{currentExternalStatus}}"
-            }
-          },
-          "position": {
-            "x": 160,
-            "y": 860
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "max-turns-check",
-          "type": "condition.expression",
-          "label": "Max Turns Reached?",
-          "config": {
-            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
-          },
-          "position": {
-            "x": 620,
-            "y": 860
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "end-max-turns",
-          "type": "flow.end",
-          "label": "End: Max Turns",
-          "config": {
-            "status": "failed",
-            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
-            "output": {
-              "reason": "max_turns",
-              "taskId": "{{taskId}}",
-              "turns": "{{continuationTurn}}"
-            }
-          },
-          "position": {
-            "x": 460,
-            "y": 1000
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "run-agent",
-          "type": "action.run_agent",
-          "label": "Drive Agent",
-          "config": {
-            "prompt": "{{continuePrompt}}",
-            "taskId": "{{taskId}}",
-            "cwd": "{{worktreePath}}",
-            "sdk": "{{sdk}}",
-            "model": "{{model}}",
-            "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
-            "failOnError": false
-          },
-          "position": {
-            "x": 800,
-            "y": 1000
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "capture-progress",
-          "type": "action.run_command",
-          "label": "Capture Progress Signature",
-          "config": {
-            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 800,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-signature",
-          "type": "action.set_variable",
-          "label": "Derive Signature",
-          "config": {
-            "key": "currentProgressSignature",
-            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 800,
-            "y": 1240
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-stuck-ms",
-          "type": "action.set_variable",
-          "label": "Derive Stuck Duration",
-          "config": {
-            "key": "stuckForMs",
-            "value": "Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 1230
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "progress-changed",
-          "type": "condition.expression",
-          "label": "Progress Changed?",
-          "config": {
-            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
-          },
-          "position": {
-            "x": 800,
-            "y": 1360
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "mark-progress-at",
-          "type": "action.set_variable",
-          "label": "Update Progress Clock",
-          "config": {
-            "key": "lastProgressAt",
-            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-progress-sig",
-          "type": "action.set_variable",
-          "label": "Update Progress Signature",
-          "config": {
-            "key": "lastProgressSignature",
-            "value": "$data?.currentProgressSignature || ''",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "reset-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Reset Stuck Retry Count On Progress",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1710
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-check",
-          "type": "condition.expression",
-          "label": "Session Stuck?",
-          "config": {
-            "expression": "(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
-          },
-          "position": {
-            "x": 980,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "emit-stuck",
-          "type": "action.emit_event",
-          "label": "Emit session-stuck",
-          "config": {
-            "eventType": "session-stuck",
-            "payload": {
-              "taskId": "{{taskId}}",
-              "turn": "{{continuationTurn}}",
-              "externalStatus": "{{currentExternalStatus}}",
-              "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "stuckForMs": "{{stuckForMs}}",
-              "onStuck": "{{onStuck}}",
-              "stuckRetryCount": "{{stuckRetryCount}}",
-              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
-              "lastProgressAt": "{{lastProgressAt}}",
-              "lastProgressSignature": "{{lastProgressSignature}}",
-              "currentProgressSignature": "{{currentProgressSignature}}",
-              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
-              "agentActivityDetected": "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
-              "agentItemCount": "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
-              "agentStreamCount": "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
-              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
-              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
-              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
-            },
-            "outputVariable": "sessionStuckEvent"
-          },
-          "position": {
-            "x": 980,
-            "y": 1600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-route",
-          "type": "condition.switch",
-          "label": "Route onStuck Action",
-          "config": {
-            "value": "$data?.onStuck || 'escalate'",
-            "cases": {
-              "retry": "retry",
-              "escalate": "escalate",
-              "pause": "pause"
-            }
-          },
-          "position": {
-            "x": 980,
-            "y": 1710
-          },
-          "outputs": [
-            "retry",
-            "escalate",
-            "pause",
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-retry-budget",
-          "type": "condition.expression",
-          "label": "Stuck Retry Budget Remaining?",
-          "config": {
-            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
-          },
-          "position": {
-            "x": 760,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "stuck-retry",
-          "type": "action.run_agent",
-          "label": "Retry After Stuck",
-          "config": {
-            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
-            "taskId": "{{taskId}}",
-            "cwd": "{{worktreePath}}",
-            "sdk": "{{sdk}}",
-            "model": "{{model}}",
-            "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
-            "failOnError": false
-          },
-          "position": {
-            "x": 760,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Increment Stuck Retry Count",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "Number($data?.stuckRetryCount || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 760,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-escalate",
-          "type": "notify.log",
-          "label": "Escalate Stuck Session",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
-          },
-          "position": {
-            "x": 980,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-escalate-budget",
-          "type": "notify.log",
-          "label": "Escalate Stuck Session (Retry Limit)",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
-          },
-          "position": {
-            "x": 760,
-            "y": 2050
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-pause",
-          "type": "notify.log",
-          "label": "Pause Stuck Session",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
-          },
-          "position": {
-            "x": 1200,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-escalated",
-          "type": "flow.end",
-          "label": "End: Escalated",
-          "config": {
-            "status": "failed",
-            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
-            "output": {
-              "reason": "stuck_escalated",
-              "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}",
-              "stuckRetryCount": "{{stuckRetryCount}}",
-              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
-            }
-          },
-          "position": {
-            "x": 980,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-paused",
-          "type": "flow.end",
-          "label": "End: Paused",
-          "config": {
-            "status": "completed",
-            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
-            "output": {
-              "reason": "stuck_paused",
-              "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}"
-            }
-          },
-          "position": {
-            "x": 1200,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "wait-next-turn",
-          "type": "action.delay",
-          "label": "Wait Poll Interval",
-          "config": {
-            "ms": "{{pollIntervalMs}}",
-            "reason": "Waiting before next external status poll"
-          },
-          "position": {
-            "x": 760,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-turn",
-          "type": "action.set_variable",
-          "label": "Increment Turn",
-          "config": {
-            "key": "continuationTurn",
-            "value": "Number($data?.continuationTurn || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 760,
-            "y": 2060
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "wait-next-turn-no-stuck",
-          "type": "action.delay",
-          "label": "Wait (No Stuck)",
-          "config": {
-            "ms": "{{pollIntervalMs}}",
-            "reason": "Waiting before next external status poll"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-turn-no-stuck",
-          "type": "action.set_variable",
-          "label": "Increment Turn (No Stuck)",
-          "config": {
-            "key": "continuationTurn",
-            "value": "Number($data?.continuationTurn || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 2060
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->init-turn",
-          "source": "trigger",
-          "target": "init-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-turn->init-progress-at",
-          "source": "init-turn",
-          "target": "init-progress-at",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-progress-at->init-signature",
-          "source": "init-progress-at",
-          "target": "init-signature",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-signature->init-stuck-retry-count",
-          "source": "init-signature",
-          "target": "init-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-stuck-retry-count->poll-task",
-          "source": "init-stuck-retry-count",
-          "target": "poll-task",
-          "sourcePort": "default"
-        },
-        {
-          "id": "poll-task->derive-status",
-          "source": "poll-task",
-          "target": "derive-status",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-status->terminal-check",
-          "source": "derive-status",
-          "target": "terminal-check",
-          "sourcePort": "default"
-        },
-        {
-          "id": "terminal-check->end-terminal",
-          "source": "terminal-check",
-          "target": "end-terminal",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "terminal-check->max-turns-check",
-          "source": "terminal-check",
-          "target": "max-turns-check",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "max-turns-check->end-max-turns",
-          "source": "max-turns-check",
-          "target": "end-max-turns",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "max-turns-check->run-agent",
-          "source": "max-turns-check",
-          "target": "run-agent",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-agent->capture-progress",
-          "source": "run-agent",
-          "target": "capture-progress",
-          "sourcePort": "default"
-        },
-        {
-          "id": "capture-progress->derive-signature",
-          "source": "capture-progress",
-          "target": "derive-signature",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-signature->derive-stuck-ms",
-          "source": "derive-signature",
-          "target": "derive-stuck-ms",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-stuck-ms->progress-changed",
-          "source": "derive-stuck-ms",
-          "target": "progress-changed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "progress-changed->mark-progress-at",
-          "source": "progress-changed",
-          "target": "mark-progress-at",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-progress-at->mark-progress-sig",
-          "source": "mark-progress-at",
-          "target": "mark-progress-sig",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-progress-sig->reset-stuck-retry-count",
-          "source": "mark-progress-sig",
-          "target": "reset-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "reset-stuck-retry-count->stuck-check",
-          "source": "reset-stuck-retry-count",
-          "target": "stuck-check",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-check->emit-stuck",
-          "source": "stuck-check",
-          "target": "emit-stuck",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "stuck-check->wait-next-turn-no-stuck",
-          "source": "stuck-check",
-          "target": "wait-next-turn-no-stuck",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "emit-stuck->stuck-route",
-          "source": "emit-stuck",
-          "target": "stuck-route",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-route->stuck-retry-budget",
-          "source": "stuck-route",
-          "target": "stuck-retry-budget",
-          "sourcePort": "retry"
-        },
-        {
-          "id": "stuck-route->stuck-escalate",
-          "source": "stuck-route",
-          "target": "stuck-escalate",
-          "sourcePort": "escalate"
-        },
-        {
-          "id": "stuck-route->stuck-pause",
-          "source": "stuck-route",
-          "target": "stuck-pause",
-          "sourcePort": "pause"
-        },
-        {
-          "id": "stuck-route->stuck-escalate",
-          "source": "stuck-route",
-          "target": "stuck-escalate",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-retry-budget->stuck-retry",
-          "source": "stuck-retry-budget",
-          "target": "stuck-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "stuck-retry-budget->stuck-escalate-budget",
-          "source": "stuck-retry-budget",
-          "target": "stuck-escalate-budget",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "stuck-retry->increment-stuck-retry-count",
-          "source": "stuck-retry",
-          "target": "increment-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-stuck-retry-count->wait-next-turn",
-          "source": "increment-stuck-retry-count",
-          "target": "wait-next-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-escalate->end-escalated",
-          "source": "stuck-escalate",
-          "target": "end-escalated",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-escalate-budget->end-escalated",
-          "source": "stuck-escalate-budget",
-          "target": "end-escalated",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-pause->end-paused",
-          "source": "stuck-pause",
-          "target": "end-paused",
-          "sourcePort": "default"
-        },
-        {
-          "id": "wait-next-turn->increment-turn",
-          "source": "wait-next-turn",
-          "target": "increment-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
-          "source": "wait-next-turn-no-stuck",
-          "target": "increment-turn-no-stuck",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-turn->poll-task",
-          "source": "increment-turn",
-          "target": "poll-task",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 500
-        },
-        {
-          "id": "increment-turn-no-stuck->poll-task",
-          "source": "increment-turn-no-stuck",
-          "target": "poll-task",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 500
-        }
-      ]
-    },
-    {
-      "id": "template-continuation-loop",
-      "name": "Continuation Loop",
-      "description": "Issue-state continuation loop. Fires automatically for any available task (trigger.task_available), drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause. taskId and worktreePath are auto-populated from the picked task — no manual input required.",
-      "category": "reliability",
-      "categoryLabel": "Reliability",
-      "categoryIcon": ":shield:",
-      "categoryOrder": 5,
-      "tags": [
-        "continuation",
-        "loop",
-        "linear",
-        "external-status",
-        "stuck-detection"
-      ],
-      "nodeCount": 34,
-      "edgeCount": 37,
-      "recommended": false,
-      "enabled": true,
-      "trigger": "trigger.task_available",
-      "variables": {
-        "maxParallel": 1,
-        "taskId": "",
-        "worktreePath": "",
-        "maxTurns": 8,
-        "pollIntervalMs": 30000,
-        "terminalStates": [
-          "done",
-          "cancelled"
-        ],
-        "stuckThresholdMs": 300000,
-        "maxStuckAutoRetries": 1,
-        "onStuck": "escalate",
-        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
-        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
-        "sdk": "auto",
-        "model": "",
-        "timeoutMs": 1800000
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-03-10T00:00:00Z",
-        "templateVersion": "1.3.0",
-        "tags": [
-          "continuation",
-          "loop",
-          "linear",
-          "external-status",
-          "stuck-detection"
-        ],
-        "configType": "continuation-loop"
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.task_available",
-          "label": "Pick Available Task",
-          "config": {
-            "maxParallel": "{{maxParallel}}",
-            "status": "inprogress",
-            "statuses": [
-              "inprogress",
-              "todo"
-            ],
-            "filterCodexScoped": true,
-            "filterDrafts": true
-          },
-          "position": {
-            "x": 420,
-            "y": 60
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-turn",
-          "type": "action.set_variable",
-          "label": "Initialize Turn Counter",
-          "config": {
-            "key": "continuationTurn",
-            "value": "0",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-progress-at",
-          "type": "action.set_variable",
-          "label": "Initialize Progress Clock",
-          "config": {
-            "key": "lastProgressAt",
-            "value": "Date.now()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 280
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-signature",
-          "type": "action.set_variable",
-          "label": "Initialize Progress Signature",
-          "config": {
-            "key": "lastProgressSignature",
-            "value": "''",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 390
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Initialize Stuck Retry Count",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "0",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 450
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "poll-task",
-          "type": "action.bosun_function",
-          "label": "Poll External Task State",
-          "config": {
-            "function": "tasks.get",
-            "args": {
-              "taskId": "{{taskId}}"
-            },
-            "outputVariable": "continuationTask"
-          },
-          "position": {
-            "x": 420,
-            "y": 500
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-status",
-          "type": "action.set_variable",
-          "label": "Derive External Status",
-          "config": {
-            "key": "currentExternalStatus",
-            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 610
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "terminal-check",
-          "type": "condition.expression",
-          "label": "Terminal State Reached?",
-          "config": {
-            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
-          },
-          "position": {
-            "x": 420,
-            "y": 720
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "end-terminal",
-          "type": "flow.end",
-          "label": "End: Terminal State",
-          "config": {
-            "status": "completed",
-            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
-            "output": {
-              "reason": "terminal_state",
-              "taskId": "{{taskId}}",
-              "externalStatus": "{{currentExternalStatus}}"
-            }
-          },
-          "position": {
-            "x": 160,
-            "y": 860
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "max-turns-check",
-          "type": "condition.expression",
-          "label": "Max Turns Reached?",
-          "config": {
-            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
-          },
-          "position": {
-            "x": 620,
-            "y": 860
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "end-max-turns",
-          "type": "flow.end",
-          "label": "End: Max Turns",
-          "config": {
-            "status": "failed",
-            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
-            "output": {
-              "reason": "max_turns",
-              "taskId": "{{taskId}}",
-              "turns": "{{continuationTurn}}"
-            }
-          },
-          "position": {
-            "x": 460,
-            "y": 1000
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "run-agent",
-          "type": "action.run_agent",
-          "label": "Drive Agent",
-          "config": {
-            "prompt": "{{continuePrompt}}",
-            "taskId": "{{taskId}}",
-            "cwd": "{{worktreePath}}",
-            "sdk": "{{sdk}}",
-            "model": "{{model}}",
-            "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
-            "failOnError": false
-          },
-          "position": {
-            "x": 800,
-            "y": 1000
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "capture-progress",
-          "type": "action.run_command",
-          "label": "Capture Progress Signature",
-          "config": {
-            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 800,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-signature",
-          "type": "action.set_variable",
-          "label": "Derive Signature",
-          "config": {
-            "key": "currentProgressSignature",
-            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 800,
-            "y": 1240
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-stuck-ms",
-          "type": "action.set_variable",
-          "label": "Derive Stuck Duration",
-          "config": {
-            "key": "stuckForMs",
-            "value": "Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 1230
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "progress-changed",
-          "type": "condition.expression",
-          "label": "Progress Changed?",
-          "config": {
-            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
-          },
-          "position": {
-            "x": 800,
-            "y": 1360
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "mark-progress-at",
-          "type": "action.set_variable",
-          "label": "Update Progress Clock",
-          "config": {
-            "key": "lastProgressAt",
-            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-progress-sig",
-          "type": "action.set_variable",
-          "label": "Update Progress Signature",
-          "config": {
-            "key": "lastProgressSignature",
-            "value": "$data?.currentProgressSignature || ''",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "reset-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Reset Stuck Retry Count On Progress",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1710
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-check",
-          "type": "condition.expression",
-          "label": "Session Stuck?",
-          "config": {
-            "expression": "(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
-          },
-          "position": {
-            "x": 980,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "emit-stuck",
-          "type": "action.emit_event",
-          "label": "Emit session-stuck",
-          "config": {
-            "eventType": "session-stuck",
-            "payload": {
-              "taskId": "{{taskId}}",
-              "turn": "{{continuationTurn}}",
-              "externalStatus": "{{currentExternalStatus}}",
-              "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "stuckForMs": "{{stuckForMs}}",
-              "onStuck": "{{onStuck}}",
-              "stuckRetryCount": "{{stuckRetryCount}}",
-              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
-              "lastProgressAt": "{{lastProgressAt}}",
-              "lastProgressSignature": "{{lastProgressSignature}}",
-              "currentProgressSignature": "{{currentProgressSignature}}",
-              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
-              "agentActivityDetected": "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
-              "agentItemCount": "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
-              "agentStreamCount": "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
-              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
-              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
-              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
-            },
-            "outputVariable": "sessionStuckEvent"
-          },
-          "position": {
-            "x": 980,
-            "y": 1600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-route",
-          "type": "condition.switch",
-          "label": "Route onStuck Action",
-          "config": {
-            "value": "$data?.onStuck || 'escalate'",
-            "cases": {
-              "retry": "retry",
-              "escalate": "escalate",
-              "pause": "pause"
-            }
-          },
-          "position": {
-            "x": 980,
-            "y": 1710
-          },
-          "outputs": [
-            "retry",
-            "escalate",
-            "pause",
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-retry-budget",
-          "type": "condition.expression",
-          "label": "Stuck Retry Budget Remaining?",
-          "config": {
-            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
-          },
-          "position": {
-            "x": 760,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "stuck-retry",
-          "type": "action.run_agent",
-          "label": "Retry After Stuck",
-          "config": {
-            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
-            "taskId": "{{taskId}}",
-            "cwd": "{{worktreePath}}",
-            "sdk": "{{sdk}}",
-            "model": "{{model}}",
-            "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
-            "failOnError": false
-          },
-          "position": {
-            "x": 760,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Increment Stuck Retry Count",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "Number($data?.stuckRetryCount || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 760,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-escalate",
-          "type": "notify.log",
-          "label": "Escalate Stuck Session",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
-          },
-          "position": {
-            "x": 980,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-escalate-budget",
-          "type": "notify.log",
-          "label": "Escalate Stuck Session (Retry Limit)",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
-          },
-          "position": {
-            "x": 760,
-            "y": 2050
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-pause",
-          "type": "notify.log",
-          "label": "Pause Stuck Session",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
-          },
-          "position": {
-            "x": 1200,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-escalated",
-          "type": "flow.end",
-          "label": "End: Escalated",
-          "config": {
-            "status": "failed",
-            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
-            "output": {
-              "reason": "stuck_escalated",
-              "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}",
-              "stuckRetryCount": "{{stuckRetryCount}}",
-              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
-            }
-          },
-          "position": {
-            "x": 980,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-paused",
-          "type": "flow.end",
-          "label": "End: Paused",
-          "config": {
-            "status": "completed",
-            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
-            "output": {
-              "reason": "stuck_paused",
-              "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}"
-            }
-          },
-          "position": {
-            "x": 1200,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "wait-next-turn",
-          "type": "action.delay",
-          "label": "Wait Poll Interval",
-          "config": {
-            "ms": "{{pollIntervalMs}}",
-            "reason": "Waiting before next external status poll"
-          },
-          "position": {
-            "x": 760,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-turn",
-          "type": "action.set_variable",
-          "label": "Increment Turn",
-          "config": {
-            "key": "continuationTurn",
-            "value": "Number($data?.continuationTurn || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 760,
-            "y": 2060
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "wait-next-turn-no-stuck",
-          "type": "action.delay",
-          "label": "Wait (No Stuck)",
-          "config": {
-            "ms": "{{pollIntervalMs}}",
-            "reason": "Waiting before next external status poll"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-turn-no-stuck",
-          "type": "action.set_variable",
-          "label": "Increment Turn (No Stuck)",
-          "config": {
-            "key": "continuationTurn",
-            "value": "Number($data?.continuationTurn || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 2060
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->init-turn",
-          "source": "trigger",
-          "target": "init-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-turn->init-progress-at",
-          "source": "init-turn",
-          "target": "init-progress-at",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-progress-at->init-signature",
-          "source": "init-progress-at",
-          "target": "init-signature",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-signature->init-stuck-retry-count",
-          "source": "init-signature",
-          "target": "init-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-stuck-retry-count->poll-task",
-          "source": "init-stuck-retry-count",
-          "target": "poll-task",
-          "sourcePort": "default"
-        },
-        {
-          "id": "poll-task->derive-status",
-          "source": "poll-task",
-          "target": "derive-status",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-status->terminal-check",
-          "source": "derive-status",
-          "target": "terminal-check",
-          "sourcePort": "default"
-        },
-        {
-          "id": "terminal-check->end-terminal",
-          "source": "terminal-check",
-          "target": "end-terminal",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "terminal-check->max-turns-check",
-          "source": "terminal-check",
-          "target": "max-turns-check",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "max-turns-check->end-max-turns",
-          "source": "max-turns-check",
-          "target": "end-max-turns",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "max-turns-check->run-agent",
-          "source": "max-turns-check",
-          "target": "run-agent",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-agent->capture-progress",
-          "source": "run-agent",
-          "target": "capture-progress",
-          "sourcePort": "default"
-        },
-        {
-          "id": "capture-progress->derive-signature",
-          "source": "capture-progress",
-          "target": "derive-signature",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-signature->derive-stuck-ms",
-          "source": "derive-signature",
-          "target": "derive-stuck-ms",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-stuck-ms->progress-changed",
-          "source": "derive-stuck-ms",
-          "target": "progress-changed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "progress-changed->mark-progress-at",
-          "source": "progress-changed",
-          "target": "mark-progress-at",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-progress-at->mark-progress-sig",
-          "source": "mark-progress-at",
-          "target": "mark-progress-sig",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-progress-sig->reset-stuck-retry-count",
-          "source": "mark-progress-sig",
-          "target": "reset-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "reset-stuck-retry-count->stuck-check",
-          "source": "reset-stuck-retry-count",
-          "target": "stuck-check",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-check->emit-stuck",
-          "source": "stuck-check",
-          "target": "emit-stuck",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "stuck-check->wait-next-turn-no-stuck",
-          "source": "stuck-check",
-          "target": "wait-next-turn-no-stuck",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "emit-stuck->stuck-route",
-          "source": "emit-stuck",
-          "target": "stuck-route",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-route->stuck-retry-budget",
-          "source": "stuck-route",
-          "target": "stuck-retry-budget",
-          "sourcePort": "retry"
-        },
-        {
-          "id": "stuck-route->stuck-escalate",
-          "source": "stuck-route",
-          "target": "stuck-escalate",
-          "sourcePort": "escalate"
-        },
-        {
-          "id": "stuck-route->stuck-pause",
-          "source": "stuck-route",
-          "target": "stuck-pause",
-          "sourcePort": "pause"
-        },
-        {
-          "id": "stuck-route->stuck-escalate",
-          "source": "stuck-route",
-          "target": "stuck-escalate",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-retry-budget->stuck-retry",
-          "source": "stuck-retry-budget",
-          "target": "stuck-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "stuck-retry-budget->stuck-escalate-budget",
-          "source": "stuck-retry-budget",
-          "target": "stuck-escalate-budget",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "stuck-retry->increment-stuck-retry-count",
-          "source": "stuck-retry",
-          "target": "increment-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-stuck-retry-count->wait-next-turn",
-          "source": "increment-stuck-retry-count",
-          "target": "wait-next-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-escalate->end-escalated",
-          "source": "stuck-escalate",
-          "target": "end-escalated",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-escalate-budget->end-escalated",
-          "source": "stuck-escalate-budget",
-          "target": "end-escalated",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-pause->end-paused",
-          "source": "stuck-pause",
-          "target": "end-paused",
-          "sourcePort": "default"
-        },
-        {
-          "id": "wait-next-turn->increment-turn",
-          "source": "wait-next-turn",
-          "target": "increment-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
-          "source": "wait-next-turn-no-stuck",
-          "target": "increment-turn-no-stuck",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-turn->poll-task",
-          "source": "increment-turn",
-          "target": "poll-task",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 500
-        },
-        {
-          "id": "increment-turn-no-stuck->poll-task",
-          "source": "increment-turn-no-stuck",
-          "target": "poll-task",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 500
-        }
-      ]
-    },
-    {
-      "id": "template-continuation-loop-manual",
-      "name": "Continuation Loop (Manual)",
-      "description": "Issue-state continuation loop for a specific task. Provide taskId and worktreePath at install time. Drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
-      "category": "reliability",
-      "categoryLabel": "Reliability",
-      "categoryIcon": ":shield:",
-      "categoryOrder": 5,
-      "tags": [
-        "continuation",
-        "loop",
-        "linear",
-        "external-status",
-        "stuck-detection",
-        "manual"
-      ],
-      "nodeCount": 34,
-      "edgeCount": 37,
-      "recommended": false,
-      "enabled": true,
-      "trigger": "trigger.manual",
-      "variables": {
-        "taskId": "",
-        "worktreePath": "",
-        "maxTurns": 8,
-        "pollIntervalMs": 30000,
-        "terminalStates": [
-          "done",
-          "cancelled"
-        ],
-        "stuckThresholdMs": 300000,
-        "maxStuckAutoRetries": 1,
-        "onStuck": "escalate",
-        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
-        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
-        "sdk": "auto",
-        "model": "",
-        "timeoutMs": 1800000
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-03-10T00:00:00Z",
-        "templateVersion": "1.3.0",
-        "tags": [
-          "continuation",
-          "loop",
-          "linear",
-          "external-status",
-          "stuck-detection",
-          "manual"
-        ],
-        "configType": "continuation-loop"
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Continuation Loop",
+          "label": "Task Available",
           "config": {},
           "position": {
             "x": 420,
@@ -12562,7 +11098,6 @@
             "sdk": "{{sdk}}",
             "model": "{{model}}",
             "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
             "failOnError": false
           },
           "position": {
@@ -12602,23 +11137,6 @@
           "position": {
             "x": 800,
             "y": 1240
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-stuck-ms",
-          "type": "action.set_variable",
-          "label": "Derive Stuck Duration",
-          "config": {
-            "key": "stuckForMs",
-            "value": "Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 1230
           },
           "outputs": [
             "default"
@@ -12696,7 +11214,7 @@
           "type": "condition.expression",
           "label": "Session Stuck?",
           "config": {
-            "expression": "(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
+            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
           },
           "position": {
             "x": 980,
@@ -12718,17 +11236,13 @@
               "turn": "{{continuationTurn}}",
               "externalStatus": "{{currentExternalStatus}}",
               "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "stuckForMs": "{{stuckForMs}}",
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
               "onStuck": "{{onStuck}}",
               "stuckRetryCount": "{{stuckRetryCount}}",
               "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
               "lastProgressAt": "{{lastProgressAt}}",
               "lastProgressSignature": "{{lastProgressSignature}}",
               "currentProgressSignature": "{{currentProgressSignature}}",
-              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
-              "agentActivityDetected": "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
-              "agentItemCount": "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
-              "agentStreamCount": "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
               "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
               "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
               "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
@@ -12793,7 +11307,6 @@
             "sdk": "{{sdk}}",
             "model": "{{model}}",
             "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
             "failOnError": false
           },
           "position": {
@@ -12827,7 +11340,7 @@
           "label": "Escalate Stuck Session",
           "config": {
             "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
           },
           "position": {
             "x": 980,
@@ -12843,7 +11356,7 @@
           "label": "Escalate Stuck Session (Retry Limit)",
           "config": {
             "level": "warn",
-            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
           },
           "position": {
             "x": 760,
@@ -13064,14 +11577,889 @@
           "sourcePort": "default"
         },
         {
-          "id": "derive-signature->derive-stuck-ms",
+          "id": "derive-signature->progress-changed",
           "source": "derive-signature",
-          "target": "derive-stuck-ms",
+          "target": "progress-changed",
           "sourcePort": "default"
         },
         {
-          "id": "derive-stuck-ms->progress-changed",
-          "source": "derive-stuck-ms",
+          "id": "progress-changed->mark-progress-at",
+          "source": "progress-changed",
+          "target": "mark-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-at->mark-progress-sig",
+          "source": "mark-progress-at",
+          "target": "mark-progress-sig",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-sig->reset-stuck-retry-count",
+          "source": "mark-progress-sig",
+          "target": "reset-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reset-stuck-retry-count->stuck-check",
+          "source": "reset-stuck-retry-count",
+          "target": "stuck-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-check->emit-stuck",
+          "source": "stuck-check",
+          "target": "emit-stuck",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-check->wait-next-turn-no-stuck",
+          "source": "stuck-check",
+          "target": "wait-next-turn-no-stuck",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "emit-stuck->stuck-route",
+          "source": "emit-stuck",
+          "target": "stuck-route",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-route->stuck-retry-budget",
+          "source": "stuck-route",
+          "target": "stuck-retry-budget",
+          "sourcePort": "retry"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "escalate"
+        },
+        {
+          "id": "stuck-route->stuck-pause",
+          "source": "stuck-route",
+          "target": "stuck-pause",
+          "sourcePort": "pause"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-retry",
+          "source": "stuck-retry-budget",
+          "target": "stuck-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-escalate-budget",
+          "source": "stuck-retry-budget",
+          "target": "stuck-escalate-budget",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "stuck-retry->increment-stuck-retry-count",
+          "source": "stuck-retry",
+          "target": "increment-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-stuck-retry-count->wait-next-turn",
+          "source": "increment-stuck-retry-count",
+          "target": "wait-next-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate->end-escalated",
+          "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate-budget->end-escalated",
+          "source": "stuck-escalate-budget",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-pause->end-paused",
+          "source": "stuck-pause",
+          "target": "end-paused",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn->increment-turn",
+          "source": "wait-next-turn",
+          "target": "increment-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
+          "source": "wait-next-turn-no-stuck",
+          "target": "increment-turn-no-stuck",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-turn->poll-task",
+          "source": "increment-turn",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        },
+        {
+          "id": "increment-turn-no-stuck->poll-task",
+          "source": "increment-turn-no-stuck",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        }
+      ]
+    },
+    {
+      "id": "template-continuation-loop",
+      "name": "Continuation Loop",
+      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "category": "reliability",
+      "categoryLabel": "Reliability",
+      "categoryIcon": ":shield:",
+      "categoryOrder": 5,
+      "tags": [
+        "continuation",
+        "loop",
+        "linear",
+        "external-status",
+        "stuck-detection"
+      ],
+      "nodeCount": 33,
+      "edgeCount": 36,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.task_available",
+      "variables": {
+        "taskId": "",
+        "worktreePath": "",
+        "maxTurns": 8,
+        "pollIntervalMs": 30000,
+        "terminalStates": [
+          "done",
+          "cancelled"
+        ],
+        "stuckThresholdMs": 300000,
+        "maxStuckAutoRetries": 1,
+        "onStuck": "escalate",
+        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
+        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
+        "sdk": "auto",
+        "model": "",
+        "timeoutMs": 1800000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-10T00:00:00Z",
+        "templateVersion": "1.1.0",
+        "tags": [
+          "continuation",
+          "loop",
+          "linear",
+          "external-status",
+          "stuck-detection"
+        ],
+        "configType": "continuation-loop"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_available",
+          "label": "Task Available",
+          "config": {},
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-turn",
+          "type": "action.set_variable",
+          "label": "Initialize Turn Counter",
+          "config": {
+            "key": "continuationTurn",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-progress-at",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "Date.now()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 280
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-signature",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Initialize Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "poll-task",
+          "type": "action.bosun_function",
+          "label": "Poll External Task State",
+          "config": {
+            "function": "tasks.get",
+            "args": {
+              "taskId": "{{taskId}}"
+            },
+            "outputVariable": "continuationTask"
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-status",
+          "type": "action.set_variable",
+          "label": "Derive External Status",
+          "config": {
+            "key": "currentExternalStatus",
+            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "terminal-check",
+          "type": "condition.expression",
+          "label": "Terminal State Reached?",
+          "config": {
+            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
+          },
+          "position": {
+            "x": 420,
+            "y": 720
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-terminal",
+          "type": "flow.end",
+          "label": "End: Terminal State",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
+            "output": {
+              "reason": "terminal_state",
+              "taskId": "{{taskId}}",
+              "externalStatus": "{{currentExternalStatus}}"
+            }
+          },
+          "position": {
+            "x": 160,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "max-turns-check",
+          "type": "condition.expression",
+          "label": "Max Turns Reached?",
+          "config": {
+            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
+          },
+          "position": {
+            "x": 620,
+            "y": 860
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-max-turns",
+          "type": "flow.end",
+          "label": "End: Max Turns",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
+            "output": {
+              "reason": "max_turns",
+              "taskId": "{{taskId}}",
+              "turns": "{{continuationTurn}}"
+            }
+          },
+          "position": {
+            "x": 460,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent",
+          "type": "action.run_agent",
+          "label": "Drive Agent",
+          "config": {
+            "prompt": "{{continuePrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "capture-progress",
+          "type": "action.run_command",
+          "label": "Capture Progress Signature",
+          "config": {
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-signature",
+          "type": "action.set_variable",
+          "label": "Derive Signature",
+          "config": {
+            "key": "currentProgressSignature",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 800,
+            "y": 1240
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "progress-changed",
+          "type": "condition.expression",
+          "label": "Progress Changed?",
+          "config": {
+            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
+          },
+          "position": {
+            "x": 800,
+            "y": 1360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "mark-progress-at",
+          "type": "action.set_variable",
+          "label": "Update Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "mark-progress-sig",
+          "type": "action.set_variable",
+          "label": "Update Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "$data?.currentProgressSignature || ''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "reset-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Reset Stuck Retry Count On Progress",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1710
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-check",
+          "type": "condition.expression",
+          "label": "Session Stuck?",
+          "config": {
+            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+          },
+          "position": {
+            "x": 980,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "emit-stuck",
+          "type": "action.emit_event",
+          "label": "Emit session-stuck",
+          "config": {
+            "eventType": "session-stuck",
+            "payload": {
+              "taskId": "{{taskId}}",
+              "turn": "{{continuationTurn}}",
+              "externalStatus": "{{currentExternalStatus}}",
+              "stuckThresholdMs": "{{stuckThresholdMs}}",
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+              "onStuck": "{{onStuck}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
+              "lastProgressAt": "{{lastProgressAt}}",
+              "lastProgressSignature": "{{lastProgressSignature}}",
+              "currentProgressSignature": "{{currentProgressSignature}}",
+              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
+            },
+            "outputVariable": "sessionStuckEvent"
+          },
+          "position": {
+            "x": 980,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-route",
+          "type": "condition.switch",
+          "label": "Route onStuck Action",
+          "config": {
+            "value": "$data?.onStuck || 'escalate'",
+            "cases": {
+              "retry": "retry",
+              "escalate": "escalate",
+              "pause": "pause"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "retry",
+            "escalate",
+            "pause",
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-retry-budget",
+          "type": "condition.expression",
+          "label": "Stuck Retry Budget Remaining?",
+          "config": {
+            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
+          },
+          "position": {
+            "x": 760,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "stuck-retry",
+          "type": "action.run_agent",
+          "label": "Retry After Stuck",
+          "config": {
+            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 760,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Increment Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "Number($data?.stuckRetryCount || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 980,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate-budget",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session (Retry Limit)",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 760,
+            "y": 2050
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-pause",
+          "type": "notify.log",
+          "label": "Pause Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 1200,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-escalated",
+          "type": "flow.end",
+          "label": "End: Escalated",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_escalated",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-paused",
+          "type": "flow.end",
+          "label": "End: Paused",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_paused",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 1200,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn",
+          "type": "action.delay",
+          "label": "Wait Poll Interval",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 760,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn",
+          "type": "action.set_variable",
+          "label": "Increment Turn",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn-no-stuck",
+          "type": "action.delay",
+          "label": "Wait (No Stuck)",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn-no-stuck",
+          "type": "action.set_variable",
+          "label": "Increment Turn (No Stuck)",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 1080,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->init-turn",
+          "source": "trigger",
+          "target": "init-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-turn->init-progress-at",
+          "source": "init-turn",
+          "target": "init-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-progress-at->init-signature",
+          "source": "init-progress-at",
+          "target": "init-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-signature->init-stuck-retry-count",
+          "source": "init-signature",
+          "target": "init-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-stuck-retry-count->poll-task",
+          "source": "init-stuck-retry-count",
+          "target": "poll-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "poll-task->derive-status",
+          "source": "poll-task",
+          "target": "derive-status",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-status->terminal-check",
+          "source": "derive-status",
+          "target": "terminal-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "terminal-check->end-terminal",
+          "source": "terminal-check",
+          "target": "end-terminal",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "terminal-check->max-turns-check",
+          "source": "terminal-check",
+          "target": "max-turns-check",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "max-turns-check->end-max-turns",
+          "source": "max-turns-check",
+          "target": "end-max-turns",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "max-turns-check->run-agent",
+          "source": "max-turns-check",
+          "target": "run-agent",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-agent->capture-progress",
+          "source": "run-agent",
+          "target": "capture-progress",
+          "sourcePort": "default"
+        },
+        {
+          "id": "capture-progress->derive-signature",
+          "source": "capture-progress",
+          "target": "derive-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-signature->progress-changed",
+          "source": "derive-signature",
           "target": "progress-changed",
           "sourcePort": "default"
         },
@@ -14597,498 +13985,6 @@
       ]
     },
     {
-      "id": "template-recover-blocked-task",
-      "name": "Recover Blocked Task (Worktree)",
-      "description": "Sub-workflow invoked once per blocked task by template-recover-blocked-worktrees. Sweeps stale worktrees for the task, acquires a clean one, and unblocks the task so it re-enters the normal task lifecycle. Works across all workspace repos — repo context is sourced entirely from the task's own stored metadata.",
-      "category": "reliability",
-      "categoryLabel": "Reliability",
-      "categoryIcon": ":shield:",
-      "categoryOrder": 5,
-      "tags": [
-        "recovery",
-        "worktree",
-        "blocked",
-        "resilience",
-        "sub-workflow"
-      ],
-      "nodeCount": 10,
-      "edgeCount": 9,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.event",
-      "variables": {
-        "baseBranch": "main",
-        "defaultTargetBranch": "origin/main"
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "recovery",
-          "worktree",
-          "blocked",
-          "resilience",
-          "sub-workflow"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.event",
-          "label": "Recovery Requested",
-          "config": {
-            "eventType": "task.blocked.recovery_requested"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-context",
-          "type": "condition.expression",
-          "label": "Has Task Context?",
-          "config": {
-            "expression": "Boolean($data?.item?.taskId || $data?.taskId) && Boolean($data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch) && Boolean($data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot)"
-          },
-          "position": {
-            "x": 400,
-            "y": 190
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "recover-wt",
-          "type": "action.recover_worktree",
-          "label": "Reset Broken Worktree",
-          "config": {
-            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
-            "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
-            "repoRoot": "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
-            "worktreePath": "{{$data?.item?.worktreePath || $data?.worktreePath || $data?.item?.meta?.worktreeFailure?.worktreePath || $data?.meta?.worktreeFailure?.worktreePath || ''}}"
-          },
-          "position": {
-            "x": 250,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "acquire-wt",
-          "type": "action.acquire_worktree",
-          "label": "Acquire Clean Worktree",
-          "config": {
-            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
-            "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
-            "repoRoot": "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
-            "baseBranch": "{{$data?.item?.baseBranch || $data?.baseBranch || $data?.item?.meta?.worktreeFailure?.baseBranch || $data?.meta?.worktreeFailure?.baseBranch || baseBranch}}",
-            "defaultTargetBranch": "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || $data?.item?.meta?.worktreeFailure?.defaultTargetBranch || $data?.meta?.worktreeFailure?.defaultTargetBranch || defaultTargetBranch}}"
-          },
-          "position": {
-            "x": 250,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-acquired",
-          "type": "condition.expression",
-          "label": "Worktree Acquired?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('acquire-wt')?.success === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 640
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "unblock-task",
-          "type": "action.update_task_status",
-          "label": "Unblock Task",
-          "config": {
-            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
-            "status": "todo",
-            "taskTitle": "{{$data?.item?.taskTitle || $data?.taskTitle || $data?.item?.taskId || $data?.taskId || ''}}",
-            "workflowEvent": "task.blocked.recovery_succeeded",
-            "workflowData": {
-              "stage": "worktree_recovery",
-              "result": "recovered",
-              "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
-              "worktreePath": "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}"
-            }
-          },
-          "position": {
-            "x": 250,
-            "y": 790
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "clear-blocked-meta",
-          "type": "action.bosun_function",
-          "label": "Clear Blocked Metadata",
-          "config": {
-            "function": "tasks.update",
-            "args": {
-              "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
-              "fields": {
-                "blockedReason": null,
-                "meta": "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.autoRecovery; delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}"
-              }
-            }
-          },
-          "position": {
-            "x": 250,
-            "y": 940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-success",
-          "type": "notify.log",
-          "label": "Log Recovery Success",
-          "config": {
-            "message": ":check: Worktree recovery succeeded for task {{$data?.item?.taskId || $data?.taskId}} ({{$data?.item?.taskTitle || $data?.taskTitle || 'unknown'}}). Task unblocked and returned to todo.",
-            "level": "info"
-          },
-          "position": {
-            "x": 250,
-            "y": 1090
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-context",
-          "type": "notify.log",
-          "label": "Log Missing Context",
-          "config": {
-            "message": "Blocked task recovery skipped — missing taskId or branch in dispatch payload. Item: {{JSON.stringify($data?.item || {})}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 620,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-acquire-failed",
-          "type": "notify.log",
-          "label": "Log Acquire Failure",
-          "config": {
-            "message": ":warning: Worktree recovery failed for task {{$data?.item?.taskId || $data?.taskId}} — could not acquire a clean worktree. Branch: {{$data?.item?.branch || $data?.branch || 'unknown'}}. Manual intervention may be required.",
-            "level": "warn"
-          },
-          "position": {
-            "x": 620,
-            "y": 790
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->check-context",
-          "source": "trigger",
-          "target": "check-context",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-context->recover-wt",
-          "source": "check-context",
-          "target": "recover-wt",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-context->log-no-context",
-          "source": "check-context",
-          "target": "log-no-context",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "recover-wt->acquire-wt",
-          "source": "recover-wt",
-          "target": "acquire-wt",
-          "sourcePort": "default"
-        },
-        {
-          "id": "acquire-wt->check-acquired",
-          "source": "acquire-wt",
-          "target": "check-acquired",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-acquired->unblock-task",
-          "source": "check-acquired",
-          "target": "unblock-task",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-acquired->log-acquire-failed",
-          "source": "check-acquired",
-          "target": "log-acquire-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "unblock-task->clear-blocked-meta",
-          "source": "unblock-task",
-          "target": "clear-blocked-meta",
-          "sourcePort": "default"
-        },
-        {
-          "id": "clear-blocked-meta->log-success",
-          "source": "clear-blocked-meta",
-          "target": "log-success",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
-      "id": "template-recover-blocked-worktrees",
-      "name": "Recover Blocked Worktree Tasks",
-      "description": "Scheduled operator-assist workflow that finds all tasks blocked due to worktree failures, sweeps their stale worktrees, and re-queues each as todo. Works across every repo in the workspace — repo context is read from each task's own metadata, so no repo configuration is needed here.",
-      "category": "reliability",
-      "categoryLabel": "Reliability",
-      "categoryIcon": ":shield:",
-      "categoryOrder": 5,
-      "tags": [
-        "recovery",
-        "worktree",
-        "blocked",
-        "resilience",
-        "automation",
-        "scheduled"
-      ],
-      "nodeCount": 7,
-      "edgeCount": 6,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.schedule",
-      "variables": {
-        "scheduleIntervalMs": 1800000,
-        "maxPerSweep": 20,
-        "maxConcurrent": 2
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "recovery",
-          "worktree",
-          "blocked",
-          "resilience",
-          "automation",
-          "scheduled"
-        ],
-        "requiredTemplates": [
-          "template-recover-blocked-task"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.schedule",
-          "label": "Scheduled Worktree Recovery Sweep",
-          "config": {
-            "intervalMs": "{{scheduleIntervalMs}}",
-            "cron": "*/30 * * * *"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "query-blocked",
-          "type": "action.run_command",
-          "label": "Query Blocked Tasks",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, { status: \"blocked\" }))\n          .then(tasks => {\n            const limit = parseInt(process.env.MAX_PER_SWEEP || \"20\");\n            const blocked = (tasks || [])\n              .map(t => {\n                const meta = t && typeof t.meta === \"object\" ? t.meta : {};\n                const worktreeFailure = meta && typeof meta.worktreeFailure === \"object\" ? meta.worktreeFailure : {};\n                const branch = t?.branch || t?.branchName || t?.metadata?.branch || meta?.branch || worktreeFailure?.branch || null;\n                const repoRoot = t?.repoRoot || t?.workspace || t?.metadata?.repoRoot || t?.metadata?.workspace || meta?.repoRoot || meta?.workspace || worktreeFailure?.repoRoot || null;\n                const worktreePath = t?.worktreePath || t?.metadata?.worktreePath || meta?.worktreePath || worktreeFailure?.worktreePath || null;\n                const baseBranch = t?.baseBranch || t?.metadata?.baseBranch || meta?.baseBranch || worktreeFailure?.baseBranch || null;\n                const defaultTargetBranch = t?.defaultTargetBranch || t?.metadata?.defaultTargetBranch || meta?.defaultTargetBranch || worktreeFailure?.defaultTargetBranch || null;\n                return {\n                  taskId:       t?.id,\n                  taskTitle:    t?.title || t?.id,\n                  branch,\n                  repoRoot,\n                  worktreePath,\n                  repository:   t?.repository || t?.metadata?.repository || meta?.repository || null,\n                  baseBranch,\n                  defaultTargetBranch,\n                  meta,\n                };\n              })\n              .filter(t => t && t.taskId && t.branch && t.repoRoot)\n              .slice(0, limit)\n              ;\n            console.log(JSON.stringify(blocked));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
-            ],
-            "env": {
-              "MAX_PER_SWEEP": "{{maxPerSweep}}"
-            },
-            "parseJson": true
-          },
-          "position": {
-            "x": 400,
-            "y": 190
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-has-tasks",
-          "type": "condition.expression",
-          "label": "Any Blocked Tasks?",
-          "config": {
-            "expression": "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0"
-          },
-          "position": {
-            "x": 400,
-            "y": 360
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "recover-each",
-          "type": "loop.for_each",
-          "label": "Recover Each Blocked Task",
-          "config": {
-            "items": "$ctx.getNodeOutput('query-blocked')?.output || []",
-            "variable": "item",
-            "indexVariable": "recoveryIndex",
-            "maxConcurrent": "{{maxConcurrent}}",
-            "workflowId": "template-recover-blocked-task",
-            "mode": "dispatch"
-          },
-          "position": {
-            "x": 400,
-            "y": 510
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "prune-worktrees",
-          "type": "action.run_command",
-          "label": "Prune Stale Worktree Refs",
-          "config": {
-            "command": "git",
-            "args": [
-              "worktree",
-              "prune",
-              "--verbose"
-            ],
-            "continueOnError": true
-          },
-          "position": {
-            "x": 400,
-            "y": 650
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-summary",
-          "type": "notify.log",
-          "label": "Log Recovery Summary",
-          "config": {
-            "message": ":broom: Blocked worktree recovery sweep dispatched for {{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 250,
-            "y": 790
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-idle",
-          "type": "notify.log",
-          "label": "Log No Blocked Tasks",
-          "config": {
-            "message": "Blocked worktree recovery sweep: no blocked tasks with branch context found.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 620,
-            "y": 510
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->query-blocked",
-          "source": "trigger",
-          "target": "query-blocked",
-          "sourcePort": "default"
-        },
-        {
-          "id": "query-blocked->check-has-tasks",
-          "source": "query-blocked",
-          "target": "check-has-tasks",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-has-tasks->recover-each",
-          "source": "check-has-tasks",
-          "target": "recover-each",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-has-tasks->log-idle",
-          "source": "check-has-tasks",
-          "target": "log-idle",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "recover-each->prune-worktrees",
-          "source": "recover-each",
-          "target": "prune-worktrees",
-          "sourcePort": "default"
-        },
-        {
-          "id": "prune-worktrees->log-summary",
-          "source": "prune-worktrees",
-          "target": "log-summary",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
       "id": "template-task-archiver",
       "name": "Task Archiver",
       "description": "Automated archival of completed tasks — migrates old completed/cancelled tasks to local archives, cleans up agent sessions, prunes archives beyond retention, and optionally chains into Sprint Retrospective.",
@@ -16175,16 +15071,14 @@
         "resilience",
         "automation"
       ],
-      "nodeCount": 21,
-      "edgeCount": 24,
+      "nodeCount": 16,
+      "edgeCount": 17,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
       "variables": {
         "repairTimeoutMs": 5400000,
         "verificationTimeoutMs": 3600000,
-        "repoRoot": "",
-        "defaultTargetBranch": "main",
         "baseBranch": "main",
         "verificationCommand": "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
         "repairPrompt": "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for Bosun PR lifecycle handoff."
@@ -16247,88 +15141,18 @@
           ]
         },
         {
-          "id": "has-branch-context",
+          "id": "has-worktree",
           "type": "condition.expression",
-          "label": "Branch Context Available?",
+          "label": "Worktree Context Available?",
           "config": {
-            "expression": "Boolean($data?.repoRoot) && Boolean($data?.branch) && Boolean($data?.taskId)"
+            "expression": "Boolean($data?.worktreePath)"
           },
           "position": {
             "x": 400,
             "y": 180
           },
           "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "recover-repair-worktree",
-          "type": "action.recover_worktree",
-          "label": "Reset Broken Worktree",
-          "config": {
-            "worktreePath": "{{worktreePath}}",
-            "branch": "{{branch}}",
-            "repoRoot": "{{repoRoot}}",
-            "taskId": "{{taskId}}"
-          },
-          "position": {
-            "x": 220,
-            "y": 320
-          },
-          "outputs": [
             "default"
-          ]
-        },
-        {
-          "id": "acquire-repair-worktree",
-          "type": "action.acquire_worktree",
-          "label": "Acquire Clean Worktree",
-          "config": {
-            "repoRoot": "{{repoRoot}}",
-            "branch": "{{branch}}",
-            "taskId": "{{taskId}}",
-            "baseBranch": "{{baseBranch}}",
-            "defaultTargetBranch": "{{defaultTargetBranch}}"
-          },
-          "position": {
-            "x": 220,
-            "y": 460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "acquired-repair-worktree",
-          "type": "condition.expression",
-          "label": "Clean Worktree Ready?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('acquire-repair-worktree')?.success === true"
-          },
-          "position": {
-            "x": 220,
-            "y": 600
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "has-worktree",
-          "type": "condition.expression",
-          "label": "Fallback Worktree Context Available?",
-          "config": {
-            "expression": "Boolean($data?.worktreePath)"
-          },
-          "position": {
-            "x": 560,
-            "y": 320
-          },
-          "outputs": [
-            "yes",
-            "no"
           ]
         },
         {
@@ -16337,12 +15161,12 @@
           "label": "Refresh Worktree",
           "config": {
             "operation": "fetch",
-            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
+            "cwd": "{{worktreePath}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 740
+            "y": 320
           },
           "outputs": [
             "default"
@@ -16354,12 +15178,12 @@
           "label": "Repair Task",
           "config": {
             "prompt": "{{repairPrompt}}",
-            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
+            "cwd": "{{worktreePath}}",
             "timeoutMs": "{{repairTimeoutMs}}"
           },
           "position": {
             "x": 400,
-            "y": 880
+            "y": 460
           },
           "outputs": [
             "default"
@@ -16371,13 +15195,13 @@
           "label": "Re-run Quality Gates",
           "config": {
             "command": "{{verificationCommand}}",
-            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
+            "cwd": "{{worktreePath}}",
             "timeoutMs": "{{verificationTimeoutMs}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 1020
+            "y": 600
           },
           "outputs": [
             "default"
@@ -16392,7 +15216,7 @@
           },
           "position": {
             "x": 400,
-            "y": 1160
+            "y": 740
           },
           "outputs": [
             "default"
@@ -16414,7 +15238,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1300
+            "y": 880
           },
           "outputs": [
             "default"
@@ -16429,7 +15253,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1370
+            "y": 950
           },
           "outputs": [
             "yes",
@@ -16454,7 +15278,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1440
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -16463,21 +15287,18 @@
         {
           "id": "clear-repair-blocked-success",
           "type": "action.bosun_function",
-          "label": "Clear Repair Blocked State",
+          "label": "Clear Repair Block (Success)",
           "config": {
-            "function": "tasks.update",
+            "function": "tasks.clearBlocker",
             "args": {
               "taskId": "{{taskId}}",
-              "fields": {
-                "cooldownUntil": null,
-                "blockedReason": null,
-                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
-              }
-            }
+              "reason": "repair_succeeded"
+            },
+            "continueOnError": true
           },
           "position": {
             "x": 250,
-            "y": 1510
+            "y": 1090
           },
           "outputs": [
             "default"
@@ -16502,7 +15323,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1650
+            "y": 1160
           },
           "outputs": [
             "default"
@@ -16527,30 +15348,7 @@
           },
           "position": {
             "x": 560,
-            "y": 1300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "clear-repair-blocked-failure",
-          "type": "action.bosun_function",
-          "label": "Clear Failed Repair Blocked State",
-          "config": {
-            "function": "tasks.update",
-            "args": {
-              "taskId": "{{taskId}}",
-              "fields": {
-                "cooldownUntil": null,
-                "blockedReason": null,
-                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
-              }
-            }
-          },
-          "position": {
-            "x": 560,
-            "y": 1440
+            "y": 880
           },
           "outputs": [
             "default"
@@ -16566,7 +15364,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1790
+            "y": 1300
           },
           "outputs": [
             "default"
@@ -16581,7 +15379,7 @@
           },
           "position": {
             "x": 560,
-            "y": 1580
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -16596,8 +15394,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 720,
-            "y": 460
+            "x": 700,
+            "y": 320
           },
           "outputs": [
             "default"
@@ -16606,69 +15404,29 @@
       ],
       "edges": [
         {
-          "id": "trigger-failed->has-branch-context",
+          "id": "trigger-failed->has-worktree",
           "source": "trigger-failed",
-          "target": "has-branch-context",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-finalization->has-branch-context",
-          "source": "trigger-finalization",
-          "target": "has-branch-context",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-branch-context->recover-repair-worktree",
-          "source": "has-branch-context",
-          "target": "recover-repair-worktree",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-branch-context->has-worktree",
-          "source": "has-branch-context",
           "target": "has-worktree",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "recover-repair-worktree->acquire-repair-worktree",
-          "source": "recover-repair-worktree",
-          "target": "acquire-repair-worktree",
           "sourcePort": "default"
         },
         {
-          "id": "acquire-repair-worktree->acquired-repair-worktree",
-          "source": "acquire-repair-worktree",
-          "target": "acquired-repair-worktree",
+          "id": "trigger-finalization->has-worktree",
+          "source": "trigger-finalization",
+          "target": "has-worktree",
           "sourcePort": "default"
-        },
-        {
-          "id": "acquired-repair-worktree->refresh-worktree",
-          "source": "acquired-repair-worktree",
-          "target": "refresh-worktree",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "acquired-repair-worktree->no-worktree",
-          "source": "acquired-repair-worktree",
-          "target": "no-worktree",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
         },
         {
           "id": "has-worktree->refresh-worktree",
           "source": "has-worktree",
           "target": "refresh-worktree",
-          "sourcePort": "yes",
+          "sourcePort": "default",
           "condition": "$output?.result === true"
         },
         {
           "id": "has-worktree->no-worktree",
           "source": "has-worktree",
           "target": "no-worktree",
-          "sourcePort": "no",
+          "sourcePort": "default",
           "condition": "$output?.result !== true"
         },
         {
@@ -16742,14 +15500,8 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-todo->clear-repair-blocked-failure",
+          "id": "mark-todo->notify-escalate",
           "source": "mark-todo",
-          "target": "clear-repair-blocked-failure",
-          "sourcePort": "default"
-        },
-        {
-          "id": "clear-repair-blocked-failure->notify-escalate",
-          "source": "clear-repair-blocked-failure",
           "target": "notify-escalate",
           "sourcePort": "default"
         },
@@ -17072,7 +15824,7 @@
           "type": "action.run_command",
           "label": "Rotate Agent Logs",
           "config": {
-            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','logs');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()&&entry.name.endsWith('.log')){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Rotated '+removed+'\\n');\"",
+            "command": "find .bosun/logs -name '*.log' -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Rotated'",
             "continueOnError": true
           },
           "position": {
@@ -17088,7 +15840,7 @@
           "type": "action.run_command",
           "label": "Clean Old Evidence",
           "config": {
-            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','evidence');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Cleaned '+removed+'\\n');\"",
+            "command": "find .bosun/evidence -type f -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Cleaned'",
             "continueOnError": true
           },
           "position": {
@@ -22690,235 +21442,6 @@
       ]
     },
     {
-      "id": "template-pr-review-quality-striker",
-      "name": "PR Review Quality Striker",
-      "description": "Reactive PR quality workflow that responds to GitHub review activity, falls back to scheduled sweeps, pulls GitHub review comments, reviews, inline review comments, and quality-related checks, then dispatches a constrained repair agent against actionable findings.",
-      "category": "maintenance",
-      "categoryLabel": "Maintenance",
-      "categoryIcon": ":settings:",
-      "categoryOrder": 99,
-      "tags": [
-        "maintenance",
-        "github",
-        "pr",
-        "review",
-        "quality",
-        "reactive"
-      ],
-      "nodeCount": 8,
-      "edgeCount": 7,
-      "recommended": false,
-      "enabled": true,
-      "trigger": "trigger.pr_event",
-      "variables": {
-        "repoScope": "auto",
-        "maxPrs": 12,
-        "intervalMs": 300000,
-        "trustedAuthors": "",
-        "allowTrustedFixes": false
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-03-27T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "maintenance",
-          "github",
-          "pr",
-          "review",
-          "quality",
-          "reactive"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.pr_event",
-          "label": "PR Review Activity",
-          "config": {
-            "event": "review_requested",
-            "events": [
-              "review_requested",
-              "changes_requested",
-              "approved",
-              "opened"
-            ]
-          },
-          "position": {
-            "x": 220,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "trigger-review-comment",
-          "type": "trigger.event",
-          "label": "PR Review Comment",
-          "config": {
-            "eventType": "github:pull_request_review_comment",
-            "filter": "['created','edited'].includes(String($event?.action || '').toLowerCase())"
-          },
-          "position": {
-            "x": 420,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "trigger-fallback",
-          "type": "trigger.schedule",
-          "label": "Poll PR Quality Signals",
-          "config": {
-            "intervalMs": "{{intervalMs}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fetch-review-signals",
-          "type": "action.run_command",
-          "label": "Fetch Review Quality Signals",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||12); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const TRUSTED_AUTHORS=new Set(String('{{trustedAuthors}}'||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean)); const ALLOW_TRUSTED_FIXES=String('{{allowTrustedFixes}}'||'false').trim().toLowerCase()==='true'; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}} function ghJson(args){return parseJson(runGh(args),[]);} function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];} function isBosunCreated(pr){return readLabelNames(pr).includes('bosun-pr-bosun-created');} function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();} function configPath(){const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json');} function readBosunConfig(){try{return JSON.parse(fs.readFileSync(configPath(),'utf8'));}catch{return {};}} function collectReposFromConfig(){const repos=[];try{const cfg=readBosunConfig();const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];if(workspaces.length>0){const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();const activeWs=active?workspaces.find((ws)=>String(ws?.id||'').trim().toLowerCase()===active):null;const wsList=activeWs?[activeWs]:workspaces;for(const ws of wsList){for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();if(slug)repos.push(slug);}}}if(repos.length===0){for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();if(slug)repos.push(slug);}}}catch{}return repos;} function resolveRepoTargets(){if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='current'){return [...new Set(REPO_SCOPE.split(',').map((entry)=>entry.trim()).filter(Boolean))];}if(REPO_SCOPE==='current')return [''];const fromConfig=collectReposFromConfig();if(fromConfig.length>0)return [...new Set(fromConfig)];const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();return envRepo?[envRepo]:[''];} function parseRepoFromUrl(url){const raw=String(url||'');const marker='github.com/';const idx=raw.toLowerCase().indexOf(marker);if(idx<0)return '';const tail=raw.slice(idx+marker.length).split('/');if(tail.length<2)return '';const owner=String(tail[0]||'').trim();const repo=String(tail[1]||'').trim();return owner&&repo?(owner+'/'+repo):'';} function isEligible(pr){const bosunCreated=isBosunCreated(pr);if(bosunCreated)return true;return ALLOW_TRUSTED_FIXES&&TRUSTED_AUTHORS.has(readAuthorLogin(pr));} const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']); const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const SONAR_CHECK_RE=/(^|[^a-z])(sonarqube|sonarcloud|sonar)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function safeGhJson(args,fallback,runner){try{const invoke=typeof runner==='function'?runner:runGh;const out=invoke(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=readCheckName(check);const state=String(check?.state||check?.conclusion||'').trim().toUpperCase();const bucket=String(check?.bucket||'').trim().toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const filePath=String(file?.filename||file?.path||'').trim();return filePath?{path:filePath,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback,runner){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{},runner);const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[],runner).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[],runner).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[],runner).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[],runner).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{},runner);const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const labels=(Array.isArray(pr?.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const pendingChecks=checks.filter((check)=>QUALITY_PENDING_STATES.has(String(check?.state||'').toUpperCase()));const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} function isActionableText(value){const text=String(value||'').trim();if(!text)return false;return /(fix|please|should|must|needs?|issue|bug|error|warning|sonar|lint|review|nit|suggest|change|request|fail)/i.test(text);} function collectActionableReviewSignals(prDigest){const digest=prDigest&&typeof prDigest==='object'?prDigest:{};const reviewComments=Array.isArray(digest.reviewComments)?digest.reviewComments:[];const reviews=Array.isArray(digest.reviews)?digest.reviews:[];const issueComments=Array.isArray(digest.issueComments)?digest.issueComments:[];const checks=Array.isArray(digest.checks)?digest.checks:[];const commentFindings=[];for(const comment of reviewComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'review_comment',path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||null,author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}for(const review of reviews){const state=String(review?.state||'').trim().toUpperCase();if(state!=='CHANGES_REQUESTED'&&!isActionableText(review?.body))continue;commentFindings.push({kind:'review',state:state||null,author:String(review?.author?.login||'').trim()||null,body:String(review?.body||'').trim(),url:String(review?.url||'').trim()||null});}for(const comment of issueComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'issue_comment',author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const sonarChecks=failingChecks.filter((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||'')));const qualityChecks=failingChecks.map((check)=>({name:readCheckName(check),state:String(check?.state||check?.bucket||'').trim()||null,workflow:String(check?.workflow||'').trim()||null}));const summary=['commentFindings='+commentFindings.length,'qualityChecks='+qualityChecks.length,sonarChecks.length?'sonarChecks='+sonarChecks.length:''].filter(Boolean).join(' ');return {commentFindings,qualityChecks,sonarChecks,summary};} const DIRECT_PR_NUMBER=Number('{{prNumber}}')||0; const DIRECT_PR_URL=String('{{prUrl}}'||'').trim(); const DIRECT_REPO=String('{{repo}}'||'{{repoSlug}}'||'{{repository}}'||'').trim()||parseRepoFromUrl(DIRECT_PR_URL); const DIRECT_BRANCH=String('{{branch}}'||'').trim(); const DIRECT_BASE=String('{{baseBranch}}'||'').trim(); const DIRECT_EVENT=String('{{prEvent}}'||'').trim().toLowerCase(); const actionables=[]; function appendActionable(repo,prNumber,fallback,sourceKind){const number=Number(prNumber)||0;if(!repo||!number)return false;const prDigest=collectPrDigest(repo,number,fallback,runGh);if(prDigest?.core?.isDraft===true)return false;if(!isEligible({author:prDigest?.core?.author,labels:prDigest?.labels,body:prDigest?.core?.body,title:prDigest?.core?.title}))return false;const signals=collectActionableReviewSignals(prDigest);if(signals.commentFindings.length===0&&signals.qualityChecks.length===0)return false;actionables.push({repo,number,branch:String(prDigest?.core?.branch||fallback?.branch||'').trim(),base:String(prDigest?.core?.baseBranch||fallback?.base||'').trim(),url:String(prDigest?.core?.url||fallback?.url||'').trim(),title:String(prDigest?.core?.title||fallback?.title||'').trim(),sourceKind,prEvent:DIRECT_EVENT||null,commentFindings:signals.commentFindings,qualityChecks:signals.qualityChecks,sonarChecks:signals.sonarChecks,summary:signals.summary,digestSummary:prDigest.digestSummary,prDigest});return true;} let total=0; if(DIRECT_REPO&&DIRECT_PR_NUMBER>0){total=1;appendActionable(DIRECT_REPO,DIRECT_PR_NUMBER,{branch:DIRECT_BRANCH,base:DIRECT_BASE,url:DIRECT_PR_URL},'event');}else{const prs=[];for(const target of resolveRepoTargets()){const repo=String(target||'').trim();const args=['pr','list','--state','open','--json','number,title,body,author,headRefName,baseRefName,isDraft,statusCheckRollup,labels,url','--limit',String(MAX_PRS)];if(repo)args.push('--repo',repo);try{const list=ghJson(args);for(const pr of (Array.isArray(list)?list:[])){prs.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)});}}catch{}}total=prs.length;for(const pr of prs){if(pr?.isDraft===true)continue;if(!isEligible(pr))continue;const repo=String(pr?.__repo||'').trim();if(!repo)continue;if(appendActionable(repo,pr.number,{branch:pr.headRefName,base:pr.baseRefName,title:pr.title,url:pr.url},'schedule')&&actionables.length>=5)break;}} console.log(JSON.stringify({total,actionableCount:actionables.length,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule',actionables}));"
-            ],
-            "continueOnError": false,
-            "failOnError": true
-          },
-          "position": {
-            "x": 420,
-            "y": 210
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-review-work",
-          "type": "condition.expression",
-          "label": "Actionable Review Signals?",
-          "config": {
-            "expression": "(()=>{try{const raw=$ctx.getNodeOutput('fetch-review-signals')?.output||'{}';return (JSON.parse(raw).actionableCount||0)>0;}catch{return false;}})()"
-          },
-          "position": {
-            "x": 420,
-            "y": 370
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "run-review-striker",
-          "type": "action.run_agent",
-          "label": "Repair PR Quality Findings",
-          "config": {
-            "sdk": "auto",
-            "timeoutMs": 1800000,
-            "prompt": "You are a Bosun PR quality repair agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('fetch-review-signals')?.output}}\n\nEach item contains prDigest with the PR body, files, issue comments, reviews, review comments, and checks. Address only the listed commentFindings and qualityChecks on the existing PR branch. Make the smallest safe code change, run targeted validation, and push updates to the same PR branch.\n\nSTRICT RULES:\n- Focus on actionable review feedback and failing quality checks only.\n- Do not create a new PR, close the PR, or perform unrelated cleanup.\n- Prioritize commentFindings before generic lint or static-analysis cleanup.\n- Preserve runtime behavior unless a reviewer-requested fix requires otherwise.\n- If a check is listed but the cause is unclear, inspect the relevant file paths from prDigest.files and the referenced review comment paths before editing."
-          },
-          "position": {
-            "x": 220,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-review-idle",
-          "type": "notify.log",
-          "label": "No Review Work",
-          "config": {
-            "message": "PR Review Quality Striker found no actionable review or quality findings.",
-            "level": "info"
-          },
-          "position": {
-            "x": 620,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-review-run",
-          "type": "notify.log",
-          "label": "Log Review Dispatch",
-          "config": {
-            "message": "PR Review Quality Striker dispatched remediation for actionable GitHub review signals.",
-            "level": "info"
-          },
-          "position": {
-            "x": 220,
-            "y": 700
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->fetch-review-signals",
-          "source": "trigger",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-review-comment->fetch-review-signals",
-          "source": "trigger-review-comment",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-fallback->fetch-review-signals",
-          "source": "trigger-fallback",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fetch-review-signals->has-review-work",
-          "source": "fetch-review-signals",
-          "target": "has-review-work",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-review-work->run-review-striker",
-          "source": "has-review-work",
-          "target": "run-review-striker",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-review-work->log-review-idle",
-          "source": "has-review-work",
-          "target": "log-review-idle",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-review-striker->notify-review-run",
-          "source": "run-review-striker",
-          "target": "notify-review-run",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
       "id": "template-scheduled-maintenance",
       "name": "Scheduled Maintenance",
       "description": "Runs a one-time maintenance window: reads config, waits, acquires a worktree through a safety gate, performs work, then releases. Exercises scheduled_once, read_file, delay, flow.gate, acquire/release_worktree.",
@@ -23099,184 +21622,6 @@
           "id": "release->done",
           "source": "release",
           "target": "done",
-          "sourcePort": "default"
-        }
-      ]
-    },
-    {
-      "id": "template-sonarqube-pr-striker",
-      "name": "SonarQube PR Striker",
-      "description": "Scheduled PR quality workflow that detects failing SonarQube or SonarCloud checks through GitHub-native status checks, enriches them with the same compact PR digest used by Bosun's PR workflows, and dispatches a constrained static-analysis remediation agent.",
-      "category": "maintenance",
-      "categoryLabel": "Maintenance",
-      "categoryIcon": ":settings:",
-      "categoryOrder": 99,
-      "tags": [
-        "maintenance",
-        "sonarqube",
-        "sonarcloud",
-        "pr",
-        "quality"
-      ],
-      "nodeCount": 6,
-      "edgeCount": 5,
-      "recommended": false,
-      "enabled": true,
-      "trigger": "trigger.schedule",
-      "variables": {
-        "repoScope": "auto",
-        "maxPrs": 12,
-        "intervalMs": 600000,
-        "trustedAuthors": "",
-        "allowTrustedFixes": false
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2026-03-27T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "maintenance",
-          "sonarqube",
-          "sonarcloud",
-          "pr",
-          "quality"
-        ]
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.schedule",
-          "label": "Poll Sonar Signals",
-          "config": {
-            "intervalMs": "{{intervalMs}}"
-          },
-          "position": {
-            "x": 420,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fetch-sonar-signals",
-          "type": "action.run_command",
-          "label": "Fetch SonarQube Signals",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||12); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const TRUSTED_AUTHORS=new Set(String('{{trustedAuthors}}'||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean)); const ALLOW_TRUSTED_FIXES=String('{{allowTrustedFixes}}'||'false').trim().toLowerCase()==='true'; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}} function ghJson(args){return parseJson(runGh(args),[]);} function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];} function isBosunCreated(pr){return readLabelNames(pr).includes('bosun-pr-bosun-created');} function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();} function configPath(){const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json');} function readBosunConfig(){try{return JSON.parse(fs.readFileSync(configPath(),'utf8'));}catch{return {};}} function collectReposFromConfig(){const repos=[];try{const cfg=readBosunConfig();const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];if(workspaces.length>0){const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();const activeWs=active?workspaces.find((ws)=>String(ws?.id||'').trim().toLowerCase()===active):null;const wsList=activeWs?[activeWs]:workspaces;for(const ws of wsList){for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();if(slug)repos.push(slug);}}}if(repos.length===0){for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();if(slug)repos.push(slug);}}}catch{}return repos;} function resolveRepoTargets(){if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='current'){return [...new Set(REPO_SCOPE.split(',').map((entry)=>entry.trim()).filter(Boolean))];}if(REPO_SCOPE==='current')return [''];const fromConfig=collectReposFromConfig();if(fromConfig.length>0)return [...new Set(fromConfig)];const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();return envRepo?[envRepo]:[''];} function parseRepoFromUrl(url){const raw=String(url||'');const marker='github.com/';const idx=raw.toLowerCase().indexOf(marker);if(idx<0)return '';const tail=raw.slice(idx+marker.length).split('/');if(tail.length<2)return '';const owner=String(tail[0]||'').trim();const repo=String(tail[1]||'').trim();return owner&&repo?(owner+'/'+repo):'';} function isEligible(pr){const bosunCreated=isBosunCreated(pr);if(bosunCreated)return true;return ALLOW_TRUSTED_FIXES&&TRUSTED_AUTHORS.has(readAuthorLogin(pr));} const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']); const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const SONAR_CHECK_RE=/(^|[^a-z])(sonarqube|sonarcloud|sonar)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function safeGhJson(args,fallback,runner){try{const invoke=typeof runner==='function'?runner:runGh;const out=invoke(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=readCheckName(check);const state=String(check?.state||check?.conclusion||'').trim().toUpperCase();const bucket=String(check?.bucket||'').trim().toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const filePath=String(file?.filename||file?.path||'').trim();return filePath?{path:filePath,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback,runner){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{},runner);const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[],runner).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[],runner).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[],runner).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[],runner).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{},runner);const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const labels=(Array.isArray(pr?.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const pendingChecks=checks.filter((check)=>QUALITY_PENDING_STATES.has(String(check?.state||'').toUpperCase()));const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} function isActionableText(value){const text=String(value||'').trim();if(!text)return false;return /(fix|please|should|must|needs?|issue|bug|error|warning|sonar|lint|review|nit|suggest|change|request|fail)/i.test(text);} function collectActionableReviewSignals(prDigest){const digest=prDigest&&typeof prDigest==='object'?prDigest:{};const reviewComments=Array.isArray(digest.reviewComments)?digest.reviewComments:[];const reviews=Array.isArray(digest.reviews)?digest.reviews:[];const issueComments=Array.isArray(digest.issueComments)?digest.issueComments:[];const checks=Array.isArray(digest.checks)?digest.checks:[];const commentFindings=[];for(const comment of reviewComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'review_comment',path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||null,author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}for(const review of reviews){const state=String(review?.state||'').trim().toUpperCase();if(state!=='CHANGES_REQUESTED'&&!isActionableText(review?.body))continue;commentFindings.push({kind:'review',state:state||null,author:String(review?.author?.login||'').trim()||null,body:String(review?.body||'').trim(),url:String(review?.url||'').trim()||null});}for(const comment of issueComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'issue_comment',author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const sonarChecks=failingChecks.filter((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||'')));const qualityChecks=failingChecks.map((check)=>({name:readCheckName(check),state:String(check?.state||check?.bucket||'').trim()||null,workflow:String(check?.workflow||'').trim()||null}));const summary=['commentFindings='+commentFindings.length,'qualityChecks='+qualityChecks.length,sonarChecks.length?'sonarChecks='+sonarChecks.length:''].filter(Boolean).join(' ');return {commentFindings,qualityChecks,sonarChecks,summary};} const prs=[]; for(const target of resolveRepoTargets()){const repo=String(target||'').trim();const args=['pr','list','--state','open','--json','number,title,body,author,headRefName,baseRefName,isDraft,statusCheckRollup,labels,url','--limit',String(MAX_PRS)];if(repo)args.push('--repo',repo);try{const list=ghJson(args);for(const pr of (Array.isArray(list)?list:[])){prs.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)});}}catch{}} const actionables=[]; for(const pr of prs){if(pr?.isDraft===true)continue;if(!isEligible(pr))continue;const repo=String(pr?.__repo||'').trim();if(!repo)continue;const listedChecks=Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[];const hasSonarFailure=listedChecks.some((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||''))&&(QUALITY_FAIL_STATES.has(String(check?.conclusion||check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase())));if(!hasSonarFailure)continue;const prDigest=collectPrDigest(repo,pr.number,{branch:pr.headRefName,base:pr.baseRefName,title:pr.title,url:pr.url},runGh);const signals=collectActionableReviewSignals(prDigest);if(signals.sonarChecks.length===0)continue;actionables.push({repo,number:pr.number,branch:String(pr?.headRefName||'').trim(),base:String(pr?.baseRefName||'').trim(),url:String(pr?.url||'').trim(),title:String(pr?.title||'').trim(),sonarChecks:signals.sonarChecks,qualityChecks:signals.qualityChecks,commentFindings:signals.commentFindings,digestSummary:prDigest.digestSummary,summary:signals.summary,prDigest});if(actionables.length>=5)break;} console.log(JSON.stringify({total:prs.length,actionableCount:actionables.length,actionables}));"
-            ],
-            "continueOnError": false,
-            "failOnError": true
-          },
-          "position": {
-            "x": 420,
-            "y": 210
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-sonar-work",
-          "type": "condition.expression",
-          "label": "Actionable Sonar Findings?",
-          "config": {
-            "expression": "(()=>{try{const raw=$ctx.getNodeOutput('fetch-sonar-signals')?.output||'{}';return (JSON.parse(raw).actionableCount||0)>0;}catch{return false;}})()"
-          },
-          "position": {
-            "x": 420,
-            "y": 370
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "run-sonar-striker",
-          "type": "action.run_agent",
-          "label": "Repair SonarQube Findings",
-          "config": {
-            "sdk": "auto",
-            "timeoutMs": 1800000,
-            "prompt": "You are a Bosun SonarQube remediation agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('fetch-sonar-signals')?.output}}\n\nEach item contains sonarChecks plus prDigest with files, comments, reviews, review comments, and all checks. Fix only the listed SonarQube or SonarCloud findings on the existing PR branch, using the smallest safe code change.\n\nSTRICT RULES:\n- Use GitHub-native Sonar checks as the source of truth for this run.\n- Do not create a new PR or perform unrelated refactors.\n- If reviewer comments overlap with the Sonar issue, incorporate them only when they point at the same root cause.\n- Run targeted validation before pushing the branch update.\n- Preserve behavior while satisfying the static-analysis requirement."
-          },
-          "position": {
-            "x": 220,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-sonar-idle",
-          "type": "notify.log",
-          "label": "No Sonar Work",
-          "config": {
-            "message": "SonarQube PR Striker found no actionable SonarQube or SonarCloud failures.",
-            "level": "info"
-          },
-          "position": {
-            "x": 620,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-sonar-run",
-          "type": "notify.log",
-          "label": "Log Sonar Dispatch",
-          "config": {
-            "message": "SonarQube PR Striker dispatched remediation for Sonar-native quality failures.",
-            "level": "info"
-          },
-          "position": {
-            "x": 220,
-            "y": 700
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->fetch-sonar-signals",
-          "source": "trigger",
-          "target": "fetch-sonar-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fetch-sonar-signals->has-sonar-work",
-          "source": "fetch-sonar-signals",
-          "target": "has-sonar-work",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-sonar-work->run-sonar-striker",
-          "source": "has-sonar-work",
-          "target": "run-sonar-striker",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-sonar-work->log-sonar-idle",
-          "source": "has-sonar-work",
-          "target": "log-sonar-idle",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-sonar-striker->notify-sonar-run",
-          "source": "run-sonar-striker",
-          "target": "notify-sonar-run",
           "sourcePort": "default"
         }
       ]
@@ -29465,6 +27810,182 @@
       }
     },
     {
+      "id": "wf-pr-review-quality-striker",
+      "name": "PR Review Quality Striker",
+      "description": "Reactive PR review agent. Fires on review_requested events, review comment events, and a scheduled fallback. Collects PR digest + review signals, runs a quality-review agent, and comments actionable findings.",
+      "category": "github",
+      "enabled": true,
+      "nodeCount": 6,
+      "trigger": "trigger.pr_event",
+      "variables": {
+        "intervalMs": 1800000,
+        "maxPrsPerRun": 5,
+        "timeoutMs": 1800000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.pr_event",
+          "label": "PR Review Requested",
+          "config": {
+            "event": "review_requested",
+            "events": [
+              "review_requested",
+              "changes_requested",
+              "approved",
+              "opened"
+            ]
+          },
+          "position": {
+            "x": 200,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "trigger-review-comment",
+          "type": "trigger.event",
+          "label": "Review Comment Posted",
+          "config": {
+            "eventType": "github:pull_request_review_comment"
+          },
+          "position": {
+            "x": 500,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "trigger-fallback",
+          "type": "trigger.schedule",
+          "label": "Scheduled Fallback",
+          "config": {
+            "intervalMs": "{{intervalMs}}"
+          },
+          "position": {
+            "x": 800,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fetch-review-signals",
+          "type": "action.run_command",
+          "label": "Fetch PR Review Signals",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const {execFileSync}=require('child_process'); const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim(); const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0); const DIRECT_PR_URL=String(process.env.DIRECT_PR_URL||'').trim(); const DIRECT_EVENT=String(process.env.DIRECT_EVENT||'').trim(); const sourceKind=DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'; function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}} function collectPrDigest(repo,n){   const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,mergeable,url,labels,state,author,createdAt']);   const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);   const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);   return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]}; } function collectActionableReviewSignals(repo,n){   const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);   const reviewComments=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviewDecision']);   return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]}; } function appendActionable(signals,digest){   return {...signals,digest}; } let results=[]; if(sourceKind==='event'&&DIRECT_REPO&&DIRECT_PR_NUMBER>0){   const digest=collectPrDigest(DIRECT_REPO,DIRECT_PR_NUMBER);   const signals=collectActionableReviewSignals(DIRECT_REPO,DIRECT_PR_NUMBER);   const commentFindings=[];   const qualityChecks=[];   results=[appendActionable({repo:DIRECT_REPO,number:DIRECT_PR_NUMBER,url:DIRECT_PR_URL,event:DIRECT_EVENT,commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'},digest)]; }else{   const commentFindings=[];   const qualityChecks=[];   results=[{repo:'',number:0,url:'',event:'schedule',commentFindings,qualityChecks,sourceKind,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'}]; } process.stdout.write(JSON.stringify({prs:results,count:results.length}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "timeoutMs": 120000,
+            "env": {
+              "DIRECT_REPO": "{{$data?.prRepo || $data?.repo || ''}}",
+              "DIRECT_PR_NUMBER": "{{$data?.prNumber || $data?.number || 0}}",
+              "DIRECT_PR_URL": "{{$data?.prUrl || $data?.url || ''}}",
+              "DIRECT_EVENT": "{{$data?.action || $data?.event || ''}}",
+              "MAX_PRS_PER_RUN": "{{maxPrsPerRun}}"
+            }
+          },
+          "position": {
+            "x": 500,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-review-striker",
+          "type": "action.run_agent",
+          "label": "Run Review Quality Agent",
+          "config": {
+            "prompt": "You are a PR review quality agent. Analyse the PR review signals and produce actionable quality findings.\n\nInput data: commentFindings and qualityChecks from fetch-review-signals output.\nPR context: prDigest with the PR body, files, issue comments, reviews, review comments, and checks.\n\nFor each finding: explain what is wrong, why it matters, and how to fix it. Post findings as a single review comment on the PR.",
+            "sdk": "auto",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 500,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done",
+          "type": "notify.log",
+          "label": "Review Strike Complete",
+          "config": {
+            "message": "PR review quality striker finished for PR #{{$data?.prNumber || 0}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 500,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->fetch-review-signals",
+          "source": "trigger",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger-review-comment->fetch-review-signals",
+          "source": "trigger-review-comment",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger-fallback->fetch-review-signals",
+          "source": "trigger-fallback",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fetch-review-signals->run-review-striker",
+          "source": "fetch-review-signals",
+          "target": "run-review-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-review-striker->notify-done",
+          "source": "run-review-striker",
+          "target": "notify-done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-09T12:00:00.000Z",
+        "updatedAt": "2026-03-09T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-pr-review-quality-striker",
+          "templateName": "PR Review Quality Striker",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-pr-security-fix-single",
       "name": "PR Security Fix Agent (Single PR)",
       "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
@@ -29810,8 +28331,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-09T12:00:00.000Z",
-        "updatedAt": "2026-03-09T12:00:00.000Z",
+        "createdAt": "2026-03-10T12:00:00.000Z",
+        "updatedAt": "2026-03-10T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-security-fix-single",
           "templateName": "PR Security Fix Agent (Single PR)",
@@ -30074,8 +28595,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-10T12:00:00.000Z",
-        "updatedAt": "2026-03-10T12:00:00.000Z",
+        "createdAt": "2026-03-11T12:00:00.000Z",
+        "updatedAt": "2026-03-11T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-triage",
           "templateName": "PR Triage & Labels",
@@ -30250,8 +28771,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-11T12:00:00.000Z",
-        "updatedAt": "2026-03-11T12:00:00.000Z",
+        "createdAt": "2026-03-12T12:00:00.000Z",
+        "updatedAt": "2026-03-12T12:00:00.000Z",
         "templateState": {
           "templateId": "template-release-drafter",
           "templateName": "Release Drafter",
@@ -30408,8 +28929,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-12T12:00:00.000Z",
-        "updatedAt": "2026-03-12T12:00:00.000Z",
+        "createdAt": "2026-03-13T12:00:00.000Z",
+        "updatedAt": "2026-03-13T12:00:00.000Z",
         "templateState": {
           "templateId": "template-review-agent",
           "templateName": "Review Agent",
@@ -30860,11 +29381,188 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-13T12:00:00.000Z",
-        "updatedAt": "2026-03-13T12:00:00.000Z",
+        "createdAt": "2026-03-14T12:00:00.000Z",
+        "updatedAt": "2026-03-14T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sdk-conflict-resolver",
           "templateName": "SDK Conflict Resolver",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-sonarqube-pr-striker",
+      "name": "SonarQube PR Striker",
+      "description": "Monitors open PRs for SonarQube quality-gate failures using GitHub-native check results. Does NOT call the SonarQube API. Collects PR digest and sonarChecks, then runs a focused repair agent.",
+      "category": "github",
+      "enabled": true,
+      "nodeCount": 6,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "intervalMs": 1800000,
+        "maxPrsPerRun": 3,
+        "timeoutMs": 3600000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Every 30 min",
+          "config": {
+            "intervalMs": "{{intervalMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fetch-sonar-signals",
+          "type": "action.run_command",
+          "label": "Fetch Sonar PR Signals",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const {execFileSync}=require('child_process'); const SONAR_CHECK_RE=/sonar/i; function ghJson(args){try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}catch{return [];}} function collectPrDigest(repo,n){   const core=ghJson(['pr','view',String(n),'--repo',repo,'--json','number,title,body,headRefName,baseRefName,url,labels,state,author']);   const files=ghJson(['pr','view',String(n),'--repo',repo,'--json','files','--jq','.files']);   const checks=ghJson(['pr','checks',String(n),'--repo',repo,'--json','name,state,bucket']);   return {core:core||{},files:Array.isArray(files)?files:[],checks:Array.isArray(checks)?checks:[]}; } function collectActionableReviewSignals(repo,n){   const reviews=ghJson(['pr','view',String(n),'--repo',repo,'--json','reviews','--jq','.reviews']);   return {reviews:Array.isArray(reviews)?reviews:[],reviewComments:[]}; } const repo=String(process.env.BOSUN_REPO||'').trim(); if(!repo){process.stdout.write(JSON.stringify({prs:[],count:0}));process.exit(0);} const prs=ghJson(['pr','list','--repo',repo,'--state','open','--json','number,headRefName,url','--limit','20']); const results=[]; for(const pr of (Array.isArray(prs)?prs:[])){   const digest=collectPrDigest(repo,pr.number);   const signals=collectActionableReviewSignals(repo,pr.number);   const sonarChecks=Array.isArray(digest.checks)?digest.checks.filter(c=>SONAR_CHECK_RE.test(c.name||'')):[];   const hasSonarFailure=sonarChecks.some(c=>['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(String(c.state||'').toUpperCase()));   if(!hasSonarFailure){     if(signals.sonarChecks&&signals.sonarChecks.length===0)continue;     continue;   }   const digestSummary={total:digest.checks.length,sonarFailing:sonarChecks.filter(c=>['FAILURE','ERROR'].includes(String(c.state||'').toUpperCase())).length};   results.push({repo,number:pr.number,url:pr.url,branch:pr.headRefName,sonarChecks,hasSonarFailure,digest,digestSummary,reviews:signals.reviews}); } process.stdout.write(JSON.stringify({prs:results,count:results.length}));"
+            ],
+            "parseJson": true,
+            "continueOnError": true,
+            "timeoutMs": 180000,
+            "env": {
+              "BOSUN_REPO": "{{$data?.repo || ''}}",
+              "MAX_PRS_PER_RUN": "{{maxPrsPerRun}}"
+            }
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-sonar-failures",
+          "type": "condition.expression",
+          "label": "Any Sonar Failures?",
+          "config": {
+            "expression": "Number($ctx.getNodeOutput('fetch-sonar-signals')?.prs?.length || 0) > 0"
+          },
+          "position": {
+            "x": 400,
+            "y": 320
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "run-sonar-striker",
+          "type": "action.run_agent",
+          "label": "Fix SonarQube Failures",
+          "config": {
+            "prompt": "You are a PR repair agent for Sonar quality-gate failures. Use GitHub-native Sonar checks as the source of truth. Do NOT call any external quality API directly.\n\nInput: sonarChecks plus prDigest for each failing PR.\nFor each PR with sonar failures: check out the branch, fix the issues, run tests, push fixes.",
+            "sdk": "auto",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "skip-no-failures",
+          "type": "notify.log",
+          "label": "No Sonar Failures",
+          "config": {
+            "message": "SonarQube PR striker: no open PRs with Sonar failures",
+            "level": "info"
+          },
+          "position": {
+            "x": 700,
+            "y": 320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done",
+          "type": "notify.log",
+          "label": "Sonar Strike Complete",
+          "config": {
+            "message": "SonarQube PR striker finished",
+            "level": "info"
+          },
+          "position": {
+            "x": 400,
+            "y": 590
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->fetch-sonar-signals",
+          "source": "trigger",
+          "target": "fetch-sonar-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fetch-sonar-signals->has-sonar-failures",
+          "source": "fetch-sonar-signals",
+          "target": "has-sonar-failures",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-sonar-failures->run-sonar-striker",
+          "source": "has-sonar-failures",
+          "target": "run-sonar-striker",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-sonar-failures->skip-no-failures",
+          "source": "has-sonar-failures",
+          "target": "skip-no-failures",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-sonar-striker->notify-done",
+          "source": "run-sonar-striker",
+          "target": "notify-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "skip-no-failures->notify-done",
+          "source": "skip-no-failures",
+          "target": "notify-done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-15T12:00:00.000Z",
+        "updatedAt": "2026-03-15T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-sonarqube-pr-striker",
+          "templateName": "SonarQube PR Striker",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
@@ -31081,8 +29779,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-14T12:00:00.000Z",
-        "updatedAt": "2026-03-14T12:00:00.000Z",
+        "createdAt": "2026-03-16T12:00:00.000Z",
+        "updatedAt": "2026-03-16T12:00:00.000Z",
         "templateState": {
           "templateId": "template-stale-pr-reaper",
           "templateName": "Stale PR Reaper",
@@ -31306,8 +30004,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-15T12:00:00.000Z",
-        "updatedAt": "2026-03-15T12:00:00.000Z",
+        "createdAt": "2026-03-17T12:00:00.000Z",
+        "updatedAt": "2026-03-17T12:00:00.000Z",
         "templateState": {
           "templateId": "template-agent-session-monitor",
           "templateName": "Agent Session Monitor",
@@ -31480,8 +30178,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-16T12:00:00.000Z",
-        "updatedAt": "2026-03-16T12:00:00.000Z",
+        "createdAt": "2026-03-18T12:00:00.000Z",
+        "updatedAt": "2026-03-18T12:00:00.000Z",
         "templateState": {
           "templateId": "template-custom-agent",
           "templateName": "Custom Agent Profile",
@@ -31900,8 +30598,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-17T12:00:00.000Z",
-        "updatedAt": "2026-03-17T12:00:00.000Z",
+        "createdAt": "2026-03-19T12:00:00.000Z",
+        "updatedAt": "2026-03-19T12:00:00.000Z",
         "templateState": {
           "templateId": "template-frontend-agent",
           "templateName": "Frontend Agent",
@@ -32276,8 +30974,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-18T12:00:00.000Z",
-        "updatedAt": "2026-03-18T12:00:00.000Z",
+        "createdAt": "2026-03-20T12:00:00.000Z",
+        "updatedAt": "2026-03-20T12:00:00.000Z",
         "templateState": {
           "templateId": "template-meeting-subworkflow-chain",
           "templateName": "Meeting Orchestrator + Subworkflow Chain",
@@ -32351,7 +31049,7 @@
           "config": {
             "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCreate a descriptive test commit message that names the behavior or surface covered.\nExample: \"test: cover portal login validation\"",
             "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
+            "timeoutMs": "{{testTimeoutMs}}"
           },
           "position": {
             "x": 400,
@@ -32399,8 +31097,7 @@
           "type": "validation.tests",
           "label": "Test Run",
           "config": {
-            "command": "{{testCommand}}",
-            "timeoutMs": "{{testTimeoutMs}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
@@ -32643,8 +31340,7 @@
           "type": "validation.tests",
           "label": "Test Run",
           "config": {
-            "command": "{{testCommand}}",
-            "timeoutMs": "{{testTimeoutMs}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
@@ -32872,8 +31568,7 @@
           "type": "validation.tests",
           "label": "Test Run",
           "config": {
-            "command": "{{testCommand}}",
-            "timeoutMs": "{{testTimeoutMs}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
@@ -33417,8 +32112,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-19T12:00:00.000Z",
-        "updatedAt": "2026-03-19T12:00:00.000Z",
+        "createdAt": "2026-03-21T12:00:00.000Z",
+        "updatedAt": "2026-03-21T12:00:00.000Z",
         "templateState": {
           "templateId": "template-backend-agent",
           "templateName": "Task Completion Agent",
@@ -33709,8 +32404,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-20T12:00:00.000Z",
-        "updatedAt": "2026-03-20T12:00:00.000Z",
+        "createdAt": "2026-03-22T12:00:00.000Z",
+        "updatedAt": "2026-03-22T12:00:00.000Z",
         "templateState": {
           "templateId": "template-voice-video-parallel-rollout",
           "templateName": "Voice + Video Rollout (Parallel Lanes)",
@@ -33861,8 +32556,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-21T12:00:00.000Z",
-        "updatedAt": "2026-03-21T12:00:00.000Z",
+        "createdAt": "2026-03-23T12:00:00.000Z",
+        "updatedAt": "2026-03-23T12:00:00.000Z",
         "templateState": {
           "templateId": "template-build-deploy",
           "templateName": "Build & Deploy",
@@ -34151,8 +32846,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-22T12:00:00.000Z",
-        "updatedAt": "2026-03-22T12:00:00.000Z",
+        "createdAt": "2026-03-24T12:00:00.000Z",
+        "updatedAt": "2026-03-24T12:00:00.000Z",
         "templateState": {
           "templateId": "template-canary-deploy",
           "templateName": "Canary Deploy",
@@ -34508,8 +33203,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-23T12:00:00.000Z",
-        "updatedAt": "2026-03-23T12:00:00.000Z",
+        "createdAt": "2026-03-25T12:00:00.000Z",
+        "updatedAt": "2026-03-25T12:00:00.000Z",
         "templateState": {
           "templateId": "template-release-pipeline",
           "templateName": "Release Pipeline",
@@ -34675,8 +33370,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-24T12:00:00.000Z",
-        "updatedAt": "2026-03-24T12:00:00.000Z",
+        "createdAt": "2026-03-26T12:00:00.000Z",
+        "updatedAt": "2026-03-26T12:00:00.000Z",
         "templateState": {
           "templateId": "template-nightly-report",
           "templateName": "Nightly Report",
@@ -34935,8 +33630,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-25T12:00:00.000Z",
-        "updatedAt": "2026-03-25T12:00:00.000Z",
+        "createdAt": "2026-03-27T12:00:00.000Z",
+        "updatedAt": "2026-03-27T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sprint-retrospective",
           "templateName": "Sprint Retrospective",
@@ -35221,8 +33916,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-26T12:00:00.000Z",
-        "updatedAt": "2026-03-26T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-task-planner",
           "templateName": "Task Planner",
@@ -35411,8 +34106,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-27T12:00:00.000Z",
-        "updatedAt": "2026-03-27T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-task-replenish",
           "templateName": "Task Replenish (Scheduled)",
@@ -35526,7 +34221,7 @@
           "label": "Summarize Fitness Metrics",
           "config": {
             "key": "fitnessSummary",
-            "value": "(() => {  try {    const now = Date.now();    const lookbackDays = Math.max(1, Number($data?.lookbackDays || 7));    const windowMs = lookbackDays * 24 * 60 * 60 * 1000;    const currentStart = now - windowMs;    const previousStart = currentStart - windowMs;    const previousEnd = currentStart;    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };    const toIso = (ms) => new Date(ms).toISOString();    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };    const extractCanonicalItems = (value) => {      if (!value || typeof value !== 'object') return null;      const keys = ['items', 'tasks', 'entries', 'records', 'results', 'data'];      for (const key of keys) {        if (Array.isArray(value[key])) return value[key].filter(Boolean);      }      return null;    };    const parseSource = (raw, depth = 0) => {      if (depth > 3) return { items: [], degraded: true, parsedAny: false, partial: false };      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false, parsedAny: raw.length > 0, partial: false };      if (raw && typeof raw === 'object') {        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output) ?? extractCanonicalItems(raw.result) ?? extractCanonicalItems(raw.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: canonical.length > 0, partial: false };        const wrappedCandidates = [raw.output, raw.result, raw.payload, raw.data, raw.stdout, raw.content, raw.text, raw.json];        for (const candidate of wrappedCandidates) {          if (candidate == null) continue;          const parsedCandidate = parseSource(candidate, depth + 1);          if (parsedCandidate.items.length > 0 || parsedCandidate.parsedAny || parsedCandidate.degraded === false) return parsedCandidate;        }        return { items: [], degraded: Object.keys(raw).length > 0, parsedAny: false, partial: false };      }      if (typeof raw !== 'string') return { items: [], degraded: true, parsedAny: false, partial: false };      const trimmed = raw.trim();      if (!trimmed) return { items: [], degraded: false, parsedAny: false, partial: false };      const parsed = parseJsonSafe(trimmed);      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false, parsedAny: true, partial: false };      if (parsed && typeof parsed === 'object') {        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output) ?? extractCanonicalItems(parsed.result) ?? extractCanonicalItems(parsed.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: true, partial: false };      }      const lines = trimmed.split(/\\r?\\n/).filter((line) => line.trim() !== '');      const parsedLines = [];      let failedLines = 0;      for (const line of lines) {        const parsedLine = parseJsonSafe(line);        if (parsedLine == null) { failedLines += 1; continue; }        if (Array.isArray(parsedLine)) parsedLines.push(...parsedLine.filter(Boolean));        else parsedLines.push(parsedLine);      }      if (parsedLines.length > 0) return { items: parsedLines, degraded: failedLines > 0, parsedAny: true, partial: failedLines > 0 };      return { items: [], degraded: true, parsedAny: false, partial: false };    };    const detectLinewiseParseHealth = (raw) => {      if (typeof raw !== 'string') return { mixedValidity: false, nonJson: false };      const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);      if (lines.length === 0) return { mixedValidity: false, nonJson: false };      let parsedLines = 0;      let failedLines = 0;      for (const line of lines) {        if (parseJsonSafe(line) == null) failedLines += 1;        else parsedLines += 1;      }      return { mixedValidity: parsedLines > 0 && failedLines > 0, nonJson: parsedLines === 0 && failedLines > 0 };    };    const getTs = (item) => {      if (!item || typeof item !== 'object') return null;      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date', 'completed_at', 'closed_at', 'merged_at', 'resolved_at', 'updated_at', 'created_at'];      for (const key of fields) {        const value = item[key];        if (!value) continue;        const ms = Date.parse(String(value));        if (Number.isFinite(ms)) return ms;        if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;      }      return null;    };    const normalizeBucket = (items) => {      const stamped = [];      const unstamped = [];      for (const item of items) {        const ts = getTs(item);        if (ts == null) unstamped.push(item); else stamped.push({ item, ts });      }      return { stamped, unstamped };    };    const splitWindows = (items) => {      const { stamped, unstamped } = normalizeBucket(items);      const current = stamped.filter((entry) => entry.ts >= currentStart && entry.ts <= now).map((entry) => entry.item);      const previous = stamped.filter((entry) => entry.ts >= previousStart && entry.ts < previousEnd).map((entry) => entry.item);      const usedFallbackWindow = stamped.length === 0 && unstamped.length > 0;      if (usedFallbackWindow) return { current: unstamped, previous: [], usedFallbackWindow };      return { current, previous, usedFallbackWindow };    };    const metric = (name, value, previous, direction, unit, confidence, status, notes = []) => {      const hasCurrent = typeof value === 'number' && Number.isFinite(value);      const hasPrevious = typeof previous === 'number' && Number.isFinite(previous);      return {        name,        value: hasCurrent ? value : null,        previous: hasPrevious ? previous : null,        delta: hasCurrent && hasPrevious ? Number((value - previous).toFixed(2)) : null,        direction,        unit,        confidence,        status,        notes: notes.filter(Boolean),      };    };    const sourceStatus = (nodeOut, parsedList, parsedMeta = {}) => {      const output = nodeOut?.output;      const hasPayload = (() => {        if (output == null) return false;        if (Array.isArray(output)) return true;        if (typeof output === 'string') return output.trim() !== '';        if (typeof output === 'object') {          const wrapped = [output.stdout, output.content, output.text, output.json, output.output, output.result, output.payload, output.data];          if (wrapped.some((v) => (typeof v === 'string' ? v.trim() !== '' : v != null))) return true;          return Object.keys(output).length > 0;        }        return true;      })();      const linewiseHealth = (() => {        if (typeof output === 'string') return detectLinewiseParseHealth(output);        if (output && typeof output === 'object') {          const candidate = [output.stdout, output.content, output.text, output.output, output.result, output.payload, output.data].find((value) => typeof value === 'string' && value.trim() !== '');          return detectLinewiseParseHealth(candidate);        }        return { mixedValidity: false, nonJson: false };      })();      const success = nodeOut?.success !== false;      if (!hasPayload) return { status: 'missing', confidence: 'low' };      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };      if (linewiseHealth.mixedValidity) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      if (linewiseHealth.nonJson && parsedList.length === 0) return { status: 'degraded', confidence: 'low' };      if (parsedMeta?.degraded || parsedMeta?.partial) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      if (!success) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };    };    const taskNode = $ctx.getNodeOutput('task-metrics') || {};    const prNode = $ctx.getNodeOutput('pr-metrics') || {};    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};    const taskParsed = parseSource(taskNode.output);    const prParsed = parseSource(prNode.output);    const debtParsed = parseSource(debtNode.output);    const tasks = taskParsed.items;    const prs = prParsed.items;    const debt = debtParsed.items;    const taskHealth = sourceStatus(taskNode, tasks, taskParsed);    const prHealth = sourceStatus(prNode, prs, prParsed);    const debtHealth = sourceStatus(debtNode, debt, debtParsed);    const taskSplit = splitWindows(tasks);    const prSplit = splitWindows(prs);    const debtSplit = splitWindows(debt);    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);    const isDone = (item) => doneStatuses.has(String(item?.status ?? item?.state ?? '').toLowerCase());    const taskTelemetryUnavailable = taskHealth.status === 'missing' || (taskHealth.status === 'degraded' && tasks.length === 0);    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;    const reopenedCount = (items) => items.filter((item) => {      if (!item || typeof item !== 'object') return false;      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount ?? item.reopen_count ?? item.reopened_count, 0);      if (reopenCount > 0) return true;      if (item.reopened === true) return true;      const status = String(item.status ?? item.state ?? '').toLowerCase();      return status.includes('reopen');    }).length;    const reopenedCurrent = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.current);    const reopenedPrevious = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.previous);    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at) || pr?.merged === true).length;    const closedCount = (items) => items.filter((pr) => {      const state = String(pr?.state || '').toLowerCase();      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.closed_at) || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at);    }).length;    const mergeClosedCurrent = closedCount(prSplit.current);    const mergeClosedPrevious = closedCount(prSplit.previous);    const mergeSuccessCurrent = mergeClosedCurrent > 0 ? Number(((mergedCount(prSplit.current) / mergeClosedCurrent) * 100).toFixed(2)) : null;    const mergeSuccessPrevious = mergeClosedPrevious > 0 ? Number(((mergedCount(prSplit.previous) / mergeClosedPrevious) * 100).toFixed(2)) : null;    const debtDelta = (entries) => {      let total = 0;      for (const entry of entries) {        if (entry == null) continue;        if (typeof entry === 'number') { total += entry; continue; }        if (typeof entry !== 'object') continue;        if (Number.isFinite(Number(entry.debtDelta))) { total += Number(entry.debtDelta); continue; }        if (Number.isFinite(Number(entry.delta))) { total += Number(entry.delta); continue; }        if (Number.isFinite(Number(entry.netChange))) { total += Number(entry.netChange); continue; }        const amt = Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 1;        const kind = String(entry.type || entry.event || entry.action || '').toLowerCase();        if (/resolved|burn|paydown|decrease|closed/.test(kind)) total -= amt;        else if (/created|added|increase|opened|new/.test(kind)) total += amt;      }      return Number(total.toFixed(2));    };    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;    const priorRaw = prevNode?.success === true ? (parseSource(prevNode.content).items?.[0] ?? parseJsonSafe(prevNode.content)) : null;    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : (priorRaw && typeof priorRaw === 'object' ? priorRaw : null);    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {      if (!hasValue) return 'low';      if (primaryHealth.status === 'missing') return 'low';      if (primaryHealth.status === 'degraded') return 'low';      if (usedFallbackWindow) return 'medium';      return primaryHealth.confidence || 'medium';    };    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, throughputCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [throughputCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, reopenedCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [reopenedCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };    const metricKeys = ['throughput', 'regression_rate', 'merge_success', 'reopened_tasks', 'debt_growth'];    const trendDeltas = metricKeys.reduce((acc, key) => { const d = metrics?.[key]?.delta; acc[key] = Number.isFinite(d) ? d : null; return acc; }, {});    const normalizePriorTrendDelta = (metricName) => {      const direct = priorParsed?.priorWeekTrendDeltas?.[metricName];      if (Number.isFinite(Number(direct))) return Number(Number(direct).toFixed(2));      const trend = priorParsed?.trendDeltas?.[metricName];      if (Number.isFinite(Number(trend))) return Number(Number(trend).toFixed(2));      const metricDelta = priorParsed?.metrics?.[metricName]?.delta;      if (Number.isFinite(Number(metricDelta))) return Number(Number(metricDelta).toFixed(2));      return null;    };    const priorWeekTrendDeltas = metricKeys.reduce((acc, key) => { acc[key] = normalizePriorTrendDelta(key); return acc; }, {});    const priorWeekDeltas = priorWeekTrendDeltas;    const priorWeekMetrics = priorParsed?.metrics && typeof priorParsed.metrics === 'object' ? priorParsed.metrics : null;    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };    const metricTrendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {      if (m == null || m.delta == null) return [];      if (String(m.confidence || '').toLowerCase() === 'low') return [];      const delta = Number(m.delta);      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);      if (!isRegression) return [];      const absDelta = Math.abs(delta);      const threshold = alertThresholds[metricName] ?? 1;      const severity = absDelta >= threshold * 2 ? 'high' : absDelta >= threshold ? 'medium' : 'low';      return [{ metric: metricName, severity, delta, reason: `${metricName} moved in a negative direction by ${delta} ${m.unit}.` }];    });    const sourceHealth = {      tasks: { ...taskHealth, count: tasks.length },      prs: { ...prHealth, count: prs.length },      debt: { ...debtHealth, count: debt.length },    };    const sourceTelemetryAlerts = Object.entries(sourceHealth).flatMap(([sourceName, health]) => {      if (health?.status === 'ok') return [];      const severity = health?.status === 'missing' ? 'high' : 'medium';      const reason = health?.status === 'missing' ? `${sourceName} telemetry missing; metric interpretation may be limited.` : `${sourceName} telemetry partially parsed; confidence reduced.`;      return [{ metric: `telemetry:${sourceName}`, severity, delta: null, reason }];    });    const trendAlerts = [...metricTrendAlerts, ...sourceTelemetryAlerts];    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';    const plannerSignals = {      schemaVersion: '1.0',      overallConfidence,      trendAlertCount: trendAlerts.length,      highSeverityAlertCount: trendAlerts.filter((a) => a?.severity === 'high').length,      sourceStatus: Object.fromEntries(Object.entries(sourceHealth).map(([k, v]) => [k, v?.status || 'missing'])),      metricStatus: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.status || 'missing'])),      metricConfidence: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.confidence || 'low'])),      metricValues: Object.fromEntries(metricKeys.map((k) => [k, Number.isFinite(metrics?.[k]?.value) ? Number(metrics[k].value) : null])),      trendDeltas,      priorWeekTrendDeltas,    };    const plannerArtifact = {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      sourceStatus: plannerSignals.sourceStatus,      metricConfidence: plannerSignals.metricConfidence,      metricValues: plannerSignals.metricValues,      trendDeltas,      priorWeekTrendDeltas,      trendAlertCount: plannerSignals.trendAlertCount,      highSeverityAlertCount: plannerSignals.highSeverityAlertCount,      trendAlerts,    };    return {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) },      sourceHealth,      metrics,      trendDeltas,      trendAlerts,      priorWeekTrendDeltas,      priorWeekDeltas,      priorWeekMetrics,      plannerSignals,      plannerArtifact,      dataQuality: {        overallConfidence,        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k),        degradedSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'degraded').map(([k]) => k),      },    };  } catch (error) {    return {      schemaVersion: '1.0',      generatedAt: new Date().toISOString(),      lookbackDays: Number($data?.lookbackDays || 7),      sourceHealth: {        tasks: { status: 'missing', confidence: 'low', count: 0 },        prs: { status: 'missing', confidence: 'low', count: 0 },        debt: { status: 'missing', confidence: 'low', count: 0 },      },      metrics: {        throughput: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        regression_rate: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        merge_success: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },      },      trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekMetrics: null,      plannerSignals: {        schemaVersion: '1.0',        overallConfidence: 'low',        trendAlertCount: 1,        highSeverityAlertCount: 1,        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricStatus: { throughput: 'missing', regression_rate: 'missing', merge_success: 'missing', reopened_tasks: 'missing', debt_growth: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      },      plannerArtifact: {        schemaVersion: '1.0',        generatedAt: new Date().toISOString(),        lookbackDays: Number($data?.lookbackDays || 7),        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendAlertCount: 1,        highSeverityAlertCount: 1,        trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      },      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] },    };  }})()",
+            "value": "(() => {  try {    const now = Date.now();    const lookbackDays = Math.max(1, Number($data?.lookbackDays || 7));    const windowMs = lookbackDays * 24 * 60 * 60 * 1000;    const currentStart = now - windowMs;    const previousStart = currentStart - windowMs;    const previousEnd = currentStart;    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };    const toIso = (ms) => new Date(ms).toISOString();    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };    const extractCanonicalItems = (value) => {      if (!value || typeof value !== 'object') return null;      const keys = ['items', 'tasks', 'entries', 'records', 'results', 'data'];      for (const key of keys) {        if (Array.isArray(value[key])) return value[key].filter(Boolean);      }      return null;    };    const parseSource = (raw, depth = 0) => {      if (depth > 3) return { items: [], degraded: true, parsedAny: false, partial: false };      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false, parsedAny: raw.length > 0, partial: false };      if (raw && typeof raw === 'object') {        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output) ?? extractCanonicalItems(raw.result) ?? extractCanonicalItems(raw.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: canonical.length > 0, partial: false };        const wrappedCandidates = [raw.output, raw.result, raw.payload, raw.data, raw.stdout, raw.content, raw.text, raw.json];        for (const candidate of wrappedCandidates) {          if (candidate == null) continue;          const parsedCandidate = parseSource(candidate, depth + 1);          if (parsedCandidate.items.length > 0 || parsedCandidate.parsedAny || parsedCandidate.degraded === false) return parsedCandidate;        }        return { items: [], degraded: Object.keys(raw).length > 0, parsedAny: false, partial: false };      }      if (typeof raw !== 'string') return { items: [], degraded: true, parsedAny: false, partial: false };      const trimmed = raw.trim();      if (!trimmed) return { items: [], degraded: false, parsedAny: false, partial: false };      const parsed = parseJsonSafe(trimmed);      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false, parsedAny: true, partial: false };      if (parsed && typeof parsed === 'object') {        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output) ?? extractCanonicalItems(parsed.result) ?? extractCanonicalItems(parsed.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: true, partial: false };      }      const lines = trimmed.split(/\\r?\\n/).filter((line) => line.trim() !== '');      const parsedLines = [];      let failedLines = 0;      for (const line of lines) {        const parsedLine = parseJsonSafe(line);        if (parsedLine == null) { failedLines += 1; continue; }        if (Array.isArray(parsedLine)) parsedLines.push(...parsedLine.filter(Boolean));        else parsedLines.push(parsedLine);      }      if (parsedLines.length > 0) return { items: parsedLines, degraded: failedLines > 0, parsedAny: true, partial: failedLines > 0 };      return { items: [], degraded: true, parsedAny: false, partial: false };    };    const getTs = (item) => {      if (!item || typeof item !== 'object') return null;      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date', 'completed_at', 'closed_at', 'merged_at', 'resolved_at', 'updated_at', 'created_at'];      for (const key of fields) {        const value = item[key];        if (!value) continue;        const ms = Date.parse(String(value));        if (Number.isFinite(ms)) return ms;        if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;      }      return null;    };    const normalizeBucket = (items) => {      const stamped = [];      const unstamped = [];      for (const item of items) {        const ts = getTs(item);        if (ts == null) unstamped.push(item); else stamped.push({ item, ts });      }      return { stamped, unstamped };    };    const splitWindows = (items) => {      const { stamped, unstamped } = normalizeBucket(items);      const current = stamped.filter((entry) => entry.ts >= currentStart && entry.ts <= now).map((entry) => entry.item);      const previous = stamped.filter((entry) => entry.ts >= previousStart && entry.ts < previousEnd).map((entry) => entry.item);      const usedFallbackWindow = stamped.length === 0 && unstamped.length > 0;      if (usedFallbackWindow) return { current: unstamped, previous: [], usedFallbackWindow };      return { current, previous, usedFallbackWindow };    };    const metric = (name, value, previous, direction, unit, confidence, status, notes = []) => {      const hasCurrent = typeof value === 'number' && Number.isFinite(value);      const hasPrevious = typeof previous === 'number' && Number.isFinite(previous);      return {        name,        value: hasCurrent ? value : null,        previous: hasPrevious ? previous : null,        delta: hasCurrent && hasPrevious ? Number((value - previous).toFixed(2)) : null,        direction,        unit,        confidence,        status,        notes: notes.filter(Boolean),      };    };    const sourceStatus = (nodeOut, parsedList, parsedMeta = {}) => {      const output = nodeOut?.output;      const hasPayload = (() => {        if (output == null) return false;        if (Array.isArray(output)) return true;        if (typeof output === 'string') return output.trim() !== '';        if (typeof output === 'object') {          const wrapped = [output.stdout, output.content, output.text, output.json, output.output, output.result, output.payload, output.data];          if (wrapped.some((v) => (typeof v === 'string' ? v.trim() !== '' : v != null))) return true;          return Object.keys(output).length > 0;        }        return true;      })();      const success = nodeOut?.success !== false;      if (!hasPayload) return { status: 'missing', confidence: 'low' };      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };      if (parsedMeta?.degraded || parsedMeta?.partial) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      if (!success) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };    };    const taskNode = $ctx.getNodeOutput('task-metrics') || {};    const prNode = $ctx.getNodeOutput('pr-metrics') || {};    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};    const taskParsed = parseSource(taskNode.output);    const prParsed = parseSource(prNode.output);    const debtParsed = parseSource(debtNode.output);    const tasks = taskParsed.items;    const prs = prParsed.items;    const debt = debtParsed.items;    const taskHealth = sourceStatus(taskNode, tasks, taskParsed);    const prHealth = sourceStatus(prNode, prs, prParsed);    const debtHealth = sourceStatus(debtNode, debt, debtParsed);    const taskSplit = splitWindows(tasks);    const prSplit = splitWindows(prs);    const debtSplit = splitWindows(debt);    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);    const isDone = (item) => doneStatuses.has(String(item?.status ?? item?.state ?? '').toLowerCase());    const taskTelemetryUnavailable = taskHealth.status === 'missing' || (taskHealth.status === 'degraded' && tasks.length === 0);    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;    const reopenedCount = (items) => items.filter((item) => {      if (!item || typeof item !== 'object') return false;      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount ?? item.reopen_count ?? item.reopened_count, 0);      if (reopenCount > 0) return true;      if (item.reopened === true) return true;      const status = String(item.status ?? item.state ?? '').toLowerCase();      return status.includes('reopen');    }).length;    const reopenedCurrent = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.current);    const reopenedPrevious = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.previous);    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at) || pr?.merged === true).length;    const closedCount = (items) => items.filter((pr) => {      const state = String(pr?.state || '').toLowerCase();      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.closed_at) || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at);    }).length;    const mergeClosedCurrent = closedCount(prSplit.current);    const mergeClosedPrevious = closedCount(prSplit.previous);    const mergeSuccessCurrent = mergeClosedCurrent > 0 ? Number(((mergedCount(prSplit.current) / mergeClosedCurrent) * 100).toFixed(2)) : null;    const mergeSuccessPrevious = mergeClosedPrevious > 0 ? Number(((mergedCount(prSplit.previous) / mergeClosedPrevious) * 100).toFixed(2)) : null;    const debtDelta = (entries) => {      let total = 0;      for (const entry of entries) {        if (entry == null) continue;        if (typeof entry === 'number') { total += entry; continue; }        if (typeof entry !== 'object') continue;        if (Number.isFinite(Number(entry.debtDelta))) { total += Number(entry.debtDelta); continue; }        if (Number.isFinite(Number(entry.delta))) { total += Number(entry.delta); continue; }        if (Number.isFinite(Number(entry.netChange))) { total += Number(entry.netChange); continue; }        const amt = Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 1;        const kind = String(entry.type || entry.event || entry.action || '').toLowerCase();        if (/resolved|burn|paydown|decrease|closed/.test(kind)) total -= amt;        else if (/created|added|increase|opened|new/.test(kind)) total += amt;      }      return Number(total.toFixed(2));    };    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;    const priorRaw = prevNode?.success === true ? (parseSource(prevNode.content).items?.[0] ?? parseJsonSafe(prevNode.content)) : null;    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : (priorRaw && typeof priorRaw === 'object' ? priorRaw : null);    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {      if (!hasValue) return 'low';      if (primaryHealth.status === 'missing') return 'low';      if (primaryHealth.status === 'degraded') return 'low';      if (usedFallbackWindow) return 'medium';      return primaryHealth.confidence || 'medium';    };    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, throughputCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [throughputCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, reopenedCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [reopenedCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };    const metricKeys = ['throughput', 'regression_rate', 'merge_success', 'reopened_tasks', 'debt_growth'];    const trendDeltas = metricKeys.reduce((acc, key) => { const d = metrics?.[key]?.delta; acc[key] = Number.isFinite(d) ? d : null; return acc; }, {});    const normalizePriorTrendDelta = (metricName) => {      const direct = priorParsed?.priorWeekTrendDeltas?.[metricName];      if (Number.isFinite(Number(direct))) return Number(Number(direct).toFixed(2));      const trend = priorParsed?.trendDeltas?.[metricName];      if (Number.isFinite(Number(trend))) return Number(Number(trend).toFixed(2));      const metricDelta = priorParsed?.metrics?.[metricName]?.delta;      if (Number.isFinite(Number(metricDelta))) return Number(Number(metricDelta).toFixed(2));      return null;    };    const priorWeekTrendDeltas = metricKeys.reduce((acc, key) => { acc[key] = normalizePriorTrendDelta(key); return acc; }, {});    const priorWeekDeltas = priorWeekTrendDeltas;    const priorWeekMetrics = priorParsed?.metrics && typeof priorParsed.metrics === 'object' ? priorParsed.metrics : null;    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };    const metricTrendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {      if (m == null || m.delta == null) return [];      if (String(m.confidence || '').toLowerCase() === 'low') return [];      const delta = Number(m.delta);      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);      if (!isRegression) return [];      const absDelta = Math.abs(delta);      const threshold = alertThresholds[metricName] ?? 1;      const severity = absDelta >= threshold * 2 ? 'high' : absDelta >= threshold ? 'medium' : 'low';      return [{ metric: metricName, severity, delta, reason: `${metricName} moved in a negative direction by ${delta} ${m.unit}.` }];    });    const sourceHealth = {      tasks: { ...taskHealth, count: tasks.length },      prs: { ...prHealth, count: prs.length },      debt: { ...debtHealth, count: debt.length },    };    const sourceTelemetryAlerts = Object.entries(sourceHealth).flatMap(([sourceName, health]) => {      if (health?.status === 'ok') return [];      const severity = health?.status === 'missing' ? 'high' : 'medium';      const reason = health?.status === 'missing' ? `${sourceName} telemetry missing; metric interpretation may be limited.` : `${sourceName} telemetry partially parsed; confidence reduced.`;      return [{ metric: `telemetry:${sourceName}`, severity, delta: null, reason }];    });    const trendAlerts = [...metricTrendAlerts, ...sourceTelemetryAlerts];    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';    const plannerSignals = {      schemaVersion: '1.0',      overallConfidence,      trendAlertCount: trendAlerts.length,      highSeverityAlertCount: trendAlerts.filter((a) => a?.severity === 'high').length,      sourceStatus: Object.fromEntries(Object.entries(sourceHealth).map(([k, v]) => [k, v?.status || 'missing'])),      metricStatus: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.status || 'missing'])),      metricConfidence: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.confidence || 'low'])),      metricValues: Object.fromEntries(metricKeys.map((k) => [k, Number.isFinite(metrics?.[k]?.value) ? Number(metrics[k].value) : null])),      trendDeltas,      priorWeekTrendDeltas,    };    const plannerArtifact = {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      sourceStatus: plannerSignals.sourceStatus,      metricConfidence: plannerSignals.metricConfidence,      metricValues: plannerSignals.metricValues,      trendDeltas,      priorWeekTrendDeltas,      trendAlertCount: plannerSignals.trendAlertCount,      highSeverityAlertCount: plannerSignals.highSeverityAlertCount,      trendAlerts,    };    return {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) },      sourceHealth,      metrics,      trendDeltas,      trendAlerts,      priorWeekTrendDeltas,      priorWeekDeltas,      priorWeekMetrics,      plannerSignals,      plannerArtifact,      dataQuality: {        overallConfidence,        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k),        degradedSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'degraded').map(([k]) => k),      },    };  } catch (error) {    return {      schemaVersion: '1.0',      generatedAt: new Date().toISOString(),      lookbackDays: Number($data?.lookbackDays || 7),      sourceHealth: {        tasks: { status: 'missing', confidence: 'low', count: 0 },        prs: { status: 'missing', confidence: 'low', count: 0 },        debt: { status: 'missing', confidence: 'low', count: 0 },      },      metrics: {        throughput: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        regression_rate: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        merge_success: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },      },      trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekMetrics: null,      plannerSignals: {        schemaVersion: '1.0',        overallConfidence: 'low',        trendAlertCount: 1,        highSeverityAlertCount: 1,        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricStatus: { throughput: 'missing', regression_rate: 'missing', merge_success: 'missing', reopened_tasks: 'missing', debt_growth: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      },      plannerArtifact: {        schemaVersion: '1.0',        generatedAt: new Date().toISOString(),        lookbackDays: Number($data?.lookbackDays || 7),        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendAlertCount: 1,        highSeverityAlertCount: 1,        trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      },      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] },    };  }})()",
             "isExpression": true
           },
           "position": {
@@ -36080,13 +34775,12 @@
     {
       "id": "wf-continuation-loop",
       "name": "Continuation Loop",
-      "description": "Issue-state continuation loop. Fires automatically for any available task (trigger.task_available), drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause. taskId and worktreePath are auto-populated from the picked task — no manual input required.",
+      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 34,
+      "nodeCount": 33,
       "trigger": "trigger.task_available",
       "variables": {
-        "maxParallel": 1,
         "taskId": "",
         "worktreePath": "",
         "maxTurns": 8,
@@ -36108,1820 +34802,7 @@
         {
           "id": "trigger",
           "type": "trigger.task_available",
-          "label": "Pick Available Task",
-          "config": {
-            "maxParallel": "{{maxParallel}}",
-            "status": "inprogress",
-            "statuses": [
-              "inprogress",
-              "todo"
-            ],
-            "filterCodexScoped": true,
-            "filterDrafts": true
-          },
-          "position": {
-            "x": 420,
-            "y": 60
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-turn",
-          "type": "action.set_variable",
-          "label": "Initialize Turn Counter",
-          "config": {
-            "key": "continuationTurn",
-            "value": "0",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-progress-at",
-          "type": "action.set_variable",
-          "label": "Initialize Progress Clock",
-          "config": {
-            "key": "lastProgressAt",
-            "value": "Date.now()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 280
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-signature",
-          "type": "action.set_variable",
-          "label": "Initialize Progress Signature",
-          "config": {
-            "key": "lastProgressSignature",
-            "value": "''",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 390
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Initialize Stuck Retry Count",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "0",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 450
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "poll-task",
-          "type": "action.bosun_function",
-          "label": "Poll External Task State",
-          "config": {
-            "function": "tasks.get",
-            "args": {
-              "taskId": "{{taskId}}"
-            },
-            "outputVariable": "continuationTask"
-          },
-          "position": {
-            "x": 420,
-            "y": 500
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-status",
-          "type": "action.set_variable",
-          "label": "Derive External Status",
-          "config": {
-            "key": "currentExternalStatus",
-            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 610
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "terminal-check",
-          "type": "condition.expression",
-          "label": "Terminal State Reached?",
-          "config": {
-            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
-          },
-          "position": {
-            "x": 420,
-            "y": 720
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "end-terminal",
-          "type": "flow.end",
-          "label": "End: Terminal State",
-          "config": {
-            "status": "completed",
-            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
-            "output": {
-              "reason": "terminal_state",
-              "taskId": "{{taskId}}",
-              "externalStatus": "{{currentExternalStatus}}"
-            }
-          },
-          "position": {
-            "x": 160,
-            "y": 860
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "max-turns-check",
-          "type": "condition.expression",
-          "label": "Max Turns Reached?",
-          "config": {
-            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
-          },
-          "position": {
-            "x": 620,
-            "y": 860
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "end-max-turns",
-          "type": "flow.end",
-          "label": "End: Max Turns",
-          "config": {
-            "status": "failed",
-            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
-            "output": {
-              "reason": "max_turns",
-              "taskId": "{{taskId}}",
-              "turns": "{{continuationTurn}}"
-            }
-          },
-          "position": {
-            "x": 460,
-            "y": 1000
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "run-agent",
-          "type": "action.run_agent",
-          "label": "Drive Agent",
-          "config": {
-            "prompt": "{{continuePrompt}}",
-            "taskId": "{{taskId}}",
-            "cwd": "{{worktreePath}}",
-            "sdk": "{{sdk}}",
-            "model": "{{model}}",
-            "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
-            "failOnError": false
-          },
-          "position": {
-            "x": 800,
-            "y": 1000
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "capture-progress",
-          "type": "action.run_command",
-          "label": "Capture Progress Signature",
-          "config": {
-            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 800,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-signature",
-          "type": "action.set_variable",
-          "label": "Derive Signature",
-          "config": {
-            "key": "currentProgressSignature",
-            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 800,
-            "y": 1240
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-stuck-ms",
-          "type": "action.set_variable",
-          "label": "Derive Stuck Duration",
-          "config": {
-            "key": "stuckForMs",
-            "value": "Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 1230
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "progress-changed",
-          "type": "condition.expression",
-          "label": "Progress Changed?",
-          "config": {
-            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
-          },
-          "position": {
-            "x": 800,
-            "y": 1360
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "mark-progress-at",
-          "type": "action.set_variable",
-          "label": "Update Progress Clock",
-          "config": {
-            "key": "lastProgressAt",
-            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-progress-sig",
-          "type": "action.set_variable",
-          "label": "Update Progress Signature",
-          "config": {
-            "key": "lastProgressSignature",
-            "value": "$data?.currentProgressSignature || ''",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "reset-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Reset Stuck Retry Count On Progress",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1710
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-check",
-          "type": "condition.expression",
-          "label": "Session Stuck?",
-          "config": {
-            "expression": "(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
-          },
-          "position": {
-            "x": 980,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "emit-stuck",
-          "type": "action.emit_event",
-          "label": "Emit session-stuck",
-          "config": {
-            "eventType": "session-stuck",
-            "payload": {
-              "taskId": "{{taskId}}",
-              "turn": "{{continuationTurn}}",
-              "externalStatus": "{{currentExternalStatus}}",
-              "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "stuckForMs": "{{stuckForMs}}",
-              "onStuck": "{{onStuck}}",
-              "stuckRetryCount": "{{stuckRetryCount}}",
-              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
-              "lastProgressAt": "{{lastProgressAt}}",
-              "lastProgressSignature": "{{lastProgressSignature}}",
-              "currentProgressSignature": "{{currentProgressSignature}}",
-              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
-              "agentActivityDetected": "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
-              "agentItemCount": "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
-              "agentStreamCount": "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
-              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
-              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
-              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
-            },
-            "outputVariable": "sessionStuckEvent"
-          },
-          "position": {
-            "x": 980,
-            "y": 1600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-route",
-          "type": "condition.switch",
-          "label": "Route onStuck Action",
-          "config": {
-            "value": "$data?.onStuck || 'escalate'",
-            "cases": {
-              "retry": "retry",
-              "escalate": "escalate",
-              "pause": "pause"
-            }
-          },
-          "position": {
-            "x": 980,
-            "y": 1710
-          },
-          "outputs": [
-            "retry",
-            "escalate",
-            "pause",
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-retry-budget",
-          "type": "condition.expression",
-          "label": "Stuck Retry Budget Remaining?",
-          "config": {
-            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
-          },
-          "position": {
-            "x": 760,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "stuck-retry",
-          "type": "action.run_agent",
-          "label": "Retry After Stuck",
-          "config": {
-            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
-            "taskId": "{{taskId}}",
-            "cwd": "{{worktreePath}}",
-            "sdk": "{{sdk}}",
-            "model": "{{model}}",
-            "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
-            "failOnError": false
-          },
-          "position": {
-            "x": 760,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Increment Stuck Retry Count",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "Number($data?.stuckRetryCount || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 760,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-escalate",
-          "type": "notify.log",
-          "label": "Escalate Stuck Session",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
-          },
-          "position": {
-            "x": 980,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-escalate-budget",
-          "type": "notify.log",
-          "label": "Escalate Stuck Session (Retry Limit)",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
-          },
-          "position": {
-            "x": 760,
-            "y": 2050
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-pause",
-          "type": "notify.log",
-          "label": "Pause Stuck Session",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
-          },
-          "position": {
-            "x": 1200,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-escalated",
-          "type": "flow.end",
-          "label": "End: Escalated",
-          "config": {
-            "status": "failed",
-            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
-            "output": {
-              "reason": "stuck_escalated",
-              "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}",
-              "stuckRetryCount": "{{stuckRetryCount}}",
-              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
-            }
-          },
-          "position": {
-            "x": 980,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-paused",
-          "type": "flow.end",
-          "label": "End: Paused",
-          "config": {
-            "status": "completed",
-            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
-            "output": {
-              "reason": "stuck_paused",
-              "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}"
-            }
-          },
-          "position": {
-            "x": 1200,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "wait-next-turn",
-          "type": "action.delay",
-          "label": "Wait Poll Interval",
-          "config": {
-            "ms": "{{pollIntervalMs}}",
-            "reason": "Waiting before next external status poll"
-          },
-          "position": {
-            "x": 760,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-turn",
-          "type": "action.set_variable",
-          "label": "Increment Turn",
-          "config": {
-            "key": "continuationTurn",
-            "value": "Number($data?.continuationTurn || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 760,
-            "y": 2060
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "wait-next-turn-no-stuck",
-          "type": "action.delay",
-          "label": "Wait (No Stuck)",
-          "config": {
-            "ms": "{{pollIntervalMs}}",
-            "reason": "Waiting before next external status poll"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-turn-no-stuck",
-          "type": "action.set_variable",
-          "label": "Increment Turn (No Stuck)",
-          "config": {
-            "key": "continuationTurn",
-            "value": "Number($data?.continuationTurn || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 2060
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->init-turn",
-          "source": "trigger",
-          "target": "init-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-turn->init-progress-at",
-          "source": "init-turn",
-          "target": "init-progress-at",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-progress-at->init-signature",
-          "source": "init-progress-at",
-          "target": "init-signature",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-signature->init-stuck-retry-count",
-          "source": "init-signature",
-          "target": "init-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-stuck-retry-count->poll-task",
-          "source": "init-stuck-retry-count",
-          "target": "poll-task",
-          "sourcePort": "default"
-        },
-        {
-          "id": "poll-task->derive-status",
-          "source": "poll-task",
-          "target": "derive-status",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-status->terminal-check",
-          "source": "derive-status",
-          "target": "terminal-check",
-          "sourcePort": "default"
-        },
-        {
-          "id": "terminal-check->end-terminal",
-          "source": "terminal-check",
-          "target": "end-terminal",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "terminal-check->max-turns-check",
-          "source": "terminal-check",
-          "target": "max-turns-check",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "max-turns-check->end-max-turns",
-          "source": "max-turns-check",
-          "target": "end-max-turns",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "max-turns-check->run-agent",
-          "source": "max-turns-check",
-          "target": "run-agent",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-agent->capture-progress",
-          "source": "run-agent",
-          "target": "capture-progress",
-          "sourcePort": "default"
-        },
-        {
-          "id": "capture-progress->derive-signature",
-          "source": "capture-progress",
-          "target": "derive-signature",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-signature->derive-stuck-ms",
-          "source": "derive-signature",
-          "target": "derive-stuck-ms",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-stuck-ms->progress-changed",
-          "source": "derive-stuck-ms",
-          "target": "progress-changed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "progress-changed->mark-progress-at",
-          "source": "progress-changed",
-          "target": "mark-progress-at",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-progress-at->mark-progress-sig",
-          "source": "mark-progress-at",
-          "target": "mark-progress-sig",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-progress-sig->reset-stuck-retry-count",
-          "source": "mark-progress-sig",
-          "target": "reset-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "reset-stuck-retry-count->stuck-check",
-          "source": "reset-stuck-retry-count",
-          "target": "stuck-check",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-check->emit-stuck",
-          "source": "stuck-check",
-          "target": "emit-stuck",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "stuck-check->wait-next-turn-no-stuck",
-          "source": "stuck-check",
-          "target": "wait-next-turn-no-stuck",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "emit-stuck->stuck-route",
-          "source": "emit-stuck",
-          "target": "stuck-route",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-route->stuck-retry-budget",
-          "source": "stuck-route",
-          "target": "stuck-retry-budget",
-          "sourcePort": "retry"
-        },
-        {
-          "id": "stuck-route->stuck-escalate",
-          "source": "stuck-route",
-          "target": "stuck-escalate",
-          "sourcePort": "escalate"
-        },
-        {
-          "id": "stuck-route->stuck-pause",
-          "source": "stuck-route",
-          "target": "stuck-pause",
-          "sourcePort": "pause"
-        },
-        {
-          "id": "stuck-route->stuck-escalate",
-          "source": "stuck-route",
-          "target": "stuck-escalate",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-retry-budget->stuck-retry",
-          "source": "stuck-retry-budget",
-          "target": "stuck-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "stuck-retry-budget->stuck-escalate-budget",
-          "source": "stuck-retry-budget",
-          "target": "stuck-escalate-budget",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "stuck-retry->increment-stuck-retry-count",
-          "source": "stuck-retry",
-          "target": "increment-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-stuck-retry-count->wait-next-turn",
-          "source": "increment-stuck-retry-count",
-          "target": "wait-next-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-escalate->end-escalated",
-          "source": "stuck-escalate",
-          "target": "end-escalated",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-escalate-budget->end-escalated",
-          "source": "stuck-escalate-budget",
-          "target": "end-escalated",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-pause->end-paused",
-          "source": "stuck-pause",
-          "target": "end-paused",
-          "sourcePort": "default"
-        },
-        {
-          "id": "wait-next-turn->increment-turn",
-          "source": "wait-next-turn",
-          "target": "increment-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
-          "source": "wait-next-turn-no-stuck",
-          "target": "increment-turn-no-stuck",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-turn->poll-task",
-          "source": "increment-turn",
-          "target": "poll-task",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 500
-        },
-        {
-          "id": "increment-turn-no-stuck->poll-task",
-          "source": "increment-turn-no-stuck",
-          "target": "poll-task",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 500
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-continuation-loop",
-          "templateName": "Continuation Loop",
-          "templateVersion": "1.3.0",
-          "installedTemplateVersion": "1.3.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-continuation-loop",
-      "name": "Continuation Loop",
-      "description": "Issue-state continuation loop. Fires automatically for any available task (trigger.task_available), drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause. taskId and worktreePath are auto-populated from the picked task — no manual input required.",
-      "category": "reliability",
-      "enabled": true,
-      "nodeCount": 34,
-      "trigger": "trigger.task_available",
-      "variables": {
-        "maxParallel": 1,
-        "taskId": "",
-        "worktreePath": "",
-        "maxTurns": 8,
-        "pollIntervalMs": 30000,
-        "terminalStates": [
-          "done",
-          "cancelled"
-        ],
-        "stuckThresholdMs": 300000,
-        "maxStuckAutoRetries": 1,
-        "onStuck": "escalate",
-        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
-        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
-        "sdk": "auto",
-        "model": "",
-        "timeoutMs": 1800000
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.task_available",
-          "label": "Pick Available Task",
-          "config": {
-            "maxParallel": "{{maxParallel}}",
-            "status": "inprogress",
-            "statuses": [
-              "inprogress",
-              "todo"
-            ],
-            "filterCodexScoped": true,
-            "filterDrafts": true
-          },
-          "position": {
-            "x": 420,
-            "y": 60
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-turn",
-          "type": "action.set_variable",
-          "label": "Initialize Turn Counter",
-          "config": {
-            "key": "continuationTurn",
-            "value": "0",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-progress-at",
-          "type": "action.set_variable",
-          "label": "Initialize Progress Clock",
-          "config": {
-            "key": "lastProgressAt",
-            "value": "Date.now()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 280
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-signature",
-          "type": "action.set_variable",
-          "label": "Initialize Progress Signature",
-          "config": {
-            "key": "lastProgressSignature",
-            "value": "''",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 390
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "init-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Initialize Stuck Retry Count",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "0",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 450
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "poll-task",
-          "type": "action.bosun_function",
-          "label": "Poll External Task State",
-          "config": {
-            "function": "tasks.get",
-            "args": {
-              "taskId": "{{taskId}}"
-            },
-            "outputVariable": "continuationTask"
-          },
-          "position": {
-            "x": 420,
-            "y": 500
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-status",
-          "type": "action.set_variable",
-          "label": "Derive External Status",
-          "config": {
-            "key": "currentExternalStatus",
-            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 420,
-            "y": 610
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "terminal-check",
-          "type": "condition.expression",
-          "label": "Terminal State Reached?",
-          "config": {
-            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
-          },
-          "position": {
-            "x": 420,
-            "y": 720
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "end-terminal",
-          "type": "flow.end",
-          "label": "End: Terminal State",
-          "config": {
-            "status": "completed",
-            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
-            "output": {
-              "reason": "terminal_state",
-              "taskId": "{{taskId}}",
-              "externalStatus": "{{currentExternalStatus}}"
-            }
-          },
-          "position": {
-            "x": 160,
-            "y": 860
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "max-turns-check",
-          "type": "condition.expression",
-          "label": "Max Turns Reached?",
-          "config": {
-            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
-          },
-          "position": {
-            "x": 620,
-            "y": 860
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "end-max-turns",
-          "type": "flow.end",
-          "label": "End: Max Turns",
-          "config": {
-            "status": "failed",
-            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
-            "output": {
-              "reason": "max_turns",
-              "taskId": "{{taskId}}",
-              "turns": "{{continuationTurn}}"
-            }
-          },
-          "position": {
-            "x": 460,
-            "y": 1000
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "run-agent",
-          "type": "action.run_agent",
-          "label": "Drive Agent",
-          "config": {
-            "prompt": "{{continuePrompt}}",
-            "taskId": "{{taskId}}",
-            "cwd": "{{worktreePath}}",
-            "sdk": "{{sdk}}",
-            "model": "{{model}}",
-            "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
-            "failOnError": false
-          },
-          "position": {
-            "x": 800,
-            "y": 1000
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "capture-progress",
-          "type": "action.run_command",
-          "label": "Capture Progress Signature",
-          "config": {
-            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
-            "cwd": "{{worktreePath}}",
-            "failOnError": false
-          },
-          "position": {
-            "x": 800,
-            "y": 1120
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-signature",
-          "type": "action.set_variable",
-          "label": "Derive Signature",
-          "config": {
-            "key": "currentProgressSignature",
-            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 800,
-            "y": 1240
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-stuck-ms",
-          "type": "action.set_variable",
-          "label": "Derive Stuck Duration",
-          "config": {
-            "key": "stuckForMs",
-            "value": "Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 1230
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "progress-changed",
-          "type": "condition.expression",
-          "label": "Progress Changed?",
-          "config": {
-            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
-          },
-          "position": {
-            "x": 800,
-            "y": 1360
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "mark-progress-at",
-          "type": "action.set_variable",
-          "label": "Update Progress Clock",
-          "config": {
-            "key": "lastProgressAt",
-            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "mark-progress-sig",
-          "type": "action.set_variable",
-          "label": "Update Progress Signature",
-          "config": {
-            "key": "lastProgressSignature",
-            "value": "$data?.currentProgressSignature || ''",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "reset-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Reset Stuck Retry Count On Progress",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 680,
-            "y": 1710
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-check",
-          "type": "condition.expression",
-          "label": "Session Stuck?",
-          "config": {
-            "expression": "(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
-          },
-          "position": {
-            "x": 980,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "emit-stuck",
-          "type": "action.emit_event",
-          "label": "Emit session-stuck",
-          "config": {
-            "eventType": "session-stuck",
-            "payload": {
-              "taskId": "{{taskId}}",
-              "turn": "{{continuationTurn}}",
-              "externalStatus": "{{currentExternalStatus}}",
-              "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "stuckForMs": "{{stuckForMs}}",
-              "onStuck": "{{onStuck}}",
-              "stuckRetryCount": "{{stuckRetryCount}}",
-              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
-              "lastProgressAt": "{{lastProgressAt}}",
-              "lastProgressSignature": "{{lastProgressSignature}}",
-              "currentProgressSignature": "{{currentProgressSignature}}",
-              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
-              "agentActivityDetected": "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
-              "agentItemCount": "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
-              "agentStreamCount": "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
-              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
-              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
-              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
-            },
-            "outputVariable": "sessionStuckEvent"
-          },
-          "position": {
-            "x": 980,
-            "y": 1600
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-route",
-          "type": "condition.switch",
-          "label": "Route onStuck Action",
-          "config": {
-            "value": "$data?.onStuck || 'escalate'",
-            "cases": {
-              "retry": "retry",
-              "escalate": "escalate",
-              "pause": "pause"
-            }
-          },
-          "position": {
-            "x": 980,
-            "y": 1710
-          },
-          "outputs": [
-            "retry",
-            "escalate",
-            "pause",
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-retry-budget",
-          "type": "condition.expression",
-          "label": "Stuck Retry Budget Remaining?",
-          "config": {
-            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
-          },
-          "position": {
-            "x": 760,
-            "y": 1820
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "stuck-retry",
-          "type": "action.run_agent",
-          "label": "Retry After Stuck",
-          "config": {
-            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
-            "taskId": "{{taskId}}",
-            "cwd": "{{worktreePath}}",
-            "sdk": "{{sdk}}",
-            "model": "{{model}}",
-            "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
-            "failOnError": false
-          },
-          "position": {
-            "x": 760,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-stuck-retry-count",
-          "type": "action.set_variable",
-          "label": "Increment Stuck Retry Count",
-          "config": {
-            "key": "stuckRetryCount",
-            "value": "Number($data?.stuckRetryCount || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 760,
-            "y": 1940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-escalate",
-          "type": "notify.log",
-          "label": "Escalate Stuck Session",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
-          },
-          "position": {
-            "x": 980,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-escalate-budget",
-          "type": "notify.log",
-          "label": "Escalate Stuck Session (Retry Limit)",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
-          },
-          "position": {
-            "x": 760,
-            "y": 2050
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "stuck-pause",
-          "type": "notify.log",
-          "label": "Pause Stuck Session",
-          "config": {
-            "level": "warn",
-            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
-          },
-          "position": {
-            "x": 1200,
-            "y": 1830
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-escalated",
-          "type": "flow.end",
-          "label": "End: Escalated",
-          "config": {
-            "status": "failed",
-            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
-            "output": {
-              "reason": "stuck_escalated",
-              "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}",
-              "stuckRetryCount": "{{stuckRetryCount}}",
-              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
-            }
-          },
-          "position": {
-            "x": 980,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "end-paused",
-          "type": "flow.end",
-          "label": "End: Paused",
-          "config": {
-            "status": "completed",
-            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
-            "output": {
-              "reason": "stuck_paused",
-              "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}"
-            }
-          },
-          "position": {
-            "x": 1200,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "wait-next-turn",
-          "type": "action.delay",
-          "label": "Wait Poll Interval",
-          "config": {
-            "ms": "{{pollIntervalMs}}",
-            "reason": "Waiting before next external status poll"
-          },
-          "position": {
-            "x": 760,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-turn",
-          "type": "action.set_variable",
-          "label": "Increment Turn",
-          "config": {
-            "key": "continuationTurn",
-            "value": "Number($data?.continuationTurn || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 760,
-            "y": 2060
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "wait-next-turn-no-stuck",
-          "type": "action.delay",
-          "label": "Wait (No Stuck)",
-          "config": {
-            "ms": "{{pollIntervalMs}}",
-            "reason": "Waiting before next external status poll"
-          },
-          "position": {
-            "x": 1080,
-            "y": 1950
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "increment-turn-no-stuck",
-          "type": "action.set_variable",
-          "label": "Increment Turn (No Stuck)",
-          "config": {
-            "key": "continuationTurn",
-            "value": "Number($data?.continuationTurn || 0) + 1",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 2060
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->init-turn",
-          "source": "trigger",
-          "target": "init-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-turn->init-progress-at",
-          "source": "init-turn",
-          "target": "init-progress-at",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-progress-at->init-signature",
-          "source": "init-progress-at",
-          "target": "init-signature",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-signature->init-stuck-retry-count",
-          "source": "init-signature",
-          "target": "init-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "init-stuck-retry-count->poll-task",
-          "source": "init-stuck-retry-count",
-          "target": "poll-task",
-          "sourcePort": "default"
-        },
-        {
-          "id": "poll-task->derive-status",
-          "source": "poll-task",
-          "target": "derive-status",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-status->terminal-check",
-          "source": "derive-status",
-          "target": "terminal-check",
-          "sourcePort": "default"
-        },
-        {
-          "id": "terminal-check->end-terminal",
-          "source": "terminal-check",
-          "target": "end-terminal",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "terminal-check->max-turns-check",
-          "source": "terminal-check",
-          "target": "max-turns-check",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "max-turns-check->end-max-turns",
-          "source": "max-turns-check",
-          "target": "end-max-turns",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "max-turns-check->run-agent",
-          "source": "max-turns-check",
-          "target": "run-agent",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-agent->capture-progress",
-          "source": "run-agent",
-          "target": "capture-progress",
-          "sourcePort": "default"
-        },
-        {
-          "id": "capture-progress->derive-signature",
-          "source": "capture-progress",
-          "target": "derive-signature",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-signature->derive-stuck-ms",
-          "source": "derive-signature",
-          "target": "derive-stuck-ms",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-stuck-ms->progress-changed",
-          "source": "derive-stuck-ms",
-          "target": "progress-changed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "progress-changed->mark-progress-at",
-          "source": "progress-changed",
-          "target": "mark-progress-at",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-progress-at->mark-progress-sig",
-          "source": "mark-progress-at",
-          "target": "mark-progress-sig",
-          "sourcePort": "default"
-        },
-        {
-          "id": "mark-progress-sig->reset-stuck-retry-count",
-          "source": "mark-progress-sig",
-          "target": "reset-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "reset-stuck-retry-count->stuck-check",
-          "source": "reset-stuck-retry-count",
-          "target": "stuck-check",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-check->emit-stuck",
-          "source": "stuck-check",
-          "target": "emit-stuck",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "stuck-check->wait-next-turn-no-stuck",
-          "source": "stuck-check",
-          "target": "wait-next-turn-no-stuck",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "emit-stuck->stuck-route",
-          "source": "emit-stuck",
-          "target": "stuck-route",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-route->stuck-retry-budget",
-          "source": "stuck-route",
-          "target": "stuck-retry-budget",
-          "sourcePort": "retry"
-        },
-        {
-          "id": "stuck-route->stuck-escalate",
-          "source": "stuck-route",
-          "target": "stuck-escalate",
-          "sourcePort": "escalate"
-        },
-        {
-          "id": "stuck-route->stuck-pause",
-          "source": "stuck-route",
-          "target": "stuck-pause",
-          "sourcePort": "pause"
-        },
-        {
-          "id": "stuck-route->stuck-escalate",
-          "source": "stuck-route",
-          "target": "stuck-escalate",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-retry-budget->stuck-retry",
-          "source": "stuck-retry-budget",
-          "target": "stuck-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "stuck-retry-budget->stuck-escalate-budget",
-          "source": "stuck-retry-budget",
-          "target": "stuck-escalate-budget",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "stuck-retry->increment-stuck-retry-count",
-          "source": "stuck-retry",
-          "target": "increment-stuck-retry-count",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-stuck-retry-count->wait-next-turn",
-          "source": "increment-stuck-retry-count",
-          "target": "wait-next-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-escalate->end-escalated",
-          "source": "stuck-escalate",
-          "target": "end-escalated",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-escalate-budget->end-escalated",
-          "source": "stuck-escalate-budget",
-          "target": "end-escalated",
-          "sourcePort": "default"
-        },
-        {
-          "id": "stuck-pause->end-paused",
-          "source": "stuck-pause",
-          "target": "end-paused",
-          "sourcePort": "default"
-        },
-        {
-          "id": "wait-next-turn->increment-turn",
-          "source": "wait-next-turn",
-          "target": "increment-turn",
-          "sourcePort": "default"
-        },
-        {
-          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
-          "source": "wait-next-turn-no-stuck",
-          "target": "increment-turn-no-stuck",
-          "sourcePort": "default"
-        },
-        {
-          "id": "increment-turn->poll-task",
-          "source": "increment-turn",
-          "target": "poll-task",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 500
-        },
-        {
-          "id": "increment-turn-no-stuck->poll-task",
-          "source": "increment-turn-no-stuck",
-          "target": "poll-task",
-          "sourcePort": "default",
-          "backEdge": true,
-          "maxIterations": 500
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-continuation-loop",
-          "templateName": "Continuation Loop",
-          "templateVersion": "1.3.0",
-          "installedTemplateVersion": "1.3.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-continuation-loop-manual",
-      "name": "Continuation Loop (Manual)",
-      "description": "Issue-state continuation loop for a specific task. Provide taskId and worktreePath at install time. Drives the agent until a terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
-      "category": "reliability",
-      "enabled": true,
-      "nodeCount": 34,
-      "trigger": "trigger.manual",
-      "variables": {
-        "taskId": "",
-        "worktreePath": "",
-        "maxTurns": 8,
-        "pollIntervalMs": 30000,
-        "terminalStates": [
-          "done",
-          "cancelled"
-        ],
-        "stuckThresholdMs": 300000,
-        "maxStuckAutoRetries": 1,
-        "onStuck": "escalate",
-        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
-        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
-        "sdk": "auto",
-        "model": "",
-        "timeoutMs": 1800000
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Continuation Loop",
+          "label": "Task Available",
           "config": {},
           "position": {
             "x": 420,
@@ -38120,7 +35001,6 @@
             "sdk": "{{sdk}}",
             "model": "{{model}}",
             "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
             "failOnError": false
           },
           "position": {
@@ -38160,23 +35040,6 @@
           "position": {
             "x": 800,
             "y": 1240
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "derive-stuck-ms",
-          "type": "action.set_variable",
-          "label": "Derive Stuck Duration",
-          "config": {
-            "key": "stuckForMs",
-            "value": "Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))",
-            "isExpression": true
-          },
-          "position": {
-            "x": 1080,
-            "y": 1230
           },
           "outputs": [
             "default"
@@ -38254,7 +35117,7 @@
           "type": "condition.expression",
           "label": "Session Stuck?",
           "config": {
-            "expression": "(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()"
+            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
           },
           "position": {
             "x": 980,
@@ -38276,17 +35139,13 @@
               "turn": "{{continuationTurn}}",
               "externalStatus": "{{currentExternalStatus}}",
               "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "stuckForMs": "{{stuckForMs}}",
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
               "onStuck": "{{onStuck}}",
               "stuckRetryCount": "{{stuckRetryCount}}",
               "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
               "lastProgressAt": "{{lastProgressAt}}",
               "lastProgressSignature": "{{lastProgressSignature}}",
               "currentProgressSignature": "{{currentProgressSignature}}",
-              "placeholderResponse": "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
-              "agentActivityDetected": "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
-              "agentItemCount": "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
-              "agentStreamCount": "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
               "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
               "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
               "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
@@ -38351,7 +35210,6 @@
             "sdk": "{{sdk}}",
             "model": "{{model}}",
             "timeoutMs": "{{timeoutMs}}",
-            "requireTaskPromptCompleteness": false,
             "failOnError": false
           },
           "position": {
@@ -38385,7 +35243,7 @@
           "label": "Escalate Stuck Session",
           "config": {
             "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
           },
           "position": {
             "x": 980,
@@ -38401,7 +35259,7 @@
           "label": "Escalate Stuck Session (Retry Limit)",
           "config": {
             "level": "warn",
-            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
           },
           "position": {
             "x": 760,
@@ -38622,14 +35480,8 @@
           "sourcePort": "default"
         },
         {
-          "id": "derive-signature->derive-stuck-ms",
+          "id": "derive-signature->progress-changed",
           "source": "derive-signature",
-          "target": "derive-stuck-ms",
-          "sourcePort": "default"
-        },
-        {
-          "id": "derive-stuck-ms->progress-changed",
-          "source": "derive-stuck-ms",
           "target": "progress-changed",
           "sourcePort": "default"
         },
@@ -38779,10 +35631,878 @@
         "createdAt": "2026-03-28T12:00:00.000Z",
         "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
-          "templateId": "template-continuation-loop-manual",
-          "templateName": "Continuation Loop (Manual)",
-          "templateVersion": "1.3.0",
-          "installedTemplateVersion": "1.3.0",
+          "templateId": "template-continuation-loop",
+          "templateName": "Continuation Loop",
+          "templateVersion": "1.1.0",
+          "installedTemplateVersion": "1.1.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-continuation-loop",
+      "name": "Continuation Loop",
+      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "category": "reliability",
+      "enabled": true,
+      "nodeCount": 33,
+      "trigger": "trigger.task_available",
+      "variables": {
+        "taskId": "",
+        "worktreePath": "",
+        "maxTurns": 8,
+        "pollIntervalMs": 30000,
+        "terminalStates": [
+          "done",
+          "cancelled"
+        ],
+        "stuckThresholdMs": 300000,
+        "maxStuckAutoRetries": 1,
+        "onStuck": "escalate",
+        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
+        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
+        "sdk": "auto",
+        "model": "",
+        "timeoutMs": 1800000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_available",
+          "label": "Task Available",
+          "config": {},
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-turn",
+          "type": "action.set_variable",
+          "label": "Initialize Turn Counter",
+          "config": {
+            "key": "continuationTurn",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-progress-at",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "Date.now()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 280
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-signature",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Initialize Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "poll-task",
+          "type": "action.bosun_function",
+          "label": "Poll External Task State",
+          "config": {
+            "function": "tasks.get",
+            "args": {
+              "taskId": "{{taskId}}"
+            },
+            "outputVariable": "continuationTask"
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-status",
+          "type": "action.set_variable",
+          "label": "Derive External Status",
+          "config": {
+            "key": "currentExternalStatus",
+            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "terminal-check",
+          "type": "condition.expression",
+          "label": "Terminal State Reached?",
+          "config": {
+            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
+          },
+          "position": {
+            "x": 420,
+            "y": 720
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-terminal",
+          "type": "flow.end",
+          "label": "End: Terminal State",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
+            "output": {
+              "reason": "terminal_state",
+              "taskId": "{{taskId}}",
+              "externalStatus": "{{currentExternalStatus}}"
+            }
+          },
+          "position": {
+            "x": 160,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "max-turns-check",
+          "type": "condition.expression",
+          "label": "Max Turns Reached?",
+          "config": {
+            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
+          },
+          "position": {
+            "x": 620,
+            "y": 860
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-max-turns",
+          "type": "flow.end",
+          "label": "End: Max Turns",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
+            "output": {
+              "reason": "max_turns",
+              "taskId": "{{taskId}}",
+              "turns": "{{continuationTurn}}"
+            }
+          },
+          "position": {
+            "x": 460,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent",
+          "type": "action.run_agent",
+          "label": "Drive Agent",
+          "config": {
+            "prompt": "{{continuePrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "capture-progress",
+          "type": "action.run_command",
+          "label": "Capture Progress Signature",
+          "config": {
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-signature",
+          "type": "action.set_variable",
+          "label": "Derive Signature",
+          "config": {
+            "key": "currentProgressSignature",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 800,
+            "y": 1240
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "progress-changed",
+          "type": "condition.expression",
+          "label": "Progress Changed?",
+          "config": {
+            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
+          },
+          "position": {
+            "x": 800,
+            "y": 1360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "mark-progress-at",
+          "type": "action.set_variable",
+          "label": "Update Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "mark-progress-sig",
+          "type": "action.set_variable",
+          "label": "Update Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "$data?.currentProgressSignature || ''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "reset-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Reset Stuck Retry Count On Progress",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1710
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-check",
+          "type": "condition.expression",
+          "label": "Session Stuck?",
+          "config": {
+            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+          },
+          "position": {
+            "x": 980,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "emit-stuck",
+          "type": "action.emit_event",
+          "label": "Emit session-stuck",
+          "config": {
+            "eventType": "session-stuck",
+            "payload": {
+              "taskId": "{{taskId}}",
+              "turn": "{{continuationTurn}}",
+              "externalStatus": "{{currentExternalStatus}}",
+              "stuckThresholdMs": "{{stuckThresholdMs}}",
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+              "onStuck": "{{onStuck}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
+              "lastProgressAt": "{{lastProgressAt}}",
+              "lastProgressSignature": "{{lastProgressSignature}}",
+              "currentProgressSignature": "{{currentProgressSignature}}",
+              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
+            },
+            "outputVariable": "sessionStuckEvent"
+          },
+          "position": {
+            "x": 980,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-route",
+          "type": "condition.switch",
+          "label": "Route onStuck Action",
+          "config": {
+            "value": "$data?.onStuck || 'escalate'",
+            "cases": {
+              "retry": "retry",
+              "escalate": "escalate",
+              "pause": "pause"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "retry",
+            "escalate",
+            "pause",
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-retry-budget",
+          "type": "condition.expression",
+          "label": "Stuck Retry Budget Remaining?",
+          "config": {
+            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
+          },
+          "position": {
+            "x": 760,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "stuck-retry",
+          "type": "action.run_agent",
+          "label": "Retry After Stuck",
+          "config": {
+            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 760,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Increment Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "Number($data?.stuckRetryCount || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 980,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate-budget",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session (Retry Limit)",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 760,
+            "y": 2050
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-pause",
+          "type": "notify.log",
+          "label": "Pause Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 1200,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-escalated",
+          "type": "flow.end",
+          "label": "End: Escalated",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_escalated",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-paused",
+          "type": "flow.end",
+          "label": "End: Paused",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_paused",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 1200,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn",
+          "type": "action.delay",
+          "label": "Wait Poll Interval",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 760,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn",
+          "type": "action.set_variable",
+          "label": "Increment Turn",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn-no-stuck",
+          "type": "action.delay",
+          "label": "Wait (No Stuck)",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn-no-stuck",
+          "type": "action.set_variable",
+          "label": "Increment Turn (No Stuck)",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 1080,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->init-turn",
+          "source": "trigger",
+          "target": "init-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-turn->init-progress-at",
+          "source": "init-turn",
+          "target": "init-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-progress-at->init-signature",
+          "source": "init-progress-at",
+          "target": "init-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-signature->init-stuck-retry-count",
+          "source": "init-signature",
+          "target": "init-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-stuck-retry-count->poll-task",
+          "source": "init-stuck-retry-count",
+          "target": "poll-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "poll-task->derive-status",
+          "source": "poll-task",
+          "target": "derive-status",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-status->terminal-check",
+          "source": "derive-status",
+          "target": "terminal-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "terminal-check->end-terminal",
+          "source": "terminal-check",
+          "target": "end-terminal",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "terminal-check->max-turns-check",
+          "source": "terminal-check",
+          "target": "max-turns-check",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "max-turns-check->end-max-turns",
+          "source": "max-turns-check",
+          "target": "end-max-turns",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "max-turns-check->run-agent",
+          "source": "max-turns-check",
+          "target": "run-agent",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-agent->capture-progress",
+          "source": "run-agent",
+          "target": "capture-progress",
+          "sourcePort": "default"
+        },
+        {
+          "id": "capture-progress->derive-signature",
+          "source": "capture-progress",
+          "target": "derive-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-signature->progress-changed",
+          "source": "derive-signature",
+          "target": "progress-changed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "progress-changed->mark-progress-at",
+          "source": "progress-changed",
+          "target": "mark-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-at->mark-progress-sig",
+          "source": "mark-progress-at",
+          "target": "mark-progress-sig",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-sig->reset-stuck-retry-count",
+          "source": "mark-progress-sig",
+          "target": "reset-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reset-stuck-retry-count->stuck-check",
+          "source": "reset-stuck-retry-count",
+          "target": "stuck-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-check->emit-stuck",
+          "source": "stuck-check",
+          "target": "emit-stuck",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-check->wait-next-turn-no-stuck",
+          "source": "stuck-check",
+          "target": "wait-next-turn-no-stuck",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "emit-stuck->stuck-route",
+          "source": "emit-stuck",
+          "target": "stuck-route",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-route->stuck-retry-budget",
+          "source": "stuck-route",
+          "target": "stuck-retry-budget",
+          "sourcePort": "retry"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "escalate"
+        },
+        {
+          "id": "stuck-route->stuck-pause",
+          "source": "stuck-route",
+          "target": "stuck-pause",
+          "sourcePort": "pause"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-retry",
+          "source": "stuck-retry-budget",
+          "target": "stuck-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-escalate-budget",
+          "source": "stuck-retry-budget",
+          "target": "stuck-escalate-budget",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "stuck-retry->increment-stuck-retry-count",
+          "source": "stuck-retry",
+          "target": "increment-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-stuck-retry-count->wait-next-turn",
+          "source": "increment-stuck-retry-count",
+          "target": "wait-next-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate->end-escalated",
+          "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate-budget->end-escalated",
+          "source": "stuck-escalate-budget",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-pause->end-paused",
+          "source": "stuck-pause",
+          "target": "end-paused",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn->increment-turn",
+          "source": "wait-next-turn",
+          "target": "increment-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
+          "source": "wait-next-turn-no-stuck",
+          "target": "increment-turn-no-stuck",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-turn->poll-task",
+          "source": "increment-turn",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        },
+        {
+          "id": "increment-turn-no-stuck->poll-task",
+          "source": "increment-turn-no-stuck",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-continuation-loop",
+          "templateName": "Continuation Loop",
+          "templateVersion": "1.1.0",
+          "installedTemplateVersion": "1.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -40075,469 +37795,6 @@
       }
     },
     {
-      "id": "wf-recover-blocked-task",
-      "name": "Recover Blocked Task (Worktree)",
-      "description": "Sub-workflow invoked once per blocked task by template-recover-blocked-worktrees. Sweeps stale worktrees for the task, acquires a clean one, and unblocks the task so it re-enters the normal task lifecycle. Works across all workspace repos — repo context is sourced entirely from the task's own stored metadata.",
-      "category": "reliability",
-      "enabled": true,
-      "nodeCount": 10,
-      "trigger": "trigger.event",
-      "variables": {
-        "baseBranch": "main",
-        "defaultTargetBranch": "origin/main"
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.event",
-          "label": "Recovery Requested",
-          "config": {
-            "eventType": "task.blocked.recovery_requested"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-context",
-          "type": "condition.expression",
-          "label": "Has Task Context?",
-          "config": {
-            "expression": "Boolean($data?.item?.taskId || $data?.taskId) && Boolean($data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch) && Boolean($data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot)"
-          },
-          "position": {
-            "x": 400,
-            "y": 190
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "recover-wt",
-          "type": "action.recover_worktree",
-          "label": "Reset Broken Worktree",
-          "config": {
-            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
-            "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
-            "repoRoot": "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
-            "worktreePath": "{{$data?.item?.worktreePath || $data?.worktreePath || $data?.item?.meta?.worktreeFailure?.worktreePath || $data?.meta?.worktreeFailure?.worktreePath || ''}}"
-          },
-          "position": {
-            "x": 250,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "acquire-wt",
-          "type": "action.acquire_worktree",
-          "label": "Acquire Clean Worktree",
-          "config": {
-            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
-            "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
-            "repoRoot": "{{$data?.item?.repoRoot || $data?.item?.workspace || $data?.repoRoot || $data?.workspace || $data?.item?.meta?.worktreeFailure?.repoRoot || $data?.meta?.worktreeFailure?.repoRoot || ''}}",
-            "baseBranch": "{{$data?.item?.baseBranch || $data?.baseBranch || $data?.item?.meta?.worktreeFailure?.baseBranch || $data?.meta?.worktreeFailure?.baseBranch || baseBranch}}",
-            "defaultTargetBranch": "{{$data?.item?.defaultTargetBranch || $data?.defaultTargetBranch || $data?.item?.meta?.worktreeFailure?.defaultTargetBranch || $data?.meta?.worktreeFailure?.defaultTargetBranch || defaultTargetBranch}}"
-          },
-          "position": {
-            "x": 250,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-acquired",
-          "type": "condition.expression",
-          "label": "Worktree Acquired?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('acquire-wt')?.success === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 640
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "unblock-task",
-          "type": "action.update_task_status",
-          "label": "Unblock Task",
-          "config": {
-            "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
-            "status": "todo",
-            "taskTitle": "{{$data?.item?.taskTitle || $data?.taskTitle || $data?.item?.taskId || $data?.taskId || ''}}",
-            "workflowEvent": "task.blocked.recovery_succeeded",
-            "workflowData": {
-              "stage": "worktree_recovery",
-              "result": "recovered",
-              "branch": "{{$data?.item?.branch || $data?.item?.branchName || $data?.branch || $data?.branchName || $data?.item?.meta?.worktreeFailure?.branch || $data?.meta?.worktreeFailure?.branch || ''}}",
-              "worktreePath": "{{$ctx.getNodeOutput('acquire-wt')?.worktreePath || ''}}"
-            }
-          },
-          "position": {
-            "x": 250,
-            "y": 790
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "clear-blocked-meta",
-          "type": "action.bosun_function",
-          "label": "Clear Blocked Metadata",
-          "config": {
-            "function": "tasks.update",
-            "args": {
-              "taskId": "{{$data?.item?.taskId || $data?.taskId || ''}}",
-              "fields": {
-                "blockedReason": null,
-                "meta": "{{(() => { const cur = Object.assign({}, $data?.item?.meta || $data?.meta || {}); delete cur.autoRecovery; delete cur.worktreeFailure; delete cur.consecutiveRecoveryFailures; delete cur.blockedReason; return cur; })()}}"
-              }
-            }
-          },
-          "position": {
-            "x": 250,
-            "y": 940
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-success",
-          "type": "notify.log",
-          "label": "Log Recovery Success",
-          "config": {
-            "message": ":check: Worktree recovery succeeded for task {{$data?.item?.taskId || $data?.taskId}} ({{$data?.item?.taskTitle || $data?.taskTitle || 'unknown'}}). Task unblocked and returned to todo.",
-            "level": "info"
-          },
-          "position": {
-            "x": 250,
-            "y": 1090
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-no-context",
-          "type": "notify.log",
-          "label": "Log Missing Context",
-          "config": {
-            "message": "Blocked task recovery skipped — missing taskId or branch in dispatch payload. Item: {{JSON.stringify($data?.item || {})}}",
-            "level": "warn"
-          },
-          "position": {
-            "x": 620,
-            "y": 340
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-acquire-failed",
-          "type": "notify.log",
-          "label": "Log Acquire Failure",
-          "config": {
-            "message": ":warning: Worktree recovery failed for task {{$data?.item?.taskId || $data?.taskId}} — could not acquire a clean worktree. Branch: {{$data?.item?.branch || $data?.branch || 'unknown'}}. Manual intervention may be required.",
-            "level": "warn"
-          },
-          "position": {
-            "x": 620,
-            "y": 790
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->check-context",
-          "source": "trigger",
-          "target": "check-context",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-context->recover-wt",
-          "source": "check-context",
-          "target": "recover-wt",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-context->log-no-context",
-          "source": "check-context",
-          "target": "log-no-context",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "recover-wt->acquire-wt",
-          "source": "recover-wt",
-          "target": "acquire-wt",
-          "sourcePort": "default"
-        },
-        {
-          "id": "acquire-wt->check-acquired",
-          "source": "acquire-wt",
-          "target": "check-acquired",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-acquired->unblock-task",
-          "source": "check-acquired",
-          "target": "unblock-task",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-acquired->log-acquire-failed",
-          "source": "check-acquired",
-          "target": "log-acquire-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "unblock-task->clear-blocked-meta",
-          "source": "unblock-task",
-          "target": "clear-blocked-meta",
-          "sourcePort": "default"
-        },
-        {
-          "id": "clear-blocked-meta->log-success",
-          "source": "clear-blocked-meta",
-          "target": "log-success",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-recover-blocked-task",
-          "templateName": "Recover Blocked Task (Worktree)",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-recover-blocked-worktrees",
-      "name": "Recover Blocked Worktree Tasks",
-      "description": "Scheduled operator-assist workflow that finds all tasks blocked due to worktree failures, sweeps their stale worktrees, and re-queues each as todo. Works across every repo in the workspace — repo context is read from each task's own metadata, so no repo configuration is needed here.",
-      "category": "reliability",
-      "enabled": true,
-      "nodeCount": 7,
-      "trigger": "trigger.schedule",
-      "variables": {
-        "scheduleIntervalMs": 1800000,
-        "maxPerSweep": 20,
-        "maxConcurrent": 2
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.schedule",
-          "label": "Scheduled Worktree Recovery Sweep",
-          "config": {
-            "intervalMs": "{{scheduleIntervalMs}}",
-            "cron": "*/30 * * * *"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "query-blocked",
-          "type": "action.run_command",
-          "label": "Query Blocked Tasks",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        let repoRoot = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        if (repoRoot.toLowerCase().includes(mirrorMarker)) {\n          const r = path.resolve(repoRoot, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(r, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = r;\n        }\n        const kanbanUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanUrl)\n          .then(k => k.listTasks(undefined, { status: \"blocked\" }))\n          .then(tasks => {\n            const limit = parseInt(process.env.MAX_PER_SWEEP || \"20\");\n            const blocked = (tasks || [])\n              .map(t => {\n                const meta = t && typeof t.meta === \"object\" ? t.meta : {};\n                const worktreeFailure = meta && typeof meta.worktreeFailure === \"object\" ? meta.worktreeFailure : {};\n                const branch = t?.branch || t?.branchName || t?.metadata?.branch || meta?.branch || worktreeFailure?.branch || null;\n                const repoRoot = t?.repoRoot || t?.workspace || t?.metadata?.repoRoot || t?.metadata?.workspace || meta?.repoRoot || meta?.workspace || worktreeFailure?.repoRoot || null;\n                const worktreePath = t?.worktreePath || t?.metadata?.worktreePath || meta?.worktreePath || worktreeFailure?.worktreePath || null;\n                const baseBranch = t?.baseBranch || t?.metadata?.baseBranch || meta?.baseBranch || worktreeFailure?.baseBranch || null;\n                const defaultTargetBranch = t?.defaultTargetBranch || t?.metadata?.defaultTargetBranch || meta?.defaultTargetBranch || worktreeFailure?.defaultTargetBranch || null;\n                return {\n                  taskId:       t?.id,\n                  taskTitle:    t?.title || t?.id,\n                  branch,\n                  repoRoot,\n                  worktreePath,\n                  repository:   t?.repository || t?.metadata?.repository || meta?.repository || null,\n                  baseBranch,\n                  defaultTargetBranch,\n                  meta,\n                };\n              })\n              .filter(t => t && t.taskId && t.branch && t.repoRoot)\n              .slice(0, limit)\n              ;\n            console.log(JSON.stringify(blocked));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
-            ],
-            "env": {
-              "MAX_PER_SWEEP": "{{maxPerSweep}}"
-            },
-            "parseJson": true
-          },
-          "position": {
-            "x": 400,
-            "y": 190
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "check-has-tasks",
-          "type": "condition.expression",
-          "label": "Any Blocked Tasks?",
-          "config": {
-            "expression": "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0"
-          },
-          "position": {
-            "x": 400,
-            "y": 360
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "recover-each",
-          "type": "loop.for_each",
-          "label": "Recover Each Blocked Task",
-          "config": {
-            "items": "$ctx.getNodeOutput('query-blocked')?.output || []",
-            "variable": "item",
-            "indexVariable": "recoveryIndex",
-            "maxConcurrent": "{{maxConcurrent}}",
-            "workflowId": "template-recover-blocked-task",
-            "mode": "dispatch"
-          },
-          "position": {
-            "x": 400,
-            "y": 510
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "prune-worktrees",
-          "type": "action.run_command",
-          "label": "Prune Stale Worktree Refs",
-          "config": {
-            "command": "git",
-            "args": [
-              "worktree",
-              "prune",
-              "--verbose"
-            ],
-            "continueOnError": true
-          },
-          "position": {
-            "x": 400,
-            "y": 650
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-summary",
-          "type": "notify.log",
-          "label": "Log Recovery Summary",
-          "config": {
-            "message": ":broom: Blocked worktree recovery sweep dispatched for {{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
-            "level": "info"
-          },
-          "position": {
-            "x": 250,
-            "y": 790
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-idle",
-          "type": "notify.log",
-          "label": "Log No Blocked Tasks",
-          "config": {
-            "message": "Blocked worktree recovery sweep: no blocked tasks with branch context found.",
-            "level": "debug"
-          },
-          "position": {
-            "x": 620,
-            "y": 510
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->query-blocked",
-          "source": "trigger",
-          "target": "query-blocked",
-          "sourcePort": "default"
-        },
-        {
-          "id": "query-blocked->check-has-tasks",
-          "source": "query-blocked",
-          "target": "check-has-tasks",
-          "sourcePort": "default"
-        },
-        {
-          "id": "check-has-tasks->recover-each",
-          "source": "check-has-tasks",
-          "target": "recover-each",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "check-has-tasks->log-idle",
-          "source": "check-has-tasks",
-          "target": "log-idle",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "recover-each->prune-worktrees",
-          "source": "recover-each",
-          "target": "prune-worktrees",
-          "sourcePort": "default"
-        },
-        {
-          "id": "prune-worktrees->log-summary",
-          "source": "prune-worktrees",
-          "target": "log-summary",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-recover-blocked-worktrees",
-          "templateName": "Recover Blocked Worktree Tasks",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
       "id": "wf-task-archiver",
       "name": "Task Archiver",
       "description": "Automated archival of completed tasks — migrates old completed/cancelled tasks to local archives, cleans up agent sessions, prunes archives beyond retention, and optionally chains into Sprint Retrospective.",
@@ -41540,13 +38797,11 @@
       "description": "Recovery workflow for tasks that fail execution or finalization. Refreshes worktree state, runs a repair agent, re-validates quality gates, and escalates only after automated repair fails.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 21,
+      "nodeCount": 16,
       "trigger": "trigger.event",
       "variables": {
         "repairTimeoutMs": 5400000,
         "verificationTimeoutMs": 3600000,
-        "repoRoot": "",
-        "defaultTargetBranch": "main",
         "baseBranch": "main",
         "verificationCommand": "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
         "repairPrompt": "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for Bosun PR lifecycle handoff."
@@ -41583,88 +38838,18 @@
           ]
         },
         {
-          "id": "has-branch-context",
+          "id": "has-worktree",
           "type": "condition.expression",
-          "label": "Branch Context Available?",
+          "label": "Worktree Context Available?",
           "config": {
-            "expression": "Boolean($data?.repoRoot) && Boolean($data?.branch) && Boolean($data?.taskId)"
+            "expression": "Boolean($data?.worktreePath)"
           },
           "position": {
             "x": 400,
             "y": 180
           },
           "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "recover-repair-worktree",
-          "type": "action.recover_worktree",
-          "label": "Reset Broken Worktree",
-          "config": {
-            "worktreePath": "{{worktreePath}}",
-            "branch": "{{branch}}",
-            "repoRoot": "{{repoRoot}}",
-            "taskId": "{{taskId}}"
-          },
-          "position": {
-            "x": 220,
-            "y": 320
-          },
-          "outputs": [
             "default"
-          ]
-        },
-        {
-          "id": "acquire-repair-worktree",
-          "type": "action.acquire_worktree",
-          "label": "Acquire Clean Worktree",
-          "config": {
-            "repoRoot": "{{repoRoot}}",
-            "branch": "{{branch}}",
-            "taskId": "{{taskId}}",
-            "baseBranch": "{{baseBranch}}",
-            "defaultTargetBranch": "{{defaultTargetBranch}}"
-          },
-          "position": {
-            "x": 220,
-            "y": 460
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "acquired-repair-worktree",
-          "type": "condition.expression",
-          "label": "Clean Worktree Ready?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('acquire-repair-worktree')?.success === true"
-          },
-          "position": {
-            "x": 220,
-            "y": 600
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "has-worktree",
-          "type": "condition.expression",
-          "label": "Fallback Worktree Context Available?",
-          "config": {
-            "expression": "Boolean($data?.worktreePath)"
-          },
-          "position": {
-            "x": 560,
-            "y": 320
-          },
-          "outputs": [
-            "yes",
-            "no"
           ]
         },
         {
@@ -41673,12 +38858,12 @@
           "label": "Refresh Worktree",
           "config": {
             "operation": "fetch",
-            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
+            "cwd": "{{worktreePath}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 740
+            "y": 320
           },
           "outputs": [
             "default"
@@ -41690,12 +38875,12 @@
           "label": "Repair Task",
           "config": {
             "prompt": "{{repairPrompt}}",
-            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
+            "cwd": "{{worktreePath}}",
             "timeoutMs": "{{repairTimeoutMs}}"
           },
           "position": {
             "x": 400,
-            "y": 880
+            "y": 460
           },
           "outputs": [
             "default"
@@ -41707,13 +38892,13 @@
           "label": "Re-run Quality Gates",
           "config": {
             "command": "{{verificationCommand}}",
-            "cwd": "{{$ctx.getNodeOutput('acquire-repair-worktree')?.worktreePath || $data?.worktreePath || ''}}",
+            "cwd": "{{worktreePath}}",
             "timeoutMs": "{{verificationTimeoutMs}}",
             "continueOnError": true
           },
           "position": {
             "x": 400,
-            "y": 1020
+            "y": 600
           },
           "outputs": [
             "default"
@@ -41728,7 +38913,7 @@
           },
           "position": {
             "x": 400,
-            "y": 1160
+            "y": 740
           },
           "outputs": [
             "default"
@@ -41750,7 +38935,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1300
+            "y": 880
           },
           "outputs": [
             "default"
@@ -41765,7 +38950,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1370
+            "y": 950
           },
           "outputs": [
             "yes",
@@ -41790,7 +38975,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1440
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -41799,21 +38984,18 @@
         {
           "id": "clear-repair-blocked-success",
           "type": "action.bosun_function",
-          "label": "Clear Repair Blocked State",
+          "label": "Clear Repair Block (Success)",
           "config": {
-            "function": "tasks.update",
+            "function": "tasks.clearBlocker",
             "args": {
               "taskId": "{{taskId}}",
-              "fields": {
-                "cooldownUntil": null,
-                "blockedReason": null,
-                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
-              }
-            }
+              "reason": "repair_succeeded"
+            },
+            "continueOnError": true
           },
           "position": {
             "x": 250,
-            "y": 1510
+            "y": 1090
           },
           "outputs": [
             "default"
@@ -41838,7 +39020,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1650
+            "y": 1160
           },
           "outputs": [
             "default"
@@ -41863,30 +39045,7 @@
           },
           "position": {
             "x": 560,
-            "y": 1300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "clear-repair-blocked-failure",
-          "type": "action.bosun_function",
-          "label": "Clear Failed Repair Blocked State",
-          "config": {
-            "function": "tasks.update",
-            "args": {
-              "taskId": "{{taskId}}",
-              "fields": {
-                "cooldownUntil": null,
-                "blockedReason": null,
-                "meta": "{{(() => { const current = ($data?.meta && typeof $data.meta === 'object') ? $data.meta : {}; const next = { ...current }; delete next.autoRecovery; delete next.worktreeFailure; delete next.blockedReason; return next; })()}}"
-              }
-            }
-          },
-          "position": {
-            "x": 560,
-            "y": 1440
+            "y": 880
           },
           "outputs": [
             "default"
@@ -41902,7 +39061,7 @@
           },
           "position": {
             "x": 250,
-            "y": 1790
+            "y": 1300
           },
           "outputs": [
             "default"
@@ -41917,7 +39076,7 @@
           },
           "position": {
             "x": 560,
-            "y": 1580
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -41932,8 +39091,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 720,
-            "y": 460
+            "x": 700,
+            "y": 320
           },
           "outputs": [
             "default"
@@ -41942,69 +39101,29 @@
       ],
       "edges": [
         {
-          "id": "trigger-failed->has-branch-context",
+          "id": "trigger-failed->has-worktree",
           "source": "trigger-failed",
-          "target": "has-branch-context",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-finalization->has-branch-context",
-          "source": "trigger-finalization",
-          "target": "has-branch-context",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-branch-context->recover-repair-worktree",
-          "source": "has-branch-context",
-          "target": "recover-repair-worktree",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-branch-context->has-worktree",
-          "source": "has-branch-context",
           "target": "has-worktree",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "recover-repair-worktree->acquire-repair-worktree",
-          "source": "recover-repair-worktree",
-          "target": "acquire-repair-worktree",
           "sourcePort": "default"
         },
         {
-          "id": "acquire-repair-worktree->acquired-repair-worktree",
-          "source": "acquire-repair-worktree",
-          "target": "acquired-repair-worktree",
+          "id": "trigger-finalization->has-worktree",
+          "source": "trigger-finalization",
+          "target": "has-worktree",
           "sourcePort": "default"
-        },
-        {
-          "id": "acquired-repair-worktree->refresh-worktree",
-          "source": "acquired-repair-worktree",
-          "target": "refresh-worktree",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "acquired-repair-worktree->no-worktree",
-          "source": "acquired-repair-worktree",
-          "target": "no-worktree",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
         },
         {
           "id": "has-worktree->refresh-worktree",
           "source": "has-worktree",
           "target": "refresh-worktree",
-          "sourcePort": "yes",
+          "sourcePort": "default",
           "condition": "$output?.result === true"
         },
         {
           "id": "has-worktree->no-worktree",
           "source": "has-worktree",
           "target": "no-worktree",
-          "sourcePort": "no",
+          "sourcePort": "default",
           "condition": "$output?.result !== true"
         },
         {
@@ -42078,14 +39197,8 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-todo->clear-repair-blocked-failure",
+          "id": "mark-todo->notify-escalate",
           "source": "mark-todo",
-          "target": "clear-repair-blocked-failure",
-          "sourcePort": "default"
-        },
-        {
-          "id": "clear-repair-blocked-failure->notify-escalate",
-          "source": "clear-repair-blocked-failure",
           "target": "notify-escalate",
           "sourcePort": "default"
         },
@@ -42363,7 +39476,7 @@
           "type": "action.run_command",
           "label": "Rotate Agent Logs",
           "config": {
-            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','logs');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()&&entry.name.endsWith('.log')){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Rotated '+removed+'\\n');\"",
+            "command": "find .bosun/logs -name '*.log' -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Rotated'",
             "continueOnError": true
           },
           "position": {
@@ -42379,7 +39492,7 @@
           "type": "action.run_command",
           "label": "Clean Old Evidence",
           "config": {
-            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve('.bosun','evidence');const cutoff=Date.now()-((Number('{{logRetentionDays}}')||7)*86400000);let removed=0;const walk=(dir)=>{if(!fs.existsSync(dir))return;for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const full=path.join(dir,entry.name);if(entry.isDirectory())walk(full);else if(entry.isFile()){const stat=fs.statSync(full);if(Number(stat.mtimeMs||0)<cutoff){fs.rmSync(full,{force:true});removed+=1;}}}};walk(root);process.stdout.write('Cleaned '+removed+'\\n');\"",
+            "command": "find .bosun/evidence -type f -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Cleaned'",
             "continueOnError": true
           },
           "position": {
@@ -47753,221 +44866,6 @@
       }
     },
     {
-      "id": "wf-pr-review-quality-striker",
-      "name": "PR Review Quality Striker",
-      "description": "Reactive PR quality workflow that responds to GitHub review activity, falls back to scheduled sweeps, pulls GitHub review comments, reviews, inline review comments, and quality-related checks, then dispatches a constrained repair agent against actionable findings.",
-      "category": "maintenance",
-      "enabled": true,
-      "nodeCount": 8,
-      "trigger": "trigger.pr_event",
-      "variables": {
-        "repoScope": "auto",
-        "maxPrs": 12,
-        "intervalMs": 300000,
-        "trustedAuthors": "",
-        "allowTrustedFixes": false
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.pr_event",
-          "label": "PR Review Activity",
-          "config": {
-            "event": "review_requested",
-            "events": [
-              "review_requested",
-              "changes_requested",
-              "approved",
-              "opened"
-            ]
-          },
-          "position": {
-            "x": 220,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "trigger-review-comment",
-          "type": "trigger.event",
-          "label": "PR Review Comment",
-          "config": {
-            "eventType": "github:pull_request_review_comment",
-            "filter": "['created','edited'].includes(String($event?.action || '').toLowerCase())"
-          },
-          "position": {
-            "x": 420,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "trigger-fallback",
-          "type": "trigger.schedule",
-          "label": "Poll PR Quality Signals",
-          "config": {
-            "intervalMs": "{{intervalMs}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fetch-review-signals",
-          "type": "action.run_command",
-          "label": "Fetch Review Quality Signals",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||12); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const TRUSTED_AUTHORS=new Set(String('{{trustedAuthors}}'||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean)); const ALLOW_TRUSTED_FIXES=String('{{allowTrustedFixes}}'||'false').trim().toLowerCase()==='true'; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}} function ghJson(args){return parseJson(runGh(args),[]);} function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];} function isBosunCreated(pr){return readLabelNames(pr).includes('bosun-pr-bosun-created');} function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();} function configPath(){const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json');} function readBosunConfig(){try{return JSON.parse(fs.readFileSync(configPath(),'utf8'));}catch{return {};}} function collectReposFromConfig(){const repos=[];try{const cfg=readBosunConfig();const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];if(workspaces.length>0){const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();const activeWs=active?workspaces.find((ws)=>String(ws?.id||'').trim().toLowerCase()===active):null;const wsList=activeWs?[activeWs]:workspaces;for(const ws of wsList){for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();if(slug)repos.push(slug);}}}if(repos.length===0){for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();if(slug)repos.push(slug);}}}catch{}return repos;} function resolveRepoTargets(){if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='current'){return [...new Set(REPO_SCOPE.split(',').map((entry)=>entry.trim()).filter(Boolean))];}if(REPO_SCOPE==='current')return [''];const fromConfig=collectReposFromConfig();if(fromConfig.length>0)return [...new Set(fromConfig)];const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();return envRepo?[envRepo]:[''];} function parseRepoFromUrl(url){const raw=String(url||'');const marker='github.com/';const idx=raw.toLowerCase().indexOf(marker);if(idx<0)return '';const tail=raw.slice(idx+marker.length).split('/');if(tail.length<2)return '';const owner=String(tail[0]||'').trim();const repo=String(tail[1]||'').trim();return owner&&repo?(owner+'/'+repo):'';} function isEligible(pr){const bosunCreated=isBosunCreated(pr);if(bosunCreated)return true;return ALLOW_TRUSTED_FIXES&&TRUSTED_AUTHORS.has(readAuthorLogin(pr));} const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']); const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const SONAR_CHECK_RE=/(^|[^a-z])(sonarqube|sonarcloud|sonar)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function safeGhJson(args,fallback,runner){try{const invoke=typeof runner==='function'?runner:runGh;const out=invoke(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=readCheckName(check);const state=String(check?.state||check?.conclusion||'').trim().toUpperCase();const bucket=String(check?.bucket||'').trim().toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const filePath=String(file?.filename||file?.path||'').trim();return filePath?{path:filePath,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback,runner){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{},runner);const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[],runner).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[],runner).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[],runner).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[],runner).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{},runner);const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const labels=(Array.isArray(pr?.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const pendingChecks=checks.filter((check)=>QUALITY_PENDING_STATES.has(String(check?.state||'').toUpperCase()));const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} function isActionableText(value){const text=String(value||'').trim();if(!text)return false;return /(fix|please|should|must|needs?|issue|bug|error|warning|sonar|lint|review|nit|suggest|change|request|fail)/i.test(text);} function collectActionableReviewSignals(prDigest){const digest=prDigest&&typeof prDigest==='object'?prDigest:{};const reviewComments=Array.isArray(digest.reviewComments)?digest.reviewComments:[];const reviews=Array.isArray(digest.reviews)?digest.reviews:[];const issueComments=Array.isArray(digest.issueComments)?digest.issueComments:[];const checks=Array.isArray(digest.checks)?digest.checks:[];const commentFindings=[];for(const comment of reviewComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'review_comment',path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||null,author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}for(const review of reviews){const state=String(review?.state||'').trim().toUpperCase();if(state!=='CHANGES_REQUESTED'&&!isActionableText(review?.body))continue;commentFindings.push({kind:'review',state:state||null,author:String(review?.author?.login||'').trim()||null,body:String(review?.body||'').trim(),url:String(review?.url||'').trim()||null});}for(const comment of issueComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'issue_comment',author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const sonarChecks=failingChecks.filter((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||'')));const qualityChecks=failingChecks.map((check)=>({name:readCheckName(check),state:String(check?.state||check?.bucket||'').trim()||null,workflow:String(check?.workflow||'').trim()||null}));const summary=['commentFindings='+commentFindings.length,'qualityChecks='+qualityChecks.length,sonarChecks.length?'sonarChecks='+sonarChecks.length:''].filter(Boolean).join(' ');return {commentFindings,qualityChecks,sonarChecks,summary};} const DIRECT_PR_NUMBER=Number('{{prNumber}}')||0; const DIRECT_PR_URL=String('{{prUrl}}'||'').trim(); const DIRECT_REPO=String('{{repo}}'||'{{repoSlug}}'||'{{repository}}'||'').trim()||parseRepoFromUrl(DIRECT_PR_URL); const DIRECT_BRANCH=String('{{branch}}'||'').trim(); const DIRECT_BASE=String('{{baseBranch}}'||'').trim(); const DIRECT_EVENT=String('{{prEvent}}'||'').trim().toLowerCase(); const actionables=[]; function appendActionable(repo,prNumber,fallback,sourceKind){const number=Number(prNumber)||0;if(!repo||!number)return false;const prDigest=collectPrDigest(repo,number,fallback,runGh);if(prDigest?.core?.isDraft===true)return false;if(!isEligible({author:prDigest?.core?.author,labels:prDigest?.labels,body:prDigest?.core?.body,title:prDigest?.core?.title}))return false;const signals=collectActionableReviewSignals(prDigest);if(signals.commentFindings.length===0&&signals.qualityChecks.length===0)return false;actionables.push({repo,number,branch:String(prDigest?.core?.branch||fallback?.branch||'').trim(),base:String(prDigest?.core?.baseBranch||fallback?.base||'').trim(),url:String(prDigest?.core?.url||fallback?.url||'').trim(),title:String(prDigest?.core?.title||fallback?.title||'').trim(),sourceKind,prEvent:DIRECT_EVENT||null,commentFindings:signals.commentFindings,qualityChecks:signals.qualityChecks,sonarChecks:signals.sonarChecks,summary:signals.summary,digestSummary:prDigest.digestSummary,prDigest});return true;} let total=0; if(DIRECT_REPO&&DIRECT_PR_NUMBER>0){total=1;appendActionable(DIRECT_REPO,DIRECT_PR_NUMBER,{branch:DIRECT_BRANCH,base:DIRECT_BASE,url:DIRECT_PR_URL},'event');}else{const prs=[];for(const target of resolveRepoTargets()){const repo=String(target||'').trim();const args=['pr','list','--state','open','--json','number,title,body,author,headRefName,baseRefName,isDraft,statusCheckRollup,labels,url','--limit',String(MAX_PRS)];if(repo)args.push('--repo',repo);try{const list=ghJson(args);for(const pr of (Array.isArray(list)?list:[])){prs.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)});}}catch{}}total=prs.length;for(const pr of prs){if(pr?.isDraft===true)continue;if(!isEligible(pr))continue;const repo=String(pr?.__repo||'').trim();if(!repo)continue;if(appendActionable(repo,pr.number,{branch:pr.headRefName,base:pr.baseRefName,title:pr.title,url:pr.url},'schedule')&&actionables.length>=5)break;}} console.log(JSON.stringify({total,actionableCount:actionables.length,mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule',actionables}));"
-            ],
-            "continueOnError": false,
-            "failOnError": true
-          },
-          "position": {
-            "x": 420,
-            "y": 210
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-review-work",
-          "type": "condition.expression",
-          "label": "Actionable Review Signals?",
-          "config": {
-            "expression": "(()=>{try{const raw=$ctx.getNodeOutput('fetch-review-signals')?.output||'{}';return (JSON.parse(raw).actionableCount||0)>0;}catch{return false;}})()"
-          },
-          "position": {
-            "x": 420,
-            "y": 370
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "run-review-striker",
-          "type": "action.run_agent",
-          "label": "Repair PR Quality Findings",
-          "config": {
-            "sdk": "auto",
-            "timeoutMs": 1800000,
-            "prompt": "You are a Bosun PR quality repair agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('fetch-review-signals')?.output}}\n\nEach item contains prDigest with the PR body, files, issue comments, reviews, review comments, and checks. Address only the listed commentFindings and qualityChecks on the existing PR branch. Make the smallest safe code change, run targeted validation, and push updates to the same PR branch.\n\nSTRICT RULES:\n- Focus on actionable review feedback and failing quality checks only.\n- Do not create a new PR, close the PR, or perform unrelated cleanup.\n- Prioritize commentFindings before generic lint or static-analysis cleanup.\n- Preserve runtime behavior unless a reviewer-requested fix requires otherwise.\n- If a check is listed but the cause is unclear, inspect the relevant file paths from prDigest.files and the referenced review comment paths before editing."
-          },
-          "position": {
-            "x": 220,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-review-idle",
-          "type": "notify.log",
-          "label": "No Review Work",
-          "config": {
-            "message": "PR Review Quality Striker found no actionable review or quality findings.",
-            "level": "info"
-          },
-          "position": {
-            "x": 620,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-review-run",
-          "type": "notify.log",
-          "label": "Log Review Dispatch",
-          "config": {
-            "message": "PR Review Quality Striker dispatched remediation for actionable GitHub review signals.",
-            "level": "info"
-          },
-          "position": {
-            "x": 220,
-            "y": 700
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->fetch-review-signals",
-          "source": "trigger",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-review-comment->fetch-review-signals",
-          "source": "trigger-review-comment",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "trigger-fallback->fetch-review-signals",
-          "source": "trigger-fallback",
-          "target": "fetch-review-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fetch-review-signals->has-review-work",
-          "source": "fetch-review-signals",
-          "target": "has-review-work",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-review-work->run-review-striker",
-          "source": "has-review-work",
-          "target": "run-review-striker",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-review-work->log-review-idle",
-          "source": "has-review-work",
-          "target": "log-review-idle",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-review-striker->notify-review-run",
-          "source": "run-review-striker",
-          "target": "notify-review-run",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-pr-review-quality-striker",
-          "templateName": "PR Review Quality Striker",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
       "id": "wf-scheduled-maintenance",
       "name": "Scheduled Maintenance",
       "description": "Runs a one-time maintenance window: reads config, waits, acquires a worktree through a safety gate, performs work, then releases. Exercises scheduled_once, read_file, delay, flow.gate, acquire/release_worktree.",
@@ -48140,172 +45038,6 @@
         "templateState": {
           "templateId": "template-scheduled-maintenance",
           "templateName": "Scheduled Maintenance",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-sonarqube-pr-striker",
-      "name": "SonarQube PR Striker",
-      "description": "Scheduled PR quality workflow that detects failing SonarQube or SonarCloud checks through GitHub-native status checks, enriches them with the same compact PR digest used by Bosun's PR workflows, and dispatches a constrained static-analysis remediation agent.",
-      "category": "maintenance",
-      "enabled": true,
-      "nodeCount": 6,
-      "trigger": "trigger.schedule",
-      "variables": {
-        "repoScope": "auto",
-        "maxPrs": 12,
-        "intervalMs": 600000,
-        "trustedAuthors": "",
-        "allowTrustedFixes": false
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.schedule",
-          "label": "Poll Sonar Signals",
-          "config": {
-            "intervalMs": "{{intervalMs}}"
-          },
-          "position": {
-            "x": 420,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "fetch-sonar-signals",
-          "type": "action.run_command",
-          "label": "Fetch SonarQube Signals",
-          "config": {
-            "command": "node",
-            "args": [
-              "-e",
-              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||12); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const TRUSTED_AUTHORS=new Set(String('{{trustedAuthors}}'||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean)); const ALLOW_TRUSTED_FIXES=String('{{allowTrustedFixes}}'||'false').trim().toLowerCase()==='true'; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function parseJson(raw,fallback){try{return JSON.parse(raw||'')}catch{return fallback;}} function ghJson(args){return parseJson(runGh(args),[]);} function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];} function isBosunCreated(pr){return readLabelNames(pr).includes('bosun-pr-bosun-created');} function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();} function configPath(){const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json');} function readBosunConfig(){try{return JSON.parse(fs.readFileSync(configPath(),'utf8'));}catch{return {};}} function collectReposFromConfig(){const repos=[];try{const cfg=readBosunConfig();const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];if(workspaces.length>0){const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();const activeWs=active?workspaces.find((ws)=>String(ws?.id||'').trim().toLowerCase()===active):null;const wsList=activeWs?[activeWs]:workspaces;for(const ws of wsList){for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();if(slug)repos.push(slug);}}}if(repos.length===0){for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();if(slug)repos.push(slug);}}}catch{}return repos;} function resolveRepoTargets(){if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='current'){return [...new Set(REPO_SCOPE.split(',').map((entry)=>entry.trim()).filter(Boolean))];}if(REPO_SCOPE==='current')return [''];const fromConfig=collectReposFromConfig();if(fromConfig.length>0)return [...new Set(fromConfig)];const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();return envRepo?[envRepo]:[''];} function parseRepoFromUrl(url){const raw=String(url||'');const marker='github.com/';const idx=raw.toLowerCase().indexOf(marker);if(idx<0)return '';const tail=raw.slice(idx+marker.length).split('/');if(tail.length<2)return '';const owner=String(tail[0]||'').trim();const repo=String(tail[1]||'').trim();return owner&&repo?(owner+'/'+repo):'';} function isEligible(pr){const bosunCreated=isBosunCreated(pr);if(bosunCreated)return true;return ALLOW_TRUSTED_FIXES&&TRUSTED_AUTHORS.has(readAuthorLogin(pr));} const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']); const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const SONAR_CHECK_RE=/(^|[^a-z])(sonarqube|sonarcloud|sonar)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function safeGhJson(args,fallback,runner){try{const invoke=typeof runner==='function'?runner:runGh;const out=invoke(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=readCheckName(check);const state=String(check?.state||check?.conclusion||'').trim().toUpperCase();const bucket=String(check?.bucket||'').trim().toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const filePath=String(file?.filename||file?.path||'').trim();return filePath?{path:filePath,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback,runner){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{},runner);const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[],runner).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[],runner).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[],runner).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[],runner).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{},runner);const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const labels=(Array.isArray(pr?.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const pendingChecks=checks.filter((check)=>QUALITY_PENDING_STATES.has(String(check?.state||'').toUpperCase()));const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} function isActionableText(value){const text=String(value||'').trim();if(!text)return false;return /(fix|please|should|must|needs?|issue|bug|error|warning|sonar|lint|review|nit|suggest|change|request|fail)/i.test(text);} function collectActionableReviewSignals(prDigest){const digest=prDigest&&typeof prDigest==='object'?prDigest:{};const reviewComments=Array.isArray(digest.reviewComments)?digest.reviewComments:[];const reviews=Array.isArray(digest.reviews)?digest.reviews:[];const issueComments=Array.isArray(digest.issueComments)?digest.issueComments:[];const checks=Array.isArray(digest.checks)?digest.checks:[];const commentFindings=[];for(const comment of reviewComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'review_comment',path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||null,author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}for(const review of reviews){const state=String(review?.state||'').trim().toUpperCase();if(state!=='CHANGES_REQUESTED'&&!isActionableText(review?.body))continue;commentFindings.push({kind:'review',state:state||null,author:String(review?.author?.login||'').trim()||null,body:String(review?.body||'').trim(),url:String(review?.url||'').trim()||null});}for(const comment of issueComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'issue_comment',author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const sonarChecks=failingChecks.filter((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||'')));const qualityChecks=failingChecks.map((check)=>({name:readCheckName(check),state:String(check?.state||check?.bucket||'').trim()||null,workflow:String(check?.workflow||'').trim()||null}));const summary=['commentFindings='+commentFindings.length,'qualityChecks='+qualityChecks.length,sonarChecks.length?'sonarChecks='+sonarChecks.length:''].filter(Boolean).join(' ');return {commentFindings,qualityChecks,sonarChecks,summary};} const prs=[]; for(const target of resolveRepoTargets()){const repo=String(target||'').trim();const args=['pr','list','--state','open','--json','number,title,body,author,headRefName,baseRefName,isDraft,statusCheckRollup,labels,url','--limit',String(MAX_PRS)];if(repo)args.push('--repo',repo);try{const list=ghJson(args);for(const pr of (Array.isArray(list)?list:[])){prs.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)});}}catch{}} const actionables=[]; for(const pr of prs){if(pr?.isDraft===true)continue;if(!isEligible(pr))continue;const repo=String(pr?.__repo||'').trim();if(!repo)continue;const listedChecks=Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[];const hasSonarFailure=listedChecks.some((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||''))&&(QUALITY_FAIL_STATES.has(String(check?.conclusion||check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase())));if(!hasSonarFailure)continue;const prDigest=collectPrDigest(repo,pr.number,{branch:pr.headRefName,base:pr.baseRefName,title:pr.title,url:pr.url},runGh);const signals=collectActionableReviewSignals(prDigest);if(signals.sonarChecks.length===0)continue;actionables.push({repo,number:pr.number,branch:String(pr?.headRefName||'').trim(),base:String(pr?.baseRefName||'').trim(),url:String(pr?.url||'').trim(),title:String(pr?.title||'').trim(),sonarChecks:signals.sonarChecks,qualityChecks:signals.qualityChecks,commentFindings:signals.commentFindings,digestSummary:prDigest.digestSummary,summary:signals.summary,prDigest});if(actionables.length>=5)break;} console.log(JSON.stringify({total:prs.length,actionableCount:actionables.length,actionables}));"
-            ],
-            "continueOnError": false,
-            "failOnError": true
-          },
-          "position": {
-            "x": 420,
-            "y": 210
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "has-sonar-work",
-          "type": "condition.expression",
-          "label": "Actionable Sonar Findings?",
-          "config": {
-            "expression": "(()=>{try{const raw=$ctx.getNodeOutput('fetch-sonar-signals')?.output||'{}';return (JSON.parse(raw).actionableCount||0)>0;}catch{return false;}})()"
-          },
-          "position": {
-            "x": 420,
-            "y": 370
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "run-sonar-striker",
-          "type": "action.run_agent",
-          "label": "Repair SonarQube Findings",
-          "config": {
-            "sdk": "auto",
-            "timeoutMs": 1800000,
-            "prompt": "You are a Bosun SonarQube remediation agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('fetch-sonar-signals')?.output}}\n\nEach item contains sonarChecks plus prDigest with files, comments, reviews, review comments, and all checks. Fix only the listed SonarQube or SonarCloud findings on the existing PR branch, using the smallest safe code change.\n\nSTRICT RULES:\n- Use GitHub-native Sonar checks as the source of truth for this run.\n- Do not create a new PR or perform unrelated refactors.\n- If reviewer comments overlap with the Sonar issue, incorporate them only when they point at the same root cause.\n- Run targeted validation before pushing the branch update.\n- Preserve behavior while satisfying the static-analysis requirement."
-          },
-          "position": {
-            "x": 220,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "log-sonar-idle",
-          "type": "notify.log",
-          "label": "No Sonar Work",
-          "config": {
-            "message": "SonarQube PR Striker found no actionable SonarQube or SonarCloud failures.",
-            "level": "info"
-          },
-          "position": {
-            "x": 620,
-            "y": 540
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-sonar-run",
-          "type": "notify.log",
-          "label": "Log Sonar Dispatch",
-          "config": {
-            "message": "SonarQube PR Striker dispatched remediation for Sonar-native quality failures.",
-            "level": "info"
-          },
-          "position": {
-            "x": 220,
-            "y": 700
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->fetch-sonar-signals",
-          "source": "trigger",
-          "target": "fetch-sonar-signals",
-          "sourcePort": "default"
-        },
-        {
-          "id": "fetch-sonar-signals->has-sonar-work",
-          "source": "fetch-sonar-signals",
-          "target": "has-sonar-work",
-          "sourcePort": "default"
-        },
-        {
-          "id": "has-sonar-work->run-sonar-striker",
-          "source": "has-sonar-work",
-          "target": "run-sonar-striker",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "has-sonar-work->log-sonar-idle",
-          "source": "has-sonar-work",
-          "target": "log-sonar-idle",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "run-sonar-striker->notify-sonar-run",
-          "source": "run-sonar-striker",
-          "target": "notify-sonar-run",
-          "sourcePort": "default"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-sonarqube-pr-striker",
-          "templateName": "SonarQube PR Striker",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
@@ -52973,7 +49705,7 @@
   ],
   "libraryContents": {
     "orchestrator": "# Task Orchestrator Agent\n\nYou are an autonomous task orchestrator agent. You receive implementation tasks and execute them end-to-end.\n\n## Prime Directives\n\n1. Never ask for human input for normal engineering decisions.\n2. Complete the assigned scope fully before stopping.\n3. Keep changes minimal, correct, and production-safe.\n4. Run relevant verification (tests/lint/build) before finalizing.\n5. Use conventional commit messages.\n\n## Code Quality — Hard Rules\n\nThese rules are non-negotiable. Violations cause real production crashes.\n\n- **Module-scope caching:** Variables that cache state (lazy singletons, loaded\n  flags, memoization maps) MUST be at module scope, never inside a function body\n  that runs repeatedly.\n- **Async safety:** NEVER use bare `void asyncFn()`. Every async call must be\n  `await`-ed or have a `.catch()` handler. Unhandled rejections crash Node.js.\n- **Error boundaries:** HTTP handlers, timers, and event callbacks MUST wrap async\n  work in try/catch so one failure doesn't kill the process.\n- **No over-mocking in tests:** Mock only external boundaries (network, disk, clock).\n  Never mock the module under test. If a test needs > 3 mocks, refactor the code.\n- **Deterministic tests:** No `Math.random()`, real network calls, or `setTimeout`\n  for synchronization. Tests must be reproducible and order-independent.\n- **Dynamic `import()` must be cached:** Never place `import()` inside a\n  frequently-called function without caching the result at module scope.\n\n## Completion Criteria\n\n- Implementation matches requested behavior.\n- Existing functionality is preserved.\n- Relevant checks pass.\n- Branch is pushed and ready for PR/review flow.\n\n## Skills & Knowledge Base\n\nBefore starting any task, load relevant skills to avoid known pitfalls and\napply patterns discovered by previous agents:\n\n1. Check if `.bosun/skills/index.json` exists in the workspace or bosun home.\n2. Read the index to find skills whose tags match your task's module or domain.\n3. Load and apply any matching skill files from `.bosun/skills/`.\n\nAfter completing a task, if you discovered a non-obvious pattern, workaround, or\ndomain-specific fact, write or update a skill file at `.bosun/skills/<module>.md`\nso the next agent benefits from your investigation.\n",
-    "taskexecutor": "# {{TASK_ID}} — {{TASK_TITLE}}\n\n## Description\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n\n## Environment\n- Working Directory: {{WORKTREE_PATH}}\n- Branch: {{BRANCH}}\n- Repository: {{REPO_SLUG}}\n\n## Skills — Load Before Starting\n\nCheck for relevant skills before implementing:\n1. Look for `.bosun/skills/index.json` (in workspace root or BOSUN_HOME).\n2. Read the index; load skills whose tags match this task's module/domain.\n3. Apply the patterns — especially `background-task-execution`, `error-recovery`,\n   and `pr-workflow` which apply to almost every task.\n\n## Instructions\n1. Load relevant skills as described above.\n2. Read task requirements carefully.\n3. Implement required code changes using structured edit tools first. Prefer native Codex edit tools when available; otherwise use Bosun MCP file tools. Avoid repo-root scratch files such as `.tmp-*`, `*.patch`, ad hoc `.cjs` helpers, or redirected log files for edit workflows.\n4. Run relevant tests/lint/build checks.\n5. Commit with conventional commit format.\n6. Push branch updates.\n7. After completing: if you discovered non-obvious patterns, write a skill file\n   at `.bosun/skills/<module>.md` for future agents.\n\n## Critical Rules\n- Do not ask for manual confirmation.\n- No placeholders/stubs/TODO-only output.\n- Keep behavior stable and production-safe.\n\n## Code Quality — Mandatory Checks\n\nThese patterns have caused real production crashes. Treat them as hard rules:\n\n1. **Module-scope caching:** If you declare variables that cache state (lazy\n   singletons, init flags, memoization), place them at **module scope** — never\n   inside a function body that runs per-request or per-event.\n2. **Async fire-and-forget:** Never use bare `void asyncFn()`. Always `await`\n   or append `.catch()`. Unhandled promise rejections crash Node.js (exit 1).\n3. **Error boundaries:** Wrap HTTP handlers, timers, and event callbacks in\n   top-level try/catch. One unguarded throw must not kill the process.\n4. **Dynamic imports:** Cache `import()` results at module scope. Never call\n   `import()` inside a hot path without caching — it causes repeated I/O.\n5. **Test quality:** Mock only external boundaries (network, disk, clock). Never\n   mock the module under test. No `setTimeout`/`sleep` for synchronization.\n   Tests must be deterministic and order-independent. Assert on behavior, not\n   implementation details.\n6. **No architectural shortcuts:** Don't force-enable feature flags inline. Don't\n   add config overrides that bypass safety checks. If a feature is behind a flag,\n   respect it.\n\n## Bosun Task Agent — Git & Bosun Lifecycle Workflow\n\nYou are running as a **Bosun-managed task agent**.  Environment variables\n`BOSUN_TASK_TITLE`, `BOSUN_BRANCH_NAME`, `BOSUN_TASK_ID`, and their\n`VE_*` / `VK_*` aliases are available in your environment.\n\n**Before committing:**\n- Run auto-formatting tools (gofmt, prettier, etc.) relevant to changed files.\n- Fix any lint or vet warnings introduced by your changes.\n\n**After committing:**\n- If a precommit hook auto-applies additional formatting changes, add those\n  to a follow-up commit before finishing.\n- Merge any upstream changes — BOTH from the base (module) branch AND from main:\n  `git fetch origin && git merge origin/<base-branch> --no-edit && git merge origin/main --no-edit`\n  Resolve any conflicts that arise before handing off.\n- Run local validation, including the repository pre-push quality gate, before handing off.\n- Do not push directly. Bosun workflow automation will perform the validated push and PR lifecycle handoff.\n- Do not run direct PR commands.\n{{COAUTHOR_INSTRUCTION}}\n**Do NOT:**\n- Push branches directly from the agent session.\n- Bypass pre-push hooks (`git push --no-verify` is forbidden).\n- Use `git add .` — stage files individually.\n- Wait for user confirmation before handing off lifecycle state.\n\n## Agent Status Endpoint\n- URL: http://127.0.0.1:{{ENDPOINT_PORT}}/api/tasks/{{TASK_ID}}\n- POST /status {\"status\":\"inreview\"} after push + Bosun lifecycle handoff readiness\n- POST /heartbeat {} while running\n- POST /error {\"error\":\"...\"} on fatal failure\n- POST /complete {\"hasCommits\":true} when done\n\n## Task Reference\n{{TASK_URL_LINE}}\n\n## Repository Context\n{{REPO_CONTEXT}}\n",
+    "taskexecutor": "# {{TASK_ID}} — {{TASK_TITLE}}\n\n## Description\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n\n## Environment\n- Working Directory: {{WORKTREE_PATH}}\n- Branch: {{BRANCH}}\n- Repository: {{REPO_SLUG}}\n\n## Skills — Load Before Starting\n\nCheck for relevant skills before implementing:\n1. Look for `.bosun/skills/index.json` (in workspace root or BOSUN_HOME).\n2. Read the index; load skills whose tags match this task's module/domain.\n3. Apply the patterns — especially `background-task-execution`, `error-recovery`,\n   and `pr-workflow` which apply to almost every task.\n\n## Instructions\n1. Load relevant skills as described above.\n2. Read task requirements carefully.\n3. Implement required code changes using structured edit tools first. Prefer native Codex edit tools when available; otherwise use Bosun MCP file tools. Avoid repo-root scratch files such as `.tmp-*`, `*.patch`, ad hoc `.cjs` helpers, or redirected log files for edit workflows.\n4. Run relevant tests/lint/build checks.\n5. Commit with conventional commit format.\n6. Push branch updates.\n7. After completing: if you discovered non-obvious patterns, write a skill file\n   at `.bosun/skills/<module>.md` for future agents.\n\n## Critical Rules\n- Do not ask for manual confirmation.\n- No placeholders/stubs/TODO-only output.\n- Keep behavior stable and production-safe.\n\n## Code Quality — Mandatory Checks\n\nThese patterns have caused real production crashes. Treat them as hard rules:\n\n1. **Module-scope caching:** If you declare variables that cache state (lazy\n   singletons, init flags, memoization), place them at **module scope** — never\n   inside a function body that runs per-request or per-event.\n2. **Async fire-and-forget:** Never use bare `void asyncFn()`. Always `await`\n   or append `.catch()`. Unhandled promise rejections crash Node.js (exit 1).\n3. **Error boundaries:** Wrap HTTP handlers, timers, and event callbacks in\n   top-level try/catch. One unguarded throw must not kill the process.\n4. **Dynamic imports:** Cache `import()` results at module scope. Never call\n   `import()` inside a hot path without caching — it causes repeated I/O.\n5. **Test quality:** Mock only external boundaries (network, disk, clock). Never\n   mock the module under test. No `setTimeout`/`sleep` for synchronization.\n   Tests must be deterministic and order-independent. Assert on behavior, not\n   implementation details.\n6. **No architectural shortcuts:** Don't force-enable feature flags inline. Don't\n   add config overrides that bypass safety checks. If a feature is behind a flag,\n   respect it.\n\n## Bosun Task Agent — Git & Bosun Lifecycle Workflow\n\nYou are running as a **Bosun-managed task agent**.  Environment variables\n`BOSUN_TASK_TITLE`, `BOSUN_BRANCH_NAME`, `BOSUN_TASK_ID`, and their\n`VE_*` / `VK_*` aliases are available in your environment.\n\n**Before committing:**\n- Run auto-formatting tools (gofmt, prettier, etc.) relevant to changed files.\n- Fix any lint or vet warnings introduced by your changes.\n\n**After committing:**\n- If a precommit hook auto-applies additional formatting changes, add those\n  to a follow-up commit before pushing.\n- Merge any upstream changes — BOTH from the base (module) branch AND from main:\n  `git fetch origin && git merge origin/<base-branch> --no-edit && git merge origin/main --no-edit`\n  Resolve any conflicts that arise before pushing.\n- Push: `git push --set-upstream origin {{BRANCH}}`\n- After a successful push, hand off PR lifecycle to Bosun management.\n- Do not run direct PR commands.\n{{COAUTHOR_INSTRUCTION}}\n**Do NOT:**\n- Bypass pre-push hooks (`git push --no-verify` is forbidden).\n- Use `git add .` — stage files individually.\n- Wait for user confirmation before pushing or handing off lifecycle state.\n\n## Agent Status Endpoint\n- URL: http://127.0.0.1:{{ENDPOINT_PORT}}/api/tasks/{{TASK_ID}}\n- POST /status {\"status\":\"inreview\"} after push + Bosun lifecycle handoff readiness\n- POST /heartbeat {} while running\n- POST /error {\"error\":\"...\"} on fatal failure\n- POST /complete {\"hasCommits\":true} when done\n\n## Task Reference\n{{TASK_URL_LINE}}\n\n## Repository Context\n{{REPO_CONTEXT}}\n",
     "taskexecutorretry": "# {{TASK_ID}} — ERROR RECOVERY (Attempt {{ATTEMPT_NUMBER}})\n\nYour previous attempt on task \"{{TASK_TITLE}}\" encountered an issue:\n\n```\n{{LAST_ERROR}}\n```\n\nError classification: {{CLASSIFICATION_PATTERN}} (confidence: {{CLASSIFICATION_CONFIDENCE}})\n\nPlease:\n1. Diagnose the failure root cause.\n2. Fix the issue with minimal safe changes.\n3. Re-run verification checks.\n4. Commit and push the fix.\n\nOriginal task description:\n{{TASK_DESCRIPTION}}\n{{TASK_CONTEXT}}\n",
     "taskexecutorcontinuehascommits": "# {{TASK_ID}} — CONTINUE (Verify and Push)\n\nYou were working on \"{{TASK_TITLE}}\" and appear to have stopped.\nYou already made commits.\n\n1. Run tests to verify changes.\n2. If passing, push: git push origin HEAD\n3. If failing, fix issues, commit, and push.\n4. Task is not complete until push succeeds.\n{{TASK_CONTEXT}}\n",
     "taskexecutorcontinuehasedits": "# {{TASK_ID}} — CONTINUE (Commit and Push)\n\nYou were working on \"{{TASK_TITLE}}\" and appear to have stopped.\nYou made file edits but no commit yet.\n\n1. Review edits for correctness.\n2. Run relevant tests.\n3. Commit with conventional format.\n4. Push: git push origin HEAD\n{{TASK_CONTEXT}}\n",

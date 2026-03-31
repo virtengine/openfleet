@@ -316,3 +316,41 @@ export const TASK_BATCH_PR_TEMPLATE = {
     requiredTemplates: ["template-bosun-pr-progressor"],
   },
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task Batch Payload Validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TASK_BATCH_FIELD_MAX = 128;
+
+/**
+ * Validates and normalises a task-batch payload array.
+ * - Required: taskId (non-empty string), taskTitle, status, repository, workspace
+ * - Optional: branch, scope — trimmed to TASK_BATCH_FIELD_MAX chars
+ * Throws with a deterministic message on the first invalid item.
+ * Returns the (possibly trimmed) payload on success.
+ *
+ * @param {unknown[]} payload
+ * @returns {object[]}
+ */
+export function validateTaskBatchPayload(payload) {
+  if (!Array.isArray(payload)) {
+    throw new Error("Invalid task-batch payload: must be an array");
+  }
+  return payload.map((item, index) => {
+    if (!item || typeof item !== "object") {
+      throw new Error(`Invalid task-batch payload: item[${index}] must be an object`);
+    }
+    if (!item.taskId || typeof item.taskId !== "string" || !String(item.taskId).trim()) {
+      throw new Error(`Invalid task-batch payload: item[${index}].taskId must be a non-empty string`);
+    }
+    const normalised = { ...item };
+    if (typeof normalised.branch === "string" && normalised.branch.length > TASK_BATCH_FIELD_MAX) {
+      normalised.branch = normalised.branch.slice(0, TASK_BATCH_FIELD_MAX);
+    }
+    if (typeof normalised.scope === "string" && normalised.scope.length > TASK_BATCH_FIELD_MAX) {
+      normalised.scope = normalised.scope.slice(0, TASK_BATCH_FIELD_MAX);
+    }
+    return normalised;
+  });
+}
