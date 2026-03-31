@@ -525,6 +525,36 @@ function mergeApprovalRequestLists(...sources) {
     ));
 }
 
+function normalizeApprovalScopeType(value) {
+  return String(value || "").trim().toLowerCase() || "other";
+}
+
+function getApprovalScopeLabel(scopeType) {
+  const normalized = normalizeApprovalScopeType(scopeType);
+  if (normalized === "workflow-run") return "Workflow Runs";
+  if (normalized === "workflow-gate") return "Workflow Gates";
+  if (normalized === "workflow-action") return "Workflow Actions";
+  if (normalized === "harness-run") return "Harness Runs";
+  return "Other";
+}
+
+function getApprovalScopeBadgeStyles(scopeType) {
+  const normalized = normalizeApprovalScopeType(scopeType);
+  if (normalized === "workflow-run") {
+    return { background: "#3b82f624", color: "#93c5fd" };
+  }
+  if (normalized === "workflow-gate") {
+    return { background: "#f59e0b24", color: "#fbbf24" };
+  }
+  if (normalized === "workflow-action") {
+    return { background: "#8b5cf624", color: "#c4b5fd" };
+  }
+  if (normalized === "harness-run") {
+    return { background: "#14b8a624", color: "#99f6e4" };
+  }
+  return { background: "#47556924", color: "#cbd5e1" };
+}
+
 function summarizeProofBundleEntry(entry) {
   if (!entry || typeof entry !== "object") return "";
   const parts = [];
@@ -6282,6 +6312,7 @@ function RunHistoryView() {
   const [nowTick, setNowTick] = useState(Date.now());
   const [approvalRequests, setApprovalRequests] = useState([]);
   const [approvalStatusFilter, setApprovalStatusFilter] = useState("pending");
+  const [approvalScopeFilter, setApprovalScopeFilter] = useState("all");
   const [approvalQueueLoading, setApprovalQueueLoading] = useState(false);
   const hasRunningRuns = runs.some((run) => run?.status === "running");
   const selectedRunIsRunning = selectedRun?.status === "running";
@@ -6327,6 +6358,29 @@ function RunHistoryView() {
     () => approvalRequests.filter((entry) => String(entry?.status || "").trim().toLowerCase() === "pending").length,
     [approvalRequests],
   );
+  const approvalScopeCounts = useMemo(() => {
+    const counts = {
+      all: approvalRequests.length,
+      pending: 0,
+      "workflow-run": 0,
+      "workflow-gate": 0,
+      "workflow-action": 0,
+      "harness-run": 0,
+      other: 0,
+    };
+    for (const entry of approvalRequests) {
+      const status = String(entry?.status || "").trim().toLowerCase();
+      const scopeType = normalizeApprovalScopeType(entry?.scopeType);
+      if (status === "pending") counts.pending += 1;
+      if (Object.prototype.hasOwnProperty.call(counts, scopeType)) counts[scopeType] += 1;
+      else counts.other += 1;
+    }
+    return counts;
+  }, [approvalRequests]);
+  const filteredApprovalRequests = useMemo(() => {
+    if (approvalScopeFilter === "all") return approvalRequests;
+    return approvalRequests.filter((entry) => normalizeApprovalScopeType(entry?.scopeType) === approvalScopeFilter);
+  }, [approvalRequests, approvalScopeFilter]);
 
   useEffect(() => {
     setLogsPaneSearch("");
@@ -6499,6 +6553,27 @@ function RunHistoryView() {
     if (request?.taskTitle) parts.push(request.taskTitle);
     if (request?.runId) parts.push(`run ${request.runId}`);
     return parts.join(" · ") || "No workflow target metadata";
+  }, []);
+  const openApprovalTarget = useCallback((request) => {
+    const scopeType = normalizeApprovalScopeType(request?.scopeType);
+    const requestRunId = String(request?.runId || "").trim();
+    const requestScopeId = String(request?.scopeId || "").trim();
+    if (scopeType === "harness-run") {
+      navigateTo("agents");
+      return;
+    }
+    if (requestRunId) {
+      loadRunDetail(requestRunId);
+      return;
+    }
+    if (scopeType === "workflow-run" && requestScopeId) {
+      loadRunDetail(requestScopeId);
+      return;
+    }
+    const workflowId = String(request?.workflowId || "").trim();
+    if (workflowId) {
+      openWorkflowCanvas(workflowId);
+    }
   }, []);
   const openRunCopilot = useCallback((run, intent = "ask") => {
     const safeRunId = String(run?.runId || "").trim();
@@ -7829,7 +7904,8 @@ function RunHistoryView() {
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span class="wf-badge" style="background:#f59e0b24;color:#fbbf24;">Approval Queue</span>
-            <span class="wf-runs-count">Pending Approvals ${pendingApprovalCount}</span>
+            <span class="wf-runs-count">Pending Approvals ${approvalQueuePendingCount}</span>
+            <span class="wf-runs-count">${filteredApprovalRequests.length} shown</span>
             <span class="wf-runs-count">${approvalRequests.length} loaded</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -7837,26 +7913,56 @@ function RunHistoryView() {
               <${MenuItem} value="pending">Pending Only</${MenuItem}>
               <${MenuItem} value="all">Pending + Resolved</${MenuItem}>
             </${Select}>
+            <${Select} size="small" value=${approvalScopeFilter} onChange=${(event) => setApprovalScopeFilter(event.target.value)}>
+              <${MenuItem} value="all">All Scopes</${MenuItem}>
+              <${MenuItem} value="workflow-run">Workflow Runs</${MenuItem}>
+              <${MenuItem} value="workflow-gate">Workflow Gates</${MenuItem}>
+              <${MenuItem} value="workflow-action">Workflow Actions</${MenuItem}>
+              <${MenuItem} value="harness-run">Harness Runs</${MenuItem}>
+            </${Select}>
             <${Button} variant="text" size="small" onClick=${() => loadApprovals(approvalStatusFilter)} disabled=${approvalQueueLoading}>
               ${approvalQueueLoading ? "Refreshing…" : "Refresh Queue"}
             <//>
           </div>
         </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+          ${[
+            { key: "all", label: `All ${approvalScopeCounts.all}` },
+            { key: "workflow-run", label: `Runs ${approvalScopeCounts["workflow-run"]}` },
+            { key: "workflow-gate", label: `Gates ${approvalScopeCounts["workflow-gate"]}` },
+            { key: "workflow-action", label: `Actions ${approvalScopeCounts["workflow-action"]}` },
+            { key: "harness-run", label: `Harness ${approvalScopeCounts["harness-run"]}` },
+          ].map((option) => html`
+            <${Chip}
+              key=${option.key}
+              label=${option.label}
+              onClick=${() => setApprovalScopeFilter(option.key)}
+              variant=${approvalScopeFilter === option.key ? "filled" : "outlined"}
+              size="small"
+            />
+          `)}
+        </div>
         ${approvalRequests.length === 0
           ? html`<div style="font-size:12px;color:var(--color-text-secondary,#8b95a5);">No approval requests are currently queued.</div>`
+          : filteredApprovalRequests.length === 0
+            ? html`<div style="font-size:12px;color:var(--color-text-secondary,#8b95a5);">No approval requests match the selected scope filter.</div>`
           : html`
             <div style="display:flex;flex-direction:column;gap:8px;">
-              ${approvalRequests.map((request) => {
+              ${filteredApprovalRequests.map((request) => {
                 const requestStatus = String(request?.status || "pending").trim().toLowerCase() || "pending";
                 const canResolve = requestStatus === "pending";
                 const requestRunId = String(request?.runId || "").trim();
                 const requestScopeType = String(request?.scopeType || "").trim().toLowerCase();
+                const scopeBadge = getApprovalScopeBadgeStyles(requestScopeType);
                 return html`
                   <div key=${request.requestId} style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px;">
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
                       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                         <span class="wf-badge" style="background:${requestStatus === "pending" ? "#f59e0b24" : (requestStatus === "approved" ? "#22c55e22" : "#ef444422")};color:${requestStatus === "pending" ? "#fbbf24" : (requestStatus === "approved" ? "#86efac" : "#fca5a5")};">
                           ${requestStatus}
+                        </span>
+                        <span class="wf-badge" style="background:${scopeBadge.background};color:${scopeBadge.color};">
+                          ${getApprovalScopeLabel(requestScopeType)}
                         </span>
                         <span style="font-size:12px;font-weight:600;color:#e5e7eb;">${describeApprovalRequest(request)}</span>
                       </div>
@@ -7874,8 +7980,9 @@ function RunHistoryView() {
                       ${request?.resolution?.actorId && html`<div><b>Resolved By:</b> ${request.resolution.actorId}${request?.resolution?.note ? ` · ${request.resolution.note}` : ""}</div>`}
                     </div>
                     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-                      ${requestRunId && requestScopeType !== "harness-run" && html`<${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(requestRunId)}>Open Run<//>`}
-                      ${requestRunId && requestScopeType === "harness-run" && html`<${Button} variant="outlined" size="small" onClick=${() => navigateTo("agents")}>Open Harness Monitor<//>`}
+                      <${Button} variant="outlined" size="small" onClick=${() => openApprovalTarget(request)}>
+                        ${requestScopeType === "harness-run" ? "Open Harness Monitor" : requestRunId ? "Open Run" : "Open Target"}
+                      <//>
                       ${canResolve && html`
                         <${Button} variant="contained" size="small" color="success" onClick=${() => resolveQueuedApproval(request, "approved")}>
                           Approve Request

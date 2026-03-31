@@ -122,6 +122,14 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("/api/workflows/approvals");
     });
 
+    it(`${label} exposes scope filters and target routing for the approval queue`, () => {
+      expect(source).toContain("approvalScopeFilter");
+      expect(source).toContain("normalizeApprovalScopeType");
+      expect(source).toContain("getApprovalScopeBadgeStyles");
+      expect(source).toContain("Open Harness Monitor");
+      expect(source).toContain("No approval requests match the selected scope filter.");
+    });
+
     it(`${label} exposes explicit edge port mapping controls`, () => {
       if (label !== "ui") return;
       expect(source).toContain("Port Bindings");
