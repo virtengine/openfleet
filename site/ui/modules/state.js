@@ -51,7 +51,6 @@ const CACHE_TTL = {
   threads: 5000, logs: 15000, worktrees: 30000, workspaces: 30000,
   presence: 30000, config: 60000, projects: 60000, git: 20000,
   infra: 30000,
-  guardrails: 10000,
   benchmarks: 8000,
   telemetry: 15000,
   analytics: 30000,
@@ -352,7 +351,6 @@ export const sharedWorkspaces = signal([]);
 export const presenceInstances = signal([]);
 export const coordinatorInfo = signal(null);
 export const infraData = signal(null);
-export const guardrailsData = signal(null);
 
 // ── Logs
 export const logsData = signal(null);
@@ -768,21 +766,6 @@ export async function loadInfra() {
   _markFresh("infra");
 }
 
-/** Load guardrails overview → guardrailsData */
-export async function loadGuardrails() {
-  const url = "/api/guardrails";
-  const cached = _cacheGet(url);
-  if (_cacheFresh(url, "guardrails")) return;
-  const fallback = cached?.data ?? guardrailsData.value ?? null;
-  if (cached?.data) guardrailsData.value = cached.data;
-  const res = await apiFetch(url, { _silent: true }).catch(() => ({
-    snapshot: fallback,
-  }));
-  guardrailsData.value = res?.snapshot ?? res?.data ?? fallback;
-  _cacheSet(url, guardrailsData.value);
-  _markFresh("guardrails");
-}
-
 /** Load system logs → logsData */
 export async function loadLogs(options = {}) {
   const url = `/api/logs?lines=${logsLines.value}`;
@@ -1063,7 +1046,6 @@ const TAB_LOADERS = {
       loadSharedWorkspaces(),
       loadPresence(),
     ]),
-  guardrails: () => loadGuardrails(),
   control: () => Promise.all([loadExecutor(), loadConfig()]),
   logs: () =>
     Promise.all([loadLogs(), loadGit(), loadAgentLogFileList(), loadAgentLogTailData()]),
@@ -1165,7 +1147,6 @@ const WS_CHANNEL_MAP = {
   benchmarks: ["benchmarks", "tasks", "executor", "workflows", "workspaces", "library"],
   agents: ["agents", "executor"],
   infra: ["worktrees", "workspaces", "presence"],
-  guardrails: ["guardrails", "overview", "workspaces", "library", "executor"],
   control: ["executor", "overview"],
   logs: ["*"],
   marketplace: ["library"],

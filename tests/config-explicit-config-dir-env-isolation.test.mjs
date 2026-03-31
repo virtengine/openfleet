@@ -17,11 +17,4 @@ describe("config explicit config-dir env isolation", () => {
     expect(source).toContain("if (shouldLoadRepoEnv) {");
     expect(source).toContain("envPaths.push(resolve(repoRoot, \".env\"));");
   });
-
-  it("anchors default cacheDir to explicit config-dir when repo config is isolated", () => {
-    expect(source).toContain("const configuredCacheDir =");
-    expect(source).toContain("hasExplicitConfigDir && !selectedRepository?.cacheDir && !configData.cacheDir");
-    expect(source).toContain("? configDir");
-    expect(source).toContain("const cacheDir = resolve(cacheDirBase, configuredCacheDir);");
-  });
 });

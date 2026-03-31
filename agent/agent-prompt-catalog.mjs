@@ -442,19 +442,18 @@ You are running as a **Bosun-managed task agent**.  Environment variables
 
 **After committing:**
 - If a precommit hook auto-applies additional formatting changes, add those
-  to a follow-up commit before finishing.
+  to a follow-up commit before pushing.
 - Merge any upstream changes — BOTH from the base (module) branch AND from main:
   \`git fetch origin && git merge origin/<base-branch> --no-edit && git merge origin/main --no-edit\`
-  Resolve any conflicts that arise before handing off.
-- Run local validation, including the repository pre-push quality gate, before handing off.
-- Do not push directly. Bosun workflow automation will perform the validated push and PR lifecycle handoff.
+  Resolve any conflicts that arise before pushing.
+- Push: \`git push --set-upstream origin {{BRANCH}}\`
+- After a successful push, hand off PR lifecycle to Bosun management.
 - Do not run direct PR commands.
 {{COAUTHOR_INSTRUCTION}}
 **Do NOT:**
-- Push branches directly from the agent session.
 - Bypass pre-push hooks (\`git push --no-verify\` is forbidden).
 - Use \`git add .\` — stage files individually.
-- Wait for user confirmation before handing off lifecycle state.
+- Wait for user confirmation before pushing or handing off lifecycle state.
 
 ## Agent Status Endpoint
 - URL: http://127.0.0.1:{{ENDPOINT_PORT}}/api/tasks/{{TASK_ID}}

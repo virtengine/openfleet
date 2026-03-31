@@ -1,16 +1,6 @@
-import * as ReactModule from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import htm from "htm";
-import * as ink from "ink";
-
-const React = ReactModule.default ?? ReactModule;
-const useEffect = ReactModule.useEffect ?? React.useEffect;
-const useMemo = ReactModule.useMemo ?? React.useMemo;
-const useState = ReactModule.useState ?? React.useState;
-const Box = ink.Box ?? ink.default?.Box;
-const Text = ink.Text ?? ink.default?.Text;
-const useInput = ink.useInput ?? ink.default?.useInput;
-const useStdout = ink.useStdout ?? ink.default?.useStdout;
-import { getFooterHints } from "./HelpScreen.js";
+import { Box, Text, useInput, useStdout } from "ink";
 
 import {
   buildBoardColumns,
@@ -128,12 +118,16 @@ function TaskForm({ mode, formState, activeFieldIndex, validationErrors, busy })
           value=${formState[field.key] || ""}
           error=${validationErrors[field.key]}
         />
-      `)}${busy ? html`<${Text} color="yellow">Saving...<//>` : null}
+      `)}
+      <${Text} dimColor>
+        [Tab] Next  [Shift+Tab] Prev  [Left/Right] Select  [Ctrl+S] Save  [Esc] Cancel
+      <//>
+      ${busy ? html`<${Text} color="yellow">Saving...<//>` : null}
     <//>
   `;
 }
 
-export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureChange, onFooterHintsChange }) {
+export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureChange }) {
   const { stdout } = useStdout();
   const terminalWidth = stdout?.columns || process.stdout.columns || 120;
   const [preferredView, setPreferredView] = useState("kanban");
@@ -268,15 +262,6 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
     }
   }
 
-
-  useEffect(() => {
-    if (typeof onFooterHintsChange !== "function") return;
-    onFooterHintsChange(getFooterHints("tasks", {
-      formMode,
-      filterOpen,
-      deletePrompt,
-    }));
-  }, [deletePrompt, filterOpen, formMode, onFooterHintsChange]);
   async function moveSelectedTask(direction) {
     if (!selectedTask || busy) return;
     const currentIndex = STATUS_MOVE_ORDER.indexOf(selectedTask.statusDisplay || "todo");
@@ -553,6 +538,12 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
                 : html`<${Text} dimColor>No matching tasks<//>`}
             <//>
           `}
+
+      <${Box} marginTop=${1} paddingX=${1} borderStyle="single">
+        <${Text} dimColor>
+          [Arrows] Navigate  [Enter] Edit  [N] New  [E] Edit  [D] Delete  [F] Filter  [V] View  [[]/[]] Move
+        <//>
+      <//>
       ${selectedTask
         ? html`
             <${Box} marginTop=${1} paddingX=${1} flexDirection="column" borderStyle="single">
@@ -571,5 +562,3 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
     <//>
   `;
 }
-
-

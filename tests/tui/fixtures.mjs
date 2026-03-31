@@ -66,20 +66,6 @@ export const sessionDetailFixture = {
   ok: true,
   session: {
     ...sessionsFixture[0],
-    branch: "task/cfd631a87666-feat-tui-session-detail-modal-full-session-drill",
-    provider: "openai",
-    model: "gpt-5.4",
-    tokensIn: 2300,
-    tokensOut: 1100,
-    runtimeMs: 30000,
-    turns: Array.from({ length: 18 }, (_, index) => ({
-      id: `turn-${index + 1}`,
-      number: index + 1,
-      timestamp: `2026-03-23T00:00:${String(index).padStart(2, "0")}.000Z`,
-      tokenDelta: 50 + index,
-      durationMs: 1000 + (index * 250),
-      lastToolCall: index % 2 === 0 ? "shell.exec" : "assistant.message",
-    })),
     messages: [
       { timestamp: "2026-03-23T00:00:00.000Z", role: "user", content: "Start debugging" },
       { timestamp: "2026-03-23T00:00:05.000Z", role: "assistant", content: "Loaded the relevant logs" },
@@ -91,15 +77,9 @@ export const sessionDiffFixture = {
   ok: true,
   summary: "2 files changed",
   diff: {
-    formatted: [
-      "diff --git a/src/app.mjs b/src/app.mjs",
-      "--- a/src/app.mjs",
-      "+++ b/src/app.mjs",
-      ...Array.from({ length: 45 }, (_, index) => index % 3 === 0 ? `+added line ${index}` : index % 3 === 1 ? `-removed line ${index}` : ` context line ${index}`),
-    ].join("\\n"),
     files: [
-      { filename: "src/app.mjs", additions: 8, deletions: 2, patch: "+added line\n-removed line\n context" },
-      { filename: "tests/app.test.mjs", additions: 4, deletions: 0, patch: "+test line" },
+      { filename: "src/app.mjs", additions: 8, deletions: 2 },
+      { filename: "tests/app.test.mjs", additions: 4, deletions: 0 },
     ],
   },
 };
@@ -150,4 +130,3 @@ export function createMockWsClient() {
     },
   };
 }
-

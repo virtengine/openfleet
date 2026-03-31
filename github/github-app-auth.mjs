@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * github-app-auth.mjs — GitHub App JWT + Installation Token helpers
  *

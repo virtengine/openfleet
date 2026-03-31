@@ -1,17 +1,6 @@
-import * as ReactModule from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import htm from "htm";
-import * as ink from "ink";
-
-const React = ReactModule.default ?? ReactModule;
-const useCallback = ReactModule.useCallback ?? React.useCallback;
-const useEffect = ReactModule.useEffect ?? React.useEffect;
-const useMemo = ReactModule.useMemo ?? React.useMemo;
-const useState = ReactModule.useState ?? React.useState;
-const Box = ink.Box ?? ink.default?.Box;
-const Text = ink.Text ?? ink.default?.Text;
-const useApp = ink.useApp ?? ink.default?.useApp;
-const useInput = ink.useInput ?? ink.default?.useInput;
-const useStdout = ink.useStdout ?? ink.default?.useStdout;
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 
 import wsBridgeFactory from "./lib/ws-bridge.mjs";
 import { getNextScreenForInput } from "./lib/navigation.mjs";
@@ -295,14 +284,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [bridge, effectiveRefreshMs, requestJson]);
 
   useEffect(() => {
-    if (helpOpen) {
-      setFooterHints(getFooterHints(screen, { helpOpen: true }));
-      return;
-    }
-    setFooterHints(getFooterHints(screen));
-  }, [screen, helpOpen]);
-
-  useEffect(() => {
     const intervalId = setInterval(() => {
       setRefreshCountdownSec((previous) => Math.max(0, previous - 1));
     }, 1000);
@@ -412,7 +393,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       return;
     }
     setScreen((current) => getNextScreenForInput(current, input));
-  }, [exit, helpOpen, maxHelpScrollOffset, screen]);
+  }, [exit]);
 
   useInput((input, key) => {
     if (paletteOpen) return;
@@ -428,7 +409,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
   const screenStats = screen === "status" ? stats : undefined;
-  const footerText = (footerHints || []).map(([keysLabel, description]) => `${keysLabel} ${description}`).join("  |  ");
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
@@ -471,22 +451,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           onTasksChange=${setTasks}
           onLogsFilterStateChange=${setLogsFilterState}
           onInputCaptureChange=${setScreenInputLocked}
-          onFooterHintsChange=${setFooterHints}
         />
-        ${helpOpen
-          ? html`
-              <${Box} flexDirection="column" marginTop=${1}>
-                <${HelpScreen}
-                  scrollOffset=${helpScrollOffset}
-                  maxRows=${helpRows}
-                  groups=${CLI_SHORTCUT_GROUPS}
-                />
-              <//>
-            `
-          : null}
-      <//>
-      <${Box} paddingX=${1}>
-        <${Text} dimColor>${footerText}<//>
       <//>
     <//>
   `;

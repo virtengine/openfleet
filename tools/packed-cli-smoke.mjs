@@ -3,7 +3,6 @@
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
-  readdirSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -60,58 +59,14 @@ function runNpm(args, options = {}) {
   });
 }
 
-function sanitizeTarballFilename(name, version) {
-  const normalizedName = String(name || "")
-    .trim()
-    .replace(/^@/, "")
-    .replaceAll("/", "-")
-    .replaceAll("\\", "-");
-  return `${normalizedName}-${String(version || "").trim()}.tgz`;
-}
-
-function waitForExistingPath(candidates, timeoutMs = 4000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    for (const candidate of candidates) {
-      if (candidate && existsSync(candidate)) return candidate;
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-  }
-  return null;
-}
-
-function resolvePackedTarballPath(packDir, packEntry = {}) {
-  const expectedPaths = [
-    packEntry.filename ? resolve(packDir, String(packEntry.filename)) : null,
-    packEntry.filename ? resolve(packDir, String(packEntry.filename).split(/[\\/]/).pop() || "") : null,
-    packEntry.name && packEntry.version
-      ? resolve(packDir, sanitizeTarballFilename(packEntry.name, packEntry.version))
-      : null,
-  ].filter(Boolean);
-
-  const found = waitForExistingPath(expectedPaths);
-  if (found) return found;
-
-  const tarballs = readdirSync(packDir)
-    .filter((entry) => entry.endsWith(".tgz"))
-    .map((entry) => resolve(packDir, entry));
-  const fallback = waitForExistingPath(tarballs, 1000);
-  if (fallback) return fallback;
-
-  throw new Error(
-    `npm pack reported a tarball but none was found in ${packDir}. Expected one of: ${expectedPaths.join(", ") || "<none>"}`,
-  );
-}
-
-function packTarball(packDir) {
-  mkdirSync(packDir, { recursive: true });
-  const raw = runNpm(["pack", "--json", "--ignore-scripts", "--pack-destination", packDir]);
+function packTarball() {
+  const raw = runNpm(["pack", "--json", "--ignore-scripts"]);
   const parsed = JSON.parse(raw);
-  const packEntry = parsed?.[0];
-  if (!packEntry) {
+  const filename = parsed?.[0]?.filename;
+  if (!filename) {
     throw new Error("npm pack did not return a tarball filename");
   }
-  return resolvePackedTarballPath(packDir, packEntry);
+  return resolve(ROOT, filename);
 }
 
 function installPackedArtifact(tarballPath, installDir) {
@@ -181,14 +136,12 @@ function safeRemove(targetPath, label) {
 
 function main() {
   const tempRoot = mkdtempSync(resolve(tmpdir(), "bosun-packed-smoke-"));
-  const packDir = resolve(tempRoot, "pack");
   const installDir = resolve(tempRoot, "install");
-  mkdirSync(packDir, { recursive: true });
   mkdirSync(installDir, { recursive: true });
 
   let tarballPath = "";
   try {
-    tarballPath = packTarball(packDir);
+    tarballPath = packTarball();
     installPackedArtifact(tarballPath, installDir);
     assertPackedCliStarts(installDir);
 

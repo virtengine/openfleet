@@ -1,18 +1,11 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync as nodeExecSync } from "node:child_process";
+import { execSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BUNDLED_PWSH_PATH = resolve(__dirname, "..", ".cache", "bosun", "pwsh", "pwsh");
 const BUNDLED_PWSH_WINDOWS_PATH = `${BUNDLED_PWSH_PATH}.exe`;
-
-function execSync(command, options = {}) {
-  return nodeExecSync(command, {
-    ...options,
-    windowsHide: options.windowsHide ?? (process.platform === "win32"),
-  });
-}
 
 function commandExists(cmd) {
   try {

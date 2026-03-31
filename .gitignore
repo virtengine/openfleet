@@ -64,12 +64,3 @@ reports/mutation/
 
 .bosun-monitor/backups/*
 tmp/*
-
-node-compile-cache/*
-*/*.tmp
-*/*.log
-*.log
-*.tmp
-{{*}}
-*tmp*
-*null*

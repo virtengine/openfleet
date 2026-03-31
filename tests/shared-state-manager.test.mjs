@@ -524,7 +524,7 @@ describe("shared-state-manager", () => {
       expect(state.attemptStatus).toBe("abandoned");
       expect(state.lastError).toContain("Heartbeat stale");
       expect(state.eventLog.some((e) => e.event === "abandoned")).toBe(true);
-    }, 15000);
+    });
 
     it("does not sweep active tasks", async () => {
       await claimTaskInSharedState(

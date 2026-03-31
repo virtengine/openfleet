@@ -10,12 +10,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as wsModule from "ws";
-
-const WebSocketServer =
-  wsModule.WebSocketServer ??
-  wsModule.default?.WebSocketServer ??
-  wsModule.default?.Server;
+import { WebSocketServer } from "ws";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const uiRoot = resolve(__dirname, "..", "ui");

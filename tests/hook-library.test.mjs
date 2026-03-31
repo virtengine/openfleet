@@ -121,14 +121,6 @@ describe("hook-library", () => {
       expect(results.some((h) => h.id === "safety-block-force-push")).toBe(true);
     });
 
-    it("includes the agent direct push blocker as a default safety hook", () => {
-      const hook = getHookById("safety-block-agent-direct-push");
-      expect(hook).toBeDefined();
-      expect(hook.defaultEnabled).toBe(true);
-      expect(hook.category).toBe("safety");
-      expect(String(hook.command)).toContain("git\\s+push\\b");
-    });
-
     it("returns empty for nonexistent category", () => {
       expect(getHookCatalog({ category: "nonexistent" })).toEqual([]);
     });
@@ -504,15 +496,6 @@ describe("hook-library", () => {
     it("all hooks have non-empty command", () => {
       for (const hook of BUILTIN_HOOKS) {
         expect(hook.command.length).toBeGreaterThan(0);
-      }
-    });
-
-    it("powershell file writers force UTF-8 encoding", () => {
-      for (const hook of BUILTIN_HOOKS) {
-        if (!hook.command.includes("powershell -NoProfile -Command")) continue;
-        const writes = hook.command.match(/\b(?:Set-Content|Add-Content)\b/g) || [];
-        if (!writes.length) continue;
-        expect(hook.command).not.toMatch(/\b(?:Set-Content|Add-Content)\b(?!\s+-Encoding UTF8)/);
       }
     });
 

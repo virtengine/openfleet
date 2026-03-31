@@ -599,27 +599,21 @@ export class WorkflowExecutionLedger {
 
     const timestamp = String(event.timestamp || new Date().toISOString()).trim() || new Date().toISOString();
     const shape = inferExecutionShape(runId, event);
-    this._ensureDir();
-    const existing = this.getRunLedger(runId);
-    const ledger = normalizeLedgerDocument(runId, {
-      ...existing,
+    const ledger = this.ensureRun({
       runId,
       workflowId: event.workflowId || null,
       workflowName: event.workflowName || null,
-      rootRunId: event.rootRunId || existing?.rootRunId || runId,
-      parentRunId: event.parentRunId || existing?.parentRunId || null,
-      retryOf: event.retryOf || existing?.retryOf || null,
-      retryMode: event.retryMode || existing?.retryMode || null,
-      runKind: event.runKind || event.meta?.runKind || existing?.runKind || undefined,
-      startedAt: event.eventType === "run.start"
-        ? timestamp
-        : (existing?.startedAt || undefined),
+      rootRunId: event.rootRunId || runId,
+      parentRunId: event.parentRunId || null,
+      retryOf: event.retryOf || null,
+      retryMode: event.retryMode || null,
+      runKind: event.runKind || event.meta?.runKind || undefined,
+      startedAt: event.eventType === "run.start" ? timestamp : undefined,
       endedAt: event.eventType === "run.end" || event.eventType === "run.error" || event.eventType === "run.cancelled"
         ? timestamp
-        : (existing?.endedAt || undefined),
-      status: event.status || existing?.status || undefined,
+        : undefined,
+      status: event.status || undefined,
       updatedAt: timestamp,
-      events: Array.isArray(existing?.events) ? existing.events : [],
     });
 
     const nextSeq = (ledger.events.at(-1)?.seq || 0) + 1;

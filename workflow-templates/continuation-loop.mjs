@@ -16,17 +16,14 @@ export const CONTINUATION_LOOP_TEMPLATE = {
   id: "template-continuation-loop",
   name: "Continuation Loop",
   description:
-    "Issue-state continuation loop. Fires automatically for any available task " +
-    "(trigger.task_available), drives the agent until a terminal state or max turns, " +
-    "and handles stuck sessions with retry/escalate/pause. " +
-    "taskId and worktreePath are auto-populated from the picked task — " +
-    "no manual input required.",
+    "Issue-state continuation loop. Polls externalStatus, keeps driving the " +
+    "agent until terminal state or max turns, and handles stuck sessions " +
+    "with retry/escalate/pause.",
   category: "reliability",
   enabled: true,
   recommended: false,
-  trigger: "trigger.task_available",
+  trigger: "trigger.manual",
   variables: {
-    maxParallel: 1,
     taskId: "",
     worktreePath: "",
     maxTurns: 8,
@@ -44,13 +41,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     timeoutMs: 1800000,
   },
   nodes: [
-    node("trigger", "trigger.task_available", "Pick Available Task", {
-      maxParallel: "{{maxParallel}}",
-      status: "inprogress",
-      statuses: ["inprogress", "todo"],
-      filterCodexScoped: true,
-      filterDrafts: true,
-    }, { x: 420, y: 60 }),
+    node("trigger", "trigger.manual", "Start Continuation Loop", {}, { x: 420, y: 60 }),
 
     node("init-turn", "action.set_variable", "Initialize Turn Counter", {
       key: "continuationTurn",
@@ -127,7 +118,6 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       sdk: "{{sdk}}",
       model: "{{model}}",
       timeoutMs: "{{timeoutMs}}",
-      requireTaskPromptCompleteness: false,
       failOnError: false,
     }, { x: 800, y: 1000 }),
 
@@ -144,12 +134,6 @@ export const CONTINUATION_LOOP_TEMPLATE = {
         "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
       isExpression: true,
     }, { x: 800, y: 1240 }),
-
-    node("derive-stuck-ms", "action.set_variable", "Derive Stuck Duration", {
-      key: "stuckForMs",
-      value: "Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))",
-      isExpression: true,
-    }, { x: 1080, y: 1230 }),
 
     node("progress-changed", "condition.expression", "Progress Changed?", {
       expression: "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')",
@@ -177,7 +161,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
 
     node("stuck-check", "condition.expression", "Session Stuck?", {
       expression:
-        String.raw`(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); const meaningfulAgentActivity = streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); const noProgressChange = String($data?.currentProgressSignature || '') === String($data?.lastProgressSignature || ''); if (noProgressChange && !meaningfulAgentActivity) return true; if (placeholderOutput && noProgressChange) return true; const lastProgressAt = Number($data?.lastProgressAt || 0); const stuckThresholdMs = Number($data?.stuckThresholdMs || 0); if (stuckThresholdMs <= 0) return noProgressChange; if (lastProgressAt <= 0) return false; return noProgressChange && (Date.now() - lastProgressAt) >= stuckThresholdMs; })()`,
+        "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)",
     }, { x: 980, y: 1820, outputs: ["yes", "no"] }),
 
     node("emit-stuck", "action.emit_event", "Emit session-stuck", {
@@ -187,17 +171,13 @@ export const CONTINUATION_LOOP_TEMPLATE = {
         turn: "{{continuationTurn}}",
         externalStatus: "{{currentExternalStatus}}",
         stuckThresholdMs: "{{stuckThresholdMs}}",
-        stuckForMs: "{{stuckForMs}}",
+        stuckForMs: "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
         onStuck: "{{onStuck}}",
         stuckRetryCount: "{{stuckRetryCount}}",
         maxStuckAutoRetries: "{{maxStuckAutoRetries}}",
         lastProgressAt: "{{lastProgressAt}}",
         lastProgressSignature: "{{lastProgressSignature}}",
         currentProgressSignature: "{{currentProgressSignature}}",
-        placeholderResponse: "{{(() => { const normalizedOutput = String($ctx.getNodeOutput('run-agent')?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); return normalizedOutput === 'continued' || normalizedOutput === 'model response continued'; })()}}",
-        agentActivityDetected: "{{(() => { const agentOutput = $ctx.getNodeOutput('run-agent') || {}; const normalizedOutput = String(agentOutput?.output || '').replace(/\\s+/g, ' ').trim().toLowerCase(); const placeholderOutput = normalizedOutput === 'continued' || normalizedOutput === 'model response continued' || normalizedOutput === '(agent completed with no text output)'; const streamCount = Array.isArray(agentOutput?.stream) ? agentOutput.stream.length : 0; const itemCount = Number(agentOutput?.itemCount || (Array.isArray(agentOutput?.items) ? agentOutput.items.length : 0) || 0); return streamCount > 0 || itemCount > 0 || (!!normalizedOutput && !placeholderOutput); })()}}",
-        agentItemCount: "{{$ctx.getNodeOutput('run-agent')?.itemCount || (Array.isArray($ctx.getNodeOutput('run-agent')?.items) ? $ctx.getNodeOutput('run-agent')?.items.length : 0) || 0}}",
-        agentStreamCount: "{{Array.isArray($ctx.getNodeOutput('run-agent')?.stream) ? $ctx.getNodeOutput('run-agent')?.stream.length : 0}}",
         progressSnapshot: "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
         lastAgentSuccess: "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
         lastAgentOutput: "{{$ctx.getNodeOutput('run-agent')?.output || ''}}",
@@ -237,7 +217,6 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       sdk: "{{sdk}}",
       model: "{{model}}",
       timeoutMs: "{{timeoutMs}}",
-      requireTaskPromptCompleteness: false,
       failOnError: false,
     }, { x: 760, y: 1830 }),
 
@@ -250,13 +229,13 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     node("stuck-escalate", "notify.log", "Escalate Stuck Session", {
       level: "warn",
       message:
-        "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
+        "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
     }, { x: 980, y: 1830 }),
 
     node("stuck-escalate-budget", "notify.log", "Escalate Stuck Session (Retry Limit)", {
       level: "warn",
       message:
-        "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{stuckForMs}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
+        "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
     }, { x: 760, y: 2050 }),
 
     node("stuck-pause", "notify.log", "Pause Stuck Session", {
@@ -323,8 +302,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     edge("max-turns-check", "run-agent", { condition: "$output?.result !== true", port: "no" }),
     edge("run-agent", "capture-progress"),
     edge("capture-progress", "derive-signature"),
-    edge("derive-signature", "derive-stuck-ms"),
-    edge("derive-stuck-ms", "progress-changed"),
+    edge("derive-signature", "progress-changed"),
     edge("progress-changed", "mark-progress-at"),
     edge("mark-progress-at", "mark-progress-sig"),
     edge("mark-progress-sig", "reset-stuck-retry-count"),
@@ -352,38 +330,9 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-03-10T00:00:00Z",
-    templateVersion: "1.3.0",
+    templateVersion: "1.1.0",
     tags: ["continuation", "loop", "linear", "external-status", "stuck-detection"],
     configType: "continuation-loop",
-  },
-};
-
-/**
- * Manual-trigger variant — use this when you want to target a specific task
- * by ID rather than letting the loop pick from the queue automatically.
- * taskId and worktreePath must be supplied at install time.
- */
-export const CONTINUATION_LOOP_MANUAL_TEMPLATE = {
-  ...CONTINUATION_LOOP_TEMPLATE,
-  id: "template-continuation-loop-manual",
-  name: "Continuation Loop (Manual)",
-  description:
-    "Issue-state continuation loop for a specific task. Provide taskId and " +
-    "worktreePath at install time. Drives the agent until a terminal state or " +
-    "max turns, and handles stuck sessions with retry/escalate/pause.",
-  trigger: "trigger.manual",
-  variables: {
-    ...Object.fromEntries(
-      Object.entries(CONTINUATION_LOOP_TEMPLATE.variables).filter(([key]) => key !== "maxParallel"),
-    ),
-  },
-  nodes: [
-    node("trigger", "trigger.manual", "Start Continuation Loop", {}, { x: 420, y: 60 }),
-    ...CONTINUATION_LOOP_TEMPLATE.nodes.slice(1),
-  ],
-  metadata: {
-    ...CONTINUATION_LOOP_TEMPLATE.metadata,
-    tags: [...CONTINUATION_LOOP_TEMPLATE.metadata.tags, "manual"],
   },
 };
 

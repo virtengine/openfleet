@@ -213,8 +213,6 @@ function createWorkspaceStorageCollisionError(kind, canonicalKey, existingRaw, i
 let _store = null; // { _meta: {...}, tasks: { [id]: Task } }
 let _loaded = false;
 let _writeChain = Promise.resolve(); // simple write lock
-let _writeScheduled = false;
-let _writeDirty = false;
 let _didLogInitialLoad = false;
 let _lastLoadedMtimeMs = 0;
 let _lastLoadedSizeBytes = 0;
@@ -241,8 +239,6 @@ export function configureTaskStore(options = {}) {
     _store = null;
     _loaded = false;
     _writeChain = Promise.resolve();
-    _writeScheduled = false;
-    _writeDirty = false;
     _didLogInitialLoad = false;
     _lastLoadedMtimeMs = 0;
     _lastLoadedSizeBytes = 0;
@@ -1304,52 +1300,42 @@ export function loadStore() {
 export function saveStore() {
   ensureLoaded();
   recalcStats();
-  _writeDirty = true;
-  if (_writeScheduled) return;
-  _writeScheduled = true;
 
   _writeChain = _writeChain
     .then(() => {
-      while (_writeDirty) {
-        _writeDirty = false;
-        try {
-          const dir = dirname(storePath);
-          if (!existsSync(dir)) {
-            mkdirSync(dir, { recursive: true });
-          }
-          const json = JSON.stringify(_store, null, 2);
-          writeFileSync(storeTmpPath, json, "utf-8");
-          try {
-            renameSync(storeTmpPath, storePath);
-          } catch (renameErr) {
-            if (!ATOMIC_RENAME_FALLBACK_CODES.has(renameErr?.code)) {
-              throw renameErr;
-            }
-            writeFileSync(storePath, json, "utf-8");
-            try {
-              unlinkSync(storeTmpPath);
-            } catch {
-              /* best effort */
-            }
-            console.warn(
-              TAG,
-              `Atomic rename failed (${renameErr?.message || renameErr}); fell back to direct write.`,
-            );
-          }
-          const loadedFingerprint = getStoreFingerprint();
-          _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
-          _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
-        } catch (err) {
-          console.error(TAG, "Failed to save store:", err.message);
+      try {
+        const dir = dirname(storePath);
+        if (!existsSync(dir)) {
+          mkdirSync(dir, { recursive: true });
         }
+        const json = JSON.stringify(_store, null, 2);
+        writeFileSync(storeTmpPath, json, "utf-8");
+        try {
+          renameSync(storeTmpPath, storePath);
+        } catch (renameErr) {
+          if (!ATOMIC_RENAME_FALLBACK_CODES.has(renameErr?.code)) {
+            throw renameErr;
+          }
+          writeFileSync(storePath, json, "utf-8");
+          try {
+            unlinkSync(storeTmpPath);
+          } catch {
+            /* best effort */
+          }
+          console.warn(
+            TAG,
+            `Atomic rename failed (${renameErr?.message || renameErr}); fell back to direct write.`,
+          );
+        }
+        const loadedFingerprint = getStoreFingerprint();
+        _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
+        _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
+      } catch (err) {
+        console.error(TAG, "Failed to save store:", err.message);
       }
     })
     .catch((err) => {
       console.error(TAG, "Write chain error:", err.message);
-    })
-    .finally(() => {
-      _writeScheduled = false;
-      if (_writeDirty) saveStore();
     });
 }
 
@@ -3031,13 +3017,11 @@ export function setReviewResult(taskId, { approved, issues } = {}) {
     return null;
   }
 
-  const reviewTimestamp = now();
-
   task.reviewStatus = approved ? "approved" : "changes_requested";
   task.reviewIssues = issues || null;
-  task.reviewedAt = reviewTimestamp;
-  task.updatedAt = reviewTimestamp;
-  task.lastActivityAt = reviewTimestamp;
+  task.reviewedAt = now();
+  task.updatedAt = now();
+  task.lastActivityAt = now();
   task.syncDirty = true;
 
   console.log(
@@ -3238,3 +3222,4 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
+

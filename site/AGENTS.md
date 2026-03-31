@@ -14,7 +14,5 @@ Public website and docs pages (`bosun.engineer`) static assets.
 - Demo/smoke failures -> `site/ui/demo.html`, CI/test hooks.
 
 ## Validation
-- Run `npm run syntax:check` after changing any file in `site/ui/`; the hook now validates browser import graphs, not just parse errors.
-- Keep `site/ui/` helper/module copies in sync with their `ui/` counterparts when the hosted demo imports them directly.
 - Build docs: `npm run build:docs`
 - Full checks: `npm test && npm run build`

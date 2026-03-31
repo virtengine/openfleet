@@ -30,15 +30,11 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { getTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 import {
   normalizeWorkspaceStorageKey,
   normalizeWorkspaceStorageKeys,
 } from "./task-store.mjs";
-import {
-  validateTaskBatchPayload,
-  summarizeTaskBatchPayloadForLog,
-} from "../workflow-templates/task-batch.mjs";
+import { getTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1103,6 +1099,7 @@ function computeRepoAreaEffectiveLimit({
 export async function taskImport(source) {
   let tasks;
   if (typeof source === "string") {
+    // File path
     const raw = readFileSync(resolve(source), "utf8");
     const parsed = JSON.parse(raw);
     tasks = parsed.tasks || parsed.backlog || parsed;
@@ -1113,39 +1110,6 @@ export async function taskImport(source) {
     tasks = source;
   } else {
     throw new Error("Source must be a file path or array of task objects");
-  }
-
-  // Support both legacy plain task objects and new task-batch payloads.
-  // Detect batch-like payloads (with taskId/taskTitle fields) and only then
-  // apply batch validation + remapping to preserve backwards compatibility.
-  const looksLikeBatchPayload =
-    Array.isArray(tasks) &&
-    tasks.length > 0 &&
-    tasks.every(
-      (item) =>
-        item &&
-        typeof item === "object" &&
-        ("taskId" in item || "taskTitle" in item),
-    );
-
-  if (looksLikeBatchPayload) {
-    try {
-      tasks = validateTaskBatchPayload(tasks).map((item) => ({
-        id: item.taskId,
-        title: item.taskTitle,
-        status: item.status,
-        branch: item.branch,
-        scope: item.scope,
-        repository: item.repository,
-        workspace: item.workspace,
-      }));
-    } catch (error) {
-      if (typeof source === "string") {
-        const summary = summarizeTaskBatchPayloadForLog(tasks);
-        throw new Error(`${error.message}; summary=${JSON.stringify(summary)}`);
-      }
-      throw error;
-    }
   }
 
   let created = 0;
@@ -1212,8 +1176,6 @@ export async function runTaskCli(args) {
       return await cliStats(subArgs);
     case "import":
       return await cliImport(subArgs);
-    case "create-batch":
-      return await cliCreateBatch(subArgs);
     default:
       showTaskHelp();
       process.exit(subcommand ? 1 : 0);
@@ -1702,47 +1664,6 @@ async function cliImport(args) {
 
 // ── Help ──────────────────────────────────────────────────────────────────────
 
-async function cliCreateBatch(args) {
-  if (hasFlag(args, "--help") || hasFlag(args, "-h")) {
-    console.log(`
-  bosun task create-batch — Validate and import a task-batch payload file
-
-  USAGE
-    bosun task create-batch --payload-file <path.json>
-
-  FILE FORMAT
-    JSON array of task-batch items. Each item requires:
-      taskId, taskTitle, status, repository, workspace
-
-  EXAMPLES
-    bosun task create-batch --payload-file ./batch.json
-`);
-    return;
-  }
-  const payloadFile =
-    getArgValue(args, "--payload-file") || args.find((a) => !a.startsWith("--"));
-  if (!payloadFile) {
-    console.error(
-      "  Error: payload file required. Usage: bosun task create-batch --payload-file <path.json>",
-    );
-    process.exit(1);
-  }
-
-  const resolvedPayloadFile = resolve(payloadFile);
-  if (!existsSync(resolvedPayloadFile)) {
-    console.error(`  Error: file not found: ${payloadFile}`);
-    process.exit(1);
-  }
-
-  try {
-    const result = await taskImport(resolvedPayloadFile);
-    console.log(JSON.stringify(result, null, 2));
-  } catch (err) {
-    console.error(`  Error: ${err.message}`);
-    process.exit(1);
-  }
-}
-
 function showCreateHelp() {
   console.log(`
   bosun task create — Create a new task
@@ -1923,4 +1844,3 @@ if (process.argv[1] && resolve(process.argv[1]) === __filename) {
     process.exit(1);
   });
 }
-

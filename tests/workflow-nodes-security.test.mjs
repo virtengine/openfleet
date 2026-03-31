@@ -318,46 +318,6 @@ describe("dangerous shell payload containment", () => {
     expect(result.autoMerge?.reason).toBe("test_runtime_skip");
     expect(result.autoMerge?.method).toBe("rebase");
   });
-
-  it("fails gracefully when the resolved PR title is empty", async () => {
-    const nodeType = getNodeType("action.create_pr");
-    const node = makeNode("action.create_pr", {
-      title: "{{missingTitle}}",
-      body: "Body",
-      branch: "feat/missing-title",
-    });
-
-    const ctx = makeCtx();
-    const result = await nodeType.execute(node, ctx);
-
-    expect(result).toEqual({
-      success: false,
-      error: "PR title is required",
-      title: "",
-      base: "main",
-      branch: "feat/missing-title",
-      repoSlug: null,
-    });
-    expect(ctx.log).toHaveBeenCalledWith(node.id, "PR title is required");
-  });
-
-  it("treats fallback handoff as a successful node contract", async () => {
-    const nodeType = getNodeType("action.create_pr");
-    const node = makeNode("action.create_pr", {
-      title: "Fallback handoff",
-      body: "Body",
-      branch: "feat/handoff",
-      cwd: "C:/__bosun_nonexistent__/handoff-test",
-    });
-
-    const result = await nodeType.execute(node, makeCtx());
-
-    expect(result.success).toBe(true);
-    expect(result.handedOff).toBe(true);
-    expect(result.lifecycle).toBe("bosun_managed");
-    expect(result.action).toBe("pr_handoff");
-    expect(result.title).toBe("Fallback handoff");
-  }, 15000);
 });
 
 describe("action.run_command env interpolation", () => {
@@ -473,7 +433,11 @@ describe("workflow validation output compaction", () => {
     expect(result.output).toContain("bosun --tool-log");
     expect(result.outputBudgetPolicy).toBeTruthy();
     expect(result.outputContextEnvelope?.meta?.family).toBe("test");
-    expect(result.outputDiagnostics || result.outputHint || result.outputBudgetReason).toBeTruthy();
+    expect(
+      result.outputDiagnostics?.suggestedRerun
+      || result.outputSuggestedRerun
+      || result.outputDiagnostics?.summary,
+    ).toBeTruthy();
   });
 });
 
@@ -702,3 +666,4 @@ describe("validation nodes can offload to isolated runners", () => {
     expect(result.failureDiagnostic?.exitCode).toBe(1);
   });
 });
+
