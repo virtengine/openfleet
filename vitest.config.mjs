@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { availableParallelism, cpus } from "node:os";
 import * as vitestConfig from "vitest/config";
 
 const defineConfig =
@@ -6,17 +7,37 @@ const defineConfig =
   vitestConfig.default?.defineConfig ??
   ((config) => config);
 
+function detectParallelism() {
+  try {
+    if (typeof availableParallelism === "function") {
+      return availableParallelism();
+    }
+  } catch {
+    // Fall through to cpu count.
+  }
+  return Array.isArray(cpus?.()) && cpus().length > 0 ? cpus().length : 4;
+}
+
 function parseWorkerCount(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+const detectedParallelism = detectParallelism();
+const windowsSuggestedMaxWorkers = Math.max(
+  2,
+  Math.min(6, Math.floor(detectedParallelism / 2) || 2),
+);
+const windowsSuggestedMinWorkers = Math.max(
+  1,
+  Math.min(3, Math.floor(windowsSuggestedMaxWorkers / 2) || 1),
+);
 const windowsDefaultMaxWorkers = parseWorkerCount(
   process.env.BOSUN_VITEST_MAX_WORKERS,
-  2,
+  windowsSuggestedMaxWorkers,
 );
 const windowsDefaultMinWorkers = Math.min(
-  parseWorkerCount(process.env.BOSUN_VITEST_MIN_WORKERS, 1),
+  parseWorkerCount(process.env.BOSUN_VITEST_MIN_WORKERS, windowsSuggestedMinWorkers),
   windowsDefaultMaxWorkers,
 );
 

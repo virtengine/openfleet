@@ -108,7 +108,6 @@ async function initEngine(cfg = {}) {
     workflowDir: cfg.workflowDir,
     runsDir:     cfg.runsDir,
     services,
-    detectInterruptedRuns: false,
   });
 
   // ── Forward engine events to main thread ──────────────────────────────────
@@ -187,8 +186,21 @@ async function dispatch(method, args) {
     case "getRetryOptions":
       return sanitise(await engine.getRetryOptions?.(...args));
     case "retryRun": {
-      const ctx = await engine.retryRun(...args);
-      return { id: ctx?.id, workflowId: ctx?.workflowId, status: ctx?.status, errors: ctx?.errors || [] };
+      const retryResult = await engine.retryRun(...args);
+      return sanitise({
+        retryRunId: retryResult?.retryRunId || retryResult?.ctx?.id || null,
+        originalRunId: retryResult?.originalRunId || null,
+        mode: retryResult?.mode || null,
+        ctx: retryResult?.ctx
+          ? {
+              id: retryResult.ctx.id,
+              workflowId: retryResult.ctx.workflowId,
+              status: retryResult.ctx.status,
+              errors: retryResult.ctx.errors || [],
+              data: sanitise(retryResult.ctx.data),
+            }
+          : null,
+      });
     }
     case "restoreFromSnapshot": {
       const ctx = await engine.restoreFromSnapshot?.(...args);

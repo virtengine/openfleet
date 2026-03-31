@@ -1383,6 +1383,28 @@ class WorkflowEngineProxy {
     this._listeners = new Map(); // eventName → Set<handler>
     this._ready = false;
     this._initPromise = null;
+    this._lastError = null;
+  }
+
+  _handleWorkerUnavailable(err) {
+    this._ready = false;
+    this._lastError = err instanceof Error ? err : null;
+    this._initPromise = null;
+    this._worker = null;
+    if (this._pending.size > 0) {
+      const pendingError =
+        err instanceof Error
+          ? err
+          : new Error("Workflow engine worker is unavailable");
+      for (const { reject } of this._pending.values()) {
+        try { reject(pendingError); } catch { /* best-effort */ }
+      }
+      this._pending.clear();
+    }
+  }
+
+  isAvailable() {
+    return Boolean(this._worker) && this._ready;
   }
 
   /** Start the Worker thread and wait for "ready". */
@@ -1397,11 +1419,18 @@ class WorkflowEngineProxy {
 
       const failStart = (err) => {
         if (!this._worker) {
+          this._handleWorkerUnavailable(err);
           reject(err);
           return;
         }
         this._worker.off("message", onReady);
         this._worker.off("message", onInitError);
+        try {
+          void this._worker.terminate().catch(() => {});
+        } catch {
+          // best-effort shutdown
+        }
+        this._handleWorkerUnavailable(err);
         reject(err);
       };
 
@@ -1410,6 +1439,7 @@ class WorkflowEngineProxy {
         this._worker.off("message", onReady);
         this._worker.off("message", onInitError);
         this._ready = true;
+        this._lastError = null;
         resolve();
       };
       const onInitError = (msg) => {
@@ -1428,7 +1458,13 @@ class WorkflowEngineProxy {
       });
       this._worker.on("exit", (code) => {
         if (code !== 0) console.warn(`[wf-worker] worker exited with code ${code}`);
-        this._ready = false;
+        this._handleWorkerUnavailable(
+          new Error(
+            code !== 0
+              ? `Workflow engine worker exited with code ${code}`
+              : "Workflow engine worker exited",
+          ),
+        );
       });
 
       /* Send init after attaching all listeners */
@@ -1523,7 +1559,7 @@ class WorkflowEngineProxy {
   _call(method, args) {
     return new Promise((resolve, reject) => {
       if (!this._ready || !this._worker) {
-        return reject(new Error("Workflow engine worker not ready"));
+        return reject(this._lastError || new Error("Workflow engine worker not ready"));
       }
       const callId = _genCallId();
       this._pending.set(callId, { resolve, reject });
@@ -3394,6 +3430,10 @@ async function getWorkflowRequestContext(reqUrl, options = {}) {
   const paths = getWorkflowStoragePaths(workspaceContext.workspaceDir);
   const workspaceKey = getWorkflowWorkspaceKey(paths.workspaceRoot);
   let engine = _wfEngineByWorkspace.get(workspaceKey) || null;
+  if (engine?.isWorkflowEngineProxy && typeof engine.isAvailable === "function" && !engine.isAvailable()) {
+    _wfEngineByWorkspace.delete(workspaceKey);
+    engine = null;
+  }
   if (!engine) {
     if (_testDefaultEngine) {
       engine = _testDefaultEngine;

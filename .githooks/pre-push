@@ -213,10 +213,6 @@ if [ "${#CHANGED_RUNTIME[@]}" -eq 0 ] && [ "${#CHANGED_TESTS[@]}" -eq 0 ]; then
   exit 0
 fi
 
-if [ "${#BROAD_IMPACT_MAP[@]}" -gt 0 ]; then
-  echo "[hooks] broad-impact files changed; running targeted local coverage only and deferring full-suite coverage to CI"
-fi
-
 should_fast_run_full_suite() {
   local runtime_count="${#CHANGED_RUNTIME[@]}"
   local changed_count="${#CHANGED_FILES[@]}"
@@ -233,9 +229,15 @@ should_fast_run_full_suite() {
 
 if should_fast_run_full_suite; then
   echo "[hooks] large diff detected (${#CHANGED_FILES[@]} files, ${#CHANGED_RUNTIME[@]} runtime, ${#CHANGED_TESTS[@]} tests) — skipping discovery and running the full suite immediately"
+  export BOSUN_VITEST_MAX_WORKERS="${BOSUN_PREPUSH_FULL_SUITE_VITEST_MAX_WORKERS:-4}"
+  export BOSUN_VITEST_MIN_WORKERS="${BOSUN_PREPUSH_FULL_SUITE_VITEST_MIN_WORKERS:-2}"
   npm run test:all
   echo "[hooks] pre-push checks passed ✓"
   exit 0
+fi
+
+if [ "${#BROAD_IMPACT_MAP[@]}" -gt 0 ]; then
+  echo "[hooks] broad-impact files changed; running targeted local coverage only and deferring full-suite coverage to CI"
 fi
 
 # ── Collect all targeted test files into a single set ────────────────────────
