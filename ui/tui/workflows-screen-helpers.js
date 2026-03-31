@@ -1,4 +1,3 @@
-import figures from "figures";
 
 export const WORKFLOW_HISTORY_LIMIT = 50;
 export const WORKFLOW_FLASH_DURATION_MS = 3000;
@@ -216,6 +215,6 @@ export function workflowResultColor(status) {
   if (normalized === "completed" || normalized === "success") return "green";
   if (normalized === "failed" || normalized === "error") return "red";
   if (normalized === "running") return "yellow";
-  if (normalized === "cancelled") return figures.cross ? "red" : "red";
+  if (normalized === "cancelled") return "red";
   return "gray";
 }

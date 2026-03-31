@@ -16,7 +16,15 @@ import {
 
 const html = htm.bind(React.createElement);
 
+const MAX_TREE_LINES = 200;
+const MAX_TREE_DEPTH = 8;
+
 function renderTreeLines(value, expandedPaths, path = "root", depth = 0, lines = []) {
+  if (lines.length >= MAX_TREE_LINES) return lines;
+  if (depth > MAX_TREE_DEPTH) {
+    lines.push({ key: path, path, depth, label: `${path.split(".").at(-1)}: …`, expandable: false });
+    return lines;
+  }
   const isObject = value && typeof value === "object";
   if (!isObject) {
     lines.push({ key: path, path, depth, label: `${path.split(".").at(-1)}: ${String(value)}`, expandable: false });
@@ -36,6 +44,7 @@ function renderTreeLines(value, expandedPaths, path = "root", depth = 0, lines =
   });
   if (!isExpanded) return lines;
   for (const [key, child] of entries) {
+    if (lines.length >= MAX_TREE_LINES) break;
     renderTreeLines(child, expandedPaths, `${path}.${key}`, depth + 1, lines);
   }
   return lines;
@@ -236,13 +245,10 @@ export default function WorkflowsScreen({ workflowState, wsState }) {
         .catch((error) => setStatusLine(String(error?.message || error || `Failed to toggle ${selectedTemplate.id}.`)));
       return;
     }
-    if ((input?.toLowerCase() === "i" || key.return) && (selectedHistory || selectedTemplate)) {
-      const runId = selectedHistory?.runId || null;
-      if (runId) {
-        setInspectingRunId(runId);
-        setSelectedTreePath("root");
-        return;
-      }
+    if ((input?.toLowerCase() === "i" || key.return) && focusArea === "history" && selectedHistory?.runId) {
+      setInspectingRunId(selectedHistory.runId);
+      setSelectedTreePath("root");
+      return;
     }
     if (key.delete && selectedTemplate) {
       Promise.resolve(workflowState?.uninstallWorkflow?.(selectedTemplate.id))

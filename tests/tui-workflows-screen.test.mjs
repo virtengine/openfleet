@@ -104,8 +104,8 @@ describe("tui workflows screen helpers", () => {
       workflowName: "Other",
       eventType: "run:start",
       status: "running",
-      timestamp: now + WORKFLOW_FLASH_DURATION_MS + 1,
-    }, now + WORKFLOW_FLASH_DURATION_MS + 1);
+      timestamp: now + 800 + WORKFLOW_FLASH_DURATION_MS + 1,
+    }, now + 800 + WORKFLOW_FLASH_DURATION_MS + 1);
     expect(afterFlash.flashByWorkflowId.has("wf-1")).toBe(false);
   });
 

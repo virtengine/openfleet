@@ -1,13 +1,16 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import * as ReactModule from "react";
 
 const React = ReactModule.default ?? ReactModule;
 const useCallback = ReactModule.useCallback ?? React.useCallback;
 const useEffect = ReactModule.useEffect ?? React.useEffect;
+const useMemo = ReactModule.useMemo ?? React.useMemo;
 const useState = ReactModule.useState ?? React.useState;
 
 import { loadConfig } from "../../config/config.mjs";
 import { CONFIG_FILES } from "../../config/config-file-names.mjs";
-import { listWorkflowSummaries, parseWorkflowInput } from "../../workflow/workflow-cli.mjs";
+import { parseWorkflowInput } from "../../workflow/workflow-cli.mjs";
 import { WorkflowEngine } from "../../workflow/workflow-engine.mjs";
 
 function resolveConfigFilePath(config) {
@@ -58,7 +61,7 @@ function createEngine(config) {
 }
 
 export function useWorkflows(config) {
-  const resolvedConfig = config || loadConfig(process.argv);
+  const resolvedConfig = useMemo(() => config ?? loadConfig(process.argv), [config]);
   const [workflows, setWorkflows] = useState([]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -68,9 +71,8 @@ export function useWorkflows(config) {
     setLoading(true);
     try {
       const engine = createEngine(resolvedConfig);
-      const summaries = await Promise.resolve(listWorkflowSummaries(resolvedConfig));
-      const normalized = (Array.isArray(summaries) ? summaries : []).map(summarizeWorkflowDefinition);
-      setWorkflows(normalized);
+      const summaries = engine.list().map(summarizeWorkflowDefinition);
+      setWorkflows(summaries);
       setHistory(engine.getRunHistory(null, 50));
       setError(null);
     } catch (err) {
@@ -99,8 +101,9 @@ export function useWorkflows(config) {
 
   const triggerWorkflow = useCallback(async (workflowId, input = {}) => {
     const engine = createEngine(resolvedConfig);
-    const payload = typeof input === "string" ? parseWorkflowInput(input) : input;
-    return engine.execute(workflowId, payload, { force: true, triggerSource: "manual" });
+    const rawPayload = typeof input === "string" ? parseWorkflowInput(input) : input;
+    const payload = { ...rawPayload, _triggerSource: "manual" };
+    return engine.execute(workflowId, payload, { force: true });
   }, [resolvedConfig]);
 
   const cancelRun = useCallback(async (runId) => {
