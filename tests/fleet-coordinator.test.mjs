@@ -896,6 +896,118 @@ Always use deterministic TF ops.
         }),
       ]);
     });
+
+    it("prefers memories tied to directly changed files over generic workspace memories", async () => {
+      await mkdir(resolve(tempRoot, ".bosun", "context-index"), { recursive: true });
+      await writeFile(
+        resolve(tempRoot, ".bosun", "context-index", "agent-index.json"),
+        JSON.stringify({ relations: [] }, null, 2),
+        "utf8",
+      );
+
+      const genericResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: refresh session fixtures before retrying auth flows.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        agentId: "agent-generic",
+      }));
+      expect(genericResult.success).toBe(true);
+
+      const directResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: src/auth/login.mjs must reseed auth fixtures before replaying retries.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-2",
+        runId: "run-2",
+        agentId: "agent-direct",
+        relatedPaths: ["src/auth/login.mjs"],
+      }));
+      expect(directResult.success).toBe(true);
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-9",
+        runId: "run-9",
+        query: "retry auth fixtures before replaying login flows",
+        changedFiles: ["src/auth/login.mjs"],
+        limit: 5,
+      });
+
+      expect(retrieved[0]).toEqual(expect.objectContaining({
+        content: "Workspace memory: src/auth/login.mjs must reseed auth fixtures before replaying retries.",
+        directPathHits: ["src/auth/login.mjs"],
+      }));
+      expect(retrieved[0].score).toBeGreaterThan(retrieved[1].score);
+    });
+
+    it("boosts memories attached to graph-adjacent files when direct matches are absent", async () => {
+      await mkdir(resolve(tempRoot, ".bosun", "context-index"), { recursive: true });
+      await writeFile(
+        resolve(tempRoot, ".bosun", "context-index", "agent-index.json"),
+        JSON.stringify({
+          relations: [
+            {
+              relationType: "file_imports_file",
+              fromPath: "src/auth/login.mjs",
+              toPath: "src/auth/session-store.mjs",
+            },
+          ],
+        }, null, 2),
+        "utf8",
+      );
+
+      const adjacentResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: session-store retries need deterministic token snapshots.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-2",
+        runId: "run-2",
+        agentId: "agent-adjacent",
+        relatedPaths: ["src/auth/session-store.mjs"],
+      }));
+      expect(adjacentResult.success).toBe(true);
+
+      const unrelatedResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: billing retries also need deterministic token snapshots.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-3",
+        runId: "run-3",
+        agentId: "agent-unrelated",
+        relatedPaths: ["src/billing/invoice-runner.mjs"],
+      }));
+      expect(unrelatedResult.success).toBe(true);
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-9",
+        runId: "run-9",
+        query: "deterministic token snapshots for retries",
+        changedFiles: ["src/auth/login.mjs"],
+        limit: 5,
+      });
+
+      expect(retrieved[0]).toEqual(expect.objectContaining({
+        content: "Workspace memory: session-store retries need deterministic token snapshots.",
+        adjacentPathHits: ["src/auth/session-store.mjs"],
+      }));
+      expect(retrieved[1].adjacentPathHits).toEqual([]);
+      expect(retrieved[0].score).toBeGreaterThan(retrieved[1].score);
+    });
   });
 
 

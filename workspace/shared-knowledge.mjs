@@ -21,7 +21,7 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, relative } from "node:path";
 import crypto from "node:crypto";
 import {
   appendKnowledgeEntryToStateLedger,
@@ -40,6 +40,7 @@ const MIN_ENTRY_LENGTH = 20;
 const RATE_LIMIT_MS = 30_000;
 const DEFAULT_BRIEFING_LIMIT = 4;
 const REGISTRY_VERSION = "1.0.0";
+const CONTEXT_INDEX_FILE = ".bosun/context-index/agent-index.json";
 const MEMORY_SCOPE_PRIORITY = {
   run: 4,
   session: 3,
@@ -47,6 +48,9 @@ const MEMORY_SCOPE_PRIORITY = {
   team: 1,
 };
 const MEMORY_SCOPES = new Set(Object.keys(MEMORY_SCOPE_PRIORITY));
+const PATH_ADJACENCY_RELATION_TYPES = new Set(["file_imports_file"]);
+const DIRECT_PATH_MATCH_SCORE = 140;
+const ADJACENT_PATH_MATCH_SCORE = 80;
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -93,6 +97,50 @@ function normalizeStringList(value, { maxItems = 12, maxLength = 240 } = {}) {
   return out;
 }
 
+function normalizeRepoPath(value, repoRoot = knowledgeState.repoRoot || process.cwd()) {
+  const text = normalizeText(value);
+  if (!text) return "";
+  const withoutPrefix = text.replace(/^file:\/\//i, "");
+  let normalized = withoutPrefix.replace(/\\/g, "/");
+  if (repoRoot && (/^[a-zA-Z]:\//.test(normalized) || normalized.startsWith("/"))) {
+    try {
+      normalized = relative(repoRoot, withoutPrefix).replace(/\\/g, "/");
+    } catch {
+      // fall back to the normalized absolute path
+    }
+  }
+  normalized = normalized.replace(/^\.\//, "").replace(/^\/+/, "");
+  const segments = normalized
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments[0] === ".") segments.shift();
+  return segments.join("/");
+}
+
+function normalizeRelatedPaths(value, { maxItems = 24, maxLength = 320, repoRoot } = {}) {
+  const rawValues = Array.isArray(value)
+    ? value
+    : (typeof value === "string" && value.includes(",")
+        ? value.split(",")
+        : [value]);
+  const out = [];
+  const seen = new Set();
+  for (const entry of rawValues) {
+    const normalized = normalizeRepoPath(entry, repoRoot);
+    if (!normalized) continue;
+    const clipped = normalized.length > maxLength
+      ? normalized.slice(0, maxLength).trim()
+      : normalized;
+    const key = clipped.toLowerCase();
+    if (!clipped || seen.has(key)) continue;
+    seen.add(key);
+    out.push(clipped);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
 function normalizeConfidence(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
@@ -103,6 +151,13 @@ function normalizeScopeLevel(value) {
   const raw = normalizeText(value).toLowerCase();
   if (!raw) return "workspace";
   return MEMORY_SCOPES.has(raw) ? raw : "workspace";
+}
+
+function extractPathCandidatesFromText(value, repoRoot = knowledgeState.repoRoot || process.cwd()) {
+  const text = normalizeText(value);
+  if (!text) return [];
+  const matches = text.match(/[A-Za-z0-9_./\\-]+\.[A-Za-z0-9]{1,8}/g) || [];
+  return normalizeRelatedPaths(matches, { repoRoot, maxItems: 24 });
 }
 
 function getScopeIdentifier(entry, scopeLevel = entry?.scopeLevel) {
@@ -150,6 +205,26 @@ function createEmptyRegistry() {
 
 function serializeEntry(entry) {
   const normalizedScopeLevel = normalizeScopeLevel(entry?.scopeLevel);
+  const repoRoot = knowledgeState.repoRoot || process.cwd();
+  const relatedPaths = normalizeRelatedPaths(
+    [
+      ...(Array.isArray(entry?.relatedPaths) ? entry.relatedPaths : []),
+      ...(Array.isArray(entry?.document?.relatedPaths) ? entry.document.relatedPaths : []),
+      ...extractPathCandidatesFromText(entry?.taskRef, repoRoot),
+      ...extractPathCandidatesFromText(entry?.scope, repoRoot),
+      ...extractPathCandidatesFromText(entry?.content, repoRoot),
+      ...(Array.isArray(entry?.provenance)
+        ? entry.provenance.flatMap((value) => extractPathCandidatesFromText(value, repoRoot))
+        : []),
+      ...(Array.isArray(entry?.evidence)
+        ? entry.evidence.flatMap((value) => extractPathCandidatesFromText(value, repoRoot))
+        : []),
+      ...(Array.isArray(entry?.tags)
+        ? entry.tags.flatMap((value) => extractPathCandidatesFromText(value, repoRoot))
+        : []),
+    ],
+    { repoRoot },
+  );
   const normalizedEntry = {
     content: normalizeText(entry?.content),
     scope: normalizeNullable(entry?.scope),
@@ -173,6 +248,7 @@ function serializeEntry(entry) {
     tags: Array.isArray(entry?.tags)
       ? entry.tags.map((tag) => normalizeText(tag)).filter(Boolean)
       : [],
+    relatedPaths,
   };
   if (!getScopeIdentifier(normalizedEntry, normalizedScopeLevel) && normalizedScopeLevel === "workspace") {
     normalizedEntry.workspaceId = "default";
@@ -315,6 +391,8 @@ function buildSearchText(entry) {
     ...(Array.isArray(entry.provenance) ? entry.provenance : []),
     ...(Array.isArray(entry.evidence) ? entry.evidence : []),
     ...(Array.isArray(entry.tags) ? entry.tags : []),
+    ...(Array.isArray(entry.relatedPaths) ? entry.relatedPaths : []),
+    ...(Array.isArray(entry.document?.relatedPaths) ? entry.document.relatedPaths : []),
   ]
     .filter(Boolean)
     .join(" ");
@@ -337,12 +415,79 @@ function isEntryVisibleForContext(entry, context) {
   return false;
 }
 
-function scoreEntry(entry, queryTokens, context) {
+async function loadContextPathAdjacency(repoRoot) {
+  const indexPath = resolve(repoRoot, CONTEXT_INDEX_FILE);
+  if (!existsSync(indexPath)) {
+    return { directPaths: new Set(), adjacentPaths: new Set() };
+  }
+  try {
+    const payload = JSON.parse(await readFile(indexPath, "utf8"));
+    const relations = Array.isArray(payload?.relations) ? payload.relations : [];
+    const adjacency = new Map();
+    const addEdge = (fromPath, toPath) => {
+      const from = normalizeRepoPath(fromPath, repoRoot);
+      const to = normalizeRepoPath(toPath, repoRoot);
+      if (!from || !to || from === to) return;
+      if (!adjacency.has(from)) adjacency.set(from, new Set());
+      adjacency.get(from).add(to);
+    };
+    for (const relation of relations) {
+      if (!PATH_ADJACENCY_RELATION_TYPES.has(relation?.relationType)) continue;
+      addEdge(relation.fromPath, relation.toPath);
+      addEdge(relation.toPath, relation.fromPath);
+    }
+    return adjacency;
+  } catch {
+    return new Map();
+  }
+}
+
+async function buildPathContext(options = {}, repoRoot = knowledgeState.repoRoot || process.cwd()) {
+  const directPaths = new Set(normalizeRelatedPaths([
+    ...(Array.isArray(options.relatedPaths) ? options.relatedPaths : []),
+    ...(Array.isArray(options.changedFiles) ? options.changedFiles : []),
+  ], { repoRoot }));
+  if (directPaths.size === 0) {
+    return { directPaths, adjacentPaths: new Set() };
+  }
+  const adjacency = await loadContextPathAdjacency(repoRoot);
+  const adjacentPaths = new Set();
+  for (const directPath of directPaths) {
+    const neighbors = adjacency.get(directPath);
+    if (!neighbors) continue;
+    for (const neighbor of neighbors) {
+      if (!directPaths.has(neighbor)) adjacentPaths.add(neighbor);
+    }
+  }
+  return { directPaths, adjacentPaths };
+}
+
+function collectEntryRelatedPaths(entry, repoRoot = knowledgeState.repoRoot || process.cwd()) {
+  return normalizeRelatedPaths([
+    ...(Array.isArray(entry?.relatedPaths) ? entry.relatedPaths : []),
+    ...(Array.isArray(entry?.document?.relatedPaths) ? entry.document.relatedPaths : []),
+    ...(Array.isArray(entry?.provenance)
+      ? entry.provenance.flatMap((value) => extractPathCandidatesFromText(value, repoRoot))
+      : []),
+    ...(Array.isArray(entry?.evidence)
+      ? entry.evidence.flatMap((value) => extractPathCandidatesFromText(value, repoRoot))
+      : []),
+    ...(Array.isArray(entry?.tags)
+      ? entry.tags.flatMap((value) => extractPathCandidatesFromText(value, repoRoot))
+      : []),
+    ...extractPathCandidatesFromText(entry?.content, repoRoot),
+    ...extractPathCandidatesFromText(entry?.taskRef, repoRoot),
+  ], { repoRoot });
+}
+
+function scoreEntry(entry, queryTokens, context, pathContext = { directPaths: new Set(), adjacentPaths: new Set() }) {
   const scopeLevel = normalizeScopeLevel(entry?.scopeLevel);
   const priority = MEMORY_SCOPE_PRIORITY[scopeLevel] || 0;
   const haystack = tokenize(buildSearchText(entry));
   const tokenSet = new Set(haystack);
   let score = priority * 100;
+  const directPathHits = [];
+  const adjacentPathHits = [];
 
   for (const token of queryTokens) {
     if (tokenSet.has(token)) score += 25;
@@ -352,9 +497,27 @@ function scoreEntry(entry, queryTokens, context) {
     score += 50;
   }
 
+  const entryRelatedPaths = collectEntryRelatedPaths(entry, context.repoRoot);
+  for (const relatedPath of entryRelatedPaths) {
+    if (pathContext.directPaths.has(relatedPath)) {
+      directPathHits.push(relatedPath);
+      score += DIRECT_PATH_MATCH_SCORE;
+      continue;
+    }
+    if (pathContext.adjacentPaths.has(relatedPath)) {
+      adjacentPathHits.push(relatedPath);
+      score += ADJACENT_PATH_MATCH_SCORE;
+    }
+  }
+
   const timestampMs = Date.parse(entry.timestamp || "") || 0;
   score += Math.floor(timestampMs / 1000 / 60 / 60 / 24);
-  return score;
+  return {
+    score,
+    relatedPaths: entryRelatedPaths,
+    directPathHits,
+    adjacentPathHits,
+  };
 }
 
 // ── Initialization ───────────────────────────────────────────────────────────
@@ -396,6 +559,7 @@ export function buildKnowledgeEntry(opts = {}) {
     tags: Array.isArray(opts.tags)
       ? opts.tags.map((tag) => normalizeText(tag)).filter(Boolean)
       : [],
+    relatedPaths: normalizeRelatedPaths(opts.relatedPaths),
   };
   if (!getScopeIdentifier(entry, entry.scopeLevel) && entry.scopeLevel === "workspace") {
     entry.workspaceId = "default";
@@ -439,6 +603,9 @@ export function formatEntryAsMarkdown(entry) {
   }
   if (Array.isArray(entry.tags) && entry.tags.length > 0) {
     lines.push(`> **Tags:** ${entry.tags.join(", ")}`);
+  }
+  if (Array.isArray(entry.relatedPaths) && entry.relatedPaths.length > 0) {
+    lines.push(`> **Related Paths:** ${entry.relatedPaths.join(" | ")}`);
   }
   lines.push("");
   lines.push(entry.content);
@@ -703,6 +870,7 @@ export async function retrieveKnowledgeEntries(options = {}) {
     sessionId: normalizeNullable(options.sessionId),
     runId: normalizeNullable(options.runId),
     taskId: normalizeNullable(options.taskId),
+    repoRoot,
   };
   const queryTokens = tokenize(
     [
@@ -714,13 +882,17 @@ export async function retrieveKnowledgeEntries(options = {}) {
       .join(" "),
   );
   const limit = Math.max(1, Number(options.limit) || DEFAULT_BRIEFING_LIMIT);
+  const pathContext = await buildPathContext(options, repoRoot);
 
   return registry.entries
     .filter((entry) => isEntryVisibleForContext(entry, context))
-    .map((entry) => ({
-      ...entry,
-      score: scoreEntry(entry, queryTokens, context),
-    }))
+    .map((entry) => {
+      const scored = scoreEntry(entry, queryTokens, context, pathContext);
+      return {
+        ...entry,
+        ...scored,
+      };
+    })
     .sort((left, right) => {
       const scopeDelta =
         (MEMORY_SCOPE_PRIORITY[right.scopeLevel] || 0) -
