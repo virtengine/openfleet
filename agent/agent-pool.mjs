@@ -68,6 +68,9 @@ import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
 import { createInternalHarnessSession as createHarnessRuntimeSession } from "./internal-harness-runtime.mjs";
 
+// Upper bound for externally supplied harness timeouts to avoid unbounded runs.
+const MAX_HARNESS_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
+
 // Lazy-load MCP registry to avoid circular dependencies.
 // Cached at module scope per AGENTS.md hard rules.
 let _mcpRegistry = null;
@@ -861,6 +864,13 @@ function clampTimerDelayMs(delayMs, label = "timer") {
 
 function getFirstEventTimeoutMs(totalTimeoutMs) {
   return resolveCodexStreamSafety(totalTimeoutMs).firstEventTimeoutMs;
+}
+
+function normalizeHarnessTimeoutMs(timeoutMs) {
+  const parsed = Number(timeoutMs);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  const clamped = Math.min(Math.trunc(parsed), MAX_HARNESS_TIMEOUT_MS);
+  return clamped;
 }
 
 function sanitizeAndBoundPrompt(text) {
@@ -4813,7 +4823,8 @@ function buildHarnessTurnExecutor(options = {}) {
     timeoutMs,
   }) {
     const cwd = stage.cwd || options.cwd || profile.cwd || REPO_ROOT;
-    const resolvedTimeoutMs = timeoutMs || stage.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS;
+    const rawTimeoutMs = timeoutMs || stage.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS;
+    const resolvedTimeoutMs = normalizeHarnessTimeoutMs(rawTimeoutMs) ?? DEFAULT_TIMEOUT_MS;
     const sessionType = stage.sessionType || profile.sessionType || options.sessionType || "task";
     const sdk = stage.sdk || options.sdk || profile.sdk || undefined;
     const model = stage.model || options.model || profile.model || undefined;
@@ -4885,6 +4896,8 @@ export function createCompiledInternalHarnessSession(compiledProfile, options = 
     throw new Error("Compiled harness profile is required");
   }
 
+  const normalizedTimeoutMs = normalizeHarnessTimeoutMs(options.timeoutMs);
+
   const controller = createHarnessRuntimeSession(compiledProfile, {
     onEvent: options.onHarnessEvent,
     runId: options.runId,
@@ -4900,7 +4913,10 @@ export function createCompiledInternalHarnessSession(compiledProfile, options = 
     requestedBy: options.requestedBy,
     emitApprovalResolutionEvent: options.emitApprovalResolutionEvent,
     steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
-    executeTurn: buildHarnessTurnExecutor(options),
+    executeTurn: buildHarnessTurnExecutor({
+      ...options,
+      timeoutMs: normalizedTimeoutMs ?? options.timeoutMs,
+    }),
     extensions: options.extensions,
     extensionRegistry: options.extensionRegistry,
   });
