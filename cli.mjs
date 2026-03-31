@@ -941,7 +941,7 @@ function daemonStatus() {
       }
       console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
-      const existingMonitorOwner = detectExistingMonitorLockOwner();
+      const existingMonitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
       if (existingMonitorOwner) {
         console.log(
           `  bosun daemon is not running in daemon mode, but bosun monitor is active (PID ${existingMonitorOwner.pid}).`,
@@ -2485,9 +2485,9 @@ function shouldPauseDaemonRestartStorm(options) {
   return { pause: true, reasons: signals.reasons };
 }
 
-function detectExistingMonitorLockOwner(excludePid = null) {
+function detectExistingMonitorLockOwner(excludePid = null, extraCacheDirs = []) {
   try {
-    for (const pidFile of getMonitorPidFileCandidates()) {
+    for (const pidFile of getMonitorPidFileCandidates(extraCacheDirs)) {
       let ownerPid = null;
       try {
         ownerPid = readAlivePid(pidFile);

@@ -202,7 +202,7 @@ function deriveTerminalSessionStatus(session, requestedStatus = "completed") {
 
   const messages = Array.isArray(session?.messages) ? session.messages : [];
   if (!messages.length || !hasMeaningfulSessionOutput(session)) {
-    return "no_output";
+    return normalizedRequested;
   }
 
   const recentText = messages
