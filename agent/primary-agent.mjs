@@ -1024,14 +1024,16 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
 
   // Record user message (original, without mode prefix)
-  tracker.recordEvent(sessionId, {
-    role: "user",
-    content: userMessage,
-    attachments: attachments.length ? attachments : undefined,
-    timestamp: new Date().toISOString(),
-    _sessionType: sessionType,
-    _mode: effectiveMode,
-  });
+  if (options.skipUserMessageRecord !== true) {
+    tracker.recordEvent(sessionId, {
+      role: "user",
+      content: userMessage,
+      attachments: attachments.length ? attachments : undefined,
+      timestamp: new Date().toISOString(),
+      _sessionType: sessionType,
+      _mode: effectiveMode,
+    });
+  }
 
   if (shouldUseIsolatedPoolExecution(activeAdapter, options)) {
     const pooled = await execPooledPrompt(framedMessage, {

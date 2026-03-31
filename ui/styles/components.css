@@ -4244,6 +4244,29 @@ select.input {
   font-weight: 600;
 }
 
+.fleet-icon-clamp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 16px;
+  block-size: 16px;
+  min-inline-size: 16px;
+  min-block-size: 16px;
+  overflow: hidden;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.fleet-icon-clamp svg,
+.fleet-icon-clamp img {
+  max-width: 100%;
+  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
 .fleet-slot-item-time {
   font-size: 10px;
   color: var(--text-hint);
@@ -4289,9 +4312,23 @@ select.input {
   color: color-mix(in srgb, var(--color-inprogress, #22c55e) 75%, var(--text-primary));
 }
 
+.fleet-slot-state-badge.warning {
+  border-color: color-mix(in srgb, var(--color-warning, #f59e0b) 45%, var(--border));
+  color: color-mix(in srgb, var(--color-warning, #f59e0b) 78%, var(--text-primary));
+}
+
+.fleet-slot-state-badge.error {
+  border-color: color-mix(in srgb, var(--color-error, #ef4444) 45%, var(--border));
+  color: color-mix(in srgb, var(--color-error, #ef4444) 78%, var(--text-primary));
+}
+
 .fleet-slot-state-badge.historic {
   border-color: color-mix(in srgb, var(--text-hint) 35%, var(--border));
   color: var(--text-hint);
+}
+
+.fleet-session-id-pill-icon {
+  font-size: 12px;
 }
 
 .fleet-slot-meta-branch {

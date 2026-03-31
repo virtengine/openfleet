@@ -40,7 +40,7 @@ import {
 import { ICONS } from "../modules/icons.js";
 import { formatCompactCount } from "../modules/session-insights.js";
 import { formatRelative, truncate } from "../modules/utils.js";
-import { resolveSessionWorkspaceHint } from "../modules/session-api.js";
+import { getSessionRuntimeState, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import {
   Card,
   Badge,
@@ -449,18 +449,82 @@ function getFleetEntryTitle(entry) {
   );
 }
 
+function formatFleetStateLabel(value, fallback = "Unknown") {
+  const normalized = String(value || "").trim();
+  if (!normalized) return fallback;
+  return normalized
+    .replace(/[_-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function getFleetEntryStatus(entry) {
-  return String(
-    entry?.slot?.status
-    || entry?.session?.status
-    || (entry?.isHistory ? "historic" : "unknown"),
-  ).toLowerCase();
+  return getFleetEntryStatusMeta(entry).key;
 }
 
 function isFleetEntryActive(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  const status = getFleetEntryStatus(entry);
-  return status === "active" || status === "running" || status === "busy" || status === "inprogress";
+  return getFleetEntryStatusMeta(entry).isActive;
+}
+
+function getFleetEntryStatusMeta(entry) {
+  if (!entry || typeof entry !== "object") {
+    return { key: "unknown", label: "Unknown", tone: "historic", isActive: false };
+  }
+
+  const slotStatus = String(entry?.slot?.status || "").trim().toLowerCase();
+  if (slotStatus) {
+    if (["running", "busy", "active", "working", "inprogress"].includes(slotStatus)) {
+      return { key: slotStatus, label: "Active", tone: "active", isActive: true };
+    }
+    if (slotStatus === "inreview") {
+      return { key: slotStatus, label: "Review", tone: "warning", isActive: false };
+    }
+    if (slotStatus === "idle" || slotStatus === "queued" || slotStatus === "pending") {
+      return {
+        key: slotStatus,
+        label: slotStatus === "queued" ? "Queued" : slotStatus === "pending" ? "Pending" : "Idle",
+        tone: "warning",
+        isActive: false,
+      };
+    }
+    if (slotStatus === "error" || slotStatus === "failed" || slotStatus === "stalled") {
+      return { key: slotStatus, label: slotStatus === "error" ? "Error" : formatFleetStateLabel(slotStatus), tone: "error", isActive: false };
+    }
+    if (slotStatus === "done" || slotStatus === "completed") {
+      return { key: slotStatus, label: "Completed", tone: "historic", isActive: false };
+    }
+  }
+
+  if (entry?.session) {
+    const runtimeState = getSessionRuntimeState(entry.session);
+    if (runtimeState?.key === "running") {
+      return { key: "running", label: "Active", tone: "active", isActive: true };
+    }
+    if (runtimeState?.key === "recent") {
+      return { key: "recent", label: "Recent", tone: "active", isActive: true };
+    }
+    if (runtimeState?.key === "idle" || runtimeState?.key === "queued" || runtimeState?.key === "paused") {
+      return { key: runtimeState.key, label: runtimeState.label || "Idle", tone: "warning", isActive: false };
+    }
+    if (runtimeState?.key === "stalled" || runtimeState?.key === "stale") {
+      return { key: runtimeState.key, label: runtimeState.label || "Stale", tone: "error", isActive: false };
+    }
+    if (runtimeState?.key === "stopped") {
+      return { key: "historic", label: entry?.isHistory ? "Historic" : "Not live", tone: "historic", isActive: false };
+    }
+    if (runtimeState?.label) {
+      return { key: runtimeState.key || "unknown", label: runtimeState.label, tone: "historic", isActive: false };
+    }
+  }
+
+  return {
+    key: entry?.isHistory ? "historic" : "unknown",
+    label: entry?.isHistory ? "Historic" : "Unknown",
+    tone: "historic",
+    isActive: false,
+  };
 }
 
 function getFleetEntryTimestamp(entry) {
@@ -539,9 +603,8 @@ function getFleetEntryRelativeTime(entry) {
 
 function isActiveSessionRecord(session) {
   if (!session || typeof session !== "object") return false;
-  if (session.active === true) return true;
-  const status = String(session.status || session.state || "").trim().toLowerCase();
-  return ["active", "running", "busy", "working", "inprogress", "streaming"].includes(status);
+  const runtimeState = getSessionRuntimeState(session);
+  return runtimeState?.key === "running" || runtimeState?.key === "recent";
 }
 
 function getFleetEntryOriginLabel(entry) {
@@ -1649,7 +1712,7 @@ export function AgentsTab() {
     const sessions = sessionsData.value || [];
     if (current || sessions.length === 0) return;
     const activeSession =
-      sessions.find((s) => s.status === "active" || s.status === "running") ||
+      sessions.find((s) => isActiveSessionRecord(s)) ||
       sessions[0];
     if (activeSession?.id) {
       selectedSessionId.value = activeSession.id;
@@ -1659,11 +1722,11 @@ export function AgentsTab() {
   useEffect(() => {
     let active = true;
     const refreshTaskSessions = () => {
-      if (!active) return;
+      if (!active || document.hidden) return;
       loadSessions({ type: "task", workspace: "all" });
     };
     refreshTaskSessions();
-    const interval = setInterval(refreshTaskSessions, 5000);
+    const interval = setInterval(refreshTaskSessions, 15000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -1707,6 +1770,7 @@ export function AgentsTab() {
   useEffect(() => {
     let cancelled = false;
     const loadAgentMonitor = async () => {
+      if (cancelled || document.hidden) return;
       try {
         const [statusPayload, livenessPayload, errorPayload, recentEventsPayload] = await Promise.all([
           apiFetch("/api/agents/events/status"),
@@ -1726,7 +1790,7 @@ export function AgentsTab() {
     void loadAgentMonitor();
     const interval = setInterval(() => {
       void loadAgentMonitor();
-    }, 5000);
+    }, 15000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -3130,7 +3194,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                         : "No sessions yet"}
                 </div>`
               : html`${visibleEntries.map((entry) => {
-                  const entryStatus = getFleetEntryStatus(entry);
+                  const entryStatus = getFleetEntryStatusMeta(entry);
                   const relativeTime = getFleetEntryRelativeTime(entry);
                   const sessionId = resolveFleetEntrySessionId(entry);
                   return html`
@@ -3157,8 +3221,8 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                       </div>
                       <div class="fleet-slot-item-meta fleet-slot-item-meta-secondary">
                         <span class="fleet-slot-meta-turns">Turns ${Number(entry.session?.turnCount || 0)}</span>
-                        <span class=${`fleet-slot-state-badge ${isFleetEntryActive(entry) ? "active" : "historic"}`}>
-                          ${entryStatus || "unknown"}
+                        <span class=${`fleet-slot-state-badge ${entryStatus.tone || "historic"}`}>
+                          ${entryStatus.label || "Unknown"}
                         </span>
                         ${sessionId
                           ? html`<button
@@ -3174,7 +3238,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                               }}
                             >
                               <span class="fleet-session-id-pill-text mono">${sessionId.slice(0, 8)}</span>
-                              <span class="fleet-session-id-pill-icon" aria-hidden="true">${copiedSessionId === sessionId ? "✓" : ICONS.copy}</span>
+                              <span class="fleet-session-id-pill-icon fleet-icon-clamp" aria-hidden="true">${copiedSessionId === sessionId ? "✓" : ICONS.copy}</span>
                             </button>`
                           : null}
                         ${entry.slot?.branch
@@ -3334,11 +3398,11 @@ export function FleetSessionsTab() {
   useEffect(() => {
     let active = true;
     const refreshTaskSessions = () => {
-      if (!active) return;
+      if (!active || document.hidden) return;
       loadSessions({ type: "task", workspace: "all" });
     };
     refreshTaskSessions();
-    const interval = setInterval(refreshTaskSessions, 5000);
+    const interval = setInterval(refreshTaskSessions, 15000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -3348,7 +3412,7 @@ export function FleetSessionsTab() {
   useEffect(() => {
     let active = true;
     const loadFallbackTasks = () => {
-      if (!active) return;
+      if (!active || document.hidden) return;
       apiFetch("/api/tasks?limit=1000", { _silent: true })
         .then((res) => {
           if (!active) return;
@@ -3364,7 +3428,7 @@ export function FleetSessionsTab() {
         });
     };
     loadFallbackTasks();
-    const interval = setInterval(loadFallbackTasks, 5000);
+    const interval = setInterval(loadFallbackTasks, 20000);
     return () => {
       active = false;
       clearInterval(interval);

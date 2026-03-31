@@ -1238,7 +1238,11 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
   const [logState, setLogState] = useState("idle");
   const [insights, setInsights] = useState(null);
   const [insightState, setInsightState] = useState("idle");
-  const workspaceHint = resolveSessionWorkspaceHint(session, "active");
+  const sessionWorkspaceFallback =
+    activeTab.value === "chat"
+      ? "active"
+      : "all";
+  const workspaceHint = resolveSessionWorkspaceHint(session, sessionWorkspaceFallback);
   const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
   const apiStatusLabel = inferUiConnected() ? "Connected" : "Offline";
   const wsStatusLabel = wsConnected.value ? "Live" : "Closed";

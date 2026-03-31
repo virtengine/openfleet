@@ -693,9 +693,10 @@ describeUiServer("ui-server mini app", () => {
     delete process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL;
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    let server = null;
     try {
       const mod = await import("../server/ui-server.mjs");
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -718,9 +719,10 @@ describeUiServer("ui-server mini app", () => {
     process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL = "true";
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    let server = null;
     try {
       const mod = await import("../server/ui-server.mjs");
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -739,12 +741,15 @@ describeUiServer("ui-server mini app", () => {
   it("treats BOSUN_UI_AUTO_OPEN_BROWSER as an auto-open opt-in when no explicit mode is set", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "1";
-    delete process.env.BOSUN_UI_BROWSER_OPEN_MODE;
+    // Keep the key present but blank so loadDotEnv() cannot repopulate it
+    // from a developer .env file during startup.
+    process.env.BOSUN_UI_BROWSER_OPEN_MODE = "";
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    let server = null;
     try {
       const mod = await import("../server/ui-server.mjs");
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -757,6 +762,9 @@ describeUiServer("ui-server mini app", () => {
       expect(startupLog).toContain("browserOpenMode=auto");
       expect(startupLog).toContain("autoOpen=enabled");
     } finally {
+      if (server) {
+        await new Promise((resolveClose) => server.close(resolveClose));
+      }
       logSpy.mockRestore();
     }
   });
@@ -765,17 +773,18 @@ describeUiServer("ui-server mini app", () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "1";
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
-    delete process.env.BOSUN_UI_BROWSER_OPEN_MODE;
+    process.env.BOSUN_UI_BROWSER_OPEN_MODE = "";
 
     const blocker = createNetServer();
     await new Promise((resolveReady) => blocker.listen(0, "127.0.0.1", resolveReady));
     const blockedPort = blocker.address().port;
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const markerPath = resolve(process.env.BOSUN_HOME, ".cache", "ui-auto-open.json");
+    let server = null;
 
     try {
       const mod = await import("../server/ui-server.mjs");
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: blockedPort,
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -789,6 +798,9 @@ describeUiServer("ui-server mini app", () => {
         ),
       ).toBe(true);
     } finally {
+      if (server) {
+        await new Promise((resolveClose) => server.close(resolveClose));
+      }
       logSpy.mockRestore();
       await new Promise((resolveDone) => blocker.close(resolveDone));
     }
@@ -1805,6 +1817,18 @@ describeUiServer("ui-server mini app", () => {
     const messageJson = await messageResponse.json();
     expect(messageResponse.status).toBe(200);
     expect(messageJson.ok).toBe(true);
+
+    const sessionResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?full=1`,
+    );
+    const sessionJson = await sessionResponse.json();
+    expect(sessionResponse.status).toBe(200);
+    expect(sessionJson.session?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "run until stopped" }),
+      ]),
+    );
+
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
     expect(execPrimaryPrompt.mock.calls[0][1]?.abortController).toBeTruthy();
@@ -7689,6 +7713,7 @@ describeUiServer("ui-server mini app", () => {
       const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`);
       const listJson = await listRes.json();
       expect(listRes.status).toBe(200);
+      const listed = listJson.sessions.find((entry) => entry.id === "ledger-session-1");
       expect(listJson.sessions).toEqual(expect.arrayContaining([
         expect.objectContaining({
           id: "ledger-session-1",
@@ -7697,6 +7722,7 @@ describeUiServer("ui-server mini app", () => {
           status: "completed",
         }),
       ]));
+      expect(Array.isArray(listed?.messages) ? listed.messages : []).toEqual([]);
 
       const detailRes = await fetch(`http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-session-1")}?workspace=all&full=1`);
       const detailJson = await detailRes.json();

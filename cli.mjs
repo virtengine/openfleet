@@ -27,7 +27,6 @@ import {
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, execSync, spawn } from "node:child_process";
 import os from "node:os";
-import { Worker } from "node:worker_threads";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
 import { safeBanner, BOX } from "./lib/safe-box.mjs";
@@ -2586,24 +2585,15 @@ function runMonitor({ restartReason = "" } = {}) {
         } else {
           delete childEnv.BOSUN_MONITOR_RESTART_REASON;
         }
-        monitorChild = new Worker(
-          `
-            import { workerData } from "node:worker_threads";
-
-            process.argv.splice(0, process.argv.length, ...workerData.argv);
-            Object.assign(process.env, workerData.env);
-            await import(workerData.monitorModuleUrl);
-          `,
+        const runAsNode = process.versions?.electron ? ["--run-as-node"] : [];
+        monitorChild = spawn(
+          process.execPath,
+          [...runAsNode, monitorPath, ...process.argv.slice(2)],
           {
-            eval: true,
-            type: "module",
-            stdout: true,
-            stderr: true,
-            workerData: {
-              argv: [process.execPath, monitorPath, ...process.argv.slice(2)],
-              env: childEnv,
-              monitorModuleUrl: pathToFileURL(monitorPath).href,
-            },
+            env: childEnv,
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: process.platform === "win32",
+            cwd: process.cwd(),
           },
         );
         monitorChild.stdout?.on("data", (chunk) => {
@@ -2614,9 +2604,8 @@ function runMonitor({ restartReason = "" } = {}) {
         });
         daemonCrashTracker.markStart();
 
-        monitorChild.on("exit", (code) => {
-          const childPid = process.pid;
-          const signal = null;
+        monitorChild.on("exit", (code, signal) => {
+          const childPid = Number(monitorChild?.pid || 0) || null;
           monitorChild = null;
           if (code === SELF_RESTART_EXIT_CODE) {
             console.log(

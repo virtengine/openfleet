@@ -1915,28 +1915,47 @@ async function getWorkflowEngineModule() {
         _wfServicesReady = true;
 
         if (shouldBootstrapDefaultWorkflowSingleton()) {
+          const preferInProcessEngine = Boolean(process.env.VITEST);
           /* ── Start the workflow engine Worker thread (complete process decoupling) ── */
-          const defaultPaths = getWorkflowStoragePaths(repoRoot);
-          const proxy = new WorkflowEngineProxy();
-          try {
-            await proxy._start({
-              repoRoot,
-              workflowDir: defaultPaths.workflowDir,
-              runsDir:     defaultPaths.runsDir,
-            });
-            const defaultKey = getWorkflowWorkspaceKey(defaultPaths.workspaceRoot);
-            _wfEngineByWorkspace.set(defaultKey, proxy);
-            attachWorkflowEngineLiveBridge(proxy);
-            console.log("[workflows] Workflow engine Worker thread started");
-
-            setTimeout(() => {
-              proxy.resumeInterruptedRuns().catch((err) => {
-                console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+          if (!preferInProcessEngine) {
+            const defaultPaths = getWorkflowStoragePaths(repoRoot);
+            const proxy = new WorkflowEngineProxy();
+            try {
+              await proxy._start({
+                repoRoot,
+                workflowDir: defaultPaths.workflowDir,
+                runsDir:     defaultPaths.runsDir,
               });
-            }, 0);
-          } catch (err) {
-            console.warn("[workflows] Worker thread start failed, falling back to in-process engine:", err.message);
-            /* Fall back: create engine in-process */
+              const defaultKey = getWorkflowWorkspaceKey(defaultPaths.workspaceRoot);
+              _wfEngineByWorkspace.set(defaultKey, proxy);
+              attachWorkflowEngineLiveBridge(proxy);
+              console.log("[workflows] Workflow engine Worker thread started");
+
+              setTimeout(() => {
+                proxy.resumeInterruptedRuns().catch((err) => {
+                  console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+                });
+              }, 0);
+            } catch (err) {
+              console.warn("[workflows] Worker thread start failed, falling back to in-process engine:", err.message);
+              /* Fall back: create engine in-process */
+              const engine = _wfEngine.getWorkflowEngine({ services });
+              attachWorkflowEngineLiveBridge(engine);
+              if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
+                engine.registerTaskTraceHook((event) => {
+                  handleTaskWorkflowTraceEvent(event);
+                });
+                _wfTaskTraceHookRegistered = true;
+              }
+              if (typeof engine.resumeInterruptedRuns === "function") {
+                setTimeout(() => {
+                  engine.resumeInterruptedRuns().catch((err) => {
+                    console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+                  });
+                }, 0);
+              }
+            }
+          } else {
             const engine = _wfEngine.getWorkflowEngine({ services });
             attachWorkflowEngineLiveBridge(engine);
             if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
@@ -1944,13 +1963,6 @@ async function getWorkflowEngineModule() {
                 handleTaskWorkflowTraceEvent(event);
               });
               _wfTaskTraceHookRegistered = true;
-            }
-            if (typeof engine.resumeInterruptedRuns === "function") {
-              setTimeout(() => {
-                engine.resumeInterruptedRuns().catch((err) => {
-                  console.warn("[workflows] Failed to resume interrupted runs:", err.message);
-                });
-              }, 0);
             }
           }
         } else {
@@ -8111,7 +8123,8 @@ let _fallbackExecPrimaryPrompt = null;
 const sessionRunAbortControllers = new Map();
 let _activeSessions = [];
 
-function normalizeLedgerSessionDocument(activity) {
+function normalizeLedgerSessionDocument(activity, options = {}) {
+  const includeMessages = options.includeMessages === true;
   const document = activity?.document && typeof activity.document === "object"
     ? { ...activity.document }
     : null;
@@ -8156,7 +8169,9 @@ function normalizeLedgerSessionDocument(activity) {
     totalEvents: Math.max(0, Number(document.totalEvents ?? document.eventCount ?? activity?.eventCount ?? 0) || 0),
     turnCount: Math.max(0, Number(document.turnCount || 0) || 0),
     turns: Array.isArray(document.turns) ? document.turns.map((turn) => ({ ...turn })) : [],
-    messages: Array.isArray(document.messages) ? document.messages.map((message) => ({ ...message })) : [],
+    messages: includeMessages && Array.isArray(document.messages)
+      ? document.messages.map((message) => ({ ...message }))
+      : [],
     metadata: {
       ...metadata,
       ...(workspaceId ? { workspaceId } : {}),
@@ -8334,33 +8349,35 @@ function listDurableSessionsFromLedger(workspaceContext = null, options = {}) {
     ...resolveUiStateLedgerOptions(workspaceContext),
     limit: 5000,
   };
-  return listSessionActivitiesFromStateLedger(ledgerOptions)
-    .map((activity) => {
-      const sessionId = String(activity?.sessionId || "").trim();
-      if (!sessionId) return normalizeLedgerSessionDocument(activity);
-      return normalizeLedgerSessionDocument(
-        getSessionActivityFromStateLedger(sessionId, ledgerOptions) || activity,
-      );
-    })
-    .filter(Boolean)
-    .filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, options));
+  try {
+    return listSessionActivitiesFromStateLedger(ledgerOptions)
+      .map((activity) => normalizeLedgerSessionDocument(activity))
+      .filter(Boolean)
+      .filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, options));
+  } catch {
+    return [];
+  }
 }
 
 function mergeTrackerAndLedgerSessions(baseSessions = [], workspaceContext = null, options = {}) {
-  const ledgerOptions = resolveUiStateLedgerOptions(workspaceContext);
+  const durableSessions = listDurableSessionsFromLedger(workspaceContext, options);
+  const durableById = new Map();
+  for (const session of durableSessions) {
+    const sessionId = String(session?.id || session?.taskId || "").trim();
+    if (!sessionId) continue;
+    durableById.set(sessionId, session);
+  }
   const byId = new Map();
   for (const session of Array.isArray(baseSessions) ? baseSessions : []) {
     const sessionId = String(session?.id || session?.taskId || "").trim();
     if (!sessionId) continue;
-    const directLedgerSession = normalizeLedgerSessionDocument(
-      getSessionActivityFromStateLedger(sessionId, ledgerOptions),
-    );
+    const directLedgerSession = durableById.get(sessionId) || null;
     byId.set(
       sessionId,
       directLedgerSession ? mergeSessionRecords(session, directLedgerSession) : session,
     );
   }
-  for (const session of listDurableSessionsFromLedger(workspaceContext, options)) {
+  for (const session of durableSessions) {
     const sessionId = String(session?.id || session?.taskId || "").trim();
     if (!sessionId) continue;
     const existing = byId.get(sessionId) || null;
@@ -26823,6 +26840,7 @@ if (path === "/api/agent-logs/context") {
           : (tracker.getSessionById(sessionId) || tracker.getSessionMessages(sessionId));
         const ledgerSession = normalizeLedgerSessionDocument(
           getSessionActivityFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext)),
+          { includeMessages },
         );
         const durableSession = mergeSessionRecords(trackerSession, ledgerSession);
         if (!durableSession) return null;
@@ -26990,6 +27008,19 @@ if (path === "/api/agent-logs/context") {
         const messageAgentProfileId = String(
           body?.agentProfileId || session?.metadata?.agentProfileId || "",
         ).trim() || undefined;
+        let userMessageRecorded = false;
+        const recordUserMessageOnce = () => {
+          if (userMessageRecorded) return;
+          tracker.recordEvent(sessionId, {
+            role: "user",
+            content: messageContent,
+            attachments,
+            timestamp: new Date().toISOString(),
+            _sessionType: session.type === "primary" ? "primary" : undefined,
+            _mode: messageMode || undefined,
+          });
+          userMessageRecorded = true;
+        };
 
         // Forward to primary agent if applicable (exec records user + assistant events)
         let exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
@@ -26999,7 +27030,9 @@ if (path === "/api/agent-logs/context") {
         }
         if (exec) {
           const sessionWorkspaceDir = resolveSessionWorkspaceDir(session);
-          // Don't record user event here — execPrimaryPrompt records it
+          // Persist the user turn immediately so session history is visible
+          // even while the primary agent is still initializing.
+          recordUserMessageOnce();
           // Respond immediately so the UI doesn't block on agent execution
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
@@ -27045,6 +27078,7 @@ if (path === "/api/agent-logs/context") {
             agentProfileId: messageAgentProfileId,
             cwd: sessionWorkspaceDir,
             persistent: true,
+            skipUserMessageRecord: userMessageRecorded,
             sendRawEvents: true,
             attachments,
             attachmentsAppended,
@@ -27098,12 +27132,7 @@ if (path === "/api/agent-logs/context") {
           });
         } else {
           // No agent available — record user event and notify user
-          tracker.recordEvent(sessionId, {
-            role: "user",
-            content: messageContent,
-            attachments,
-            timestamp: new Date().toISOString(),
-          });
+          recordUserMessageOnce();
           tracker.recordEvent(sessionId, {
             role: "system",
             type: "error",

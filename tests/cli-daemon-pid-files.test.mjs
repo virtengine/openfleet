@@ -78,10 +78,10 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("duplicate daemon-child ignored");
   });
 
-  it("launches the foreground monitor via worker bootstrap instead of fork IPC", () => {
-    expect(cliSource).toContain("monitorChild = new Worker(");
-    expect(cliSource).toContain("monitorModuleUrl: pathToFileURL(monitorPath).href");
-    expect(cliSource).not.toContain("monitorChild = fork(monitorPath");
+  it("launches the foreground monitor as a child process instead of a worker thread", () => {
+    expect(cliSource).toContain("monitorChild = spawn(");
+    expect(cliSource).toContain("[...runAsNode, monitorPath, ...process.argv.slice(2)]");
+    expect(cliSource).not.toContain("monitorChild = new Worker(");
   });
 
 
