@@ -252,7 +252,8 @@ import {
   getAllTasks as getAllInternalTasks,
 } from "../task/task-store.mjs";
 import { createAgentEndpoint } from "../agent/agent-endpoint.mjs";
-import { createAgentEventBus } from "../agent/agent-event-bus.mjs";`r`nimport { onConfigReload } from "../ui/tui/config-events.js";
+import { createAgentEventBus } from "../agent/agent-event-bus.mjs";
+import { onConfigReload } from "../ui/tui/config-events.js";
 import { createReviewAgent } from "../agent/review-agent.mjs";
 
 import { createErrorDetector } from "./error-detector.mjs";
@@ -13664,7 +13665,8 @@ process.on("SIGINT", async () => {
 });
 
 // Windows: closing the terminal window doesn't send SIGINT/SIGTERM reliably.
-process.on("exit", () => {`r`n  try { stopTuiConfigReloadListener?.(); } catch { /* best effort */ }
+process.on("exit", () => {
+  try { stopTuiConfigReloadListener?.(); } catch { /* best effort */ }
   shuttingDown = true;
   stopWorkspaceSyncTimers();
   stopHeartbeatMonitor();
