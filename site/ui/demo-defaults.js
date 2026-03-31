@@ -2521,7 +2521,7 @@
           "label": "Resolve PR Parameters",
           "config": {
             "key": "prParams",
-            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0'), reason: String($data?.item?.reason || ''), mergeable: String($data?.item?.mergeable || $data?.item?.prDigest?.core?.mergeable || '')})",
+            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.prDigest?.core?.branch || $data?.item?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0'), reason: String($data?.item?.reason || ''), mergeable: String($data?.item?.mergeable || $data?.item?.prDigest?.core?.mergeable || '')})",
             "isExpression": true
           },
           "position": {
@@ -3738,7 +3738,7 @@
           "label": "Resolve PR Parameters",
           "config": {
             "key": "prParams",
-            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0')})",
+            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.prDigest?.core?.branch || $data?.item?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0')})",
             "isExpression": true
           },
           "position": {
@@ -21632,11 +21632,12 @@
             "command": "node",
             "args": [
               "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        const cwd = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        let repoRoot = cwd;\n        if (cwd.toLowerCase().includes(mirrorMarker)) {\n          const sourceRepoRoot = path.resolve(cwd, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(sourceRepoRoot, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = sourceRepoRoot;\n        }\n        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanModuleUrl)\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => task && task.status === \"todo\" && !task.draft);\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"5\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              branch: t.branch || t.metadata?.branch || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        const cwd = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        let repoRoot = cwd;\n        if (cwd.toLowerCase().includes(mirrorMarker)) {\n          const sourceRepoRoot = path.resolve(cwd, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(sourceRepoRoot, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = sourceRepoRoot;\n        }\n        process.env.REPO_ROOT = repoRoot;\n        process.env.BOSUN_STORE_PATH = path.join(repoRoot, \".bosun\", \".cache\", \"kanban-state.json\");\n        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanModuleUrl)\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => task && task.status === \"todo\" && !task.draft);\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"5\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              branch: t.branch || t.metadata?.branch || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
             ],
             "env": {
               "MAX_BATCH": "{{maxBatchSize}}"
             },
+            "cwd": "{{repoRoot}}",
             "parseJson": true
           },
           "position": {
@@ -21986,11 +21987,12 @@
             "command": "node",
             "args": [
               "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        const cwd = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        let repoRoot = cwd;\n        if (cwd.toLowerCase().includes(mirrorMarker)) {\n          const sourceRepoRoot = path.resolve(cwd, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(sourceRepoRoot, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = sourceRepoRoot;\n        }\n        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanModuleUrl)\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => task && task.status === \"todo\" && !task.draft);\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"10\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              status: t.status,\n              branch: t.branch || t.metadata?.branch || null,\n              scope: t.scope || t.metadata?.scope || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        const cwd = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        let repoRoot = cwd;\n        if (cwd.toLowerCase().includes(mirrorMarker)) {\n          const sourceRepoRoot = path.resolve(cwd, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(sourceRepoRoot, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = sourceRepoRoot;\n        }\n        process.env.REPO_ROOT = repoRoot;\n        process.env.BOSUN_STORE_PATH = path.join(repoRoot, \".bosun\", \".cache\", \"kanban-state.json\");\n        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanModuleUrl)\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => task && task.status === \"todo\" && !task.draft);\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"10\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              status: t.status,\n              branch: t.branch || t.metadata?.branch || null,\n              scope: t.scope || t.metadata?.scope || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
             ],
             "env": {
               "MAX_BATCH": "{{maxBatchSize}}"
             },
+            "cwd": "{{repoRoot}}",
             "parseJson": true
           },
           "position": {
@@ -22007,7 +22009,7 @@
           "label": "Dispatch Tasks",
           "config": {
             "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
-            "itemVariable": "currentTask",
+            "variable": "currentTask",
             "indexVariable": "taskIndex",
             "maxConcurrent": "{{maxConcurrent}}",
             "workflowId": "{{subWorkflow}}",
@@ -26834,7 +26836,7 @@
           "label": "Resolve PR Parameters",
           "config": {
             "key": "prParams",
-            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0'), reason: String($data?.item?.reason || ''), mergeable: String($data?.item?.mergeable || $data?.item?.prDigest?.core?.mergeable || '')})",
+            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.prDigest?.core?.branch || $data?.item?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0'), reason: String($data?.item?.reason || ''), mergeable: String($data?.item?.mergeable || $data?.item?.prDigest?.core?.mergeable || '')})",
             "isExpression": true
           },
           "position": {
@@ -27996,7 +27998,7 @@
           "label": "Resolve PR Parameters",
           "config": {
             "key": "prParams",
-            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0')})",
+            "value": "({repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), branch: String($data?.item?.prDigest?.core?.branch || $data?.item?.branch || ''), base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), number: String($data?.item?.number || $data?.item?.n || '0')})",
             "isExpression": true
           },
           "position": {
@@ -44964,11 +44966,12 @@
             "command": "node",
             "args": [
               "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        const cwd = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        let repoRoot = cwd;\n        if (cwd.toLowerCase().includes(mirrorMarker)) {\n          const sourceRepoRoot = path.resolve(cwd, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(sourceRepoRoot, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = sourceRepoRoot;\n        }\n        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanModuleUrl)\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => task && task.status === \"todo\" && !task.draft);\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"5\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              branch: t.branch || t.metadata?.branch || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        const cwd = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        let repoRoot = cwd;\n        if (cwd.toLowerCase().includes(mirrorMarker)) {\n          const sourceRepoRoot = path.resolve(cwd, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(sourceRepoRoot, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = sourceRepoRoot;\n        }\n        process.env.REPO_ROOT = repoRoot;\n        process.env.BOSUN_STORE_PATH = path.join(repoRoot, \".bosun\", \".cache\", \"kanban-state.json\");\n        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanModuleUrl)\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => task && task.status === \"todo\" && !task.draft);\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"5\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              branch: t.branch || t.metadata?.branch || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
             ],
             "env": {
               "MAX_BATCH": "{{maxBatchSize}}"
             },
+            "cwd": "{{repoRoot}}",
             "parseJson": true
           },
           "position": {
@@ -45306,11 +45309,12 @@
             "command": "node",
             "args": [
               "-e",
-              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        const cwd = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        let repoRoot = cwd;\n        if (cwd.toLowerCase().includes(mirrorMarker)) {\n          const sourceRepoRoot = path.resolve(cwd, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(sourceRepoRoot, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = sourceRepoRoot;\n        }\n        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanModuleUrl)\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => task && task.status === \"todo\" && !task.draft);\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"10\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              status: t.status,\n              branch: t.branch || t.metadata?.branch || null,\n              scope: t.scope || t.metadata?.scope || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const { pathToFileURL } = require(\"node:url\");\n        const cwd = process.cwd();\n        const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();\n        let repoRoot = cwd;\n        if (cwd.toLowerCase().includes(mirrorMarker)) {\n          const sourceRepoRoot = path.resolve(cwd, \"..\", \"..\", \"..\", \"..\");\n          if (fs.existsSync(path.join(sourceRepoRoot, \"kanban\", \"kanban-adapter.mjs\"))) repoRoot = sourceRepoRoot;\n        }\n        process.env.REPO_ROOT = repoRoot;\n        process.env.BOSUN_STORE_PATH = path.join(repoRoot, \".bosun\", \".cache\", \"kanban-state.json\");\n        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, \"kanban\", \"kanban-adapter.mjs\")).href;\n        import(kanbanModuleUrl)\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => task && task.status === \"todo\" && !task.draft);\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"10\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              status: t.status,\n              branch: t.branch || t.metadata?.branch || null,\n              scope: t.scope || t.metadata?.scope || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
             ],
             "env": {
               "MAX_BATCH": "{{maxBatchSize}}"
             },
+            "cwd": "{{repoRoot}}",
             "parseJson": true
           },
           "position": {
@@ -45327,7 +45331,7 @@
           "label": "Dispatch Tasks",
           "config": {
             "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
-            "itemVariable": "currentTask",
+            "variable": "currentTask",
             "indexVariable": "taskIndex",
             "maxConcurrent": "{{maxConcurrent}}",
             "workflowId": "{{subWorkflow}}",

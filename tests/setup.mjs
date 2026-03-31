@@ -1,3 +1,4 @@
+import "./warning-filter.mjs";
 import { spawnSync } from "node:child_process";
 import { afterEach } from "vitest";
 import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";

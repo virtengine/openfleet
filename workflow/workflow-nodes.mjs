@@ -4480,7 +4480,7 @@ registerBuiltinNodeType("action.run_agent", {
     properties: {
       prompt: { type: "string", description: "Agent prompt (supports {{variables}})" },
       systemPrompt: { type: "string", description: "Optional stable system prompt for cache anchoring" },
-      sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
+      sdk: { type: "string", enum: ["codex", "copilot", "claude", "opencode", "auto"], default: "auto" },
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
       cwd: { type: "string", description: "Working directory for the agent" },
@@ -12981,7 +12981,7 @@ registerBuiltinNodeType("action.restart_agent", {
     properties: {
       sessionId: { type: "string", description: "Session ID to restart" },
       reason: { type: "string", description: "Reason for restart (logged and given as context)" },
-      sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
+      sdk: { type: "string", enum: ["codex", "copilot", "claude", "opencode", "auto"], default: "auto" },
       prompt: { type: "string", description: "New prompt for the restarted agent" },
       cwd: { type: "string", description: "Working directory" },
       timeoutMs: { type: "number", default: 3600000 },
@@ -15256,6 +15256,7 @@ function normalizeWorkflowSdkKey(value) {
 function sdkToComplexityExecutorType(sdk) {
   if (sdk === "copilot") return "COPILOT";
   if (sdk === "codex") return "CODEX";
+  if (sdk === "opencode") return "OPENCODE";
   return "";
 }
 function buildWorkflowBaseExecutorProfile(sdk, defaults = {}) {
@@ -15294,7 +15295,7 @@ function resolveWorkflowExecutorPreference(config, defaultSdk) {
         sdk: configuredSdk,
         model: Array.isArray(primaryExecutor.models)
           ? String(primaryExecutor.models[0] || "").trim()
-          : "",
+          : String(primaryExecutor.providerConfig?.model || "").trim(),
         baseProfile: buildWorkflowBaseExecutorProfile(configuredSdk, {
           name: primaryExecutor.name || configuredSdk,
           variant: primaryExecutor.variant || "DEFAULT",
@@ -17358,7 +17359,11 @@ registerBuiltinNodeType("action.resolve_executor", {
 
     // Check env var overrides (mirrors TaskExecutor behavior)
     const envModel =
-      process.env.COPILOT_MODEL || process.env.CLAUDE_MODEL || process.env.CODEX_MODEL || "";
+      process.env.COPILOT_MODEL ||
+      process.env.CLAUDE_MODEL ||
+      process.env.CODEX_MODEL ||
+      process.env.OPENCODE_MODEL ||
+      "";
 
     // Manual override takes precedence
     if (sdkOverride && sdkOverride !== "auto") {
@@ -17484,9 +17489,11 @@ registerBuiltinNodeType("action.resolve_executor", {
           if (profileSdkRaw.includes("claude")) sdk = "claude";
           else if (profileSdkRaw.includes("copilot")) sdk = "copilot";
           else if (profileSdkRaw.includes("codex")) sdk = "codex";
+          else if (profileSdkRaw.includes("opencode")) sdk = "opencode";
         } else if (profileModelRaw) {
           if (profileModelRaw.includes("claude")) sdk = "claude";
           else if (profileModelRaw.includes("gpt") || profileModelRaw.includes("codex")) sdk = "codex";
+          else if (profileModelRaw.includes("opencode")) sdk = "opencode";
         } else if (configuredExecutorPreference?.sdk) {
           sdk = configuredExecutorPreference.sdk;
         }
@@ -20385,7 +20392,7 @@ registerBuiltinNodeType("action.push_branch", {
       rebaseBeforePush: { type: "boolean", default: true, description: "Rebase onto base before push" },
       mergeBaseBeforePush: { type: "boolean", default: false, description: "Merge the base branch into the worktree before push so PR conflicts surface locally" },
       autoResolveMergeConflicts: { type: "boolean", default: false, description: "When merge-base validation conflicts, run an agent to resolve them before pushing" },
-      conflictResolverSdk: { type: "string", enum: ["auto", "copilot", "codex", "claude"], default: "auto", description: "SDK used for merge conflict resolution agent runs" },
+      conflictResolverSdk: { type: "string", enum: ["auto", "copilot", "codex", "claude", "opencode"], default: "auto", description: "SDK used for merge conflict resolution agent runs" },
       conflictResolverPrompt: { type: "string", description: "Optional custom prompt for merge conflict resolution agent runs" },
       emptyDiffGuard: { type: "boolean", default: true, description: "Abort if no files changed vs base" },
       syncMainForModuleBranch: { type: "boolean", default: false, description: "Also sync base with main" },

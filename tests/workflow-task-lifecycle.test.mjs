@@ -2040,6 +2040,102 @@ describe("action.resolve_executor", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  it("resolves configured OpenCode executors and preserves providerConfig models", async () => {
+    const configMod = await import("../config/config.mjs");
+    const loadConfigSpy = vi.spyOn(configMod, "loadConfig").mockReturnValue({
+      executorConfig: {
+        executors: [
+          {
+            name: "opencode-kimi",
+            executor: "OPENCODE",
+            variant: "DEFAULT",
+            role: "primary",
+            weight: 100,
+            enabled: true,
+            provider: "openrouter",
+            providerConfig: {
+              model: "openrouter/moonshotai/kimi-k2",
+            },
+          },
+        ],
+      },
+      internalExecutor: { sdk: "codex" },
+      primaryAgent: "codex",
+    });
+    const saved = { ...process.env };
+    delete process.env.COPILOT_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+    delete process.env.OPENCODE_MODEL;
+
+    try {
+      const nt = getNodeType("action.resolve_executor");
+      const ctx = makeCtx({});
+      const node = makeNode("action.resolve_executor", {
+        defaultSdk: "auto",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.sdk).toBe("opencode");
+      expect(result.model).toBe("openrouter/moonshotai/kimi-k2");
+      expect(ctx.data.resolvedSdk).toBe("opencode");
+      expect(ctx.data.resolvedModel).toBe("openrouter/moonshotai/kimi-k2");
+    } finally {
+      loadConfigSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) delete process.env[key];
+      }
+      Object.assign(process.env, saved);
+    }
+  });
+
+  it("exposes OpenCode in workflow agent SDK allowlists", () => {
+    const runAgent = getNodeType("action.run_agent");
+    const restartAgent = getNodeType("action.restart_agent");
+    const pushBranch = getNodeType("action.push_branch");
+
+    expect(runAgent?.schema?.properties?.sdk?.enum).toContain("opencode");
+    expect(restartAgent?.schema?.properties?.sdk?.enum).toContain("opencode");
+    expect(pushBranch?.schema?.properties?.conflictResolverSdk?.enum).toContain("opencode");
+  });
+
+  it("forwards an explicit OpenCode SDK through action.run_agent execution", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = makeCtx({ worktreePath: "/tmp/opencode-workflow" });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "opencode-run-complete",
+      sdk: "opencode",
+      items: [],
+      threadId: "opencode-thread-1",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = makeNode("action.run_agent", {
+      prompt: "Use OpenCode for this task",
+      sdk: "opencode",
+      autoRecover: false,
+      failOnError: true,
+    }, "run-agent-opencode");
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("opencode");
+    expect(result.threadId).toBe("opencode-thread-1");
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({
+        sdk: "opencode",
+      }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

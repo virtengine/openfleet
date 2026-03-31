@@ -1690,6 +1690,42 @@ describe("github template CLI compatibility", () => {
     expect(progressorTemplate.edges.find((e) => e.source === "detect-pr-conflicts" && e.target === "build-fix-prompt")).toBeDefined();
   });
 
+  it("single PR fix templates prefer verified PR head branches over task branches", () => {
+    const fixTemplate = getTemplate("template-pr-fix-single");
+    const securityFixTemplate = getTemplate("template-pr-security-fix-single");
+    const fixParams = String(fixTemplate.nodes.find((n) => n.id === "resolve-pr-params")?.config?.value || "");
+    const securityParams = String(securityFixTemplate.nodes.find((n) => n.id === "resolve-pr-params")?.config?.value || "");
+
+    expect(fixParams).toContain("$data?.item?.prDigest?.core?.branch || $data?.item?.branch");
+    expect(fixParams).not.toContain("$data?.item?.branch || $data?.item?.prDigest?.core?.branch");
+    expect(securityParams).toContain("$data?.item?.prDigest?.core?.branch || $data?.item?.branch");
+    expect(securityParams).not.toContain("$data?.item?.branch || $data?.item?.prDigest?.core?.branch");
+  });
+
+  it("task batch processor binds currentTask through loop.for_each variable", () => {
+    const template = getTemplate("template-task-batch-processor");
+    const dispatchNode = template.nodes.find((n) => n.id === "dispatch-tasks");
+    const queryNode = template.nodes.find((n) => n.id === "query-tasks");
+    const queryCode = String(queryNode?.config?.args?.[1] || "");
+
+    expect(dispatchNode?.type).toBe("loop.for_each");
+    expect(dispatchNode?.config?.variable).toBe("currentTask");
+    expect(dispatchNode?.config).not.toHaveProperty("itemVariable");
+    expect(queryNode?.config?.cwd).toBe("{{repoRoot}}");
+    expect(queryCode).toContain('process.env.REPO_ROOT = repoRoot');
+    expect(queryCode).toContain('process.env.BOSUN_STORE_PATH = path.join(repoRoot, ".bosun", ".cache", "kanban-state.json")');
+  });
+
+  it("task batch PR template pins repo-local store context before querying tasks", () => {
+    const template = getTemplate("template-task-batch-pr");
+    const queryNode = template.nodes.find((n) => n.id === "query-tasks");
+    const queryCode = String(queryNode?.config?.args?.[1] || "");
+
+    expect(queryNode?.config?.cwd).toBe("{{repoRoot}}");
+    expect(queryCode).toContain('process.env.REPO_ROOT = repoRoot');
+    expect(queryCode).toContain('process.env.BOSUN_STORE_PATH = path.join(repoRoot, ".bosun", ".cache", "kanban-state.json")');
+  });
+
   it("task lifecycle dispatches repair workflow for blocked non-retryable worktree failures", () => {
     const lifecycleTemplate = getTemplate("template-task-lifecycle");
     const repairDispatch = lifecycleTemplate.nodes.find((n) => n.id === "dispatch-wt-repair");

@@ -1229,6 +1229,12 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
     }
     return { ok: true, reason: null };
   }
+  if (name === "opencode") {
+    if (!hasOptionalModule("@opencode-ai/sdk")) {
+      return { ok: false, reason: "@opencode-ai/sdk not installed" };
+    }
+    return { ok: true, reason: null };
+  }
   return { ok: true, reason: null };
 }
 
@@ -1485,6 +1491,17 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
  * Each entry maps a canonical name to its loader and disable-check env var.
  * @type {Record<string, SdkAdapter>}
  */
+function normalizePoolSdkName(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw === "auto") return "";
+  if (raw.includes("copilot")) return "copilot";
+  if (raw.includes("codex") || raw.includes("gpt")) return "codex";
+  if (raw.includes("claude")) return "claude";
+  if (raw.includes("opencode")) return "opencode";
+  return raw.replace(/-sdk$/, "");
+}
+
 const SDK_ADAPTERS = {
   codex: {
     name: "codex",
@@ -1501,20 +1518,25 @@ const SDK_ADAPTERS = {
     load: loadClaudeAdapter,
     envDisableKey: "CLAUDE_SDK_DISABLED",
   },
+  opencode: {
+    name: "opencode",
+    load: loadOpencodeAdapter,
+    envDisableKey: "OPENCODE_SDK_DISABLED",
+  },
 };
 
 /**
  * Ordered fallback chain for SDK resolution.
  * Configurable via bosun.config.json → agentPool.fallbackOrder
  */
-let SDK_FALLBACK_ORDER = ["codex", "copilot", "claude"];
+let SDK_FALLBACK_ORDER = ["codex", "copilot", "claude", "opencode"];
 
 function getSdkFallbackOrder() {
   const envOrder = String(process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER || "").trim();
   if (envOrder) {
     const parsed = envOrder
       .split(",")
-      .map((value) => String(value || "").trim().toLowerCase())
+      .map((value) => normalizePoolSdkName(value))
       .filter((value, index, arr) => SDK_ADAPTERS[value] && arr.indexOf(value) === index);
     if (parsed.length > 0) return parsed;
   }
@@ -1528,7 +1550,7 @@ try {
   if (Array.isArray(customOrder) && customOrder.length > 0) {
     // Validate: only accept known SDK names
     const valid = customOrder
-      .map((s) => String(s).trim().toLowerCase())
+      .map((s) => normalizePoolSdkName(s))
       .filter((s) => SDK_ADAPTERS[s]);
     if (valid.length > 0) SDK_FALLBACK_ORDER = valid;
   }
@@ -1724,13 +1746,13 @@ function logResolution(name, source) {
  *   4. `loadConfig().agentPool.sdk` from bosun.config.json
  *   5. First non-disabled SDK in fallback chain
  *
- * @returns {string} Canonical SDK name (e.g. "codex", "copilot", "claude").
+ * @returns {string} Canonical SDK name (e.g. "codex", "copilot", "claude", "opencode").
  */
 function resolvePoolSdkName() {
   if (resolvedSdkName) return resolvedSdkName;
 
   // 1. AGENT_POOL_SDK env var (explicit override)
-  const envPoolSdk = (process.env.AGENT_POOL_SDK || "").trim().toLowerCase();
+  const envPoolSdk = normalizePoolSdkName(process.env.AGENT_POOL_SDK || "");
   if (envPoolSdk && SDK_ADAPTERS[envPoolSdk] && !isDisabled(envPoolSdk)) {
     resolvedSdkName = envPoolSdk;
     logResolution(envPoolSdk, "AGENT_POOL_SDK env");
@@ -1738,9 +1760,7 @@ function resolvePoolSdkName() {
   }
 
   // 2. PRIMARY_AGENT env var
-  const envPrimaryRaw = (process.env.PRIMARY_AGENT || "").trim().toLowerCase();
-  // Normalize: "copilot-sdk" → "copilot", "codex-sdk" → "codex", etc.
-  const envPrimary = envPrimaryRaw.replace(/-sdk$/, "");
+  const envPrimary = normalizePoolSdkName(process.env.PRIMARY_AGENT || "");
   if (envPrimary && SDK_ADAPTERS[envPrimary] && !isDisabled(envPrimary)) {
     resolvedSdkName = envPrimary;
     logResolution(envPrimary, "PRIMARY_AGENT env");
@@ -1750,11 +1770,11 @@ function resolvePoolSdkName() {
   // 3. bosun.config.json → agentPool.sdk
   try {
     const config = loadConfig();
-    const configSdk = (
+    const configSdk = normalizePoolSdkName(
       config?.agentPool?.sdk ||
       config?.primaryAgent ||
       ""
-    ).toLowerCase();
+    );
     if (configSdk && SDK_ADAPTERS[configSdk] && !isDisabled(configSdk)) {
       resolvedSdkName = configSdk;
       logResolution(configSdk, "bosun.config.json");
@@ -1793,11 +1813,11 @@ export function getPoolSdkName() {
 
 /**
  * Override the pool SDK at runtime.
- * @param {string} name SDK name ("codex", "copilot", or "claude").
+ * @param {string} name SDK name ("codex", "copilot", "claude", or "opencode").
  * @throws {Error} If the name is not a recognised SDK.
  */
 export function setPoolSdk(name) {
-  const normalised = (name || "").trim().toLowerCase();
+  const normalised = normalizePoolSdkName(name);
   if (!SDK_ADAPTERS[normalised]) {
     throw new Error(
       `${TAG} unknown SDK "${name}". Valid: ${Object.keys(SDK_ADAPTERS).join(", ")}`,
@@ -3073,6 +3093,117 @@ async function loadClaudeAdapter() {
   return launchClaudeThread;
 }
 
+/**
+ * @returns {Promise<Function>} The OpenCode launcher function.
+ */
+async function loadOpencodeAdapter() {
+  return launchOpencodeThread;
+}
+
+function isOpencodeFailureMessage(message) {
+  const normalized = String(message || "").trim().toLowerCase();
+  return normalized.startsWith(":close:") || normalized.startsWith(":clock:");
+}
+
+function formatOpencodeError(message) {
+  return String(message || "")
+    .replace(/^:(?:close|clock):\s*/i, "")
+    .trim() || "OpenCode execution failed";
+}
+
+async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
+  const {
+    onEvent = null,
+    abortController = null,
+    onThreadReady = null,
+    resumeThreadId = null,
+    envOverrides = null,
+    model = null,
+    taskKey = null,
+  } = extra;
+
+  let execOpencodePrompt;
+  try {
+    ({ execOpencodePrompt } = await import("../shell/opencode-shell.mjs"));
+    if (typeof execOpencodePrompt !== "function") {
+      throw new Error("execOpencodePrompt export not found");
+    }
+  } catch (err) {
+    return {
+      success: false,
+      output: "",
+      items: [],
+      error: `OpenCode SDK not available: ${err.message}`,
+      sdk: "opencode",
+      threadId: null,
+    };
+  }
+
+  const runtimeSessionEnv =
+    envOverrides && typeof envOverrides === "object"
+      ? { ...process.env, ...envOverrides }
+      : { ...process.env };
+  const logicalSessionId = String(
+    resumeThreadId ||
+      extra.sessionId ||
+      extra.workflowSessionId ||
+      taskKey ||
+      "",
+  ).trim() || null;
+  const persistent = Boolean(logicalSessionId);
+  const providerConfig =
+    model && String(model).trim()
+      ? { model: String(model).trim() }
+      : null;
+
+  if (persistent && typeof onThreadReady === "function") {
+    try {
+      onThreadReady(logicalSessionId, "opencode");
+    } catch {
+      /* caller errors must not break execution */
+    }
+  }
+
+  try {
+    const result = await withTemporaryEnv(
+      {
+        ...runtimeSessionEnv,
+        PRIMARY_AGENT: "opencode-sdk",
+        PRIMARY_AGENT_SDK: "opencode-sdk",
+        OPENCODE_SDK_DISABLED: null,
+      },
+      async () => execOpencodePrompt(prompt, {
+        onEvent,
+        timeoutMs,
+        persistent,
+        sessionId: logicalSessionId,
+        abortController,
+        providerConfig,
+      }),
+    );
+    const finalResponse = String(result?.finalResponse || "").trim();
+    const success = !isOpencodeFailureMessage(finalResponse);
+    return {
+      success,
+      output: success ? finalResponse : "",
+      items: Array.isArray(result?.items) ? result.items : [],
+      error: success ? null : formatOpencodeError(finalResponse),
+      sdk: "opencode",
+      threadId: persistent ? logicalSessionId : null,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      output: "",
+      items: [],
+      error: `OpenCode execution error: ${err.message || err}`,
+      sdk: "opencode",
+      threadId: persistent ? logicalSessionId : null,
+    };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Unified ephemeral thread launcher
 // ---------------------------------------------------------------------------
@@ -3163,7 +3294,7 @@ export async function launchEphemeralThread(
 
   // Determine the primary SDK to try
   const requestedSdk = launchExtra.sdk
-    ? String(launchExtra.sdk).trim().toLowerCase()
+    ? normalizePoolSdkName(launchExtra.sdk)
     : null;
 
   const primaryName =
@@ -3572,7 +3703,7 @@ const MAX_THREAD_TURNS = 100;
 const THREAD_MAX_ABSOLUTE_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /** SDKs that provide real resumable thread IDs */
-const PERSISTENT_THREAD_SDKS = new Set(["codex", "copilot", "claude"]);
+const PERSISTENT_THREAD_SDKS = new Set(["codex", "copilot", "claude", "opencode"]);
 
 function sdkSupportsPersistentThreads(sdkName) {
   return PERSISTENT_THREAD_SDKS.has(String(sdkName || "").toLowerCase());
@@ -4051,7 +4182,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
  * @param {string} cwd        Working directory.
  * @param {number} timeoutMs  Abort timeout.
  * @param {object} extra      Optional extras.
- * @param {string} sdkName    "copilot" or "claude".
+ * @param {string} sdkName    "copilot", "claude", or "opencode".
  * @returns {Promise<Object>}
  */
 async function resumeGenericThread(
@@ -4065,7 +4196,11 @@ async function resumeGenericThread(
   // No native resume — launch fresh with context preamble
   const contextPrompt = `# CONTINUATION — Resuming Prior Context\n\nYou are continuing work from a previous session. Pick up where you left off.\n\n---\n\n${prompt}`;
   const launcher =
-    sdkName === "claude" ? launchClaudeThread : launchCopilotThread;
+    sdkName === "claude"
+      ? launchClaudeThread
+      : sdkName === "opencode"
+        ? launchOpencodeThread
+        : launchCopilotThread;
   const result = await launcher(contextPrompt, cwd, timeoutMs, extra);
   return { ...result, threadId: null }; // No persistent ID available
 }
@@ -4273,6 +4408,39 @@ export async function launchOrResumeThread(
           cwd,
           timeoutMs,
           restExtra,
+        );
+
+        if (result.success) {
+          existing.turnCount += 1;
+          existing.lastUsedAt = Date.now();
+          existing.lastError = null;
+          if (result.threadId) existing.threadId = result.threadId;
+          existing.alive = !!existing.threadId;
+          threadRegistry.set(taskKey, existing);
+          saveThreadRegistry().catch(() => {});
+          return { ...result, resumed: true };
+        }
+
+        console.warn(
+          `${TAG} resume failed for task "${taskKey}": ${result.error}. Starting fresh.`,
+        );
+        existing.alive = false;
+        existing.lastError = result.error || existing.lastError || null;
+        threadRegistry.set(taskKey, existing);
+        saveThreadRegistry().catch(() => {});
+      } else if (sdkName === "opencode" && existing.sdk === "opencode") {
+        console.log(
+          `${TAG} resuming OpenCode session ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
+        );
+        const result = await launchOpencodeThread(
+          prompt,
+          cwd,
+          timeoutMs,
+          {
+            ...restExtra,
+            resumeThreadId: existing.threadId,
+            taskKey,
+          },
         );
 
         if (result.success) {

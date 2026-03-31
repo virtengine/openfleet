@@ -50,6 +50,7 @@ import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
 import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
+import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -90,6 +91,57 @@ function shouldQuietWorkflowTraceLogs() {
 function logWorkflowTrace(message) {
   if (shouldQuietWorkflowTraceLogs()) return;
   console.log(message);
+}
+
+function normalizeWorkflowRunText(value) {
+  const normalized = typeof value === "string" ? value : String(value || "");
+  if (!normalized) return normalized;
+  return repairCommonMojibake(normalized);
+}
+
+function repairWorkflowRunDetail(detail = null) {
+  if (!detail || typeof detail !== "object") return detail;
+  const nextDetail = { ...detail };
+  const nextData =
+    detail.data && typeof detail.data === "object"
+      ? { ...detail.data }
+      : null;
+  const nextIssueAdvisor =
+    detail.issueAdvisor && typeof detail.issueAdvisor === "object"
+      ? { ...detail.issueAdvisor }
+      : null;
+
+  if (typeof nextDetail.workflowName === "string") {
+    nextDetail.workflowName = normalizeWorkflowRunText(nextDetail.workflowName);
+  }
+  if (typeof nextDetail.taskTitle === "string") {
+    nextDetail.taskTitle = normalizeWorkflowRunText(nextDetail.taskTitle);
+  }
+  if (typeof nextDetail.primaryGoalTitle === "string") {
+    nextDetail.primaryGoalTitle = normalizeWorkflowRunText(nextDetail.primaryGoalTitle);
+  }
+  if (nextIssueAdvisor && typeof nextIssueAdvisor.summary === "string") {
+    nextIssueAdvisor.summary = normalizeWorkflowRunText(nextIssueAdvisor.summary);
+    nextDetail.issueAdvisor = nextIssueAdvisor;
+  }
+  if (nextData) {
+    for (const key of [
+      "_workflowName",
+      "workflowName",
+      "taskTitle",
+      "activeTaskTitle",
+      "_workflowTerminalMessage",
+      "_taskTitle",
+      "primaryGoalTitle",
+    ]) {
+      if (typeof nextData[key] === "string") {
+        nextData[key] = normalizeWorkflowRunText(nextData[key]);
+      }
+    }
+    nextDetail.data = nextData;
+  }
+
+  return nextDetail;
 }
 
 function getRuntimeCwd() {
@@ -5048,7 +5100,7 @@ export class WorkflowEngine extends EventEmitter {
     if (!existsSync(detailPath)) return null;
 
     try {
-      const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+      const detail = repairWorkflowRunDetail(JSON.parse(readFileSync(detailPath, "utf8")));
       const summary = this._normalizeRunSummary(
         this._readRunIndex().find((entry) => entry?.runId === normalizedRunId) || null,
       );
@@ -6580,7 +6632,7 @@ export class WorkflowEngine extends EventEmitter {
     const validationFailures = collectValidationFailures(detail);
     const taskIds = collectRunTaskIds(detail);
     const sessionIds = collectRunSessionIds(detail);
-    const taskTitle = resolveRunTaskTitle(detail);
+    const taskTitle = normalizeWorkflowRunText(resolveRunTaskTitle(detail));
     const delegationTopology = buildRunDelegationTopology({ runId, detail });
     const governanceState = buildWorkflowGovernanceState(detail?.data || detail || {});
     const workflowTeamState = hasWorkflowTeamStateData(
@@ -6601,7 +6653,7 @@ export class WorkflowEngine extends EventEmitter {
     return {
       runId,
       workflowId,
-      workflowName: workflowName || workflowId || null,
+      workflowName: normalizeWorkflowRunText(workflowName || workflowId || null),
       startedAt,
       endedAt,
       duration,
@@ -6634,7 +6686,7 @@ export class WorkflowEngine extends EventEmitter {
       retryMode,
       retryDecisionReason,
       issueAdvisorRecommendation,
-      issueAdvisorSummary,
+      issueAdvisorSummary: normalizeWorkflowRunText(issueAdvisorSummary),
       dagRevisionCount,
       taskId: taskIds[0] || null,
       taskIds,
@@ -6647,7 +6699,7 @@ export class WorkflowEngine extends EventEmitter {
       teamSummary,
       goalAncestry: governanceState.goalAncestry || [],
       primaryGoalId: governanceState.primaryGoalId || null,
-      primaryGoalTitle: governanceState.primaryGoalTitle || null,
+      primaryGoalTitle: normalizeWorkflowRunText(governanceState.primaryGoalTitle || null),
       goalDepth: governanceState.goalDepth ?? null,
       heartbeatRun: governanceState.heartbeatRun || null,
       wakeupRequest: governanceState.wakeupRequest || null,
@@ -6682,6 +6734,10 @@ export class WorkflowEngine extends EventEmitter {
       ...summary,
       runId: String(summary.runId),
       status: summary.status || WorkflowStatus.COMPLETED,
+      workflowName: normalizeWorkflowRunText(summary.workflowName || null),
+      taskTitle: normalizeWorkflowRunText(summary.taskTitle || null),
+      issueAdvisorSummary: normalizeWorkflowRunText(summary.issueAdvisorSummary || null),
+      primaryGoalTitle: normalizeWorkflowRunText(summary.primaryGoalTitle || null),
     };
     if (!Number.isFinite(Number(normalized.stuckThresholdMs))) {
       normalized.stuckThresholdMs = this._getRunStuckThresholdMs();

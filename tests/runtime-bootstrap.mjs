@@ -1,3 +1,4 @@
+import "./warning-filter.mjs";
 import { spawnSync } from "node:child_process";
 import { _resetSingleton } from "../infra/session-tracker.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";

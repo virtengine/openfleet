@@ -10,7 +10,7 @@ import {
   isDirectExecution,
   resolveVitestArgs,
 } from "../tools/vitest-runner.mjs";
-import { buildVitestFullSuitePlan } from "../tools/vitest-full-suite.mjs";
+import { buildVitestBatchArgs, buildVitestFullSuitePlan } from "../tools/vitest-full-suite.mjs";
 
 const tempDirs = [];
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -101,6 +101,7 @@ describe("vitest-runner", () => {
     expect(packageJson.scripts.test).toContain("tools/vitest-full-suite.mjs");
     expect(packageJson.scripts["test:vitest"]).toContain("tools/vitest-full-suite.mjs");
     expect(packageJson.scripts["prepush:check"]).toContain("npm run test:all");
+    expect(packageJson.scripts["test:node"]).toContain("--no-warnings=ExperimentalWarning");
     expect(packageJson.scripts.test).not.toContain("node_modules/vitest/vitest.mjs");
     expect(packageJson.scripts["test:vitest"]).not.toContain("node_modules/vitest/vitest.mjs");
   });
@@ -115,12 +116,35 @@ describe("vitest-runner", () => {
     expect(groupedSuites.length + heavySuites.length).toBeGreaterThan(0);
   });
 
+  it("builds full-suite vitest batches without unsupported minWorkers flags", () => {
+    expect(
+      buildVitestBatchArgs(["tests/workflow-engine.test.mjs"], { maxWorkers: 1 }),
+    ).toEqual([
+      "run",
+      "--config",
+      "vitest.config.mjs",
+      "--maxWorkers",
+      "1",
+      "tests/workflow-engine.test.mjs",
+    ]);
+  });
+
+  it("caps grouped full-suite worker fan-out on Windows by default", () => {
+    const source = readFileSync(resolve(repoRoot, "tools", "vitest-full-suite.mjs"), "utf8");
+    expect(source).toContain('process.env.BOSUN_VITEST_MAX_WORKERS || (process.platform === "win32" ? "4" : "")');
+    expect(source).toContain('process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "48" : "0")');
+  });
+
   it("routes the pre-push hook through the worktree-safe runner", () => {
     const prePushHook = readFileSync(resolve(repoRoot, ".githooks", "pre-push"), "utf8");
 
     expect(prePushHook).toContain('local -a runner_args=(run --config vitest.config.mjs)');
     expect(prePushHook).toContain('local -a bounded_runner_args=("${runner_args[@]}" --maxWorkers 1)');
     expect(prePushHook).toContain('node tools/vitest-runner.mjs "${bounded_runner_args[@]}"');
+    expect(prePushHook).toContain('tests/*workflow*e2e*.test.mjs)');
+    expect(prePushHook).toContain('tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs)');
+    expect(prePushHook).toContain('local -a slice=("${regular_tests[@]:$offset:$batch_size}")');
+    expect(prePushHook).toContain('local -a slice=("${tests[@]:$offset:$batch_size}")');
     expect(prePushHook).not.toContain("node node_modules/vitest/vitest.mjs");
   });
 
@@ -168,6 +192,7 @@ describe("vitest-runner", () => {
     const source = readFileSync(resolve(repoRoot, "tools", "vitest-runner.mjs"), "utf8");
     expect(source).toContain("vite-windows-realpath-shim.mjs");
     expect(source).toContain('nodeArgs.push("--import"');
+    expect(source).toContain('--no-warnings=ExperimentalWarning');
     expect(source).toContain("--max-old-space-size=");
     expect(source).toContain("BOSUN_VITEST_HEAP_MB");
   });

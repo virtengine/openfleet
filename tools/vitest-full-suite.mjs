@@ -51,12 +51,17 @@ export function buildVitestFullSuitePlan({ startDir = process.cwd() } = {}) {
   };
 }
 
-function runBatch(files, { startDir = process.cwd(), maxWorkers, minWorkers, label } = {}) {
-  if (!Array.isArray(files) || files.length === 0) return 0;
+export function buildVitestBatchArgs(files, { maxWorkers } = {}) {
+  if (!Array.isArray(files) || files.length === 0) return [];
   const args = ["run", "--config", "vitest.config.mjs"];
   if (maxWorkers) args.push("--maxWorkers", String(maxWorkers));
-  if (minWorkers) args.push("--minWorkers", String(minWorkers));
   args.push(...files);
+  return args;
+}
+
+function runBatch(files, { startDir = process.cwd(), maxWorkers, label } = {}) {
+  const args = buildVitestBatchArgs(files, { maxWorkers });
+  if (args.length === 0) return 0;
   if (label) {
     console.log(`[vitest-full-suite] ${label}: ${files.length} file(s)`);
   }
@@ -71,11 +76,11 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
   }
 
   const groupedMaxWorkers = Number.parseInt(
-    String(process.env.BOSUN_VITEST_MAX_WORKERS || ""),
+    String(process.env.BOSUN_VITEST_MAX_WORKERS || (process.platform === "win32" ? "4" : "")),
     10,
   );
-  const groupedMinWorkers = Number.parseInt(
-    String(process.env.BOSUN_VITEST_MIN_WORKERS || ""),
+  const groupedBatchSize = Number.parseInt(
+    String(process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "48" : "0")),
     10,
   );
   const isolatedMaxWorkers = Number.parseInt(
@@ -84,20 +89,29 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
   );
 
   if (groupedSuites.length > 0) {
-    const code = runBatch(groupedSuites, {
-      startDir,
-      maxWorkers: Number.isFinite(groupedMaxWorkers) && groupedMaxWorkers > 0 ? groupedMaxWorkers : undefined,
-      minWorkers: Number.isFinite(groupedMinWorkers) && groupedMinWorkers > 0 ? groupedMinWorkers : undefined,
-      label: "grouped batch",
-    });
-    if (code !== 0) return code;
+    const effectiveGroupedMaxWorkers =
+      Number.isFinite(groupedMaxWorkers) && groupedMaxWorkers > 0 ? groupedMaxWorkers : undefined;
+    const effectiveGroupedBatchSize =
+      Number.isFinite(groupedBatchSize) && groupedBatchSize > 0 ? groupedBatchSize : groupedSuites.length;
+
+    for (let index = 0; index < groupedSuites.length; index += effectiveGroupedBatchSize) {
+      const batch = groupedSuites.slice(index, index + effectiveGroupedBatchSize);
+      const batchLabel = effectiveGroupedBatchSize >= groupedSuites.length
+        ? "grouped batch"
+        : `grouped batch ${Math.floor(index / effectiveGroupedBatchSize) + 1}/${Math.ceil(groupedSuites.length / effectiveGroupedBatchSize)}`;
+      const code = runBatch(batch, {
+        startDir,
+        maxWorkers: effectiveGroupedMaxWorkers,
+        label: batchLabel,
+      });
+      if (code !== 0) return code;
+    }
   }
 
   for (const suite of heavySuites) {
     const code = runBatch([suite], {
       startDir,
       maxWorkers: Number.isFinite(isolatedMaxWorkers) && isolatedMaxWorkers > 0 ? isolatedMaxWorkers : 1,
-      minWorkers: 1,
       label: `isolated suite ${suite}`,
     });
     if (code !== 0) return code;

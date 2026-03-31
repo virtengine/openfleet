@@ -10,6 +10,7 @@ let mockCopilotStart;
 let mockCopilotCreateSession;
 let mockCopilotResumeSession;
 let mockClaudeQuery;
+let mockOpencodeExec;
 let mockLoadConfig;
 let mockMcpResolve;
 let mockMcpWrap;
@@ -36,6 +37,7 @@ const callMockCopilotStart = ensureMock("__agentPoolMockCopilotStart");
 const callMockCopilotCreateSession = ensureMock("__agentPoolMockCopilotCreateSession");
 const callMockCopilotResumeSession = ensureMock("__agentPoolMockCopilotResumeSession");
 const callMockClaudeQuery = ensureMock("__agentPoolMockClaudeQuery");
+const callMockOpencodeExec = ensureMock("__agentPoolMockOpencodeExec");
 const callMockLoadConfig = ensureMock("__agentPoolMockLoadConfig");
 const callMockMcpResolve = ensureMock("__agentPoolMockMcpResolve");
 const callMockMcpWrap = ensureMock("__agentPoolMockMcpWrap");
@@ -83,6 +85,7 @@ mockCopilotStart = vi.fn();
 mockCopilotCreateSession = vi.fn();
 mockCopilotResumeSession = vi.fn();
 mockClaudeQuery = vi.fn();
+mockOpencodeExec = vi.fn();
 mockLoadConfig = vi.fn();
 mockMcpResolve = vi.fn();
 mockMcpWrap = vi.fn();
@@ -93,6 +96,7 @@ globalThis.__agentPoolMockCopilotStart = mockCopilotStart;
 globalThis.__agentPoolMockCopilotCreateSession = mockCopilotCreateSession;
 globalThis.__agentPoolMockCopilotResumeSession = mockCopilotResumeSession;
 globalThis.__agentPoolMockClaudeQuery = mockClaudeQuery;
+globalThis.__agentPoolMockOpencodeExec = mockOpencodeExec;
 globalThis.__agentPoolMockLoadConfig = mockLoadConfig;
 globalThis.__agentPoolMockMcpResolve = mockMcpResolve;
 globalThis.__agentPoolMockMcpWrap = mockMcpWrap;
@@ -255,6 +259,21 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   throw new Error("Cannot find module '@anthropic-ai/claude-agent-sdk'");
 });
 
+vi.mock("../shell/opencode-shell.mjs", () => ({
+  execOpencodePrompt: (...args) => {
+    if (process.env.__MOCK_OPENCODE_AVAILABLE !== "1") {
+      throw new Error("OpenCode SDK not available: mocked unavailable");
+    }
+    const injected = callMockOpencodeExec(...args);
+    if (injected !== undefined) return injected;
+    return {
+      finalResponse: "opencode-output",
+      items: [],
+      usage: null,
+    };
+  },
+}));
+
 // Mock agent-sdk.mjs so the config.toml resolution doesn't interfere
 vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: () => ({ primary: "", source: "test" }),
@@ -312,6 +331,7 @@ const ENV_KEYS = [
   "CODEX_SDK_DISABLED",
   "COPILOT_SDK_DISABLED",
   "CLAUDE_SDK_DISABLED",
+  "OPENCODE_SDK_DISABLED",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
   "OPENAI_ORGANIZATION",
@@ -325,6 +345,7 @@ const ENV_KEYS = [
   "__MOCK_CODEX_AVAILABLE",
   "__MOCK_COPILOT_AVAILABLE",
   "__MOCK_CLAUDE_AVAILABLE",
+  "__MOCK_OPENCODE_AVAILABLE",
   "COPILOT_MODEL",
   "COPILOT_SDK_MODEL",
   "GITHUB_TOKEN",
@@ -365,6 +386,7 @@ function clearSdkEnv() {
   delete process.env.CODEX_SDK_DISABLED;
   delete process.env.COPILOT_SDK_DISABLED;
   delete process.env.CLAUDE_SDK_DISABLED;
+  delete process.env.OPENCODE_SDK_DISABLED;
   delete process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_BASE_URL;
   delete process.env.OPENAI_ORGANIZATION;
@@ -378,6 +400,7 @@ function clearSdkEnv() {
   delete process.env.__MOCK_CODEX_AVAILABLE;
   delete process.env.__MOCK_COPILOT_AVAILABLE;
   delete process.env.__MOCK_CLAUDE_AVAILABLE;
+  delete process.env.__MOCK_OPENCODE_AVAILABLE;
   delete process.env.COPILOT_MODEL;
   delete process.env.COPILOT_SDK_MODEL;
   delete process.env.GITHUB_TOKEN;
@@ -448,6 +471,7 @@ beforeEach(async () => {
   mockCopilotCreateSession.mockReset();
   mockCopilotResumeSession.mockReset();
   mockClaudeQuery.mockReset();
+  mockOpencodeExec.mockReset();
   mockLoadConfig.mockReset();
   mockLoadConfig.mockReturnValue({});
   mockMcpResolve.mockReset();
@@ -540,6 +564,12 @@ describe("SDK resolution", () => {
     expect(getPoolSdkName()).toBe("copilot");
   });
 
+  it("normalizes opencode-sdk from PRIMARY_AGENT env var", () => {
+    process.env.PRIMARY_AGENT = "opencode-sdk";
+    resetPoolSdkCache();
+    expect(getPoolSdkName()).toBe("opencode");
+  });
+
   it("falls back to PRIMARY_AGENT env var", () => {
     // No AGENT_POOL_SDK
     process.env.PRIMARY_AGENT = "claude";
@@ -580,9 +610,18 @@ describe("SDK resolution", () => {
     process.env.CODEX_SDK_DISABLED = "1";
     process.env.COPILOT_SDK_DISABLED = "1";
     process.env.CLAUDE_SDK_DISABLED = "1";
+    process.env.OPENCODE_SDK_DISABLED = "1";
     resetPoolSdkCache();
     // All disabled → last resort codex
     expect(getPoolSdkName()).toBe("codex");
+  });
+
+  it("uses opencode when config primaryAgent is opencode-sdk", () => {
+    mockLoadConfig.mockReturnValue({
+      primaryAgent: "opencode-sdk",
+    });
+    resetPoolSdkCache();
+    expect(getPoolSdkName()).toBe("opencode");
   });
 });
 
@@ -601,10 +640,19 @@ describe("SDK management", () => {
     expect(getPoolSdkName()).toBe("claude");
   });
 
+  it("setPoolSdk normalizes opencode-sdk aliases", () => {
+    setPoolSdk("OpenCode-SDK");
+    expect(getPoolSdkName()).toBe("opencode");
+  });
+
   it("setPoolSdk throws for unknown SDK", () => {
     expect(() => setPoolSdk("invalid")).toThrow(/unknown SDK/i);
-    expect(() => setPoolSdk("gpt")).toThrow(/unknown SDK/i);
     expect(() => setPoolSdk("")).toThrow(/unknown SDK/i);
+  });
+
+  it("setPoolSdk normalizes gpt aliases to codex", () => {
+    setPoolSdk("gpt");
+    expect(getPoolSdkName()).toBe("codex");
   });
 
   it("resetPoolSdkCache forces re-resolution", () => {
@@ -618,12 +666,13 @@ describe("SDK management", () => {
   });
 
   it("getAvailableSdks returns non-disabled SDKs", () => {
-    // Nothing disabled → all three available
+    // Nothing disabled → all supported SDKs available
     const available = getAvailableSdks();
     expect(available).toContain("codex");
     expect(available).toContain("copilot");
     expect(available).toContain("claude");
-    expect(available).toHaveLength(3);
+    expect(available).toContain("opencode");
+    expect(available).toHaveLength(4);
   });
 
   it("getAvailableSdks excludes disabled SDKs", () => {
@@ -632,13 +681,15 @@ describe("SDK management", () => {
     expect(available).not.toContain("copilot");
     expect(available).toContain("codex");
     expect(available).toContain("claude");
-    expect(available).toHaveLength(2);
+    expect(available).toContain("opencode");
+    expect(available).toHaveLength(3);
   });
 
   it("getAvailableSdks returns empty when all disabled", () => {
     process.env.CODEX_SDK_DISABLED = "1";
     process.env.COPILOT_SDK_DISABLED = "1";
     process.env.CLAUDE_SDK_DISABLED = "1";
+    process.env.OPENCODE_SDK_DISABLED = "1";
     expect(getAvailableSdks()).toHaveLength(0);
   });
 });
@@ -657,7 +708,35 @@ describe("launchEphemeralThread", () => {
     );
     expect(result).toHaveProperty("sdk");
     expect(typeof result.sdk).toBe("string");
-    expect(["codex", "copilot", "claude"]).toContain(result.sdk);
+    expect(["codex", "copilot", "claude", "opencode"]).toContain(result.sdk);
+  });
+
+  it("launches via opencode when requested through opencode-sdk alias", async () => {
+    process.env.__MOCK_OPENCODE_AVAILABLE = "1";
+    mockOpencodeExec.mockResolvedValue({
+      finalResponse: "opencode handled the workflow",
+      items: [{ type: "assistant.message", data: { content: "opencode handled the workflow" } }],
+      usage: null,
+    });
+
+    const result = await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      5000,
+      { sdk: "opencode-sdk", taskKey: "workflow-opencode" },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("opencode");
+    expect(result.output).toBe("opencode handled the workflow");
+    expect(result.threadId).toBe("workflow-opencode");
+    expect(mockOpencodeExec).toHaveBeenCalledTimes(1);
+    expect(mockOpencodeExec.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        persistent: true,
+        sessionId: "workflow-opencode",
+      }),
+    );
   });
 
   it("returns success/output/items/error fields", async () => {
@@ -732,7 +811,7 @@ describe("launchEphemeralThread", () => {
     expect(result).toHaveProperty("success");
     expect(result).toHaveProperty("error");
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/no SDK available|claude|codex|copilot/i);
+    expect(result.error).toMatch(/no SDK available|claude|codex|copilot|opencode/i);
   });
 
   it("returns error when SDK is not available", async () => {
@@ -2122,6 +2201,75 @@ describe("launchOrResumeThread", () => {
     expect(mockClaudeQuery).toHaveBeenCalledTimes(2);
     logSpy.mockRestore();
   });
+
+  it("persists and resumes OpenCode session IDs", async () => {
+    process.env.__MOCK_OPENCODE_AVAILABLE = "1";
+    const taskKey = "monitor-monitor-opencode";
+
+    mockOpencodeExec
+      .mockResolvedValueOnce({
+        finalResponse: "open-code first run",
+        items: [],
+        usage: null,
+      })
+      .mockResolvedValueOnce({
+        finalResponse: "open-code resumed run",
+        items: [],
+        usage: null,
+      });
+
+    const first = await launchOrResumeThread(
+      "initial prompt",
+      process.cwd(),
+      5000,
+      {
+        taskKey,
+        sdk: "opencode",
+      },
+    );
+    expect(first.success).toBe(true);
+    expect(first.threadId).toBe(taskKey);
+    expect(first.resumed).toBe(false);
+
+    const firstRecord = getThreadRecord(taskKey);
+    expect(firstRecord?.sdk).toBe("opencode");
+    expect(firstRecord?.threadId).toBe(taskKey);
+    expect(firstRecord?.alive).toBe(true);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    logSpy.mockClear();
+    const second = await launchOrResumeThread(
+      "follow-up prompt",
+      process.cwd(),
+      5000,
+      {
+        taskKey,
+        sdk: "opencode",
+      },
+    );
+
+    expect(second.success).toBe(true);
+    expect(second.resumed).toBe(true);
+    expect(second.threadId).toBe(taskKey);
+    expect(mockOpencodeExec).toHaveBeenCalledTimes(2);
+    expect(mockOpencodeExec.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        persistent: true,
+        sessionId: taskKey,
+      }),
+    );
+    expect(mockOpencodeExec.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        persistent: true,
+        sessionId: taskKey,
+      }),
+    );
+    const emittedLogs = logSpy.mock.calls
+      .map((args) => args.join(" "))
+      .join("\n");
+    expect(emittedLogs).toContain("resuming OpenCode session");
+    logSpy.mockRestore();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2314,6 +2462,7 @@ describe("execPooledPrompt", () => {
     process.env.CODEX_SDK_DISABLED = "1";
     process.env.COPILOT_SDK_DISABLED = "1";
     process.env.CLAUDE_SDK_DISABLED = "1";
+    process.env.OPENCODE_SDK_DISABLED = "1";
     resetPoolSdkCache();
 
     const result = await execPooledPrompt("test task");
@@ -2358,6 +2507,7 @@ describe("resolution and launch integration", () => {
     process.env.CODEX_SDK_DISABLED = "1";
     process.env.COPILOT_SDK_DISABLED = "1";
     process.env.CLAUDE_SDK_DISABLED = "1";
+    process.env.OPENCODE_SDK_DISABLED = "1";
     resetPoolSdkCache();
 
     const result = await launchEphemeralThread("test", process.cwd(), 5000);
@@ -2367,4 +2517,3 @@ describe("resolution and launch integration", () => {
   });
 });
 }
-

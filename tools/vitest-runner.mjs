@@ -157,6 +157,7 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
       nodeArgs.push("--import", pathToFileURL(realpathShimPath).href);
     }
   }
+  nodeArgs.push("--no-warnings=ExperimentalWarning");
   nodeArgs.push(`--max-old-space-size=${resolveVitestHeapMb()}`);
 
   const esbuildBinaryPath = resolveWindowsEsbuildBinary({ startDir });

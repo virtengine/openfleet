@@ -1410,6 +1410,34 @@ describe("WorkflowEngine - run history details", () => {
     expect(page.nextOffset).toBe(30);
   });
 
+  it("repairs common mojibake in workflow run history and detail text fields", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Workflow run mojibake test" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {
+      taskTitle: "feat(tui): Session Detail modal ÔÇö full session drill-down",
+      _workflowName: "PR watchdog ÔÇö repair loop",
+      primaryGoalTitle: "Telemetry ÔÇö stabilize run history",
+    });
+
+    const historyEntry = engine.getRunHistory(wf.id, 10).find((entry) => entry.runId === ctx.id);
+    const detail = engine.getRunDetail(ctx.id);
+
+    expect(historyEntry?.taskTitle).toContain("—");
+    expect(historyEntry?.taskTitle).not.toContain("ÔÇö");
+    expect(historyEntry?.primaryGoalTitle).toContain("—");
+    expect(historyEntry?.primaryGoalTitle).not.toContain("ÔÇö");
+    expect(historyEntry?.workflowName).toBe("Workflow run mojibake test");
+    expect(detail?.detail?.data?.taskTitle).toContain("—");
+    expect(detail?.detail?.data?.primaryGoalTitle).toContain("—");
+    expect(detail?.detail?.data?.taskTitle).not.toContain("ÔÇö");
+    expect(detail?.detail?.data?._workflowName).toBe("Workflow run mojibake test");
+  });
+
   it("includes active runs in history and exposes live run detail while executing", async () => {
     const prevThreshold = process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
     process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = "20";

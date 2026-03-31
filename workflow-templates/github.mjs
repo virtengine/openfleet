@@ -2697,7 +2697,7 @@ export const PR_FIX_SINGLE_TEMPLATE = {
       value:
         "({" +
         "repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), " +
-        "branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), " +
+        "branch: String($data?.item?.prDigest?.core?.branch || $data?.item?.branch || ''), " +
         "base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), " +
         "number: String($data?.item?.number || $data?.item?.n || '0'), " +
         "reason: String($data?.item?.reason || ''), " +
@@ -3241,7 +3241,7 @@ export const PR_SECURITY_FIX_SINGLE_TEMPLATE = {
       value:
         "({" +
         "repo: String($data?.item?.repo || $data?.item?.prDigest?.core?.repo || ''), " +
-        "branch: String($data?.item?.branch || $data?.item?.prDigest?.core?.branch || ''), " +
+        "branch: String($data?.item?.prDigest?.core?.branch || $data?.item?.branch || ''), " +
         "base: String($data?.item?.base || $data?.item?.baseBranch || $data?.item?.prDigest?.core?.baseBranch || 'main'), " +
         "number: String($data?.item?.number || $data?.item?.n || '0')" +
         "})",

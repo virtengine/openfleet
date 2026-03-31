@@ -382,10 +382,10 @@ run_vitest_batches() {
   local test_file
   for test_file in "${tests[@]}"; do
     case "$test_file" in
-      tests/bosun-mcp-server.test.mjs|tests/ui-server.test.mjs|tests/ui-server-session-actions.test.mjs|tests/*workflow*e2e*.test.mjs)
+      tests/*workflow*e2e*.test.mjs)
         standalone_serialized_tests+=("$test_file")
         ;;
-      tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs|tests/*workflow*e2e*.test.mjs)
+      tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs)
         serialized_tests+=("$test_file")
         ;;
       *)
@@ -405,7 +405,7 @@ run_vitest_batches() {
       local serialized_offset=0
       local serialized_batch=1
       while [ "$serialized_offset" -lt "$serialized_total" ]; do
-        local -a serialized_slice=("${serialized_tests[@]:serialized_offset:serialized_batch_size}")
+        local -a serialized_slice=("${serialized_tests[@]:$serialized_offset:$serialized_batch_size}")
         echo "[hooks] serialized vitest batch ${serialized_batch}: ${#serialized_slice[@]} files"
         node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${serialized_slice[@]}" || return $?
         serialized_offset=$((serialized_offset + serialized_batch_size))
@@ -431,13 +431,13 @@ run_vitest_batches() {
   echo "[hooks] splitting vitest target set into batches to keep local memory bounded"
   local total="${#regular_tests[@]}"
   local offset=0
-  local batch=1
+  local batch_index=1
   while [ "$offset" -lt "$total" ]; do
-    local -a slice=("${regular_tests[@]:offset:batch_size}")
-    echo "[hooks] vitest batch ${batch}: ${#slice[@]} files"
+    local -a slice=("${regular_tests[@]:$offset:$batch_size}")
+    echo "[hooks] vitest batch ${batch_index}: ${#slice[@]} files"
     node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${slice[@]}" || return $?
     offset=$((offset + batch_size))
-    batch=$((batch + 1))
+    batch_index=$((batch_index + 1))
   done
 }
 
@@ -448,13 +448,13 @@ run_node_test_batches() {
   local batch_size=12
   local total="${#tests[@]}"
   local offset=0
-  local batch=1
+  local batch_index=1
   while [ "$offset" -lt "$total" ]; do
-    local -a slice=("${tests[@]:offset:batch_size}")
-    echo "[hooks] node-test batch ${batch}: ${#slice[@]} files"
-    node --import ./tests/node-test-bootstrap.mjs --test "${slice[@]}" || return $?
+    local -a slice=("${tests[@]:$offset:$batch_size}")
+    echo "[hooks] node-test batch ${batch_index}: ${#slice[@]} files"
+    node --no-warnings=ExperimentalWarning --import ./tests/node-test-bootstrap.mjs --test "${slice[@]}" || return $?
     offset=$((offset + batch_size))
-    batch=$((batch + 1))
+    batch_index=$((batch_index + 1))
   done
 }
 

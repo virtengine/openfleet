@@ -5,14 +5,21 @@ const ORIGINAL_CONSOLE = {
 };
 
 const SUPPRESSED_PREFIXES = [
+  /^╔/u,
+  /^║/u,
+  /^╚/u,
   /^\[archiver\]/i,
   /^\[agent-prompts\]/i,
   /^\[config\]/i,
   /^\[kanban\]/i,
   /^\[monitor(?:[^\]]*)?\]/i,
+  /^\[session-tracker\]/i,
   /^\[sharedstatemanager\]/i,
   /^\[task-store\]/i,
+  /^\[telegram-bot\]/i,
   /^\[telegram-ui\]/i,
+  /^\[ui\]/i,
+  /^\[workspace-manager\]/i,
   /^\[workflow-engine\]/i,
   /^\[workflow-nodes\]/i,
   /^\[workflows\]/i,

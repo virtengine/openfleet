@@ -5361,6 +5361,63 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 20000);
 
+  it("lists workflow template updates through a worker-style async engine proxy", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const fakeEngine = {
+      isWorkflowEngineProxy: true,
+      list: vi.fn(async () => [
+        {
+          id: "wf-template-1",
+          name: "Installed Template Workflow",
+          metadata: {
+            templateState: {
+              templateId: "template-task-batch-processor",
+              templateName: "Task Batch Processor",
+              updateAvailable: true,
+              isCustomized: false,
+              templateVersion: "1.0.1",
+              installedTemplateVersion: "1.0.0",
+            },
+          },
+        },
+      ]),
+      getRunHistory: vi.fn(() => []),
+      getRunDetail: vi.fn(() => null),
+      getTaskTraceEvents: vi.fn(() => []),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    try {
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/workflows/template-updates`).then((r) => r.json());
+      expect(response.ok).toBe(true);
+      expect(Array.isArray(response.updates)).toBe(true);
+      expect(response.updates).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          workflowId: "wf-template-1",
+          templateId: "template-task-batch-processor",
+          updateAvailable: true,
+          isCustomized: false,
+        }),
+      ]));
+      expect(fakeEngine.list).toHaveBeenCalled();
+    } finally {
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  }, 20000);
+
   it("reports epic dependency blockers from start guards", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.EXECUTOR_MODE = "internal";

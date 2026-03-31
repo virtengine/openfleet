@@ -121,6 +121,8 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
           const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
           if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
         }
+        process.env.REPO_ROOT = repoRoot;
+        process.env.BOSUN_STORE_PATH = path.join(repoRoot, ".bosun", ".cache", "kanban-state.json");
         const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
@@ -140,13 +142,14 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
           .catch(e => { console.error(e.message); process.exit(1); });
       `],
       env: { MAX_BATCH: "{{maxBatchSize}}" },
+      cwd: "{{repoRoot}}",
       parseJson: true,
     }, { x: 400, y: 310 }),
 
     // ── Fan-out: dispatch each task to the lifecycle workflow ─────────────
     node("dispatch-tasks", "loop.for_each", "Dispatch Tasks", {
       items: "$ctx.getNodeOutput('query-tasks')?.output || []",
-      itemVariable: "currentTask",
+      variable: "currentTask",
       indexVariable: "taskIndex",
       maxConcurrent: "{{maxConcurrent}}",
       workflowId: "{{subWorkflow}}",
@@ -244,6 +247,8 @@ export const TASK_BATCH_PR_TEMPLATE = {
           const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
           if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
         }
+        process.env.REPO_ROOT = repoRoot;
+        process.env.BOSUN_STORE_PATH = path.join(repoRoot, ".bosun", ".cache", "kanban-state.json");
         const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
@@ -261,6 +266,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
           .catch(e => { console.error(e.message); process.exit(1); });
       `],
       env: { MAX_BATCH: "{{maxBatchSize}}" },
+      cwd: "{{repoRoot}}",
       parseJson: true,
     }, { x: 400, y: 180 }),
 

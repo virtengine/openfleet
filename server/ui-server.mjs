@@ -2058,7 +2058,7 @@ async function getWorkflowEngineModule() {
         if (result.errors.length) {
           console.warn("[workflows] Default template install errors:", result.errors);
         }
-        if (typeof _wfTemplates.reconcileInstalledTemplates === "function") {
+        if (typeof _wfTemplates.reconcileInstalledTemplates === "function" && !engine?.isWorkflowEngineProxy) {
           const reconcile = _wfTemplates.reconcileInstalledTemplates(engine, {
             autoUpdateUnmodified: true,
           });
@@ -3400,7 +3400,7 @@ function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspac
         result = _wfTemplates.installRecommendedTemplates(engine);
       }
     }
-    if (typeof _wfTemplates.reconcileInstalledTemplates === "function") {
+    if (typeof _wfTemplates.reconcileInstalledTemplates === "function" && !engine?.isWorkflowEngineProxy) {
       _wfTemplates.reconcileInstalledTemplates(engine, {
         autoUpdateUnmodified: true,
       });
@@ -23242,13 +23242,13 @@ if (path === "/api/agent-logs/context") {
         return;
       }
       const engine = wfCtx.engine;
-      if (typeof _wfTemplates?.reconcileInstalledTemplates === "function") {
+      if (typeof _wfTemplates?.reconcileInstalledTemplates === "function" && !engine?.isWorkflowEngineProxy) {
         _wfTemplates.reconcileInstalledTemplates(engine, {
           autoUpdateUnmodified: true,
         });
       }
-      const updates = engine
-        .list()
+      const workflows = await Promise.resolve(engine.list?.() || []);
+      const updates = workflows
         .map((wf) => {
           const state = wf.metadata?.templateState || null;
           if (!state?.templateId) return null;
