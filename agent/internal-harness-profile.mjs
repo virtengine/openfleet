@@ -33,7 +33,8 @@ function slugify(value) {
   return toTrimmedString(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "harness";
+    .replace(/^-+/, "")
+    .replace(/-+$/, "") || "harness";
 }
 
 function safeClone(value) {
@@ -73,9 +74,17 @@ function parseSourceObject(source) {
   try {
     return JSON.parse(raw);
   } catch {
-    const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fenceMatch?.[1]) {
-      return JSON.parse(fenceMatch[1]);
+    // Extract JSON from a markdown fenced code block using string operations
+    // to avoid ReDoS from regex with [\s\S]*? on adversarial input.
+    const fenceOpen = raw.indexOf("```");
+    if (fenceOpen !== -1) {
+      const lineEnd = raw.indexOf("\n", fenceOpen);
+      const contentStart = lineEnd !== -1 ? lineEnd + 1 : fenceOpen + 3;
+      const fenceClose = raw.indexOf("\n```", contentStart);
+      if (fenceClose !== -1) {
+        const content = raw.slice(contentStart, fenceClose).trim();
+        if (content) return JSON.parse(content);
+      }
     }
   }
   throw new Error("Harness source must be a JSON object or markdown fenced JSON block");
