@@ -10118,8 +10118,7 @@ function shouldHideSessionFromDefaultList(session) {
   const fixturePattern = /^(?:meeting-(?:1|vision)|session-linked-task-1|workspace-scope-test(?:-.+)?|task-\d+)$/i;
   const hasFixtureIdentifier = identifiers.some((value) => fixturePattern.test(String(value || "").trim()));
   const looksLikeSyntheticType =
-    normalizedType.endsWith("-test")
-    || normalizedType.includes("scope-test")
+    normalizedType.includes("scope-test")
     || normalizedType === "workspace-scope-test";
   const syntheticTempSource =
     normalizedSource === "workflow-meeting"
@@ -26812,7 +26811,8 @@ if (path === "/api/agent-logs/context") {
       let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions(), workspaceContext, {
         allowLegacyWithoutWorkspace,
       });
-      if (!includeHidden) {
+      const applyDefaultListHiding = !includeHidden && !typeFilter && !statusFilter;
+      if (applyDefaultListHiding) {
         sessions = sessions.filter((session) => !shouldHideSessionFromDefaultList(session));
       }
       if (typeFilter) sessions = sessions.filter((s) => s.type === typeFilter);

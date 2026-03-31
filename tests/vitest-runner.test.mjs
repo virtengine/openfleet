@@ -10,6 +10,7 @@ import {
   isDirectExecution,
   resolveVitestArgs,
 } from "../tools/vitest-runner.mjs";
+import { buildVitestFullSuitePlan } from "../tools/vitest-full-suite.mjs";
 
 const tempDirs = [];
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -97,10 +98,20 @@ describe("vitest-runner", () => {
   it("routes package test scripts through the worktree-safe runner", () => {
     const packageJson = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
 
-    expect(packageJson.scripts.test).toContain("tools/vitest-runner.mjs");
-    expect(packageJson.scripts["test:vitest"]).toContain("tools/vitest-runner.mjs");
+    expect(packageJson.scripts.test).toContain("tools/vitest-full-suite.mjs");
+    expect(packageJson.scripts["test:vitest"]).toContain("tools/vitest-full-suite.mjs");
     expect(packageJson.scripts.test).not.toContain("node_modules/vitest/vitest.mjs");
     expect(packageJson.scripts["test:vitest"]).not.toContain("node_modules/vitest/vitest.mjs");
+  });
+
+  it("isolates heavyweight suites from the grouped full-suite batch", () => {
+    const { groupedSuites, heavySuites } = buildVitestFullSuitePlan({ startDir: repoRoot });
+
+    expect(heavySuites).toContain("tests/workflow-engine.test.mjs");
+    expect(heavySuites).toContain("tests/workflow-templates-e2e.test.mjs");
+    expect(groupedSuites).not.toContain("tests/workflow-engine.test.mjs");
+    expect(groupedSuites).not.toContain("tests/workflow-templates-e2e.test.mjs");
+    expect(groupedSuites.length + heavySuites.length).toBeGreaterThan(0);
   });
 
   it("routes the pre-push hook through the worktree-safe runner", () => {
