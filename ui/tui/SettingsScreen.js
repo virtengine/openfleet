@@ -232,8 +232,9 @@ export default function SettingsScreen({ configDir, config = {}, onConfigReload 
   const orderedFields = useMemo(() => groupedEntries.flatMap(([, fields]) => fields), [groupedEntries]);
   const activeField = orderedFields[cursor] || null;
 
-  const saveField = (field, nextValue) => {
+  const saveField = (field, rawInput) => {
     try {
+      const nextValue = coerceValue(rawInput, field);
       const nextConfig = setAtPath(draftConfig, field.path, nextValue);
       const valid = validateConfig(nextConfig);
       if (!valid) {
@@ -264,7 +265,7 @@ export default function SettingsScreen({ configDir, config = {}, onConfigReload 
       }
       if (key.ctrl && String(input || "").toLowerCase() === "s") {
         const field = orderedFields.find((entry) => entry.path === editingPath);
-        if (field && saveField(field, coerceValue(inputValue, field))) {
+        if (field && saveField(field, inputValue)) {
           setEditingPath("");
           setInputValue("");
         }

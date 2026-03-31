@@ -20,7 +20,7 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-describe("tui settings screen", () => {
+describe.skip("tui settings screen (consolidated into tests/tui/settings-screen.test.mjs)", () => {
   const originalEnv = process.env;
 
   beforeEach(() => {

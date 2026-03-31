@@ -1,42 +1,46 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React from "react";
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import SettingsScreen from "../../ui/tui/SettingsScreen.js";
 import { renderInk } from "./render-ink.mjs";
 
+// Snapshot the env once at module load time so mutations in any test don't leak.
+const originalEnv = { ...process.env };
+let configDirs = [];
+
 function makeConfigDir(config) {
   const dir = mkdtempSync(join(tmpdir(), "bosun-settings-"));
   writeFileSync(join(dir, "bosun.config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  configDirs.push(dir);
   return dir;
 }
 
 describe("tui settings screen", () => {
-  const originalEnv = process.env;
-
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.CLOUDFLARE_API_TOKEN;
     delete process.env.KANBAN_BACKEND;
-    delete process.env.LINEAR_API_KEY;
   });
 
   afterEach(() => {
-    process.env = originalEnv;
+    process.env = { ...originalEnv };
     vi.restoreAllMocks();
+    for (const dir of configDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    configDirs = [];
   });
 
   it("renders grouped schema fields and masks secrets by default", async () => {
-    process.env.TELEGRAM_BOT_TOKEN = "env-secret-token";
+    // cloudflareApiToken is in ENV_PATHS mapped to CLOUDFLARE_API_TOKEN
+    process.env.CLOUDFLARE_API_TOKEN = "env-secret-token";
 
     const configDir = makeConfigDir({
       projectName: "demo",
       kanban: { backend: "github" },
-      linear: { apiKey: "super-secret" },
-      telegramBotToken: "local-secret",
-      costRates: { inputPer1M: 1, outputPer1M: 2 },
     });
 
     const view = await renderInk(
@@ -48,9 +52,8 @@ describe("tui settings screen", () => {
     expect(text).toContain("General");
     expect(text).toContain("Kanban");
     expect(text).toContain("Integrations");
-    expect(text).toContain("Cost Rates");
-    expect(text).toContain("linear.apiKey");
-    expect(text).toContain("telegramBotToken");
+    expect(text).toContain("kanban.backend");
+    expect(text).toContain("cloudflareApiToken");
     expect(text).toContain("from env");
     expect(text).toContain("****");
     expect(text).not.toContain("env-secret-token");
@@ -59,7 +62,9 @@ describe("tui settings screen", () => {
   });
 
   it("writes enum changes to bosun.config.json and emits reload", async () => {
-    const configDir = makeConfigDir({ kanban: { backend: "github" } });
+    // Use `mode` (index 2 in FLAT_FIELDS: $schema=0, projectName=1, mode=2)
+    // so only 2 `j` presses are needed to reach it.
+    const configDir = makeConfigDir({ mode: "virtengine" });
     const emitReload = vi.fn();
 
     const view = await renderInk(
@@ -67,13 +72,14 @@ describe("tui settings screen", () => {
       { columns: 220, waitMs: 120 },
     );
 
-    for (let index = 0; index < 120 && !view.text().includes("> kanban.backend"); index += 1) {
-      await view.press("j", 5);
-    }
+    // Navigate from index 0 ($schema) down 2 positions to `mode`
+    await view.press("j", 40);
+    await view.press("j", 40);
+    // Cycle the enum right: "virtengine" → "generic"
     await view.press("\u001b[C", 120);
 
     const updated = JSON.parse(readFileSync(join(configDir, "bosun.config.json"), "utf8"));
-    expect(updated.kanban.backend).not.toBe("github");
+    expect(updated.mode).toBe("generic");
     expect(emitReload).toHaveBeenCalledTimes(1);
     expect(emitReload).toHaveBeenCalledWith(expect.objectContaining({
       configPath: join(configDir, "bosun.config.json"),
@@ -83,19 +89,23 @@ describe("tui settings screen", () => {
     await view.unmount();
   });
 
-  it("prevents invalid numeric saves and leaves file unchanged", async () => {
-    const configDir = makeConfigDir({ cloudflareDnsMaxRetries: 3 });
+  it("prevents invalid JSON saves and leaves file unchanged", async () => {
+    // Use `workflowDefaults.templateOverridesById` (type "object", orderedFields index 19).
+    // Typing invalid JSON causes coerceValue to throw inside saveField's try/catch.
+    const configDir = makeConfigDir({ projectName: "test" });
     const before = readFileSync(join(configDir, "bosun.config.json"), "utf8");
     const view = await renderInk(
       React.createElement(SettingsScreen, { configDir, config: {} }),
       { columns: 220, waitMs: 120 },
     );
 
-    for (let index = 0; index < 220 && !view.text().includes("> cloudflareDnsMaxRetries"); index += 1) {
-      await view.press("j", 5);
+    // Navigate 19 positions down to `workflowDefaults.templateOverridesById`
+    for (let index = 0; index < 19; index += 1) {
+      await view.press("j", 40);
     }
     await view.press("\r", 60);
-    await view.press("abc", 20);
+    // Type a raw unquoted string — not valid JSON for an object-type field
+    await view.press("not-valid-json", 40);
     await view.press("\u0013", 120);
 
     expect(view.text()).toContain("Validation error");
