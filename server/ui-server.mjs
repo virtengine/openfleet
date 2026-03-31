@@ -14377,10 +14377,20 @@ function broadcastSessionMessage(payload) {
     }
   }
 
+  const currentSnapshot = getCurrentSessionSnapshot();
+  const payloadSessionId = String(payload?.sessionId || payload?.session?.id || payload?.taskId || "").trim();
+  const payloadTaskId = String(payload?.taskId || payload?.session?.taskId || payload?.sessionId || "").trim();
+  const snapshotSession = currentSnapshot.find((session) => (
+    String(session?.id || "").trim() === payloadSessionId
+    || String(session?.taskId || "").trim() === payloadTaskId
+  )) || null;
+  const sessionForEvent = snapshotSession
+    ? { ...(payload?.session && typeof payload.session === "object" ? payload.session : {}), ...snapshotSession }
+    : (payload?.session || {});
   const sessionEvent = buildSessionEventPayload({
-    sessionId: payload?.sessionId || payload?.session?.id || payload?.taskId || "",
-    taskId: payload?.taskId || payload?.session?.taskId || payload?.sessionId || "",
-    session: payload?.session || {},
+    sessionId: payloadSessionId,
+    taskId: payloadTaskId,
+    session: sessionForEvent,
     event: {
       kind: "message",
       message: payload?.message || payload?.payload || null,
@@ -14389,7 +14399,7 @@ function broadcastSessionMessage(payload) {
   if (sessionEvent.sessionId && sessionEvent.taskId) {
     broadcastCanonicalEvent(["sessions", "tui"], "session:event", sessionEvent);
   }
-  broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", getCurrentSessionSnapshot());
+  broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", currentSnapshot);
 }
 
 async function collectUiStats() {

@@ -59,7 +59,9 @@ for (const { relPath, source } of workflowSources) {
 
     it("routes harness approval actions to the harness API and agents monitor", () => {
       expect(source).toContain('scopeType === "harness-run"');
-      expect(source).toContain('navigateTo("agents")');
+      expect(source).toContain('navigateTo("agents", {');
+      expect(source).toContain("harnessRunId");
+      expect(source).toContain("harnessSource");
       expect(source).toContain("Open Harness Monitor");
     });
   });
