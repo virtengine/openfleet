@@ -124,6 +124,11 @@ const INTERRUPTED_ORPHAN_SCAN_WINDOW_MS = readBoundedEnvInt(
   7 * 24 * 60 * 60 * 1000,
   { min: 0, max: 90 * 24 * 60 * 60 * 1000 },
 );
+const INTERRUPTED_RESUME_YIELD_EVERY = readBoundedEnvInt(
+  "WORKFLOW_INTERRUPTED_RESUME_YIELD_EVERY",
+  25,
+  { min: 1, max: 1000 },
+);
 const DEFAULT_RUN_STUCK_THRESHOLD_MS = readBoundedEnvInt(
   "WORKFLOW_RUN_STUCK_THRESHOLD_MS",
   5 * 60 * 1000,
@@ -165,6 +170,12 @@ function resolveWorkflowRootRunId(inputData = {}, opts = {}) {
       inputData?._rootRunId ||
       "",
   ).trim() || null;
+}
+
+function maybeYieldInterruptedResumeWork(iteration) {
+  if (INTERRUPTED_RESUME_YIELD_EVERY <= 0) return null;
+  if (iteration % INTERRUPTED_RESUME_YIELD_EVERY !== 0) return null;
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 const DEFAULT_DELEGATION_WATCHDOG_TIMEOUT_MS = readBoundedEnvInt(
@@ -6987,6 +6998,7 @@ export class WorkflowEngine extends EventEmitter {
       const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
       const ledgerTaskEntries = this._executionLedger.listTaskRunEntries();
       const ledgerTaskIdByRunId = new Map();
+      let resumeLoopCount = 0;
       for (const entry of ledgerTaskEntries) {
         if (!entry?.runId || !entry?.taskId) continue;
         ledgerTaskIdByRunId.set(entry.runId, entry.taskId);
@@ -7008,6 +7020,8 @@ export class WorkflowEngine extends EventEmitter {
         if (!previous || entryTime >= previousTime) {
           latestByTaskId.set(entry.taskId, candidate);
         }
+        resumeLoopCount += 1;
+        await maybeYieldInterruptedResumeWork(resumeLoopCount);
       }
       for (const run of allRuns) {
         const dp = resolve(this.runsDir, `${run.runId}.json`);
@@ -7024,6 +7038,8 @@ export class WorkflowEngine extends EventEmitter {
         } catch {
           /* unreadable detail — handled in the main loop below */
         }
+        resumeLoopCount += 1;
+        await maybeYieldInterruptedResumeWork(resumeLoopCount);
       }
 
       // Mark older duplicate runs as not-resumable before entering the loop
@@ -7037,6 +7053,8 @@ export class WorkflowEngine extends EventEmitter {
           this._markRunUnresumable(run.runId, "duplicate_task_run");
           dedupedCount++;
         }
+        resumeLoopCount += 1;
+        await maybeYieldInterruptedResumeWork(resumeLoopCount);
       }
       if (dedupedCount > 0) {
         console.log(
@@ -7102,6 +7120,8 @@ export class WorkflowEngine extends EventEmitter {
           console.error(`${TAG} Error resuming run ${run.runId}:`, err.message);
           this._markRunUnresumable(run.runId, `error: ${err.message}`);
         }
+        resumeLoopCount += 1;
+        await maybeYieldInterruptedResumeWork(resumeLoopCount);
       }
     } finally {
       this._resumingRuns = false;

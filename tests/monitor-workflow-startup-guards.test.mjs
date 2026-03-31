@@ -62,6 +62,8 @@ describe("monitor workflow startup guards", () => {
   it("resumes interrupted workflow runs after monitor services are wired", () => {
     expect(monitorSource).toContain('runWorkflowRecoveryWithPolicy(');
     expect(monitorSource).toContain('"workflow-history-unstick"');
+    expect(monitorSource).toContain("WORKFLOW_STARTUP_HISTORY_RECOVERY_DELAY_MS");
+    expect(monitorSource).toContain("workflowStartupHistoryRecoveryDelayMs");
     expect(monitorSource).toContain('if (!engine?.resumeInterruptedRuns) {');
     expect(monitorSource).toContain('await engine.resumeInterruptedRuns();');
     expect(
@@ -306,6 +308,12 @@ describe("workflow-engine interrupted run deduplication", () => {
     expect(engineSource).toContain("WORKFLOW_INTERRUPTED_ORPHAN_SCAN_WINDOW_MS");
     expect(engineSource).toContain("Orphan interrupted-run scan limited");
     expect(engineSource).toContain("this._getInterruptedOrphanRunCandidates()");
+  });
+
+  it("yields during interrupted-run resume scans so UI requests are not starved", () => {
+    expect(engineSource).toContain("WORKFLOW_INTERRUPTED_RESUME_YIELD_EVERY");
+    expect(engineSource).toContain("function maybeYieldInterruptedResumeWork(iteration)");
+    expect(engineSource).toContain("await maybeYieldInterruptedResumeWork(resumeLoopCount);");
   });
 });
 

@@ -319,6 +319,13 @@ export function createExecSandbox(scenario = {}) {
         errors: [],
       });
     }
+    if (/task-debt-ledger\.jsonl/i.test(c)) {
+      const isoDaysAgo = (days) => new Date(Date.now() - (days * 86_400_000)).toISOString();
+      return jsonOut([
+        { timestamp: isoDaysAgo(2), debtDelta: 2, type: "added" },
+        { timestamp: isoDaysAgo(9), debtDelta: -1, type: "resolved" },
+      ]);
+    }
     if (/worktree list/.test(c))  return "1\n";
     if (/worktree prune/.test(c)) return "1\n";
     return "0\n";
@@ -393,13 +400,29 @@ export function createExecSandbox(scenario = {}) {
       const self = this;
       return {
         execSync: (cmd, _opts) => self.dispatch(cmd),
-        spawnSync: (cmd, args, _opts) => ({
-          stdout: Buffer.from(""),
-          stderr: Buffer.from(""),
-          status: 0,
-          signal: null,
-        }),
-        spawn: () => {
+        spawnSync: (cmd, args, _opts) => {
+          const rendered = [String(cmd || "").trim(), ...(Array.isArray(args) ? args.map((arg) => String(arg)) : [])]
+            .filter(Boolean)
+            .join(" ")
+            .trim();
+          try {
+            const output = String(self.dispatch(rendered) || "");
+            return {
+              stdout: Buffer.from(output),
+              stderr: Buffer.from(""),
+              status: 0,
+              signal: null,
+            };
+          } catch (err) {
+            return {
+              stdout: Buffer.from(String(err?.stdout || "")),
+              stderr: Buffer.from(String(err?.stderr || err?.message || err || "")),
+              status: err?.status ?? err?.exitCode ?? 1,
+              signal: null,
+            };
+          }
+        },
+        spawn: (cmd, args) => {
           const { EventEmitter } = require("node:events");
           const proc = new EventEmitter();
           proc.stdout = new EventEmitter();
@@ -408,7 +431,23 @@ export function createExecSandbox(scenario = {}) {
           proc.stderr.pipe = () => {};
           proc.kill = () => {};
           proc.pid = 9999;
-          setTimeout(() => proc.emit("close", 0), 5);
+          setImmediate(() => {
+            const rendered = [String(cmd || "").trim(), ...(Array.isArray(args) ? args.map((arg) => String(arg)) : [])]
+              .filter(Boolean)
+              .join(" ")
+              .trim();
+            try {
+              const output = String(self.dispatch(rendered) || "");
+              if (output) proc.stdout.emit("data", output);
+              proc.emit("close", 0);
+            } catch (err) {
+              const stdout = String(err?.stdout || "");
+              const stderr = String(err?.stderr || err?.message || err || "");
+              if (stdout) proc.stdout.emit("data", stdout);
+              if (stderr) proc.stderr.emit("data", stderr);
+              proc.emit("close", err?.status ?? err?.exitCode ?? 1);
+            }
+          });
           return proc;
         },
         exec: (cmd, opts, cb) => {

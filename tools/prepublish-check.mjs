@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { BUILTIN_SKILLS } from "../agent/bosun-skills.mjs";
 
 const SOURCE_EXTENSIONS = new Set([".mjs", ".cjs", ".js"]);
 
@@ -54,6 +55,13 @@ export function expandPublishedFiles(rootDir, filesArray = []) {
     }
   }
   return published;
+}
+
+export function findMissingPublishedFiles(publishedFiles, requiredFiles = []) {
+  return requiredFiles
+    .filter((file) => typeof file === "string" && file.length > 0)
+    .filter((file) => !publishedFiles.has(file))
+    .sort((a, b) => a.localeCompare(b));
 }
 
 function isIdentifierChar(char) {
@@ -366,6 +374,9 @@ export async function validatePublishedLocalImports({ rootDir, pkg }) {
 export async function runPrepublishCheck(rootDir = ROOT) {
   const pkg = JSON.parse(readFileSync(resolve(rootDir, "package.json"), "utf8"));
   const result = await validatePublishedLocalImports({ rootDir, pkg });
+  const publishedFiles = expandPublishedFiles(rootDir, Array.isArray(pkg.files) ? pkg.files : []);
+  const requiredAssetFiles = BUILTIN_SKILLS.map((skill) => `agent/skills/${skill.filename}`);
+  const missingAssetFiles = findMissingPublishedFiles(publishedFiles, requiredAssetFiles);
 
   if (result.error) {
     console.error(`:close: ${result.error}`);
@@ -385,9 +396,17 @@ export async function runPrepublishCheck(rootDir = ROOT) {
     console.error("\nAdd the resolved targets to the 'files' array in package.json.");
     process.exit(1);
   }
+  if (missingAssetFiles.length > 0) {
+    console.error(":close: Required published asset files missing from package.json files array:");
+    for (const file of missingAssetFiles) {
+      console.error(`   ${file}`);
+    }
+    console.error("\nAdd the missing asset files or a containing directory to the 'files' array in package.json.");
+    process.exit(1);
+  }
 
   console.log(
-    `:check: ${pkg.name}@${pkg.version} — ${pkg.files.length} manifest entries, ${result.scannedFiles.length} published source files scanned, 0 missing local imports`,
+    `:check: ${pkg.name}@${pkg.version} — ${pkg.files.length} manifest entries, ${result.scannedFiles.length} published source files scanned, 0 missing local imports, ${requiredAssetFiles.length} required asset files present`,
   );
 }
 

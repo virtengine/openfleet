@@ -58,17 +58,35 @@ function isoDaysAgo(daysAgo = 0, hour = 10) {
 
 vi.mock("node:child_process", async (importOriginal) => {
   const orig = await importOriginal();
+  const renderSpawnCommand = (cmd, args = []) => {
+    const parts = [String(cmd || "").trim(), ...(Array.isArray(args) ? args.map((arg) => String(arg)) : [])]
+      .filter(Boolean);
+    return parts.join(" ").trim();
+  };
   return {
     ...orig,
     execSync: (cmd, _opts) => _activeDispatch(cmd),
 
-    spawnSync: (_cmd, _args, _opts) => ({
-      stdout: Buffer.from(""),
-      stderr: Buffer.from(""),
-      status: 0, signal: null,
-    }),
+    spawnSync: (cmd, args, _opts) => {
+      try {
+        const output = String(_activeDispatch(renderSpawnCommand(cmd, args)) || "");
+        return {
+          stdout: Buffer.from(output),
+          stderr: Buffer.from(""),
+          status: 0,
+          signal: null,
+        };
+      } catch (err) {
+        return {
+          stdout: Buffer.from(String(err?.stdout || "")),
+          stderr: Buffer.from(String(err?.stderr || err?.message || err || "")),
+          status: err?.status ?? err?.exitCode ?? 1,
+          signal: null,
+        };
+      }
+    },
 
-    spawn: vi.fn(() => {
+    spawn: vi.fn((cmd, args) => {
       const proc = new EventEmitter();
       proc.stdout = new EventEmitter();
       proc.stderr = new EventEmitter();
@@ -76,7 +94,19 @@ vi.mock("node:child_process", async (importOriginal) => {
       proc.stderr.pipe = vi.fn();
       proc.kill = vi.fn();
       proc.pid = 9999;
-      setTimeout(() => proc.emit("close", 0), 5);
+      setImmediate(() => {
+        try {
+          const output = String(_activeDispatch(renderSpawnCommand(cmd, args)) || "");
+          if (output) proc.stdout.emit("data", output);
+          proc.emit("close", 0);
+        } catch (err) {
+          const stdout = String(err?.stdout || "");
+          const stderr = String(err?.stderr || err?.message || err || "");
+          if (stdout) proc.stdout.emit("data", stdout);
+          if (stderr) proc.stderr.emit("data", stderr);
+          proc.emit("close", err?.status ?? err?.exitCode ?? 1);
+        }
+      });
       return proc;
     }),
 

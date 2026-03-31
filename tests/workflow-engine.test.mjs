@@ -2489,6 +2489,21 @@ describe("New node types", () => {
     expect(result.reason).toBe("legacy");
   });
 
+  it("action.delay honors explicit zero delay without falling back to the default", async () => {
+    const handler = getNodeType("action.delay");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({});
+    const node = {
+      id: "d3",
+      type: "action.delay",
+      config: { ms: 0, reason: "no-wait" },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.waited).toBe(0);
+    expect(result.reason).toBe("no-wait");
+  });
+
   it("flow.gate opens on condition", async () => {
     const handler = getNodeType("flow.gate");
     expect(handler).toBeDefined();

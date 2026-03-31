@@ -8647,6 +8647,15 @@ registerBuiltinNodeType("action.delay", {
     },
   },
   async execute(node, ctx, engine) {
+    const durationInputs = [
+      node.config?.ms,
+      node.config?.delayMs,
+      node.config?.durationMs,
+      node.config?.seconds,
+      node.config?.minutes,
+      node.config?.hours,
+    ];
+    const hasExplicitZeroDelay = durationInputs.some((value) => Number(value) === 0);
     const baseMs = Number(
       node.config?.ms ??
       node.config?.delayMs ??
@@ -8662,7 +8671,8 @@ registerBuiltinNodeType("action.delay", {
     if (Number.isFinite(seconds) && seconds > 0) totalMs += seconds * 1000;
     if (Number.isFinite(minutes) && minutes > 0) totalMs += minutes * 60_000;
     if (Number.isFinite(hours) && hours > 0) totalMs += hours * 3_600_000;
-    if (totalMs <= 0) totalMs = 1000; // Default 1s
+    if (totalMs < 0) totalMs = 0;
+    if (totalMs === 0 && !hasExplicitZeroDelay) totalMs = 1000; // Default 1s when unspecified
 
     // Apply jitter
     const jitterPct = Math.min(Math.max(node.config?.jitter || 0, 0), 100);

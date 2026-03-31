@@ -13898,11 +13898,16 @@ const workflowStartupRecoveryStepDelayMs = Math.max(
   0,
   Number(configWorkflowRecovery?.startupStepDelayMs || 0),
 );
+const workflowStartupHistoryRecoveryDelayMs = Math.max(
+  0,
+  Number(process.env.WORKFLOW_STARTUP_HISTORY_RECOVERY_DELAY_MS || 30_000),
+);
 
-function scheduleStartupWorkflowRecovery(name, handler, step = 0) {
+function scheduleStartupWorkflowRecovery(name, handler, step = 0, extraDelayMs = 0) {
   const delayMs =
     workflowStartupRecoveryGraceMs +
-    Math.max(0, step) * workflowStartupRecoveryStepDelayMs;
+    Math.max(0, step) * workflowStartupRecoveryStepDelayMs +
+    Math.max(0, Number(extraDelayMs) || 0);
   safeSetTimeout(name, handler, delayMs);
 }
 
@@ -14565,6 +14570,7 @@ if (!isMonitorTestRuntime) {
           },
         ),
       1,
+      workflowStartupHistoryRecoveryDelayMs,
     );
   } else {
     console.log(
