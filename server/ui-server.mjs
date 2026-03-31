@@ -7814,6 +7814,7 @@ const CONFIG_PATH_OVERRIDES = {
   BOSUN_HARNESS_ENABLED: ["harness", "enabled"],
   BOSUN_HARNESS_SOURCE: ["harness", "source"],
   BOSUN_HARNESS_VALIDATION_MODE: ["harness", "validation", "mode"],
+  SELF_RESTART_QUIET_MS: ["monitor", "selfRestartQuietMs"],
 
 };
 const ROOT_PREFIX_ALLOWLIST = [

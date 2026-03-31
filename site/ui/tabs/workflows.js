@@ -5629,6 +5629,7 @@ function RunHistoryView() {
   const [approvalStatusFilter, setApprovalStatusFilter] = useState("pending");
   const [approvalScopeFilter, setApprovalScopeFilter] = useState("all");
   const [approvalQueueLoading, setApprovalQueueLoading] = useState(false);
+  const [operatorHarnessRuns, setOperatorHarnessRuns] = useState([]);
   const hasRunningRuns = runs.some((run) => run?.status === "running");
   const selectedRunIsRunning = selectedRun?.status === "running";
   const [statusFilter, setStatusFilter] = useState("all");
@@ -5639,13 +5640,18 @@ function RunHistoryView() {
   const [errorsPaneSearch, setErrorsPaneSearch] = useState("");
   const [ledgerPaneSearch, setLedgerPaneSearch] = useState("");
   const [rawPaneSearch, setRawPaneSearch] = useState("");
+  const [selectedRunEvaluation, setSelectedRunEvaluation] = useState(null);
+  const [selectedRunForensics, setSelectedRunForensics] = useState(null);
+  const [selectedRunSnapshots, setSelectedRunSnapshots] = useState([]);
+  const [runDiagnosticsLoading, setRunDiagnosticsLoading] = useState(false);
+  const [runActionBusy, setRunActionBusy] = useState("");
   const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
 
   const loadApprovals = useCallback(async (statusOverride = approvalStatusFilter) => {
     setApprovalQueueLoading(true);
     try {
       const status = statusOverride || "pending";
-      const [workflowData, harnessData] = await Promise.all([
+      const [workflowData, harnessData, harnessRunsData] = await Promise.all([
         apiFetch(buildWorkflowRunApiPath(
           appendQueryParams("/api/workflows/approvals", {
             limit: 100,
@@ -5657,11 +5663,13 @@ function RunHistoryView() {
           status,
           includeResolved: status === "all" ? "1" : "",
         })).catch(() => ({ requests: [] })),
+        apiFetch("/api/harness/runs?limit=8").catch(() => ({ runs: [] })),
       ]);
       setApprovalRequests(mergeApprovalRequestLists(
         Array.isArray(workflowData?.requests) ? workflowData.requests : [],
         Array.isArray(harnessData?.requests) ? harnessData.requests : [],
       ));
+      setOperatorHarnessRuns(Array.isArray(harnessRunsData?.runs) ? harnessRunsData.runs : []);
     } catch (err) {
       console.error("[workflows] Failed to load approvals:", err);
     } finally {
@@ -5696,6 +5704,56 @@ function RunHistoryView() {
     if (approvalScopeFilter === "all") return approvalRequests;
     return approvalRequests.filter((entry) => normalizeApprovalScopeType(entry?.scopeType) === approvalScopeFilter);
   }, [approvalRequests, approvalScopeFilter]);
+  const operatorInboxItems = useMemo(() => {
+    const approvals = approvalRequests
+      .filter((entry) => String(entry?.status || "").trim().toLowerCase() === "pending")
+      .map((request) => ({
+        key: `approval:${request.requestId}`,
+        kind: "approval",
+        label: describeApprovalRequest(request),
+        detail: describeApprovalTarget(request),
+        state: String(request?.status || "pending").trim().toLowerCase() || "pending",
+        createdAt: request?.requestedAt || request?.createdAt || request?.updatedAt || null,
+        request,
+      }));
+    const harnessAttention = operatorHarnessRuns
+      .filter((run) => {
+        const state = String(
+          run?.health?.state
+          || run?.status
+          || run?.outcome
+          || run?.result?.status
+          || "",
+        ).trim().toLowerCase();
+        return state === "waiting" || state === "stalled";
+      })
+      .map((run) => ({
+        key: `harness:${run.runId}`,
+        kind: "harness-attention",
+        label: String(run?.taskTitle || run?.name || run?.runId || "Harness run").trim(),
+        detail: String(
+          run?.health?.attentionReason
+          || run?.health?.lastEventSummary
+          || run?.latestEvent?.summary
+          || run?.summary
+          || "Harness run needs operator attention."
+        ).trim(),
+        state: String(
+          run?.health?.state
+          || run?.status
+          || run?.outcome
+          || run?.result?.status
+          || "unknown"
+        ).trim().toLowerCase(),
+        createdAt: run?.updatedAt || run?.createdAt || run?.startedAt || null,
+        run,
+      }));
+    return [...approvals, ...harnessAttention].sort((a, b) => {
+      const aTime = new Date(a?.createdAt || 0).getTime() || 0;
+      const bTime = new Date(b?.createdAt || 0).getTime() || 0;
+      return bTime - aTime;
+    });
+  }, [approvalRequests, describeApprovalRequest, describeApprovalTarget, operatorHarnessRuns]);
 
   useEffect(() => {
     setLogsPaneSearch("");
@@ -5895,6 +5953,22 @@ function RunHistoryView() {
       openWorkflowCanvas(workflowId);
     }
   }, []);
+  const openOperatorInboxItem = useCallback((item) => {
+    if (item?.kind === "approval") {
+      openApprovalTarget(item.request);
+      return;
+    }
+    if (item?.kind === "harness-attention") {
+      const runId = String(item?.run?.runId || "").trim();
+      if (!runId) return;
+      navigateTo("agents", {
+        params: {
+          harnessRunId: runId,
+          harnessSource: "workflow-operator-inbox",
+        },
+      });
+    }
+  }, [openApprovalTarget]);
   const openRunCopilot = useCallback((run, intent = "ask") => {
     const safeRunId = String(run?.runId || "").trim();
     const safeIntent = String(intent || "ask").trim().toLowerCase();
@@ -5979,6 +6053,97 @@ function RunHistoryView() {
       showToast("Retry failed: " + (err.message || err), "error");
     }
   }, []);
+  const refreshRunDiagnostics = useCallback(async (runId = selectedRunId.value) => {
+    const safeRunId = String(runId || "").trim();
+    if (!safeRunId) return;
+    setRunDiagnosticsLoading(true);
+    try {
+      const [evaluationData, forensicsData, snapshotsData] = await Promise.all([
+        apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/evaluate`)).catch(() => null),
+        apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/forensics`)).catch(() => null),
+        apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/snapshots`)).catch(() => null),
+      ]);
+      setSelectedRunEvaluation(evaluationData?.evaluation || evaluationData || null);
+      setSelectedRunForensics(forensicsData?.forensics || forensicsData || null);
+      setSelectedRunSnapshots(Array.isArray(snapshotsData?.snapshots) ? snapshotsData.snapshots : []);
+    } finally {
+      setRunDiagnosticsLoading(false);
+    }
+  }, []);
+  const captureRunSnapshot = useCallback(async (runId = selectedRunId.value) => {
+    const safeRunId = String(runId || "").trim();
+    if (!safeRunId) return;
+    setRunActionBusy("snapshot");
+    try {
+      await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/snapshot`), {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      showToast("Run snapshot captured", "success");
+      await refreshRunDiagnostics(safeRunId);
+    } catch (err) {
+      showToast("Snapshot failed: " + (err.message || err), "error");
+    } finally {
+      setRunActionBusy("");
+    }
+  }, [refreshRunDiagnostics]);
+  const restoreRunSnapshot = useCallback(async (runId = selectedRunId.value) => {
+    const safeRunId = String(runId || "").trim();
+    if (!safeRunId) return;
+    const snapshotOptions = selectedRunSnapshots
+      .map((entry) => String(entry?.snapshotId || entry?.id || "").trim())
+      .filter(Boolean);
+    const snapshotId = window.prompt(
+      snapshotOptions.length
+        ? `Snapshot ID to restore:\n\n${snapshotOptions.join("\n")}`
+        : "Snapshot ID to restore",
+      snapshotOptions[0] || "",
+    );
+    if (snapshotId == null || !String(snapshotId).trim()) return;
+    setRunActionBusy("restore");
+    try {
+      await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/restore`), {
+        method: "POST",
+        body: JSON.stringify({ snapshotId: String(snapshotId).trim() }),
+      });
+      showToast("Run restore requested", "success");
+      setTimeout(() => loadRunDetail(safeRunId), 500);
+      await refreshRunDiagnostics(safeRunId);
+    } catch (err) {
+      showToast("Restore failed: " + (err.message || err), "error");
+    } finally {
+      setRunActionBusy("");
+    }
+  }, [refreshRunDiagnostics, selectedRunSnapshots]);
+  const remediateRun = useCallback(async (runId = selectedRunId.value) => {
+    const safeRunId = String(runId || "").trim();
+    if (!safeRunId) return;
+    const note = window.prompt("Optional remediation note", "") || "";
+    setRunActionBusy("remediate");
+    try {
+      await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/remediate`), {
+        method: "POST",
+        body: JSON.stringify(note ? { note } : {}),
+      });
+      showToast("Run remediation requested", "success");
+      setTimeout(() => loadRunDetail(safeRunId), 500);
+      await refreshRunDiagnostics(safeRunId);
+    } catch (err) {
+      showToast("Remediation failed: " + (err.message || err), "error");
+    } finally {
+      setRunActionBusy("");
+    }
+  }, [refreshRunDiagnostics]);
+
+  useEffect(() => {
+    if (!selectedRunId.value) {
+      setSelectedRunEvaluation(null);
+      setSelectedRunForensics(null);
+      setSelectedRunSnapshots([]);
+      return;
+    }
+    refreshRunDiagnostics(selectedRunId.value).catch(() => {});
+  }, [refreshRunDiagnostics, selectedRunId.value]);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -6210,6 +6375,18 @@ function RunHistoryView() {
           ${selectedRun.workflowId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowCanvas(selectedRun.workflowId)}>Open Workflow<//>`}
           <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run Details</h2>
           <${Button} variant="text" size="small" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh<//>
+          <${Button} variant="text" size="small" onClick=${() => refreshRunDiagnostics(selectedRun.runId)} disabled=${runDiagnosticsLoading}>
+            ${runDiagnosticsLoading ? "Refreshing Diagnostics…" : "Refresh Diagnostics"}
+          <//>
+          <${Button} variant="outlined" size="small" onClick=${() => captureRunSnapshot(selectedRun.runId)} disabled=${runActionBusy === "snapshot"}>
+            ${runActionBusy === "snapshot" ? "Capturing…" : "Capture Snapshot"}
+          <//>
+          <${Button} variant="outlined" size="small" onClick=${() => restoreRunSnapshot(selectedRun.runId)} disabled=${runActionBusy === "restore" || selectedRunSnapshots.length === 0}>
+            ${runActionBusy === "restore" ? "Restoring…" : "Restore Snapshot"}
+          <//>
+          <${Button} variant="outlined" size="small" color="warning" onClick=${() => remediateRun(selectedRun.runId)} disabled=${runActionBusy === "remediate"}>
+            ${runActionBusy === "remediate" ? "Remediating…" : "Remediate Run"}
+          <//>
           <${Button}
             variant="outlined"
             size="small"
@@ -6522,6 +6699,70 @@ function RunHistoryView() {
             </div>
           </div>
         </div>
+
+        <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Run Diagnostics & Recovery</summary>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:8px;">
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Run Evaluation</div>
+              ${selectedRunEvaluation
+                ? html`
+                    <div><b>Status:</b> ${selectedRunEvaluation.status || selectedRunEvaluation.outcome || selectedRunEvaluation.verdict || "unknown"}</div>
+                    ${(selectedRunEvaluation.score ?? selectedRunEvaluation.healthScore ?? selectedRunEvaluation.confidence) !== undefined && html`
+                      <div><b>Score:</b> ${selectedRunEvaluation.score ?? selectedRunEvaluation.healthScore ?? selectedRunEvaluation.confidence}</div>
+                    `}
+                    <div style="margin-top:6px;">${selectedRunEvaluation.summary || selectedRunEvaluation.reason || selectedRunEvaluation.recommendation || "Evaluation data loaded."}</div>
+                    ${Array.isArray(selectedRunEvaluation.issues) && selectedRunEvaluation.issues.slice(0, 3).map((issue, index) => html`
+                      <div key=${`evaluation-issue-${index}`} style="margin-top:6px;color:#fcd34d;">
+                        ${(typeof issue === "string" ? issue : issue?.summary || issue?.message || issue?.reason || issue?.title || "").trim() || "Issue recorded"}
+                      </div>
+                    `)}
+                  `
+                : html`<div style="opacity:0.6;">No evaluation recorded for this run.</div>`}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Run Forensics</div>
+              ${selectedRunForensics
+                ? html`
+                    <div>${selectedRunForensics.summary || selectedRunForensics.reason || selectedRunForensics.status || "Forensics data loaded."}</div>
+                    ${Array.isArray(selectedRunForensics.failedNodes) && selectedRunForensics.failedNodes.length > 0 && html`
+                      <div style="margin-top:6px;"><b>Failed Nodes:</b> ${selectedRunForensics.failedNodes.slice(0, 3).map((entry) => String(entry?.nodeId || entry?.id || entry)).join(", ")}</div>
+                    `}
+                    ${Array.isArray(selectedRunForensics.artifacts) && selectedRunForensics.artifacts.length > 0 && html`
+                      <div style="margin-top:6px;"><b>Artifacts:</b> ${selectedRunForensics.artifacts.slice(0, 3).map((entry) => String(entry?.path || entry?.label || entry?.name || entry)).join(", ")}</div>
+                    `}
+                    ${Array.isArray(selectedRunForensics.trace) && selectedRunForensics.trace.slice(0, 3).map((entry, index) => html`
+                      <div key=${`forensics-trace-${index}`} style="margin-top:6px;color:#bfdbfe;">
+                        ${(typeof entry === "string" ? entry : entry?.summary || entry?.message || entry?.reason || entry?.eventType || "").trim() || "Trace event"}
+                      </div>
+                    `)}
+                  `
+                : html`<div style="opacity:0.6;">No forensics snapshot recorded for this run.</div>`}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Run Snapshots</div>
+              ${selectedRunSnapshots.length === 0
+                ? html`<div style="opacity:0.6;">No snapshots recorded.</div>`
+                : selectedRunSnapshots.slice(0, 6).map((entry, index) => html`
+                    <div key=${`snapshot-${index}`} style="margin-bottom:8px;">
+                      <div><b>${entry?.snapshotId || entry?.id || `snapshot-${index + 1}`}</b></div>
+                      <div style="opacity:0.8;">${entry?.status || entry?.result || "saved"}${entry?.createdAt || entry?.timestamp ? ` · ${entry.createdAt || entry.timestamp}` : ""}</div>
+                    </div>
+                  `)}
+              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+                <${Button} variant="outlined" size="small" onClick=${() => captureRunSnapshot(selectedRun.runId)} disabled=${runActionBusy === "snapshot"}>
+                  Capture Snapshot
+                <//>
+                <${Button} variant="outlined" size="small" onClick=${() => restoreRunSnapshot(selectedRun.runId)} disabled=${runActionBusy === "restore" || selectedRunSnapshots.length === 0}>
+                  Restore Snapshot
+                <//>
+                <${Button} variant="outlined" size="small" color="warning" onClick=${() => remediateRun(selectedRun.runId)} disabled=${runActionBusy === "remediate"}>
+                  Remediate Run
+                <//>
+              </div>
+            </div>
+          </div>
+        </details>
 
         <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
           <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Team Coordination (${Number(teamSummary?.rosterCount || teamRoster.length || 0)} members · ${Number(teamSummary?.taskCount || teamTasks.length || 0)} tasks)</summary>
@@ -7158,6 +7399,61 @@ function RunHistoryView() {
           <div style="font-size:20px;font-weight:700;line-height:1.2;color:${runMetrics.stuckCount > 0 ? "#fbbf24" : "#34d399"};">${runMetrics.stuckCount}</div>
           <div style="font-size:11px;opacity:0.6;">Potential intervention</div>
         </div>
+      </div>
+
+      <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:10px;padding:12px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="wf-badge" style="background:#38bdf820;color:#7dd3fc;">Operator Inbox</span>
+              <span class="wf-runs-count">${operatorInboxItems.length} open item(s)</span>
+            </div>
+            <div style="font-size:12px;color:var(--color-text-secondary,#8b95a5);margin-top:4px;">
+              Pending workflow approvals plus waiting or stalled harness runs
+            </div>
+          </div>
+          <${Button} variant="text" size="small" onClick=${() => loadApprovals(approvalStatusFilter)} disabled=${approvalQueueLoading}>
+            ${approvalQueueLoading ? "Refreshing…" : "Refresh Inbox"}
+          <//>
+        </div>
+        ${operatorInboxItems.length === 0
+          ? html`<div style="font-size:12px;color:var(--color-text-secondary,#8b95a5);">No operator inbox items right now.</div>`
+          : html`
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                ${operatorInboxItems.map((item) => html`
+                  <div key=${item.key} style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <span class="wf-badge" style="background:${item.kind === "approval" ? "#f59e0b24" : "#a855f720"};color:${item.kind === "approval" ? "#fbbf24" : "#d8b4fe"};">
+                          ${item.kind === "approval" ? "approval" : "harness attention"}
+                        </span>
+                        <span class="wf-badge">${item.state || "unknown"}</span>
+                        <span style="font-size:12px;font-weight:600;color:#e5e7eb;">${item.label}</span>
+                      </div>
+                      <div style="font-size:11px;color:#93c5fd;">
+                        ${item.createdAt ? `${formatDate(item.createdAt)} (${formatRelative(item.createdAt)})` : "queued now"}
+                      </div>
+                    </div>
+                    <div style="margin-top:6px;font-size:12px;color:var(--color-text-secondary,#cbd5e1);line-height:1.6;">
+                      ${item.detail || "No additional detail recorded."}
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+                      <${Button} variant="outlined" size="small" onClick=${() => openOperatorInboxItem(item)}>
+                        ${item.kind === "approval" ? "Open Target" : "Open Harness Monitor"}
+                      <//>
+                      ${item.kind === "approval" && html`
+                        <${Button} variant="contained" size="small" color="success" onClick=${() => resolveQueuedApproval(item.request, "approved")}>
+                          Approve Request
+                        <//>
+                        <${Button} variant="outlined" size="small" color="warning" onClick=${() => resolveQueuedApproval(item.request, "denied")}>
+                          Deny Request
+                        <//>
+                      `}
+                    </div>
+                  </div>
+                `)}
+              </div>
+            `}
       </div>
 
       <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:10px;padding:12px;margin-bottom:12px;">

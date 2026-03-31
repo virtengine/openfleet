@@ -3233,6 +3233,34 @@ select.input {
   }
 }
 
+@media (max-width: 480px) {
+  .dashboard-shell {
+    gap: 14px;
+    padding: 6px 0 14px;
+  }
+
+  .dashboard-header-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .dashboard-card {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .dashboard-actions-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .dashboard-action-btn {
+    min-height: 108px;
+    padding: 14px;
+    border-radius: 14px;
+  }
+}
+
 /* ─── Command History Dropdown ─── */
 .cmd-history-dropdown {
   position: absolute;

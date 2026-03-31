@@ -481,28 +481,28 @@ function syncAgentEndpointPortEnv(port) {
   process.env.AGENT_ENDPOINT_PORT = value;
 }
 
-let workflowAutomationEnabled = false;
-let workflowEventDedupWindowMs = 15_000;
-const workflowEventDedup = new Map();
-const workflowTaskStatusSnapshot = new Map();
-let workflowAutomationEngine = null;
-let workflowAutomationInitPromise = null;
-let workflowAutomationInitDone = false;
-let workflowAutomationReadyLogged = false;
-let workflowAutomationUnavailableLogged = false;
-let workflowConflictResolverPausedLogged = false;
-let workflowTaskReconcilePausedLogged = false;
-let workflowTaskReconcileInFlight = false;
-let workflowTaskReconcileLastAt = 0;
-const WORKFLOW_TASK_RECONCILE_MIN_INTERVAL_MS = 45 * 1000;
+var workflowAutomationEnabled = false;
+var workflowEventDedupWindowMs = 15_000;
+var workflowEventDedup = new Map();
+var workflowTaskStatusSnapshot = new Map();
+var workflowAutomationEngine = null;
+var workflowAutomationInitPromise = null;
+var workflowAutomationInitDone = false;
+var workflowAutomationReadyLogged = false;
+var workflowAutomationUnavailableLogged = false;
+var workflowConflictResolverPausedLogged = false;
+var workflowTaskReconcilePausedLogged = false;
+var workflowTaskReconcileInFlight = false;
+var workflowTaskReconcileLastAt = 0;
+var WORKFLOW_TASK_RECONCILE_MIN_INTERVAL_MS = 45 * 1000;
 
 /**
  * Cache of module names that have an enabled workflow replacement.
  * Populated once after the workflow engine loads.
  * Used by `isWorkflowReplacingModule()` to let legacy code yield.
  */
-const _workflowReplacesModuleCache = new Set();
-let _workflowReplacesModuleCachePopulated = false;
+var _workflowReplacesModuleCache = new Set();
+var _workflowReplacesModuleCachePopulated = false;
 
 /**
  * Check whether a workflow replaces a legacy module and workflow automation is

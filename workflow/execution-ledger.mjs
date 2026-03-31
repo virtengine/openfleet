@@ -16,6 +16,29 @@ const STATE_LEDGER_SCHEMA_VERSION = 1;
 const STATE_LEDGER_BUSY_TIMEOUT_MS = 5_000;
 const _stateLedgerCache = new Map();
 
+function isLikelyTestRuntime() {
+  if (process.env.BOSUN_TEST_SANDBOX === "1") return true;
+  if (process.env.VITEST) return true;
+  if (process.env.VITEST_POOL_ID) return true;
+  if (process.env.VITEST_WORKER_ID) return true;
+  if (process.env.JEST_WORKER_ID) return true;
+  if (process.env.NODE_ENV === "test") return true;
+  const argv = Array.isArray(process.argv) ? process.argv.join(" ").toLowerCase() : "";
+  return argv.includes("vitest") || argv.includes("--test");
+}
+
+function isPathInside(parentPath, childPath) {
+  const parent = resolve(String(parentPath || ""));
+  const child = resolve(String(childPath || ""));
+  if (!parent || !child) return false;
+  if (process.platform === "win32") {
+    const normalizedParent = parent.toLowerCase();
+    const normalizedChild = child.toLowerCase();
+    return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}\\`) || normalizedChild.startsWith(`${normalizedParent}/`);
+  }
+  return child === parent || child.startsWith(`${parent}/`);
+}
+
 function normalizeLedgerDocument(runId, doc = {}) {
   const governanceState = extractGovernanceState(doc);
   return {
@@ -349,6 +372,12 @@ function resolveOwnedStateLedgerPath(runsDir) {
   }
   const explicit = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
   if (explicit) {
+    if (isLikelyTestRuntime()) {
+      const sandboxRoot = String(process.env.BOSUN_TEST_SANDBOX_ROOT || "").trim();
+      if (!sandboxRoot || !isPathInside(sandboxRoot, normalizedRunsDir)) {
+        return null;
+      }
+    }
     return explicit === ":memory:" ? explicit : resolve(explicit);
   }
   return null;

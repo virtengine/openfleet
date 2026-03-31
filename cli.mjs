@@ -941,8 +941,7 @@ async function daemonStatus() {
       }
       console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
-      const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
-      const existingMonitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
+      const existingMonitorOwner = detectExistingMonitorLockOwner();
       if (existingMonitorOwner) {
         console.log(
           `  bosun daemon is not running in daemon mode, but bosun monitor is active (PID ${existingMonitorOwner.pid}).`,
@@ -2320,8 +2319,7 @@ async function main() {
     process.exit(0);
   }
 
-  const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
-  const existingOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
+  const existingOwner = detectExistingMonitorLockOwner();
   if (existingOwner) {
     console.log(
       `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,

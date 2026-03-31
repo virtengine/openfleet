@@ -3445,6 +3445,188 @@
       ]
     },
     {
+      "id": "template-pr-review-quality-striker",
+      "name": "PR Review Quality Striker",
+      "description": "Reactive PR review sweeper that consolidates actionable review signals from reviews, comments, and failing quality checks, then dispatches an agent to propose or apply fixes.",
+      "category": "github",
+      "categoryLabel": "GitHub",
+      "categoryIcon": ":git:",
+      "categoryOrder": 1,
+      "tags": [
+        "github",
+        "pr",
+        "review",
+        "quality",
+        "automation"
+      ],
+      "nodeCount": 6,
+      "edgeCount": 5,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.pr_event",
+      "variables": {
+        "intervalMs": 1800000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-31T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "github",
+          "pr",
+          "review",
+          "quality",
+          "automation"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.pr_event",
+          "label": "PR Review Requested",
+          "config": {
+            "event": "review_requested",
+            "events": [
+              "review_requested",
+              "changes_requested",
+              "approved",
+              "opened"
+            ]
+          },
+          "position": {
+            "x": 220,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "trigger-review-comment",
+          "type": "trigger.event",
+          "label": "Review Comment Event",
+          "config": {
+            "eventType": "github:pull_request_review_comment"
+          },
+          "position": {
+            "x": 520,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "trigger-fallback",
+          "type": "trigger.schedule",
+          "label": "Fallback Sweep",
+          "config": {
+            "intervalMs": "{{intervalMs}}"
+          },
+          "position": {
+            "x": 820,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fetch-review-signals",
+          "type": "action.run_command",
+          "label": "Fetch Review Signals",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0); const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim(); const DIRECT_PR_URL=String(process.env.DIRECT_PR_URL||'').trim(); const DIRECT_EVENT=String(process.env.DIRECT_EVENT||'').trim(); const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']); const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const SONAR_CHECK_RE=/(^|[^a-z])(sonarqube|sonarcloud|sonar)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function safeGhJson(args,fallback,runner){try{const invoke=typeof runner==='function'?runner:runGh;const out=invoke(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=readCheckName(check);const state=String(check?.state||check?.conclusion||'').trim().toUpperCase();const bucket=String(check?.bucket||'').trim().toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const filePath=String(file?.filename||file?.path||'').trim();return filePath?{path:filePath,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback,runner){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{},runner);const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[],runner).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[],runner).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[],runner).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[],runner).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{},runner);const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const labels=(Array.isArray(pr?.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const pendingChecks=checks.filter((check)=>QUALITY_PENDING_STATES.has(String(check?.state||'').toUpperCase()));const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} function isActionableText(value){const text=String(value||'').trim();if(!text)return false;return /(fix|please|should|must|needs?|issue|bug|error|warning|sonar|lint|review|nit|suggest|change|request|fail)/i.test(text);} function collectActionableReviewSignals(prDigest){const digest=prDigest&&typeof prDigest==='object'?prDigest:{};const reviewComments=Array.isArray(digest.reviewComments)?digest.reviewComments:[];const reviews=Array.isArray(digest.reviews)?digest.reviews:[];const issueComments=Array.isArray(digest.issueComments)?digest.issueComments:[];const checks=Array.isArray(digest.checks)?digest.checks:[];const commentFindings=[];for(const comment of reviewComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'review_comment',path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||null,author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}for(const review of reviews){const state=String(review?.state||'').trim().toUpperCase();if(state!=='CHANGES_REQUESTED'&&!isActionableText(review?.body))continue;commentFindings.push({kind:'review',state:state||null,author:String(review?.author?.login||'').trim()||null,body:String(review?.body||'').trim(),url:String(review?.url||'').trim()||null});}for(const comment of issueComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'issue_comment',author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const sonarChecks=failingChecks.filter((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||'')));const qualityChecks=failingChecks.map((check)=>({name:readCheckName(check),state:String(check?.state||check?.bucket||'').trim()||null,workflow:String(check?.workflow||'').trim()||null}));const summary=['commentFindings='+commentFindings.length,'qualityChecks='+qualityChecks.length,sonarChecks.length?'sonarChecks='+sonarChecks.length:''].filter(Boolean).join(' ');return {commentFindings,qualityChecks,sonarChecks,summary};} function appendActionable(target,items,sourceKind){for(const item of Array.isArray(items)?items:[]){target.push({...item,sourceKind});}} const modeExpression=\"mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'\"; const mode=DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'; const repo=DIRECT_REPO; const prNumber=DIRECT_PR_NUMBER; const prDigest=repo&&prNumber>0?collectPrDigest(repo,prNumber,{url:DIRECT_PR_URL},runGh):{core:{number:prNumber||null,url:DIRECT_PR_URL||null},body:'',files:[],issueComments:[],reviews:[],reviewComments:[],checks:[],digestSummary:''}; const signals=collectActionableReviewSignals(prDigest); const actionable=[]; appendActionable(actionable,signals.commentFindings,'comment'); appendActionable(actionable,signals.qualityChecks,'quality'); const sourceKind=DIRECT_EVENT?'review_event':'schedule'; process.stdout.write(JSON.stringify({mode,sourceKind,repo,prNumber,prUrl:DIRECT_PR_URL,prDigest,signals,commentFindings:signals.commentFindings,qualityChecks:signals.qualityChecks,actionable}));"
+            ],
+            "env": {
+              "DIRECT_PR_NUMBER": "{{$data?.prNumber || 0}}",
+              "DIRECT_REPO": "{{$data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+              "DIRECT_PR_URL": "{{$data?.prUrl || ''}}",
+              "DIRECT_EVENT": "{{$data?.event || $data?.eventType || ''}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 520,
+            "y": 230
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-review-striker",
+          "type": "action.run_agent",
+          "label": "Run Review Striker",
+          "config": {
+            "prompt": "Use commentFindings and qualityChecks to identify the smallest actionable repair set. Use prDigest with the PR body, files, issue comments, reviews, review comments, and checks to ground the response. Prioritize concrete review feedback over speculative cleanup.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "failOnError": false
+          },
+          "position": {
+            "x": 520,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end",
+          "type": "flow.end",
+          "label": "End Review Striker",
+          "config": {
+            "status": "completed",
+            "message": "PR review quality striker finished for PR {{prNumber}}."
+          },
+          "position": {
+            "x": 520,
+            "y": 520
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->fetch-review-signals",
+          "source": "trigger",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger-review-comment->fetch-review-signals",
+          "source": "trigger-review-comment",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger-fallback->fetch-review-signals",
+          "source": "trigger-fallback",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fetch-review-signals->run-review-striker",
+          "source": "fetch-review-signals",
+          "target": "run-review-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-review-striker->end",
+          "source": "run-review-striker",
+          "target": "end",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-pr-security-fix-single",
       "name": "PR Security Fix Agent (Single PR)",
       "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
@@ -4951,6 +5133,138 @@
           "id": "push-auto->notify-resolved",
           "source": "push-auto",
           "target": "notify-resolved",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-sonarqube-pr-striker",
+      "name": "SonarQube PR Striker",
+      "description": "Scheduled PR quality sweep that reacts to failing GitHub-native Sonar checks and prepares a repair packet grounded in the shared PR digest.",
+      "category": "github",
+      "categoryLabel": "GitHub",
+      "categoryIcon": ":git:",
+      "categoryOrder": 1,
+      "tags": [
+        "github",
+        "pr",
+        "sonar",
+        "quality",
+        "automation"
+      ],
+      "nodeCount": 4,
+      "edgeCount": 3,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "intervalMs": 1800000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-31T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "github",
+          "pr",
+          "sonar",
+          "quality",
+          "automation"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Scheduled Sonar Sweep",
+          "config": {
+            "intervalMs": "{{intervalMs}}"
+          },
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fetch-sonar-signals",
+          "type": "action.run_command",
+          "label": "Fetch Sonar Signals",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0); const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim(); const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']); const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const SONAR_CHECK_RE=/(^|[^a-z])(sonarqube|sonarcloud|sonar)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function safeGhJson(args,fallback,runner){try{const invoke=typeof runner==='function'?runner:runGh;const out=invoke(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=readCheckName(check);const state=String(check?.state||check?.conclusion||'').trim().toUpperCase();const bucket=String(check?.bucket||'').trim().toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const filePath=String(file?.filename||file?.path||'').trim();return filePath?{path:filePath,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback,runner){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{},runner);const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[],runner).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[],runner).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[],runner).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[],runner).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{},runner);const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const labels=(Array.isArray(pr?.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const pendingChecks=checks.filter((check)=>QUALITY_PENDING_STATES.has(String(check?.state||'').toUpperCase()));const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} function isActionableText(value){const text=String(value||'').trim();if(!text)return false;return /(fix|please|should|must|needs?|issue|bug|error|warning|sonar|lint|review|nit|suggest|change|request|fail)/i.test(text);} function collectActionableReviewSignals(prDigest){const digest=prDigest&&typeof prDigest==='object'?prDigest:{};const reviewComments=Array.isArray(digest.reviewComments)?digest.reviewComments:[];const reviews=Array.isArray(digest.reviews)?digest.reviews:[];const issueComments=Array.isArray(digest.issueComments)?digest.issueComments:[];const checks=Array.isArray(digest.checks)?digest.checks:[];const commentFindings=[];for(const comment of reviewComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'review_comment',path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||null,author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}for(const review of reviews){const state=String(review?.state||'').trim().toUpperCase();if(state!=='CHANGES_REQUESTED'&&!isActionableText(review?.body))continue;commentFindings.push({kind:'review',state:state||null,author:String(review?.author?.login||'').trim()||null,body:String(review?.body||'').trim(),url:String(review?.url||'').trim()||null});}for(const comment of issueComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'issue_comment',author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const sonarChecks=failingChecks.filter((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||'')));const qualityChecks=failingChecks.map((check)=>({name:readCheckName(check),state:String(check?.state||check?.bucket||'').trim()||null,workflow:String(check?.workflow||'').trim()||null}));const summary=['commentFindings='+commentFindings.length,'qualityChecks='+qualityChecks.length,sonarChecks.length?'sonarChecks='+sonarChecks.length:''].filter(Boolean).join(' ');return {commentFindings,qualityChecks,sonarChecks,summary};} function hasSonarFailure(signals){return Array.isArray(signals?.sonarChecks)&&signals.sonarChecks.length>0;} const repo=DIRECT_REPO; const prNumber=DIRECT_PR_NUMBER; const prDigest=repo&&prNumber>0?collectPrDigest(repo,prNumber,{},runGh):{core:{number:prNumber||null},body:'',files:[],issueComments:[],reviews:[],reviewComments:[],checks:[],digestSummary:''}; const signals=collectActionableReviewSignals(prDigest); const hasFailure=hasSonarFailure(signals); if(signals.sonarChecks.length===0){process.stdout.write(JSON.stringify({repo,prNumber,hasSonarFailure:hasFailure,sonarChecks:signals.sonarChecks,prDigest,signals}));process.exit(0);} process.stdout.write(JSON.stringify({repo,prNumber,hasSonarFailure:hasFailure,sonarChecks:signals.sonarChecks,prDigest,signals}));"
+            ],
+            "env": {
+              "DIRECT_PR_NUMBER": "{{$data?.prNumber || 0}}",
+              "DIRECT_REPO": "{{$data?.repo || $data?.repoSlug || $data?.repository || ''}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 420,
+            "y": 210
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-sonar-striker",
+          "type": "action.run_agent",
+          "label": "Run Sonar Striker",
+          "config": {
+            "prompt": "Use GitHub-native Sonar checks as the source of truth. Analyze sonarChecks plus prDigest to decide whether the PR needs a Sonar-focused repair pass and summarize the actionable issues.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "failOnError": false
+          },
+          "position": {
+            "x": 420,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end",
+          "type": "flow.end",
+          "label": "End Sonar Striker",
+          "config": {
+            "status": "completed",
+            "message": "Sonar striker finished for PR {{prNumber}}."
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->fetch-sonar-signals",
+          "source": "trigger",
+          "target": "fetch-sonar-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fetch-sonar-signals->run-sonar-striker",
+          "source": "fetch-sonar-signals",
+          "target": "run-sonar-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-sonar-striker->end",
+          "source": "run-sonar-striker",
+          "target": "end",
           "sourcePort": "default"
         }
       ]
@@ -6558,7 +6872,7 @@
           "config": {
             "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCreate a descriptive test commit message that names the behavior or surface covered.\nExample: \"test: cover portal login validation\"",
             "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
+            "timeoutMs": "{{testTimeoutMs}}"
           },
           "position": {
             "x": 400,
@@ -10481,7 +10795,7 @@
       "edgeCount": 36,
       "recommended": false,
       "enabled": true,
-      "trigger": "trigger.manual",
+      "trigger": "trigger.task_available",
       "variables": {
         "taskId": "",
         "worktreePath": "",
@@ -10517,9 +10831,13 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Continuation Loop",
-          "config": {},
+          "type": "trigger.task_available",
+          "label": "Task Available",
+          "config": {
+            "maxParallel": 1,
+            "pollIntervalMs": "{{pollIntervalMs}}",
+            "status": "inprogress"
+          },
           "position": {
             "x": 420,
             "y": 60
@@ -11362,7 +11680,7 @@
       "edgeCount": 36,
       "recommended": false,
       "enabled": true,
-      "trigger": "trigger.manual",
+      "trigger": "trigger.task_available",
       "variables": {
         "taskId": "",
         "worktreePath": "",
@@ -11398,9 +11716,13 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Continuation Loop",
-          "config": {},
+          "type": "trigger.task_available",
+          "label": "Task Available",
+          "config": {
+            "maxParallel": 1,
+            "pollIntervalMs": "{{pollIntervalMs}}",
+            "status": "inprogress"
+          },
           "position": {
             "x": 420,
             "y": 60
@@ -14690,8 +15012,8 @@
         "resilience",
         "automation"
       ],
-      "nodeCount": 15,
-      "edgeCount": 16,
+      "nodeCount": 16,
+      "edgeCount": 17,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
@@ -14904,6 +15226,22 @@
           ]
         },
         {
+          "id": "clear-repair-blocked-success",
+          "type": "action.set_variable",
+          "label": "Clear Repair Block",
+          "config": {
+            "key": "repairBlocked",
+            "value": "false"
+          },
+          "position": {
+            "x": 250,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "handoff-pr-progressor",
           "type": "action.execute_workflow",
           "label": "Dispatch PR Progressor",
@@ -15081,8 +15419,14 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "mark-inreview->handoff-pr-progressor",
+          "id": "mark-inreview->clear-repair-blocked-success",
           "source": "mark-inreview",
+          "target": "clear-repair-blocked-success",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-repair-blocked-success->handoff-pr-progressor",
+          "source": "clear-repair-blocked-success",
           "target": "handoff-pr-progressor",
           "sourcePort": "default"
         },
@@ -27403,6 +27747,176 @@
       }
     },
     {
+      "id": "wf-pr-review-quality-striker",
+      "name": "PR Review Quality Striker",
+      "description": "Reactive PR review sweeper that consolidates actionable review signals from reviews, comments, and failing quality checks, then dispatches an agent to propose or apply fixes.",
+      "category": "github",
+      "enabled": true,
+      "nodeCount": 6,
+      "trigger": "trigger.pr_event",
+      "variables": {
+        "intervalMs": 1800000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.pr_event",
+          "label": "PR Review Requested",
+          "config": {
+            "event": "review_requested",
+            "events": [
+              "review_requested",
+              "changes_requested",
+              "approved",
+              "opened"
+            ]
+          },
+          "position": {
+            "x": 220,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "trigger-review-comment",
+          "type": "trigger.event",
+          "label": "Review Comment Event",
+          "config": {
+            "eventType": "github:pull_request_review_comment"
+          },
+          "position": {
+            "x": 520,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "trigger-fallback",
+          "type": "trigger.schedule",
+          "label": "Fallback Sweep",
+          "config": {
+            "intervalMs": "{{intervalMs}}"
+          },
+          "position": {
+            "x": 820,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fetch-review-signals",
+          "type": "action.run_command",
+          "label": "Fetch Review Signals",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0); const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim(); const DIRECT_PR_URL=String(process.env.DIRECT_PR_URL||'').trim(); const DIRECT_EVENT=String(process.env.DIRECT_EVENT||'').trim(); const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']); const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const SONAR_CHECK_RE=/(^|[^a-z])(sonarqube|sonarcloud|sonar)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function safeGhJson(args,fallback,runner){try{const invoke=typeof runner==='function'?runner:runGh;const out=invoke(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=readCheckName(check);const state=String(check?.state||check?.conclusion||'').trim().toUpperCase();const bucket=String(check?.bucket||'').trim().toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const filePath=String(file?.filename||file?.path||'').trim();return filePath?{path:filePath,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback,runner){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{},runner);const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[],runner).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[],runner).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[],runner).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[],runner).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{},runner);const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const labels=(Array.isArray(pr?.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const pendingChecks=checks.filter((check)=>QUALITY_PENDING_STATES.has(String(check?.state||'').toUpperCase()));const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} function isActionableText(value){const text=String(value||'').trim();if(!text)return false;return /(fix|please|should|must|needs?|issue|bug|error|warning|sonar|lint|review|nit|suggest|change|request|fail)/i.test(text);} function collectActionableReviewSignals(prDigest){const digest=prDigest&&typeof prDigest==='object'?prDigest:{};const reviewComments=Array.isArray(digest.reviewComments)?digest.reviewComments:[];const reviews=Array.isArray(digest.reviews)?digest.reviews:[];const issueComments=Array.isArray(digest.issueComments)?digest.issueComments:[];const checks=Array.isArray(digest.checks)?digest.checks:[];const commentFindings=[];for(const comment of reviewComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'review_comment',path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||null,author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}for(const review of reviews){const state=String(review?.state||'').trim().toUpperCase();if(state!=='CHANGES_REQUESTED'&&!isActionableText(review?.body))continue;commentFindings.push({kind:'review',state:state||null,author:String(review?.author?.login||'').trim()||null,body:String(review?.body||'').trim(),url:String(review?.url||'').trim()||null});}for(const comment of issueComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'issue_comment',author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const sonarChecks=failingChecks.filter((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||'')));const qualityChecks=failingChecks.map((check)=>({name:readCheckName(check),state:String(check?.state||check?.bucket||'').trim()||null,workflow:String(check?.workflow||'').trim()||null}));const summary=['commentFindings='+commentFindings.length,'qualityChecks='+qualityChecks.length,sonarChecks.length?'sonarChecks='+sonarChecks.length:''].filter(Boolean).join(' ');return {commentFindings,qualityChecks,sonarChecks,summary};} function appendActionable(target,items,sourceKind){for(const item of Array.isArray(items)?items:[]){target.push({...item,sourceKind});}} const modeExpression=\"mode:DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'\"; const mode=DIRECT_REPO&&DIRECT_PR_NUMBER>0?'event':'schedule'; const repo=DIRECT_REPO; const prNumber=DIRECT_PR_NUMBER; const prDigest=repo&&prNumber>0?collectPrDigest(repo,prNumber,{url:DIRECT_PR_URL},runGh):{core:{number:prNumber||null,url:DIRECT_PR_URL||null},body:'',files:[],issueComments:[],reviews:[],reviewComments:[],checks:[],digestSummary:''}; const signals=collectActionableReviewSignals(prDigest); const actionable=[]; appendActionable(actionable,signals.commentFindings,'comment'); appendActionable(actionable,signals.qualityChecks,'quality'); const sourceKind=DIRECT_EVENT?'review_event':'schedule'; process.stdout.write(JSON.stringify({mode,sourceKind,repo,prNumber,prUrl:DIRECT_PR_URL,prDigest,signals,commentFindings:signals.commentFindings,qualityChecks:signals.qualityChecks,actionable}));"
+            ],
+            "env": {
+              "DIRECT_PR_NUMBER": "{{$data?.prNumber || 0}}",
+              "DIRECT_REPO": "{{$data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+              "DIRECT_PR_URL": "{{$data?.prUrl || ''}}",
+              "DIRECT_EVENT": "{{$data?.event || $data?.eventType || ''}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 520,
+            "y": 230
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-review-striker",
+          "type": "action.run_agent",
+          "label": "Run Review Striker",
+          "config": {
+            "prompt": "Use commentFindings and qualityChecks to identify the smallest actionable repair set. Use prDigest with the PR body, files, issue comments, reviews, review comments, and checks to ground the response. Prioritize concrete review feedback over speculative cleanup.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "failOnError": false
+          },
+          "position": {
+            "x": 520,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end",
+          "type": "flow.end",
+          "label": "End Review Striker",
+          "config": {
+            "status": "completed",
+            "message": "PR review quality striker finished for PR {{prNumber}}."
+          },
+          "position": {
+            "x": 520,
+            "y": 520
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->fetch-review-signals",
+          "source": "trigger",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger-review-comment->fetch-review-signals",
+          "source": "trigger-review-comment",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger-fallback->fetch-review-signals",
+          "source": "trigger-fallback",
+          "target": "fetch-review-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fetch-review-signals->run-review-striker",
+          "source": "fetch-review-signals",
+          "target": "run-review-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-review-striker->end",
+          "source": "run-review-striker",
+          "target": "end",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-09T12:00:00.000Z",
+        "updatedAt": "2026-03-09T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-pr-review-quality-striker",
+          "templateName": "PR Review Quality Striker",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-pr-security-fix-single",
       "name": "PR Security Fix Agent (Single PR)",
       "description": "Fixes one Bosun-attached PR with CodeQL or code-scanning failures using a dedicated long-running agent (up to 2 hours). Programmatically clones the target repo and checks out the PR's HEAD branch into a temp worktree, runs the agent there, then pushes fixes back with --force-with-lease. The agent NEVER manages git setup or push.",
@@ -27748,8 +28262,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-09T12:00:00.000Z",
-        "updatedAt": "2026-03-09T12:00:00.000Z",
+        "createdAt": "2026-03-10T12:00:00.000Z",
+        "updatedAt": "2026-03-10T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-security-fix-single",
           "templateName": "PR Security Fix Agent (Single PR)",
@@ -28012,8 +28526,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-10T12:00:00.000Z",
-        "updatedAt": "2026-03-10T12:00:00.000Z",
+        "createdAt": "2026-03-11T12:00:00.000Z",
+        "updatedAt": "2026-03-11T12:00:00.000Z",
         "templateState": {
           "templateId": "template-pr-triage",
           "templateName": "PR Triage & Labels",
@@ -28188,8 +28702,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-11T12:00:00.000Z",
-        "updatedAt": "2026-03-11T12:00:00.000Z",
+        "createdAt": "2026-03-12T12:00:00.000Z",
+        "updatedAt": "2026-03-12T12:00:00.000Z",
         "templateState": {
           "templateId": "template-release-drafter",
           "templateName": "Release Drafter",
@@ -28346,8 +28860,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-12T12:00:00.000Z",
-        "updatedAt": "2026-03-12T12:00:00.000Z",
+        "createdAt": "2026-03-13T12:00:00.000Z",
+        "updatedAt": "2026-03-13T12:00:00.000Z",
         "templateState": {
           "templateId": "template-review-agent",
           "templateName": "Review Agent",
@@ -28798,11 +29312,131 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-13T12:00:00.000Z",
-        "updatedAt": "2026-03-13T12:00:00.000Z",
+        "createdAt": "2026-03-14T12:00:00.000Z",
+        "updatedAt": "2026-03-14T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sdk-conflict-resolver",
           "templateName": "SDK Conflict Resolver",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-sonarqube-pr-striker",
+      "name": "SonarQube PR Striker",
+      "description": "Scheduled PR quality sweep that reacts to failing GitHub-native Sonar checks and prepares a repair packet grounded in the shared PR digest.",
+      "category": "github",
+      "enabled": true,
+      "nodeCount": 4,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "intervalMs": 1800000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Scheduled Sonar Sweep",
+          "config": {
+            "intervalMs": "{{intervalMs}}"
+          },
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fetch-sonar-signals",
+          "type": "action.run_command",
+          "label": "Fetch Sonar Signals",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "const DIRECT_PR_NUMBER=Number(process.env.DIRECT_PR_NUMBER||0); const DIRECT_REPO=String(process.env.DIRECT_REPO||'').trim(); const QUALITY_FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE','FAIL']); const QUALITY_PENDING_STATES=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const SONAR_CHECK_RE=/(^|[^a-z])(sonarqube|sonarcloud|sonar)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function safeGhJson(args,fallback,runner){try{const invoke=typeof runner==='function'?runner:runGh;const out=invoke(args);return out?JSON.parse(out):fallback;}catch{return fallback;}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function compactUser(user){const login=String(user?.login||user?.name||'').trim();return login?{login,url:String(user?.url||user?.html_url||'').trim()||null}:null;} function compactCheck(check){const name=readCheckName(check);const state=String(check?.state||check?.conclusion||'').trim().toUpperCase();const bucket=String(check?.bucket||'').trim().toUpperCase();if(!name&&!state&&!bucket)return null;return {name:name||null,state:state||null,bucket:bucket||null,workflow:String(check?.workflowName||'').trim()||null};} function compactIssueComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactReview(review){return {id:Number(review?.id||0)||null,author:compactUser(review?.user||review?.author),state:String(review?.state||'').trim()||null,submittedAt:String(review?.submitted_at||review?.submittedAt||'').trim()||null,body:truncateText(review?.body,1200)};} function compactReviewComment(comment){return {id:Number(comment?.id||0)||null,author:compactUser(comment?.user||comment?.author),path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||Number(comment?.original_line||0)||null,side:String(comment?.side||'').trim()||null,url:String(comment?.html_url||comment?.url||'').trim()||null,createdAt:String(comment?.created_at||comment?.createdAt||'').trim()||null,body:truncateText(comment?.body,1200)};} function compactFile(file){const filePath=String(file?.filename||file?.path||'').trim();return filePath?{path:filePath,status:String(file?.status||'').trim()||null,additions:Number(file?.additions||0)||0,deletions:Number(file?.deletions||0)||0,changes:Number(file?.changes||0)||0}:null;} function collectPrDigest(repo,number,fallback,runner){const pr=safeGhJson(['pr','view',String(number),'--repo',repo,'--json','number,title,body,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,author,labels,reviewDecision'],{},runner);const issueComments=safeGhJson(['api','repos/'+repo+'/issues/'+number+'/comments?per_page=100'],[],runner).map(compactIssueComment).slice(0,40);const reviews=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/reviews?per_page=100'],[],runner).map(compactReview).slice(0,40);const reviewComments=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/comments?per_page=100'],[],runner).map(compactReviewComment).slice(0,60);const files=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/files?per_page=100'],[],runner).map(compactFile).filter(Boolean).slice(0,80);const requested=safeGhJson(['api','repos/'+repo+'/pulls/'+number+'/requested_reviewers'],{},runner);const requestedReviewers=[...(Array.isArray(requested?.users)?requested.users:[]).map(compactUser),...(Array.isArray(requested?.teams)?requested.teams:[]).map((team)=>{const slug=String(team?.slug||team?.name||'').trim();return slug?{team:slug,url:String(team?.html_url||team?.url||'').trim()||null}:null;})].filter(Boolean);const checks=(Array.isArray(pr?.statusCheckRollup)?pr.statusCheckRollup:[]).map(compactCheck).filter(Boolean);const labels=(Array.isArray(pr?.labels)?pr.labels:[]).map((label)=>String(label?.name||label||'').trim()).filter(Boolean);const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const pendingChecks=checks.filter((check)=>QUALITY_PENDING_STATES.has(String(check?.state||'').toUpperCase()));const digestSummary=['PR #'+String(pr?.number||number)+' '+String(pr?.title||fallback?.title||''),'repo='+repo+' branch='+(String(pr?.headRefName||fallback?.branch||'').trim()||'unknown'),'checks='+checks.length+' fail='+failingChecks.length+' pending='+pendingChecks.length,'comments='+issueComments.length+' reviews='+reviews.length+' reviewComments='+reviewComments.length+' files='+files.length,labels.length?'labels='+labels.join(', '):''].filter(Boolean).join('\\n');return {core:{number:Number(pr?.number||number)||number,title:String(pr?.title||fallback?.title||''),url:String(pr?.url||fallback?.url||'').trim()||null,body:truncateText(pr?.body,4000),branch:String(pr?.headRefName||fallback?.branch||'').trim()||null,baseBranch:String(pr?.baseRefName||fallback?.base||'').trim()||null,isDraft:pr?.isDraft===true,mergeable:String(pr?.mergeable||'').trim()||null,author:compactUser(pr?.author),reviewDecision:String(pr?.reviewDecision||'').trim()||null},labels,requestedReviewers,checks,ciSummary:{total:checks.length,failing:failingChecks.length,pending:pendingChecks.length,passing:Math.max(0,checks.length-failingChecks.length-pendingChecks.length)},issueComments,reviews,reviewComments,files,digestSummary};} function isActionableText(value){const text=String(value||'').trim();if(!text)return false;return /(fix|please|should|must|needs?|issue|bug|error|warning|sonar|lint|review|nit|suggest|change|request|fail)/i.test(text);} function collectActionableReviewSignals(prDigest){const digest=prDigest&&typeof prDigest==='object'?prDigest:{};const reviewComments=Array.isArray(digest.reviewComments)?digest.reviewComments:[];const reviews=Array.isArray(digest.reviews)?digest.reviews:[];const issueComments=Array.isArray(digest.issueComments)?digest.issueComments:[];const checks=Array.isArray(digest.checks)?digest.checks:[];const commentFindings=[];for(const comment of reviewComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'review_comment',path:String(comment?.path||'').trim()||null,line:Number(comment?.line||0)||null,author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}for(const review of reviews){const state=String(review?.state||'').trim().toUpperCase();if(state!=='CHANGES_REQUESTED'&&!isActionableText(review?.body))continue;commentFindings.push({kind:'review',state:state||null,author:String(review?.author?.login||'').trim()||null,body:String(review?.body||'').trim(),url:String(review?.url||'').trim()||null});}for(const comment of issueComments){if(!isActionableText(comment?.body))continue;commentFindings.push({kind:'issue_comment',author:String(comment?.author?.login||'').trim()||null,body:String(comment?.body||'').trim(),url:String(comment?.url||'').trim()||null});}const failingChecks=checks.filter((check)=>QUALITY_FAIL_STATES.has(String(check?.state||'').toUpperCase())||QUALITY_FAIL_STATES.has(String(check?.bucket||'').toUpperCase()));const sonarChecks=failingChecks.filter((check)=>SONAR_CHECK_RE.test(String(readCheckName(check)||'')));const qualityChecks=failingChecks.map((check)=>({name:readCheckName(check),state:String(check?.state||check?.bucket||'').trim()||null,workflow:String(check?.workflow||'').trim()||null}));const summary=['commentFindings='+commentFindings.length,'qualityChecks='+qualityChecks.length,sonarChecks.length?'sonarChecks='+sonarChecks.length:''].filter(Boolean).join(' ');return {commentFindings,qualityChecks,sonarChecks,summary};} function hasSonarFailure(signals){return Array.isArray(signals?.sonarChecks)&&signals.sonarChecks.length>0;} const repo=DIRECT_REPO; const prNumber=DIRECT_PR_NUMBER; const prDigest=repo&&prNumber>0?collectPrDigest(repo,prNumber,{},runGh):{core:{number:prNumber||null},body:'',files:[],issueComments:[],reviews:[],reviewComments:[],checks:[],digestSummary:''}; const signals=collectActionableReviewSignals(prDigest); const hasFailure=hasSonarFailure(signals); if(signals.sonarChecks.length===0){process.stdout.write(JSON.stringify({repo,prNumber,hasSonarFailure:hasFailure,sonarChecks:signals.sonarChecks,prDigest,signals}));process.exit(0);} process.stdout.write(JSON.stringify({repo,prNumber,hasSonarFailure:hasFailure,sonarChecks:signals.sonarChecks,prDigest,signals}));"
+            ],
+            "env": {
+              "DIRECT_PR_NUMBER": "{{$data?.prNumber || 0}}",
+              "DIRECT_REPO": "{{$data?.repo || $data?.repoSlug || $data?.repository || ''}}"
+            },
+            "parseJson": true
+          },
+          "position": {
+            "x": 420,
+            "y": 210
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-sonar-striker",
+          "type": "action.run_agent",
+          "label": "Run Sonar Striker",
+          "config": {
+            "prompt": "Use GitHub-native Sonar checks as the source of truth. Analyze sonarChecks plus prDigest to decide whether the PR needs a Sonar-focused repair pass and summarize the actionable issues.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "failOnError": false
+          },
+          "position": {
+            "x": 420,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end",
+          "type": "flow.end",
+          "label": "End Sonar Striker",
+          "config": {
+            "status": "completed",
+            "message": "Sonar striker finished for PR {{prNumber}}."
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->fetch-sonar-signals",
+          "source": "trigger",
+          "target": "fetch-sonar-signals",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fetch-sonar-signals->run-sonar-striker",
+          "source": "fetch-sonar-signals",
+          "target": "run-sonar-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-sonar-striker->end",
+          "source": "run-sonar-striker",
+          "target": "end",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-15T12:00:00.000Z",
+        "updatedAt": "2026-03-15T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-sonarqube-pr-striker",
+          "templateName": "SonarQube PR Striker",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
@@ -29019,8 +29653,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-14T12:00:00.000Z",
-        "updatedAt": "2026-03-14T12:00:00.000Z",
+        "createdAt": "2026-03-16T12:00:00.000Z",
+        "updatedAt": "2026-03-16T12:00:00.000Z",
         "templateState": {
           "templateId": "template-stale-pr-reaper",
           "templateName": "Stale PR Reaper",
@@ -29244,8 +29878,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-15T12:00:00.000Z",
-        "updatedAt": "2026-03-15T12:00:00.000Z",
+        "createdAt": "2026-03-17T12:00:00.000Z",
+        "updatedAt": "2026-03-17T12:00:00.000Z",
         "templateState": {
           "templateId": "template-agent-session-monitor",
           "templateName": "Agent Session Monitor",
@@ -29418,8 +30052,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-16T12:00:00.000Z",
-        "updatedAt": "2026-03-16T12:00:00.000Z",
+        "createdAt": "2026-03-18T12:00:00.000Z",
+        "updatedAt": "2026-03-18T12:00:00.000Z",
         "templateState": {
           "templateId": "template-custom-agent",
           "templateName": "Custom Agent Profile",
@@ -29838,8 +30472,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-17T12:00:00.000Z",
-        "updatedAt": "2026-03-17T12:00:00.000Z",
+        "createdAt": "2026-03-19T12:00:00.000Z",
+        "updatedAt": "2026-03-19T12:00:00.000Z",
         "templateState": {
           "templateId": "template-frontend-agent",
           "templateName": "Frontend Agent",
@@ -30214,8 +30848,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-18T12:00:00.000Z",
-        "updatedAt": "2026-03-18T12:00:00.000Z",
+        "createdAt": "2026-03-20T12:00:00.000Z",
+        "updatedAt": "2026-03-20T12:00:00.000Z",
         "templateState": {
           "templateId": "template-meeting-subworkflow-chain",
           "templateName": "Meeting Orchestrator + Subworkflow Chain",
@@ -30289,7 +30923,7 @@
           "config": {
             "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCreate a descriptive test commit message that names the behavior or surface covered.\nExample: \"test: cover portal login validation\"",
             "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
+            "timeoutMs": "{{testTimeoutMs}}"
           },
           "position": {
             "x": 400,
@@ -31352,8 +31986,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-19T12:00:00.000Z",
-        "updatedAt": "2026-03-19T12:00:00.000Z",
+        "createdAt": "2026-03-21T12:00:00.000Z",
+        "updatedAt": "2026-03-21T12:00:00.000Z",
         "templateState": {
           "templateId": "template-backend-agent",
           "templateName": "Task Completion Agent",
@@ -31644,8 +32278,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-20T12:00:00.000Z",
-        "updatedAt": "2026-03-20T12:00:00.000Z",
+        "createdAt": "2026-03-22T12:00:00.000Z",
+        "updatedAt": "2026-03-22T12:00:00.000Z",
         "templateState": {
           "templateId": "template-voice-video-parallel-rollout",
           "templateName": "Voice + Video Rollout (Parallel Lanes)",
@@ -31796,8 +32430,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-21T12:00:00.000Z",
-        "updatedAt": "2026-03-21T12:00:00.000Z",
+        "createdAt": "2026-03-23T12:00:00.000Z",
+        "updatedAt": "2026-03-23T12:00:00.000Z",
         "templateState": {
           "templateId": "template-build-deploy",
           "templateName": "Build & Deploy",
@@ -32086,8 +32720,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-22T12:00:00.000Z",
-        "updatedAt": "2026-03-22T12:00:00.000Z",
+        "createdAt": "2026-03-24T12:00:00.000Z",
+        "updatedAt": "2026-03-24T12:00:00.000Z",
         "templateState": {
           "templateId": "template-canary-deploy",
           "templateName": "Canary Deploy",
@@ -32443,8 +33077,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-23T12:00:00.000Z",
-        "updatedAt": "2026-03-23T12:00:00.000Z",
+        "createdAt": "2026-03-25T12:00:00.000Z",
+        "updatedAt": "2026-03-25T12:00:00.000Z",
         "templateState": {
           "templateId": "template-release-pipeline",
           "templateName": "Release Pipeline",
@@ -32610,8 +33244,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-24T12:00:00.000Z",
-        "updatedAt": "2026-03-24T12:00:00.000Z",
+        "createdAt": "2026-03-26T12:00:00.000Z",
+        "updatedAt": "2026-03-26T12:00:00.000Z",
         "templateState": {
           "templateId": "template-nightly-report",
           "templateName": "Nightly Report",
@@ -32870,8 +33504,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-25T12:00:00.000Z",
-        "updatedAt": "2026-03-25T12:00:00.000Z",
+        "createdAt": "2026-03-27T12:00:00.000Z",
+        "updatedAt": "2026-03-27T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sprint-retrospective",
           "templateName": "Sprint Retrospective",
@@ -33156,8 +33790,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-26T12:00:00.000Z",
-        "updatedAt": "2026-03-26T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-task-planner",
           "templateName": "Task Planner",
@@ -33346,8 +33980,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-27T12:00:00.000Z",
-        "updatedAt": "2026-03-27T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-task-replenish",
           "templateName": "Task Replenish (Scheduled)",
@@ -34019,7 +34653,7 @@
       "category": "reliability",
       "enabled": true,
       "nodeCount": 33,
-      "trigger": "trigger.manual",
+      "trigger": "trigger.task_available",
       "variables": {
         "taskId": "",
         "worktreePath": "",
@@ -34041,9 +34675,13 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Continuation Loop",
-          "config": {},
+          "type": "trigger.task_available",
+          "label": "Task Available",
+          "config": {
+            "maxParallel": 1,
+            "pollIntervalMs": "{{pollIntervalMs}}",
+            "status": "inprogress"
+          },
           "position": {
             "x": 420,
             "y": 60
@@ -34887,7 +35525,7 @@
       "category": "reliability",
       "enabled": true,
       "nodeCount": 33,
-      "trigger": "trigger.manual",
+      "trigger": "trigger.task_available",
       "variables": {
         "taskId": "",
         "worktreePath": "",
@@ -34909,9 +35547,13 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.manual",
-          "label": "Start Continuation Loop",
-          "config": {},
+          "type": "trigger.task_available",
+          "label": "Task Available",
+          "config": {
+            "maxParallel": 1,
+            "pollIntervalMs": "{{pollIntervalMs}}",
+            "status": "inprogress"
+          },
           "position": {
             "x": 420,
             "y": 60
@@ -38037,7 +38679,7 @@
       "description": "Recovery workflow for tasks that fail execution or finalization. Refreshes worktree state, runs a repair agent, re-validates quality gates, and escalates only after automated repair fails.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 15,
+      "nodeCount": 16,
       "trigger": "trigger.event",
       "variables": {
         "repairTimeoutMs": 5400000,
@@ -38222,6 +38864,22 @@
           ]
         },
         {
+          "id": "clear-repair-blocked-success",
+          "type": "action.set_variable",
+          "label": "Clear Repair Block",
+          "config": {
+            "key": "repairBlocked",
+            "value": "false"
+          },
+          "position": {
+            "x": 250,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "handoff-pr-progressor",
           "type": "action.execute_workflow",
           "label": "Dispatch PR Progressor",
@@ -38399,8 +39057,14 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "mark-inreview->handoff-pr-progressor",
+          "id": "mark-inreview->clear-repair-blocked-success",
           "source": "mark-inreview",
+          "target": "clear-repair-blocked-success",
+          "sourcePort": "default"
+        },
+        {
+          "id": "clear-repair-blocked-success->handoff-pr-progressor",
+          "source": "clear-repair-blocked-success",
           "target": "handoff-pr-progressor",
           "sourcePort": "default"
         },

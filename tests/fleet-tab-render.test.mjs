@@ -720,3 +720,30 @@ describe("TUI workflows operator inbox", () => {
     expect(helpSource).toContain("if (context.workflowRunDetailOpen) {");
   });
 });
+
+describe("Web workflows operator surfaces", () => {
+  for (const relativePath of [
+    "ui/tabs/workflows.js",
+    "site/ui/tabs/workflows.js",
+  ]) {
+    it(`renders operator inbox and diagnostics contracts in ${relativePath}`, () => {
+      const source = readFileSync(resolve(process.cwd(), relativePath), "utf8");
+      expect(source).toContain('/api/harness/runs?limit=8');
+      expect(source).toContain("Operator Inbox");
+      expect(source).toContain("Pending workflow approvals plus waiting or stalled harness runs");
+      expect(source).toContain('/api/workflows/runs/${encodeURIComponent(safeRunId)}/evaluate');
+      expect(source).toContain('/api/workflows/runs/${encodeURIComponent(safeRunId)}/forensics');
+      expect(source).toContain('/api/workflows/runs/${encodeURIComponent(safeRunId)}/snapshot');
+      expect(source).toContain('/api/workflows/runs/${encodeURIComponent(safeRunId)}/snapshots');
+      expect(source).toContain('/api/workflows/runs/${encodeURIComponent(safeRunId)}/restore');
+      expect(source).toContain('/api/workflows/runs/${encodeURIComponent(safeRunId)}/remediate');
+      expect(source).toContain("Run Evaluation");
+      expect(source).toContain("Run Forensics");
+      expect(source).toContain("Run Snapshots");
+      expect(source).toContain("Refresh Diagnostics");
+      expect(source).toContain("Capture Snapshot");
+      expect(source).toContain("Restore Snapshot");
+      expect(source).toContain("Remediate Run");
+    });
+  }
+});

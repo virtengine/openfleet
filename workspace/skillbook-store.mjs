@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { listPromotedStrategiesFromStateLedger } from "../lib/state-ledger-sqlite.mjs";
+import { listPromotedStrategiesFromStateLedger, resolveStateLedgerPath } from "../lib/state-ledger-sqlite.mjs";
 
 const DEFAULT_SKILLBOOK_FILE = ".bosun/skillbook/strategies.json";
 const SKILLBOOK_VERSION = "1.0.0";
@@ -190,6 +190,26 @@ function createEmptySkillbook() {
     updatedAt: new Date().toISOString(),
     strategies: [],
   };
+}
+
+function isLikelyTestRuntime() {
+  if (process.env.BOSUN_TEST_SANDBOX === "1") return true;
+  if (process.env.VITEST) return true;
+  if (process.env.VITEST_POOL_ID) return true;
+  if (process.env.VITEST_WORKER_ID) return true;
+  if (process.env.JEST_WORKER_ID) return true;
+  if (process.env.NODE_ENV === "test") return true;
+  const argv = Array.isArray(process.argv) ? process.argv.join(" ").toLowerCase() : "";
+  return argv.includes("vitest") || argv.includes("--test");
+}
+
+function shouldReadSkillbookFromStateLedger(options = {}) {
+  if (options.preferStateLedger === true) return true;
+  if (process.env.BOSUN_SKILLBOOK_LEDGER_READS === "1") return true;
+  if (!isLikelyTestRuntime()) return true;
+  if (existsSync(resolveSkillbookPath(options))) return false;
+  const ledgerPath = resolveStateLedgerPath(options);
+  return ledgerPath === ":memory:" || existsSync(ledgerPath);
 }
 
 function mapLedgerStrategyToSkillbookEntry(record = {}) {
@@ -396,9 +416,11 @@ export function resolveSkillbookPath(options = {}) {
 }
 
 export async function loadSkillbook(options = {}) {
-  const ledgerSkillbook = loadSkillbookFromStateLedger(options);
-  if (ledgerSkillbook?.strategies?.length) {
-    return ledgerSkillbook;
+  if (shouldReadSkillbookFromStateLedger(options)) {
+    const ledgerSkillbook = loadSkillbookFromStateLedger(options);
+    if (ledgerSkillbook?.strategies?.length) {
+      return ledgerSkillbook;
+    }
   }
   const skillbookPath = resolveSkillbookPath(options);
   if (!existsSync(skillbookPath)) {
