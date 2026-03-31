@@ -1559,10 +1559,19 @@ describe("self-improvement workflow nodes", () => {
     const ctx = new WorkflowContext({
       repoRoot,
       _workspaceId: "workspace-1",
+      _changedFiles: ["workflow/workflow-engine.mjs"],
       sessionId: "session-1",
       runId: "run-1",
       _workflowId: "wf-self-improvement-pass",
       taskId: "TASK-SI-2",
+      task: {
+        id: "TASK-SI-2",
+        title: "Promote self-improvement baseline",
+        filePaths: ["workflow/workflow-engine.mjs"],
+        meta: {
+          filePaths: ["workflow/workflow-engine.mjs"],
+        },
+      },
       _lastRunEvaluation: {
         runId: "run-1",
         workflowId: "wf-self-improvement-pass",
@@ -1620,7 +1629,9 @@ describe("self-improvement workflow nodes", () => {
     expect(existsSync(registryPath)).toBe(true);
     const registry = JSON.parse(readFileSync(registryPath, "utf8"));
     expect(Array.isArray(registry.entries)).toBe(true);
-    expect(registry.entries.some((entry) => entry.strategyId === result.strategyId)).toBe(true);
+    const promotedEntry = registry.entries.find((entry) => entry.strategyId === result.strategyId);
+    expect(promotedEntry).toBeTruthy();
+    expect(promotedEntry.relatedPaths).toContain("workflow/workflow-engine.mjs");
     const skillbookPath = join(repoRoot, ".bosun", "skillbook", "strategies.json");
     expect(existsSync(skillbookPath)).toBe(true);
     const skillbook = JSON.parse(readFileSync(skillbookPath, "utf8"));
@@ -1638,6 +1649,21 @@ describe("self-improvement workflow nodes", () => {
     expect(result.skillbookPath).toContain(".bosun");
     expect(result.ledgerPath).toContain(".sqlite");
     expect(ctx.data.promotionResult.strategyId).toBe(result.strategyId);
+    const { retrieveKnowledgeEntries } = await import("../workspace/shared-knowledge.mjs");
+    const retrieved = await retrieveKnowledgeEntries({
+      repoRoot,
+      workspaceId: "workspace-1",
+      sessionId: "session-9",
+      runId: "run-9",
+      taskId: "TASK-SI-2",
+      changedFiles: ["workflow/workflow-engine.mjs"],
+      query: "workflow reliability baseline",
+      limit: 5,
+    });
+    expect(retrieved).toContainEqual(expect.objectContaining({
+      strategyId: result.strategyId,
+      directPathHits: ["workflow/workflow-engine.mjs"],
+    }));
   });
 
   it("action.load_skillbook_strategies ranks reusable strategies for the current workflow", async () => {

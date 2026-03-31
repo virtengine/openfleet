@@ -1128,6 +1128,18 @@ async function persistSelfImprovementKnowledgeEntry(ctx, node, {
   const resolvedCategory = String(category || "strategy").trim() || "strategy";
   const resolvedStatus = String(status || "").trim() || "promoted";
   const tagValues = normalizeSelfImprovementTagList(tags, selectedStrategy.tags || []);
+  const relatedPaths = collectPromptPathHints(
+    ctx?.data?._taskMemoryPaths,
+    ctx?.data?._changedFiles,
+    ctx?.data?.changedFiles,
+    ctx?.data?.task?.filePaths,
+    ctx?.data?.task?.files,
+    ctx?.data?.task?.meta?.filePaths,
+    ctx?.data?.task?.metadata?.filePaths,
+    selectedStrategy?.relatedPaths,
+    selectedStrategy?.filePaths,
+    evaluation?.changedFiles,
+  );
 
   const initOpts = { repoRoot: resolvedScope.repoRoot };
   if (resolvedTargetFile) initOpts.targetFile = resolvedTargetFile;
@@ -1159,6 +1171,7 @@ async function persistSelfImprovementKnowledgeEntry(ctx, node, {
     agentId: resolvedScope.agentId,
     agentType: resolvedScope.agentType,
     tags: tagValues,
+    relatedPaths,
   });
 
   const knowledgeResult = await appendKnowledgeEntry(entry, { skipRateLimit: true });
