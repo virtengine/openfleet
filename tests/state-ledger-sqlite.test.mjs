@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  appendKnowledgeEntryToStateLedger,
   appendPromotedStrategyToStateLedger,
   appendTaskTraceEventToStateLedger,
   appendArtifactRecordToStateLedger,
@@ -25,6 +26,7 @@ import {
   getWorkflowRunFromStateLedger,
   listAuditEventsFromStateLedger,
   listArtifactsFromStateLedger,
+  listKnowledgeEntriesFromStateLedger,
   listSessionActivitiesFromStateLedger,
   listOperatorActionsFromStateLedger,
   listPromotedStrategiesFromStateLedger,
@@ -134,7 +136,7 @@ describe("state ledger sqlite workflow integration", () => {
     expect(existsSync(dbPath)).toBe(true);
 
     const info = getStateLedgerInfo({ anchorPath: runsDir });
-    expect(info.schemaVersion).toBe(5);
+    expect(info.schemaVersion).toBe(6);
     expect(info.tables).toEqual(
       expect.arrayContaining([
         "agent_activity",
@@ -719,6 +721,54 @@ describe("state ledger sqlite audit helpers", () => {
           strategyId: "wf-1:promote:global:quality",
           runId: "run-1",
         }),
+      ]),
+    );
+  });
+
+  it("stores persistent knowledge entries in the state ledger with scope filtering", () => {
+    const repoRoot = makeTempDir("state-ledger-knowledge-");
+
+    appendKnowledgeEntryToStateLedger({
+      hash: "knowledge-workspace-1",
+      content: "Workspace memory: reset database fixtures before retrying login flows.",
+      scope: "testing",
+      scopeLevel: "workspace",
+      teamId: "team-a",
+      workspaceId: "workspace-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      workflowId: "wf-knowledge",
+      agentId: "agent-a",
+      tags: ["testing", "login"],
+      provenance: ["run:run-1"],
+      evidence: ["fixture-reset"],
+      timestamp: "2026-03-31T10:00:00.000Z",
+    }, { repoRoot });
+    appendKnowledgeEntryToStateLedger({
+      hash: "knowledge-team-1",
+      content: "Team memory: deterministic waits beat sleep-based polling.",
+      scope: "testing",
+      scopeLevel: "team",
+      teamId: "team-a",
+      workspaceId: "workspace-9",
+      sessionId: "session-9",
+      runId: "run-9",
+      workflowId: "wf-knowledge",
+      agentId: "agent-b",
+      tags: ["testing"],
+      timestamp: "2026-03-31T09:00:00.000Z",
+    }, { repoRoot });
+
+    expect(listKnowledgeEntriesFromStateLedger({ repoRoot, workspaceId: "workspace-1" })).toEqual([
+      expect.objectContaining({
+        hash: "knowledge-workspace-1",
+        scopeLevel: "workspace",
+        workspaceId: "workspace-1",
+      }),
+    ]);
+    expect(listKnowledgeEntriesFromStateLedger({ repoRoot, teamId: "team-a" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ hash: "knowledge-team-1", scopeLevel: "team" }),
       ]),
     );
   });

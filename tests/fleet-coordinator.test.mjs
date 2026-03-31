@@ -13,6 +13,8 @@ describe("fleet-coordinator", () => {
   });
 
   afterEach(async () => {
+    const { resetStateLedgerCache } = await import("../lib/state-ledger-sqlite.mjs");
+    resetStateLedgerCache();
     if (tempRoot) {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = null;
@@ -425,6 +427,8 @@ describe("shared-knowledge", () => {
   });
 
   afterEach(async () => {
+    const { resetStateLedgerCache } = await import("../lib/state-ledger-sqlite.mjs");
+    resetStateLedgerCache();
     if (tempRoot) {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = null;
@@ -801,6 +805,96 @@ Always use deterministic TF ops.
       expect(briefing).toContain("[run]");
       expect(briefing).toContain("[workspace]");
       expect(briefing).not.toContain("[team]");
+    });
+
+    it("retrieves memories from the SQL ledger even when the JSON registry is missing", async () => {
+      const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
+      const {
+        listKnowledgeEntriesFromStateLedger,
+      } = await import("../lib/state-ledger-sqlite.mjs");
+
+      const result = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: reset fixtures before retrying browser login flows.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        agentId: "agent-workspace",
+      }));
+      expect(result.success).toBe(true);
+
+      await rm(registryPath, { force: true });
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        query: "retry browser login fixtures",
+        limit: 5,
+      });
+
+      expect(retrieved).toEqual([
+        expect.objectContaining({
+          content: "Workspace memory: reset fixtures before retrying browser login flows.",
+          scopeLevel: "workspace",
+        }),
+      ]);
+      expect(listKnowledgeEntriesFromStateLedger({ repoRoot: tempRoot, workspaceId: "workspace-1" })).toEqual([
+        expect.objectContaining({
+          content: "Workspace memory: reset fixtures before retrying browser login flows.",
+        }),
+      ]);
+    });
+
+    it("backfills legacy JSON registry memories into the SQL ledger on retrieval", async () => {
+      const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
+      const {
+        listKnowledgeEntriesFromStateLedger,
+      } = await import("../lib/state-ledger-sqlite.mjs");
+
+      const legacyEntry = buildKnowledgeEntry({
+        content: "Workspace memory: seed deterministic data before replaying flaky workflows.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-legacy",
+        runId: "run-legacy",
+        agentId: "agent-legacy",
+      });
+      await mkdir(resolve(tempRoot, ".cache", "bosun"), { recursive: true });
+      await writeFile(registryPath, JSON.stringify({
+        version: "1.0.0",
+        updatedAt: legacyEntry.timestamp,
+        entries: [legacyEntry],
+      }, null, 2), "utf8");
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        query: "deterministic replay workflows",
+        limit: 5,
+      });
+
+      expect(retrieved).toEqual([
+        expect.objectContaining({
+          content: "Workspace memory: seed deterministic data before replaying flaky workflows.",
+          scopeLevel: "workspace",
+        }),
+      ]);
+      expect(listKnowledgeEntriesFromStateLedger({ repoRoot: tempRoot, workspaceId: "workspace-1" })).toEqual([
+        expect.objectContaining({
+          content: "Workspace memory: seed deterministic data before replaying flaky workflows.",
+          hash: legacyEntry.hash,
+        }),
+      ]);
     });
   });
 

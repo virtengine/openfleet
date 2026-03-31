@@ -14,14 +14,20 @@
  *   - Persistent scoped memory retrieval for team/workspace/session/run
  *
  * Knowledge entries are appended to a `## Agent Learnings` section at the
- * bottom of the target file (default: AGENTS.md) and indexed in a persistent
- * JSON registry for lightweight retrieval during later runs.
+ * bottom of the target file (default: AGENTS.md), mirrored into the SQLite
+ * state ledger, and projected into a compatibility JSON registry for later
+ * runs.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import crypto from "node:crypto";
+import {
+  appendKnowledgeEntryToStateLedger,
+  listKnowledgeEntriesFromStateLedger,
+  resolveStateLedgerPath,
+} from "../lib/state-ledger-sqlite.mjs";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -185,7 +191,7 @@ function normalizeRegistryEntry(raw) {
   return entry;
 }
 
-async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
+async function loadLegacyRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
   const registryPath = getRegistryPath(repoRoot);
   if (!existsSync(registryPath)) return createEmptyRegistry();
 
@@ -202,6 +208,41 @@ async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process
   } catch {
     return createEmptyRegistry();
   }
+}
+
+async function backfillLedgerEntries(repoRoot, entries = []) {
+  for (const rawEntry of Array.isArray(entries) ? entries : []) {
+    const entry = normalizeRegistryEntry(rawEntry);
+    if (!entry) continue;
+    try {
+      appendKnowledgeEntryToStateLedger(entry, { repoRoot });
+    } catch {
+      // best-effort migration only
+    }
+  }
+}
+
+async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
+  try {
+    const entries = listKnowledgeEntriesFromStateLedger({ repoRoot, limit: 5000 })
+      .map((entry) => normalizeRegistryEntry(entry))
+      .filter(Boolean);
+    if (entries.length > 0) {
+      return {
+        version: REGISTRY_VERSION,
+        updatedAt: entries[0]?.timestamp || new Date().toISOString(),
+        entries,
+      };
+    }
+  } catch {
+    // fall back to legacy registry
+  }
+
+  const legacyRegistry = await loadLegacyRegistryEntries(repoRoot);
+  if (legacyRegistry.entries.length > 0) {
+    await backfillLedgerEntries(repoRoot, legacyRegistry.entries);
+  }
+  return legacyRegistry;
 }
 
 async function saveRegistryEntries(repoRoot, registry) {
@@ -566,6 +607,9 @@ export async function appendKnowledgeEntry(entry, options = {}) {
     const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
     registry.entries.push(normalizedEntry);
     await saveRegistryEntries(knowledgeState.repoRoot || process.cwd(), registry);
+    const ledgerResult = appendKnowledgeEntryToStateLedger(normalizedEntry, {
+      repoRoot: knowledgeState.repoRoot || process.cwd(),
+    });
 
     knowledgeState.entryHashes.add(normalizedEntry.hash);
     knowledgeState.entriesWritten++;
@@ -576,6 +620,9 @@ export async function appendKnowledgeEntry(entry, options = {}) {
       success: true,
       hash: normalizedEntry.hash,
       registryPath: getRegistryPath(knowledgeState.repoRoot || process.cwd()),
+      ledgerPath: ledgerResult?.path || resolveStateLedgerPath({
+        repoRoot: knowledgeState.repoRoot || process.cwd(),
+      }),
     };
   } catch (err) {
     return { success: false, reason: `write error: ${err.message}` };
@@ -730,4 +777,3 @@ export function formatKnowledgeSummary() {
       : "No writes this session",
   ].join("\n");
 }
-
