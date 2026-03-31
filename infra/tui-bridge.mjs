@@ -302,6 +302,29 @@ export const TUI_EVENT_SCHEMAS = Object.freeze({
           recentRuns: { type: "array", items: { type: "object" } },
         },
       },
+      harness: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          enabled: { type: "boolean" },
+          activeArtifactId: { type: ["string", "null"] },
+          activeArtifactPath: { type: ["string", "null"] },
+          activeProfile: { type: ["object", "null"] },
+          validationMode: { type: ["string", "null"] },
+          totals: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              total: { type: "number", minimum: 0 },
+              successful: { type: "number", minimum: 0 },
+              failed: { type: "number", minimum: 0 },
+              dryRuns: { type: "number", minimum: 0 },
+            },
+          },
+          lastRun: { type: ["object", "null"] },
+          recentRuns: { type: "array", items: { type: "object" } },
+        },
+      },
     },
   },
   "sessions:update": {
@@ -802,6 +825,9 @@ export function buildMonitorStatsPayload({ agentPool, runtimeStats = {}, uptimeM
       : null,
     recovery: agentPoolStats.recovery && typeof agentPoolStats.recovery === "object"
       ? agentPoolStats.recovery
+      : null,
+    harness: agentPoolStats.harness && typeof agentPoolStats.harness === "object"
+      ? agentPoolStats.harness
       : null,
   };
 }

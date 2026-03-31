@@ -155,33 +155,33 @@ export default function TelemetryScreen({
   `, { key: "throughput-panel", width: wide ? "33%" : undefined, marginRight: wide ? 1 : 0, marginBottom: wide ? 0 : 1 });
 
   const providerPanel = panel("Token Usage by Provider", html`
-    ${model.providerRows.map((row) => html`
+    ${React.Children.toArray(model.providerRows.map((row) => html`
       <${Box} key=${row.provider}>
         <${Text} color=${row.highlight || undefined}>${row.provider.padEnd(7)}<//>
         <${Text}> ${String(row.sessions).padStart(2)} sess | in ${formatCompactCount(row.tokensIn)} | out ${formatCompactCount(row.tokensOut)} | est ${formatUsd(row.costEstimateUsd)} | avg ${row.avgSessionLengthLabel} | err ${row.errorCount}<//>
       <//>
-    `)}
+    `))}
     <${Text}>Day estimate: ${formatUsd(model.cost.dayEstimateUsd)}<//>
     <${Text} dimColor>Cost estimates only<//>
   `, { key: "provider-panel", width: wide ? "34%" : undefined, marginRight: wide ? 1 : 0, marginBottom: wide ? 0 : 1 });
 
   const rateLimitPanel = panel("Rate Limits", html`
     ${rateLimitRows.length
-      ? rateLimitRows.map((row) => html`
+      ? React.Children.toArray(rateLimitRows.map((row) => html`
           <${Text} key=${row.provider}>
             ${String(row.provider).padEnd(10, " ")}
             primary ${row.primary}/${row.unit}  secondary ${row.secondary}/${row.unit}  credits ${row.credits}
           <//>
-        `)
+        `))
       : html`<${Text} dimColor>No provider rate-limit telemetry exposed yet.<//>`}
     <${Box} marginTop=${1} flexWrap="wrap">
-      ${model.heatmap.map((cell) => html`
+      ${React.Children.toArray(model.heatmap.map((cell) => html`
         <${Box} key=${cell.hour} width=${9} marginRight=${1}>
           <${Text} color=${toneColor(cell.tone)} dimColor=${cell.tone === "dim"} inverse=${cell.isCurrentHour}>
             ${String(cell.hour).padStart(2, "0")}:${cell.label}
           <//>
         <//>
-        `)}
+        `))}
     <//>
   `, { key: "rate-limit-panel", width: wide ? "33%" : undefined, marginBottom: wide ? 0 : 1 });
 
@@ -192,11 +192,11 @@ export default function TelemetryScreen({
     <${Text}>Active agents: ${stats?.activeAgents ?? stats?.agents?.online ?? 0}/${stats?.maxAgents ?? stats?.agents?.total ?? 0}<//>
     <${Text}>Retry queue: ${stats?.retryQueue?.count ?? 0}<//>
     ${retryItems.length
-      ? retryItems.slice(0, 5).map((item) => html`
+      ? React.Children.toArray(retryItems.slice(0, 5).map((item) => html`
           <${Text} key=${item.taskId || item.id}>
             ${String(item.taskTitle || item.taskId || item.id || "task").padEnd(24, " ")} attempt ${item.retryCount || 0}
           <//>
-        `)
+        `))
       : html`<${Text} dimColor>No queued retries.<//>`}
   `, { key: "runtime-panel", marginTop: 1, marginBottom: 1 });
 

@@ -1302,10 +1302,10 @@ export function buildTaskWorkflowRunLineageBadges(run) {
     ? run.delegationTopology
     : normalizeTaskWorkflowDelegationTopology(run);
   const runGraph = run?.runGraph && typeof run.runGraph === "object" ? run.runGraph : null;
-  const runCount = Array.isArray(runGraph.runs) ? runGraph.runs.length : 0;
-  const executionCount = Array.isArray(runGraph.executions) ? runGraph.executions.length : 0;
-  const timelineCount = Array.isArray(runGraph.timeline) ? runGraph.timeline.length : 0;
-  const retryCount = Array.isArray(runGraph.edges)
+  const runCount = Array.isArray(runGraph?.runs) ? runGraph.runs.length : 0;
+  const executionCount = Array.isArray(runGraph?.executions) ? runGraph.executions.length : 0;
+  const timelineCount = Array.isArray(runGraph?.timeline) ? runGraph.timeline.length : 0;
+  const retryCount = Array.isArray(runGraph?.edges)
     ? runGraph.edges.filter((entry) => entry?.type === "retry").length
     : 0;
   const badges = [];
@@ -1555,6 +1555,107 @@ function summarizeTaskAuditAgentActivity(activity = {}) {
   const status = getTaskAuditValue(activity, ["latestStatus"]);
   const error = getTaskAuditValue(activity, ["lastErrorText"]);
   return [summary, eventType, status, error].filter(Boolean).join(" · ") || "Agent activity";
+}
+
+function resolveTaskWorkflowRunDelegationTopology(run = {}) {
+  const candidates = [
+    run?.delegationTopology,
+    run?.meta?.delegationTopology,
+    run?.detail?.delegationTopology,
+    run?.detail?.data?._delegationTopology,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object") return candidate;
+  }
+  return null;
+}
+
+function collectTaskWorkflowRunSessionIds(run = {}) {
+  const topology = resolveTaskWorkflowRunDelegationTopology(run);
+  const values = [
+    run?.sessionId,
+    run?.primarySessionId,
+    run?.meta?.sessionId,
+    run?.meta?.primarySessionId,
+    topology?.sessionId,
+    topology?.rootSessionId,
+    topology?.parentSessionId,
+    ...(Array.isArray(run?.sessionIds) ? run.sessionIds : []),
+    ...(Array.isArray(topology?.sessionIds) ? topology.sessionIds : []),
+  ];
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function collectTaskDurableSessionIds(task = {}, workflowRuns = [], auditActivity = null) {
+  const values = [
+    task?.sessionId,
+    task?.primarySessionId,
+    task?.meta?.sessionId,
+    task?.meta?.primarySessionId,
+    ...(Array.isArray(task?.meta?.linkedSessionIds) ? task.meta.linkedSessionIds : []),
+    ...(Array.isArray(auditActivity?.sessionIds) ? auditActivity.sessionIds : []),
+    auditActivity?.sessionActivity?.sessionId,
+  ];
+  for (const run of workflowRuns || []) {
+    values.push(...collectTaskWorkflowRunSessionIds(run));
+  }
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function summarizeTaskDelegationTopology(topology = {}) {
+  if (!topology || typeof topology !== "object") return "";
+  const parts = [];
+  const depth = Number(topology.delegationDepth);
+  const rootTaskId = String(topology.rootTaskId || "").trim();
+  const parentTaskId = String(topology.parentTaskId || "").trim();
+  const rootSessionId = String(topology.rootSessionId || "").trim();
+  const sessionCount = Array.isArray(topology.sessionIds) ? topology.sessionIds.length : 0;
+  if (Number.isFinite(depth) && depth >= 0) parts.push(`depth ${depth}`);
+  if (rootTaskId) parts.push(`root task ${rootTaskId}`);
+  if (parentTaskId && parentTaskId !== rootTaskId) parts.push(`parent task ${parentTaskId}`);
+  if (rootSessionId) parts.push(`root session ${rootSessionId}`);
+  if (sessionCount > 0) parts.push(`${sessionCount} durable sessions`);
+  return parts.join(" · ") || "Delegation topology recorded";
+}
+
+function buildTaskDelegationTopologyRows(workflowRuns = []) {
+  return (workflowRuns || [])
+    .map((run) => {
+      const topology = resolveTaskWorkflowRunDelegationTopology(run);
+      if (!topology) return null;
+      return {
+        run,
+        topology,
+        durableSessionIds: collectTaskWorkflowRunSessionIds(run),
+        summary: summarizeTaskDelegationTopology(topology),
+      };
+    })
+    .filter(Boolean);
+}
+
+function resolveTaskAuditSourceLabel(taskAuditActivity = null) {
+  if (!taskAuditActivity || typeof taskAuditActivity !== "object") return "";
+  const summary =
+    taskAuditActivity.summary && typeof taskAuditActivity.summary === "object"
+      ? taskAuditActivity.summary
+      : {};
+  return getTaskAuditValue(summary, ["stateSource", "storage", "store", "source"]) || "state ledger / SQLite";
 }
 
 export async function openTaskWorkflowRun(run, deps = {}) {
@@ -3256,6 +3357,27 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const taskAuditOperatorActionCount = Number(taskAuditSummary.operatorActionCount || taskAuditOperatorActions.length || 0);
   const taskAuditPromotedStrategyCount = Number(taskAuditSummary.promotedStrategyCount || taskAuditPromotedStrategies.length || 0);
   const taskAuditTraceCount = Number(taskAuditSummary.taskTraceCount || taskAuditTraceEvents.length || 0);
+  const taskAuditSourceLabel = useMemo(() => resolveTaskAuditSourceLabel(taskAuditActivity), [
+    taskAuditActivity,
+  ]);
+  const taskDurableSessionIds = useMemo(() => collectTaskDurableSessionIds(task, workflowRuns, taskAuditActivity), [
+    task?.id,
+    task?.sessionId,
+    task?.primarySessionId,
+    task?.meta,
+    workflowRuns,
+    taskAuditActivity,
+  ]);
+  const taskPrimaryDurableSessionId =
+    taskAuditSessionActivity?.sessionId || linkedSessionId || taskDurableSessionIds[0] || "";
+  const taskDelegationTopologyRows = useMemo(() => buildTaskDelegationTopologyRows(workflowRuns), [
+    workflowRuns,
+  ]);
+  const maxTaskDelegationDepth = taskDelegationTopologyRows.reduce((maxDepth, entry) => {
+    const depth = Number(entry?.topology?.delegationDepth);
+    if (!Number.isFinite(depth)) return maxDepth;
+    return Math.max(maxDepth, depth);
+  }, 0);
   const plannerState = task?.meta?.plannerState?.latestReplan || null;
   const planningMode = String(replanProposal?.mode || plannerState?.mode || "replan").trim().toLowerCase() === "decompose"
     ? "decompose"
@@ -4992,6 +5114,19 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 </div>
               </div>
               <div class="task-comment-item">
+                <div class="task-comment-meta">Durable Sessions</div>
+                <div class="task-comment-body">${taskDurableSessionIds.length
+                  ? `${taskDurableSessionIds.length} session IDs linked across the task, workflow runs, and state ledger.`
+                  : "No durable session lineage linked yet."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${[
+                    taskPrimaryDurableSessionId ? `primary ${truncate(taskPrimaryDurableSessionId, 36)}` : "",
+                    taskAuditSessionIds.length ? `${taskAuditSessionIds.length} ledger sessions` : "",
+                    taskAuditSourceLabel ? `source ${taskAuditSourceLabel}` : "source state ledger / SQLite",
+                  ].filter(Boolean).join(" · ")}
+                </div>
+              </div>
+              <div class="task-comment-item">
                 <div class="task-comment-meta">Planner / Proof</div>
                 <div class="task-comment-body">${workflowRuns.length
                   ? `${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.plannerEventCount || run?.plannerTimeline?.length || 0), 0)} planner events · ${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.evidenceCount || 0), 0)} evidence items`
@@ -5020,6 +5155,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                     Number.isFinite(Number(taskTopology?.delegationDepth)) ? `Delegation depth ${Number(taskTopology.delegationDepth || 0)}` : "",
                     taskTopology?.latestRunId ? `run ${taskTopology.latestRunId}` : "",
                     taskTopology?.latestSessionId ? `session ${truncate(taskTopology.latestSessionId, 36)}` : "",
+                    taskDelegationTopologyRows.length ? `${taskDelegationTopologyRows.length} delegated run families` : "",
                   ].filter(Boolean).join(" · ")}
                 </div>
                 <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
@@ -5034,13 +5170,14 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 <div class="task-comment-meta">Audit Trail</div>
                 <div class="task-comment-body">${hasTaskAuditContent
                   ? `${taskAuditEventCount} ledger events · ${taskAuditToolCallCount} tool calls · ${taskAuditArtifactCount} artifacts · ${taskAuditClaimEventCount} claim events`
-                  : "No sqlite audit trail linked yet."}</div>
+                  : "No state ledger / SQLite audit linked yet."}</div>
                 <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
                   ${[
                     taskAuditRunCount ? `${taskAuditRunCount} audit-linked workflow runs` : "",
                     taskAuditPromotedStrategyCount ? `${taskAuditPromotedStrategyCount} promoted strategies` : "",
                     taskAuditOperatorActionCount ? `${taskAuditOperatorActionCount} operator actions` : "",
                     taskAuditTraceCount ? `${taskAuditTraceCount} task trace events` : "",
+                    taskAuditSourceLabel ? `source ${taskAuditSourceLabel}` : "",
                   ].filter(Boolean).join(" · ")}
                 </div>
                 <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
@@ -6153,6 +6290,34 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                     ${taskAuditSessionActivity?.lastSummary || taskAuditAgentActivity?.lastSummary}
                   </div>
                 `}
+              </div>
+            ` : null}
+            ${taskDurableSessionIds.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Durable Session Topology</div>
+                <div class="task-comment-body">
+                  <span><b>Primary Session:</b> <code>${taskPrimaryDurableSessionId || taskDurableSessionIds[0]}</code></span>
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskDurableSessionIds.length} durable session IDs · ${taskAuditSourceLabel || "state ledger / SQLite"}
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskDurableSessionIds.slice(0, 4).map((sessionId) => html`<code key=${sessionId} style="margin-right:4px;">${sessionId}</code>`)}
+                </div>
+              </div>
+            ` : null}
+            ${taskDelegationTopologyRows.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Delegation Topology</div>
+                <div class="task-comment-body">${taskDelegationTopologyRows.length} delegated workflow run families linked to this task.</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  max depth ${maxTaskDelegationDepth} · ${taskDelegationTopologyRows.reduce((total, entry) => total + Number(entry?.durableSessionIds?.length || 0), 0)} run-linked sessions
+                </div>
+                ${taskDelegationTopologyRows.slice(0, 4).map((entry, index) => html`
+                  <div key=${`task-delegation-topology-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${entry.run.workflowName || entry.run.workflowId || entry.run.runId || "workflow"} · ${entry.summary}
+                  </div>
+                `)}
               </div>
             ` : null}
             ${taskAuditToolCalls.length > 0 ? html`

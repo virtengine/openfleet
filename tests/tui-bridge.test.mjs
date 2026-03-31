@@ -38,6 +38,16 @@ describe("tui bridge helpers", () => {
         tokensIn: 10,
         tokensOut: 5,
         rateLimits: { openai: { primary: 1, secondary: null, credits: null, unit: "rpm" } },
+        harness: {
+          enabled: true,
+          activeArtifactId: "artifact-1",
+          activeArtifactPath: "C:/tmp/artifact-1.json",
+          activeProfile: { agentId: "harness-1", name: "Harness 1" },
+          validationMode: "report",
+          totals: { total: 2, successful: 1, failed: 1, dryRuns: 0 },
+          lastRun: { runId: "run-2", status: "failed", success: false, mode: "run" },
+          recentRuns: [{ runId: "run-2", status: "failed", success: false, mode: "run" }],
+        },
       })),
     };
     const emitter = createTuiStatsEmitter({
@@ -52,6 +62,7 @@ describe("tui bridge helpers", () => {
     const first = await emitter.tick();
     expect(agentPool.getTuiStats).toHaveBeenCalledTimes(1);
     expect(first.tokensTotal).toBe(15);
+    expect(first.harness?.lastRun?.runId).toBe("run-2");
     expect(validateStats(first)).toBe(true);
     expect(validateStats.errors).toBeNull();
     expect(emit).toHaveBeenCalledTimes(1);
@@ -163,6 +174,16 @@ describe("tui bridge helpers", () => {
           },
         },
         activeSessions: sessions,
+        harness: {
+          enabled: true,
+          activeArtifactId: "artifact-telemetry",
+          activeArtifactPath: "C:/tmp/harness.json",
+          activeProfile: { agentId: "harness-telemetry", name: "Telemetry Harness" },
+          validationMode: "enforce",
+          totals: { total: 3, successful: 2, failed: 1, dryRuns: 1 },
+          lastRun: { runId: "h-run-3", status: "completed", success: true, mode: "run" },
+          recentRuns: [{ runId: "h-run-3", status: "completed", success: true, mode: "run" }],
+        },
       },
       runtimeStats: {
         sessionCount: 2,
@@ -216,6 +237,7 @@ describe("tui bridge helpers", () => {
     expect(payload.rateLimitSummary.providersNearExhaustion).toBe(1);
     expect(payload.toolSummary.topTools[0]).toEqual({ name: "command_execution", count: 2 });
     expect(payload.activeSessions[0].lastToolName).toBe("apply_patch");
+    expect(payload.harness?.totals?.total).toBe(3);
+    expect(payload.harness?.lastRun?.runId).toBe("h-run-3");
   });
 });
-

@@ -330,6 +330,7 @@ import {
   readHarnessArtifact,
   readHarnessRunRecord,
   readHarnessSourceFromPath,
+  summarizeHarnessRuns,
   shouldEnforceHarnessValidation,
 } from "../agent/internal-harness-control-plane.mjs";
 import { CONFIG_FILES } from "../config/config-file-names.mjs";
@@ -571,6 +572,7 @@ const VOICE_TRACE_MAX_SESSIONS = Math.max(
 const VOICE_TRACE_MAX_QUERY_LIMIT = 500;
 const voiceTraceStore = new Map();
 let voiceTraceSequence = 0;
+const activeHarnessRuns = new Map();
 
 function parseVoiceTraceLimit(rawLimit, fallback = 50) {
   const parsed = Number.parseInt(String(rawLimit || "").trim(), 10);
@@ -4900,6 +4902,517 @@ function buildHarnessRunPayload(runRecord, runResult, harnessConfig) {
   };
 }
 
+function normalizeHarnessLinkedTaskId(value) {
+  return String(value || "").trim();
+}
+
+function formatHarnessRunStatusLabel(value, fallback = "completed") {
+  const normalized = String(value || "").trim().replace(/[_-]+/g, " ").trim();
+  return normalized || fallback;
+}
+
+function buildHarnessTaskRunSummary(runRecord, runResult) {
+  const history = Array.isArray(runResult?.history) ? runResult.history : [];
+  const stageCount = history.length;
+  const finalStageId = String(history.at(-1)?.stageId || "").trim();
+  const statusLabel = formatHarnessRunStatusLabel(
+    runResult?.status || (runResult?.success === true ? "completed" : "failed"),
+    runResult?.success === true ? "completed" : "failed",
+  );
+  const modeLabel = runRecord?.dryRun === true ? "dry-run" : "run";
+  const stageSuffix = stageCount === 1 ? "stage" : "stages";
+  if (finalStageId) {
+    return `Harness ${modeLabel} ${statusLabel} at stage ${finalStageId} after ${stageCount} ${stageSuffix}.`;
+  }
+  return `Harness ${modeLabel} ${statusLabel} after ${stageCount} ${stageSuffix}.`;
+}
+
+function buildHarnessTaskRunSteps(runRecord, runResult) {
+  const startedAt = String(runRecord?.startedAt || new Date().toISOString());
+  const finishedAt = String(runRecord?.finishedAt || startedAt);
+  const modeLabel = runRecord?.dryRun === true ? "dry-run" : "run";
+  const history = Array.isArray(runResult?.history) ? runResult.history : [];
+  const steps = [
+    {
+      type: "thread",
+      at: startedAt,
+      summary: `Started internal-harness ${modeLabel}.`,
+      payload: {
+        sdk: "internal-harness",
+        mode: runRecord?.mode || (runRecord?.dryRun === true ? "dry-run" : "run"),
+        artifactId: runRecord?.artifactId || null,
+      },
+    },
+  ];
+  for (const entry of history) {
+    const stageId = String(entry?.stageId || "").trim() || "unknown";
+    const stageType = String(entry?.stageType || "").trim() || "stage";
+    const outcome = String(entry?.outcome || "").trim();
+    const status = String(entry?.status || "").trim();
+    const statusLabel = formatHarnessRunStatusLabel(status || outcome || "completed");
+    const summary = `Stage ${stageId} (${stageType}) ${statusLabel}.`;
+    steps.push({
+      type: "status",
+      at: String(entry?.endedAt || entry?.startedAt || finishedAt),
+      summary,
+      payload: {
+        stageId,
+        stageType,
+        outcome: outcome || null,
+        status: status || null,
+        nextStageId: String(entry?.nextStageId || "").trim() || null,
+        transitionReason: String(entry?.transitionReason || "").trim() || null,
+        repairAttempt: Number.isFinite(Number(entry?.repairAttempt)) ? Number(entry.repairAttempt) : null,
+        dryRun: entry?.dryRun === true,
+      },
+      event: entry && typeof entry === "object" ? { ...entry } : null,
+    });
+  }
+  const finalSummary = buildHarnessTaskRunSummary(runRecord, runResult);
+  steps.push({
+    type: "assistant",
+    at: finishedAt,
+    summary: finalSummary,
+    payload: {
+      content: finalSummary,
+      status: String(runResult?.status || "").trim() || null,
+      outcome: String(runResult?.outcome || "").trim() || null,
+    },
+  });
+  return steps;
+}
+
+function buildHarnessTaskRunRecord(taskId, runRecord, runResult) {
+  const linkedTaskId = normalizeHarnessLinkedTaskId(taskId);
+  if (!linkedTaskId) return null;
+  const steps = buildHarnessTaskRunSteps(runRecord, runResult);
+  return {
+    runId: String(runRecord?.runId || "").trim() || null,
+    startedAt: String(runRecord?.startedAt || new Date().toISOString()),
+    endedAt: String(runRecord?.finishedAt || runRecord?.startedAt || new Date().toISOString()),
+    status: String(runResult?.status || (runResult?.success === true ? "completed" : "failed")).trim() || "failed",
+    taskKey: linkedTaskId,
+    sdk: "internal-harness",
+    replayable: true,
+    outcome: String(runResult?.outcome || (runResult?.success === true ? "success" : "failure")).trim() || null,
+    summary: buildTaskRunSummary(steps, buildHarnessTaskRunSummary(runRecord, runResult)),
+    steps,
+    meta: {
+      source: "harness",
+      taskId: linkedTaskId,
+      harnessRunId: runRecord?.runId || null,
+      harnessArtifactId: runRecord?.artifactId || null,
+      harnessMode: runRecord?.mode || (runRecord?.dryRun === true ? "dry-run" : "run"),
+      harnessSourceOrigin: runRecord?.sourceOrigin || null,
+      harnessSourcePath: runRecord?.sourcePath || null,
+    },
+  };
+}
+
+function buildHarnessActiveRunSnapshot(state = {}) {
+  const summary = buildHarnessEventSummary(state.events || []);
+  const lastEvent = Array.isArray(summary.normalizedEvents) && summary.normalizedEvents.length > 0
+    ? summary.normalizedEvents[summary.normalizedEvents.length - 1]
+    : null;
+  return {
+    runId: String(state.runId || "").trim() || null,
+    taskId: String(state.taskId || "").trim() || null,
+    taskKey: String(state.taskKey || "").trim() || null,
+    mode: String(state.mode || (state.dryRun === true ? "dry-run" : "run")).trim() || "run",
+    dryRun: state.dryRun === true,
+    active: true,
+    success: null,
+    status: "running",
+    startedAt: String(state.startedAt || new Date().toISOString()),
+    updatedAt: String(state.updatedAt || state.startedAt || new Date().toISOString()),
+    finishedAt: null,
+    sourceOrigin: state.sourceOrigin || null,
+    sourcePath: state.sourcePath || null,
+    artifactId: state.artifactId || null,
+    artifactPath: state.artifactPath || null,
+    agentId: state.compiledProfile?.agentId || null,
+    compiledProfile: state.compiledProfile && typeof state.compiledProfile === "object"
+      ? {
+          agentId: state.compiledProfile.agentId || null,
+          name: state.compiledProfile.name || null,
+          entryStageId: state.compiledProfile.entryStageId || null,
+          metadata: state.compiledProfile.metadata || {},
+        }
+      : null,
+    eventCount: Array.isArray(state.events) ? state.events.length : 0,
+    events: Array.isArray(state.events) ? state.events.map((event) => ({ ...(event && typeof event === "object" ? event : {}) })) : [],
+    latestEventAt: summary.latestEventAt || null,
+    latestStageId: summary.latestStageId || null,
+    latestEvent: lastEvent,
+    eventSummary: {
+      ...summary,
+      normalizedEvents: undefined,
+    },
+  };
+}
+
+function setActiveHarnessRun(state = {}) {
+  const runId = String(state.runId || "").trim();
+  if (!runId) return null;
+  const nextState = {
+    ...state,
+    events: Array.isArray(state.events) ? [...state.events] : [],
+    updatedAt: String(state.updatedAt || new Date().toISOString()),
+  };
+  activeHarnessRuns.set(runId, nextState);
+  return buildHarnessActiveRunSnapshot(nextState);
+}
+
+function appendActiveHarnessRunEvent(runId, event = {}) {
+  const key = String(runId || "").trim();
+  if (!key) return null;
+  const current = activeHarnessRuns.get(key);
+  if (!current) return null;
+  current.events.push(event && typeof event === "object" ? { ...event } : event);
+  current.updatedAt = String(event?.timestamp || new Date().toISOString());
+  activeHarnessRuns.set(key, current);
+  return buildHarnessActiveRunSnapshot(current);
+}
+
+function getActiveHarnessRunSnapshot(runId) {
+  const current = activeHarnessRuns.get(String(runId || "").trim());
+  return current ? buildHarnessActiveRunSnapshot(current) : null;
+}
+
+function listActiveHarnessRunSnapshots() {
+  return [...activeHarnessRuns.values()]
+    .map((state) => buildHarnessActiveRunSnapshot(state))
+    .sort((left, right) => Date.parse(String(right?.startedAt || 0)) - Date.parse(String(left?.startedAt || 0)));
+}
+
+function removeActiveHarnessRun(runId) {
+  activeHarnessRuns.delete(String(runId || "").trim());
+}
+
+function summarizeHarnessEvent(event = {}) {
+  const type = String(event?.type || "event").trim().toLowerCase();
+  const stageId = String(event?.stageId || "").trim();
+  const stageType = String(event?.stageType || "").trim();
+  const toStageId = String(event?.toStageId || "").trim();
+  const reason = String(event?.reason || "").trim();
+  const status = String(event?.status || "").trim();
+  const outcome = String(event?.outcome || "").trim();
+  if (type === "harness:stage-start") {
+    return clampRunSummaryText(`Started stage ${stageId || "unknown"}${stageType ? ` (${stageType})` : ""}.`);
+  }
+  if (type === "harness:stage-result") {
+    return clampRunSummaryText(`Stage ${stageId || "unknown"} returned ${formatHarnessRunStatusLabel(status || outcome || "completed")}.`);
+  }
+  if (type === "harness:stage-transition") {
+    return clampRunSummaryText(
+      `Transitioned from ${stageId || "unknown"} to ${toStageId || "unknown"}${reason ? ` (${reason})` : ""}.`,
+    );
+  }
+  if (type === "harness:stage-backoff") {
+    const backoffMs = Math.max(0, Number(event?.backoffMs) || 0);
+    const attempt = Math.max(0, Number(event?.attempt) || 0);
+    return clampRunSummaryText(
+      `Backoff ${backoffMs}ms before retry ${attempt || 1} for stage ${stageId || "unknown"}.`,
+    );
+  }
+  if (type === "harness:completed") {
+    return clampRunSummaryText(`Harness completed at stage ${stageId || "unknown"}.`);
+  }
+  if (type === "harness:stage-failed") {
+    return clampRunSummaryText(`Stage ${stageId || "unknown"} failed with ${formatHarnessRunStatusLabel(status || outcome || "failure")}.`);
+  }
+  if (type === "harness:failed") {
+    return clampRunSummaryText(`Harness failed at stage ${stageId || "unknown"}.`);
+  }
+  return clampRunSummaryText(type.replace(/^harness:/, "").replace(/[-_:]+/g, " "));
+}
+
+function classifyHarnessEventCategory(type) {
+  const normalized = String(type || "").trim().toLowerCase();
+  if (normalized.includes("transition")) return "transition";
+  if (normalized.includes("backoff")) return "control";
+  if (normalized.includes("result")) return "result";
+  if (normalized.includes("failed") || normalized.includes("completed")) return "terminal";
+  if (normalized.includes("start")) return "stage";
+  return "event";
+}
+
+function normalizeHarnessRunEvent(event = {}, index = 0) {
+  const type = String(event?.type || "event").trim() || "event";
+  const result = event?.result && typeof event.result === "object" ? event.result : null;
+  const status = String(event?.status || result?.status || "").trim() || null;
+  const outcome = String(event?.outcome || result?.outcome || "").trim() || null;
+  return {
+    index,
+    timestamp: String(event?.timestamp || event?.at || new Date().toISOString()),
+    type,
+    category: classifyHarnessEventCategory(type),
+    summary: summarizeHarnessEvent(event),
+    stageId: String(event?.stageId || "").trim() || null,
+    stageType: String(event?.stageType || "").trim() || null,
+    toStageId: String(event?.toStageId || "").trim() || null,
+    reason: String(event?.reason || "").trim() || null,
+    status,
+    outcome,
+    dryRun: event?.dryRun === true,
+    attempt: Number.isFinite(Number(event?.attempt)) ? Number(event.attempt) : null,
+    repairAttempt: Number.isFinite(Number(event?.repairAttempt)) ? Number(event.repairAttempt) : null,
+    backoffMs: Number.isFinite(Number(event?.backoffMs)) ? Number(event.backoffMs) : null,
+    taskKey: String(event?.taskKey || "").trim() || null,
+    payload: event && typeof event === "object" ? { ...event } : null,
+  };
+}
+
+function buildHarnessEventSummary(rawEvents = []) {
+  const normalizedEvents = Array.isArray(rawEvents) ? rawEvents.map((event, index) => normalizeHarnessRunEvent(event, index)) : [];
+  const counts = {
+    total: normalizedEvents.length,
+    stage: 0,
+    result: 0,
+    transition: 0,
+    control: 0,
+    terminal: 0,
+  };
+  const byType = {};
+  const byStatus = {};
+  let latestEventAt = null;
+  let latestStageId = null;
+  let terminalState = null;
+  for (const event of normalizedEvents) {
+    counts[event.category] = Math.max(0, Number(counts[event.category] || 0)) + 1;
+    byType[event.type] = Math.max(0, Number(byType[event.type] || 0)) + 1;
+    if (event.status) {
+      byStatus[event.status] = Math.max(0, Number(byStatus[event.status] || 0)) + 1;
+    }
+    if (event.timestamp && (!latestEventAt || Date.parse(event.timestamp) >= Date.parse(latestEventAt))) {
+      latestEventAt = event.timestamp;
+      latestStageId = event.stageId || latestStageId;
+    }
+    if (event.category === "terminal") {
+      terminalState = {
+        type: event.type,
+        status: event.status || null,
+        outcome: event.outcome || null,
+        stageId: event.stageId || null,
+        summary: event.summary,
+        timestamp: event.timestamp,
+      };
+    }
+  }
+  return {
+    counts,
+    byType,
+    byStatus,
+    latestEventAt,
+    latestStageId,
+    terminalState,
+    normalizedEvents,
+  };
+}
+
+function listHarnessRunEvents(runRecord, options = {}) {
+  const summary = buildHarnessEventSummary(runRecord?.events);
+  let events = Array.isArray(summary.normalizedEvents) ? [...summary.normalizedEvents] : [];
+  const typeFilter = String(options.type || "").trim().toLowerCase();
+  const categoryFilter = String(options.category || "").trim().toLowerCase();
+  if (typeFilter) {
+    events = events.filter((event) => String(event.type || "").trim().toLowerCase() === typeFilter);
+  }
+  if (categoryFilter) {
+    events = events.filter((event) => String(event.category || "").trim().toLowerCase() === categoryFilter);
+  }
+  const direction = String(options.direction || "asc").trim().toLowerCase() === "desc" ? "desc" : "asc";
+  events.sort((left, right) => {
+    const leftTime = Date.parse(String(left?.timestamp || 0));
+    const rightTime = Date.parse(String(right?.timestamp || 0));
+    return direction === "desc" ? rightTime - leftTime : leftTime - rightTime;
+  });
+  const limit = Math.max(1, Math.trunc(Number(options.limit) || events.length || 1));
+  return {
+    summary: {
+      ...summary,
+      normalizedEvents: undefined,
+      filteredCount: Math.min(events.length, limit),
+      direction,
+      filters: {
+        ...(typeFilter ? { type: typeFilter } : {}),
+        ...(categoryFilter ? { category: categoryFilter } : {}),
+      },
+    },
+    events: events.slice(0, limit),
+  };
+}
+
+function mergeHarnessRunSummaries(persistedRuns = [], activeRuns = [], limit = 25) {
+  const combined = [...(Array.isArray(activeRuns) ? activeRuns : []), ...(Array.isArray(persistedRuns) ? persistedRuns : [])];
+  combined.sort((left, right) => {
+    const rightTime = Date.parse(String(right?.startedAt || right?.finishedAt || right?.updatedAt || 0));
+    const leftTime = Date.parse(String(left?.startedAt || left?.finishedAt || left?.updatedAt || 0));
+    return rightTime - leftTime;
+  });
+  const seen = new Set();
+  const deduped = [];
+  for (const entry of combined) {
+    const runId = String(entry?.runId || "").trim();
+    if (!runId || seen.has(runId)) continue;
+    seen.add(runId);
+    deduped.push(entry);
+  }
+  return deduped.slice(0, Math.max(1, Number(limit) || 25));
+}
+
+async function executeHarnessRunRequest(body = {}, options = {}) {
+  const harnessConfig = options.harnessConfig || getHarnessRuntimeConfig();
+  const linkedTaskId = normalizeHarnessLinkedTaskId(body?.taskId);
+  if (linkedTaskId) {
+    const taskLookup = await callTaskStoreFunction(TASK_STORE_GET_TASK_EXPORTS, [linkedTaskId]);
+    if (!taskLookup.available) {
+      const error = new Error("Task store unavailable for task-linked harness runs");
+      error.statusCode = 503;
+      throw error;
+    }
+    if (!taskLookup.value) {
+      const error = new Error(`Task not found: ${linkedTaskId}`);
+      error.statusCode = 404;
+      throw error;
+    }
+  }
+
+  const runPlan = resolveHarnessRunPlan(body || {}, harnessConfig);
+  if (runPlan.artifact?.isValid !== true && shouldEnforceHarnessValidation(runPlan.validationMode)) {
+    const error = new Error("Harness validation failed in enforce mode");
+    error.statusCode = 400;
+    error.payload = {
+      validationReport: runPlan.artifact?.validationReport || null,
+      artifactPath: runPlan.artifact?.artifactPath || null,
+    };
+    throw error;
+  }
+
+  const compiledProfile = runPlan.artifact?.compiledProfile;
+  if (!compiledProfile || typeof compiledProfile !== "object") {
+    const error = new Error("Harness artifact is missing a compiled profile");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const dryRun = body?.dryRun === true || String(body?.mode || "").trim().toLowerCase() === "dry-run";
+  const runId = String(body?.runId || "").trim() || `harness-run-${_genCallId()}`;
+  const runEvents = [];
+  const startedAt = new Date().toISOString();
+  const harnessRunner = typeof uiDeps.runCompiledInternalHarnessProfile === "function"
+    ? uiDeps.runCompiledInternalHarnessProfile
+    : runCompiledInternalHarnessProfile;
+  const effectiveTaskKey = String(body?.taskKey || "").trim() || linkedTaskId || `harness:${compiledProfile.agentId || "profile"}:${runId}`;
+  setActiveHarnessRun({
+    runId,
+    taskId: linkedTaskId || null,
+    taskKey: effectiveTaskKey,
+    mode: dryRun ? "dry-run" : "run",
+    dryRun,
+    startedAt,
+    updatedAt: startedAt,
+    sourceOrigin: runPlan.sourceOrigin,
+    sourcePath: runPlan.sourcePath,
+    artifactId: runPlan.artifact?.artifactId || null,
+    artifactPath: runPlan.artifact?.artifactPath || null,
+    compiledProfile,
+    events: [],
+  });
+  let session;
+  let runRecord;
+  try {
+    session = await harnessRunner(compiledProfile, {
+      dryRun,
+      runId,
+      taskKey: effectiveTaskKey,
+      timeoutMs: Number.isFinite(Number(body?.timeoutMs)) && Number(body.timeoutMs) > 0
+        ? Number(body.timeoutMs)
+        : undefined,
+      turnExecutor: typeof uiDeps.harnessTurnExecutor === "function" ? uiDeps.harnessTurnExecutor : undefined,
+      onHarnessEvent: (event) => {
+        runEvents.push(event);
+        appendActiveHarnessRunEvent(runId, event);
+      },
+    });
+    const finishedAt = new Date().toISOString();
+    runRecord = recordHarnessRun({
+      runId,
+      taskId: linkedTaskId || null,
+      taskKey: String(body?.taskKey || "").trim() || linkedTaskId || null,
+      mode: dryRun ? "dry-run" : "run",
+      dryRun,
+      startedAt,
+      finishedAt,
+      sourceOrigin: runPlan.sourceOrigin,
+      sourcePath: runPlan.sourcePath,
+      artifactId: runPlan.artifact?.artifactId || null,
+      artifactPath: runPlan.artifact?.artifactPath || null,
+      compiledProfile,
+      result: session?.result || null,
+      events: runEvents,
+    }, {
+      configDir: resolveUiConfigDir(),
+      actor: "api",
+    });
+  } finally {
+    removeActiveHarnessRun(runId);
+  }
+  let taskRun = null;
+  const warnings = [];
+  if (linkedTaskId) {
+    const appendedRun = await callTaskStoreFunction(
+      TASK_STORE_RUN_EXPORTS.append,
+      [linkedTaskId, buildHarnessTaskRunRecord(linkedTaskId, runRecord, session?.result || null)],
+    );
+    if (!appendedRun.available || !appendedRun.found) {
+      warnings.push("Task run persistence unavailable for linked harness run.");
+    } else if (!appendedRun.value) {
+      warnings.push(`Failed to append harness run to task ${linkedTaskId}.`);
+    } else {
+      taskRun = appendedRun.value;
+    }
+  }
+  return {
+    ...buildHarnessRunPayload(runRecord, session?.result || null, harnessConfig),
+    ...(linkedTaskId ? { taskId: linkedTaskId } : {}),
+    ...(taskRun ? { taskRun } : {}),
+    ...(options.replayedFromRunId ? { replayedFromRunId: options.replayedFromRunId } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
+}
+
+function buildHarnessOverview(configDir = resolveUiConfigDir()) {
+  try {
+    const persisted = summarizeHarnessRuns(configDir, { limit: 5 });
+    const activeRuns = listActiveHarnessRunSnapshots();
+    return {
+      ...persisted,
+      totals: {
+        ...(persisted?.totals || {}),
+        active: activeRuns.length,
+      },
+      activeRunCount: activeRuns.length,
+      activeRuns,
+      lastRun: activeRuns[0] || persisted?.lastRun || null,
+      recentRuns: mergeHarnessRunSummaries(persisted?.recentRuns || [], activeRuns, 5),
+    };
+  } catch {
+    return {
+      enabled: false,
+      activeArtifactId: null,
+      activeArtifactPath: null,
+      activeProfile: null,
+      validationMode: null,
+      totals: { total: 0, successful: 0, failed: 0, dryRuns: 0, active: 0 },
+      activeRunCount: 0,
+      activeRuns: [],
+      lastRun: null,
+      recentRuns: [],
+    };
+  }
+}
+
 function resolveUiTriggerSystem() {
   try {
     const cfg = loadConfig([
@@ -5576,20 +6089,38 @@ function sessionMatchesWorkspaceContext(session, workspaceContext) {
   if (!workspaceContext || workspaceContext.allWorkspaces) return true;
   const sessionWorkspace = resolveSessionWorkspaceMeta(session);
   const hasWorkspaceMeta =
-    Boolean(sessionWorkspace.workspaceId) || Boolean(sessionWorkspace.workspaceDir);
+    Boolean(sessionWorkspace.workspaceId)
+    || Boolean(sessionWorkspace.workspaceDir)
+    || Boolean(sessionWorkspace.workspaceRoot);
+  const activeWorkspaceDir = normalizeCandidatePath(workspaceContext.workspaceDir);
+  const activeWorkspaceRoot = normalizeCandidatePath(workspaceContext.workspaceRoot);
   if (!hasWorkspaceMeta) {
-    // Legacy sessions without workspace metadata are only visible in the
-    // primary (first) workspace — not leaked into every workspace.
     const filter = String(workspaceContext.workspaceFilter || "").trim().toLowerCase();
+    if (!filter || filter === "active") return true;
+    // Legacy sessions without workspace metadata should remain visible in the
+    // default active view and the primary workspace, but not leak into
+    // explicitly selected non-primary workspaces.
     const primaryId = resolvePrimaryWorkspaceId();
-    return !filter || !primaryId || filter === primaryId;
+    const matchesPrimaryWorkspace = !filter || !primaryId || filter === primaryId;
+    if (!matchesPrimaryWorkspace) return false;
+    if (!activeWorkspaceDir && !activeWorkspaceRoot) return true;
+    return activeWorkspaceDir === repoRoot || activeWorkspaceRoot === repoRoot;
   }
   if (sessionWorkspace.workspaceId) {
-    return sessionWorkspace.workspaceId === String(workspaceContext.workspaceFilter || "").trim().toLowerCase();
+    const filter = String(workspaceContext.workspaceFilter || "").trim().toLowerCase();
+    if (filter) {
+      return sessionWorkspace.workspaceId === filter;
+    }
   }
-  const activeWorkspaceDir = normalizeCandidatePath(workspaceContext.workspaceDir);
   if (sessionWorkspace.workspaceDir && activeWorkspaceDir) {
-    return sessionWorkspace.workspaceDir === activeWorkspaceDir;
+    if (sessionWorkspace.workspaceDir === activeWorkspaceDir) return true;
+    if (activeWorkspaceRoot && sessionWorkspace.workspaceDir.startsWith(activeWorkspaceRoot + sep)) return true;
+  }
+  if (sessionWorkspace.workspaceRoot && activeWorkspaceRoot) {
+    if (sessionWorkspace.workspaceRoot === activeWorkspaceRoot) return true;
+  }
+  if (sessionWorkspace.workspaceRoot && activeWorkspaceDir) {
+    if (sessionWorkspace.workspaceRoot === activeWorkspaceDir) return true;
   }
   return !workspaceContext.workspaceFilter;
 }
@@ -7226,8 +7757,8 @@ function normalizeLedgerSessionDocument(activity) {
     ? { ...document.metadata }
     : {};
   const workspaceId = document.workspaceId || metadata.workspaceId || activity?.workspaceId || null;
-  const workspaceDir = document.workspaceDir || metadata.workspaceDir || null;
-  const workspaceRoot = document.workspaceRoot || metadata.workspaceRoot || null;
+  const workspaceDir = normalizeCandidatePath(document.workspaceDir || metadata.workspaceDir);
+  const workspaceRoot = normalizeCandidatePath(document.workspaceRoot || metadata.workspaceRoot || workspaceDir);
   return {
     ...document,
     id: sessionId,
@@ -7295,6 +7826,8 @@ function mergeSessionRecords(primarySession, fallbackSession) {
   if (!fallback) return { ...primary };
   const primaryMeta = primary.metadata && typeof primary.metadata === "object" ? primary.metadata : {};
   const fallbackMeta = fallback.metadata && typeof fallback.metadata === "object" ? fallback.metadata : {};
+  const primaryLifecycleStatus = String(primary.lifecycleStatus || primary.status || "").trim().toLowerCase();
+  const primaryIsLive = primary.runtimeIsLive === true || primaryLifecycleStatus === "active";
   const pickString = (...values) => {
     for (const value of values) {
       const normalized = String(value || "").trim();
@@ -7302,39 +7835,73 @@ function mergeSessionRecords(primarySession, fallbackSession) {
     }
     return null;
   };
+  const pickLatestTimestamp = (...values) => {
+    let winner = null;
+    let winnerMs = Number.NEGATIVE_INFINITY;
+    for (const value of values) {
+      const normalized = String(value || "").trim();
+      if (!normalized) continue;
+      const parsedMs = Date.parse(normalized);
+      if (Number.isFinite(parsedMs) && parsedMs >= winnerMs) {
+        winner = normalized;
+        winnerMs = parsedMs;
+      } else if (!winner) {
+        winner = normalized;
+      }
+    }
+    return winner;
+  };
   const pickList = (...values) => {
     for (const value of values) {
       if (Array.isArray(value) && value.length > 0) return value.map((entry) => ({ ...entry }));
     }
     return [];
   };
-  const workspaceId = pickString(primary.workspaceId, primaryMeta.workspaceId, fallback.workspaceId, fallbackMeta.workspaceId);
-  const workspaceDir = pickString(primary.workspaceDir, primaryMeta.workspaceDir, fallback.workspaceDir, fallbackMeta.workspaceDir);
-  const workspaceRoot = pickString(primary.workspaceRoot, primaryMeta.workspaceRoot, fallback.workspaceRoot, fallbackMeta.workspaceRoot);
+  const workspaceId = pickString(fallback.workspaceId, fallbackMeta.workspaceId, primary.workspaceId, primaryMeta.workspaceId);
+  const workspaceDir = pickString(fallback.workspaceDir, fallbackMeta.workspaceDir, primary.workspaceDir, primaryMeta.workspaceDir);
+  const workspaceRoot = pickString(fallback.workspaceRoot, fallbackMeta.workspaceRoot, primary.workspaceRoot, primaryMeta.workspaceRoot, workspaceDir);
+  const runtimeUpdatedAt = pickLatestTimestamp(
+    primary.runtimeUpdatedAt,
+    primary.lastActiveAt,
+    fallback.runtimeUpdatedAt,
+    fallback.lastActiveAt,
+  );
+  const lifecycleStatus = primaryIsLive
+    ? pickString(primary.lifecycleStatus, primary.status, fallback.lifecycleStatus, fallback.status)
+    : pickString(fallback.lifecycleStatus, fallback.status, primary.lifecycleStatus, primary.status);
+  const status = primaryIsLive
+    ? pickString(primary.status, primary.runtimeState, fallback.status, fallback.runtimeState)
+    : pickString(fallback.status, fallback.runtimeState, primary.status, primary.runtimeState);
   return {
     ...fallback,
     ...primary,
     id: pickString(primary.id, fallback.id),
     sessionId: pickString(primary.sessionId, primary.id, fallback.sessionId, fallback.id),
-    taskId: pickString(primary.taskId, fallback.taskId),
-    taskTitle: pickString(primary.taskTitle, fallback.taskTitle),
-    title: pickString(primary.title, fallback.title),
+    taskId: pickString(fallback.taskId, primary.taskId),
+    taskTitle: pickString(fallback.taskTitle, fallback.title, primary.taskTitle, primary.title),
+    title: pickString(fallback.title, fallback.taskTitle, primary.title, primary.taskTitle),
     type: pickString(primary.type, fallback.type),
-    status: pickString(primary.status, fallback.status),
-    lifecycleStatus: pickString(primary.lifecycleStatus, fallback.lifecycleStatus),
-    runtimeState: pickString(primary.runtimeState, fallback.runtimeState),
+    status,
+    lifecycleStatus,
+    runtimeState: primaryIsLive
+      ? pickString(primary.runtimeState, primary.status, fallback.runtimeState, fallback.status)
+      : pickString(fallback.runtimeState, fallback.status, primary.runtimeState, primary.status),
+    runtimeUpdatedAt,
+    runtimeIsLive: primary.runtimeIsLive === true || fallback.runtimeIsLive === true,
     workspaceId,
     workspaceDir,
     workspaceRoot,
-    createdAt: pickString(primary.createdAt, fallback.createdAt),
-    lastActiveAt: pickString(primary.lastActiveAt, fallback.lastActiveAt),
-    totalEvents: Math.max(0, Number(primary.totalEvents ?? fallback.totalEvents ?? 0) || 0),
+    createdAt: pickString(fallback.createdAt, primary.createdAt),
+    lastActiveAt: pickLatestTimestamp(primary.lastActiveAt, fallback.lastActiveAt, runtimeUpdatedAt),
+    totalEvents: Math.max(0, Number(primary.totalEvents ?? fallback.totalEvents ?? 0) || 0, Number(primary.eventCount ?? fallback.eventCount ?? 0) || 0),
     turnCount: Math.max(0, Number(primary.turnCount ?? fallback.turnCount ?? 0) || 0),
     turns: pickList(primary.turns, fallback.turns),
     messages: pickList(primary.messages, fallback.messages),
+    preview: pickString(primary.preview, primary.lastMessage, fallback.preview, fallback.lastMessage),
+    lastMessage: pickString(primary.lastMessage, primary.preview, fallback.lastMessage, fallback.preview),
     metadata: {
-      ...fallbackMeta,
       ...primaryMeta,
+      ...fallbackMeta,
       ...(workspaceId ? { workspaceId } : {}),
       ...(workspaceDir ? { workspaceDir } : {}),
       ...(workspaceRoot ? { workspaceRoot } : {}),
@@ -7348,7 +7915,8 @@ function listDurableSessionsFromLedger(workspaceContext = null) {
     limit: 5000,
   })
     .map((activity) => normalizeLedgerSessionDocument(activity))
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext));
 }
 
 function mergeTrackerAndLedgerSessions(baseSessions = [], workspaceContext = null) {
@@ -12554,6 +13122,9 @@ function broadcastTuiSessionsSnapshot(reason = "updated", detail = {}) {
 function buildCurrentTuiMonitorStats() {
   const executor = uiDeps.getInternalExecutor?.() || null;
   const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
+  const harness = injectedStats?.harness && typeof injectedStats.harness === "object"
+    ? injectedStats.harness
+    : buildHarnessOverview();
   const status = executor?.getStatus?.() || {};
   const slots = Array.isArray(status?.slots) ? status.slots : [];
   const runtimeStats = getRuntimeStats() || {};
@@ -12599,6 +13170,7 @@ function buildCurrentTuiMonitorStats() {
       recovery: status?.inProgressRecovery && typeof status.inProgressRecovery === "object"
         ? status.inProgressRecovery
         : injectedStats?.recovery || null,
+      harness,
     },
     runtimeStats: {
       ...runtimeStats,
@@ -16219,8 +16791,12 @@ async function handleApi(req, res, url) {
       ? {
           ...(rawData && typeof rawData === "object" ? rawData : {}),
           serverState,
+          harness: buildHarnessOverview(),
         }
-      : rawData;
+      : {
+          ...((rawData && typeof rawData === "object") ? rawData : {}),
+          harness: buildHarnessOverview(),
+        };
     const payload = { ok: true, data };
     setCachedApiResponse("status", payload);
     jsonResponse(res, 200, payload);
@@ -20746,6 +21322,7 @@ async function handleApi(req, res, url) {
         uiDeps.getInternalExecutor?.()?.getStatus?.()?.repoAreaLocks || null,
         { now: "2026-03-24T12:00:00.000Z" },
       );
+      summary.harness = buildHarnessOverview();
       jsonResponse(res, 200, {
         ok: true,
         data: summary,
@@ -24190,12 +24767,38 @@ if (path === "/api/agent-logs/context") {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
       const limit = Number(url.searchParams.get("limit") || 25);
+      const activeRuns = listActiveHarnessRunSnapshots();
+      const persistedRuns = listHarnessRuns(resolveUiConfigDir(), { limit: Math.max(limit, 25) });
       jsonResponse(res, 200, {
         ok: true,
-        items: listHarnessRuns(resolveUiConfigDir(), { limit }),
+        activeRunCount: activeRuns.length,
+        items: mergeHarnessRunSummaries(persistedRuns, activeRuns, limit),
       });
     } catch (err) {
       jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  const harnessRunEventsMatch = path.match(/^\/api\/harness\/runs\/([^/]+)\/events$/);
+  if (harnessRunEventsMatch && req.method === "GET") {
+    try {
+      const runId = decodeURIComponent(harnessRunEventsMatch[1]);
+      const run = getActiveHarnessRunSnapshot(runId) || readHarnessRunRecord(resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`));
+      const payload = listHarnessRunEvents(run, {
+        limit: Number(url.searchParams.get("limit")) || 120,
+        direction: url.searchParams.get("direction") || "asc",
+        type: url.searchParams.get("type") || "",
+        category: url.searchParams.get("category") || "",
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        runId,
+        summary: payload.summary,
+        events: payload.events,
+      });
+    } catch (err) {
+      jsonResponse(res, 404, { ok: false, error: err.message });
     }
     return;
   }
@@ -24204,13 +24807,50 @@ if (path === "/api/agent-logs/context") {
   if (harnessRunMatch && req.method === "GET") {
     try {
       const runId = decodeURIComponent(harnessRunMatch[1]);
-      const runPath = resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`);
+      const run = getActiveHarnessRunSnapshot(runId) || readHarnessRunRecord(resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`));
+      const eventSummary = buildHarnessEventSummary(run?.events);
       jsonResponse(res, 200, {
         ok: true,
-        run: readHarnessRunRecord(runPath),
+        run,
+        eventSummary: {
+          ...eventSummary,
+          normalizedEvents: undefined,
+        },
+        normalizedEvents: eventSummary.normalizedEvents,
       });
     } catch (err) {
       jsonResponse(res, 404, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  const harnessReplayMatch = path.match(/^\/api\/harness\/runs\/([^/]+)\/replay$/);
+  if (harnessReplayMatch && req.method === "POST") {
+    try {
+      const sourceRunId = decodeURIComponent(harnessReplayMatch[1]);
+      const sourceRunPath = resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${sourceRunId}.json`);
+      const sourceRun = readHarnessRunRecord(sourceRunPath);
+      const body = await readJsonBody(req);
+      const replayPayload = await executeHarnessRunRequest({
+        ...(body && typeof body === "object" ? body : {}),
+        ...(String(body?.artifactPath || "").trim() ? {} : (sourceRun?.artifactPath ? { artifactPath: sourceRun.artifactPath } : {})),
+        ...(String(body?.sourcePath || "").trim() || String(body?.source || "").trim()
+          ? {}
+          : (sourceRun?.sourcePath ? { sourcePath: sourceRun.sourcePath } : {})),
+        ...(String(body?.taskId || "").trim() ? {} : (sourceRun?.taskId ? { taskId: sourceRun.taskId } : {})),
+        ...(String(body?.taskKey || "").trim() ? {} : (sourceRun?.taskKey ? { taskKey: sourceRun.taskKey } : {})),
+      }, {
+        harnessConfig: getHarnessRuntimeConfig(),
+        replayedFromRunId: sourceRunId,
+      });
+      jsonResponse(res, 200, replayPayload);
+    } catch (err) {
+      const statusCode = Number(err?.statusCode) || (String(err?.message || "").includes("not found") ? 404 : 400);
+      jsonResponse(res, statusCode, {
+        ok: false,
+        error: err.message,
+        ...(err?.payload && typeof err.payload === "object" ? err.payload : {}),
+      });
     }
     return;
   }
@@ -24294,68 +24934,17 @@ if (path === "/api/agent-logs/context") {
   if (path === "/api/harness/run" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const harnessConfig = getHarnessRuntimeConfig();
-      const runPlan = resolveHarnessRunPlan(body || {}, harnessConfig);
-      if (runPlan.artifact?.isValid !== true && shouldEnforceHarnessValidation(runPlan.validationMode)) {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "Harness validation failed in enforce mode",
-          validationReport: runPlan.artifact?.validationReport || null,
-          artifactPath: runPlan.artifact?.artifactPath || null,
-        });
-        return;
-      }
-
-      const compiledProfile = runPlan.artifact?.compiledProfile;
-      if (!compiledProfile || typeof compiledProfile !== "object") {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "Harness artifact is missing a compiled profile",
-        });
-        return;
-      }
-
-      const dryRun = body?.dryRun === true || String(body?.mode || "").trim().toLowerCase() === "dry-run";
-      const runId = String(body?.runId || "").trim() || `harness-run-${_genCallId()}`;
-      const runEvents = [];
-      const startedAt = new Date().toISOString();
-      const harnessRunner = typeof uiDeps.runCompiledInternalHarnessProfile === "function"
-        ? uiDeps.runCompiledInternalHarnessProfile
-        : runCompiledInternalHarnessProfile;
-      const session = await harnessRunner(compiledProfile, {
-        dryRun,
-        runId,
-        taskKey: String(body?.taskKey || "").trim() || `harness:${compiledProfile.agentId || "profile"}:${runId}`,
-        timeoutMs: Number.isFinite(Number(body?.timeoutMs)) && Number(body.timeoutMs) > 0
-          ? Number(body.timeoutMs)
-          : undefined,
-        turnExecutor: typeof uiDeps.harnessTurnExecutor === "function" ? uiDeps.harnessTurnExecutor : undefined,
-        onHarnessEvent: (event) => {
-          runEvents.push(event);
-        },
+      const payload = await executeHarnessRunRequest(body, {
+        harnessConfig: getHarnessRuntimeConfig(),
       });
-      const finishedAt = new Date().toISOString();
-      const runRecord = recordHarnessRun({
-        runId,
-        mode: dryRun ? "dry-run" : "run",
-        dryRun,
-        startedAt,
-        finishedAt,
-        sourceOrigin: runPlan.sourceOrigin,
-        sourcePath: runPlan.sourcePath,
-        artifactId: runPlan.artifact?.artifactId || null,
-        artifactPath: runPlan.artifact?.artifactPath || null,
-        compiledProfile,
-        result: session?.result || null,
-        events: runEvents,
-      }, {
-        configDir: resolveUiConfigDir(),
-        actor: "api",
-      });
-      const payload = buildHarnessRunPayload(runRecord, session?.result || null, harnessConfig);
       jsonResponse(res, 200, payload);
     } catch (err) {
-      jsonResponse(res, 400, { ok: false, error: err.message });
+      const statusCode = Number(err?.statusCode) || 400;
+      jsonResponse(res, statusCode, {
+        ok: false,
+        error: err.message,
+        ...(err?.payload && typeof err.payload === "object" ? err.payload : {}),
+      });
     }
     return;
   }
@@ -25330,20 +25919,25 @@ if (path === "/api/agent-logs/context") {
     }
     const tracker = getSessionTracker();
       const getScopedSession = () => {
-        const session = tracker.getSessionById(sessionId)
-        || normalizeLedgerSessionDocument(getSessionActivityFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext)));
+        const trackerSession = tracker.getSessionById(sessionId);
+        const ledgerSession = normalizeLedgerSessionDocument(
+          getSessionActivityFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext)),
+        );
+        const session = mergeSessionRecords(trackerSession, ledgerSession);
         if (!session) return null;
         return sessionMatchesWorkspaceContext(session, workspaceContext) ? session : null;
       };
-    const getScopedSessionRecord = ({ includeMessages = false } = {}) => {
-      const session = includeMessages
-        ? tracker.getSessionMessages(sessionId)
-        : (tracker.getSessionById(sessionId) || tracker.getSessionMessages(sessionId));
-      const durableSession = session
-        || normalizeLedgerSessionDocument(getSessionActivityFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext)));
-      if (!durableSession) return null;
-      return sessionMatchesWorkspaceContext(durableSession, workspaceContext) ? durableSession : null;
-    };
+      const getScopedSessionRecord = ({ includeMessages = false } = {}) => {
+        const trackerSession = includeMessages
+          ? tracker.getSessionMessages(sessionId)
+          : (tracker.getSessionById(sessionId) || tracker.getSessionMessages(sessionId));
+        const ledgerSession = normalizeLedgerSessionDocument(
+          getSessionActivityFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext)),
+        );
+        const durableSession = mergeSessionRecords(trackerSession, ledgerSession);
+        if (!durableSession) return null;
+        return sessionMatchesWorkspaceContext(durableSession, workspaceContext) ? durableSession : null;
+      };
 
     if (!action && req.method === "GET") {
       try {
@@ -28386,6 +28980,7 @@ export async function startTelegramUiServer(options = {}) {
 
 export function stopTelegramUiServer() {
   if (!uiServer) return;
+  const serverToClose = uiServer;
   setComponentStatus("server", "stopped");
   stopTunnel();
   stopWsHeartbeat();
@@ -28431,7 +29026,15 @@ export function stopTelegramUiServer() {
   }
   wsServer = null;
   try {
-    uiServer.close();
+    if (typeof serverToClose.closeIdleConnections === "function") {
+      serverToClose.closeIdleConnections();
+    }
+    serverToClose.close(() => {});
+    if (typeof serverToClose.closeAllConnections === "function") {
+      serverToClose.closeAllConnections();
+    } else if (typeof serverToClose.closeIdleConnections === "function") {
+      serverToClose.closeIdleConnections();
+    }
   } catch {
     /* best effort */
   }

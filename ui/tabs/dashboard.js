@@ -353,6 +353,16 @@ export function DashboardTab() {
   const worktreeRecovery = buildWorktreeRecoveryViewModel(
     status?.worktreeRecovery || status?.worktree_recovery || null,
   );
+  const sessionHealth = status?.sessionHealth && typeof status.sessionHealth === "object"
+    ? status.sessionHealth
+    : {};
+  const durableContext = status?.context && typeof status.context === "object"
+    ? status.context
+    : {};
+  const toolSummary = status?.toolSummary && typeof status.toolSummary === "object"
+    ? status.toolSummary
+    : {};
+  const topRuntimeTool = Array.isArray(toolSummary.topTools) ? toolSummary.topTools[0] : null;
 
   const running = useLiveTaskCounts
     ? Number(liveTaskCounts.inProgress || 0)
@@ -882,6 +892,20 @@ export function DashboardTab() {
                 ${event.error ? html`<div style="font-size:11px;color:var(--color-error);margin-top:4px;">${event.error}</div>` : null}
               </div>
             `)}
+          </div>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <div>
+                <div style="font-size:12px;font-weight:600;">Durable Runtime</div>
+                <div style="font-size:11px;color:var(--text-secondary);">Session lineage and context pressure from the durable runtime / SQL-backed ledger surfaces.</div>
+              </div>
+              <span class="dashboard-chip">State ledger / SQL</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary);line-height:1.6;">
+              <div><b>Sessions:</b> live ${Number(durableContext.liveSessionCount || sessionHealth.live || status?.activeSessionCount || 0)} · completed ${Number(durableContext.completedSessionCount || sessionHealth.completed || status?.completedSessionCount || 0)} · total ${Number(status?.totalSessionCount || status?.totalSessions || 0)}</div>
+              <div><b>Context Pressure:</b> near limit ${Number(durableContext.sessionsNearContextLimit || 0)} · high pressure ${Number(durableContext.sessionsHighContextPressure || 0)} · max ${Number(durableContext.maxContextUsagePercent || 0)}%</div>
+              <div><b>Top Tool:</b> ${topRuntimeTool?.name ? `${topRuntimeTool.name}${Number(topRuntimeTool.count || 0) > 0 ? ` · ${Number(topRuntimeTool.count)} calls` : ""}` : "No durable tool summary recorded yet."}</div>
+            </div>
           </div>
           ${tickerTasks.length > 0 ? html`
             <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">

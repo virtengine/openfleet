@@ -440,7 +440,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   });
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
-  const screenStats = screen === "status" ? stats : undefined;
+  const screenStats = stats;
   const settingsState = {
     configDir: bridge?.configDir,
     host,

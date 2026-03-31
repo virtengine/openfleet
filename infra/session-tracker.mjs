@@ -240,6 +240,7 @@ function normalizeSessionMetadata(metadata = {}) {
     "title",
     "workspaceId",
     "workspaceDir",
+    "workspaceRoot",
     "branch",
     "workflowId",
     "workflowName",
@@ -613,6 +614,7 @@ function buildSessionSummaryRecord(session, { progress = null, preview = null, r
     runtimeIsLive: isLive,
     workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
     workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
+    workspaceRoot: String(s?.metadata?.workspaceRoot || "").trim() || null,
     branch: String(session?.metadata?.branch || "").trim() || null,
     workflowId: String(session?.metadata?.workflowId || "").trim() || null,
     workflowName: String(session?.metadata?.workflowName || "").trim() || null,
@@ -699,12 +701,13 @@ function persistSessionRecordToStateLedger(session) {
   const record = buildStateLedgerSessionRecord(session);
   if (!record) return;
   const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
+  const explicitRepoRoot = String(process.env.REPO_ROOT || "").trim();
   try {
     upsertSessionRecordToStateLedger(
       record,
       explicitLedgerPath && isTestRuntime()
         ? { ledgerPath: explicitLedgerPath }
-        : { repoRoot: SESSION_TRACKER_REPO_ROOT },
+        : { repoRoot: explicitRepoRoot ? resolve(explicitRepoRoot) : SESSION_TRACKER_REPO_ROOT },
     );
   } catch {
     // Best-effort persistence — session tracking should continue even if the
@@ -886,6 +889,9 @@ export class SessionTracker {
 
   /** @type {{ loadedAt: number, sessions: Array<Object> }} */
   #persistedSummaryCache = { loadedAt: 0, sessions: [] };
+
+  /** @type {Set<string>} persisted sessions already rebuilt into sqlite */
+  #backfilledSessionIds = new Set();
 
   /** @type {ReturnType<typeof setInterval>|null} */
   #flushTimer = null;
@@ -1400,6 +1406,7 @@ export class SessionTracker {
               this.#evictOldest();
             }
             this.#sessions.set(restored.id, restored);
+            this.#backfillSessionToStateLedger(restored);
             session = restored;
           }
         }
@@ -1612,6 +1619,7 @@ export class SessionTracker {
       const restored = buildSessionRecordFromPersistedData(data, this.#idleThresholdMs);
       if (!restored) continue;
       this.#sessions.set(restored.id, restored);
+      this.#backfillSessionToStateLedger(restored);
     }
   }
 
@@ -1745,6 +1753,15 @@ export class SessionTracker {
     });
     session.accumulatedAt = new Date().toISOString();
     return true;
+  }
+
+  #backfillSessionToStateLedger(session, { force = false } = {}) {
+    if (!session) return;
+    const sessionId = String(session.id || session.taskId || "").trim();
+    if (!sessionId) return;
+    if (!force && this.#backfilledSessionIds.has(sessionId)) return;
+    persistSessionRecordToStateLedger(session);
+    this.#backfilledSessionIds.add(sessionId);
   }
 
   #appendTrajectoryStep(session, event) {
@@ -2008,6 +2025,7 @@ export class SessionTracker {
           const id = restored.id;
           if (this.#sessions.has(id)) continue;
           this.#sessions.set(id, restored);
+          this.#backfillSessionToStateLedger(restored);
           // Skip completed-session accumulation during startup hydration to keep disk-backed reloads fast.
           // Sessions are still available for listing and lazy message reads from disk.
         } catch {
@@ -2049,6 +2067,7 @@ export class SessionTracker {
             this.#idleThresholdMs,
           );
           if (!restored) continue;
+          this.#backfillSessionToStateLedger(restored);
           const sessionId = restored.id || restored.taskId;
           const lastActiveAt =
             restored.lastActiveAt || new Date(restored.lastActivityAt).toISOString();

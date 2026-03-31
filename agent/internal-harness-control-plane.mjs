@@ -81,6 +81,8 @@ export function readHarnessRunRecord(runPath) {
 function buildHarnessRunSummary(runRecord) {
   return {
     runId: runRecord.runId,
+    taskId: runRecord.taskId || null,
+    taskKey: runRecord.taskKey || null,
     mode: runRecord.mode,
     dryRun: runRecord.dryRun === true,
     success: runRecord.result?.success === true,
@@ -165,6 +167,8 @@ export function recordHarnessRun(runInput, options = {}) {
     schemaVersion: 1,
     kind: "bosun-harness-run-record",
     runId,
+    taskId: toTrimmedString(runInput?.taskId || "") || null,
+    taskKey: toTrimmedString(runInput?.taskKey || "") || null,
     actor: toTrimmedString(options.actor || runInput?.actor || "api") || "api",
     recordedAt: new Date().toISOString(),
     startedAt,
@@ -238,6 +242,31 @@ export function listHarnessRuns(configDir, options = {}) {
     return rightTime - leftTime;
   });
   return records.slice(0, limit);
+}
+
+export function summarizeHarnessRuns(configDir, options = {}) {
+  const recentRuns = listHarnessRuns(configDir, {
+    limit: Number.isFinite(Number(options.limit)) && Number(options.limit) > 0
+      ? Math.trunc(Number(options.limit))
+      : 10,
+  });
+  const activeState = readActiveHarnessState(configDir);
+  const totals = {
+    total: recentRuns.length,
+    successful: recentRuns.filter((run) => run.success === true).length,
+    failed: recentRuns.filter((run) => run.success === false).length,
+    dryRuns: recentRuns.filter((run) => run.dryRun === true).length,
+  };
+  return {
+    enabled: activeState?.isValid === true || Boolean(activeState?.artifactPath),
+    activeArtifactId: activeState?.artifactId || null,
+    activeArtifactPath: activeState?.artifactPath || null,
+    activeProfile: activeState?.compiledProfile || null,
+    validationMode: activeState?.validationMode || null,
+    totals,
+    lastRun: activeState?.lastRun || recentRuns[0] || null,
+    recentRuns,
+  };
 }
 
 export function shouldEnforceHarnessValidation(validationMode) {

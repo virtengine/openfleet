@@ -40,14 +40,23 @@ export default function StatusScreen({ stats, sessions, tasks }) {
   };
   const activeSessions = (sessions || []).filter((session) => session?.status === "active");
   const executorSlots = Array.isArray(s.executor?.slots) ? s.executor.slots : [];
+  const sessionHealth = s.sessionHealth && typeof s.sessionHealth === "object" ? s.sessionHealth : {};
+  const durableContext = s.context && typeof s.context === "object" ? s.context : {};
+  const toolSummary = s.toolSummary && typeof s.toolSummary === "object" ? s.toolSummary : {};
+  const topTools = Array.isArray(toolSummary.topTools) ? toolSummary.topTools.slice(0, 3) : [];
+  const harness = s.harness && typeof s.harness === "object" ? s.harness : null;
   const lastRecovery = s.recovery?.lastRun && typeof s.recovery.lastRun === "object"
     ? s.recovery.lastRun
+    : null;
+  const lastHarnessRun = harness?.lastRun && typeof harness.lastRun === "object"
+    ? harness.lastRun
     : null;
   const metrics = [
     { key: "active-sessions", label: "Active Sessions", value: activeSessions.length },
     { key: "tasks", label: "Tasks", value: (tasks || []).length },
     { key: "retry-queue", label: "Retry Queue", value: s.retryQueue?.count || 0 },
     { key: "recovery-resets", label: "Recovery Resets", value: s.recovery?.totals?.resetToTodo || 0 },
+    { key: "harness-runs", label: "Harness Runs", value: harness?.totals?.total || 0 },
     { key: "cost", label: "Cost", value: Number(s.totalCostUsd || 0).toFixed(2), suffix: " USD" },
   ];
 
@@ -77,6 +86,30 @@ export default function StatusScreen({ stats, sessions, tasks }) {
         <//>
       <//>
       <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} bold>Durable Runtime<//>
+        <${Text}>
+          Sessions live ${Number(durableContext.liveSessionCount || sessionHealth.live || s.activeSessionCount || 0)}
+          {" | "}completed ${Number(durableContext.completedSessionCount || sessionHealth.completed || s.completedSessionCount || 0)}
+          {" | "}total ${Number(s.totalSessionCount || s.totalSessions || sessions?.length || 0)}
+        <//>
+        <${Text}>
+          Context near-limit ${Number(durableContext.sessionsNearContextLimit || 0)}
+          {" | "}high-pressure ${Number(durableContext.sessionsHighContextPressure || 0)}
+          {" | "}max ${Number(durableContext.maxContextUsagePercent || 0)}%
+        <//>
+        <${Text}>
+          State ledger / SQL
+          {" | "}editing ${Number(sessionHealth.editing || 0)}
+          {" | "}blocked ${Number(sessionHealth.blocked || 0)}
+          {" | "}stalled ${Number(sessionHealth.stalled || 0)}
+        <//>
+        <${Text}>
+          Top tools ${topTools.length
+            ? topTools.map((tool) => `${tool.name}:${Number(tool.count || 0)}`).join(", ")
+            : "none"}
+        <//>
+      <//>
+      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
         <${Text} bold>Recovery / Orphans<//>
         ${lastRecovery
           ? html`
@@ -96,6 +129,32 @@ export default function StatusScreen({ stats, sessions, tasks }) {
               <//>
             `
           : html`<${Text} dimColor>No recovery activity recorded yet<//>`}
+      <//>
+      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} bold>Harness Runs<//>
+        ${harness
+          ? html`
+              <${Text}>
+                Runs ${harness.totals?.total || 0}
+                {" | "}success ${harness.totals?.successful || 0}
+                {" | "}failed ${harness.totals?.failed || 0}
+                {" | "}dry-run ${harness.totals?.dryRuns || 0}
+              <//>
+              <${Text}>
+                Active profile ${harness.activeProfile?.name || harness.activeProfile?.agentId || "-"}
+                {" | "}validation ${harness.validationMode || "-"}
+              <//>
+              ${lastHarnessRun
+                ? html`
+                    <${Text}>
+                      Last ${lastHarnessRun.mode || "run"} ${lastHarnessRun.status || "unknown"}
+                      {" | "}success ${lastHarnessRun.success === true ? "yes" : "no"}
+                      {" | "}artifact ${lastHarnessRun.artifactId || "-"}
+                    <//>
+                  `
+                : html`<${Text} dimColor>No harness runs recorded yet<//>`}
+            `
+          : html`<${Text} dimColor>Harness telemetry unavailable<//>`}
       <//>
       <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
         <${Text} bold>Executor Slots<//>

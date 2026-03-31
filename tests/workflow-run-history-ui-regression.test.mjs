@@ -146,4 +146,12 @@ describe("workflow run history UI pagination", () => {
       expect(source).not.toContain("validateEdgePortMapping");
     });
   }
+
+  it("ui exposes durable session-family and ledger source context in run details", () => {
+    expect(uiSource).toContain("Durable Sessions:");
+    expect(uiSource).toContain("Durable Session Family:");
+    expect(uiSource).toContain("Source:");
+    expect(uiSource).toContain("state ledger / SQLite");
+    expect(uiSource).toContain("All Sessions:");
+  });
 });

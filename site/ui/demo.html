@@ -3724,6 +3724,16 @@
         if (!STATE.harness) {
           const compiledAt = '2026-03-31T05:30:00.000Z';
           const artifactPath = '/demo/.bosun/harness/internal-harness-profile.json';
+          const compiledProfile = {
+            id: 'demo-internal-harness',
+            name: 'Bosun Demo Harness',
+            description: 'Deterministic internal harness profile for the Bosun demo control plane.',
+            entryStageId: 'plan',
+            stages: [
+              { id: 'plan', type: 'prompt', prompt: 'Plan the next deterministic verification pass.' },
+              { id: 'validate', type: 'gate', prompt: 'Validate the patch and emit the final report.' },
+            ],
+          };
           STATE.harness = {
             harnessConfig: {
               enabled: true,
@@ -3736,16 +3746,7 @@
               isValid: true,
               sourceOrigin: 'config-file',
               sourcePath: '/demo/config/internal-harness-profile.json',
-              compiledProfile: {
-                id: 'demo-internal-harness',
-                name: 'Bosun Demo Harness',
-                description: 'Deterministic internal harness profile for the Bosun demo control plane.',
-                entryStageId: 'plan',
-                stages: [
-                  { id: 'plan', type: 'prompt', prompt: 'Plan the next deterministic verification pass.' },
-                  { id: 'validate', type: 'gate', prompt: 'Validate the patch and emit the final report.' },
-                ],
-              },
+              compiledProfile,
               validationReport: {
                 ok: true,
                 mode: 'report',
@@ -3760,11 +3761,36 @@
               activatedAt: compiledAt,
               actor: 'demo',
               compiledProfile: {
-                id: 'demo-internal-harness',
-                name: 'Bosun Demo Harness',
-                entryStageId: 'plan',
+                id: compiledProfile.id,
+                name: compiledProfile.name,
+                entryStageId: compiledProfile.entryStageId,
               },
             },
+            runs: [
+              {
+                runId: 'demo-harness-run-1',
+                runPath: '/demo/.bosun/harness/runs/demo-harness-run-1.json',
+                mode: 'dry-run',
+                dryRun: true,
+                startedAt: compiledAt,
+                finishedAt: compiledAt,
+                sourceOrigin: 'config-file',
+                sourcePath: '/demo/config/internal-harness-profile.json',
+                artifactId: 'demo-harness-artifact',
+                artifactPath,
+                compiledProfile,
+                events: [
+                  { type: 'stage:start', stageId: 'plan', at: compiledAt, message: 'Planning verification pass' },
+                  { type: 'stage:end', stageId: 'validate', at: compiledAt, message: 'Validation report emitted' },
+                ],
+                result: {
+                  success: true,
+                  status: 'completed',
+                  summary: 'Demo harness completed deterministically.',
+                  outputs: { report: 'Harness demo run completed.' },
+                },
+              },
+            ],
           };
         }
 
@@ -3782,6 +3808,25 @@
               compiledProfile: { ...STATE.harness.artifact.compiledProfile },
               validationReport: { ...STATE.harness.artifact.validationReport },
             },
+          };
+        }
+        if (route === '/api/harness/runs') {
+          const limit = Math.max(1, Number(params.get('limit') || 25));
+          return {
+            ok: true,
+            items: (STATE.harness.runs || []).slice(0, limit).map((run) => ({ ...run, compiledProfile: { ...run.compiledProfile } })),
+          };
+        }
+        const harnessRunMatch = route.match(/^\/api\/harness\/runs\/([^/]+)$/);
+        if (harnessRunMatch) {
+          const runId = decodeURIComponent(harnessRunMatch[1]);
+          const run = (STATE.harness.runs || []).find((entry) => entry.runId === runId);
+          if (!run) {
+            return { ok: false, error: `Harness run not found: ${runId}` };
+          }
+          return {
+            ok: true,
+            run: { ...run, compiledProfile: { ...run.compiledProfile } },
           };
         }
         if (route === '/api/harness/compile' && method === 'POST') {
@@ -3854,6 +3899,50 @@
             compiledProfile: { ...STATE.harness.artifact.compiledProfile },
             validationReport: { ...STATE.harness.artifact.validationReport },
             compiledProfileJson: STATE.harness.artifact.compiledProfileJson,
+          };
+        }
+        if (route === '/api/harness/run' && method === 'POST') {
+          const startedAt = new Date().toISOString();
+          const dryRun = body?.dryRun === true || String(body?.mode || '').trim().toLowerCase() === 'dry-run';
+          const runId = String(body?.runId || '').trim() || `demo-harness-run-${Date.now()}`;
+          const runRecord = {
+            runId,
+            runPath: `/demo/.bosun/harness/runs/${runId}.json`,
+            mode: dryRun ? 'dry-run' : 'run',
+            dryRun,
+            startedAt,
+            finishedAt: startedAt,
+            sourceOrigin: STATE.harness.artifact.sourceOrigin,
+            sourcePath: STATE.harness.artifact.sourcePath,
+            artifactId: STATE.harness.artifact.artifactId,
+            artifactPath: STATE.harness.artifact.artifactPath,
+            compiledProfile: { ...STATE.harness.artifact.compiledProfile },
+            events: [
+              { type: 'run:start', at: startedAt, message: dryRun ? 'Dry run started' : 'Harness run started' },
+              { type: 'run:end', at: startedAt, message: dryRun ? 'Dry run completed' : 'Harness run completed' },
+            ],
+            result: {
+              success: true,
+              status: 'completed',
+              summary: dryRun ? 'Demo dry-run completed.' : 'Demo harness run completed.',
+              outputs: { report: 'Harness demo run completed.' },
+            },
+          };
+          STATE.harness.runs = [runRecord, ...(STATE.harness.runs || [])].slice(0, 25);
+          return {
+            ok: true,
+            status: runRecord.result.status,
+            success: true,
+            dryRun,
+            runId,
+            runPath: runRecord.runPath,
+            artifactId: runRecord.artifactId,
+            artifactPath: runRecord.artifactPath,
+            sourceOrigin: runRecord.sourceOrigin,
+            sourcePath: runRecord.sourcePath,
+            harnessConfig: { ...STATE.harness.harnessConfig },
+            result: { ...runRecord.result },
+            runRecord: { ...runRecord, compiledProfile: { ...runRecord.compiledProfile } },
           };
         }
 

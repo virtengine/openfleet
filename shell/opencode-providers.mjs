@@ -456,7 +456,7 @@ async function execOpencode(args, execOpts = {}) {
   const bin = resolveOpencodeBin();
   const isWindows = process.platform === "win32";
   const baseOpts = {
-    timeout: 30_000,
+    timeout: 5_000,
     maxBuffer: 10 * 1024 * 1024,
     encoding: "utf-8",
     windowsHide: process.platform === "win32",
@@ -922,7 +922,6 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
-
 
 
 

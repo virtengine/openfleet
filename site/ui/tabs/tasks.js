@@ -1302,10 +1302,10 @@ export function buildTaskWorkflowRunLineageBadges(run) {
     ? run.delegationTopology
     : normalizeTaskWorkflowDelegationTopology(run);
   const runGraph = run?.runGraph && typeof run.runGraph === "object" ? run.runGraph : null;
-  const runCount = Array.isArray(runGraph.runs) ? runGraph.runs.length : 0;
-  const executionCount = Array.isArray(runGraph.executions) ? runGraph.executions.length : 0;
-  const timelineCount = Array.isArray(runGraph.timeline) ? runGraph.timeline.length : 0;
-  const retryCount = Array.isArray(runGraph.edges)
+  const runCount = Array.isArray(runGraph?.runs) ? runGraph.runs.length : 0;
+  const executionCount = Array.isArray(runGraph?.executions) ? runGraph.executions.length : 0;
+  const timelineCount = Array.isArray(runGraph?.timeline) ? runGraph.timeline.length : 0;
+  const retryCount = Array.isArray(runGraph?.edges)
     ? runGraph.edges.filter((entry) => entry?.type === "retry").length
     : 0;
   const badges = [];

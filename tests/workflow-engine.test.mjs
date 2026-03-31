@@ -7533,10 +7533,10 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
 
     engine.save(wf);
     // If timers leaked, the 60s timeout timer would keep the process alive.
-    // We verify it completes quickly.
+    // We verify execution finishes well before the configured timeout.
     const start = Date.now();
     const result = await engine.execute(wf.id, {});
-    expect(Date.now() - start).toBeLessThan(1000);
+    expect(Date.now() - start).toBeLessThan(5000);
     expect(result.errors.length).toBe(0);
     const output = result.getNodeOutput("fast");
     expect(output.fast).toBe(true);

@@ -6685,6 +6685,13 @@ function RunHistoryView() {
     const auditSummary = auditActivity?.summary && typeof auditActivity.summary === "object"
       ? auditActivity.summary
       : {};
+    const auditSourceLabel = String(
+      auditSummary?.stateSource
+      || auditSummary?.storage
+      || auditSummary?.store
+      || auditSummary?.source
+      || "state ledger / SQLite",
+    ).trim();
     const auditSessionActivity =
       auditActivity?.sessionActivity && typeof auditActivity.sessionActivity === "object"
         ? auditActivity.sessionActivity
@@ -6726,6 +6733,17 @@ function RunHistoryView() {
     const recentAuditPromotedStrategyEvents = auditPromotedStrategyEvents.slice().reverse().slice(0, 8);
     const recentAuditClaimEvents = derivedAuditClaimEvents.slice().reverse().slice(0, 8);
     const recentAuditOperatorActions = derivedAuditOperatorActions.slice().reverse().slice(0, 8);
+    const durableSessionIds = uniqueDelegationIds([
+      selectedRun?.primarySessionId,
+      selectedRun?.sessionId,
+      delegationTopology?.sessionId,
+      delegationTopology?.parentSessionId,
+      delegationTopology?.rootSessionId,
+      ...(Array.isArray(delegationTopology?.childSessionIds) ? delegationTopology.childSessionIds : []),
+      ...(Array.isArray(delegationTopology?.familySessionIds) ? delegationTopology.familySessionIds : []),
+      ...(Array.isArray(auditSessionIds) ? auditSessionIds : []),
+      auditSessionActivity?.sessionId,
+    ]);
     const latestAuditTrace = recentAuditTaskTraceEvents[0] || null;
     const latestPromotedStrategy = recentAuditPromotedStrategies[0] || null;
     const latestAuditWorkflowEvent = recentAuditWorkflowEvents[0] || null;
@@ -6908,6 +6926,7 @@ function RunHistoryView() {
               <div><b>Session Lineage:</b> ${delegationSessionLineage.length > 0 ? delegationSessionLineage.join(" · ") : "—"}</div>
               <div><b>Child Runs:</b> ${Number(delegationTopology?.childRunIds?.length || 0)} · <b>Child Sessions:</b> ${Number(delegationTopology?.childSessionIds?.length || 0)}</div>
               <div><b>Family Runs:</b> ${Number(delegationTopology?.familyRunIds?.length || 0)} · <b>Family Sessions:</b> ${Number(delegationTopology?.familySessionIds?.length || 0)}</div>
+              <div><b>Durable Sessions:</b> ${durableSessionIds.length || 0}${durableSessionIds[0] ? ` · primary ${durableSessionIds[0]}` : ""}</div>
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
               ${selectedRun.parentRunId && html`
@@ -7046,6 +7065,7 @@ function RunHistoryView() {
               <div><b>Workflow Events:</b> ${Number(auditSummary.workflowEventCount || auditWorkflowEvents.length || 0)} · <b>Tool Calls:</b> ${Number(auditSummary.toolCallCount || auditToolCalls.length || 0)} · <b>Artifacts:</b> ${Number(auditSummary.artifactCount || auditArtifacts.length || 0)}</div>
               <div><b>Claims:</b> ${Number(auditSummary.claimEventCount || derivedAuditClaimEvents.length || 0)} · <b>Promoted Strategy Events:</b> ${auditPromotedStrategyEvents.length}</div>
               <div><b>Promoted Strategies:</b> ${Number(auditSummary.promotedStrategyCount || auditPromotedStrategies.length || 0)} · <b>Operator Actions:</b> ${Number(auditSummary.operatorActionCount || derivedAuditOperatorActions.length || 0)}</div>
+              <div><b>Source:</b> ${auditSourceLabel}</div>
               <div><b>Tracked Sessions:</b> ${auditSessionIds.length} · <b>Tracked Agents:</b> ${auditAgentIds.length}</div>
               <div><b>Session:</b> <code>${auditSessionActivity?.sessionId || selectedRun.primarySessionId || selectedRun.sessionId || "—"}</code></div>
               <div><b>Agent:</b> <code>${auditAgentActivity?.agentId || "—"}</code></div>
@@ -7305,6 +7325,7 @@ function RunHistoryView() {
             <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
               <div style="font-weight:600; margin-bottom:6px;">Session & Agent Activity</div>
               <div><b>Tracked Sessions:</b> ${auditSessionIds.length || 0}</div>
+              <div><b>Durable Session Family:</b> ${durableSessionIds.length || 0}</div>
               <div><b>Current Session:</b> <code>${auditSessionActivity?.sessionId || auditSessionIds[0] || selectedRun.primarySessionId || selectedRun.sessionId || "—"}</code></div>
               <div><b>Latest Event:</b> ${auditSessionActivity?.latestEventType || "—"}${auditSessionActivity?.latestStatus ? ` · ${auditSessionActivity.latestStatus}` : ""}</div>
               <div><b>Latest Task:</b> ${auditSessionActivity?.latestTaskTitle || auditSessionActivity?.latestTaskId || "—"}</div>
@@ -7318,6 +7339,9 @@ function RunHistoryView() {
               `}
               ${auditSessionIds.length > 1 && html`
                 <div style="margin-top:6px;"><b>All Sessions:</b> ${auditSessionIds.map((sessionId) => html`<code key=${sessionId} style="margin-right:4px;">${sessionId}</code>`)}</div>
+              `}
+              ${durableSessionIds.length > 1 && html`
+                <div style="margin-top:6px;"><b>Durable Sessions:</b> ${durableSessionIds.map((sessionId) => html`<code key=${sessionId} style="margin-right:4px;">${sessionId}</code>`)}</div>
               `}
             </div>
             <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">

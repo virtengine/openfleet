@@ -10,6 +10,8 @@ const sourceFiles = [
   source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
 }));
 
+const uiSource = sourceFiles.find((entry) => entry.relPath === "ui/tabs/tasks.js")?.source || "";
+
 for (const { relPath, source } of sourceFiles) {
   describe(`task audit UI parity (${relPath})`, () => {
     it("merges workflow runs sourced from audit activity", () => {
@@ -43,5 +45,29 @@ for (const { relPath, source } of sourceFiles) {
       expect(source).toContain("child sessions");
       expect(source).toContain("normalizeTaskWorkflowDelegationTopology");
     });
+
+    it("guards missing run graphs when building lineage badges", () => {
+      expect(source).toContain("const runGraph = run?.runGraph && typeof run.runGraph === \"object\" ? run.runGraph : null;");
+      expect(source).toContain("Array.isArray(runGraph?.runs)");
+      expect(source).toContain("Array.isArray(runGraph?.executions)");
+      expect(source).toContain("Array.isArray(runGraph?.timeline)");
+      expect(source).toContain("Array.isArray(runGraph?.edges)");
+    });
   });
 }
+
+describe("task durable-runtime UI adoption", () => {
+  it("exposes durable session lineage and ledger source context in the owned ui bundle", () => {
+    expect(uiSource).toContain("Durable Sessions");
+    expect(uiSource).toContain("No durable session lineage linked yet.");
+    expect(uiSource).toContain("Durable Session Topology");
+    expect(uiSource).toContain("No state ledger / SQLite audit linked yet.");
+    expect(uiSource).toContain("source state ledger / SQLite");
+  });
+
+  it("surfaces delegated run-family summaries in the owned ui bundle", () => {
+    expect(uiSource).toContain("delegated run families");
+    expect(uiSource).toContain("task-delegation-topology-");
+    expect(uiSource).toContain("run-linked sessions");
+  });
+});

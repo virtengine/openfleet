@@ -3229,6 +3229,7 @@ let envWatchers = [];
 let envWatcherDebounce = null;
 let envPathMtimes = new Map();
 let removeConfigReloadListener = null;
+let stopTuiConfigReloadListener = null;
 
 // ── Self-restart: exit code 75 signals cli.mjs to re-fork with fresh ESM cache
 const SELF_RESTART_EXIT_CODE = 75;
@@ -13640,6 +13641,14 @@ function ensureConfigReloadBusListener() {
   });
 }
 
+function ensureTuiConfigReloadListener() {
+  if (stopTuiConfigReloadListener) return;
+  stopTuiConfigReloadListener = onConfigReload((payload = {}) => {
+    const reason = String(payload?.reason || "tui").trim() || "tui";
+    runDetached(`config-reload:${reason}`, () => reloadConfig(reason));
+  });
+}
+
 process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
@@ -13652,6 +13661,10 @@ process.on("SIGINT", async () => {
   if (removeConfigReloadListener) {
     removeConfigReloadListener();
     removeConfigReloadListener = null;
+  }
+  if (stopTuiConfigReloadListener) {
+    stopTuiConfigReloadListener();
+    stopTuiConfigReloadListener = null;
   }
   if (watcher) {
     watcher.close();
@@ -13720,6 +13733,14 @@ process.on("SIGTERM", async () => {
   stopAgentWorkAnalyzer();
   stopSelfWatcher();
   stopEnvWatchers();
+  if (removeConfigReloadListener) {
+    removeConfigReloadListener();
+    removeConfigReloadListener = null;
+  }
+  if (stopTuiConfigReloadListener) {
+    stopTuiConfigReloadListener();
+    stopTuiConfigReloadListener = null;
+  }
   if (watcher) {
     watcher.close();
   }
@@ -14356,6 +14377,7 @@ startAutoUpdateLoop({
 startWatcher();
 startEnvWatchers();
 ensureConfigReloadBusListener();
+ensureTuiConfigReloadListener();
 if (selfRestartWatcherEnabled) {
   startSelfWatcher();
 } else {

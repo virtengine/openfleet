@@ -6,6 +6,7 @@ import AgentsScreen from "../../tui/screens/agents.mjs";
 import SettingsScreen from "../../tui/screens/settings.mjs";
 import StatusScreen from "../../tui/screens/status.mjs";
 import TasksScreen from "../../tui/screens/tasks.mjs";
+import TelemetryScreen from "../../tui/screens/telemetry.mjs";
 import {
   monitorStatsFixture,
   sessionDetailFixture,
@@ -92,9 +93,29 @@ describe("tui screen rendering", () => {
 
     expect(view.latestText()).toContain("Runtime Snapshot");
     expect(view.latestText()).toContain("Active Sessions: 1");
+    expect(view.latestText()).toContain("Durable Runtime");
+    expect(view.latestText()).toContain("State ledger / SQL");
     expect(view.latestText()).toContain("Recovery / Orphans");
     expect(view.latestText()).toContain("Executor Slots");
     expect(view.latestText()).toContain("Investigate failing build");
+
+    await view.unmount();
+  });
+
+  it("renders the telemetry screen with durable runtime counters", async () => {
+    const view = await renderInk(
+      React.createElement(TelemetryScreen, {
+        stats: monitorStatsFixture,
+        sessions: sessionsFixture,
+        tasks: tasksFixture,
+      }),
+      { columns: 220 },
+    );
+
+    expect(view.latestText()).toContain("Durable Session Runtime");
+    expect(view.latestText()).toContain("State ledger / SQL");
+    expect(view.latestText()).toContain("Top tools");
+    expect(view.latestText()).toContain("apply_patch:1");
 
     await view.unmount();
   });
@@ -409,4 +430,3 @@ describe("tui screen rendering", () => {
     await view.unmount();
   });
 });
-

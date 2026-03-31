@@ -514,6 +514,17 @@ for (const relPath of ["ui/tabs/telemetry.js", "site/ui/tabs/telemetry.js"]) {
       expect(source).not.toContain('font-variant-numeric');
     });
   });
+
+  if (relPath === "ui/tabs/telemetry.js") {
+    describe(`Telemetry durable runtime adoption (${relPath})`, () => {
+      it("renders the durable session runtime panel in the owned ui bundle", () => {
+        expect(source).toContain("Durable Session Runtime");
+        expect(source).toContain("SQL-backed session lineage");
+        expect(source).toContain("State ledger / SQL");
+        expect(source).toContain("Top Durable Tools");
+      });
+    });
+  }
 }
 
 for (const { relPath, source } of telemetrySourceFiles) {
@@ -538,6 +549,16 @@ for (const { relPath, source } of dashboardSourceFiles) {
       expect(source).not.toContain('${recentCommits.length > 0 && html`');
     });
   });
+
+  if (relPath === "ui/tabs/dashboard.js") {
+    describe(`Dashboard durable runtime adoption (${relPath})`, () => {
+      it("renders the durable runtime status summary in the owned ui bundle", () => {
+        expect(source).toContain("Durable Runtime");
+        expect(source).toContain("Session lineage and context pressure");
+        expect(source).toContain("State ledger / SQL");
+      });
+    });
+  }
 }
 
 for (const relPath of ["ui/tabs/tasks.js", "site/ui/tabs/tasks.js"]) {

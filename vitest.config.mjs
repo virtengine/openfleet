@@ -42,7 +42,10 @@ export default defineConfig({
         : []),
     ],
     testTimeout: 5000,
-    pool: "threads",
+    // Several Bosun integration suites intentionally mutate process.env and
+    // other singleton runtime state. Run files in isolated worker processes so
+    // cross-file leakage does not cause nondeterministic timeouts.
+    pool: "forks",
     minWorkers: process.platform === "win32" ? 1 : undefined,
     maxWorkers: process.platform === "win32" ? 4 : undefined,
     setupFiles: ["tests/setup.mjs"],
