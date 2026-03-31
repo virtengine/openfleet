@@ -1103,6 +1103,66 @@ function pickTaskWorkflowSessionId(entry) {
   return "";
 }
 
+function uniqueTaskWorkflowIdentityList(values = []) {
+  const seen = new Set();
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function normalizeTaskWorkflowDelegationTopology(entry = {}) {
+  const rawTopology =
+    entry?.delegationTopology && typeof entry.delegationTopology === "object"
+      ? entry.delegationTopology
+      : (entry?.detail?.delegationTopology && typeof entry.detail.delegationTopology === "object"
+          ? entry.detail.delegationTopology
+          : (entry?.detail?.data?._delegationTopology && typeof entry.detail.data._delegationTopology === "object"
+              ? entry.detail.data._delegationTopology
+              : (entry?.data?._delegationTopology && typeof entry.data._delegationTopology === "object"
+                  ? entry.data._delegationTopology
+                  : null)));
+  const topology = rawTopology && typeof rawTopology === "object" ? rawTopology : {};
+  const pickString = (...candidates) => {
+    for (const value of candidates) {
+      const normalized = String(value || "").trim();
+      if (normalized) return normalized;
+    }
+    return "";
+  };
+  const pickList = (...candidates) => {
+    for (const value of candidates) {
+      if (Array.isArray(value) && value.length > 0) return uniqueTaskWorkflowIdentityList(value);
+    }
+    return [];
+  };
+  const delegationDepthRaw = Number(topology.delegationDepth ?? entry?.delegationDepth ?? 0);
+  const normalized = {
+    runId: pickString(topology.runId, entry?.runId),
+    rootRunId: pickString(topology.rootRunId, entry?.rootRunId),
+    parentRunId: pickString(topology.parentRunId, entry?.parentRunId),
+    taskId: pickString(topology.taskId, entry?.taskId, entry?.meta?.taskId, entry?.data?.taskId),
+    rootTaskId: pickString(topology.rootTaskId, entry?.rootTaskId),
+    parentTaskId: pickString(topology.parentTaskId, entry?.parentTaskId),
+    sessionId: pickString(topology.sessionId, pickTaskWorkflowSessionId(entry)),
+    rootSessionId: pickString(topology.rootSessionId, entry?.rootSessionId),
+    parentSessionId: pickString(topology.parentSessionId, entry?.parentSessionId),
+    delegationDepth: Number.isFinite(delegationDepthRaw) ? Math.max(0, Math.trunc(delegationDepthRaw)) : 0,
+    childRunIds: pickList(topology.childRunIds, entry?.childRunIds),
+    childSessionIds: pickList(topology.childSessionIds, entry?.childSessionIds),
+    familyRunIds: pickList(topology.familyRunIds, entry?.familyRunIds),
+    familySessionIds: pickList(topology.familySessionIds, entry?.familySessionIds),
+  };
+  const hasData = Object.entries(normalized).some(([key, value]) =>
+    Array.isArray(value) ? value.length > 0 : (key === "delegationDepth" ? value > 0 : Boolean(value)),
+  );
+  return hasData ? normalized : null;
+}
+
 export function normalizeTaskWorkflowRunEntry(entry) {
   if (entry == null) return null;
   if (typeof entry === "string") {
@@ -1163,6 +1223,7 @@ export function normalizeTaskWorkflowRunEntry(entry) {
     entry.proofSummary && typeof entry.proofSummary === "object"
       ? { ...entry.proofSummary }
       : null;
+  const delegationTopology = normalizeTaskWorkflowDelegationTopology(entry);
   return {
     workflowId,
     workflowName,
@@ -1187,6 +1248,20 @@ export function normalizeTaskWorkflowRunEntry(entry) {
     proofSummary,
     issueAdvisor: entry.issueAdvisor && typeof entry.issueAdvisor === "object" ? { ...entry.issueAdvisor } : null,
     runGraph: entry.runGraph && typeof entry.runGraph === "object" ? { ...entry.runGraph } : null,
+    rootRunId: delegationTopology?.rootRunId || String(entry.rootRunId || "").trim(),
+    parentRunId: delegationTopology?.parentRunId || String(entry.parentRunId || "").trim(),
+    rootTaskId: delegationTopology?.rootTaskId || String(entry.rootTaskId || "").trim(),
+    parentTaskId: delegationTopology?.parentTaskId || String(entry.parentTaskId || "").trim(),
+    rootSessionId: delegationTopology?.rootSessionId || String(entry.rootSessionId || "").trim(),
+    parentSessionId: delegationTopology?.parentSessionId || String(entry.parentSessionId || "").trim(),
+    delegationDepth: Number.isFinite(Number(delegationTopology?.delegationDepth ?? entry.delegationDepth))
+      ? Math.max(0, Math.trunc(Number(delegationTopology?.delegationDepth ?? entry.delegationDepth)))
+      : 0,
+    childRunIds: Array.isArray(delegationTopology?.childRunIds) ? [...delegationTopology.childRunIds] : [],
+    childSessionIds: Array.isArray(delegationTopology?.childSessionIds) ? [...delegationTopology.childSessionIds] : [],
+    familyRunIds: Array.isArray(delegationTopology?.familyRunIds) ? [...delegationTopology.familyRunIds] : [],
+    familySessionIds: Array.isArray(delegationTopology?.familySessionIds) ? [...delegationTopology.familySessionIds] : [],
+    delegationTopology: delegationTopology ? { ...delegationTopology } : null,
     meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
   };
 }
@@ -1223,8 +1298,10 @@ function buildTaskWorkflowProofBadges(run) {
 }
 
 export function buildTaskWorkflowRunLineageBadges(run) {
+  const topology = run?.delegationTopology && typeof run.delegationTopology === "object"
+    ? run.delegationTopology
+    : normalizeTaskWorkflowDelegationTopology(run);
   const runGraph = run?.runGraph && typeof run.runGraph === "object" ? run.runGraph : null;
-  if (!runGraph) return [];
   const runCount = Array.isArray(runGraph.runs) ? runGraph.runs.length : 0;
   const executionCount = Array.isArray(runGraph.executions) ? runGraph.executions.length : 0;
   const timelineCount = Array.isArray(runGraph.timeline) ? runGraph.timeline.length : 0;
@@ -1236,7 +1313,47 @@ export function buildTaskWorkflowRunLineageBadges(run) {
   if (executionCount > 0) badges.push(`${executionCount} execution steps`);
   if (timelineCount > 0) badges.push(`${timelineCount} lineage events`);
   if (retryCount > 0) badges.push(`${retryCount} retries`);
+  if (Number(topology?.delegationDepth || 0) > 0) badges.push(`depth ${Number(topology.delegationDepth)}`);
+  if (Array.isArray(topology?.childRunIds) && topology.childRunIds.length > 0) {
+    badges.push(`${topology.childRunIds.length} child runs`);
+  }
+  if (Array.isArray(topology?.childSessionIds) && topology.childSessionIds.length > 0) {
+    badges.push(`${topology.childSessionIds.length} child sessions`);
+  }
   return badges;
+}
+
+function buildTaskWorkflowRunTopologyLines(run) {
+  const topology = run?.delegationTopology && typeof run.delegationTopology === "object"
+    ? run.delegationTopology
+    : normalizeTaskWorkflowDelegationTopology(run);
+  if (!topology) return [];
+  const taskLine = [
+    topology.taskId ? `task ${topology.taskId}` : "",
+    topology.parentTaskId && topology.parentTaskId !== topology.taskId ? `parent ${topology.parentTaskId}` : "",
+    topology.rootTaskId && topology.rootTaskId !== topology.parentTaskId && topology.rootTaskId !== topology.taskId
+      ? `root ${topology.rootTaskId}`
+      : "",
+  ].filter(Boolean);
+  const sessionLine = [
+    topology.sessionId ? `current ${truncate(topology.sessionId, 36)}` : "",
+    topology.parentSessionId && topology.parentSessionId !== topology.sessionId
+      ? `parent ${truncate(topology.parentSessionId, 36)}`
+      : "",
+    topology.rootSessionId && topology.rootSessionId !== topology.parentSessionId && topology.rootSessionId !== topology.sessionId
+      ? `root ${truncate(topology.rootSessionId, 36)}`
+      : "",
+  ].filter(Boolean);
+  const familyLine = [
+    Array.isArray(topology.childRunIds) && topology.childRunIds.length > 0 ? `${topology.childRunIds.length} child runs` : "",
+    Array.isArray(topology.childSessionIds) && topology.childSessionIds.length > 0 ? `${topology.childSessionIds.length} child sessions` : "",
+    Array.isArray(topology.familyRunIds) && topology.familyRunIds.length > 1 ? `${topology.familyRunIds.length} family runs` : "",
+  ].filter(Boolean);
+  return [
+    taskLine.length > 0 ? `Task lineage: ${taskLine.join(" · ")}` : "",
+    sessionLine.length > 0 ? `Session ancestry: ${sessionLine.join(" · ")}` : "",
+    familyLine.length > 0 ? familyLine.join(" · ") : "",
+  ].filter(Boolean);
 }
 
 function buildTaskWorkflowRuns(task) {
@@ -2852,6 +2969,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     });
     return deduped.slice(0, 30);
   }, [baseWorkflowRuns, taskAuditWorkflowRuns]);
+  const taskTopology = useMemo(() => (
+    task?.topology && typeof task.topology === "object" ? task.topology : {}
+  ), [task?.topology]);
+  const taskGraphPath = useMemo(() => uniqueTaskWorkflowIdentityList(taskTopology?.graphPath || []), [taskTopology]);
+  const taskSessionAncestry = useMemo(() => [
+    taskTopology?.sessionId ? `current ${truncate(taskTopology.sessionId, 36)}` : "",
+    taskTopology?.parentSessionId && taskTopology.parentSessionId !== taskTopology.sessionId
+      ? `parent ${truncate(taskTopology.parentSessionId, 36)}`
+      : "",
+    taskTopology?.rootSessionId
+      && taskTopology.rootSessionId !== taskTopology.parentSessionId
+      && taskTopology.rootSessionId !== taskTopology.sessionId
+      ? `root ${truncate(taskTopology.rootSessionId, 36)}`
+      : "",
+  ].filter(Boolean), [taskTopology]);
   const hasTaskAuditContent = Boolean(
     taskAuditEvents.length
     || taskAuditArtifacts.length
@@ -2971,6 +3103,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     const plannerPreview = Array.isArray(run?.plannerTimeline) ? run.plannerTimeline.slice(-3).reverse() : [];
     const proofBadges = buildTaskWorkflowProofBadges(run);
     const lineageBadges = buildTaskWorkflowRunLineageBadges(run);
+    const topologyLines = buildTaskWorkflowRunTopologyLines(run);
     const latestDecision = String(
       run?.proofSummary?.latestDecision?.summary
       || run?.issueAdvisor?.summary
@@ -3012,6 +3145,13 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             ${lineageBadges.length > 0 ? html`
               <div class="task-comment-meta" style=${{ marginTop: proofBadges.length > 0 ? "4px" : "6px" }}>
                 Lineage: ${lineageBadges.join(" · ")}
+              </div>
+            ` : null}
+            ${topologyLines.length > 0 ? html`
+              <div style=${{ marginTop: lineageBadges.length > 0 || proofBadges.length > 0 ? "4px" : "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                ${topologyLines.map((line, index) => html`
+                  <div class="task-comment-meta" key=${`topology-${index}`}>${line}</div>
+                `)}
               </div>
             ` : null}
             ${latestDecision ? html`
@@ -4515,6 +4655,24 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   ${workflowRuns.length
                     ? `${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.timeline?.length || 0), 0)} lineage events`
                     : ""}
+                </div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Delegation Topology</div>
+                <div class="task-comment-body">${taskGraphPath.length > 1
+                  ? `Task graph: ${taskGraphPath.join(" → ")}`
+                  : (taskTopology?.latestRunId || taskTopology?.latestSessionId || taskTopology?.rootTaskId || taskTopology?.parentTaskId
+                      ? `${taskTopology.workflowName || taskTopology.workflowId || "workflow"} · ${taskTopology.rootTaskId || task?.id || "task"}`
+                      : "No delegated topology linked yet.")}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${[
+                    Number.isFinite(Number(taskTopology?.delegationDepth)) ? `Delegation depth ${Number(taskTopology.delegationDepth || 0)}` : "",
+                    taskTopology?.latestRunId ? `run ${taskTopology.latestRunId}` : "",
+                    taskTopology?.latestSessionId ? `session ${truncate(taskTopology.latestSessionId, 36)}` : "",
+                  ].filter(Boolean).join(" · ")}
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskSessionAncestry.length > 0 ? `Session ancestry: ${taskSessionAncestry.join(" · ")}` : ""}
                 </div>
               </div>
               <div class="task-comment-item">

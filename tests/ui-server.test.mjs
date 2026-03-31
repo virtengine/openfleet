@@ -15,6 +15,7 @@ import {
   _resetRuntimeAccumulatorForTests,
   addCompletedSession,
 } from "../infra/runtime-accumulator.mjs";
+import { _resetSingleton as resetSessionTrackerSingleton } from "../infra/session-tracker.mjs";
 
 const describeUiServer = (
   process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
@@ -42,6 +43,8 @@ function sanitizedGitEnv(extra = {}) {
 async function settleUiRuntimeCleanup() {
   const mod = await import("../server/ui-server.mjs");
   mod.stopTelegramUiServer();
+  resetSessionTrackerSingleton({ persistDir: null });
+  _resetRuntimeAccumulatorForTests();
   resetStateLedgerCache();
   await new Promise((resolve) => setTimeout(resolve, 25));
 }
@@ -106,6 +109,8 @@ describeUiServer("ui-server mini app", () => {
     "BOSUN_UI_MONITORING_STATE_ENABLED",
     "TELEGRAM_INTERVAL_MIN",
     "BOSUN_CONFIG_PATH",
+    "BOSUN_TEST_CACHE_DIR",
+    "BOSUN_STATE_LEDGER_PATH",
     "BOSUN_HOME",
     "BOSUN_DIR",
     "CODEX_MONITOR_HOME",
@@ -168,11 +173,16 @@ describeUiServer("ui-server mini app", () => {
     process.env.BOSUN_CONFIG_PATH = join(sandbox.configDir, "bosun.config.json");
     process.env.BOSUN_HOME = sandbox.configDir;
     process.env.BOSUN_DIR = sandbox.configDir;
+    process.env.BOSUN_TEST_CACHE_DIR = sandbox.cacheDir;
+    process.env.BOSUN_STATE_LEDGER_PATH = sandbox.stateLedgerPath;
     process.env.CODEX_MONITOR_HOME = sandbox.configDir;
     process.env.CODEX_MONITOR_DIR = sandbox.configDir;
     delete process.env.REPO_ROOT;
     delete process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG;
     vi.resetModules();
+    resetSessionTrackerSingleton({ persistDir: null });
+    _resetRuntimeAccumulatorForTests({ cacheDir: sandbox.cacheDir });
+    resetStateLedgerCache();
 
     const { setKanbanBackend } = await import("../kanban/kanban-adapter.mjs");
     setKanbanBackend("internal");
@@ -1695,39 +1705,42 @@ describeUiServer("ui-server mini app", () => {
       host: "127.0.0.1",
       dependencies: { execPrimaryPrompt },
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "primary", prompt: "hello" }),
-    });
-    const createJson = await createResponse.json();
-    expect(createResponse.status).toBe(200);
-    expect(createJson.ok).toBe(true);
-    expect(createJson.session.metadata.workspaceId).toBe("chatws");
-    expect(createJson.session.metadata.workspaceDir).toBe(workspaceRepo);
-    const sessionId = createJson.session.id;
-
-    const messageResponse = await fetch(
-      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
-      {
+      const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: "run task", mode: "agent" }),
-      },
-    );
-    const messageJson = await messageResponse.json();
-    expect(messageResponse.status).toBe(200);
-    expect(messageJson.ok).toBe(true);
+        body: JSON.stringify({ type: "primary", prompt: "hello" }),
+      });
+      const createJson = await createResponse.json();
+      expect(createResponse.status).toBe(200);
+      expect(createJson.ok).toBe(true);
+      expect(createJson.session.metadata.workspaceId).toBe("chatws");
+      expect(createJson.session.metadata.workspaceDir).toBe(workspaceRepo);
+      const sessionId = createJson.session.id;
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
-    const [, opts] = execPrimaryPrompt.mock.calls[0];
-    expect(opts.sessionId).toBe(sessionId);
-    expect(opts.cwd).toBe(workspaceRepo);
+      const messageResponse = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ content: "run task", mode: "agent" }),
+        },
+      );
+      const messageJson = await messageResponse.json();
+      expect(messageResponse.status).toBe(200);
+      expect(messageJson.ok).toBe(true);
 
-    rmSync(tmpDir, { recursive: true, force: true });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
+      const [, opts] = execPrimaryPrompt.mock.calls[0];
+      expect(opts.sessionId).toBe(sessionId);
+      expect(opts.cwd).toBe(workspaceRepo);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await removeDirWithRetries(tmpDir);
+    }
   }, 15000);
 
   it("stops an in-flight session turn via /api/sessions/:id/stop", async () => {
@@ -1852,36 +1865,39 @@ describeUiServer("ui-server mini app", () => {
       host: "127.0.0.1",
       dependencies: { execSdkCommand },
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "primary", prompt: "hello" }),
-    });
-    const createJson = await createResponse.json();
-    const sessionId = createJson.session.id;
+      const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "primary", prompt: "hello" }),
+      });
+      const createJson = await createResponse.json();
+      const sessionId = createJson.session.id;
 
-    const sdkResponse = await fetch(`http://127.0.0.1:${port}/api/agents/sdk-command`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "/status", sessionId }),
-    });
-    const sdkJson = await sdkResponse.json();
-    expect(sdkResponse.status).toBe(200);
-    expect(sdkJson.ok).toBe(true);
-    expect(sdkJson.result).toBe("sdk-ok");
-    expect(execSdkCommand).toHaveBeenCalledWith(
-      "/status",
-      "",
-      undefined,
-      expect.objectContaining({
-        cwd: workspaceRepo,
-        sessionId,
-      }),
-    );
-
-    rmSync(tmpDir, { recursive: true, force: true });
+      const sdkResponse = await fetch(`http://127.0.0.1:${port}/api/agents/sdk-command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command: "/status", sessionId }),
+      });
+      const sdkJson = await sdkResponse.json();
+      expect(sdkResponse.status).toBe(200);
+      expect(sdkJson.ok).toBe(true);
+      expect(sdkJson.result).toBe("sdk-ok");
+      expect(execSdkCommand).toHaveBeenCalledWith(
+        "/status",
+        "",
+        undefined,
+        expect.objectContaining({
+          cwd: workspaceRepo,
+          sessionId,
+        }),
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await removeDirWithRetries(tmpDir);
+    }
   });
 
   it("scopes session listing to the active workspace by default", async () => {
@@ -1926,59 +1942,62 @@ describeUiServer("ui-server mini app", () => {
       host: "127.0.0.1",
     });
     const port = server.address().port;
+    try {
+      const setActiveWsOne = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspaceId: "ws-one" }),
+      }).then((r) => r.json());
+      // Some environments initialize managed workspaces lazily, so explicit
+      // activation can fail even when activeWorkspace is already set in config.
+      expect(typeof setActiveWsOne.ok).toBe("boolean");
 
-    const setActiveWsOne = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workspaceId: "ws-one" }),
-    }).then((r) => r.json());
-    // Some environments initialize managed workspaces lazily, so explicit
-    // activation can fail even when activeWorkspace is already set in config.
-    expect(typeof setActiveWsOne.ok).toBe("boolean");
+      const wsOneCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-one" }),
+      }).then((r) => r.json());
+      if (!wsOneCreate?.ok) {
+        return;
+      }
+      const wsOneSessionId = wsOneCreate?.session?.id;
 
-    const wsOneCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-one" }),
-    }).then((r) => r.json());
-    if (!wsOneCreate?.ok) {
-      return;
+      const wsTwoCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-two" }),
+      }).then((r) => r.json());
+      if (!wsTwoCreate?.ok) {
+        return;
+      }
+
+      const activeList = await fetch(
+        `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test`,
+      ).then((r) => r.json());
+      expect(activeList.ok).toBe(true);
+      expect(activeList.sessions).toHaveLength(1);
+      expect(activeList.sessions[0]?.id).toBe(wsOneSessionId);
+
+      const allList = await fetch(
+        `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test&workspace=all`,
+      ).then((r) => r.json());
+      expect(allList.ok).toBe(true);
+      expect(allList.sessions.length).toBeGreaterThanOrEqual(2);
+      const wsTwoSessionId = wsTwoCreate?.session?.id;
+      expect(typeof wsTwoSessionId).toBe("string");
+
+      const allScopedSession = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(wsTwoSessionId)}?workspace=all&limit=10`,
+      );
+      expect(allScopedSession.status).toBe(200);
+      const allScopedSessionBody = await allScopedSession.json();
+      expect(allScopedSessionBody.ok).toBe(true);
+      expect(allScopedSessionBody.session?.id).toBe(wsTwoSessionId);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
     }
-    const wsOneSessionId = wsOneCreate?.session?.id;
-
-    const wsTwoCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-two" }),
-    }).then((r) => r.json());
-    if (!wsTwoCreate?.ok) {
-      return;
-    }
-
-    const activeList = await fetch(
-      `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test`,
-    ).then((r) => r.json());
-    expect(activeList.ok).toBe(true);
-    expect(activeList.sessions).toHaveLength(1);
-    expect(activeList.sessions[0]?.id).toBe(wsOneSessionId);
-
-    const allList = await fetch(
-      `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test&workspace=all`,
-    ).then((r) => r.json());
-    expect(allList.ok).toBe(true);
-    expect(allList.sessions.length).toBeGreaterThanOrEqual(2);
-    const wsTwoSessionId = wsTwoCreate?.session?.id;
-    expect(typeof wsTwoSessionId).toBe("string");
-
-    const allScopedSession = await fetch(
-      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(wsTwoSessionId)}?workspace=all&limit=10`,
-    );
-    expect(allScopedSession.status).toBe(200);
-    const allScopedSessionBody = await allScopedSession.json();
-    expect(allScopedSessionBody.ok).toBe(true);
-    expect(allScopedSessionBody.session?.id).toBe(wsTwoSessionId);
-
-    rmSync(tmpDir, { recursive: true, force: true });
   }, 20000);
 
   it("prefers repo-local .bosun config over global BOSUN_HOME for active workspace routing", async () => {
@@ -2046,10 +2065,11 @@ describeUiServer("ui-server mini app", () => {
     process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG = "1";
     delete process.env.BOSUN_CONFIG_PATH;
     vi.resetModules();
+    let server = null;
 
     try {
       const mod = await import("../server/ui-server.mjs");
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -2076,6 +2096,10 @@ describeUiServer("ui-server mini app", () => {
       expect(listJson.sessions).toHaveLength(1);
       expect(listJson.sessions[0]?.workspaceId).toBe("repo-ws");
     } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
       vi.resetModules();
       if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
       else process.env.REPO_ROOT = previousRepoRoot;
@@ -2085,8 +2109,8 @@ describeUiServer("ui-server mini app", () => {
       else process.env.BOSUN_DIR = previousBosunDir;
       if (previousTestRepoLocalOverride === undefined) delete process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG;
       else process.env.BOSUN_TEST_ALLOW_REPO_LOCAL_CONFIG = previousTestRepoLocalOverride;
-      rmSync(repoRootDir, { recursive: true, force: true });
-      rmSync(globalHomeDir, { recursive: true, force: true });
+      await removeDirWithRetries(repoRootDir);
+      await removeDirWithRetries(globalHomeDir);
     }
   }, 20000);
 
@@ -3265,6 +3289,8 @@ describeUiServer("ui-server mini app", () => {
       mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, {
         getRunHistory: async () => mockRuns.map((run) => ({
           runId: run.runId,
+          rootRunId: run.rootRunId,
+          parentRunId: run.parentRunId,
           workflowId: run.workflowId,
           workflowName: run.workflowName,
           status: run.status,
@@ -3274,6 +3300,12 @@ describeUiServer("ui-server mini app", () => {
           taskId: run.detail?.data?.taskId || "",
           taskIds: [run.detail?.data?.taskId || ""].filter(Boolean),
           primarySessionId: run.primarySessionId,
+          rootTaskId: run.rootTaskId,
+          parentTaskId: run.parentTaskId,
+          rootSessionId: run.rootSessionId,
+          parentSessionId: run.parentSessionId,
+          delegationDepth: run.delegationDepth,
+          delegationTopology: run.delegationTopology,
           runGraph: run.runGraph,
         })),
         getRunDetail: async (runId) => mockRuns.find((run) => run.runId === runId) || null,
@@ -3316,6 +3348,29 @@ describeUiServer("ui-server mini app", () => {
         endedAt: "2026-03-31T06:00:00.000Z",
         duration: 120000,
         primarySessionId: `session:${linkedRunId}`,
+        rootRunId: "run-root-parent",
+        parentRunId: "run-parent-operator",
+        rootTaskId: taskId,
+        parentTaskId: taskId,
+        rootSessionId: `session:${linkedRunId}:root`,
+        parentSessionId: `session:${linkedRunId}:parent`,
+        delegationDepth: 2,
+        delegationTopology: {
+          runId: linkedRunId,
+          rootRunId: "run-root-parent",
+          parentRunId: "run-parent-operator",
+          taskId,
+          rootTaskId: taskId,
+          parentTaskId: taskId,
+          sessionId: `session:${linkedRunId}`,
+          rootSessionId: `session:${linkedRunId}:root`,
+          parentSessionId: `session:${linkedRunId}:parent`,
+          delegationDepth: 2,
+          childRunIds: [`${linkedRunId}:child-a`, `${linkedRunId}:child-b`],
+          childSessionIds: [`session:${linkedRunId}:child-a`],
+          familyRunIds: ["run-root-parent", "run-parent-operator", linkedRunId],
+          familySessionIds: [`session:${linkedRunId}:root`, `session:${linkedRunId}:parent`, `session:${linkedRunId}`],
+        },
         detail: {
           data: {
             taskId,
@@ -3340,6 +3395,25 @@ describeUiServer("ui-server mini app", () => {
       expect(Array.isArray(detail.data.workflowRuns)).toBe(true);
       expect(detail.data.workflowRuns.length).toBeGreaterThan(0);
       expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
+      expect(detail.data.workflowRuns).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          runId: linkedRunId,
+          rootRunId: "run-root-parent",
+          parentRunId: "run-parent-operator",
+          rootTaskId: taskId,
+          parentTaskId: taskId,
+          rootSessionId: `session:${linkedRunId}:root`,
+          parentSessionId: `session:${linkedRunId}:parent`,
+          delegationDepth: 2,
+          childRunIds: expect.arrayContaining([`${linkedRunId}:child-a`, `${linkedRunId}:child-b`]),
+          childSessionIds: expect.arrayContaining([`session:${linkedRunId}:child-a`]),
+          delegationTopology: expect.objectContaining({
+            runId: linkedRunId,
+            parentRunId: "run-parent-operator",
+            rootSessionId: `session:${linkedRunId}:root`,
+          }),
+        }),
+      ]));
 
       const stateLedger = await import("../lib/state-ledger-sqlite.mjs");
       stateLedger.writeWorkflowStateLedger({
@@ -3420,6 +3494,16 @@ describeUiServer("ui-server mini app", () => {
 
       expect(runDetail.ok).toBe(true);
       expect(refreshedDetail.ok).toBe(true);
+      expect(runDetail.run?.delegationTopology).toEqual(expect.objectContaining({
+        runId: linkedRunId,
+        rootRunId: "run-root-parent",
+        parentRunId: "run-parent-operator",
+        taskId,
+        rootSessionId: `session:${linkedRunId}:root`,
+        parentSessionId: `session:${linkedRunId}:parent`,
+        delegationDepth: 2,
+        childRunIds: expect.arrayContaining([`${linkedRunId}:child-a`, `${linkedRunId}:child-b`]),
+      }));
       expect(runDetail.run?.auditActivity).toEqual(
         expect.objectContaining({
           summary: expect.objectContaining({
@@ -4773,7 +4857,7 @@ describeUiServer("ui-server mini app", () => {
       }),
     });
 
-    const server = await mod.startTelegramUiServer({
+    let server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
@@ -4781,25 +4865,33 @@ describeUiServer("ui-server mini app", () => {
     });
     const port = server.address().port;
 
-    const response = await fetch("http://127.0.0.1:" + port + "/api/telemetry/summary");
-    const payload = await response.json();
+    try {
+      const response = await fetch("http://127.0.0.1:" + port + "/api/telemetry/summary");
+      const payload = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(payload.ok).toBe(true);
-    expect(payload.repoAreaContention).toMatchObject({
-      totalEvents: 3,
-      totalWaitMs: 8400,
-      stale: false,
-    });
-    expect(payload.repoAreaContention.hotAreas[0]).toMatchObject({
-      area: "server",
-      waitingTasks: 2,
-      events: 3,
-    });
-    expect(payload.repoAreaContention.recent[0]).toMatchObject({
-      taskId: "task-123",
-      area: "server",
-    });
+      expect(response.status).toBe(200);
+      expect(payload.ok).toBe(true);
+      expect(payload.repoAreaContention).toMatchObject({
+        totalEvents: 3,
+        totalWaitMs: 8400,
+        stale: false,
+      });
+      expect(payload.repoAreaContention.hotAreas[0]).toMatchObject({
+        area: "server",
+        waitingTasks: 2,
+        events: 3,
+      });
+      expect(payload.repoAreaContention.recent[0]).toMatchObject({
+        taskId: "task-123",
+        area: "server",
+      });
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      server = null;
+    }
   });
 
   it("returns durable lifetime telemetry totals from the runtime accumulator", async () => {
@@ -4852,8 +4944,9 @@ describeUiServer("ui-server mini app", () => {
     } finally {
       runtimeAccumulator._resetRuntimeAccumulatorForTests();
       vi.resetModules();
-      await removeDirWithRetries(cacheDir);
       await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(cacheDir);
     }
   });
   it("returns a diagnosticId on task detail failures and logs the raw backend cause", async () => {

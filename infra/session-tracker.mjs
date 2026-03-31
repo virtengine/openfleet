@@ -698,8 +698,14 @@ function buildStateLedgerSessionRecord(session) {
 function persistSessionRecordToStateLedger(session) {
   const record = buildStateLedgerSessionRecord(session);
   if (!record) return;
+  const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
   try {
-    upsertSessionRecordToStateLedger(record, { repoRoot: SESSION_TRACKER_REPO_ROOT });
+    upsertSessionRecordToStateLedger(
+      record,
+      explicitLedgerPath && isTestRuntime()
+        ? { ledgerPath: explicitLedgerPath }
+        : { repoRoot: SESSION_TRACKER_REPO_ROOT },
+    );
   } catch {
     // Best-effort persistence — session tracking should continue even if the
     // durable index is temporarily unavailable.

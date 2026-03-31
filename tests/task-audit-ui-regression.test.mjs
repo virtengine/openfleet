@@ -32,5 +32,16 @@ for (const { relPath, source } of sourceFiles) {
       expect(source).toContain("ledger workflow runs");
       expect(source).toContain("claim lifecycle events");
     });
+
+    it("surfaces delegated workflow and task topology", () => {
+      expect(source).toContain("Delegation Topology");
+      expect(source).toContain("Task graph:");
+      expect(source).toContain("Delegation depth");
+      expect(source).toContain("Task lineage:");
+      expect(source).toContain("Session ancestry:");
+      expect(source).toContain("child runs");
+      expect(source).toContain("child sessions");
+      expect(source).toContain("normalizeTaskWorkflowDelegationTopology");
+    });
   });
 }

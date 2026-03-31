@@ -62,6 +62,18 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("runGraph?.timeline");
     });
 
+    it(`${label} exposes delegated topology and run-family navigation in run details`, () => {
+      expect(source).toContain("Delegation Topology");
+      expect(source).toContain("Delegation Depth:");
+      expect(source).toContain("Task Lineage:");
+      expect(source).toContain("Session Lineage:");
+      expect(source).toContain("Child Runs:");
+      expect(source).toContain("Child Sessions:");
+      expect(source).toContain("Family Runs:");
+      expect(source).toContain("Family Sessions:");
+      expect(source).toContain("Open Child Run");
+    });
+
     it(`${label} exposes governance and goal context in run details`, () => {
       expect(source).toContain("Governance & Goals");
       expect(source).toContain("Primary Goal:");

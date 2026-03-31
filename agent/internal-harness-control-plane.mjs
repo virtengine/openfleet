@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
@@ -20,6 +21,7 @@ export function resolveHarnessControlPlanePaths(configDir) {
   return {
     root,
     compiledDir: resolve(root, "compiled"),
+    runsDir: resolve(root, "runs"),
     activeStatePath: resolve(root, "active-harness.json"),
   };
 }
@@ -68,6 +70,21 @@ export function readActiveHarnessState(configDir) {
   return JSON.parse(readFileSync(activeStatePath, "utf8"));
 }
 
+function buildHarnessRunSummary(runRecord) {
+  return {
+    runId: runRecord.runId,
+    mode: runRecord.mode,
+    dryRun: runRecord.dryRun === true,
+    success: runRecord.result?.success === true,
+    status: runRecord.result?.status || null,
+    startedAt: runRecord.startedAt,
+    finishedAt: runRecord.finishedAt,
+    artifactId: runRecord.artifactId || null,
+    agentId: runRecord.compiledProfile?.agentId || null,
+    eventCount: Array.isArray(runRecord.events) ? runRecord.events.length : 0,
+  };
+}
+
 export function compileHarnessSourceToArtifact(source, options = {}) {
   const validationMode = normalizeValidationMode(options.validationMode);
   const compileResult = compileInternalHarnessProfile(source, options);
@@ -112,6 +129,7 @@ export function activateHarnessArtifact(artifactPath, options = {}) {
     sourcePath: artifact.sourcePath || null,
     validationMode: artifact.validationMode || "report",
     isValid: artifact.isValid === true,
+    lastRun: null,
     compiledProfile: {
       agentId: artifact.compiledProfile?.agentId || null,
       name: artifact.compiledProfile?.name || null,
@@ -127,6 +145,63 @@ export function compileAndActivateHarnessSource(source, options = {}) {
   const compiled = compileHarnessSourceToArtifact(source, options);
   const activeState = activateHarnessArtifact(compiled.artifactPath, options);
   return { ...compiled, activeState };
+}
+
+export function recordHarnessRun(runInput, options = {}) {
+  const paths = resolveHarnessControlPlanePaths(options.configDir);
+  ensureDir(paths.runsDir);
+  const runId = toTrimmedString(options.runId || runInput?.runId || randomUUID());
+  const startedAt = toTrimmedString(runInput?.startedAt || "") || new Date().toISOString();
+  const finishedAt = toTrimmedString(runInput?.finishedAt || "") || new Date().toISOString();
+  const runRecord = {
+    schemaVersion: 1,
+    kind: "bosun-harness-run-record",
+    runId,
+    actor: toTrimmedString(options.actor || runInput?.actor || "api") || "api",
+    recordedAt: new Date().toISOString(),
+    startedAt,
+    finishedAt,
+    mode: toTrimmedString(runInput?.mode || (runInput?.result?.dryRun ? "dry-run" : "run")) || "run",
+    dryRun: runInput?.dryRun === true || runInput?.result?.dryRun === true,
+    sourceOrigin: toTrimmedString(runInput?.sourceOrigin || "") || null,
+    sourcePath: toTrimmedString(runInput?.sourcePath || "") || null,
+    artifactId: toTrimmedString(runInput?.artifactId || "") || null,
+    artifactPath: toTrimmedString(runInput?.artifactPath || "") || null,
+    compiledProfile: runInput?.compiledProfile && typeof runInput.compiledProfile === "object"
+      ? {
+          agentId: runInput.compiledProfile.agentId || null,
+          name: runInput.compiledProfile.name || null,
+          entryStageId: runInput.compiledProfile.entryStageId || null,
+          metadata: runInput.compiledProfile.metadata || {},
+        }
+      : null,
+    result: runInput?.result && typeof runInput.result === "object"
+      ? JSON.parse(JSON.stringify(runInput.result))
+      : null,
+    events: Array.isArray(runInput?.events)
+      ? JSON.parse(JSON.stringify(runInput.events))
+      : [],
+  };
+  const runPath = resolve(paths.runsDir, `${runId}.json`);
+  writeJson(runPath, runRecord);
+
+  const activeState = readActiveHarnessState(options.configDir);
+  if (
+    activeState &&
+    runRecord.artifactPath &&
+    resolve(String(activeState.artifactPath || "")) === resolve(runRecord.artifactPath)
+  ) {
+    const nextActiveState = {
+      ...activeState,
+      lastRun: buildHarnessRunSummary(runRecord),
+    };
+    writeJson(paths.activeStatePath, nextActiveState);
+  }
+
+  return {
+    ...runRecord,
+    runPath,
+  };
 }
 
 export function shouldEnforceHarnessValidation(validationMode) {

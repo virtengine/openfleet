@@ -21,6 +21,7 @@ import {
   getStateLedgerKeyValue,
   getStateLedgerInfo,
   getTaskSnapshotFromStateLedger,
+  getTaskTopologyFromStateLedger,
   getWorkflowRunFromStateLedger,
   listAuditEventsFromStateLedger,
   listArtifactsFromStateLedger,
@@ -31,6 +32,7 @@ import {
   listTaskAuditSummariesFromStateLedger,
   listTaskTraceEventsFromStateLedger,
   listTaskClaimEventsFromStateLedger,
+  listTaskTopologiesFromStateLedger,
   listToolCallsFromStateLedger,
   listWorkflowEventsFromStateLedger,
   listWorkflowTaskRunEntriesFromStateLedger,
@@ -132,7 +134,7 @@ describe("state ledger sqlite workflow integration", () => {
     expect(existsSync(dbPath)).toBe(true);
 
     const info = getStateLedgerInfo({ anchorPath: runsDir });
-    expect(info.schemaVersion).toBe(4);
+    expect(info.schemaVersion).toBe(5);
     expect(info.tables).toEqual(
       expect.arrayContaining([
         "agent_activity",
@@ -144,6 +146,7 @@ describe("state ledger sqlite workflow integration", () => {
         "schema_meta",
         "session_activity",
         "task_trace_events",
+        "task_topology",
         "tool_calls",
         "workflow_events",
         "workflow_runs",
@@ -343,6 +346,28 @@ describe("state ledger sqlite task-store integration", () => {
       workflowRuns: [{ runId: "run-1", workflowId: "wf-1" }],
       runs: [{ startedAt: "2026-03-31T02:00:00.000Z" }],
     });
+    taskStore.addTask({
+      id: "task-store-2",
+      title: "Delegated child",
+      status: "todo",
+    });
+    taskStore.setTaskParent("task-store-2", "task-store-1", { source: "test" });
+    taskStore.linkTaskWorkflowRun("task-store-2", {
+      runId: "run-child-1",
+      workflowId: "wf-delegate",
+      workflowName: "Delegate child",
+      nodeId: "delegate-node",
+      status: "completed",
+      rootRunId: "run-root-1",
+      parentRunId: "run-parent-1",
+      taskId: "task-store-2",
+      rootTaskId: "task-store-1",
+      parentTaskId: "task-store-2",
+      sessionId: "session-child-1",
+      rootSessionId: "session-root-1",
+      parentSessionId: "session-parent-1",
+      delegationDepth: 2,
+    });
     await taskStore.waitForStoreWrites();
 
     expect(getTaskSnapshotFromStateLedger("task-store-1", { anchorPath: storePath })).toEqual(
@@ -351,6 +376,33 @@ describe("state ledger sqlite task-store integration", () => {
         title: "Persist to sqlite",
         status: "todo",
       }),
+    );
+    expect(getTaskTopologyFromStateLedger("task-store-2", { anchorPath: storePath })).toEqual(
+      expect.objectContaining({
+        taskId: "task-store-2",
+        graphRootTaskId: "task-store-1",
+        graphParentTaskId: "task-store-1",
+        graphDepth: 1,
+        graphPath: ["task-store-1", "task-store-2"],
+        workflowId: "wf-delegate",
+        workflowName: "Delegate child",
+        latestNodeId: "delegate-node",
+        latestRunId: "run-child-1",
+        rootRunId: "run-root-1",
+        parentRunId: "run-parent-1",
+        latestSessionId: "session-child-1",
+        rootSessionId: "session-root-1",
+        parentSessionId: "session-parent-1",
+        rootTaskId: "task-store-1",
+        parentTaskId: "task-store-2",
+        delegationDepth: 2,
+      }),
+    );
+    expect(listTaskTopologiesFromStateLedger({ rootTaskId: "task-store-1", anchorPath: storePath })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ taskId: "task-store-1" }),
+        expect.objectContaining({ taskId: "task-store-2", latestRunId: "run-child-1" }),
+      ]),
     );
 
     taskStore.updateTask("task-store-1", {
@@ -368,9 +420,11 @@ describe("state ledger sqlite task-store integration", () => {
     );
 
     taskStore.removeTask("task-store-1");
+    taskStore.removeTask("task-store-2");
     await taskStore.waitForStoreWrites();
 
     expect(getTaskSnapshotFromStateLedger("task-store-1", { anchorPath: storePath })).toBeNull();
+    expect(getTaskTopologyFromStateLedger("task-store-2", { anchorPath: storePath })).toBeNull();
   });
 });
 

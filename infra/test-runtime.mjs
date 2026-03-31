@@ -89,6 +89,7 @@ function buildSandboxContext(rootDir) {
   const workflowDir = resolve(bosunDataDir, "workflows");
   const runsDir = resolve(bosunDataDir, "workflow-runs");
   const cacheDir = resolve(bosunDataDir, ".cache");
+  const stateLedgerPath = resolve(cacheDir, "state-ledger.sqlite");
   const gitGlobalConfigPath = resolve(homeDir, ".gitconfig");
 
   return {
@@ -101,6 +102,7 @@ function buildSandboxContext(rootDir) {
     workflowDir,
     runsDir,
     cacheDir,
+    stateLedgerPath,
     gitGlobalConfigPath,
   };
 }
@@ -170,6 +172,8 @@ export function ensureTestRuntimeSandbox(options = {}) {
 
   setEnvValue("BOSUN_TEST_SANDBOX", "1", force);
   setEnvValue("BOSUN_TEST_SANDBOX_ROOT", context.sandboxRoot, force);
+  setEnvValue("BOSUN_TEST_CACHE_DIR", context.cacheDir, force);
+  setEnvValue("BOSUN_STATE_LEDGER_PATH", context.stateLedgerPath, force);
   setEnvValue("GIT_CONFIG_GLOBAL", context.gitGlobalConfigPath, force);
   setEnvValue("GIT_CONFIG_NOSYSTEM", "1", force);
 

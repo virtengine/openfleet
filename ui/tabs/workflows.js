@@ -6603,6 +6603,67 @@ function RunHistoryView() {
     const runGraphLineage = buildRunGraphLineageRows(runGraph, selectedRun.runId);
     const runGraphExecutions = buildRunGraphExecutionRows(runGraph);
     const runGraphTimeline = Array.isArray(runGraph?.timeline) ? runGraph.timeline.slice().reverse() : [];
+    const uniqueDelegationIds = (values = []) => {
+      const seen = new Set();
+      const out = [];
+      for (const value of Array.isArray(values) ? values : []) {
+        const normalized = String(value || "").trim();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        out.push(normalized);
+      }
+      return out;
+    };
+    const rawDelegationTopology =
+      selectedRun?.delegationTopology && typeof selectedRun.delegationTopology === "object"
+        ? selectedRun.delegationTopology
+        : (selectedRun?.detail?.delegationTopology && typeof selectedRun.detail.delegationTopology === "object"
+            ? selectedRun.detail.delegationTopology
+            : (selectedRun?.detail?.data?._delegationTopology && typeof selectedRun.detail.data._delegationTopology === "object"
+                ? selectedRun.detail.data._delegationTopology
+                : null));
+    const delegationTopology = rawDelegationTopology
+      ? {
+          runId: String(rawDelegationTopology.runId || selectedRun.runId || "").trim() || null,
+          rootRunId: String(rawDelegationTopology.rootRunId || selectedRun.rootRunId || "").trim() || null,
+          parentRunId: String(rawDelegationTopology.parentRunId || selectedRun.parentRunId || "").trim() || null,
+          taskId: String(rawDelegationTopology.taskId || selectedRun.taskId || "").trim() || null,
+          rootTaskId: String(rawDelegationTopology.rootTaskId || "").trim() || null,
+          parentTaskId: String(rawDelegationTopology.parentTaskId || "").trim() || null,
+          sessionId: String(rawDelegationTopology.sessionId || selectedRun.primarySessionId || selectedRun.sessionId || "").trim() || null,
+          rootSessionId: String(rawDelegationTopology.rootSessionId || "").trim() || null,
+          parentSessionId: String(rawDelegationTopology.parentSessionId || "").trim() || null,
+          delegationDepth: Number.isFinite(Number(rawDelegationTopology.delegationDepth))
+            ? Math.max(0, Math.trunc(Number(rawDelegationTopology.delegationDepth)))
+            : 0,
+          childRunIds: uniqueDelegationIds(rawDelegationTopology.childRunIds || []),
+          childSessionIds: uniqueDelegationIds(rawDelegationTopology.childSessionIds || []),
+          familyRunIds: uniqueDelegationIds(rawDelegationTopology.familyRunIds || []),
+          familySessionIds: uniqueDelegationIds(rawDelegationTopology.familySessionIds || []),
+        }
+      : null;
+    const delegationTaskLineage = [
+      delegationTopology?.taskId ? `task ${delegationTopology.taskId}` : "",
+      delegationTopology?.parentTaskId && delegationTopology.parentTaskId !== delegationTopology.taskId
+        ? `parent ${delegationTopology.parentTaskId}`
+        : "",
+      delegationTopology?.rootTaskId
+        && delegationTopology.rootTaskId !== delegationTopology.parentTaskId
+        && delegationTopology.rootTaskId !== delegationTopology.taskId
+        ? `root ${delegationTopology.rootTaskId}`
+        : "",
+    ].filter(Boolean);
+    const delegationSessionLineage = [
+      delegationTopology?.sessionId ? `current ${delegationTopology.sessionId}` : "",
+      delegationTopology?.parentSessionId && delegationTopology.parentSessionId !== delegationTopology.sessionId
+        ? `parent ${delegationTopology.parentSessionId}`
+        : "",
+      delegationTopology?.rootSessionId
+        && delegationTopology.rootSessionId !== delegationTopology.parentSessionId
+        && delegationTopology.rootSessionId !== delegationTopology.sessionId
+        ? `root ${delegationTopology.rootSessionId}`
+        : "",
+    ].filter(Boolean);
     const dagCounts = getRunDagCounts(selectedRun);
     const dagRevisions = Array.isArray(selectedRun?.detail?.dagState?.revisions) ? selectedRun.detail.dagState.revisions : [];
     const ledgerEvents = Array.isArray(selectedRun?.ledger?.events) ? selectedRun.ledger.events : [];
@@ -6842,6 +6903,11 @@ function RunHistoryView() {
               <div><b>Root Run:</b> <code>${selectedRun.rootRunId || "—"}</code></div>
               <div><b>Parent Run:</b> <code>${selectedRun.parentRunId || "—"}</code></div>
               <div><b>Retry Of:</b> <code>${selectedRun.retryOf || "—"}</code></div>
+              <div><b>Delegation Depth:</b> ${delegationTopology?.delegationDepth ?? 0}</div>
+              <div><b>Task Lineage:</b> ${delegationTaskLineage.length > 0 ? delegationTaskLineage.join(" · ") : "—"}</div>
+              <div><b>Session Lineage:</b> ${delegationSessionLineage.length > 0 ? delegationSessionLineage.join(" · ") : "—"}</div>
+              <div><b>Child Runs:</b> ${Number(delegationTopology?.childRunIds?.length || 0)} · <b>Child Sessions:</b> ${Number(delegationTopology?.childSessionIds?.length || 0)}</div>
+              <div><b>Family Runs:</b> ${Number(delegationTopology?.familyRunIds?.length || 0)} · <b>Family Sessions:</b> ${Number(delegationTopology?.familySessionIds?.length || 0)}</div>
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
               ${selectedRun.parentRunId && html`
@@ -6854,6 +6920,15 @@ function RunHistoryView() {
                   Open Root Run
                 <//>
               `}
+              ${Array.isArray(delegationTopology?.childRunIds) ? delegationTopology.childRunIds.slice(0, 3).map((childRunId) => (
+                childRunId && childRunId !== selectedRun.runId
+                  ? html`
+                      <${Button} key=${`child-run-${childRunId}`} variant="outlined" size="small" onClick=${() => loadRunDetail(childRunId)}>
+                        Open Child Run
+                      <//>
+                    `
+                  : null
+              )) : null}
             </div>
           </div>
 
@@ -7103,6 +7178,60 @@ function RunHistoryView() {
                 </div>
               `;
             })}
+          </div>
+        </details>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Delegation Topology (${Number(delegationTopology?.familyRunIds?.length || delegationTopology?.childRunIds?.length || 0)})</summary>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:8px;">
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Task Lineage</div>
+              ${delegationTopology
+                ? html`
+                    <div><b>Task:</b> <code>${delegationTopology.taskId || "—"}</code></div>
+                    <div><b>Parent Task:</b> <code>${delegationTopology.parentTaskId || "—"}</code></div>
+                    <div><b>Root Task:</b> <code>${delegationTopology.rootTaskId || "—"}</code></div>
+                    <div><b>Delegation Depth:</b> ${delegationTopology.delegationDepth}</div>
+                    ${delegationTaskLineage.length > 0 && html`<div style="margin-top:6px;">${delegationTaskLineage.join(" · ")}</div>`}
+                  `
+                : html`<div style="opacity:0.6;">No explicit task delegation topology recorded.</div>`}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Session Lineage</div>
+              ${delegationTopology
+                ? html`
+                    <div><b>Session:</b> <code>${delegationTopology.sessionId || "—"}</code></div>
+                    <div><b>Parent Session:</b> <code>${delegationTopology.parentSessionId || "—"}</code></div>
+                    <div><b>Root Session:</b> <code>${delegationTopology.rootSessionId || "—"}</code></div>
+                    <div><b>Child Sessions:</b> ${Number(delegationTopology.childSessionIds?.length || 0)}</div>
+                    <div><b>Family Sessions:</b> ${Number(delegationTopology.familySessionIds?.length || 0)}</div>
+                    ${delegationSessionLineage.length > 0 && html`<div style="margin-top:6px;">${delegationSessionLineage.join(" · ")}</div>`}
+                  `
+                : html`<div style="opacity:0.6;">No explicit session delegation topology recorded.</div>`}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Run Family</div>
+              ${delegationTopology
+                ? html`
+                    <div><b>Run:</b> <code>${delegationTopology.runId || selectedRun.runId || "—"}</code></div>
+                    <div><b>Parent Run:</b> <code>${delegationTopology.parentRunId || "—"}</code></div>
+                    <div><b>Root Run:</b> <code>${delegationTopology.rootRunId || "—"}</code></div>
+                    <div><b>Child Runs:</b> ${Number(delegationTopology.childRunIds?.length || 0)}</div>
+                    <div><b>Family Runs:</b> ${Number(delegationTopology.familyRunIds?.length || 0)}</div>
+                    ${Array.isArray(delegationTopology.childRunIds) && delegationTopology.childRunIds.length > 0
+                      ? html`
+                          <div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px;">
+                            ${delegationTopology.childRunIds.map((childRunId) => html`
+                              <${Button} key=${`delegation-child-${childRunId}`} variant="outlined" size="small" onClick=${() => loadRunDetail(childRunId)}>
+                                ${childRunId}
+                              <//>
+                            `)}
+                          </div>
+                        `
+                      : html`<div style="margin-top:6px; opacity:0.6;">No child runs recorded for this delegation family.</div>`}
+                  `
+                : html`<div style="opacity:0.6;">No explicit run delegation topology recorded.</div>`}
+            </div>
           </div>
         </details>
 

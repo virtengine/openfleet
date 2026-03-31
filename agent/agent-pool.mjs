@@ -4622,6 +4622,24 @@ function buildHarnessCompileOptions(options = {}) {
   };
 }
 
+function normalizeHarnessTurnResult(result, context = {}) {
+  const raw = result && typeof result === "object"
+    ? { ...result }
+    : {
+        output: result == null ? "" : String(result),
+      };
+  const success = raw.success !== false;
+  return {
+    ...raw,
+    success,
+    outcome: toTrimmedString(raw.outcome || raw.transitionOutcome || raw.status || (success ? "success" : "failure")).toLowerCase() || (success ? "success" : "failure"),
+    status: toTrimmedString(raw.status || (success ? "completed" : "failed")) || (success ? "completed" : "failed"),
+    stageId: toTrimmedString(raw.stageId || context.stageId || ""),
+    mode: toTrimmedString(raw.mode || context.mode || ""),
+    threadId: raw.threadId || null,
+  };
+}
+
 function buildHarnessTurnExecutor(options = {}) {
   if (typeof options.turnExecutor === "function") {
     return options.turnExecutor;
@@ -4633,15 +4651,17 @@ function buildHarnessTurnExecutor(options = {}) {
     taskKey,
     prompt,
     mode,
+    timeoutMs,
   }) {
     const cwd = stage.cwd || options.cwd || profile.cwd || REPO_ROOT;
-    const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
+    const resolvedTimeoutMs = timeoutMs || stage.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS;
     const sessionType = stage.sessionType || profile.sessionType || options.sessionType || "task";
     const sdk = stage.sdk || options.sdk || profile.sdk || undefined;
     const model = stage.model || options.model || profile.model || undefined;
+    const stageTaskKey = stage.taskKey || taskKey || profile.taskKey || profile.agentId || stage.id;
     const sharedOptions = {
       cwd,
-      timeoutMs,
+      timeoutMs: resolvedTimeoutMs,
       sdk,
       model,
       mcpServers: options.mcpServers,
@@ -4660,16 +4680,20 @@ function buildHarnessTurnExecutor(options = {}) {
     };
 
     if (mode === "initial") {
-      return execWithRetry(prompt, {
+      const result = await execWithRetry(prompt, {
         ...sharedOptions,
-        taskKey,
+        taskKey: stageTaskKey,
         maxRetries: stage.maxRetries,
         maxContinues: stage.maxContinues,
       });
+      return normalizeHarnessTurnResult(result, {
+        stageId: stage.id,
+        mode,
+      });
     }
 
-    return launchOrResumeThread(prompt, cwd, timeoutMs, {
-      taskKey,
+    const result = await launchOrResumeThread(prompt, cwd, resolvedTimeoutMs, {
+      taskKey: stageTaskKey,
       sdk: sharedOptions.sdk,
       model: sharedOptions.model,
       mcpServers: sharedOptions.mcpServers,
@@ -4686,11 +4710,42 @@ function buildHarnessTurnExecutor(options = {}) {
       onSlotReleased: sharedOptions.onSlotReleased,
       ignoreSdkCooldown: true,
     });
+    return normalizeHarnessTurnResult(result, {
+      stageId: stage.id,
+      mode,
+    });
   };
 }
 
 export function compileInternalHarnessSource(source, options = {}) {
   return compileInternalHarnessProfile(source, buildHarnessCompileOptions(options));
+}
+
+export function createCompiledInternalHarnessSession(compiledProfile, options = {}) {
+  if (!compiledProfile || typeof compiledProfile !== "object" || !Array.isArray(compiledProfile.stages)) {
+    throw new Error("Compiled harness profile is required");
+  }
+
+  const controller = createHarnessRuntimeSession(compiledProfile, {
+    onEvent: options.onHarnessEvent,
+    runId: options.runId,
+    dryRun: options.dryRun === true,
+    taskKey: options.taskKey || compiledProfile.taskKey || compiledProfile.agentId,
+    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
+    executeTurn: buildHarnessTurnExecutor(options),
+    extensions: options.extensions,
+    extensionRegistry: options.extensionRegistry,
+  });
+
+  return {
+    agentId: compiledProfile.agentId || "",
+    compiledProfile,
+    compiledProfileJson: JSON.stringify(compiledProfile, null, 2),
+    validationReport: { errors: [], warnings: [], stats: compiledProfile.metadata || {} },
+    isValid: true,
+    controller,
+    run: () => controller.run(),
+  };
 }
 
 export function createInternalHarnessSession(profileSource, options = {}) {
@@ -4701,18 +4756,19 @@ export function createInternalHarnessSession(profileSource, options = {}) {
     throw error;
   }
 
-  const controller = createHarnessRuntimeSession(compiled.compiledProfile, {
-    onEvent: options.onHarnessEvent,
-    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
-    executeTurn: buildHarnessTurnExecutor(options),
-    extensions: options.extensions,
-    extensionRegistry: options.extensionRegistry,
-  });
-
+  const compiledSession = createCompiledInternalHarnessSession(compiled.compiledProfile, options);
   return {
+    ...compiledSession,
     ...compiled,
-    controller,
-    run: () => controller.run(),
+  };
+}
+
+export async function runCompiledInternalHarnessProfile(compiledProfile, options = {}) {
+  const session = createCompiledInternalHarnessSession(compiledProfile, options);
+  const result = await session.run();
+  return {
+    ...session,
+    result,
   };
 }
 
@@ -4869,4 +4925,3 @@ export const __testables = {
   normalizeRetryFailureFingerprint,
   classifyRetryCircuitBreak,
 };
-

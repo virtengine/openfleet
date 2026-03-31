@@ -335,10 +335,6 @@ function extractGovernanceState(raw = {}) {
 }
 
 function resolveOwnedStateLedgerPath(runsDir) {
-  const explicit = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
-  if (explicit) {
-    return explicit === ":memory:" ? explicit : resolve(explicit);
-  }
   const normalizedRunsDir = resolve(String(runsDir || process.cwd()));
   const repoRoot = inferRepoRoot(normalizedRunsDir);
   const bosunHomeDir = resolveBosunHomeDir();
@@ -348,8 +344,14 @@ function resolveOwnedStateLedgerPath(runsDir) {
   const bosunDir = findBosunDir(normalizedRunsDir)
     || (repoRoot ? resolve(repoRoot, ".bosun") : null)
     || (isWithinBosunHome ? resolve(bosunHomeDir) : null);
-  if (!bosunDir) return null;
-  return resolve(bosunDir, ".cache", STATE_LEDGER_FILENAME);
+  if (bosunDir) {
+    return resolve(bosunDir, ".cache", STATE_LEDGER_FILENAME);
+  }
+  const explicit = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
+  if (explicit) {
+    return explicit === ":memory:" ? explicit : resolve(explicit);
+  }
+  return null;
 }
 
 function toTimestamp(value) {

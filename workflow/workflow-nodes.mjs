@@ -2559,7 +2559,7 @@ function pickLatestMeaningfulSessionMessage(messages = []) {
     const content = String(message?.content || "").trim();
     if (!content) continue;
     const normalized = content.replace(/\s+/g, " ").trim().toLowerCase();
-    if (WORKFLOW_AGENT_PLACEHOLDER_OUTPUTS.has(normalized)) continue;
+    if (SESSION_PLACEHOLDER_OUTPUTS.has(normalized)) continue;
     return content;
   }
   return "";

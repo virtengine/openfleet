@@ -44,6 +44,17 @@ function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function normalizeOptionalInteger(value, fallback = null) {
+  if (value == null || value === "") return fallback;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
+}
+
+function normalizeOptionalPositiveInteger(value, fallback = null) {
+  const numeric = normalizeOptionalInteger(value, fallback);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
 function addIssue(bucket, issue) {
   bucket.push({
     code: toTrimmedString(issue?.code || "invalid"),
@@ -122,7 +133,7 @@ function normalizeSkillEntry(entry) {
   };
 }
 
-function normalizeStage(stage, index) {
+function normalizeStage(stage, index, defaults = {}) {
   const id = toTrimmedString(stage?.id || stage?.stageId || `stage-${index + 1}`);
   const typeRaw = toTrimmedString(stage?.type || stage?.kind || "prompt").toLowerCase();
   const type = STAGE_TYPE_ALLOWLIST.has(typeRaw) ? typeRaw : "prompt";
@@ -143,6 +154,14 @@ function normalizeStage(stage, index) {
     index,
     type,
     prompt: toTrimmedString(stage?.prompt || stage?.instruction || ""),
+    cwd: toTrimmedString(stage?.cwd || defaults.defaultCwd || ""),
+    sessionType: toTrimmedString(stage?.sessionType || defaults.defaultSessionType || ""),
+    sdk: toTrimmedString(stage?.sdk || defaults.defaultSdk || ""),
+    model: toTrimmedString(stage?.model || defaults.defaultModel || ""),
+    taskKey: toTrimmedString(stage?.taskKey || defaults.defaultTaskKey || defaults.defaultAgentId || ""),
+    timeoutMs: normalizeOptionalPositiveInteger(stage?.timeoutMs),
+    maxRetries: normalizeOptionalInteger(stage?.maxRetries),
+    maxContinues: normalizeOptionalInteger(stage?.maxContinues),
     tools,
     transitions,
     repairLoop,
@@ -283,6 +302,30 @@ function validateStages(stages, entryStageId, report) {
         });
       }
     }
+    if (stage.timeoutMs != null && (!Number.isFinite(stage.timeoutMs) || stage.timeoutMs < 1)) {
+      addIssue(report.errors, {
+        code: "stage_timeout_invalid",
+        message: `Stage "${stage.id}" timeoutMs must be >= 1`,
+        path: `stages.${stage.id}.timeoutMs`,
+        stageId: stage.id,
+      });
+    }
+    if (stage.maxRetries != null && (!Number.isFinite(stage.maxRetries) || stage.maxRetries < 0)) {
+      addIssue(report.errors, {
+        code: "stage_max_retries_invalid",
+        message: `Stage "${stage.id}" maxRetries must be >= 0`,
+        path: `stages.${stage.id}.maxRetries`,
+        stageId: stage.id,
+      });
+    }
+    if (stage.maxContinues != null && (!Number.isFinite(stage.maxContinues) || stage.maxContinues < 0)) {
+      addIssue(report.errors, {
+        code: "stage_max_continues_invalid",
+        message: `Stage "${stage.id}" maxContinues must be >= 0`,
+        path: `stages.${stage.id}.maxContinues`,
+        stageId: stage.id,
+      });
+    }
     if (stage.repairLoop) {
       if (!Number.isFinite(stage.repairLoop.maxAttempts) || stage.repairLoop.maxAttempts < 1) {
         addIssue(report.errors, {
@@ -370,7 +413,7 @@ export function compileInternalHarnessProfile(source, options = {}) {
     });
   }
 
-  const stages = stagesInput.map((stage, index) => normalizeStage(stage, index));
+  const stages = stagesInput.map((stage, index) => normalizeStage(stage, index, options));
   const entryStageId = toTrimmedString(profile.entryStageId || stages[0]?.id || "");
   const skills = validateSkillRefs(toArray(profile.skills), report);
   validateStages(stages, entryStageId, report);
@@ -395,6 +438,11 @@ export function compileInternalHarnessProfile(source, options = {}) {
     name: baseName || agentIdBase,
     description: toTrimmedString(profile.description || ""),
     entryStageId,
+    cwd: toTrimmedString(profile.cwd || options.defaultCwd || ""),
+    sessionType: toTrimmedString(profile.sessionType || options.defaultSessionType || ""),
+    sdk: toTrimmedString(profile.sdk || options.defaultSdk || ""),
+    model: toTrimmedString(profile.model || options.defaultModel || ""),
+    taskKey: toTrimmedString(profile.taskKey || options.defaultTaskKey || agentId || ""),
     skills,
     metadata: {
       compiledAt: new Date().toISOString(),
@@ -410,6 +458,14 @@ export function compileInternalHarnessProfile(source, options = {}) {
       index: stage.index,
       type: stage.type,
       prompt: stage.prompt,
+      cwd: stage.cwd,
+      sessionType: stage.sessionType,
+      sdk: stage.sdk,
+      model: stage.model,
+      taskKey: stage.taskKey,
+      timeoutMs: stage.timeoutMs,
+      maxRetries: stage.maxRetries,
+      maxContinues: stage.maxContinues,
       tools: stage.tools,
       transitions: stage.transitions,
       repairLoop: stage.repairLoop,

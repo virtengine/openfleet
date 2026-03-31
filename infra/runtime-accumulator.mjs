@@ -38,7 +38,11 @@ const MAX_COMPLETED_SESSIONS = (() => {
 	return Math.min(parsed, DEFAULT_MAX_COMPLETED_SESSIONS);
 })();
 
-let _cacheDir = DEFAULT_CACHE_DIR;
+function resolveConfiguredCacheDir() {
+	return resolve(process.env.BOSUN_TEST_CACHE_DIR || DEFAULT_CACHE_DIR);
+}
+
+let _cacheDir = resolveConfiguredCacheDir();
 let _runtimeFile = resolve(_cacheDir, SNAPSHOT_FILE_NAME);
 let _sessionLogFile = resolve(_cacheDir, SESSION_LOG_FILE_NAME);
 
@@ -78,8 +82,8 @@ function cloneDefaultState() {
 	};
 }
 
-function configureCachePaths(cacheDir = DEFAULT_CACHE_DIR) {
-	_cacheDir = resolve(cacheDir || DEFAULT_CACHE_DIR);
+function configureCachePaths(cacheDir = resolveConfiguredCacheDir()) {
+	_cacheDir = resolve(cacheDir || resolveConfiguredCacheDir());
 	_runtimeFile = resolve(_cacheDir, SNAPSHOT_FILE_NAME);
 	_sessionLogFile = resolve(_cacheDir, SESSION_LOG_FILE_NAME);
 }
@@ -781,7 +785,7 @@ export function _resetRuntimeAccumulatorForTests(options = {}) {
 	// When no explicit cacheDir is given, prefer the test-sandbox dir set by
 	// bootstrapTestRuntime() so that bare reset calls (e.g. in finally blocks)
 	// never redirect writes back to the real workspace .cache folder.
-	const fallback = process.env.BOSUN_TEST_CACHE_DIR || DEFAULT_CACHE_DIR;
+	const fallback = resolveConfiguredCacheDir();
 	configureCachePaths(options.cacheDir || fallback);
 	_state = cloneDefaultState();
 	_initialized = false;

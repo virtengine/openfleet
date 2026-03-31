@@ -5009,6 +5009,24 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 </div>
               </div>
               <div class="task-comment-item">
+                <div class="task-comment-meta">Delegation Topology</div>
+                <div class="task-comment-body">${taskGraphPath.length > 1
+                  ? `Task graph: ${taskGraphPath.join(" → ")}`
+                  : (taskTopology?.latestRunId || taskTopology?.latestSessionId || taskTopology?.rootTaskId || taskTopology?.parentTaskId
+                      ? `${taskTopology.workflowName || taskTopology.workflowId || "workflow"} · ${taskTopology.rootTaskId || task?.id || "task"}`
+                      : "No delegated topology linked yet.")}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${[
+                    Number.isFinite(Number(taskTopology?.delegationDepth)) ? `Delegation depth ${Number(taskTopology.delegationDepth || 0)}` : "",
+                    taskTopology?.latestRunId ? `run ${taskTopology.latestRunId}` : "",
+                    taskTopology?.latestSessionId ? `session ${truncate(taskTopology.latestSessionId, 36)}` : "",
+                  ].filter(Boolean).join(" · ")}
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskSessionAncestry.length > 0 ? `Session ancestry: ${taskSessionAncestry.join(" · ")}` : ""}
+                </div>
+              </div>
+              <div class="task-comment-item">
                 <div class="task-comment-meta">Timeline Events</div>
                 <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
               </div>
