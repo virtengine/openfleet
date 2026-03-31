@@ -16,6 +16,7 @@ import { resolve, dirname, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
+import { upsertSessionRecordToStateLedger } from "../lib/state-ledger-sqlite.mjs";
 import { isTestRuntime } from "./test-runtime.mjs";
 import { addCompletedSession } from "./runtime-accumulator.mjs";
 
@@ -229,6 +230,40 @@ function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
   return fallbackMax;
 }
 
+function normalizeSessionMetadata(metadata = {}) {
+  const source =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? metadata
+      : {};
+  const normalized = { ...source };
+  const trimKeys = [
+    "title",
+    "workspaceId",
+    "workspaceDir",
+    "branch",
+    "workflowId",
+    "workflowName",
+    "sourceNodeId",
+    "rootTaskId",
+    "parentTaskId",
+    "rootSessionId",
+    "parentSessionId",
+    "rootRunId",
+    "parentRunId",
+    "taskSessionId",
+  ];
+  for (const key of trimKeys) {
+    if (normalized[key] == null) continue;
+    const text = String(normalized[key] || "").trim();
+    normalized[key] = text || undefined;
+  }
+  const delegationDepth = Number(normalized.delegationDepth);
+  normalized.delegationDepth = Number.isFinite(delegationDepth)
+    ? Math.max(0, Math.trunc(delegationDepth))
+    : 0;
+  return normalized;
+}
+
 function buildSessionRecordFromPersistedData(data, idleThresholdMs) {
   if (!data || typeof data !== "object") return null;
   const id = String(data.id || data.taskId || "").trim();
@@ -249,10 +284,11 @@ function buildSessionRecordFromPersistedData(data, idleThresholdMs) {
   }
 
   const messages = Array.isArray(data.messages) ? data.messages : [];
+  const metadata = normalizeSessionMetadata(data.metadata || {});
   return {
     id,
     taskId: data.taskId || id,
-    taskTitle: data.taskTitle || data.title || data.metadata?.title || id,
+    taskTitle: data.taskTitle || data.title || metadata.title || id,
     sessionKey:
       String(data.sessionKey || "").trim() ||
       `${data.taskId || id}:${data.startedAt || lastActiveMs}:${endedAt || data.startedAt || lastActiveMs}`,
@@ -268,7 +304,7 @@ function buildSessionRecordFromPersistedData(data, idleThresholdMs) {
     turns: Array.isArray(data.turns) ? data.turns : [],
     accumulatedAt: data.accumulatedAt || null,
     lastActivityAt: lastActiveMs,
-    metadata: data.metadata || {},
+    metadata,
     insights: data.insights || buildSessionInsights({ messages }),
     trajectory: data.trajectory || { version: 1, replayable: true, steps: [] },
     summary: data.summary || null,
@@ -578,6 +614,17 @@ function buildSessionSummaryRecord(session, { progress = null, preview = null, r
     workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
     workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
     branch: String(session?.metadata?.branch || "").trim() || null,
+    workflowId: String(session?.metadata?.workflowId || "").trim() || null,
+    workflowName: String(session?.metadata?.workflowName || "").trim() || null,
+    rootTaskId: String(session?.metadata?.rootTaskId || "").trim() || null,
+    parentTaskId: String(session?.metadata?.parentTaskId || "").trim() || null,
+    rootSessionId: String(session?.metadata?.rootSessionId || "").trim() || null,
+    parentSessionId: String(session?.metadata?.parentSessionId || "").trim() || null,
+    rootRunId: String(session?.metadata?.rootRunId || "").trim() || null,
+    parentRunId: String(session?.metadata?.parentRunId || "").trim() || null,
+    delegationDepth: Number.isFinite(Number(session?.metadata?.delegationDepth))
+      ? Math.max(0, Math.trunc(Number(session.metadata.delegationDepth)))
+      : 0,
     turnCount: Math.max(0, Number(session?.turnCount) || 0),
     turns,
     tokenCount: effectiveTokenUsage.totalTokens || 0,
@@ -598,6 +645,65 @@ function buildSessionSummaryRecord(session, { progress = null, preview = null, r
     insights: session?.insights || null,
     ...telemetry,
   };
+}
+
+function cloneSessionMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).map((message) => ({ ...message }));
+}
+
+function buildStateLedgerSessionRecord(session) {
+  if (!session) return null;
+  const preview = getSessionMessageText(session.messages?.at(-1)) || null;
+  const summary = buildSessionSummaryRecord(session, {
+    preview,
+    runtimeUpdatedAt: session.lastActiveAt || new Date(session.lastActivityAt || Date.now()).toISOString(),
+    runtimeIsLive: session.status === "active",
+  });
+  return {
+    sessionId: summary.id,
+    sessionType: summary.type,
+    workspaceId: summary.workspaceId,
+    agentId: String(session?.metadata?.agentId || session?.metadata?.agent || "").trim() || null,
+    taskId: summary.taskId,
+    taskTitle: summary.title,
+    workflowId: summary.workflowId,
+    workflowName: summary.workflowName,
+    latestEventType: summary.lastEventType,
+    status: summary.lifecycleStatus || summary.status,
+    updatedAt: summary.lastActiveAt,
+    startedAt: session.startedAt || summary.createdAt,
+    eventCount: Math.max(0, Number(session.totalEvents) || 0),
+    preview,
+    document: {
+      ...summary,
+      sessionId: summary.id,
+      sessionKey: session.sessionKey || null,
+      metadata: session.metadata || {},
+      createdAt: session.createdAt || summary.createdAt,
+      startedAt: session.startedAt || null,
+      endedAt: session.endedAt || null,
+      lastActiveAt: summary.lastActiveAt,
+      totalEvents: Math.max(0, Number(session.totalEvents) || 0),
+      eventCount: Math.max(0, Number(session.totalEvents) || 0),
+      turnCount: Math.max(0, Number(session.turnCount) || 0),
+      turns: cloneTurns(session.turns),
+      messages: cloneSessionMessages(session.messages),
+      trajectory: session.trajectory || null,
+      summary: session.summary || null,
+      updatedAt: summary.lastActiveAt,
+    },
+  };
+}
+
+function persistSessionRecordToStateLedger(session) {
+  const record = buildStateLedgerSessionRecord(session);
+  if (!record) return;
+  try {
+    upsertSessionRecordToStateLedger(record, { repoRoot: SESSION_TRACKER_REPO_ROOT });
+  } catch {
+    // Best-effort persistence — session tracking should continue even if the
+    // durable index is temporarily unavailable.
+  }
 }
 
 function ensureSessionTurns(session) {
@@ -902,6 +1008,7 @@ export class SessionTracker {
       this.#appendTrajectoryStep(session, event);
       this.#scheduleDerivedStateRefresh(session);
       this.#markDirty(taskId);
+      persistSessionRecordToStateLedger(session);
       emitSessionEvent(session, msg);
       return;
     }
@@ -941,6 +1048,7 @@ export class SessionTracker {
       this.#appendTrajectoryStep(session, event);
       this.#scheduleDerivedStateRefresh(session);
       this.#markDirty(taskId);
+      persistSessionRecordToStateLedger(session);
       emitSessionEvent(session, msg);
       return;
     }
@@ -963,6 +1071,7 @@ export class SessionTracker {
     this.#appendTrajectoryStep(session, event);
     this.#scheduleDerivedStateRefresh(session);
     this.#markDirty(taskId);
+    persistSessionRecordToStateLedger(session);
     emitSessionEvent(session, msg);
   }
 
@@ -989,6 +1098,7 @@ export class SessionTracker {
     this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
+    persistSessionRecordToStateLedger(session);
     emitSessionStateEvent(session, "session-ended", { status: session.status });
   }
 
@@ -1181,16 +1291,17 @@ export class SessionTracker {
     }
 
     const now = new Date().toISOString();
+    const normalizedMetadata = normalizeSessionMetadata(metadata);
     const resolvedMax = resolveSessionMaxMessages(
       type,
-      metadata,
+      normalizedMetadata,
       maxMessages,
       this.#maxMessages,
     );
     const session = {
       id,
       taskId: taskId || id,
-      taskTitle: metadata.title || id,
+      taskTitle: normalizedMetadata.title || id,
       sessionKey:
         String(sessionKey || "").trim() ||
         `${taskId || id}:${Date.now()}:${randomToken(8)}`,
@@ -1206,7 +1317,7 @@ export class SessionTracker {
       turns: [],
       lastActivityAt: Date.now(),
       accumulatedAt: null,
-      metadata,
+      metadata: normalizedMetadata,
       maxMessages: resolvedMax,
       insights: buildSessionInsights({ messages: [] }),
       trajectory: { version: 1, replayable: true, steps: [] },
@@ -1215,6 +1326,7 @@ export class SessionTracker {
     this.#sessions.set(id, session);
     this.#markDirty(id);
     this.#flushDirty(); // immediate write for create
+    persistSessionRecordToStateLedger(session);
     emitSessionStateEvent(session, "session-created");
     return session;
   }
@@ -1319,6 +1431,7 @@ export class SessionTracker {
     this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#accumulateCompletedSession(session, sessionId);
     this.#markDirty(sessionId);
+    persistSessionRecordToStateLedger(session);
     emitSessionStateEvent(session, "session-status", { status: session.status });
   }
 
@@ -1333,6 +1446,7 @@ export class SessionTracker {
     session.taskTitle = newTitle;
     session.title = newTitle;
     this.#markDirty(sessionId);
+    persistSessionRecordToStateLedger(session);
     emitSessionStateEvent(session, "session-renamed", { title: newTitle });
   }
 
@@ -1400,6 +1514,7 @@ export class SessionTracker {
     session.lastActiveAt = new Date().toISOString();
     this.#scheduleDerivedStateRefresh(session, { force: true });
     this.#markDirty(sessionId);
+    persistSessionRecordToStateLedger(session);
 
     return { ok: true, message: { ...target }, index: idx };
   }

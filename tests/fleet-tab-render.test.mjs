@@ -37,6 +37,23 @@ const sessionListSourceFiles = [
   source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
 }));
 
+const dashboardSourceFiles = [
+  "ui/tabs/dashboard.js",
+  "site/ui/tabs/dashboard.js",
+].map((relPath) => ({
+  relPath,
+  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
+}));
+
+const telemetrySourceFiles = [
+  "ui/tabs/telemetry.js",
+  "site/ui/tabs/telemetry.js",
+  "tui/screens/telemetry.mjs",
+].map((relPath) => ({
+  relPath,
+  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
+}));
+
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
     it("renders a keyboard-accessible session id pill with copy feedback state", () => {
@@ -495,6 +512,30 @@ for (const relPath of ["ui/tabs/telemetry.js", "site/ui/tabs/telemetry.js"]) {
         'variant="caption" className="numeral">\n                      ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}'
       );
       expect(source).not.toContain('font-variant-numeric');
+    });
+  });
+}
+
+for (const { relPath, source } of telemetrySourceFiles) {
+  describe(`Telemetry compact count formatting (${relPath})`, () => {
+    it("supports K/M/B/T abbreviations for large counts", () => {
+      expect(source).toContain("1_000_000_000_000");
+      expect(source).toContain("1_000_000_000");
+      expect(source).toContain("1_000_000");
+      expect(source).toContain("1_000");
+      expect(source).toContain('"T"');
+      expect(source).toContain('"B"');
+      expect(source).toContain('"M"');
+      expect(source).toContain('"K"');
+    });
+  });
+}
+
+for (const { relPath, source } of dashboardSourceFiles) {
+  describe(`Dashboard Git Graph rendering (${relPath})`, () => {
+    it("renders the Git Graph card without gating it on a preloaded commit list", () => {
+      expect(source).toContain('<${CommitGraph} maxCommits=${40} compact=${true} />');
+      expect(source).not.toContain('${recentCommits.length > 0 && html`');
     });
   });
 }

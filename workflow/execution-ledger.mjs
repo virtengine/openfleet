@@ -391,7 +391,7 @@ function collectTaskIdentityFromLedger(ledger) {
   for (const event of events) {
     const meta = event?.meta && typeof event.meta === "object" ? event.meta : null;
     const taskId = String(
-      meta?.taskId || meta?.task?.id || meta?.taskInfo?.id || meta?.taskDetail?.id || "",
+      event?.taskId || meta?.taskId || meta?.task?.id || meta?.taskInfo?.id || meta?.taskDetail?.id || "",
     ).trim();
     if (taskId) {
       return {
@@ -399,6 +399,11 @@ function collectTaskIdentityFromLedger(ledger) {
         taskTitle: String(
           meta?.taskTitle || meta?.task?.title || meta?.taskInfo?.title || meta?.taskDetail?.title || "",
         ).trim() || null,
+        rootTaskId: String(event?.rootTaskId || meta?.rootTaskId || taskId || "").trim() || taskId,
+        parentTaskId: String(event?.parentTaskId || meta?.parentTaskId || "").trim() || null,
+        delegationDepth: Number.isFinite(Number(event?.delegationDepth ?? meta?.delegationDepth))
+          ? Math.max(0, Math.trunc(Number(event?.delegationDepth ?? meta?.delegationDepth)))
+          : 0,
         source: "ledger",
       };
     }
@@ -411,12 +416,17 @@ function collectSessionIdentityFromLedger(ledger) {
   for (const event of events) {
     const meta = event?.meta && typeof event.meta === "object" ? event.meta : null;
     const sessionId = String(
-      meta?.sessionId || meta?.threadId || meta?.chatSessionId || event?.sessionId || event?.threadId || "",
+      event?.sessionId || meta?.sessionId || meta?.threadId || meta?.chatSessionId || event?.threadId || "",
     ).trim();
     if (!sessionId) continue;
     return {
       sessionId,
+      rootSessionId: String(event?.rootSessionId || meta?.rootSessionId || sessionId || "").trim() || sessionId,
+      parentSessionId: String(event?.parentSessionId || meta?.parentSessionId || "").trim() || null,
       sessionType: String(meta?.sessionType || meta?.runKind || "").trim() || null,
+      delegationDepth: Number.isFinite(Number(event?.delegationDepth ?? meta?.delegationDepth))
+        ? Math.max(0, Math.trunc(Number(event?.delegationDepth ?? meta?.delegationDepth)))
+        : 0,
       source: "ledger",
     };
   }
@@ -727,8 +737,16 @@ export class WorkflowExecutionLedger {
         status: ledger.status || null,
         taskId: taskIdentity?.taskId || null,
         taskTitle: taskIdentity?.taskTitle || null,
+        rootTaskId: taskIdentity?.rootTaskId || taskIdentity?.taskId || null,
+        parentTaskId: taskIdentity?.parentTaskId || null,
         sessionId: sessionIdentity?.sessionId || null,
+        rootSessionId: sessionIdentity?.rootSessionId || sessionIdentity?.sessionId || null,
+        parentSessionId: sessionIdentity?.parentSessionId || null,
         sessionType: sessionIdentity?.sessionType || null,
+        delegationDepth: Math.max(
+          Number(taskIdentity?.delegationDepth || 0),
+          Number(sessionIdentity?.delegationDepth || 0),
+        ),
       };
     });
 

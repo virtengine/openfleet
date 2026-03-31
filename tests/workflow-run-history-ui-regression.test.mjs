@@ -88,6 +88,20 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("summarizeWorkflowTeamMessageEntry");
     });
 
+    it(`${label} exposes complete state-ledger audit sections in run details`, () => {
+      expect(source).toContain("State Ledger Audit");
+      expect(source).toContain("Workflow Events:");
+      expect(source).toContain("Known Sessions:");
+      expect(source).toContain("Known Agents:");
+      expect(source).toContain("Session & Agent Activity");
+      expect(source).toContain("Tool Calls");
+      expect(source).toContain("Artifacts");
+      expect(source).toContain("Operator Actions");
+      expect(source).toContain("Claim Events");
+      expect(source).toContain("Promoted Strategy Events");
+      expect(source).toContain("No workflow lifecycle events recorded in the state ledger.");
+    });
+
     it(`${label} exposes the operator approval queue in run history`, () => {
       expect(source).toContain("Approval Queue");
       expect(source).toContain("Pending Approvals");

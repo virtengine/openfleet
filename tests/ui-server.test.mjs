@@ -9,7 +9,12 @@ import {
   appendOperatorActionToStateLedger,
   appendTaskTraceEventToStateLedger,
   resetStateLedgerCache,
+  upsertSessionRecordToStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
+import {
+  _resetRuntimeAccumulatorForTests,
+  addCompletedSession,
+} from "../infra/runtime-accumulator.mjs";
 
 const describeUiServer = (
   process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
@@ -4796,6 +4801,61 @@ describeUiServer("ui-server mini app", () => {
       area: "server",
     });
   });
+
+  it("returns durable lifetime telemetry totals from the runtime accumulator", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const cacheDir = mkdtempSync(join(tmpdir(), "bosun-ui-telemetry-runtime-"));
+    vi.resetModules();
+    const runtimeAccumulator = await import("../infra/runtime-accumulator.mjs");
+    runtimeAccumulator._resetRuntimeAccumulatorForTests({ cacheDir });
+    const baselineTotals = {
+      ...(runtimeAccumulator.getRuntimeStats()?.lifetimeTotals || {}),
+    };
+    runtimeAccumulator.addCompletedSession({
+      id: "session-telemetry-1",
+      sessionId: "session-telemetry-1",
+      sessionKey: "task-telemetry-api:1",
+      taskId: "task-telemetry-api",
+      taskTitle: "Telemetry API task",
+      startedAt: 1_000,
+      endedAt: 9_000,
+      durationMs: 8_000,
+      inputTokens: 1_200,
+      outputTokens: 300,
+      tokenCount: 1_500,
+      status: "completed",
+    });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.ok).toBe(true);
+      expect(payload.data.lifetimeTotals).toEqual(expect.objectContaining({
+        attemptsCount: Number(baselineTotals.attemptsCount || 0) + 1,
+        tokenCount: Number(baselineTotals.tokenCount || 0) + 1_500,
+        inputTokens: Number(baselineTotals.inputTokens || 0) + 1_200,
+        outputTokens: Number(baselineTotals.outputTokens || 0) + 300,
+        durationMs: Number(baselineTotals.durationMs || 0) + 8_000,
+      }));
+    } finally {
+      runtimeAccumulator._resetRuntimeAccumulatorForTests();
+      vi.resetModules();
+      await removeDirWithRetries(cacheDir);
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
   it("returns a diagnosticId on task detail failures and logs the raw backend cause", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -6686,6 +6746,84 @@ describeUiServer("ui-server mini app", () => {
       ]);
     } finally {
       await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("merges ledger-backed sessions into session list and detail fallbacks", async () => {
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-session-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    upsertSessionRecordToStateLedger({
+      sessionId: "ledger-session-1",
+      type: "manual",
+      workspaceId: "workspace-ledger",
+      taskId: "ledger-task-1",
+      taskTitle: "Ledger only session",
+      status: "completed",
+      latestEventType: "assistant",
+      updatedAt: "2026-03-31T09:15:00.000Z",
+      startedAt: "2026-03-31T09:00:00.000Z",
+      eventCount: 2,
+      preview: "Stored directly in SQLite",
+      document: {
+        id: "ledger-session-1",
+        taskId: "ledger-task-1",
+        taskTitle: "Ledger only session",
+        type: "manual",
+        status: "completed",
+        lifecycleStatus: "completed",
+        workspaceId: "workspace-ledger",
+        createdAt: "2026-03-31T09:00:00.000Z",
+        lastActiveAt: "2026-03-31T09:15:00.000Z",
+        totalEvents: 2,
+        turnCount: 1,
+        messages: [
+          { role: "assistant", content: "Stored directly in SQLite", timestamp: "2026-03-31T09:15:00.000Z" },
+        ],
+      },
+    }, { repoRoot: isolatedRepoRoot });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.sessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "ledger-session-1",
+          taskId: "ledger-task-1",
+          title: "Ledger only session",
+          status: "completed",
+        }),
+      ]));
+
+      const detailRes = await fetch(`http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-session-1")}?workspace=all&full=1`);
+      const detailJson = await detailRes.json();
+      expect(detailRes.status).toBe(200);
+      expect(detailJson.session).toEqual(expect.objectContaining({
+        id: "ledger-session-1",
+        taskId: "ledger-task-1",
+        taskTitle: "Ledger only session",
+        messages: [
+          expect.objectContaining({ content: "Stored directly in SQLite" }),
+        ],
+      }));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      vi.resetModules();
+      await removeDirWithRetries(isolatedRepoRoot);
     }
   });
 

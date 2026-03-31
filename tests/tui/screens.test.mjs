@@ -92,6 +92,8 @@ describe("tui screen rendering", () => {
 
     expect(view.latestText()).toContain("Runtime Snapshot");
     expect(view.latestText()).toContain("Active Sessions: 1");
+    expect(view.latestText()).toContain("Recovery / Orphans");
+    expect(view.latestText()).toContain("Executor Slots");
     expect(view.latestText()).toContain("Investigate failing build");
 
     await view.unmount();
@@ -407,5 +409,4 @@ describe("tui screen rendering", () => {
     await view.unmount();
   });
 });
-
 

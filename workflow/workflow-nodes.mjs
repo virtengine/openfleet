@@ -2539,6 +2539,32 @@ function deriveWorkflowAgentSessionStatus(result = {}, { streamEventCount = 0 } 
   return result?.success === true ? "completed" : "failed";
 }
 
+const SESSION_PLACEHOLDER_OUTPUTS = new Set([
+  "continued",
+  "model response continued",
+  "turn completed",
+  "session completed",
+  "agent is composing a response...",
+  "agent is composing a response…",
+]);
+
+function resolveSuccessfulWorkflowAgentSessionStatus(result = {}) {
+  return classifyWorkflowAgentBlockedStatus(result) || "completed";
+}
+
+function pickLatestMeaningfulSessionMessage(messages = []) {
+  if (!Array.isArray(messages)) return "";
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const content = String(message?.content || "").trim();
+    if (!content) continue;
+    const normalized = content.replace(/\s+/g, " ").trim().toLowerCase();
+    if (WORKFLOW_AGENT_PLACEHOLDER_OUTPUTS.has(normalized)) continue;
+    return content;
+  }
+  return "";
+}
+
 function deriveWorkflowExecutionSessionStatus(run = {}) {
   const terminalOutput = run?.data?._workflowTerminalOutput;
   const terminalMessage = String(run?.data?._workflowTerminalMessage || "").trim();
@@ -2951,13 +2977,52 @@ async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }
   const blockedTasks = await kanban.listTasks(projectId, { status: "blocked" });
   const nowMs = Date.now();
   const recoveredTaskIds = [];
+  const isWorkflowPlaceholder = (value) => {
+    if (typeof value !== "string") return false;
+    const trimmed = value.trim();
+    return trimmed.startsWith("{{") && trimmed.endsWith("}}");
+  };
+
+  const resolveRetryAtMs = (task, autoRecovery) => {
+    const candidates = [
+      autoRecovery?.retryAt,
+      task?.cooldownUntil,
+      task?.meta?.worktreeFailure?.retryAt,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate || isWorkflowPlaceholder(candidate)) continue;
+      const parsed = Date.parse(String(candidate));
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
+  const hasStaleWorktreePlaceholders = (task) => [
+    task?.blockedReason,
+    task?.cooldownUntil,
+    task?.meta?.autoRecovery?.retryAt,
+    task?.meta?.worktreeFailure?.retryAt,
+    task?.meta?.worktreeFailure?.blockedReason,
+  ].some((value) => isWorkflowPlaceholder(value));
+
   for (const task of Array.isArray(blockedTasks) ? blockedTasks : []) {
     const autoRecovery = task?.meta?.autoRecovery;
-    if (!autoRecovery || typeof autoRecovery !== "object") continue;
-    if (autoRecovery.active === false) continue;
-    // Accept any auto-recovery reason (worktree_failure, consecutive_errors, etc.)
-    const retryAtMs = Date.parse(String(autoRecovery.retryAt || task?.cooldownUntil || ""));
-    if (!Number.isFinite(retryAtMs) || retryAtMs > nowMs) continue;
+    const worktreeFailure = task?.meta?.worktreeFailure;
+    const hasPlaceholder = hasStaleWorktreePlaceholders(task);
+    const isRecoverableBlockedTask = (
+      autoRecovery &&
+      typeof autoRecovery === "object" &&
+      autoRecovery.active !== false
+    ) || (
+      worktreeFailure &&
+      typeof worktreeFailure === "object"
+    ) || hasPlaceholder;
+    if (!isRecoverableBlockedTask) continue;
+
+    const retryAtMs = resolveRetryAtMs(task, autoRecovery);
+    if (Number.isFinite(retryAtMs) && retryAtMs > nowMs) continue;
+    if (!Number.isFinite(retryAtMs) && !hasPlaceholder) continue;
+
     await kanban.updateTask(task.id, {
       status: "todo",
       cooldownUntil: null,
@@ -3147,12 +3212,65 @@ function getChildWorkflowLineage(ctx, childWorkflowId = "", extra = {}) {
 
 function applyChildWorkflowLineage(ctx, inputData = {}, childWorkflowId = "", extra = {}) {
   const lineage = getChildWorkflowLineage(ctx, childWorkflowId, extra);
+  const currentTaskId = String(
+    extra.taskId ??
+      ctx?.data?.taskId ??
+      ctx?.data?.task?.id ??
+      ctx?.data?.taskInfo?.id ??
+      ctx?.data?.taskDetail?.id ??
+      "",
+  ).trim() || null;
+  const rootTaskId = String(
+    extra.rootTaskId ??
+      ctx?.data?._workflowRootTaskId ??
+      currentTaskId ??
+      "",
+  ).trim() || currentTaskId || null;
+  const parentTaskId = String(
+    extra.parentTaskId ??
+      ctx?.data?._workflowParentTaskId ??
+      currentTaskId ??
+      "",
+  ).trim() || currentTaskId || null;
+  const currentSessionId = String(
+    ctx?.data?._workflowSessionId ??
+      "",
+  ).trim() || null;
+  const parentSessionId = String(
+    extra.parentSessionId ??
+      currentSessionId ??
+      ctx?.data?._workflowParentSessionId ??
+      currentTaskId ??
+      "",
+  ).trim() || currentTaskId || null;
+  const rootSessionId = String(
+    extra.rootSessionId ??
+      ctx?.data?._workflowRootSessionId ??
+      currentSessionId ??
+      currentTaskId ??
+      "",
+  ).trim() || currentTaskId || null;
+  const workflowSessionId = String(extra.workflowSessionId ?? "").trim() || null;
+  const rawDelegationDepth = Number(
+    extra.delegationDepth ??
+      ctx?.data?._workflowDelegationDepth ??
+      0,
+  );
+  const delegationDepth = Number.isFinite(rawDelegationDepth)
+    ? Math.max(0, Math.trunc(rawDelegationDepth))
+    : 0;
   return {
     ...(inputData && typeof inputData === "object" ? inputData : {}),
     _parentWorkflowId: lineage.parentWorkflowId || "",
     _workflowParentRunId: lineage.parentRunId,
     _workflowRootRunId: lineage.rootRunId,
     _workflowStack: lineage.workflowStack,
+    _workflowRootTaskId: rootTaskId,
+    _workflowParentTaskId: parentTaskId,
+    _workflowSessionId: workflowSessionId || undefined,
+    _workflowParentSessionId: parentSessionId,
+    _workflowRootSessionId: rootSessionId,
+    _workflowDelegationDepth: delegationDepth,
     ...(lineage.retryOf ? { _retryOf: lineage.retryOf } : {}),
     ...(lineage.retryMode ? { _retryMode: lineage.retryMode } : {}),
   };
@@ -3167,6 +3285,174 @@ function makeChildWorkflowExecuteOptions(ctx, extra = {}) {
     _rootRunId: lineage.rootRunId,
     ...(sourceNodeId ? { _parentExecutionId: `node:${ctx?.id || "run"}:${sourceNodeId}` } : {}),
   };
+}
+
+function normalizeWorkflowDelegationDepth(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : fallback;
+}
+
+function resolveWorkflowDelegationLineage(ctx, extra = {}) {
+  const taskId = String(
+    extra.taskId ??
+      ctx?.data?.taskId ??
+      ctx?.data?.task?.id ??
+      ctx?.data?.taskInfo?.id ??
+      ctx?.data?.taskDetail?.id ??
+      "",
+  ).trim() || null;
+  const currentSessionId = String(
+    extra.currentSessionId ??
+      ctx?.data?._workflowSessionId ??
+      "",
+  ).trim() || null;
+  const rootTaskId = String(
+    extra.rootTaskId ??
+      ctx?.data?._workflowRootTaskId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  const parentTaskId = String(
+    extra.parentTaskId ??
+      ctx?.data?._workflowParentTaskId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  const parentSessionId = String(
+    extra.parentSessionId ??
+      currentSessionId ??
+      ctx?.data?._workflowParentSessionId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  const rootSessionId = String(
+    extra.rootSessionId ??
+      ctx?.data?._workflowRootSessionId ??
+      currentSessionId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  return {
+    taskId,
+    rootTaskId,
+    parentTaskId,
+    currentSessionId,
+    parentSessionId,
+    rootSessionId,
+    parentRunId: String(extra.parentRunId ?? ctx?.id ?? "").trim() || null,
+    rootRunId: String(
+      extra.rootRunId ??
+        ctx?.data?._workflowRootRunId ??
+        ctx?.id ??
+        "",
+    ).trim() || null,
+    delegationDepth: normalizeWorkflowDelegationDepth(
+      extra.delegationDepth ?? ctx?.data?._workflowDelegationDepth,
+      0,
+    ),
+  };
+}
+
+function buildDelegatedSessionId(ctx, nodeId, suffix = "", taskId = "") {
+  return [
+    taskId || "workflow",
+    "delegate",
+    String(ctx?.id || "run").trim() || "run",
+    String(nodeId || "node").trim() || "node",
+    String(suffix || "child").trim() || "child",
+  ].join(":");
+}
+
+function rememberWorkflowDelegationSession(ctx, sessionId) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId || !ctx?.data || typeof ctx.data !== "object") return;
+  const existing = Array.isArray(ctx.data._delegatedSessionIds)
+    ? ctx.data._delegatedSessionIds
+    : [];
+  if (existing.includes(normalizedSessionId)) return;
+  ctx.data._delegatedSessionIds = [...existing, normalizedSessionId];
+}
+
+function buildTrackedSessionMetadata(ctx, cwd, title, lineage = {}, extra = {}) {
+  return {
+    title: title || undefined,
+    workspaceId: String(ctx?.data?.workspaceId || ctx?.data?.activeWorkspace || "").trim() || undefined,
+    workspaceDir: String(cwd || "").trim() || undefined,
+    branch:
+      String(
+        ctx?.data?.branch ||
+        ctx?.data?.task?.branch ||
+        ctx?.data?.task?.branchName ||
+        ctx?.data?.taskDetail?.branch ||
+        ctx?.data?.taskDetail?.branchName ||
+        "",
+      ).trim() || undefined,
+    workflowId: String(extra.workflowId || ctx?.data?._workflowId || "").trim() || undefined,
+    workflowName: String(extra.workflowName || ctx?.data?._workflowName || ctx?.data?._workflowId || "").trim() || undefined,
+    sourceNodeId: String(extra.sourceNodeId || "").trim() || undefined,
+    rootTaskId: String(lineage.rootTaskId || "").trim() || undefined,
+    parentTaskId: String(lineage.parentTaskId || "").trim() || undefined,
+    rootSessionId: String(lineage.rootSessionId || "").trim() || undefined,
+    parentSessionId: String(lineage.parentSessionId || "").trim() || undefined,
+    rootRunId: String(lineage.rootRunId || "").trim() || undefined,
+    parentRunId: String(lineage.parentRunId || "").trim() || undefined,
+    delegationDepth: normalizeWorkflowDelegationDepth(lineage.delegationDepth, 0),
+    taskSessionId: String(extra.taskSessionId || "").trim() || undefined,
+  };
+}
+
+function ensureTrackedSession(tracker, sessionId, options = {}) {
+  if (!tracker || !sessionId) return null;
+  const metadata = buildTrackedSessionMetadata(
+    options.ctx,
+    options.cwd,
+    options.title,
+    options.lineage,
+    options.extra,
+  );
+  const existing = tracker.getSessionById(sessionId);
+  if (!existing) {
+    return tracker.createSession({
+      id: sessionId,
+      type: options.type || "task",
+      taskId: options.taskId || sessionId,
+      metadata,
+    });
+  }
+  tracker.updateSessionStatus(sessionId, "active");
+  if (options.title) {
+    tracker.renameSession(sessionId, options.title);
+  }
+  existing.metadata = {
+    ...(existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}),
+    ...metadata,
+  };
+  return existing;
+}
+
+async function syncTaskDelegationTopology(taskId, topologyPatch = {}, workflowRun = null) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return;
+  try {
+    const taskStoreMod = await ensureTaskStoreMod();
+    if (workflowRun && typeof taskStoreMod.linkTaskWorkflowRun === "function") {
+      taskStoreMod.linkTaskWorkflowRun(normalizedTaskId, workflowRun);
+    }
+    if (typeof taskStoreMod.updateTask !== "function") return;
+    const currentTask =
+      typeof taskStoreMod.getTask === "function"
+        ? taskStoreMod.getTask(normalizedTaskId)
+        : null;
+    if (!currentTask) return;
+    taskStoreMod.updateTask(normalizedTaskId, {
+      topology: {
+        ...(currentTask?.topology && typeof currentTask.topology === "object" ? currentTask.topology : {}),
+        ...(topologyPatch && typeof topologyPatch === "object" ? topologyPatch : {}),
+      },
+    });
+  } catch {
+    // Task-store projection is best-effort during workflow execution.
+  }
 }
 
 function attachWorkflowTaskMetadata(ctx, taskData = {}, extra = {}) {
@@ -3215,6 +3501,18 @@ function buildWorkflowLedgerBase(ctx, extra = {}) {
     workflowName: ctx?.data?._workflowName || null,
     rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
     parentRunId: ctx?.data?._workflowParentRunId || null,
+    taskId:
+      ctx?.data?.taskId ||
+      ctx?.data?.task?.id ||
+      ctx?.data?.taskInfo?.id ||
+      ctx?.data?.taskDetail?.id ||
+      null,
+    rootTaskId: ctx?.data?._workflowRootTaskId || null,
+    parentTaskId: ctx?.data?._workflowParentTaskId || null,
+    sessionId: ctx?.data?._workflowSessionId || null,
+    rootSessionId: ctx?.data?._workflowRootSessionId || null,
+    parentSessionId: ctx?.data?._workflowParentSessionId || null,
+    delegationDepth: normalizeWorkflowDelegationDepth(ctx?.data?._workflowDelegationDepth, 0),
     retryOf: ctx?.data?._retryOf || null,
     retryMode: ctx?.data?._retryMode || null,
     ...extra,
@@ -4383,6 +4681,16 @@ registerBuiltinNodeType("action.run_agent", {
         });
 
         if (candidate?.id) {
+          const delegationLineage = resolveWorkflowDelegationLineage(ctx, {
+            taskId: taskIdForDelegate,
+          });
+          const taskSessionId = delegationLineage.parentSessionId || taskIdForDelegate || null;
+          const childSessionId = buildDelegatedSessionId(
+            ctx,
+            node.id,
+            [candidate.id, "workflow"].join(":"),
+            taskIdForDelegate || delegationLineage.rootTaskId || "",
+          );
           const childRunOpts = makeChildWorkflowExecuteOptions(ctx, {
             childWorkflowId: candidate.id,
             sourceNodeId: node.id,
@@ -4404,6 +4712,9 @@ registerBuiltinNodeType("action.run_agent", {
             eventType: "assign",
             taskId: taskIdForDelegate || null,
             taskTitle: taskTitleForDelegate || null,
+            sessionId: childSessionId,
+            parentSessionId: taskSessionId,
+            rootSessionId: delegationLineage.rootSessionId,
             workflowNodeId: node.id,
             delegatedWorkflowId: candidate.id,
             delegatedWorkflowName: candidate.name || candidate.id,
@@ -4413,32 +4724,57 @@ registerBuiltinNodeType("action.run_agent", {
           });
           const tracker = taskIdForDelegate ? getSessionTracker() : null;
           if (tracker && taskIdForDelegate) {
-            if (!tracker.getSessionById(taskIdForDelegate)) {
-              tracker.createSession({
-                id: taskIdForDelegate,
-                type: "task",
-                taskId: taskIdForDelegate,
-                metadata: {
-                  title: taskTitleForDelegate || taskIdForDelegate,
-                  workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
-                  workspaceDir: String(cwd || "").trim() || undefined,
-                  branch:
-                    String(
-                      ctx.data?.branch ||
-                      ctx.data?.task?.branchName ||
-                      "",
-                    ).trim() || undefined,
-                },
-              });
-            } else {
-              tracker.updateSessionStatus(taskIdForDelegate, "active");
-            }
-            tracker.recordEvent(taskIdForDelegate, {
+            ensureTrackedSession(tracker, taskSessionId, {
+              ctx,
+              cwd,
+              title: taskTitleForDelegate || taskSessionId,
+              taskId: taskIdForDelegate,
+              type: "task",
+              lineage: {
+                ...delegationLineage,
+                parentSessionId: taskSessionId,
+                rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+              },
+              extra: {
+                sourceNodeId: node.id,
+                taskSessionId,
+              },
+            });
+            ensureTrackedSession(tracker, childSessionId, {
+              ctx,
+              cwd,
+              title: `${candidate.name || candidate.id} for ${taskTitleForDelegate || taskIdForDelegate}`,
+              taskId: taskIdForDelegate,
+              type: "delegate",
+              lineage: {
+                ...delegationLineage,
+                parentTaskId: taskIdForDelegate || delegationLineage.parentTaskId,
+                parentSessionId: taskSessionId,
+                rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+                parentRunId: ctx.id,
+                rootRunId: delegationLineage.rootRunId || ctx.id,
+                delegationDepth: delegationLineage.delegationDepth + 1,
+              },
+              extra: {
+                workflowId: candidate.id,
+                workflowName: candidate.name || candidate.id,
+                sourceNodeId: node.id,
+                taskSessionId,
+              },
+            });
+            tracker.recordEvent(taskSessionId, {
               role: "system",
               type: "system",
               content: `Delegating to agent workflow "${candidate.name || candidate.id}"`,
               timestamp: new Date().toISOString(),
               _sessionType: "task",
+            });
+            tracker.recordEvent(childSessionId, {
+              role: "system",
+              type: "system",
+              content: `Delegated workflow "${candidate.name || candidate.id}" started`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "delegate",
             });
           }
 
@@ -4449,7 +4785,17 @@ registerBuiltinNodeType("action.run_agent", {
               _agentWorkflowActive: true,
             },
             candidate.id,
+            {
+              taskId: taskIdForDelegate,
+              rootTaskId: delegationLineage.rootTaskId || taskIdForDelegate || null,
+              parentTaskId: taskIdForDelegate || delegationLineage.parentTaskId || null,
+              workflowSessionId: childSessionId,
+              parentSessionId: taskSessionId,
+              rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+              delegationDepth: delegationLineage.delegationDepth + 1,
+            },
           );
+          rememberWorkflowDelegationSession(ctx, childSessionId);
           const resolveDelegatedWatchdogTimeoutMs = () => {
             const candidates = [
               ctx.resolve(node.config?.delegationWatchdogTimeoutMs),
@@ -4536,6 +4882,9 @@ registerBuiltinNodeType("action.run_agent", {
             status: subStatus,
             taskId: taskIdForDelegate || null,
             taskTitle: taskTitleForDelegate || null,
+            sessionId: childSessionId,
+            parentSessionId: taskSessionId,
+            rootSessionId: delegationLineage.rootSessionId || taskSessionId,
             workflowNodeId: node.id,
             delegatedWorkflowId: candidate.id,
             delegatedWorkflowName: candidate.name || candidate.id,
@@ -4545,19 +4894,68 @@ registerBuiltinNodeType("action.run_agent", {
             timestamp: new Date().toISOString(),
           });
           if (tracker && taskIdForDelegate) {
-            tracker.recordEvent(taskIdForDelegate, {
+            tracker.recordEvent(taskSessionId, {
+              role: "assistant",
+              type: "agent_message",
+              content: `Delegated workflow "${candidate.name || candidate.id}" completed with status=${subStatus}`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+            tracker.recordEvent(childSessionId, {
               role: subFailed ? "system" : "assistant",
               type: subFailed ? "error" : "agent_message",
               content: `Agent workflow "${candidate.name || candidate.id}" completed with status=${subStatus}`,
               timestamp: new Date().toISOString(),
-              _sessionType: "task",
+              _sessionType: "delegate",
             });
-            tracker.endSession(taskIdForDelegate, subStatus);
+            tracker.endSession(childSessionId, subStatus);
+            if (taskSessionId === taskIdForDelegate) {
+              tracker.endSession(taskSessionId, subStatus);
+            }
           }
+          await syncTaskDelegationTopology(
+            taskIdForDelegate,
+            {
+              workflowId: candidate.id,
+              workflowName: candidate.name || candidate.id,
+              latestNodeId: node.id,
+              latestRunId: String(subRun?.id || subRun?.runId || "").trim() || null,
+              rootRunId: delegationLineage.rootRunId || ctx.id || null,
+              parentRunId: ctx.id || null,
+              latestSessionId: childSessionId,
+              sessionId: childSessionId,
+              rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+              parentSessionId: taskSessionId,
+              rootTaskId: delegationLineage.rootTaskId || taskIdForDelegate || null,
+              parentTaskId: taskIdForDelegate || delegationLineage.parentTaskId || null,
+              delegationDepth: delegationLineage.delegationDepth + 1,
+            },
+            subRun?.id || subRun?.runId
+              ? {
+                  runId: String(subRun?.id || subRun?.runId || "").trim(),
+                  workflowId: candidate.id,
+                  workflowName: candidate.name || candidate.id,
+                  nodeId: node.id,
+                  status: subStatus,
+                  outcome: subFailed ? "failed" : "completed",
+                  summary: subTerminalOutput?.summary || null,
+                  rootRunId: delegationLineage.rootRunId || ctx.id || null,
+                  parentRunId: ctx.id || null,
+                  taskId: taskIdForDelegate || null,
+                  rootTaskId: delegationLineage.rootTaskId || taskIdForDelegate || null,
+                  parentTaskId: taskIdForDelegate || delegationLineage.parentTaskId || null,
+                  sessionId: childSessionId,
+                  rootSessionId: delegationLineage.rootSessionId || taskSessionId,
+                  parentSessionId: taskSessionId,
+                  delegationDepth: delegationLineage.delegationDepth + 1,
+                }
+              : null,
+          );
 
           const delegateResult = {
             success: !subFailed,
             delegated: true,
+            childSessionId,
             subWorkflowId: candidate.id,
             subWorkflowName: candidate.name || candidate.id,
             subStatus,
@@ -4686,6 +5084,20 @@ registerBuiltinNodeType("action.run_agent", {
         const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
         const fallbackTaskKey = `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
         const recoveryTaskKey = options.taskKey || explicitTaskKey || fallbackTaskKey;
+        const taskLineage = resolveWorkflowDelegationLineage(ctx, {
+          taskId: trackedTaskId,
+        });
+        const taskSessionId = trackedTaskId
+          ? (taskLineage.parentSessionId || trackedTaskId)
+          : null;
+        const childSessionId = trackedTaskId
+          ? buildDelegatedSessionId(
+              ctx,
+              node.id,
+              recoveryTaskKey || passLabel || "agent",
+              trackedTaskId || taskLineage.rootTaskId || "",
+            )
+          : null;
         const autoRecover = options.autoRecover ?? (node.config?.autoRecover !== false);
         const continueOnSession =
           options.continueOnSession ?? (node.config?.continueOnSession !== false);
@@ -4729,38 +5141,57 @@ registerBuiltinNodeType("action.run_agent", {
         );
 
         if (tracker && trackedTaskId) {
-          const existing = tracker.getSessionById(trackedTaskId);
-          if (!existing) {
-            tracker.createSession({
-              id: trackedTaskId,
-              type: "task",
-              taskId: trackedTaskId,
-              metadata: {
-                title: trackedTaskTitle || trackedTaskId,
-                workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
-                workspaceDir: String(cwd || "").trim() || undefined,
-                branch:
-                  String(
-                    ctx.data?.branch ||
-                      ctx.data?.task?.branchName ||
-                      ctx.data?.taskDetail?.branchName ||
-                      "",
-                  ).trim() || undefined,
-              },
-            });
-          } else {
-            tracker.updateSessionStatus(trackedTaskId, "active");
-            if (trackedTaskTitle) {
-              tracker.renameSession(trackedTaskId, trackedTaskTitle);
-            }
-          }
-          tracker.recordEvent(trackedTaskId, {
+          ensureTrackedSession(tracker, taskSessionId, {
+            ctx,
+            cwd,
+            title: trackedTaskTitle || taskSessionId,
+            taskId: trackedTaskId,
+            type: "task",
+            lineage: {
+              ...taskLineage,
+              parentSessionId: taskSessionId,
+              rootSessionId: taskLineage.rootSessionId || taskSessionId,
+            },
+            extra: {
+              sourceNodeId: node.id,
+              taskSessionId,
+            },
+          });
+          ensureTrackedSession(tracker, childSessionId, {
+            ctx,
+            cwd,
+            title: `${node.label || node.id} for ${trackedTaskTitle || trackedTaskId}`,
+            taskId: trackedTaskId,
+            type: "delegate",
+            lineage: {
+              ...taskLineage,
+              parentTaskId: trackedTaskId || taskLineage.parentTaskId,
+              parentSessionId: taskSessionId,
+              rootSessionId: taskLineage.rootSessionId || taskSessionId,
+              parentRunId: ctx.id,
+              rootRunId: taskLineage.rootRunId || ctx.id,
+              delegationDepth: taskLineage.delegationDepth + 1,
+            },
+            extra: {
+              sourceNodeId: node.id,
+              taskSessionId,
+            },
+          });
+          tracker.recordEvent(taskSessionId, {
             role: "system",
             type: "system",
             content: `Workflow agent run started in ${cwd}`,
             timestamp: new Date().toISOString(),
             _sessionType: trackedSessionType,
           });
+          tracker.recordEvent(childSessionId, {
+            role: "system",
+            type: "system",
+            content: `Delegated agent node "${node.label || node.id}" started`,
+            timestamp: new Date().toISOString(),
+            _sessionType: "delegate",
+          });
+          rememberWorkflowDelegationSession(ctx, childSessionId);
         }
         if (trackedTaskId) {
           recordDelegationAuditEvent(ctx, {
@@ -4768,6 +5199,9 @@ registerBuiltinNodeType("action.run_agent", {
             eventType: "assign",
             taskId: trackedTaskId,
             taskTitle: trackedTaskTitle || null,
+            sessionId: childSessionId,
+            parentSessionId: taskSessionId,
+            rootSessionId: taskLineage.rootSessionId || taskSessionId,
             workflowNodeId: node.id,
             threadKey: recoveryTaskKey,
             transitionKey: assignTransitionKey,
@@ -4829,10 +5263,10 @@ registerBuiltinNodeType("action.run_agent", {
         };
         launchExtra.onEvent = (event) => {
           try {
-            if (tracker && trackedTaskId) {
-              tracker.recordEvent(trackedTaskId, {
+            if (tracker && childSessionId) {
+              tracker.recordEvent(childSessionId, {
                 ...(event && typeof event === "object" ? event : { content: String(event || "") }),
-                _sessionType: trackedSessionType,
+                _sessionType: "delegate",
               });
             }
             const line = summarizeAgentStreamEvent(event);
@@ -4857,6 +5291,13 @@ registerBuiltinNodeType("action.run_agent", {
         recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
           eventType: "agent.started",
           ...agentExecutionLedgerRef,
+          sessionId: childSessionId,
+          parentSessionId: taskSessionId,
+          rootSessionId: taskLineage.rootSessionId || taskSessionId,
+          taskId: trackedTaskId || null,
+          parentTaskId: trackedTaskId || taskLineage.parentTaskId || null,
+          rootTaskId: taskLineage.rootTaskId || trackedTaskId || null,
+          delegationDepth: trackedTaskId ? taskLineage.delegationDepth + 1 : 0,
           status: "running",
           meta: {
             sdk: sdkOverride || sdk || null,
@@ -5029,7 +5470,9 @@ registerBuiltinNodeType("action.run_agent", {
                   type: "handoff-complete",
                   taskId: delegatedTaskId,
                   nodeId: node.id,
-                  sessionId: resolvedThreadId,
+                  sessionId: childSessionId || resolvedThreadId,
+                  parentSessionId: taskSessionId,
+                  rootSessionId: taskLineage.rootSessionId || taskSessionId,
                   threadId: resolvedThreadId,
                   sdk,
                   model,
@@ -5101,28 +5544,34 @@ registerBuiltinNodeType("action.run_agent", {
               ? String(result?.output || result?.message || "Agent run completed.").trim()
               : String(result?.error || "Agent run failed.").trim();
             if (fallbackContent) {
-              tracker.recordEvent(trackedTaskId, {
+              tracker.recordEvent(childSessionId, {
                 role: success ? "assistant" : "system",
                 type: success ? "agent_message" : "error",
                 content: fallbackContent,
                 timestamp: new Date().toISOString(),
-                _sessionType: trackedSessionType,
+                _sessionType: "delegate",
               });
             }
           }
-          tracker.endSession(
-            trackedTaskId,
-            deriveWorkflowAgentSessionStatus(result, { streamEventCount }),
-          );
         }
 
         const threadId = result?.threadId || result?.sessionId || sessionId || null;
         if (trackedTaskId) {
+          const terminalSessionStatus = success
+            ? resolveSuccessfulWorkflowAgentSessionStatus(result)
+            : deriveWorkflowAgentSessionStatus(result, { streamEventCount });
+          const childSessionMessages = tracker?.getSessionById(childSessionId)?.messages || [];
+          const visibleCompletionContent =
+            pickLatestMeaningfulSessionMessage(childSessionMessages) ||
+            String(result?.output || result?.message || "").trim();
           recordDelegationAuditEvent(ctx, {
             type: success ? "handoff-complete" : "owner-mismatch",
             eventType: success ? "handoff-complete" : "owner-mismatch",
             taskId: trackedTaskId,
             taskTitle: trackedTaskTitle || null,
+            sessionId: childSessionId,
+            parentSessionId: taskSessionId,
+            rootSessionId: taskLineage.rootSessionId || taskSessionId,
             workflowNodeId: node.id,
             threadId,
             threadKey: recoveryTaskKey,
@@ -5131,6 +5580,34 @@ registerBuiltinNodeType("action.run_agent", {
               : `${assignTransitionKey}:failed`,
             at: Date.now(),
             timestamp: new Date().toISOString(),
+          });
+          tracker?.recordEvent(taskSessionId, {
+            role: "assistant",
+            type: "agent_message",
+            content:
+              visibleCompletionContent ||
+              `Workflow agent node "${node.label || node.id}" completed with status=${terminalSessionStatus}`,
+            timestamp: new Date().toISOString(),
+            _sessionType: trackedSessionType,
+          });
+          tracker?.endSession(childSessionId, terminalSessionStatus);
+          if (taskSessionId === trackedTaskId) {
+            tracker?.endSession(taskSessionId, terminalSessionStatus);
+          }
+          await syncTaskDelegationTopology(trackedTaskId, {
+            workflowId: ctx.data?._workflowId || null,
+            workflowName: ctx.data?._workflowName || ctx.data?._workflowId || null,
+            latestNodeId: node.id,
+            latestRunId: ctx.id || null,
+            rootRunId: taskLineage.rootRunId || ctx.id || null,
+            parentRunId: taskLineage.parentRunId || null,
+            latestSessionId: childSessionId,
+            sessionId: childSessionId,
+            rootSessionId: taskLineage.rootSessionId || taskSessionId,
+            parentSessionId: taskSessionId,
+            rootTaskId: taskLineage.rootTaskId || trackedTaskId || null,
+            parentTaskId: trackedTaskId || taskLineage.parentTaskId || null,
+            delegationDepth: taskLineage.delegationDepth + 1,
           });
         }
         if (persistSession && threadId) {
@@ -5143,6 +5620,13 @@ registerBuiltinNodeType("action.run_agent", {
         recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
           eventType: success ? "agent.completed" : "agent.failed",
           ...agentExecutionLedgerRef,
+          sessionId: childSessionId,
+          parentSessionId: taskSessionId,
+          rootSessionId: taskLineage.rootSessionId || taskSessionId,
+          taskId: trackedTaskId || null,
+          parentTaskId: trackedTaskId || taskLineage.parentTaskId || null,
+          rootTaskId: taskLineage.rootTaskId || trackedTaskId || null,
+          delegationDepth: trackedTaskId ? taskLineage.delegationDepth + 1 : 0,
           status: success ? "completed" : "failed",
           durationMs: Date.now() - startedAt,
           error: success ? null : (result?.error || null),
@@ -5168,6 +5652,7 @@ registerBuiltinNodeType("action.run_agent", {
             items: result?.items,
             threadId,
             sessionId: threadId,
+            childSessionId,
             attempts: result?.attempts,
             continues: result?.continues,
             resumed: result?.resumed,
@@ -5192,6 +5677,7 @@ registerBuiltinNodeType("action.run_agent", {
           omittedItemCount: digest.omittedItemCount,
           threadId,
           sessionId: threadId,
+          childSessionId,
           attempts: result?.attempts,
           continues: result?.continues,
           resumed: result?.resumed,

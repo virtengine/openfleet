@@ -93,6 +93,13 @@ describe("runtime-accumulator", () => {
       const runtimeStats = getRuntimeStats();
       expect(runtimeStats.sessionCount).toBe(6);
       expect(runtimeStats.runtimeMs).toBe(expectedDurationMs);
+      expect(runtimeStats.lifetimeTotals).toEqual({
+        attemptsCount: 6,
+        tokenCount: expectedTokenCount,
+        inputTokens: expectedInputTokens,
+        outputTokens: expectedOutputTokens,
+        durationMs: expectedDurationMs,
+      });
 
       const logPath = getSessionAccumulatorLogPath();
       const lines = readFileSync(logPath, "utf8")
@@ -201,6 +208,13 @@ describe("runtime-accumulator", () => {
           expect.objectContaining({ turnIndex: 0, totalTokens: 75 }),
           expect.objectContaining({ turnIndex: 1, totalTokens: 105 }),
         ],
+      }));
+      expect(restoredStats.lifetimeTotals).toEqual(expect.objectContaining({
+        attemptsCount: 1,
+        tokenCount: 180,
+        inputTokens: 120,
+        outputTokens: 60,
+        durationMs: 5_000,
       }));
     } finally {
       _resetRuntimeAccumulatorForTests();

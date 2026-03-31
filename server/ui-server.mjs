@@ -291,6 +291,7 @@ import {
   getRunAuditBundleFromStateLedger,
   getTaskAuditBundleFromStateLedger,
   getSessionActivityFromStateLedger,
+  listSessionActivitiesFromStateLedger,
   listAuditEventsFromStateLedger,
   listPromotedStrategiesFromStateLedger,
   listPromotedStrategyEventsFromStateLedger,
@@ -317,6 +318,14 @@ import {
   validateSetting,
 } from "../ui/modules/settings-schema.js";
 import { loadConfig, resolveTrustedAuthorList } from "../config/config.mjs";
+import {
+  activateHarnessArtifact,
+  compileHarnessSourceToArtifact,
+  readActiveHarnessState,
+  readHarnessArtifact,
+  readHarnessSourceFromPath,
+  shouldEnforceHarnessValidation,
+} from "../agent/internal-harness-control-plane.mjs";
 import { CONFIG_FILES } from "../config/config-file-names.mjs";
 import {
   buildConfigEditorModel,
@@ -2124,6 +2133,64 @@ function handleTaskWorkflowTraceEvent(event = {}) {
 function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
   const merged = [];
   const indexByKey = new Map();
+  const uniqueIdentityList = (values = []) => {
+    const seen = new Set();
+    const out = [];
+    for (const value of Array.isArray(values) ? values : []) {
+      const normalized = String(value || "").trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+    }
+    return out;
+  };
+  const normalizeDelegationTopology = (entry = {}) => {
+    const rawTopology =
+      entry?.delegationTopology && typeof entry.delegationTopology === "object"
+        ? entry.delegationTopology
+        : (entry?.detail?.delegationTopology && typeof entry.detail.delegationTopology === "object"
+            ? entry.detail.delegationTopology
+            : (entry?.detail?.data?._delegationTopology && typeof entry.detail.data._delegationTopology === "object"
+                ? entry.detail.data._delegationTopology
+                : (entry?.data?._delegationTopology && typeof entry.data._delegationTopology === "object"
+                    ? entry.data._delegationTopology
+                    : null)));
+    const topology = rawTopology && typeof rawTopology === "object" ? rawTopology : {};
+    const pickString = (...candidates) => {
+      for (const value of candidates) {
+        const normalized = String(value || "").trim();
+        if (normalized) return normalized;
+      }
+      return null;
+    };
+    const pickList = (...candidates) => {
+      for (const value of candidates) {
+        if (Array.isArray(value) && value.length > 0) return uniqueIdentityList(value);
+      }
+      return [];
+    };
+    const delegationDepthRaw = Number(topology.delegationDepth ?? entry?.delegationDepth ?? 0);
+    const normalized = {
+      runId: pickString(topology.runId, entry?.runId),
+      rootRunId: pickString(topology.rootRunId, entry?.rootRunId),
+      parentRunId: pickString(topology.parentRunId, entry?.parentRunId),
+      taskId: pickString(topology.taskId, entry?.taskId, entry?.meta?.taskId, entry?.data?.taskId),
+      rootTaskId: pickString(topology.rootTaskId, entry?.rootTaskId),
+      parentTaskId: pickString(topology.parentTaskId, entry?.parentTaskId),
+      sessionId: pickString(topology.sessionId, entry?.sessionId, entry?.primarySessionId, entry?.threadId),
+      rootSessionId: pickString(topology.rootSessionId, entry?.rootSessionId),
+      parentSessionId: pickString(topology.parentSessionId, entry?.parentSessionId),
+      delegationDepth: Number.isFinite(delegationDepthRaw) ? Math.max(0, Math.trunc(delegationDepthRaw)) : 0,
+      childRunIds: pickList(topology.childRunIds, entry?.childRunIds),
+      childSessionIds: pickList(topology.childSessionIds, entry?.childSessionIds),
+      familyRunIds: pickList(topology.familyRunIds, entry?.familyRunIds),
+      familySessionIds: pickList(topology.familySessionIds, entry?.familySessionIds),
+    };
+    const hasIdentity = Object.entries(normalized).some(([key, value]) =>
+      Array.isArray(value) ? value.length > 0 : (key === "delegationDepth" ? value > 0 : Boolean(value)),
+    );
+    return hasIdentity ? normalized : null;
+  };
   const resolveLinkedSessionId = (entry) => {
     const candidates = [
       entry?.sessionId,
@@ -2152,6 +2219,46 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
     const mergedMeta = { ...currentMeta, ...incomingMeta };
     const currentMetaSessionId = String(currentMeta.sessionId || "").trim();
     const currentMetaThreadId = String(currentMeta.threadId || "").trim();
+    const currentTopology = normalizeDelegationTopology(current) || {};
+    const incomingTopology = normalizeDelegationTopology(incoming) || {};
+    const mergedTopology = normalizeDelegationTopology({
+      ...current,
+      ...incoming,
+      rootRunId: incoming.rootRunId || current.rootRunId || incomingTopology.rootRunId || currentTopology.rootRunId || null,
+      parentRunId: incoming.parentRunId || current.parentRunId || incomingTopology.parentRunId || currentTopology.parentRunId || null,
+      rootTaskId: incoming.rootTaskId || current.rootTaskId || incomingTopology.rootTaskId || currentTopology.rootTaskId || null,
+      parentTaskId: incoming.parentTaskId || current.parentTaskId || incomingTopology.parentTaskId || currentTopology.parentTaskId || null,
+      rootSessionId: incoming.rootSessionId || current.rootSessionId || incomingTopology.rootSessionId || currentTopology.rootSessionId || null,
+      parentSessionId: incoming.parentSessionId || current.parentSessionId || incomingTopology.parentSessionId || currentTopology.parentSessionId || null,
+      delegationDepth: Math.max(
+        Number(currentTopology.delegationDepth || current.delegationDepth || 0),
+        Number(incomingTopology.delegationDepth || incoming.delegationDepth || 0),
+      ),
+      childRunIds: uniqueIdentityList([
+        ...(Array.isArray(currentTopology.childRunIds) ? currentTopology.childRunIds : []),
+        ...(Array.isArray(incomingTopology.childRunIds) ? incomingTopology.childRunIds : []),
+        ...(Array.isArray(current.childRunIds) ? current.childRunIds : []),
+        ...(Array.isArray(incoming.childRunIds) ? incoming.childRunIds : []),
+      ]),
+      childSessionIds: uniqueIdentityList([
+        ...(Array.isArray(currentTopology.childSessionIds) ? currentTopology.childSessionIds : []),
+        ...(Array.isArray(incomingTopology.childSessionIds) ? incomingTopology.childSessionIds : []),
+        ...(Array.isArray(current.childSessionIds) ? current.childSessionIds : []),
+        ...(Array.isArray(incoming.childSessionIds) ? incoming.childSessionIds : []),
+      ]),
+      familyRunIds: uniqueIdentityList([
+        ...(Array.isArray(currentTopology.familyRunIds) ? currentTopology.familyRunIds : []),
+        ...(Array.isArray(incomingTopology.familyRunIds) ? incomingTopology.familyRunIds : []),
+        ...(Array.isArray(current.familyRunIds) ? current.familyRunIds : []),
+        ...(Array.isArray(incoming.familyRunIds) ? incoming.familyRunIds : []),
+      ]),
+      familySessionIds: uniqueIdentityList([
+        ...(Array.isArray(currentTopology.familySessionIds) ? currentTopology.familySessionIds : []),
+        ...(Array.isArray(incomingTopology.familySessionIds) ? incomingTopology.familySessionIds : []),
+        ...(Array.isArray(current.familySessionIds) ? current.familySessionIds : []),
+        ...(Array.isArray(incoming.familySessionIds) ? incoming.familySessionIds : []),
+      ]),
+    });
     if (currentMetaSessionId) mergedMeta.sessionId = currentMetaSessionId;
     if (currentMetaThreadId) mergedMeta.threadId = currentMetaThreadId;
     return {
@@ -2176,6 +2283,30 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
       proofSummary: incoming.proofSummary || current.proofSummary || null,
       runGraph: incoming.runGraph || current.runGraph || null,
       issueAdvisor: incoming.issueAdvisor || current.issueAdvisor || null,
+      rootRunId: incoming.rootRunId || current.rootRunId || mergedTopology?.rootRunId || null,
+      parentRunId: incoming.parentRunId || current.parentRunId || mergedTopology?.parentRunId || null,
+      rootTaskId: incoming.rootTaskId || current.rootTaskId || mergedTopology?.rootTaskId || null,
+      parentTaskId: incoming.parentTaskId || current.parentTaskId || mergedTopology?.parentTaskId || null,
+      rootSessionId: incoming.rootSessionId || current.rootSessionId || mergedTopology?.rootSessionId || null,
+      parentSessionId: incoming.parentSessionId || current.parentSessionId || mergedTopology?.parentSessionId || null,
+      delegationDepth: Math.max(
+        Number(incoming.delegationDepth || 0),
+        Number(current.delegationDepth || 0),
+        Number(mergedTopology?.delegationDepth || 0),
+      ),
+      childRunIds: uniqueIdentityList([
+        ...(Array.isArray(mergedTopology?.childRunIds) ? mergedTopology.childRunIds : []),
+      ]),
+      childSessionIds: uniqueIdentityList([
+        ...(Array.isArray(mergedTopology?.childSessionIds) ? mergedTopology.childSessionIds : []),
+      ]),
+      familyRunIds: uniqueIdentityList([
+        ...(Array.isArray(mergedTopology?.familyRunIds) ? mergedTopology.familyRunIds : []),
+      ]),
+      familySessionIds: uniqueIdentityList([
+        ...(Array.isArray(mergedTopology?.familySessionIds) ? mergedTopology.familySessionIds : []),
+      ]),
+      delegationTopology: mergedTopology,
       sessionId: resolveLinkedSessionId(incoming) || resolveLinkedSessionId(current) || null,
       primarySessionId:
         String(incoming.primarySessionId || "").trim()
@@ -2190,6 +2321,7 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
     const runId = String(entry.runId || "").trim();
     const workflowId = String(entry.workflowId || "").trim();
     const dedupKey = runId ? `run:${runId}` : `wf:${workflowId}:${entry.startedAt || entry.endedAt || ""}`;
+    const delegationTopology = normalizeDelegationTopology(entry);
     const normalized = {
       runId: runId || null,
       workflowId: workflowId || null,
@@ -2208,9 +2340,23 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
       proofSummary: entry.proofSummary && typeof entry.proofSummary === "object" ? entry.proofSummary : null,
       runGraph: entry.runGraph && typeof entry.runGraph === "object" ? entry.runGraph : null,
       issueAdvisor: entry.issueAdvisor && typeof entry.issueAdvisor === "object" ? entry.issueAdvisor : null,
-      sessionId: resolveLinkedSessionId(entry),
+      rootRunId: delegationTopology?.rootRunId || String(entry.rootRunId || "").trim() || null,
+      parentRunId: delegationTopology?.parentRunId || String(entry.parentRunId || "").trim() || null,
+      rootTaskId: delegationTopology?.rootTaskId || String(entry.rootTaskId || "").trim() || null,
+      parentTaskId: delegationTopology?.parentTaskId || String(entry.parentTaskId || "").trim() || null,
+      rootSessionId: delegationTopology?.rootSessionId || String(entry.rootSessionId || "").trim() || null,
+      parentSessionId: delegationTopology?.parentSessionId || String(entry.parentSessionId || "").trim() || null,
+      delegationDepth: Number.isFinite(Number(delegationTopology?.delegationDepth ?? entry.delegationDepth))
+        ? Math.max(0, Math.trunc(Number(delegationTopology?.delegationDepth ?? entry.delegationDepth)))
+        : 0,
+      childRunIds: uniqueIdentityList(delegationTopology?.childRunIds || entry.childRunIds || []),
+      childSessionIds: uniqueIdentityList(delegationTopology?.childSessionIds || entry.childSessionIds || []),
+      familyRunIds: uniqueIdentityList(delegationTopology?.familyRunIds || entry.familyRunIds || []),
+      familySessionIds: uniqueIdentityList(delegationTopology?.familySessionIds || entry.familySessionIds || []),
+      delegationTopology,
+      sessionId: resolveLinkedSessionId(entry) || delegationTopology?.sessionId || null,
       primarySessionId:
-        String(entry.primarySessionId || "").trim() || resolveSessionId(entry),
+        String(entry.primarySessionId || "").trim() || resolveSessionId(entry) || delegationTopology?.sessionId || null,
       meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
     };
     const existingIndex = indexByKey.get(dedupKey);
@@ -2318,6 +2464,7 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
       })();
       const proofBundle = normalizeWorkflowRunProofBundle(observedRun?.proofBundle || summary?.proofBundle || null);
       const proofSummary = buildWorkflowRunProofSummary(observedRun || summary);
+      const delegationTopology = normalizeDelegationTopology(observedRun || summary || {});
       out.push({
         runId: summary.runId,
         workflowId: summary.workflowId,
@@ -2330,7 +2477,7 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
         startedAt: summary.startedAt || null,
         endedAt: summary.endedAt || null,
         duration: summary.duration || null,
-        sessionId: null,
+        sessionId: delegationTopology?.sessionId || primarySessionId,
         primarySessionId,
         source: "workflow",
         plannerTimeline: proofBundle.plannerTimeline,
@@ -2338,6 +2485,20 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
         proofSummary,
         runGraph: observedRun?.runGraph || summary?.runGraph || null,
         issueAdvisor: observedRun?.detail?.issueAdvisor || summary?.detail?.issueAdvisor || null,
+        rootRunId: delegationTopology?.rootRunId || String(summary?.rootRunId || "").trim() || null,
+        parentRunId: delegationTopology?.parentRunId || String(summary?.parentRunId || "").trim() || null,
+        rootTaskId: delegationTopology?.rootTaskId || String(summary?.rootTaskId || data?.taskId || "").trim() || null,
+        parentTaskId: delegationTopology?.parentTaskId || String(summary?.parentTaskId || "").trim() || null,
+        rootSessionId: delegationTopology?.rootSessionId || String(summary?.rootSessionId || "").trim() || null,
+        parentSessionId: delegationTopology?.parentSessionId || String(summary?.parentSessionId || "").trim() || null,
+        delegationDepth: Number.isFinite(Number(delegationTopology?.delegationDepth))
+          ? Math.max(0, Math.trunc(Number(delegationTopology.delegationDepth)))
+          : 0,
+        childRunIds: uniqueIdentityList(delegationTopology?.childRunIds || []),
+        childSessionIds: uniqueIdentityList(delegationTopology?.childSessionIds || []),
+        familyRunIds: uniqueIdentityList(delegationTopology?.familyRunIds || []),
+        familySessionIds: uniqueIdentityList(delegationTopology?.familySessionIds || []),
+        delegationTopology,
       });
       if (out.length >= limit) break;
     }
@@ -4522,6 +4683,65 @@ function readConfigDocument() {
   return { configPath, configData };
 }
 
+function getHarnessRuntimeConfig() {
+  try {
+    const { configData } = readConfigDocument();
+    const harness = configData?.harness && typeof configData.harness === "object"
+      ? configData.harness
+      : {};
+    return {
+      enabled: parseBooleanLike(process.env.BOSUN_HARNESS_ENABLED ?? harness.enabled, false),
+      source: String(process.env.BOSUN_HARNESS_SOURCE ?? harness.source ?? "").trim(),
+      validationMode: String(process.env.BOSUN_HARNESS_VALIDATION_MODE ?? harness.validation?.mode ?? "report").trim().toLowerCase() || "report",
+    };
+  } catch {
+    return {
+      enabled: false,
+      source: "",
+      validationMode: "report",
+    };
+  }
+}
+
+function resolveHarnessCompileSource(body = {}, harnessConfig = getHarnessRuntimeConfig()) {
+  if (typeof body?.source === "string" && body.source.trim()) {
+    return {
+      source: body.source,
+      sourceOrigin: "inline",
+      sourcePath: null,
+    };
+  }
+  const requestedPath = String(body?.sourcePath || harnessConfig?.source || "").trim();
+  if (!requestedPath) {
+    throw new Error("Harness source or sourcePath is required");
+  }
+  const loaded = readHarnessSourceFromPath(requestedPath, {
+    repoRoot,
+    configDir: resolveUiConfigDir(),
+  });
+  return {
+    source: loaded.source,
+    sourceOrigin: body?.sourcePath ? "request-file" : "config-file",
+    sourcePath: loaded.sourcePath,
+  };
+}
+
+function buildHarnessCompilePayload(compiled, harnessConfig) {
+  return {
+    ok: compiled.isValid || !shouldEnforceHarnessValidation(compiled.artifact?.validationMode || harnessConfig?.validationMode),
+    isValid: compiled.isValid,
+    agentId: compiled.agentId,
+    artifactId: compiled.artifactId,
+    artifactPath: compiled.artifactPath,
+    compiledProfile: compiled.compiledProfile,
+    compiledProfileJson: compiled.compiledProfileJson,
+    validationReport: compiled.validationReport,
+    harnessConfig,
+    sourceOrigin: compiled.artifact?.sourceOrigin || null,
+    sourcePath: compiled.artifact?.sourcePath || null,
+  };
+}
+
 function resolveUiTriggerSystem() {
   try {
     const cfg = loadConfig([
@@ -6524,6 +6744,9 @@ const INTERNAL_EXECUTOR_MAP = {
 const CONFIG_PATH_OVERRIDES = {
   EXECUTOR_MODE: ["internalExecutor", "mode"],
   PROJECT_REQUIREMENTS_PROFILE: ["projectRequirements", "profile"],
+  BOSUN_HARNESS_ENABLED: ["harness", "enabled"],
+  BOSUN_HARNESS_SOURCE: ["harness", "source"],
+  BOSUN_HARNESS_VALIDATION_MODE: ["harness", "validation", "mode"],
 
 };
 const ROOT_PREFIX_ALLOWLIST = [
@@ -6820,9 +7043,74 @@ let _fallbackExecPrimaryPrompt = null;
 const sessionRunAbortControllers = new Map();
 let _activeSessions = [];
 
+function normalizeLedgerSessionDocument(activity) {
+  const document = activity?.document && typeof activity.document === "object"
+    ? { ...activity.document }
+    : null;
+  if (!document) return null;
+  const sessionId = String(
+    document.id || document.sessionId || activity?.sessionId || activity?.latestTaskId || "",
+  ).trim();
+  if (!sessionId) return null;
+  const createdAt = String(
+    document.createdAt
+      || document.startedAt
+      || activity?.startedAt
+      || document.updatedAt
+      || activity?.updatedAt
+      || new Date().toISOString(),
+  ).trim();
+  const lastActiveAt = String(
+    document.lastActiveAt || document.updatedAt || activity?.updatedAt || createdAt,
+  ).trim() || createdAt;
+  return {
+    ...document,
+    id: sessionId,
+    sessionId,
+    taskId: document.taskId || activity?.latestTaskId || sessionId,
+    taskTitle: document.taskTitle || document.title || activity?.latestTaskTitle || null,
+    title: document.title || document.taskTitle || activity?.latestTaskTitle || null,
+    type: document.type || document.sessionType || activity?.sessionType || "task",
+    status: document.status || document.lifecycleStatus || activity?.latestStatus || "completed",
+    lifecycleStatus: document.lifecycleStatus || activity?.latestStatus || document.status || "completed",
+    runtimeState: document.runtimeState || document.status || activity?.latestStatus || null,
+    workspaceId: document.workspaceId || document.metadata?.workspaceId || activity?.workspaceId || null,
+    createdAt,
+    lastActiveAt,
+    totalEvents: Math.max(0, Number(document.totalEvents ?? document.eventCount ?? activity?.eventCount ?? 0) || 0),
+    turnCount: Math.max(0, Number(document.turnCount || 0) || 0),
+    turns: Array.isArray(document.turns) ? document.turns.map((turn) => ({ ...turn })) : [],
+    messages: Array.isArray(document.messages) ? document.messages.map((message) => ({ ...message })) : [],
+    metadata: document.metadata && typeof document.metadata === "object" ? { ...document.metadata } : {},
+  };
+}
+
+function listDurableSessionsFromLedger() {
+  return listSessionActivitiesFromStateLedger({ repoRoot, limit: 5000 })
+    .map((activity) => normalizeLedgerSessionDocument(activity))
+    .filter(Boolean);
+}
+
+function mergeTrackerAndLedgerSessions(baseSessions = []) {
+  const byId = new Map();
+  for (const session of Array.isArray(baseSessions) ? baseSessions : []) {
+    const sessionId = String(session?.id || session?.taskId || "").trim();
+    if (!sessionId) continue;
+    byId.set(sessionId, session);
+  }
+  for (const session of listDurableSessionsFromLedger()) {
+    const sessionId = String(session?.id || session?.taskId || "").trim();
+    if (!sessionId || byId.has(sessionId)) continue;
+    byId.set(sessionId, session);
+  }
+  return [...byId.values()].sort((a, b) =>
+    String(b?.lastActiveAt || "").localeCompare(String(a?.lastActiveAt || "")),
+  );
+}
+
 function getLiveSessionSnapshot({ includeHidden = false } = {}) {
   const tracker = getSessionTracker();
-  let sessions = tracker.listAllSessions({ includePersisted: false });
+  let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions());
   if (!includeHidden) {
     sessions = sessions.filter((session) => {
       const detailed = tracker.getSessionById(session.id) || session;
@@ -12030,6 +12318,25 @@ function buildCurrentTuiMonitorStats() {
       tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
       throughputTps: injectedStats?.throughputTps,
       rateLimits: injectedStats?.rateLimits || {},
+      executor: status && typeof status === "object"
+        ? {
+            mode: String(status?.mode || "").trim() || "internal",
+            paused: status?.paused === true,
+            activeSlots: pickNumericStat(status?.activeSlots, slots.length),
+            maxParallel: pickNumericStat(status?.maxParallel),
+            slots: slots.slice(0, 8).map((slot) => ({
+              taskId: String(slot?.taskId || "").trim(),
+              taskTitle: String(slot?.taskTitle || "").trim(),
+              sdk: String(slot?.sdk || "").trim(),
+              model: String(slot?.model || "").trim(),
+              status: String(slot?.status || "").trim(),
+              runningFor: pickNumericStat(slot?.runningFor),
+            })),
+          }
+        : null,
+      recovery: status?.inProgressRecovery && typeof status.inProgressRecovery === "object"
+        ? status.inProgressRecovery
+        : injectedStats?.recovery || null,
     },
     runtimeStats: {
       ...runtimeStats,
@@ -20146,24 +20453,14 @@ async function handleApi(req, res, url) {
       const metrics = await readJsonlTail(metricsPath, 100_000, 50_000_000);
       const summary = summarizeTelemetry(metrics, days) || {};
 
-      // Read lifetime totals from the full JSONL log (not the capped in-memory state)
-      // so the count is accurate even when sessions exceed the in-memory cap.
-      const { entries: allSessions } = await readCompletedSessionEntries(200_000);
-      // Cap per-session duration at 4 hours — orphaned sessions reaped days later
-      // would otherwise inflate runtime by hundreds of hours each.
-      const MAX_SESSION_DURATION_MS = 4 * 60 * 60 * 1000;
-      const lifetimeTotals = allSessions.reduce(
-        (acc, session) => {
-          acc.attemptsCount += 1;
-          acc.tokenCount += Number(session?.tokenCount || 0);
-          acc.inputTokens += Number(session?.inputTokens || 0);
-          acc.outputTokens += Number(session?.outputTokens || 0);
-          const rawDur = Math.max(0, Number(session?.durationMs || 0));
-          acc.durationMs += Math.min(rawDur, MAX_SESSION_DURATION_MS);
-          return acc;
-        },
-        { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 },
-      );
+      const runtimeStats = getRuntimeStats();
+      const lifetimeTotals = {
+        attemptsCount: Number(runtimeStats?.lifetimeTotals?.attemptsCount || 0),
+        tokenCount: Number(runtimeStats?.lifetimeTotals?.tokenCount || 0),
+        inputTokens: Number(runtimeStats?.lifetimeTotals?.inputTokens || 0),
+        outputTokens: Number(runtimeStats?.lifetimeTotals?.outputTokens || 0),
+        durationMs: Number(runtimeStats?.lifetimeTotals?.durationMs || runtimeStats?.runtimeMs || 0),
+      };
 
       // Supplement token counts from agent-metrics.jsonl which has actual LLM usage data
       // (prompt_tokens, completion_tokens, total_tokens) that the session log may lack.
@@ -21067,16 +21364,16 @@ if (path === "/api/agent-logs/context") {
   /* ── Resolve git repo cwd from ?repo= query param (path-traversal safe) ── */
   function resolveGitRepoCwd(reqUrl) {
     const repoParam = (reqUrl.searchParams.get("repo") || "").trim();
-    if (!repoParam) return process.cwd();
-    // Sanitize: allow only simple directory name (no slashes, dots, etc.)
-    const safeName = repoParam.replace(/[^a-zA-Z0-9_-]/g, "");
-    if (!safeName) return process.cwd();
-    const parentDir = resolve(process.cwd(), "..");
+    if (!repoParam) return repoRoot;
+    // Sanitize: allow only sibling directory names while still permitting dots.
+    const safeName = repoParam.replace(/[^a-zA-Z0-9_.-]/g, "");
+    if (!safeName || safeName !== repoParam || safeName.includes("..")) return repoRoot;
+    const parentDir = resolve(repoRoot, "..");
     const candidate = resolve(parentDir, safeName);
     // Ensure the resolved path is actually inside parentDir (prevent traversal)
-    if (!candidate.startsWith(parentDir)) return process.cwd();
+    if (!candidate.startsWith(parentDir)) return repoRoot;
     if (existsSync(resolve(candidate, ".git"))) return candidate;
-    return process.cwd();
+    return repoRoot;
   }
 
   if (path === "/api/git/diff") {
@@ -21092,7 +21389,7 @@ if (path === "/api/agent-logs/context") {
   /* ── Discover git repos in parent directory ── */
   if (path === "/api/git/repos") {
     try {
-      const parentDir = resolve(process.cwd(), "..");
+      const parentDir = resolve(repoRoot, "..");
       const entries = readdirSync(parentDir, { withFileTypes: true });
       const repos = [];
       for (const ent of entries) {
@@ -21103,7 +21400,7 @@ if (path === "/api/agent-logs/context") {
         }
       }
       // Sort: current repo first, then alphabetical
-      const currentName = basename(process.cwd());
+      const currentName = basename(repoRoot);
       repos.sort((a, b) => {
         if (a.name === currentName) return -1;
         if (b.name === currentName) return 1;
@@ -21111,7 +21408,7 @@ if (path === "/api/agent-logs/context") {
       });
       jsonResponse(res, 200, { ok: true, data: repos });
     } catch (err) {
-      jsonResponse(res, 200, { ok: true, data: [{ name: basename(process.cwd()), path: process.cwd() }], error: err.message });
+      jsonResponse(res, 200, { ok: true, data: [{ name: basename(repoRoot), path: repoRoot }], error: err.message });
     }
     return;
   }
@@ -24584,7 +24881,7 @@ if (path === "/api/agent-logs/context") {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      let sessions = tracker.listAllSessions();
+      let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions());
       const includeHidden = /^(1|true|yes)$/i.test(String(url.searchParams.get("includeHidden") || "").trim());
       const typeFilter = url.searchParams.get("type");
       const statusFilter = url.searchParams.get("status");
@@ -24673,7 +24970,8 @@ if (path === "/api/agent-logs/context") {
     }
     const tracker = getSessionTracker();
     const getScopedSession = () => {
-      const session = tracker.getSessionById(sessionId);
+      const session = tracker.getSessionById(sessionId)
+        || normalizeLedgerSessionDocument(getSessionActivityFromStateLedger(sessionId, { repoRoot }));
       if (!session) return null;
       return sessionMatchesWorkspaceContext(session, workspaceContext) ? session : null;
     };
@@ -24681,8 +24979,10 @@ if (path === "/api/agent-logs/context") {
       const session = includeMessages
         ? tracker.getSessionMessages(sessionId)
         : (tracker.getSessionById(sessionId) || tracker.getSessionMessages(sessionId));
-      if (!session) return null;
-      return sessionMatchesWorkspaceContext(session, workspaceContext) ? session : null;
+      const durableSession = session
+        || normalizeLedgerSessionDocument(getSessionActivityFromStateLedger(sessionId, { repoRoot }));
+      if (!durableSession) return null;
+      return sessionMatchesWorkspaceContext(durableSession, workspaceContext) ? durableSession : null;
     };
 
     if (!action && req.method === "GET") {

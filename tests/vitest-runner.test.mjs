@@ -30,7 +30,7 @@ describe("vitest-runner", () => {
 
     expect(prePushHook).toContain('"workflow/|workflow-*|workflow-task-lifecycle*|workflow-write-file-encoding*|workflow-pipeline-primitives*|workflow-research-evidence-sidecar*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|state-ledger-sqlite*|webhook-gateway*|credential-store*|cron-scheduler*"');
     expect(prePushHook).toContain('"infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|windows-hidden-child-processes*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"');
-    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*"');
+    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*|internal-harness*"');
     expect(prePushHook).toContain('"telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"');
     expect(prePushHook).toContain('"task/|task-*|workflow-task-lifecycle*|kanban-*|state-ledger-sqlite*|ve-orchestrator*|vk-api*|ve-kanban*"');
     expect(prePushHook).toContain('"lib/|logger*|utils*|library-*|error-detector*|context-*|codebase-audit*|repo-map*|state-ledger-sqlite*"');

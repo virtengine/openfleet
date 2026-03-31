@@ -257,6 +257,9 @@ export function projectSessionRow(session, now = Date.now(), eventWidth = 32) {
   );
   const elapsedMs = Math.max(normalized.elapsedMs, elapsedFromClock);
   const sessionLabel = normalized.title || normalized.workspaceId || normalized.id;
+  const stateText = truncateText(formatStateSummary(normalized), 12);
+  const pidText = truncateText(normalized.pid || "-", 8);
+  const processText = truncateText(formatProcessSummary(normalized), 12);
   return {
     id: normalized.id,
     isDimmed:
@@ -267,8 +270,10 @@ export function projectSessionRow(session, now = Date.now(), eventWidth = 32) {
     pressureColor: getPressureColor(normalized.contextPressure),
     statusDot: "●",
     idText: truncateText(normalized.id.slice(0, 8), 8),
-    stateText: truncateText(formatStateSummary(normalized), 12),
-    processText: truncateText(formatProcessSummary(normalized), 12),
+    stateText,
+    stageText: stateText,
+    pidText,
+    processText,
     contextText: truncateText(formatContextSummary(normalized), 9),
     recommendationText: truncateText(formatRecommendation(normalized.recommendation), 10),
     ageTurnText: truncateText(`${formatAge(elapsedMs)}/${normalized.turnCount || 0}`, 10),

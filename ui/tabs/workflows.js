@@ -534,6 +534,113 @@ function summarizePlannerTimelineEntry(entry) {
   return parts.join(" · ");
 }
 
+function summarizeWorkflowAuditWorkflowEvent(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const parts = [];
+  const eventType = String(entry.eventType || "workflow.event").trim();
+  const label = String(
+    entry.summary
+    || entry.executionLabel
+    || entry.nodeLabel
+    || entry.toolName
+    || entry.nodeId
+    || entry.executionId
+    || "",
+  ).trim();
+  const status = String(entry.status || "").trim();
+  const childRunId = String(entry.childRunId || "").trim();
+  const reason = String(entry.reason || entry.error || "").trim();
+  if (eventType) parts.push(eventType);
+  if (label && label !== eventType) parts.push(label);
+  if (status) parts.push(status);
+  if (childRunId) parts.push(`child ${childRunId}`);
+  if (reason) parts.push(reason);
+  return parts.join(" · ");
+}
+
+function summarizeWorkflowAuditToolCall(call) {
+  if (!call || typeof call !== "object") return "";
+  const parts = [];
+  const label = String(call.summary || call.toolName || call.toolId || call.callId || "tool call").trim();
+  const status = String(call.status || "").trim();
+  const provider = String(call.provider || "").trim();
+  const serverId = String(call.serverId || "").trim();
+  const nodeId = String(call.nodeId || "").trim();
+  const durationMs = Number(call.durationMs || 0);
+  if (label) parts.push(label);
+  if (status && status !== label) parts.push(status);
+  if (provider) parts.push(provider);
+  else if (serverId) parts.push(`server ${serverId}`);
+  if (nodeId) parts.push(`node ${nodeId}`);
+  if (Number.isFinite(durationMs) && durationMs > 0) parts.push(formatDuration(durationMs));
+  return parts.join(" · ");
+}
+
+function summarizeWorkflowAuditArtifact(artifact) {
+  if (!artifact || typeof artifact !== "object") return "";
+  const parts = [];
+  const label = String(artifact.summary || artifact.path || artifact.kind || artifact.artifactId || "artifact").trim();
+  const kind = String(artifact.kind || "").trim();
+  const nodeId = String(artifact.nodeId || "").trim();
+  const sessionId = String(artifact.sessionId || "").trim();
+  if (label) parts.push(label);
+  if (kind && kind !== label) parts.push(kind);
+  if (nodeId) parts.push(`node ${nodeId}`);
+  if (sessionId) parts.push(`session ${sessionId}`);
+  return parts.join(" · ");
+}
+
+function summarizeWorkflowAuditOperatorAction(action) {
+  if (!action || typeof action !== "object") return "";
+  const parts = [];
+  const actionType = String(action.actionType || action.eventType || "operator.action").trim();
+  const actorId = String(action.actorId || "").trim();
+  const targetId = String(action.targetId || "").trim();
+  const status = String(action.status || "").trim();
+  const summary = String(
+    action.metadata?.summary
+    || action.result?.summary
+    || action.request?.summary
+    || "",
+  ).trim();
+  if (actionType) parts.push(actionType.replaceAll("_", " "));
+  if (actorId) parts.push(`by ${actorId}`);
+  if (targetId) parts.push(`target ${targetId}`);
+  if (status) parts.push(status);
+  if (summary) parts.push(summary);
+  return parts.join(" · ");
+}
+
+function summarizeWorkflowAuditClaimEvent(event) {
+  if (!event || typeof event !== "object") return "";
+  const parts = [];
+  const action = String(event.action || event.status || event.eventType || "claim").trim();
+  const instanceId = String(event.instanceId || event.instance_id || "").trim();
+  const claimToken = String(event.claimToken || event.claim_token || "").trim();
+  const summary = String(event.summary || "").trim();
+  if (action) parts.push(action.replaceAll("_", " "));
+  if (instanceId) parts.push(`by ${instanceId}`);
+  if (claimToken) parts.push(`token ${claimToken}`);
+  if (summary) parts.push(summary);
+  return parts.join(" · ");
+}
+
+function summarizeWorkflowAuditPromotedStrategyEvent(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const parts = [];
+  const label = String(entry.recommendation || entry.decision || entry.strategyId || "strategy").trim();
+  const status = String(entry.status || "").trim();
+  const verificationStatus = String(entry.verificationStatus || "").trim();
+  const confidence = Number.isFinite(Number(entry.confidence)) ? Number(entry.confidence) : null;
+  const rationale = String(entry.rationale || "").trim();
+  if (label) parts.push(label);
+  if (status) parts.push(status);
+  if (verificationStatus) parts.push(verificationStatus);
+  if (confidence != null) parts.push(`confidence ${confidence}`);
+  if (rationale) parts.push(rationale);
+  return parts.join(" · ");
+}
+
 function summarizeWorkflowTeamTaskEntry(task) {
   if (!task || typeof task !== "object") return "";
   const parts = [];
@@ -6504,6 +6611,7 @@ function RunHistoryView() {
         ? selectedRun.auditActivity
         : {};
     const auditTaskTraceEvents = Array.isArray(auditActivity?.taskTraceEvents) ? auditActivity.taskTraceEvents : [];
+    const auditWorkflowEvents = Array.isArray(auditActivity?.workflowEvents) ? auditActivity.workflowEvents : [];
     const auditPromotedStrategies = Array.isArray(auditActivity?.promotedStrategies) ? auditActivity.promotedStrategies : [];
     const auditPromotedStrategyEvents = Array.isArray(auditActivity?.promotedStrategyEvents) ? auditActivity.promotedStrategyEvents : [];
     const auditEvents = Array.isArray(auditActivity?.auditEvents) ? auditActivity.auditEvents : [];
@@ -6511,6 +6619,8 @@ function RunHistoryView() {
     const auditToolCalls = Array.isArray(auditActivity?.toolCalls) ? auditActivity.toolCalls : [];
     const auditOperatorActions = Array.isArray(auditActivity?.operatorActions) ? auditActivity.operatorActions : [];
     const auditClaimEvents = Array.isArray(auditActivity?.claimEvents) ? auditActivity.claimEvents : [];
+    const auditSessionIds = Array.isArray(auditActivity?.sessionIds) ? auditActivity.sessionIds : [];
+    const auditAgentIds = Array.isArray(auditActivity?.agentIds) ? auditActivity.agentIds : [];
     const auditSummary = auditActivity?.summary && typeof auditActivity.summary === "object"
       ? auditActivity.summary
       : {};
@@ -6522,8 +6632,42 @@ function RunHistoryView() {
       auditActivity?.agentActivity && typeof auditActivity.agentActivity === "object"
         ? auditActivity.agentActivity
         : null;
-    const latestAuditTrace = auditTaskTraceEvents[0] || null;
-    const latestPromotedStrategy = auditPromotedStrategies[0] || null;
+    const derivedAuditClaimEvents = auditClaimEvents.length
+      ? auditClaimEvents
+      : auditEvents
+        .filter((entry) => String(entry?.auditType || "").trim().toLowerCase() === "task_claim")
+        .map((entry) => ({
+          ...(entry?.record && typeof entry.record === "object" ? entry.record : {}),
+          auditId: entry?.auditId || null,
+          timestamp: entry?.timestamp || null,
+          status: entry?.status || null,
+          eventType: entry?.eventType || null,
+          summary: entry?.summary || null,
+        }));
+    const derivedAuditOperatorActions = auditOperatorActions.length
+      ? auditOperatorActions
+      : auditEvents
+        .filter((entry) => String(entry?.auditType || "").trim().toLowerCase() === "operator_action")
+        .map((entry) => ({
+          ...(entry?.record && typeof entry.record === "object" ? entry.record : {}),
+          auditId: entry?.auditId || null,
+          createdAt: entry?.timestamp || null,
+          updatedAt: entry?.timestamp || null,
+          status: entry?.status || null,
+          eventType: entry?.eventType || null,
+          summary: entry?.summary || null,
+        }));
+    const recentAuditWorkflowEvents = auditWorkflowEvents.slice().reverse().slice(0, 8);
+    const recentAuditTaskTraceEvents = auditTaskTraceEvents.slice().reverse().slice(0, 8);
+    const recentAuditToolCalls = auditToolCalls.slice().reverse().slice(0, 8);
+    const recentAuditArtifacts = auditArtifacts.slice().reverse().slice(0, 8);
+    const recentAuditPromotedStrategies = auditPromotedStrategies.slice().reverse().slice(0, 8);
+    const recentAuditPromotedStrategyEvents = auditPromotedStrategyEvents.slice().reverse().slice(0, 8);
+    const recentAuditClaimEvents = derivedAuditClaimEvents.slice().reverse().slice(0, 8);
+    const recentAuditOperatorActions = derivedAuditOperatorActions.slice().reverse().slice(0, 8);
+    const latestAuditTrace = recentAuditTaskTraceEvents[0] || null;
+    const latestPromotedStrategy = recentAuditPromotedStrategies[0] || null;
+    const latestAuditWorkflowEvent = recentAuditWorkflowEvents[0] || null;
     const normalizedLogsSearch = String(logsPaneSearch || "").trim().toLowerCase();
     const normalizedErrorsSearch = String(errorsPaneSearch || "").trim().toLowerCase();
     const normalizedLedgerSearch = String(ledgerPaneSearch || "").trim().toLowerCase();
@@ -6824,12 +6968,19 @@ function RunHistoryView() {
             </div>
             <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
               <div><b>Audit Events:</b> ${auditEvents.length} · <b>Trace Events:</b> ${Number(auditSummary.taskTraceCount || auditActivity?.taskTraceCount || auditTaskTraceEvents.length || 0)}</div>
-              <div><b>Tool Calls:</b> ${Number(auditSummary.toolCallCount || auditToolCalls.length || 0)} · <b>Artifacts:</b> ${Number(auditSummary.artifactCount || auditArtifacts.length || 0)} · <b>Claims:</b> ${Number(auditSummary.claimEventCount || auditClaimEvents.length || 0)}</div>
-              <div><b>Promoted Strategies:</b> ${Number(auditSummary.promotedStrategyCount || auditPromotedStrategies.length || 0)} · <b>Operator Actions:</b> ${Number(auditSummary.operatorActionCount || auditOperatorActions.length || 0)}</div>
+              <div><b>Workflow Events:</b> ${Number(auditSummary.workflowEventCount || auditWorkflowEvents.length || 0)} · <b>Tool Calls:</b> ${Number(auditSummary.toolCallCount || auditToolCalls.length || 0)} · <b>Artifacts:</b> ${Number(auditSummary.artifactCount || auditArtifacts.length || 0)}</div>
+              <div><b>Claims:</b> ${Number(auditSummary.claimEventCount || derivedAuditClaimEvents.length || 0)} · <b>Promoted Strategy Events:</b> ${auditPromotedStrategyEvents.length}</div>
+              <div><b>Promoted Strategies:</b> ${Number(auditSummary.promotedStrategyCount || auditPromotedStrategies.length || 0)} · <b>Operator Actions:</b> ${Number(auditSummary.operatorActionCount || derivedAuditOperatorActions.length || 0)}</div>
+              <div><b>Tracked Sessions:</b> ${auditSessionIds.length} · <b>Tracked Agents:</b> ${auditAgentIds.length}</div>
               <div><b>Session:</b> <code>${auditSessionActivity?.sessionId || selectedRun.primarySessionId || selectedRun.sessionId || "—"}</code></div>
               <div><b>Agent:</b> <code>${auditAgentActivity?.agentId || "—"}</code></div>
+              <div><b>Known Sessions:</b> ${auditSessionIds.length ? auditSessionIds.join(", ") : "—"}</div>
+              <div><b>Known Agents:</b> ${auditAgentIds.length ? auditAgentIds.join(", ") : "—"}</div>
               <div><b>Latest Session Event:</b> ${auditSessionActivity?.latestEventType || "—"}${auditSessionActivity?.updatedAt ? ` · ${formatRelative(auditSessionActivity.updatedAt)}` : ""}</div>
               <div><b>Latest Agent Event:</b> ${auditAgentActivity?.latestEventType || "—"}${auditAgentActivity?.updatedAt ? ` · ${formatRelative(auditAgentActivity.updatedAt)}` : ""}</div>
+              ${latestAuditWorkflowEvent && html`
+                <div style="margin-top: 6px; color: #bfdbfe;">Workflow: ${summarizeWorkflowAuditWorkflowEvent(latestAuditWorkflowEvent) || latestAuditWorkflowEvent.eventType || "workflow event"}</div>
+              `}
               ${latestAuditTrace && html`
                 <div style="margin-top: 6px; color: #e5e7eb;">Trace: ${latestAuditTrace.eventType || "event"}${latestAuditTrace.summary ? ` · ${latestAuditTrace.summary}` : ""}</div>
               `}
@@ -7020,25 +7171,61 @@ function RunHistoryView() {
         </details>
 
         <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
-          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">State Ledger Activity (${auditEvents.length})</summary>
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">State Ledger Activity (${auditEvents.length} normalized events · ${auditWorkflowEvents.length} workflow events)</summary>
           <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:8px;">
             <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Session & Agent Activity</div>
+              <div><b>Tracked Sessions:</b> ${auditSessionIds.length || 0}</div>
+              <div><b>Current Session:</b> <code>${auditSessionActivity?.sessionId || auditSessionIds[0] || selectedRun.primarySessionId || selectedRun.sessionId || "—"}</code></div>
+              <div><b>Latest Event:</b> ${auditSessionActivity?.latestEventType || "—"}${auditSessionActivity?.latestStatus ? ` · ${auditSessionActivity.latestStatus}` : ""}</div>
+              <div><b>Latest Task:</b> ${auditSessionActivity?.latestTaskTitle || auditSessionActivity?.latestTaskId || "—"}</div>
+              <div><b>Latest Workflow:</b> ${auditSessionActivity?.latestWorkflowName || auditSessionActivity?.latestWorkflowId || "—"}</div>
+              <div><b>Event Count:</b> ${Number(auditSessionActivity?.eventCount || 0)}</div>
+              ${auditSessionActivity?.updatedAt && html`
+                <div style="margin-top:6px; opacity:0.8;">Updated ${formatDate(auditSessionActivity.updatedAt)} (${formatRelative(auditSessionActivity.updatedAt)})</div>
+              `}
+              ${auditSessionActivity?.lastSummary && html`
+                <div style="margin-top:6px;">${auditSessionActivity.lastSummary}</div>
+              `}
+              ${auditSessionIds.length > 1 && html`
+                <div style="margin-top:6px;"><b>All Sessions:</b> ${auditSessionIds.map((sessionId) => html`<code key=${sessionId} style="margin-right:4px;">${sessionId}</code>`)}</div>
+              `}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Agent Activity</div>
+              <div><b>Tracked Agents:</b> ${auditAgentIds.length || 0}</div>
+              <div><b>Current Agent:</b> <code>${auditAgentActivity?.agentId || auditAgentIds[0] || "—"}</code></div>
+              <div><b>Latest Event:</b> ${auditAgentActivity?.latestEventType || "—"}${auditAgentActivity?.latestStatus ? ` · ${auditAgentActivity.latestStatus}` : ""}</div>
+              <div><b>Latest Task:</b> ${auditAgentActivity?.latestTaskTitle || auditAgentActivity?.latestTaskId || "—"}</div>
+              <div><b>Latest Workflow:</b> ${auditAgentActivity?.latestWorkflowName || auditAgentActivity?.latestWorkflowId || "—"}</div>
+              <div><b>Event Count:</b> ${Number(auditAgentActivity?.eventCount || 0)}</div>
+              ${auditAgentActivity?.updatedAt && html`
+                <div style="margin-top:6px; opacity:0.8;">Updated ${formatDate(auditAgentActivity.updatedAt)} (${formatRelative(auditAgentActivity.updatedAt)})</div>
+              `}
+              ${auditAgentActivity?.lastSummary && html`
+                <div style="margin-top:6px;">${auditAgentActivity.lastSummary}</div>
+              `}
+              ${auditAgentIds.length > 1 && html`
+                <div style="margin-top:6px;"><b>All Agents:</b> ${auditAgentIds.map((agentId) => html`<code key=${agentId} style="margin-right:4px;">${agentId}</code>`)}</div>
+              `}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
               <div style="font-weight:600; margin-bottom:6px;">Recent Trace Events</div>
-              ${auditTaskTraceEvents.length === 0
+              ${recentAuditTaskTraceEvents.length === 0
                 ? html`<div style="opacity:0.6;">No state-ledger trace events found for this run.</div>`
-                : auditTaskTraceEvents.map((entry, index) => html`
+                : recentAuditTaskTraceEvents.map((entry, index) => html`
                   <div key=${`audit-trace-${index}`} style="margin-bottom:8px;">
                     <div><b>${entry.eventType || "event"}</b>${entry.status ? ` · ${entry.status}` : ""}</div>
-                    <div style="opacity:0.8;"><code>${entry.nodeLabel || entry.nodeId || entry.runId || "—"}</code></div>
+                    <div style="opacity:0.8;"><code>${entry.nodeLabel || entry.nodeId || entry.runId || "—"}</code>${entry.agentId ? ` · agent ${entry.agentId}` : ""}</div>
                     ${entry.summary && html`<div style="margin-top:2px;">${entry.summary}</div>`}
                   </div>
                 `)}
             </div>
             <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
               <div style="font-weight:600; margin-bottom:6px;">Promoted Strategies</div>
-              ${auditPromotedStrategies.length === 0
+              ${recentAuditPromotedStrategies.length === 0
                 ? html`<div style="opacity:0.6;">No promoted strategies recorded for this run.</div>`
-                : auditPromotedStrategies.map((entry, index) => html`
+                : recentAuditPromotedStrategies.map((entry, index) => html`
                   <div key=${`audit-strategy-${index}`} style="margin-bottom:8px;">
                     <div><b>${entry.recommendation || entry.decision || entry.strategyId}</b></div>
                     <div style="opacity:0.8;">${entry.status || "unknown"}${entry.verificationStatus ? ` · ${entry.verificationStatus}` : ""}${entry.confidence != null ? ` · confidence ${entry.confidence}` : ""}</div>
@@ -7047,14 +7234,94 @@ function RunHistoryView() {
                 `)}
             </div>
             <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Workflow Ledger Events</div>
+              ${recentAuditWorkflowEvents.length === 0
+                ? html`<div style="opacity:0.6;">No workflow lifecycle events recorded in the state ledger.</div>`
+                : recentAuditWorkflowEvents.map((entry, index) => html`
+                  <div key=${`audit-workflow-event-${index}`} style="margin-bottom:8px;">
+                    <div><b>${entry.eventType || "workflow.event"}</b>${entry.status ? ` · ${entry.status}` : ""}</div>
+                    <div style="opacity:0.8;">${entry.timestamp ? `${formatDate(entry.timestamp)} (${formatRelative(entry.timestamp)})` : "unknown time"}</div>
+                    <div style="margin-top:2px;">${summarizeWorkflowAuditWorkflowEvent(entry) || entry.summary || "Workflow event"}</div>
+                    <div style="margin-top:2px;"><b>Execution:</b> <code>${entry.executionId || "—"}</code> · <b>Node:</b> <code>${entry.nodeId || "—"}</code></div>
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Tool Calls</div>
+              ${recentAuditToolCalls.length === 0
+                ? html`<div style="opacity:0.6;">No tool calls recorded for this run.</div>`
+                : recentAuditToolCalls.map((entry, index) => html`
+                  <div key=${`audit-tool-call-${index}`} style="margin-bottom:8px;">
+                    <div><b>${entry.toolName || entry.toolId || "tool"}</b>${entry.status ? ` · ${entry.status}` : ""}</div>
+                    <div style="opacity:0.8;">${entry.startedAt ? `${formatDate(entry.startedAt)} (${formatRelative(entry.startedAt)})` : "unknown time"}</div>
+                    <div style="margin-top:2px;">${summarizeWorkflowAuditToolCall(entry) || entry.summary || "Tool call"}</div>
+                    <div style="margin-top:2px;"><b>Call:</b> <code>${entry.callId || "—"}</code></div>
+                    ${entry.cwd && html`<div style="margin-top:2px;"><b>CWD:</b> <code>${entry.cwd}</code></div>`}
+                    ${entry.error && html`<div style="margin-top:2px; color:#fca5a5;"><b>Error:</b> ${entry.error}</div>`}
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Artifacts</div>
+              ${recentAuditArtifacts.length === 0
+                ? html`<div style="opacity:0.6;">No artifacts recorded for this run.</div>`
+                : recentAuditArtifacts.map((entry, index) => html`
+                  <div key=${`audit-artifact-${index}`} style="margin-bottom:8px;">
+                    <div><b>${entry.kind || "artifact"}</b>${entry.path ? ` · ${entry.path}` : ""}</div>
+                    <div style="opacity:0.8;">${entry.createdAt ? `${formatDate(entry.createdAt)} (${formatRelative(entry.createdAt)})` : "unknown time"}</div>
+                    <div style="margin-top:2px;">${summarizeWorkflowAuditArtifact(entry) || entry.summary || "Artifact"}</div>
+                    <div style="margin-top:2px;"><b>Artifact:</b> <code>${entry.artifactId || "—"}</code></div>
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Operator Actions</div>
+              ${recentAuditOperatorActions.length === 0
+                ? html`<div style="opacity:0.6;">No operator actions were linked to this run.</div>`
+                : recentAuditOperatorActions.map((entry, index) => html`
+                  <div key=${`audit-operator-action-${index}`} style="margin-bottom:8px;">
+                    <div><b>${entry.actionType || entry.eventType || "operator.action"}</b>${entry.status ? ` · ${entry.status}` : ""}</div>
+                    <div style="opacity:0.8;">${entry.createdAt ? `${formatDate(entry.createdAt)} (${formatRelative(entry.createdAt)})` : "unknown time"}</div>
+                    <div style="margin-top:2px;">${summarizeWorkflowAuditOperatorAction(entry) || entry.summary || "Operator action"}</div>
+                    <div style="margin-top:2px;"><b>Action:</b> <code>${entry.actionId || entry.auditId || "—"}</code></div>
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Claim Events</div>
+              ${recentAuditClaimEvents.length === 0
+                ? html`<div style="opacity:0.6;">No task-claim events were linked to this run.</div>`
+                : recentAuditClaimEvents.map((entry, index) => html`
+                  <div key=${`audit-claim-event-${index}`} style="margin-bottom:8px;">
+                    <div><b>${String(entry.action || entry.status || "claim").replaceAll("_", " ")}</b>${entry.instanceId || entry.instance_id ? ` · ${entry.instanceId || entry.instance_id}` : ""}</div>
+                    <div style="opacity:0.8;">${entry.timestamp ? `${formatDate(entry.timestamp)} (${formatRelative(entry.timestamp)})` : "unknown time"}</div>
+                    <div style="margin-top:2px;">${summarizeWorkflowAuditClaimEvent(entry) || entry.summary || "Claim event"}</div>
+                    <div style="margin-top:2px;"><b>Task:</b> <code>${entry.taskId || entry.task_id || auditSummary.taskId || selectedRun.taskId || "—"}</code></div>
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Promoted Strategy Events</div>
+              ${recentAuditPromotedStrategyEvents.length === 0
+                ? html`<div style="opacity:0.6;">No promoted-strategy event history recorded for this run.</div>`
+                : recentAuditPromotedStrategyEvents.map((entry, index) => html`
+                  <div key=${`audit-promoted-strategy-event-${index}`} style="margin-bottom:8px;">
+                    <div><b>${entry.strategyId || entry.recommendation || "strategy"}</b>${entry.status ? ` · ${entry.status}` : ""}</div>
+                    <div style="opacity:0.8;">${entry.createdAt ? `${formatDate(entry.createdAt)} (${formatRelative(entry.createdAt)})` : "unknown time"}</div>
+                    <div style="margin-top:2px;">${summarizeWorkflowAuditPromotedStrategyEvent(entry) || "Promoted strategy event"}</div>
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
               <div style="font-weight:600; margin-bottom:6px;">Unified Audit Timeline</div>
               ${auditEvents.length === 0
                 ? html`<div style="opacity:0.6;">No normalized audit events recorded for this run.</div>`
-                : auditEvents.slice(0, 10).map((entry, index) => html`
+                : auditEvents.slice(0, 12).map((entry, index) => html`
                   <div key=${`audit-event-${index}`} style="margin-bottom:8px;">
                     <div><b>${(entry.auditType || "audit").replace(/_/g, " ")}</b>${entry.status ? ` · ${entry.status}` : ""}</div>
                     <div style="opacity:0.8;">${entry.timestamp ? `${formatDate(entry.timestamp)} (${formatRelative(entry.timestamp)})` : "unknown time"}</div>
                     <div style="margin-top:2px;">${entry.summary || entry.eventType || "Audit event"}</div>
+                    <div style="margin-top:2px;"><b>Run:</b> <code>${entry.runId || selectedRun.runId || "—"}</code>${entry.sessionId ? html` · <b>Session:</b> <code>${entry.sessionId}</code>` : ""}</div>
                   </div>
                 `)}
             </div>

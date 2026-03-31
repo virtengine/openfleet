@@ -10,7 +10,12 @@ const html = htm.bind(React.createElement);
 function formatNumber(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "0";
-  if (numeric >= 1000) return `${(numeric / 1000).toFixed(1)}k`;
+  const abs = Math.abs(numeric);
+  const formatCompact = (scaled, suffix) => `${Number(scaled.toFixed(1)).toString()}${suffix}`;
+  if (abs >= 1_000_000_000_000) return formatCompact(numeric / 1_000_000_000_000, "T");
+  if (abs >= 1_000_000_000) return formatCompact(numeric / 1_000_000_000, "B");
+  if (abs >= 1_000_000) return formatCompact(numeric / 1_000_000, "M");
+  if (abs >= 1_000) return formatCompact(numeric / 1_000, "K");
   return numeric.toFixed(numeric >= 10 ? 0 : 1);
 }
 

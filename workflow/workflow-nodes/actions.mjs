@@ -651,6 +651,23 @@ function deriveWorkflowAgentSessionStatus(result = {}, { streamEventCount = 0 } 
   return result?.success === true ? "completed" : "failed";
 }
 
+function resolveSuccessfulWorkflowAgentSessionStatus(result = {}) {
+  return classifyWorkflowAgentBlockedStatus(result) || "completed";
+}
+
+function pickLatestMeaningfulSessionMessage(messages = []) {
+  if (!Array.isArray(messages)) return "";
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const content = String(message?.content || "").trim();
+    if (!content) continue;
+    const normalized = content.replace(/\s+/g, " ").trim().toLowerCase();
+    if (WORKFLOW_AGENT_PLACEHOLDER_OUTPUTS.has(normalized)) continue;
+    return content;
+  }
+  return "";
+}
+
 function deriveWorkflowExecutionSessionStatus(run = {}) {
   const terminalOutput = run?.data?._workflowTerminalOutput;
   const terminalMessage = String(run?.data?._workflowTerminalMessage || "").trim();

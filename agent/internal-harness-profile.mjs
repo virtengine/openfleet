@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 
 const SECRET_KEY_RE = /(api[_-]?key|token|secret|password|client[_-]?secret|pat)/i;
-const SECRET_PLACEHOLDER_RE = /^(?:\$?\{?[A-Z0-9_:-]+\}?|<[^>]+>|changeme|replace[-_ ]?me|your[-_ ]?key|your[-_ ]?token)$/i;
+const SECRET_PLACEHOLDER_ENV_RE = /^(?:\$?\{?[A-Z0-9_:-]+\}?|<[^>]+>)$/;
+const SECRET_PLACEHOLDER_TEXT_RE = /^(?:changeme|replace[-_ ]?me|your[-_ ]?key|your[-_ ]?token)$/i;
 const PROMPT_INJECTION_RE = /\b(ignore (?:all |any |the )?(?:previous|prior) instructions|reveal (?:the )?(?:system|developer) prompt|bypass (?:all )?(?:guardrails|safeguards)|disable (?:all )?(?:guardrails|checks)|override (?:the )?(?:system|developer) message)\b/i;
 const UNSAFE_EXECUTION_RE = /\b(?:rm\s+-rf\s+\/|git\s+reset\s+--hard|curl\b[^|\n\r]*\|\s*(?:sh|bash)|wget\b[^|\n\r]*\|\s*(?:sh|bash)|del\s+\/f\s+\/s\s+\/q|format\s+[a-z]:)\b/i;
 const GATE_TOOL_ALLOWLIST = new Set([
@@ -347,7 +348,11 @@ export function compileInternalHarnessProfile(source, options = {}) {
     if (typeof value !== "string") return;
     const trimmed = toTrimmedString(value);
     if (!trimmed) return;
-    if (SECRET_KEY_RE.test(key) && !SECRET_PLACEHOLDER_RE.test(trimmed)) {
+    if (
+      SECRET_KEY_RE.test(key) &&
+      !SECRET_PLACEHOLDER_ENV_RE.test(trimmed) &&
+      !SECRET_PLACEHOLDER_TEXT_RE.test(trimmed)
+    ) {
       addIssue(report.errors, {
         code: "secret_literal_detected",
         message: `Secret-looking field "${path}" must not contain a literal secret`,

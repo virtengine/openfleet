@@ -24,6 +24,7 @@ import {
   getWorkflowRunFromStateLedger,
   listAuditEventsFromStateLedger,
   listArtifactsFromStateLedger,
+  listSessionActivitiesFromStateLedger,
   listOperatorActionsFromStateLedger,
   listPromotedStrategiesFromStateLedger,
   listPromotedStrategyEventsFromStateLedger,
@@ -35,6 +36,7 @@ import {
   listWorkflowTaskRunEntriesFromStateLedger,
   resetStateLedgerCache,
   resolveStateLedgerPath,
+  upsertSessionRecordToStateLedger,
   upsertStateLedgerKeyValue,
 } from "../lib/state-ledger-sqlite.mjs";
 
@@ -502,6 +504,93 @@ describe("state ledger sqlite audit helpers", () => {
         eventCount: 1,
       }),
     );
+  });
+
+  it("stores tracker-backed session summaries and lists them newest-first", () => {
+    const repoRoot = makeTempDir("state-ledger-session-record-");
+
+    upsertSessionRecordToStateLedger({
+      sessionId: "session-manual-1",
+      type: "manual",
+      workspaceId: "workspace-a",
+      taskId: "task-manual-1",
+      taskTitle: "Manual session",
+      latestEventType: "assistant",
+      status: "completed",
+      updatedAt: "2026-03-31T06:05:00.000Z",
+      startedAt: "2026-03-31T06:00:00.000Z",
+      eventCount: 3,
+      preview: "Completed the manual run.",
+      document: {
+        id: "session-manual-1",
+        taskId: "task-manual-1",
+        taskTitle: "Manual session",
+        type: "manual",
+        status: "completed",
+        lifecycleStatus: "completed",
+        workspaceId: "workspace-a",
+        createdAt: "2026-03-31T06:00:00.000Z",
+        lastActiveAt: "2026-03-31T06:05:00.000Z",
+        totalEvents: 3,
+        turnCount: 1,
+        messages: [
+          { role: "assistant", content: "Completed the manual run.", timestamp: "2026-03-31T06:05:00.000Z" },
+        ],
+      },
+    }, { repoRoot });
+
+    upsertSessionRecordToStateLedger({
+      sessionId: "session-manual-2",
+      type: "manual",
+      workspaceId: "workspace-a",
+      taskId: "task-manual-2",
+      taskTitle: "Latest manual session",
+      latestEventType: "assistant",
+      status: "active",
+      updatedAt: "2026-03-31T06:10:00.000Z",
+      startedAt: "2026-03-31T06:08:00.000Z",
+      eventCount: 1,
+      preview: "Still running",
+      document: {
+        id: "session-manual-2",
+        taskId: "task-manual-2",
+        taskTitle: "Latest manual session",
+        type: "manual",
+        status: "active",
+        lifecycleStatus: "active",
+        workspaceId: "workspace-a",
+        createdAt: "2026-03-31T06:08:00.000Z",
+        lastActiveAt: "2026-03-31T06:10:00.000Z",
+        totalEvents: 1,
+        messages: [],
+      },
+    }, { repoRoot });
+
+    expect(getSessionActivityFromStateLedger("session-manual-1", { repoRoot })).toEqual(
+      expect.objectContaining({
+        sessionId: "session-manual-1",
+        latestTaskId: "task-manual-1",
+        latestStatus: "completed",
+        eventCount: 3,
+        document: expect.objectContaining({
+          id: "session-manual-1",
+          totalEvents: 3,
+        }),
+      }),
+    );
+
+    expect(listSessionActivitiesFromStateLedger({ repoRoot, workspaceId: "workspace-a" })).toEqual([
+      expect.objectContaining({
+        sessionId: "session-manual-2",
+        latestTaskId: "task-manual-2",
+        latestStatus: "active",
+      }),
+      expect.objectContaining({
+        sessionId: "session-manual-1",
+        latestTaskId: "task-manual-1",
+        latestStatus: "completed",
+      }),
+    ]);
   });
 
   it("stores promoted strategy snapshots and audit events", () => {

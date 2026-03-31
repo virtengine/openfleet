@@ -2789,7 +2789,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.events,
     task?.activity,
   ]);
-  const workflowRuns = useMemo(() => buildTaskWorkflowRuns(task), [
+  const baseWorkflowRuns = useMemo(() => buildTaskWorkflowRuns(task), [
     task?.id,
     task?.workflowRuns,
     task?.workflowHistory,
@@ -2805,9 +2805,69 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     : {};
   const taskAuditEvents = Array.isArray(taskAuditActivity?.auditEvents) ? taskAuditActivity.auditEvents : [];
   const taskAuditArtifacts = Array.isArray(taskAuditActivity?.artifacts) ? taskAuditActivity.artifacts : [];
+  const taskAuditToolCalls = Array.isArray(taskAuditActivity?.toolCalls) ? taskAuditActivity.toolCalls : [];
   const taskAuditOperatorActions = Array.isArray(taskAuditActivity?.operatorActions) ? taskAuditActivity.operatorActions : [];
   const taskAuditPromotedStrategies = Array.isArray(taskAuditActivity?.promotedStrategies) ? taskAuditActivity.promotedStrategies : [];
+  const taskAuditPromotedStrategyEvents = Array.isArray(taskAuditActivity?.promotedStrategyEvents)
+    ? taskAuditActivity.promotedStrategyEvents
+    : [];
   const taskAuditTraceEvents = Array.isArray(taskAuditActivity?.taskTraceEvents) ? taskAuditActivity.taskTraceEvents : [];
+  const taskAuditClaim = taskAuditActivity?.claim && typeof taskAuditActivity.claim === "object"
+    ? taskAuditActivity.claim
+    : null;
+  const taskAuditClaimEvents = Array.isArray(taskAuditActivity?.claimEvents) ? taskAuditActivity.claimEvents : [];
+  const taskAuditSessionIds = Array.isArray(taskAuditActivity?.sessionIds) ? taskAuditActivity.sessionIds : [];
+  const taskAuditAgentIds = Array.isArray(taskAuditActivity?.agentIds) ? taskAuditActivity.agentIds : [];
+  const taskAuditSessionActivity =
+    taskAuditActivity?.sessionActivity && typeof taskAuditActivity.sessionActivity === "object"
+      ? taskAuditActivity.sessionActivity
+      : null;
+  const taskAuditAgentActivity =
+    taskAuditActivity?.agentActivity && typeof taskAuditActivity.agentActivity === "object"
+      ? taskAuditActivity.agentActivity
+      : null;
+  const taskAuditWorkflowRuns = useMemo(() => {
+    if (!Array.isArray(taskAuditActivity?.workflowRuns)) return [];
+    return taskAuditActivity.workflowRuns
+      .map((entry) => normalizeTaskWorkflowRunEntry(entry))
+      .filter((entry) => entry && (entry.workflowId || entry.runId || entry.status || entry.result));
+  }, [taskAuditActivity?.workflowRuns]);
+  const workflowRuns = useMemo(() => {
+    const merged = [...baseWorkflowRuns, ...taskAuditWorkflowRuns];
+    const deduped = [];
+    const seen = new Set();
+    for (const run of merged) {
+      const key = String(
+        run?.runId
+          || `${run?.workflowId || ""}:${run?.nodeId || ""}:${run?.timestamp || run?.startedAt || run?.status || ""}`,
+      ).trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(run);
+    }
+    deduped.sort((a, b) => {
+      const ta = a?.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tb = b?.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tb - ta;
+    });
+    return deduped.slice(0, 30);
+  }, [baseWorkflowRuns, taskAuditWorkflowRuns]);
+  const hasTaskAuditContent = Boolean(
+    taskAuditEvents.length
+    || taskAuditArtifacts.length
+    || taskAuditToolCalls.length
+    || taskAuditOperatorActions.length
+    || taskAuditPromotedStrategies.length
+    || taskAuditPromotedStrategyEvents.length
+    || taskAuditTraceEvents.length
+    || taskAuditClaim
+    || taskAuditClaimEvents.length
+    || taskAuditWorkflowRuns.length
+    || taskAuditSessionIds.length
+    || taskAuditAgentIds.length
+    || taskAuditSessionActivity
+    || taskAuditAgentActivity,
+  );
   const plannerState = task?.meta?.plannerState?.latestReplan || null;
   const planningMode = String(replanProposal?.mode || plannerState?.mode || "replan").trim().toLowerCase() === "decompose"
     ? "decompose"
@@ -4463,15 +4523,28 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Audit Trail</div>
-                <div class="task-comment-body">${taskAuditEvents.length
-                  ? `${taskAuditEvents.length} ledger events · ${Number(taskAuditSummary.toolCallCount || 0)} tool calls · ${Number(taskAuditSummary.artifactCount || 0)} artifacts`
+                <div class="task-comment-body">${hasTaskAuditContent
+                  ? `${taskAuditEvents.length} ledger events · ${Number(taskAuditSummary.toolCallCount || taskAuditToolCalls.length || 0)} tool calls · ${Number(taskAuditSummary.artifactCount || taskAuditArtifacts.length || 0)} artifacts`
                   : "No sqlite audit trail linked yet."}</div>
                 <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${taskAuditPromotedStrategies.length
-                    ? `${taskAuditPromotedStrategies.length} promoted strategies`
-                    : taskAuditOperatorActions.length
-                      ? `${taskAuditOperatorActions.length} operator actions`
-                      : ""}
+                  ${taskAuditClaim?.instance_id
+                    ? `Claimed by ${taskAuditClaim.instance_id}`
+                    : taskAuditClaimEvents.length
+                      ? `${taskAuditClaimEvents.length} claim events`
+                      : taskAuditPromotedStrategies.length
+                        ? `${taskAuditPromotedStrategies.length} promoted strategies`
+                        : taskAuditOperatorActions.length
+                          ? `${taskAuditOperatorActions.length} operator actions`
+                          : ""}
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskAuditSessionIds[0]
+                    ? `session ${taskAuditSessionIds[0]}`
+                    : taskAuditAgentIds[0]
+                      ? `agent ${taskAuditAgentIds[0]}`
+                      : taskAuditWorkflowRuns[0]?.runId
+                        ? `run ${taskAuditWorkflowRuns[0].runId}`
+                        : ""}
                 </div>
               </div>
               <div class="task-comment-item">
@@ -5508,10 +5581,164 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
       `}
 
-      ${taskAuditEvents.length > 0 && html`
+      ${hasTaskAuditContent && html`
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Audit Trail</div>
+          <div class="tag-row" style=${{ marginBottom: "8px" }}>
+            ${taskAuditEvents.length > 0 ? html`<span class="tag-chip">${taskAuditEvents.length} audit events</span>` : null}
+            ${taskAuditClaimEvents.length > 0 ? html`<span class="tag-chip">${taskAuditClaimEvents.length} claim events</span>` : null}
+            ${taskAuditWorkflowRuns.length > 0 ? html`<span class="tag-chip">${taskAuditWorkflowRuns.length} ledger workflow runs</span>` : null}
+            ${taskAuditToolCalls.length > 0 ? html`<span class="tag-chip">${taskAuditToolCalls.length} tool calls</span>` : null}
+            ${taskAuditArtifacts.length > 0 ? html`<span class="tag-chip">${taskAuditArtifacts.length} artifacts</span>` : null}
+            ${taskAuditOperatorActions.length > 0 ? html`<span class="tag-chip">${taskAuditOperatorActions.length} operator actions</span>` : null}
+            ${taskAuditPromotedStrategies.length > 0 ? html`<span class="tag-chip">${taskAuditPromotedStrategies.length} promoted strategies</span>` : null}
+            ${taskAuditPromotedStrategyEvents.length > 0 ? html`<span class="tag-chip">${taskAuditPromotedStrategyEvents.length} strategy events</span>` : null}
+            ${taskAuditTraceEvents.length > 0 ? html`<span class="tag-chip">${taskAuditTraceEvents.length} task trace events</span>` : null}
+          </div>
           <div class="task-comments-list">
+            ${taskAuditClaim || taskAuditClaimEvents.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Claim Ledger</div>
+                <div class="task-comment-body">${taskAuditClaim?.instance_id
+                  ? `Active owner ${taskAuditClaim.instance_id}${taskAuditClaim.expires_at ? ` · expires ${formatRelative(taskAuditClaim.expires_at)}` : ""}`
+                  : "No active task claim recorded."}</div>
+                <div class="task-comment-meta">
+                  ${taskAuditClaim?.claim_token
+                    ? `token ${taskAuditClaim.claim_token}`
+                    : taskAuditClaimEvents.length
+                      ? `${taskAuditClaimEvents.length} claim lifecycle events`
+                      : ""}
+                </div>
+                ${taskAuditClaimEvents.slice(-3).reverse().map((entry, index) => html`
+                  <div key=${`claim-event-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${(entry.action || "event").replace(/_/g, " ")}
+                    ${entry.instance_id ? ` · ${entry.instance_id}` : ""}
+                    ${entry.timestamp ? ` · ${formatRelative(entry.timestamp)}` : ""}
+                  </div>
+                `)}
+              </div>
+            ` : null}
+            ${taskAuditSessionActivity || taskAuditAgentActivity || taskAuditSessionIds.length > 0 || taskAuditAgentIds.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Session & Agent Activity</div>
+                <div class="task-comment-body">
+                  ${taskAuditSessionActivity?.sessionId || taskAuditSessionIds[0]
+                    ? html`<span><b>Session:</b> <code>${taskAuditSessionActivity?.sessionId || taskAuditSessionIds[0]}</code></span>`
+                    : "No linked session activity recorded."}
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskAuditSessionActivity?.latestEventType
+                    ? `${taskAuditSessionActivity.latestEventType}${taskAuditSessionActivity.updatedAt ? ` · ${formatRelative(taskAuditSessionActivity.updatedAt)}` : ""}`
+                    : ""}
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskAuditAgentActivity?.agentId || taskAuditAgentIds[0]
+                    ? `Agent ${taskAuditAgentActivity?.agentId || taskAuditAgentIds[0]}${taskAuditAgentActivity?.latestEventType ? ` · ${taskAuditAgentActivity.latestEventType}` : ""}`
+                    : ""}
+                </div>
+                ${(taskAuditSessionActivity?.lastSummary || taskAuditAgentActivity?.lastSummary) && html`
+                  <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${taskAuditSessionActivity?.lastSummary || taskAuditAgentActivity?.lastSummary}
+                  </div>
+                `}
+              </div>
+            ` : null}
+            ${taskAuditToolCalls.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Tool Calls</div>
+                <div class="task-comment-body">${Number(taskAuditSummary.toolCallCount || taskAuditToolCalls.length || 0)} recorded tool invocations.</div>
+                ${taskAuditToolCalls.slice(0, 4).map((entry, index) => html`
+                  <div key=${`tool-call-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${entry.toolName || entry.toolId || "tool"}
+                    ${entry.status ? ` · ${entry.status}` : ""}
+                    ${entry.provider ? ` · ${entry.provider}` : ""}
+                    ${entry.summary ? ` · ${entry.summary}` : ""}
+                  </div>
+                `)}
+              </div>
+            ` : null}
+            ${taskAuditArtifacts.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Artifacts</div>
+                <div class="task-comment-body">${Number(taskAuditSummary.artifactCount || taskAuditArtifacts.length || 0)} artifact records captured.</div>
+                ${taskAuditArtifacts.slice(0, 4).map((entry, index) => html`
+                  <div key=${`artifact-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${entry.kind || "artifact"}
+                    ${entry.path ? ` · ${entry.path}` : ""}
+                    ${entry.summary ? ` · ${entry.summary}` : ""}
+                  </div>
+                `)}
+              </div>
+            ` : null}
+            ${taskAuditOperatorActions.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Operator Actions</div>
+                <div class="task-comment-body">${Number(taskAuditSummary.operatorActionCount || taskAuditOperatorActions.length || 0)} operator actions linked to this task.</div>
+                ${taskAuditOperatorActions.slice(0, 4).map((entry, index) => html`
+                  <div key=${`operator-action-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${entry.actionType || "action"}
+                    ${entry.status ? ` · ${entry.status}` : ""}
+                    ${entry.actorId ? ` · ${entry.actorId}` : ""}
+                    ${entry.targetId ? ` · target ${entry.targetId}` : ""}
+                  </div>
+                `)}
+              </div>
+            ` : null}
+            ${taskAuditPromotedStrategies.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Promoted Strategies</div>
+                <div class="task-comment-body">${Number(taskAuditSummary.promotedStrategyCount || taskAuditPromotedStrategies.length || 0)} promoted strategy records available.</div>
+                ${taskAuditPromotedStrategies.slice(0, 4).map((entry, index) => html`
+                  <div key=${`promoted-strategy-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${entry.recommendation || entry.decision || entry.strategyId || "strategy"}
+                    ${entry.status ? ` · ${entry.status}` : ""}
+                    ${entry.verificationStatus ? ` · ${entry.verificationStatus}` : ""}
+                    ${entry.confidence != null ? ` · confidence ${entry.confidence}` : ""}
+                  </div>
+                `)}
+              </div>
+            ` : null}
+            ${taskAuditPromotedStrategyEvents.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Promoted Strategy Events</div>
+                <div class="task-comment-body">${taskAuditPromotedStrategyEvents.length} promotion lifecycle events captured.</div>
+                ${taskAuditPromotedStrategyEvents.slice(0, 4).map((entry, index) => html`
+                  <div key=${`promoted-strategy-event-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${entry.decision || entry.status || entry.strategyId || "event"}
+                    ${entry.verificationStatus ? ` · ${entry.verificationStatus}` : ""}
+                    ${entry.createdAt ? ` · ${formatRelative(entry.createdAt)}` : ""}
+                  </div>
+                `)}
+              </div>
+            ` : null}
+            ${taskAuditTraceEvents.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Task Trace Events</div>
+                <div class="task-comment-body">${Number(taskAuditSummary.taskTraceCount || taskAuditTraceEvents.length || 0)} ledger trace events recorded.</div>
+                ${taskAuditTraceEvents.slice(0, 4).map((entry, index) => html`
+                  <div key=${`task-trace-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${entry.eventType || "event"}
+                    ${entry.status ? ` · ${entry.status}` : ""}
+                    ${entry.nodeLabel || entry.nodeId ? ` · ${entry.nodeLabel || entry.nodeId}` : ""}
+                    ${entry.summary ? ` · ${entry.summary}` : ""}
+                  </div>
+                `)}
+              </div>
+            ` : null}
+            ${taskAuditWorkflowRuns.length > 0 ? html`
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Ledger Workflow Runs</div>
+                <div class="task-comment-body">${Number(taskAuditSummary.runCount || taskAuditWorkflowRuns.length || 0)} workflow runs linked from the state ledger.</div>
+                ${taskAuditWorkflowRuns.slice(0, 4).map((run, index) => html`
+                  <div key=${`audit-run-${index}`} class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                    ${run.workflowName || run.workflowId || "workflow"}
+                    ${run.runId ? ` · run ${run.runId}` : ""}
+                    ${run.status ? ` · ${run.status}` : ""}
+                    ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
+                  </div>
+                `)}
+              </div>
+            ` : null}
             ${taskAuditEvents.slice(0, 12).map((entry, index) => html`
               <div class="task-comment-item" key=${`audit-${index}`}>
                 <div class="task-comment-meta">
@@ -5529,16 +5756,10 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               </div>
             `)}
           </div>
-          <div class="tag-row" style=${{ marginTop: "8px" }}>
-            ${taskAuditArtifacts.length > 0 ? html`<span class="tag-chip">${taskAuditArtifacts.length} artifacts</span>` : null}
-            ${taskAuditOperatorActions.length > 0 ? html`<span class="tag-chip">${taskAuditOperatorActions.length} operator actions</span>` : null}
-            ${taskAuditPromotedStrategies.length > 0 ? html`<span class="tag-chip">${taskAuditPromotedStrategies.length} promoted strategies</span>` : null}
-            ${taskAuditTraceEvents.length > 0 ? html`<span class="tag-chip">${taskAuditTraceEvents.length} task trace events</span>` : null}
-          </div>
         </div>
       `}
 
-      ${historyEntries.length === 0 && workflowRuns.length === 0 && relatedLinks.length === 0 ? html`
+      ${historyEntries.length === 0 && workflowRuns.length === 0 && relatedLinks.length === 0 && !hasTaskAuditContent ? html`
         <div style="padding:24px;text-align:center;opacity:0.5;font-size:0.9em;">No history, workflow runs, or links recorded yet.</div>
       ` : ""}
 

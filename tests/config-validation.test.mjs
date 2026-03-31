@@ -29,6 +29,7 @@ const ENV_KEYS = [
   "JIRA_STATUS_TODO",
   "JIRA_LABEL_IGNORE",
   "JIRA_CUSTOM_FIELD_OWNER_ID",
+  "KANBAN_PROJECT_ID",
   "GNAP_ENABLED",
   "GNAP_REPO_PATH",
   "GNAP_SYNC_MODE",
@@ -721,6 +722,11 @@ describe("loadConfig validation and edge cases", () => {
   });
 
   it("loads jira mapping settings from env", () => {
+    process.env.KANBAN_BACKEND = "jira";
+    delete process.env.KANBAN_PROJECT_ID;
+    delete process.env.GNAP_ENABLED;
+    delete process.env.GNAP_REPO_PATH;
+    delete process.env.GNAP_SYNC_MODE;
     process.env.JIRA_BASE_URL = "https://acme.atlassian.net";
     process.env.JIRA_EMAIL = "bot@acme.dev";
     process.env.JIRA_API_TOKEN = "token-1";
@@ -749,6 +755,10 @@ describe("loadConfig validation and edge cases", () => {
 
   it("fails fast when jira backend is selected without required jira config", () => {
     process.env.KANBAN_BACKEND = "jira";
+    delete process.env.KANBAN_PROJECT_ID;
+    delete process.env.GNAP_ENABLED;
+    delete process.env.GNAP_REPO_PATH;
+    delete process.env.GNAP_SYNC_MODE;
     process.env.JIRA_BASE_URL = "";
     process.env.JIRA_EMAIL = "";
     process.env.JIRA_API_TOKEN = "";
@@ -918,4 +928,3 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.workflows["parallel-search"]).toBeTruthy();
   });
 });
-

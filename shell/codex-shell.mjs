@@ -613,16 +613,23 @@ You have FULL ACCESS to:
 
 ## File Editing Strategy — IMPORTANT
 
-When editing files, always prefer the Bosun MCP file tools (available via the bosun MCP server):
+When editing files, use the strongest structured edit primitive available:
 
-1. **LOCATE first** — use \`grep_search\` to find the exact code location before editing.
-2. **READ before editing** — use \`read_file\` to confirm the exact text including whitespace.
-3. **PREFER surgical edits** — use \`str_replace_editor\` for targeted changes.
-   - \`old_str\` must exactly match the file content (copy from \`read_file\` output).
-   - Include more surrounding lines if the text is not unique.
-4. **Full rewrites only when necessary** — use \`write_file\` for new files or complete rewrites.
-5. **NEVER use shell workarounds** to edit files (no \`node -e\`, no \`sed -i\`, no temp scripts, no patch files).
-   These break on Windows due to encoding and quoting issues. The MCP tools handle encoding correctly.
+1. **PREFER native Codex edit tools first** — if the runtime exposes built-in file editing tools such as
+   \`apply_patch\` or direct file-write tools, use those before shell commands or ad hoc scripts.
+2. **Use Bosun MCP file tools as the fallback structured path** when native edit tools are unavailable:
+   - \`grep_search\` to locate code
+   - \`read_file\` to confirm exact text
+   - \`replace_lines\` for scoped block edits once line numbers are known
+   - \`str_replace_editor\` for exact unique-string replacements
+   - \`write_file\` only for new files or intentional full rewrites
+3. **Never use shell-based patching when a structured edit tool exists** — avoid \`node -e\`, \`python -c\`,
+   \`powershell -Command\`, \`sed -i\`, temp patch scripts, or one-off \`.cjs\` helpers just to edit files.
+4. **Never leave repo-root scratch artifacts behind** — do not create \`.tmp-*\`, \`*.patch\`, \`*.cjs\`, or redirected
+   \`*.log\` files in the workspace root for edit workflows. If a shell fallback is truly unavoidable, use \`tmp/codex/\`
+   inside the repo or the OS temp directory, and delete those scratch files before finishing the turn.
+5. **Prefer read/verify/edit cycles over blind rewrites** so the agent does not compensate for weak matches by
+   materializing temporary files in the repository.
 
 Key files:
   ${REPO_ROOT} — Repository root

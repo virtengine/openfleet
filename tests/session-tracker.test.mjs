@@ -425,6 +425,61 @@ describe("session-tracker", () => {
       }
     });
 
+    it("persists delegated session lineage metadata and exposes it in summaries", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-lineage-"));
+      try {
+        const persisted = new SessionTracker({ persistDir: tempDir, flushIntervalMs: 5 });
+        persisted.createSession({
+          id: "TASK-42:delegate:run-1:handoff",
+          type: "delegate",
+          taskId: "TASK-42",
+          metadata: {
+            title: "Child delegate session",
+            workspaceId: "virtengine-gh",
+            rootTaskId: "TASK-42",
+            parentTaskId: "TASK-42",
+            rootSessionId: "TASK-42",
+            parentSessionId: "TASK-42",
+            rootRunId: "run-root-1",
+            parentRunId: "run-parent-1",
+            delegationDepth: 2,
+          },
+        });
+        persisted.recordEvent("TASK-42:delegate:run-1:handoff", {
+          role: "assistant",
+          content: "Delegated workflow finished successfully.",
+        });
+        persisted.endSession("TASK-42:delegate:run-1:handoff", "completed");
+        persisted.flushNow();
+        persisted.destroy();
+
+        const restored = new SessionTracker({ persistDir: tempDir, flushIntervalMs: 5 });
+        const session = restored.getSession("TASK-42:delegate:run-1:handoff");
+        const summary = restored.listAllSessions().find((entry) => entry.id === "TASK-42:delegate:run-1:handoff");
+        expect(session?.metadata).toEqual(expect.objectContaining({
+          rootTaskId: "TASK-42",
+          parentTaskId: "TASK-42",
+          rootSessionId: "TASK-42",
+          parentSessionId: "TASK-42",
+          rootRunId: "run-root-1",
+          parentRunId: "run-parent-1",
+          delegationDepth: 2,
+        }));
+        expect(summary).toEqual(expect.objectContaining({
+          taskId: "TASK-42",
+          rootTaskId: "TASK-42",
+          parentTaskId: "TASK-42",
+          rootSessionId: "TASK-42",
+          parentSessionId: "TASK-42",
+          rootRunId: "run-root-1",
+          parentRunId: "run-parent-1",
+          delegationDepth: 2,
+        }));
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("records Copilot message events", () => {
       tracker.startSession("task-1", "Test");
       tracker.recordEvent("task-1", {
@@ -1021,6 +1076,5 @@ describe("session-tracker", () => {
     });
   });
 });
-
 
 

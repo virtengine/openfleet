@@ -996,6 +996,64 @@ describe("trigger.task_available", () => {
     }
   });
 
+  it("monitor polling reclaims stale placeholder-blocked tasks", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-monitor-placeholder-recovery-"));
+    const taskDir = join(repoRoot, ".bosun", "tasks");
+    mkdirSync(taskDir, { recursive: true });
+
+    const blockedTask = {
+      id: "task-placeholder-recovery",
+      title: "Recover placeholder-blocked worktree",
+      status: "blocked",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+    };
+
+    writeFileSync(join(taskDir, "task-placeholder-recovery.json"), JSON.stringify(blockedTask, null, 2));
+
+    const listTasks = vi.fn(async (_projectId, opts = {}) => {
+      if (opts.status === "blocked") {
+        return [blockedTask];
+      }
+      if (opts.status === "todo") {
+        return [blockedTask.status === "todo" ? blockedTask : null].filter(Boolean);
+      }
+      return [];
+    });
+    const updateTask = vi.fn(async (taskId, patch) => {
+      if (taskId === blockedTask.id) {
+        Object.assign(blockedTask, patch);
+      }
+      return { taskId, ...patch };
+    });
+    const trigger = getNodeType("trigger.task_available");
+    const ctx = makeCtx({ repoRoot });
+    const node = makeNode("trigger.task_available", {
+      repoRoot,
+      status: "todo",
+    }, "dispatch-placeholder");
+
+    const result = await trigger.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+          updateTask,
+        },
+      },
+    });
+
+    expect(updateTask).toHaveBeenCalledWith(
+      "task-placeholder-recovery",
+      expect.objectContaining({
+        status: "todo",
+        cooldownUntil: null,
+        blockedReason: null,
+      }),
+    );
+    expect(result.triggered).toBe(true);
+    expect(result.selectedTaskId).toBe("task-placeholder-recovery");
+  });
+
   it("engine handoff claims the dispatched task and releases ownership after completion", async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "wf-monitor-handoff-"));
     const { initTaskClaims, getClaim } = await import("../task/task-claims.mjs");

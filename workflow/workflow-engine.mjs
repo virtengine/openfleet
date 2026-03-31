@@ -1808,6 +1808,8 @@ function collectRunTaskIds(detail = {}) {
   push(detail?.data?.task?.id);
   push(detail?.data?.taskInfo?.id);
   push(detail?.data?.taskDetail?.id);
+  push(detail?.data?._workflowRootTaskId);
+  push(detail?.data?._workflowParentTaskId);
 
   for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
     push(event?.taskId);
@@ -1846,11 +1848,17 @@ function collectRunSessionIds(detail = {}) {
   };
 
   for (const value of [
+    detail?.data?._workflowSessionId,
+    detail?.data?._workflowRootSessionId,
+    detail?.data?._workflowParentSessionId,
     detail?.data?.sessionId,
     detail?.data?.threadId,
     detail?.data?.task?.sessionId,
     detail?.data?.task?.threadId,
   ]) {
+    push(value);
+  }
+  for (const value of Array.isArray(detail?.data?._delegatedSessionIds) ? detail.data._delegatedSessionIds : []) {
     push(value);
   }
 
@@ -1866,6 +1874,104 @@ function collectRunSessionIds(detail = {}) {
   }
 
   return ids;
+}
+
+function buildRunDelegationTopology({ runId = null, detail = {}, runGraph = null } = {}) {
+  const taskIds = collectRunTaskIds(detail);
+  const sessionIds = collectRunSessionIds(detail);
+  const requestedRunId = String(runId || detail?.id || "").trim() || null;
+  const requestedRun =
+    Array.isArray(runGraph?.runs) && requestedRunId
+      ? runGraph.runs.find((entry) => String(entry?.runId || "") === requestedRunId) || null
+      : null;
+  const rootRunId = String(
+    detail?.dagState?.rootRunId ||
+      detail?.data?._workflowRootRunId ||
+      requestedRun?.rootRunId ||
+      requestedRunId ||
+      "",
+  ).trim() || null;
+  const parentRunId = String(
+    detail?.dagState?.parentRunId ||
+      detail?.data?._workflowParentRunId ||
+      requestedRun?.parentRunId ||
+      "",
+  ).trim() || null;
+  const taskId = String(taskIds[0] || requestedRun?.taskId || "").trim() || null;
+  const rootTaskId = String(
+    detail?.data?._workflowRootTaskId ||
+      requestedRun?.rootTaskId ||
+      taskId ||
+      "",
+  ).trim() || taskId || null;
+  const parentTaskId = String(
+    detail?.data?._workflowParentTaskId ||
+      requestedRun?.parentTaskId ||
+      "",
+  ).trim() || null;
+  const sessionId = String(
+    detail?.data?._workflowSessionId ||
+      sessionIds[0] ||
+      requestedRun?.sessionId ||
+      "",
+  ).trim() || (sessionIds[0] || null);
+  const rootSessionId = String(
+    detail?.data?._workflowRootSessionId ||
+      requestedRun?.rootSessionId ||
+      sessionId ||
+      "",
+  ).trim() || sessionId || null;
+  const parentSessionId = String(
+    detail?.data?._workflowParentSessionId ||
+      requestedRun?.parentSessionId ||
+      "",
+  ).trim() || null;
+  const delegationDepthRaw = Number(
+    detail?.data?._workflowDelegationDepth ??
+      requestedRun?.delegationDepth ??
+      0,
+  );
+  const delegationDepth = Number.isFinite(delegationDepthRaw)
+    ? Math.max(0, Math.trunc(delegationDepthRaw))
+    : 0;
+  const childRunIds = Array.isArray(runGraph?.runs) && requestedRunId
+    ? runGraph.runs
+        .filter((entry) => String(entry?.parentRunId || "") === requestedRunId)
+        .map((entry) => String(entry?.runId || "").trim())
+        .filter(Boolean)
+    : [];
+  const childSessionIds = Array.isArray(runGraph?.runs)
+    ? [...new Set(
+        runGraph.runs
+          .filter((entry) => String(entry?.parentRunId || "") === requestedRunId)
+          .map((entry) => String(entry?.sessionId || "").trim())
+          .filter(Boolean),
+      )]
+    : [];
+  const familyRunIds = Array.isArray(runGraph?.runs)
+    ? [...new Set(runGraph.runs.map((entry) => String(entry?.runId || "").trim()).filter(Boolean))]
+    : [];
+  const familySessionIds = Array.isArray(runGraph?.runs)
+    ? [...new Set(runGraph.runs.map((entry) => String(entry?.sessionId || "").trim()).filter(Boolean))]
+    : [];
+  return cleanObject({
+    runId: requestedRunId,
+    rootRunId,
+    parentRunId,
+    taskId,
+    rootTaskId,
+    parentTaskId,
+    taskIds,
+    sessionId,
+    rootSessionId,
+    parentSessionId,
+    sessionIds,
+    delegationDepth,
+    childRunIds,
+    childSessionIds,
+    familyRunIds,
+    familySessionIds,
+  });
 }
 
 function buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx) {
@@ -4855,6 +4961,22 @@ export class WorkflowEngine extends EventEmitter {
     }
     const plannerTimeline = this._buildPlannerTimeline(run, detail, runGraph);
     const proofBundle = this._buildRunProofBundle(run, detail, runGraph, plannerTimeline);
+    const delegationTopology = buildRunDelegationTopology({
+      runId: run.runId,
+      detail,
+      runGraph,
+    });
+    if (delegationTopology && detail && typeof detail === "object") {
+      if (!detail.data || typeof detail.data !== "object") {
+        detail.data = {};
+      }
+      if (!detail.data._delegationTopology || typeof detail.data._delegationTopology !== "object") {
+        detail.data._delegationTopology = delegationTopology;
+      }
+      if (!detail.delegationTopology || typeof detail.delegationTopology !== "object") {
+        detail.delegationTopology = delegationTopology;
+      }
+    }
     return {
       ...run,
       detail,
@@ -4862,6 +4984,7 @@ export class WorkflowEngine extends EventEmitter {
       plannerTimeline,
       proofBundle,
       executionTree: this._buildExecutionTree(runGraph, run.runId),
+      delegationTopology,
       delegationTrail,
       delegationAuditTrail: delegationTrail,
       latestDelegationEvent: delegationTrail.at(-1) || null,
@@ -6429,6 +6552,7 @@ export class WorkflowEngine extends EventEmitter {
     const taskIds = collectRunTaskIds(detail);
     const sessionIds = collectRunSessionIds(detail);
     const taskTitle = resolveRunTaskTitle(detail);
+    const delegationTopology = buildRunDelegationTopology({ runId, detail });
     const governanceState = buildWorkflowGovernanceState(detail?.data || detail || {});
     const workflowTeamState = hasWorkflowTeamStateData(
       detail?.workflowTeamState ??
@@ -6469,6 +6593,7 @@ export class WorkflowEngine extends EventEmitter {
       delegationAuditTrail: delegationTrail,
       latestDelegationEvent: delegationTrail.at(-1) || null,
       delegationTransitionGuards,
+      delegationTopology,
       triggerEvent,
       triggerSource,
       triggeredBy,
@@ -6985,6 +7110,18 @@ export class WorkflowEngine extends EventEmitter {
         taskId: detailTaskId,
         taskTitle: String(detail?.data?.taskTitle || detail?.inputData?.taskTitle || "").trim() || null,
         source: "detail",
+      };
+    }
+    const topologyTaskId = String(
+      detail?.delegationTopology?.taskId ||
+        detail?.data?._delegationTopology?.taskId ||
+        "",
+    ).trim();
+    if (topologyTaskId) {
+      return {
+        taskId: topologyTaskId,
+        taskTitle: String(detail?.taskTitle || detail?.data?.taskTitle || "").trim() || null,
+        source: "topology",
       };
     }
     const ledgerIdentity = this._executionLedger.getTaskIdentity(runSummary?.runId || detail?.id || "");

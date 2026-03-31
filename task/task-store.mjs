@@ -585,9 +585,15 @@ function normalizeWorkflowRunLinks(rawRuns) {
     if (!entry || typeof entry !== "object") continue;
     const runId = String(entry.runId || entry.id || "").trim();
     if (!runId) continue;
+    const meta = entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {};
+    const parseDepth = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+    };
     normalized.push({
       runId,
       workflowId: entry.workflowId != null ? String(entry.workflowId) : null,
+      workflowName: entry.workflowName != null ? String(entry.workflowName) : null,
       nodeId: entry.nodeId != null ? String(entry.nodeId) : null,
       status: entry.status != null ? String(entry.status) : null,
       outcome: entry.outcome != null ? String(entry.outcome) : null,
@@ -595,12 +601,113 @@ function normalizeWorkflowRunLinks(rawRuns) {
       endedAt: entry.endedAt != null ? String(entry.endedAt) : null,
       summary: entry.summary != null ? String(entry.summary) : null,
       url: entry.url != null ? String(entry.url) : null,
+      rootRunId: entry.rootRunId != null ? String(entry.rootRunId) : (meta.rootRunId != null ? String(meta.rootRunId) : null),
+      parentRunId: entry.parentRunId != null ? String(entry.parentRunId) : (meta.parentRunId != null ? String(meta.parentRunId) : null),
+      retryOf: entry.retryOf != null ? String(entry.retryOf) : (meta.retryOf != null ? String(meta.retryOf) : null),
+      retryMode: entry.retryMode != null ? String(entry.retryMode) : (meta.retryMode != null ? String(meta.retryMode) : null),
+      taskId: entry.taskId != null ? String(entry.taskId) : (meta.taskId != null ? String(meta.taskId) : null),
+      rootTaskId: entry.rootTaskId != null ? String(entry.rootTaskId) : (meta.rootTaskId != null ? String(meta.rootTaskId) : null),
+      parentTaskId: entry.parentTaskId != null ? String(entry.parentTaskId) : (meta.parentTaskId != null ? String(meta.parentTaskId) : null),
+      sessionId: entry.sessionId != null ? String(entry.sessionId) : (meta.sessionId != null ? String(meta.sessionId) : null),
+      rootSessionId: entry.rootSessionId != null ? String(entry.rootSessionId) : (meta.rootSessionId != null ? String(meta.rootSessionId) : null),
+      parentSessionId: entry.parentSessionId != null ? String(entry.parentSessionId) : (meta.parentSessionId != null ? String(meta.parentSessionId) : null),
+      delegationDepth: parseDepth(entry.delegationDepth ?? meta.delegationDepth),
       source: entry.source != null ? String(entry.source) : "workflow",
-      meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+      meta,
     });
   }
   if (normalized.length <= MAX_WORKFLOW_RUN_LINKS) return normalized;
   return normalized.slice(-MAX_WORKFLOW_RUN_LINKS);
+}
+
+function normalizeTaskTopology(rawTopology = {}, rawTask = {}) {
+  const topology =
+    rawTopology && typeof rawTopology === "object" && !Array.isArray(rawTopology)
+      ? rawTopology
+      : {};
+  const taskId = String(rawTask?.id || topology.taskId || "").trim() || null;
+  const graphParentTaskId = String(
+    topology.graphParentTaskId ?? rawTask?.parentTaskId ?? "",
+  ).trim() || null;
+  const explicitPath = uniqueStringList(Array.isArray(topology.graphPath) ? topology.graphPath : []);
+  const graphPath = explicitPath.length > 0
+    ? [...explicitPath]
+    : [...uniqueStringList([graphParentTaskId, taskId].filter(Boolean))];
+  if (taskId && graphPath.length > 0 && graphPath[graphPath.length - 1] !== taskId) {
+    graphPath.push(taskId);
+  }
+  const parseDepth = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : fallback;
+  };
+  const graphDepthFallback = graphPath.length > 0 ? Math.max(0, graphPath.length - 1) : 0;
+  const graphRootTaskId = String(
+    topology.graphRootTaskId ??
+      topology.rootTaskId ??
+      graphPath[0] ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  const rootTaskId = String(
+    topology.rootTaskId ??
+      graphRootTaskId ??
+      taskId ??
+      "",
+  ).trim() || taskId || null;
+  const parentTaskId = String(
+    topology.parentTaskId ??
+      graphParentTaskId ??
+      "",
+  ).trim() || null;
+  return {
+    taskId,
+    graphParentTaskId,
+    graphRootTaskId,
+    graphDepth: parseDepth(topology.graphDepth, graphDepthFallback),
+    graphPath,
+    workflowId: String(topology.workflowId || "").trim() || null,
+    workflowName: String(topology.workflowName || "").trim() || null,
+    latestNodeId: String(topology.latestNodeId || "").trim() || null,
+    latestRunId: String(topology.latestRunId ?? topology.runId ?? "").trim() || null,
+    rootRunId: String(topology.rootRunId || "").trim() || null,
+    parentRunId: String(topology.parentRunId || "").trim() || null,
+    latestSessionId: String(topology.latestSessionId ?? topology.sessionId ?? "").trim() || null,
+    sessionId: String(topology.sessionId ?? topology.latestSessionId ?? "").trim() || null,
+    rootSessionId: String(topology.rootSessionId || "").trim() || null,
+    parentSessionId: String(topology.parentSessionId || "").trim() || null,
+    rootTaskId,
+    parentTaskId,
+    delegationDepth: parseDepth(topology.delegationDepth, 0),
+  };
+}
+
+function refreshTaskTopology(task) {
+  if (!task || typeof task !== "object") return;
+  task.topology = normalizeTaskTopology(task.topology, task);
+}
+
+function refreshTaskGraphTopology(taskId, visited = new Set()) {
+  if (!taskId || visited.has(taskId) || !_store?.tasks?.[taskId]) return;
+  visited.add(taskId);
+  const task = _store.tasks[taskId];
+  const parent = task.parentTaskId ? _store.tasks[task.parentTaskId] : null;
+  const parentPath =
+    Array.isArray(parent?.topology?.graphPath) && parent.topology.graphPath.length > 0
+      ? parent.topology.graphPath
+      : (parent?.id ? [parent.id] : []);
+  task.topology = normalizeTaskTopology(
+    {
+      ...(task.topology && typeof task.topology === "object" ? task.topology : {}),
+      graphParentTaskId: parent?.id || null,
+      graphRootTaskId: parent?.topology?.graphRootTaskId || parent?.id || task.id || null,
+      graphDepth: parentPath.length,
+      graphPath: task.id ? [...parentPath, task.id] : parentPath,
+    },
+    task,
+  );
+  for (const childId of uniqueStringList(task.childTaskIds || [])) {
+    refreshTaskGraphTopology(childId, visited);
+  }
 }
 
 function summarizeTrajectoryStepText(value, maxLength = 160) {
@@ -962,6 +1069,7 @@ function normalizeTaskStructure(rawTask = {}) {
           ? normalizedBase.meta.runs
           : [],
     ),
+    topology: normalizeTaskTopology(normalizedBase.topology, normalizedBase),
     stateVersion: Number.isFinite(Number(normalizedBase.stateVersion))
       ? Number(normalizedBase.stateVersion)
       : 2,
@@ -1052,6 +1160,7 @@ function defaultTask(overrides = {}) {
     timeline: [],
     workflowRuns: [],
     runs: [],
+    topology: {},
     links: { branches: [], prs: [], workflows: [] },
     stateVersion: 2,
 
@@ -1417,6 +1526,9 @@ export function loadStore() {
         tasks: normalizedTasks,
         sprints: {},
       };
+      for (const taskId of Object.keys(normalizedTasks)) {
+        refreshTaskGraphTopology(taskId);
+      }
       const sourceSprints = data && data.sprints && typeof data.sprints === "object" ? data.sprints : {};
       for (const [sprintId, sprintValue] of Object.entries(sourceSprints)) {
         const normalizedSprint = normalizeSprintStructure({ ...sprintValue, id: sprintId }, _store.sprints[sprintId] || null);
@@ -1739,6 +1851,13 @@ export function updateTask(taskId, updates) {
     lastSyncedAt: (next) => { task.lastSyncedAt = next; },
     syncDirty: (next) => { task.syncDirty = next; },
     meta: (next) => { task.meta = next; },
+    topology: (next) => {
+      const patchValue =
+        next && typeof next === "object" && !Array.isArray(next)
+          ? next
+          : {};
+      task.topology = { ...(task.topology || {}), ...patchValue };
+    },
   };
 
   for (const [key, value] of Object.entries(patch)) {
@@ -1891,6 +2010,7 @@ export function addTask(taskData) {
     parent.childTaskIds = uniqueStringList([...(parent.childTaskIds || []), task.id]);
     markTaskTouched(parent, "task-graph");
   }
+  refreshTaskGraphTopology(task.id);
   for (const dependencyId of task.dependencyTaskIds || []) {
     const dependency = _store.tasks[dependencyId];
     if (!dependency) continue;
@@ -2259,6 +2379,24 @@ export function linkTaskWorkflowRun(taskId, workflowRun = {}) {
   const existing = Array.isArray(task.workflowRuns) ? task.workflowRuns : [];
   const dedup = existing.filter((entry) => String(entry?.runId || "") !== run.runId);
   task.workflowRuns = normalizeWorkflowRunLinks([...dedup, run]);
+  task.topology = normalizeTaskTopology({
+    ...(task.topology && typeof task.topology === "object" ? task.topology : {}),
+    workflowId: run.workflowId || task.topology?.workflowId || null,
+    workflowName: run.workflowName || task.topology?.workflowName || null,
+    latestNodeId: run.nodeId || task.topology?.latestNodeId || null,
+    latestRunId: run.runId,
+    rootRunId: run.rootRunId || task.topology?.rootRunId || null,
+    parentRunId: run.parentRunId || task.topology?.parentRunId || null,
+    latestSessionId: run.sessionId || task.topology?.latestSessionId || null,
+    sessionId: run.sessionId || task.topology?.sessionId || null,
+    rootSessionId: run.rootSessionId || task.topology?.rootSessionId || null,
+    parentSessionId: run.parentSessionId || task.topology?.parentSessionId || null,
+    rootTaskId: run.rootTaskId || task.topology?.rootTaskId || task.id || null,
+    parentTaskId: run.parentTaskId || task.topology?.parentTaskId || task.parentTaskId || null,
+    delegationDepth: Number.isFinite(Number(run.delegationDepth))
+      ? Math.max(0, Math.trunc(Number(run.delegationDepth)))
+      : (task.topology?.delegationDepth || 0),
+  }, task);
   task.links = {
     branches: uniqueStringList(task.links?.branches || []),
     prs: uniqueStringList(task.links?.prs || []),
@@ -2299,6 +2437,7 @@ export function setTaskParent(taskId, parentTaskId, options = {}) {
       task.type = "subtask";
     }
   }
+  refreshTaskGraphTopology(taskId);
 
   pushTaskTimeline(task, {
     type: "task.graph.parent",
@@ -2855,14 +2994,53 @@ export function recoverAutoBlockedTasks(options = {}) {
   const recoveredAt = new Date(recoveredAtMs).toISOString();
   const recoveredTaskIds = [];
 
+  const isWorkflowPlaceholder = (value) => {
+    if (typeof value !== "string") return false;
+    const trimmed = value.trim();
+    return trimmed.startsWith("{{") && trimmed.endsWith("}}");
+  };
+
+  const resolveRetryAtMs = (task, autoRecovery) => {
+    const candidates = [
+      autoRecovery?.retryAt,
+      task?.cooldownUntil,
+      task?.meta?.worktreeFailure?.retryAt,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate || isWorkflowPlaceholder(candidate)) continue;
+      const parsed = Date.parse(String(candidate));
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
+  const hasStaleWorktreePlaceholders = (task) => [
+    task?.blockedReason,
+    task?.cooldownUntil,
+    task?.meta?.autoRecovery?.retryAt,
+    task?.meta?.worktreeFailure?.retryAt,
+    task?.meta?.worktreeFailure?.blockedReason,
+  ].some((value) => isWorkflowPlaceholder(value));
+
   for (const task of Object.values(_store.tasks)) {
     if (!task || normalizeTaskStatus(task.status) !== "blocked") continue;
     const autoRecovery = task.meta?.autoRecovery;
-    if (!autoRecovery || typeof autoRecovery !== "object") continue;
-    if (autoRecovery.active === false) continue;
-    if (String(autoRecovery.reason || "").trim() !== "worktree_failure") continue;
-    const retryAtMs = Date.parse(String(autoRecovery.retryAt || task.cooldownUntil || ""));
-    if (!Number.isFinite(retryAtMs) || retryAtMs > recoveredAtMs) continue;
+    const worktreeFailure = task.meta?.worktreeFailure;
+    const hasPlaceholder = hasStaleWorktreePlaceholders(task);
+    const isWorktreeRecovery = (
+      autoRecovery &&
+      typeof autoRecovery === "object" &&
+      autoRecovery.active !== false &&
+      String(autoRecovery.reason || "").trim() === "worktree_failure"
+    ) || (
+      worktreeFailure &&
+      typeof worktreeFailure === "object"
+    ) || hasPlaceholder;
+    if (!isWorktreeRecovery) continue;
+
+    const retryAtMs = resolveRetryAtMs(task, autoRecovery);
+    if (Number.isFinite(retryAtMs) && retryAtMs > recoveredAtMs) continue;
+    if (!Number.isFinite(retryAtMs) && !hasPlaceholder) continue;
 
     const previousStatus = normalizeTaskStatus(task.status);
     task.status = "todo";

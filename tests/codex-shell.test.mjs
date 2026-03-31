@@ -143,6 +143,37 @@ describe("codex-shell stream safeguards", () => {
     await resetThread();
   });
 
+  it("primes Codex with native structured-edit guidance before MCP fallbacks", async () => {
+    let receivedPrompt = "";
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-edit-guidance",
+      runStreamed: async (prompt) => {
+        receivedPrompt = String(prompt || "");
+        return {
+          events: {
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: "item.completed",
+                item: { type: "agent_message", text: "ok" },
+              };
+              yield { type: "turn.completed" };
+            },
+          },
+        };
+      },
+    }));
+
+    const result = await execCodexPrompt("apply the requested code change", {
+      timeoutMs: 5000,
+    });
+
+    expect(result.finalResponse).toContain("ok");
+    expect(receivedPrompt).toContain("PREFER native Codex edit tools first");
+    expect(receivedPrompt).toContain("replace_lines");
+    expect(receivedPrompt).toContain("Never leave repo-root scratch artifacts behind");
+    expect(receivedPrompt).toContain("do not create `.tmp-*`");
+  });
+
   it("retries when first stream event never arrives", async () => {
     process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS = "1000";
 
@@ -760,5 +791,4 @@ describe("codex-shell stream safeguards", () => {
   });
 
 });
-
 

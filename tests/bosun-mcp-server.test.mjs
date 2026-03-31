@@ -1,6 +1,8 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
 
 const repoRoot = process.cwd();
 const serverPath = resolve(repoRoot, "server", "bosun-mcp-server.mjs");
@@ -172,8 +174,42 @@ describe("bosun MCP server", () => {
       expect(names).toContain("bosun_request");
       expect(names).toContain("bosun_send_session_message");
       expect(names).toContain("bosun_run_agent_tool");
+      expect(names).toContain("replace_lines");
     } finally {
       await mcp.stop();
+    }
+  }, 20000);
+
+  it("supports line-scoped file edits without shell temp scripts", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "bosun-mcp-lines-"));
+    const targetPath = join(workspaceDir, "sample.mjs");
+    writeFileSync(
+      targetPath,
+      [
+        "export function greet(name) {",
+        "  return `Hello, ${name}!`;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const mcp = await startMcpProcess();
+    try {
+      await mcp.initialize();
+      const result = await mcp.callTool("replace_lines", {
+        path: targetPath,
+        start_line: 2,
+        end_line: 2,
+        new_content: "  return `Hi, ${name}.`;",
+      });
+      const payload = JSON.parse(result.result.content[0].text);
+      expect(payload.success).toBe(true);
+      expect(payload.replaced_line_range).toEqual([2, 2]);
+      expect(readFileSync(targetPath, "utf8")).toContain("  return `Hi, ${name}.`;");
+    } finally {
+      await mcp.stop();
+      rmSync(workspaceDir, { recursive: true, force: true });
     }
   }, 20000);
 

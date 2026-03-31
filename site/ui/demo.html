@@ -3721,6 +3721,142 @@
         if (route === '/api/auth/fallback/reset')
           return { ok: true, data: { enabled: false, hasSecret: false } };
 
+        if (!STATE.harness) {
+          const compiledAt = '2026-03-31T05:30:00.000Z';
+          const artifactPath = '/demo/.bosun/harness/internal-harness-profile.json';
+          STATE.harness = {
+            harnessConfig: {
+              enabled: true,
+              source: '/demo/config/internal-harness-profile.json',
+              validationMode: 'report',
+            },
+            artifact: {
+              artifactId: 'demo-harness-artifact',
+              artifactPath,
+              isValid: true,
+              sourceOrigin: 'config-file',
+              sourcePath: '/demo/config/internal-harness-profile.json',
+              compiledProfile: {
+                id: 'demo-internal-harness',
+                name: 'Bosun Demo Harness',
+                description: 'Deterministic internal harness profile for the Bosun demo control plane.',
+                entryStageId: 'plan',
+                stages: [
+                  { id: 'plan', type: 'prompt', prompt: 'Plan the next deterministic verification pass.' },
+                  { id: 'validate', type: 'gate', prompt: 'Validate the patch and emit the final report.' },
+                ],
+              },
+              validationReport: {
+                ok: true,
+                mode: 'report',
+                errors: [],
+                warnings: [],
+                normalizedAt: compiledAt,
+              },
+              compiledProfileJson: '{\n  "id": "demo-internal-harness",\n  "entryStageId": "plan"\n}',
+            },
+            activeState: {
+              artifactPath,
+              activatedAt: compiledAt,
+              actor: 'demo',
+              compiledProfile: {
+                id: 'demo-internal-harness',
+                name: 'Bosun Demo Harness',
+                entryStageId: 'plan',
+              },
+            },
+          };
+        }
+
+        if (route === '/api/harness/active') {
+          return {
+            ok: true,
+            harnessConfig: { ...STATE.harness.harnessConfig },
+            activeState: { ...STATE.harness.activeState, compiledProfile: { ...STATE.harness.activeState.compiledProfile } },
+            artifact: {
+              artifactId: STATE.harness.artifact.artifactId,
+              artifactPath: STATE.harness.artifact.artifactPath,
+              isValid: STATE.harness.artifact.isValid,
+              sourceOrigin: STATE.harness.artifact.sourceOrigin,
+              sourcePath: STATE.harness.artifact.sourcePath,
+              compiledProfile: { ...STATE.harness.artifact.compiledProfile },
+              validationReport: { ...STATE.harness.artifact.validationReport },
+            },
+          };
+        }
+        if (route === '/api/harness/compile' && method === 'POST') {
+          const nextSourcePath = String(body?.sourcePath || STATE.harness.harnessConfig.source || '').trim()
+            || '/demo/config/internal-harness-profile.json';
+          const nextValidationMode = String(body?.validationMode || STATE.harness.harnessConfig.validationMode || 'report').trim().toLowerCase() || 'report';
+          const compiledAt = new Date().toISOString();
+          STATE.harness.harnessConfig = {
+            ...STATE.harness.harnessConfig,
+            source: nextSourcePath,
+            validationMode: nextValidationMode,
+          };
+          STATE.harness.artifact = {
+            ...STATE.harness.artifact,
+            artifactId: `demo-harness-${Date.now()}`,
+            artifactPath: `/demo/.bosun/harness/${Date.now()}-internal-harness-profile.json`,
+            sourceOrigin: body?.sourceProfile ? 'request-body' : 'config-file',
+            sourcePath: nextSourcePath,
+            validationReport: {
+              ok: true,
+              mode: nextValidationMode,
+              errors: [],
+              warnings: [],
+              normalizedAt: compiledAt,
+            },
+            compiledProfileJson: JSON.stringify(
+              body?.sourceProfile || STATE.harness.artifact.compiledProfile,
+              null,
+              2,
+            ),
+          };
+          return {
+            ok: true,
+            isValid: true,
+            artifactId: STATE.harness.artifact.artifactId,
+            artifactPath: STATE.harness.artifact.artifactPath,
+            sourceOrigin: STATE.harness.artifact.sourceOrigin,
+            sourcePath: STATE.harness.artifact.sourcePath,
+            validationMode: nextValidationMode,
+            harnessConfig: { ...STATE.harness.harnessConfig },
+            compiledProfile: { ...STATE.harness.artifact.compiledProfile },
+            validationReport: { ...STATE.harness.artifact.validationReport },
+            compiledProfileJson: STATE.harness.artifact.compiledProfileJson,
+          };
+        }
+        if (route === '/api/harness/activate' && method === 'POST') {
+          const activatedAt = new Date().toISOString();
+          if (typeof body?.artifactPath === 'string' && body.artifactPath.trim()) {
+            STATE.harness.artifact = {
+              ...STATE.harness.artifact,
+              artifactPath: body.artifactPath.trim(),
+            };
+          }
+          STATE.harness.activeState = {
+            artifactPath: STATE.harness.artifact.artifactPath,
+            activatedAt,
+            actor: 'demo',
+            compiledProfile: {
+              id: STATE.harness.artifact.compiledProfile.id,
+              name: STATE.harness.artifact.compiledProfile.name,
+              entryStageId: STATE.harness.artifact.compiledProfile.entryStageId,
+            },
+          };
+          return {
+            ok: true,
+            harnessConfig: { ...STATE.harness.harnessConfig },
+            artifactPath: STATE.harness.artifact.artifactPath,
+            artifactId: STATE.harness.artifact.artifactId,
+            activeState: { ...STATE.harness.activeState, compiledProfile: { ...STATE.harness.activeState.compiledProfile } },
+            compiledProfile: { ...STATE.harness.artifact.compiledProfile },
+            validationReport: { ...STATE.harness.artifact.validationReport },
+            compiledProfileJson: STATE.harness.artifact.compiledProfileJson,
+          };
+        }
+
         // ── Status & Executor ──
         if (route === '/api/status')
           return { data: buildStatusSnapshot() };

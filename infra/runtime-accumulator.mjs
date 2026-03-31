@@ -45,6 +45,13 @@ let _sessionLogFile = resolve(_cacheDir, SESSION_LOG_FILE_NAME);
 const DEFAULT_STATE = {
 	runtimeMs: 0,
 	totalCostUsd: 0,
+	lifetimeTotals: {
+		attemptsCount: 0,
+		tokenCount: 0,
+		inputTokens: 0,
+		outputTokens: 0,
+		durationMs: 0,
+	},
 	sessionTokens: [],
 	completedSessions: [],
 	taskLifetimeTotals: {},
@@ -64,6 +71,7 @@ const SESSION_ACCUMULATION_LISTENERS = new Set();
 function cloneDefaultState() {
 	return {
 		...DEFAULT_STATE,
+		lifetimeTotals: { ...DEFAULT_STATE.lifetimeTotals },
 		sessionTokens: [],
 		completedSessions: [],
 		taskLifetimeTotals: {},
@@ -445,6 +453,13 @@ function applyCompletedSessionRecord(record) {
 		updatedAt: record.recordedAt,
 	};
 	_state.taskLifetimeTotals[record.taskId] = nextTotals;
+	_state.lifetimeTotals = {
+		attemptsCount: Math.max(0, toFiniteNumber(_state.lifetimeTotals?.attemptsCount, 0)) + 1,
+		tokenCount: Math.max(0, toFiniteNumber(_state.lifetimeTotals?.tokenCount, 0)) + record.tokenCount,
+		inputTokens: Math.max(0, toFiniteNumber(_state.lifetimeTotals?.inputTokens, 0)) + record.inputTokens,
+		outputTokens: Math.max(0, toFiniteNumber(_state.lifetimeTotals?.outputTokens, 0)) + record.outputTokens,
+		durationMs: Math.max(0, toFiniteNumber(_state.lifetimeTotals?.durationMs, 0)) + record.durationMs,
+	};
 
 	_state.runtimeMs += record.durationMs;
 	_state.totalCostUsd += record.costUsd;
@@ -525,6 +540,7 @@ function saveState(force = false) {
 		const payload = {
 			runtimeMs: _state.runtimeMs,
 			totalCostUsd: _state.totalCostUsd,
+			lifetimeTotals: _state.lifetimeTotals,
 			sessionTokens: _state.sessionTokens.slice(-MAX_SESSION_TOKENS),
 			completedSessions: _state.completedSessions.slice(-MAX_COMPLETED_SESSIONS),
 			taskLifetimeTotals: _state.taskLifetimeTotals,
@@ -600,6 +616,7 @@ export function getRuntimeStats() {
 	return {
 		runtimeMs: _state.runtimeMs,
 		totalCostUsd: _state.totalCostUsd,
+		lifetimeTotals: { ..._state.lifetimeTotals },
 		sessionCount: completedSessions.length,
 		completedSessions,
 		sessions: completedSessions,

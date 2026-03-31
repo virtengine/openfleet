@@ -256,6 +256,79 @@ describe("task-store concurrent save consistency", () => {
   });
 });
 
+describe("task-store delegation topology", () => {
+  it("normalizes task graph topology and delegated workflow run lineage", async () => {
+    const dir = makeTempDir("task-store-lineage-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "TASK-ROOT", title: "Root task", status: "todo" });
+    ts.addTask({ id: "TASK-CHILD", title: "Child task", status: "todo" });
+    ts.setTaskParent("TASK-CHILD", "TASK-ROOT", { source: "test" });
+    ts.linkTaskWorkflowRun("TASK-CHILD", {
+      runId: "run-child-1",
+      workflowId: "wf-backend",
+      workflowName: "Backend Delegate",
+      nodeId: "delegate-node",
+      status: "completed",
+      rootRunId: "run-root-1",
+      parentRunId: "run-parent-1",
+      taskId: "TASK-CHILD",
+      rootTaskId: "TASK-ROOT",
+      parentTaskId: "TASK-CHILD",
+      sessionId: "TASK-CHILD:delegate:run-parent-1",
+      rootSessionId: "TASK-ROOT",
+      parentSessionId: "TASK-CHILD",
+      delegationDepth: 2,
+    });
+
+    const child = ts.getTask("TASK-CHILD");
+    expect(child?.topology).toEqual(expect.objectContaining({
+      graphParentTaskId: "TASK-ROOT",
+      graphRootTaskId: "TASK-ROOT",
+      graphDepth: 1,
+      graphPath: ["TASK-ROOT", "TASK-CHILD"],
+      latestRunId: "run-child-1",
+      rootRunId: "run-root-1",
+      parentRunId: "run-parent-1",
+      latestSessionId: "TASK-CHILD:delegate:run-parent-1",
+      rootSessionId: "TASK-ROOT",
+      parentSessionId: "TASK-CHILD",
+      rootTaskId: "TASK-ROOT",
+      parentTaskId: "TASK-CHILD",
+      delegationDepth: 2,
+    }));
+    expect(child?.workflowRuns).toEqual([
+      expect.objectContaining({
+        runId: "run-child-1",
+        workflowName: "Backend Delegate",
+        rootRunId: "run-root-1",
+        parentRunId: "run-parent-1",
+        rootTaskId: "TASK-ROOT",
+        parentTaskId: "TASK-CHILD",
+        sessionId: "TASK-CHILD:delegate:run-parent-1",
+        rootSessionId: "TASK-ROOT",
+        parentSessionId: "TASK-CHILD",
+        delegationDepth: 2,
+      }),
+    ]);
+
+    const tsReloaded = await loadTaskStoreModule();
+    tsReloaded.configureTaskStore({ storePath });
+    tsReloaded.loadStore();
+    expect(tsReloaded.getTask("TASK-CHILD")?.topology).toEqual(expect.objectContaining({
+      graphRootTaskId: "TASK-ROOT",
+      latestRunId: "run-child-1",
+      latestSessionId: "TASK-CHILD:delegate:run-parent-1",
+    }));
+  });
+});
+
 describe("task-store review persistence", () => {
   it("stores a current review verdict with a single stable timestamp", async () => {
     const dir = makeTempDir("task-store-review-");
@@ -466,6 +539,33 @@ describe("task-store DAG organization", () => {
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery?.active).toBe(false);
     expect(task.meta?.worktreeFailure).toBeUndefined();
+  });
+
+  it("recovers blocked tasks with stale workflow placeholders", async () => {
+    const dir = makeTempDir("task-store-stale-worktree-placeholder-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "blocked-placeholder-1",
+      title: "Blocked placeholder task",
+      status: "blocked",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+    });
+
+    const recovered = ts.recoverAutoBlockedTasks();
+    const task = ts.getTask("blocked-placeholder-1");
+
+    expect(recovered.recoveredTaskIds).toEqual(["blocked-placeholder-1"]);
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
   });
 
   it("clears blocked metadata in one operation when manually unblocked", async () => {

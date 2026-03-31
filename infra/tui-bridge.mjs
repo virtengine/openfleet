@@ -253,6 +253,55 @@ export const TUI_EVENT_SCHEMAS = Object.freeze({
         type: "array",
         items: SESSION_SUMMARY_SCHEMA,
       },
+      executor: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          mode: { type: "string" },
+          paused: { type: "boolean" },
+          activeSlots: { type: "number", minimum: 0 },
+          maxParallel: { type: "number", minimum: 0 },
+          slots: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                taskId: { type: "string" },
+                taskTitle: { type: "string" },
+                sdk: { type: "string" },
+                model: { type: "string" },
+                status: { type: "string" },
+                runningFor: { type: "number", minimum: 0 },
+              },
+            },
+          },
+        },
+      },
+      recovery: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          totals: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              runs: { type: "number", minimum: 0 },
+              failures: { type: "number", minimum: 0 },
+              resumed: { type: "number", minimum: 0 },
+              resetToTodo: { type: "number", minimum: 0 },
+              reconciledDrift: { type: "number", minimum: 0 },
+              skippedForActiveClaim: { type: "number", minimum: 0 },
+              skippedForNoCommitBlock: { type: "number", minimum: 0 },
+              resetUnstarted: { type: "number", minimum: 0 },
+              staleSharedClaim: { type: "number", minimum: 0 },
+              workflowOwnerlessReset: { type: "number", minimum: 0 },
+            },
+          },
+          lastRun: { type: ["object", "null"] },
+          recentRuns: { type: "array", items: { type: "object" } },
+        },
+      },
     },
   },
   "sessions:update": {
@@ -748,6 +797,12 @@ export function buildMonitorStatsPayload({ agentPool, runtimeStats = {}, uptimeM
     context: sessionSummary.context,
     toolSummary,
     activeSessions: sessionSummary.activeSessions,
+    executor: agentPoolStats.executor && typeof agentPoolStats.executor === "object"
+      ? agentPoolStats.executor
+      : null,
+    recovery: agentPoolStats.recovery && typeof agentPoolStats.recovery === "object"
+      ? agentPoolStats.recovery
+      : null,
   };
 }
 

@@ -4619,13 +4619,16 @@ describe("Session chaining - action.run_agent", () => {
 
     const tracker = getSessionTracker();
     const session = tracker.getSessionById("TASK-SESSION-1");
+    const childSession = tracker.listAllSessions({ includePersisted: false })
+      .find((entry) => entry.taskId === "TASK-SESSION-1" && entry.type === "delegate");
     expect(session).toBeTruthy();
     expect(session.type).toBe("task");
     expect(session.status).toBe("completed");
     expect(session.metadata.workspaceId).toBe("virtengine-gh");
     expect(session.metadata.workspaceDir).toBe("/tmp/test");
     expect(session.metadata.branch).toBe("feat/task-session");
-    expect((session.messages || []).some((msg) => String(msg.content || "").includes("Task run completed."))).toBe(true);
+    expect(childSession).toBeTruthy();
+    expect((tracker.getSessionById(childSession.id)?.messages || []).some((msg) => String(msg.content || "").includes("Task run completed."))).toBe(true);
   });
 
   it("prepends architect/editor framing and repo maps for workflow agent runs", async () => {
@@ -5229,15 +5232,31 @@ describe("Session chaining - action.run_agent", () => {
     const result = await handler.execute(node, ctx, mockEngine);
     expect(result.success).toBe(true);
     expect(result.delegated).toBe(true);
+    expect(result.childSessionId).toContain("TASK-DELEGATE-SESSION:delegate:");
 
     const tracker = getSessionTracker();
-    const session = tracker.getSessionById("TASK-DELEGATE-SESSION");
-    expect(session).toBeTruthy();
-    expect(session.type).toBe("task");
-    expect(session.status).toBe("completed");
-    expect(session.metadata.branch).toBe("feat/backend-migration");
+    const taskSession = tracker.getSessionById("TASK-DELEGATE-SESSION");
+    const childSession = tracker.getSessionById(result.childSessionId);
+    expect(taskSession).toBeTruthy();
+    expect(taskSession.type).toBe("task");
+    expect(taskSession.status).toBe("completed");
+    expect(taskSession.metadata.branch).toBe("feat/backend-migration");
+    expect(childSession).toBeTruthy();
+    expect(childSession.type).toBe("delegate");
+    expect(childSession.taskId).toBe("TASK-DELEGATE-SESSION");
+    expect(childSession.status).toBe("completed");
+    expect(childSession.metadata).toEqual(expect.objectContaining({
+      workflowId: "wf-backend",
+      rootTaskId: "TASK-DELEGATE-SESSION",
+      parentTaskId: "TASK-DELEGATE-SESSION",
+      rootSessionId: "TASK-DELEGATE-SESSION",
+      parentSessionId: "TASK-DELEGATE-SESSION",
+      rootRunId: ctx.id,
+      parentRunId: ctx.id,
+      delegationDepth: 1,
+    }));
 
-    const messages = Array.isArray(session.messages) ? session.messages : [];
+    const messages = Array.isArray(taskSession.messages) ? taskSession.messages : [];
     expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
   });
 
@@ -8048,6 +8067,13 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
 
     engine.save(wf);
     const ctx = await engine.execute(wf.id, { taskId: "TASK-DELEGATION-AUDIT" });
+    ctx.data._workflowRootTaskId = "TASK-DELEGATION-AUDIT";
+    ctx.data._workflowParentTaskId = "TASK-DELEGATION-AUDIT";
+    ctx.data._workflowSessionId = "TASK-DELEGATION-AUDIT:delegate:run-1";
+    ctx.data._workflowRootSessionId = "TASK-DELEGATION-AUDIT";
+    ctx.data._workflowParentSessionId = "TASK-DELEGATION-AUDIT";
+    ctx.data._workflowDelegationDepth = 1;
+    ctx.data._delegatedSessionIds = ["TASK-DELEGATION-AUDIT:delegate:run-1"];
     ctx.__workflowRuntimeState = ctx.__workflowRuntimeState || {};
     ctx.__workflowRuntimeState.delegationAuditTrail = [
       {
@@ -8075,10 +8101,34 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
       expect.objectContaining({ type: "assign", taskId: "TASK-DELEGATION-AUDIT" }),
       expect.objectContaining({ type: "handoff-complete", taskId: "TASK-DELEGATION-AUDIT" }),
     ]);
+    expect(detail?.delegationTopology).toEqual(expect.objectContaining({
+      runId: ctx.id,
+      rootRunId: ctx.id,
+      taskId: "TASK-DELEGATION-AUDIT",
+      rootTaskId: "TASK-DELEGATION-AUDIT",
+      parentTaskId: "TASK-DELEGATION-AUDIT",
+      sessionId: "TASK-DELEGATION-AUDIT:delegate:run-1",
+      rootSessionId: "TASK-DELEGATION-AUDIT",
+      parentSessionId: "TASK-DELEGATION-AUDIT",
+      delegationDepth: 1,
+      sessionIds: expect.arrayContaining(["TASK-DELEGATION-AUDIT:delegate:run-1", "TASK-DELEGATION-AUDIT"]),
+    }));
+    expect(detail?.detail?.data?._delegationTopology).toEqual(expect.objectContaining({
+      taskId: "TASK-DELEGATION-AUDIT",
+      sessionId: "TASK-DELEGATION-AUDIT:delegate:run-1",
+    }));
     expect(historyEntry?.delegationAuditTrail).toEqual([
       expect.objectContaining({ type: "assign", taskId: "TASK-DELEGATION-AUDIT" }),
       expect.objectContaining({ type: "handoff-complete", taskId: "TASK-DELEGATION-AUDIT" }),
     ]);
+    expect(historyEntry?.delegationTopology).toEqual(expect.objectContaining({
+      taskId: "TASK-DELEGATION-AUDIT",
+      rootTaskId: "TASK-DELEGATION-AUDIT",
+      sessionId: "TASK-DELEGATION-AUDIT:delegate:run-1",
+      rootSessionId: "TASK-DELEGATION-AUDIT",
+      parentSessionId: "TASK-DELEGATION-AUDIT",
+      delegationDepth: 1,
+    }));
   });
 
   it("hydrates workflow team state into run detail and history read models", async () => {

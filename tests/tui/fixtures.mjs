@@ -67,6 +67,50 @@ export const monitorStatsFixture = {
       { name: "command_execution", count: 1 },
     ],
   },
+  executor: {
+    mode: "internal",
+    paused: false,
+    activeSlots: 1,
+    maxParallel: 3,
+    slots: [
+      {
+        taskId: "task-1",
+        taskTitle: "Investigate failing build",
+        sdk: "codex",
+        model: "gpt-5.4",
+        status: "running",
+        runningFor: 95,
+      },
+    ],
+  },
+  recovery: {
+    totals: {
+      runs: 4,
+      failures: 0,
+      resumed: 2,
+      resetToTodo: 3,
+      reconciledDrift: 1,
+      skippedForActiveClaim: 2,
+      skippedForNoCommitBlock: 0,
+      resetUnstarted: 1,
+      staleSharedClaim: 2,
+      workflowOwnerlessReset: 1,
+    },
+    lastRun: {
+      trigger: "interval",
+      scannedCount: 3,
+      resumedCount: 1,
+      resetToTodoCount: 1,
+      reconciledDriftCount: 1,
+      skippedForActiveClaimCount: 1,
+      skippedForNoCommitBlockCount: 0,
+      resetUnstartedCount: 0,
+      staleSharedClaimCount: 1,
+      workflowOwnerlessResetCount: 1,
+      durationMs: 4200,
+    },
+    recentRuns: [],
+  },
 };
 
 export const sessionsFixture = [
@@ -282,4 +326,3 @@ export function createMockWsClient() {
     },
   };
 }
-

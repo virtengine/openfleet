@@ -647,6 +647,24 @@ export function listBosunMcpTools() {
       },
     },
     {
+      name: "replace_lines",
+      description:
+        "Replace an inclusive line range in a file with new content. " +
+        "Use this when you know the line numbers from read_file and a full rewrite would be excessive. " +
+        "Safer than shell patch scripts and less brittle than exact-string replacement for larger blocks.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or workspace-relative file path." },
+          start_line: { type: "number", description: "First line to replace (1-indexed, inclusive)." },
+          end_line: { type: "number", description: "Last line to replace (1-indexed, inclusive)." },
+          new_content: { type: "string", description: "Replacement content for the selected line range." },
+          workspace_path: { type: "string", description: "Workspace root for resolving relative paths." },
+        },
+        required: ["path", "start_line", "end_line", "new_content"],
+      },
+    },
+    {
       name: "write_file",
       description:
         "Write content to a file, creating it and any missing parent directories if needed. " +
@@ -714,6 +732,31 @@ function countOccurrences(haystack, needle) {
   let pos = 0;
   while ((pos = haystack.indexOf(needle, pos)) !== -1) { count++; pos += needle.length; }
   return count;
+}
+
+function detectPreferredNewline(text) {
+  return String(text || "").includes("\r\n") ? "\r\n" : "\n";
+}
+
+function listLineBoundaries(text) {
+  const source = String(text || "");
+  const boundaries = [];
+  let lineStart = 0;
+  for (let index = 0; index < source.length; index++) {
+    if (source[index] !== "\n") continue;
+    boundaries.push({
+      start: lineStart,
+      end: index + 1,
+    });
+    lineStart = index + 1;
+  }
+  if (lineStart < source.length || source.length === 0) {
+    boundaries.push({
+      start: lineStart,
+      end: source.length,
+    });
+  }
+  return boundaries;
 }
 
 const GREP_SKIP_DIRS = new Set(["node_modules", ".git", ".bosun", "dist", "build", ".next", "coverage"]);
@@ -1091,6 +1134,46 @@ const BOSUN_TOOL_HANDLERS = {
       replaced_at_line: lineNum,
       occurrences_checked: occurrences,
       repairedMojibake: newStr !== String(args.new_str ?? ""),
+    };
+  },
+
+  replace_lines(_runtime, args) {
+    const absPath = resolveFilePath(args.path, args.workspace_path);
+    if (!existsSync(absPath)) throw new Error(`File not found: ${absPath}`);
+    const original = readFileSync(absPath, "utf8");
+    const boundaries = listLineBoundaries(original);
+    const totalLines = boundaries.length;
+    const startLine = Number(args.start_line);
+    const endLine = Number(args.end_line);
+    if (!Number.isInteger(startLine) || startLine < 1) {
+      throw new Error("replace_lines: start_line must be an integer >= 1");
+    }
+    if (!Number.isInteger(endLine) || endLine < startLine) {
+      throw new Error("replace_lines: end_line must be an integer >= start_line");
+    }
+    if (startLine > totalLines || endLine > totalLines) {
+      throw new Error(
+        `replace_lines: requested range ${startLine}-${endLine} is outside ${totalLines} line(s) in ${absPath}`,
+      );
+    }
+    const preferredNewline = detectPreferredNewline(original);
+    const rawReplacement = String(args.new_content ?? "");
+    let replacement = repairCommonMojibake(rawReplacement).replace(/\r?\n/g, preferredNewline);
+    const startOffset = boundaries[startLine - 1].start;
+    const endOffset = boundaries[endLine - 1].end;
+    const suffix = original.slice(endOffset);
+    if (replacement && suffix && !replacement.endsWith("\n") && !replacement.endsWith("\r")) {
+      replacement += preferredNewline;
+    }
+    const updated = original.slice(0, startOffset) + replacement + suffix;
+    writeFileSync(absPath, updated, "utf8");
+    return {
+      success: true,
+      path: absPath,
+      replaced_line_range: [startLine, endLine],
+      total_lines_before: totalLines,
+      total_lines_after: listLineBoundaries(updated).length,
+      repairedMojibake: replacement !== rawReplacement,
     };
   },
 
