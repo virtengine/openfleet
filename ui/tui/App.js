@@ -22,6 +22,7 @@ import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "./HelpScreen.js";
 import { useWebSocket } from "./useWebSocket.js";
 import { useTasks } from "./useTasks.js";
 import { useWorkflows } from "./useWorkflows.js";
+import TelemetryScreen from "./TelemetryScreen.js";
 
 const html = htm.bind(React.createElement);
 
@@ -312,12 +313,9 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     body = html`
       <${ScreenFrame}
         title="Telemetry"
-        subtitle="Live monitor counters and reconnect health."
+        subtitle="Live throughput, provider usage, rate limits, and cost estimates."
       >
-        <${Text}>Connection: ${wsState.connectionStatus}<//>
-        <${Text}>Reconnects: ${wsState.reconnectCount}<//>
-        <${Text}>Tokens In/Out: ${wsState.stats?.tokensIn ?? 0}/${wsState.stats?.tokensOut ?? 0}<//>
-        <${Text}>Throughput TPS: ${wsState.stats?.throughputTps ?? 0}<//>
+        <${TelemetryScreen} wsState=${wsState} config=${config} terminalSize=${terminalSize} />
       <//>
     `;
   } else if (activeTab === "settings") {
@@ -370,3 +368,5 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     <//>
   `;
 }
+
+
