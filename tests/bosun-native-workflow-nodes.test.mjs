@@ -1802,6 +1802,61 @@ describe("self-improvement workflow nodes", () => {
     expect(sentPrompt).toContain("Break reliability work into targeted validation-first tasks.");
   });
 
+  it("agent.run_planner refreshes repo topology from source files when the index is missing", async () => {
+    const repoRoot = makeTmpDir();
+    mkdirSync(join(repoRoot, "agent"), { recursive: true });
+    mkdirSync(join(repoRoot, "workflow"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "agent", "primary-agent.mjs"),
+      "import { runWorkflowNode } from '../workflow/workflow-nodes.mjs';\nexport function buildArchitectEditorFrame(options) { return runWorkflowNode(options); }\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(repoRoot, "workflow", "workflow-nodes.mjs"),
+      "export function runWorkflowNode(options) { return options; }\n",
+      "utf8",
+    );
+
+    const handler = getNodeType("agent.run_planner");
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: '```json\n{"tasks":[]}\n```',
+      sdk: "codex",
+      items: [],
+      threadId: "planner-thread-repomap-refresh",
+    });
+    const engine = {
+      services: {
+        agentPool: { launchEphemeralThread },
+        prompts: { planner: "Plan the next backlog tasks." },
+      },
+    };
+    const ctx = new WorkflowContext({
+      repoRoot,
+      _workflowId: "wf-plan",
+      taskTitle: "Improve planner topology",
+      taskDescription: "Use repository structure to plan the next steps.",
+      changedFiles: ["agent/primary-agent.mjs"],
+    });
+
+    const result = await handler.execute({
+      id: "planner-with-repomap-refresh",
+      type: "agent.run_planner",
+      config: {
+        taskCount: 2,
+        context: "Focus on the primary agent execution path.",
+        repoMapQuery: "primary agent execution path",
+      },
+    }, ctx, engine);
+
+    expect(result.success).toBe(true);
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+    expect(sentPrompt).toContain("## Repo Topology");
+    expect(sentPrompt).toContain("agent/primary-agent.mjs");
+    expect(sentPrompt).toContain("adjacent: workflow/workflow-nodes.mjs");
+  });
+
   it("workflow proof bundles surface skillbook guidance captured during execution", async () => {
     const repoRoot = makeTmpDir();
     const skillbookDir = join(repoRoot, ".bosun", "skillbook");

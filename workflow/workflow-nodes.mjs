@@ -187,6 +187,7 @@ import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-sa
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
 import { buildConflictResolutionPrompt } from "../git/conflict-resolver.mjs";
 import { buildArchitectEditorFrame, buildRepoTopologyContext, hasRepoMapContext } from "../lib/repo-map.mjs";
+import { ensureContextIndexFresh } from "../workspace/context-indexer.mjs";
 import {
   evaluateMarkdownSafety,
   recordMarkdownSafetyAuditEvent,
@@ -11704,6 +11705,22 @@ registerBuiltinNodeType("agent.run_planner", {
     const skillbookPromptContext = buildSkillbookPromptContext(skillbookGuidance);
     const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback, skillbookPromptContext].filter(Boolean).join("\n\n");
     const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
+    const repoMapChangedFiles =
+      (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
+      (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
+      [];
+    if ((node.config?.repoMap || repoMapQuery) && !promptHasRepoMap) {
+      try {
+        await ensureContextIndexFresh({
+          rootDir: ctx.data?.repoRoot || process.cwd(),
+          changedFiles: repoMapChangedFiles,
+          useTreeSitter: false,
+          useZoekt: false,
+        });
+      } catch (error) {
+        ctx.log(node.id, `Context index refresh skipped (non-fatal): ${error?.message || error}`);
+      }
+    }
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
       ? buildRepoTopologyContext({
@@ -11721,10 +11738,7 @@ registerBuiltinNodeType("agent.run_planner", {
           ctx.data?.taskDetail?.description ||
           ctx.data?.taskInfo?.description ||
           "",
-        changedFiles:
-          (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
-          (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
-          [],
+        changedFiles: repoMapChangedFiles,
         cwd: process.cwd(),
         repoRoot: ctx.data?.repoRoot || process.cwd(),
       })

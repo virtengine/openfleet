@@ -28,7 +28,7 @@ import {
   listKnowledgeEntriesFromStateLedger,
   resolveStateLedgerPath,
 } from "../lib/state-ledger-sqlite.mjs";
-import { getContextPathAdjacency } from "./context-indexer.mjs";
+import { ensureContextIndexFresh, getContextPathAdjacency } from "./context-indexer.mjs";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -417,6 +417,16 @@ function isEntryVisibleForContext(entry, context) {
 }
 
 async function loadContextPathAdjacency(repoRoot, directPaths = []) {
+  try {
+    await ensureContextIndexFresh({
+      rootDir: repoRoot,
+      changedFiles: directPaths,
+      useTreeSitter: false,
+      useZoekt: false,
+    });
+  } catch {
+    // best-effort refresh only
+  }
   const contextIndexDbPath = resolve(repoRoot, ".bosun", "context-index", "index.db");
   if (existsSync(contextIndexDbPath)) {
     try {

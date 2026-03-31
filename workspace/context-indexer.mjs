@@ -182,6 +182,8 @@ const TASK_TYPE_SCOPES = Object.freeze({
   },
 });
 
+const DEFAULT_CONTEXT_INDEX_MAX_AGE_MS = 15 * 60 * 1000;
+
 let sqliteModulePromise = null;
 let treeSitterAvailability = null;
 let zoektAvailability = null;
@@ -206,6 +208,47 @@ function ensureIndexDirs(paths) {
   mkdirSync(paths.indexDir, { recursive: true });
   mkdirSync(dirname(paths.dbPath), { recursive: true });
   mkdirSync(paths.docsPath, { recursive: true });
+}
+
+function normalizeContextIndexPathHints(paths = [], rootDir = process.cwd()) {
+  const root = resolve(rootDir || process.cwd());
+  return [...new Set(
+    (Array.isArray(paths) ? paths : [paths])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .map((value) => value.replace(/\\/g, "/"))
+      .map((value) => {
+        if (!value) return "";
+        const absoluteCandidate = resolve(root, value);
+        if (absoluteCandidate.startsWith(root)) {
+          return relative(root, absoluteCandidate).replace(/\\/g, "/");
+        }
+        return value.replace(/^\.\//, "");
+      })
+      .filter(Boolean),
+  )];
+}
+
+function resolveContextIndexMaxAgeMs(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : DEFAULT_CONTEXT_INDEX_MAX_AGE_MS;
+}
+
+function haveHintedFilesChangedSince(rootDir, changedFiles = [], lastIndexedAt = "") {
+  const lastIndexedMs = Date.parse(String(lastIndexedAt || ""));
+  if (!Number.isFinite(lastIndexedMs)) return changedFiles.length > 0;
+  const normalizedFiles = normalizeContextIndexPathHints(changedFiles, rootDir);
+  for (const relPath of normalizedFiles) {
+    const absolutePath = resolve(rootDir, relPath);
+    try {
+      if (statSync(absolutePath).mtimeMs > lastIndexedMs + 1000) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
 }
 
 async function openDb(rootDir) {
@@ -1382,6 +1425,62 @@ export async function searchContextIndex(query, opts = {}) {
   } finally {
     db.close();
   }
+}
+
+export async function ensureContextIndexFresh(opts = {}) {
+  const rootDir = opts.rootDir || process.cwd();
+  const maxAgeMs = resolveContextIndexMaxAgeMs(
+    opts.maxAgeMs
+    ?? process.env.BOSUN_CONTEXT_INDEX_MAX_AGE_MS,
+  );
+  const changedFiles = normalizeContextIndexPathHints(
+    opts.changedFiles || opts.relatedPaths || [],
+    rootDir,
+  );
+  const force = opts.force === true;
+  const status = await getContextIndexStatus({ rootDir });
+  const lastIndexedAt = String(status?.lastIndexedAt || "");
+  const lastIndexedMs = Date.parse(lastIndexedAt);
+  const missing = status?.ready !== true;
+  const staleByAge =
+    !missing
+    && maxAgeMs >= 0
+    && (!Number.isFinite(lastIndexedMs) || (Date.now() - lastIndexedMs) > maxAgeMs);
+  const staleByChangedFiles =
+    !missing
+    && changedFiles.length > 0
+    && haveHintedFilesChangedSince(rootDir, changedFiles, lastIndexedAt);
+
+  if (!force && !missing && !staleByAge && !staleByChangedFiles) {
+    return {
+      refreshed: false,
+      reason: "fresh",
+      rootDir: resolve(rootDir),
+      status,
+    };
+  }
+
+  const result = await runContextIndex({
+    rootDir,
+    includeTests: opts.includeTests,
+    maxFileBytes: opts.maxFileBytes,
+    useTreeSitter: opts.useTreeSitter,
+    useZoekt: opts.useZoekt,
+  });
+  const nextStatus = await getContextIndexStatus({ rootDir });
+  return {
+    refreshed: true,
+    reason: force
+      ? "forced"
+      : missing
+        ? "missing"
+        : staleByChangedFiles
+          ? "changed-files"
+          : "stale",
+    rootDir: resolve(rootDir),
+    result,
+    status: nextStatus,
+  };
 }
 
 function mapRelationRow(row) {

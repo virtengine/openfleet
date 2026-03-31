@@ -27,6 +27,7 @@ import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 import { buildRepoTopologyContext, hasRepoMapContext } from "../../lib/repo-map.mjs";
+import { ensureContextIndexFresh } from "../../workspace/context-indexer.mjs";
 
 import {
   registerNodeType,
@@ -1178,6 +1179,22 @@ registerNodeType("agent.run_planner", {
       resolvedRepoMapFileLimit == null || resolvedRepoMapFileLimit === ""
         ? 8
         : (Number(resolvedRepoMapFileLimit) || 8);
+    const repoMapChangedFiles =
+      (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
+      (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
+      [];
+    if ((node.config?.repoMap || repoMapQuery) && !promptHasRepoMap) {
+      try {
+        await ensureContextIndexFresh({
+          rootDir: ctx.data?.repoRoot || process.cwd(),
+          changedFiles: repoMapChangedFiles,
+          useTreeSitter: false,
+          useZoekt: false,
+        });
+      } catch (error) {
+        ctx.log(node.id, `Context index refresh skipped (non-fatal): ${error?.message || error}`);
+      }
+    }
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
       ? buildRepoTopologyContext({
@@ -1195,10 +1212,7 @@ registerNodeType("agent.run_planner", {
           ctx.data?.taskDetail?.description ||
           ctx.data?.taskInfo?.description ||
           "",
-        changedFiles:
-          (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
-          (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
-          [],
+        changedFiles: repoMapChangedFiles,
         cwd: process.cwd(),
         repoRoot: ctx.data?.repoRoot || process.cwd(),
       })

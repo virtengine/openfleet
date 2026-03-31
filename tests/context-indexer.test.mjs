@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  ensureContextIndexFresh,
   getContextGraph,
   runContextIndex,
   searchContextIndex,
@@ -131,6 +132,38 @@ describe("context-indexer", () => {
     expect(graph.nodes.some((node) => node.type === "file" && String(node.path || "").endsWith("src/alpha.mjs"))).toBe(true);
     expect(graph.nodes.some((node) => node.type === "file" && String(node.path || "").endsWith("src/helper.mjs"))).toBe(true);
     expect(graph.edges.some((edge) => edge.relationType === "file_defines_symbol" && edge.toName === "greetUser")).toBe(true);
+    expect(graph.edges.some((edge) => edge.relationType === "file_imports_file" && String(edge.toPath || "").endsWith("src/helper.mjs"))).toBe(true);
+  });
+
+  it("rebuilds the context index when it is missing and changed files request graph context", async () => {
+    mkdirSync(resolve(testRoot, "src"), { recursive: true });
+
+    writeFileSync(
+      resolve(testRoot, "src", "alpha.mjs"),
+      "import { formatGreeting } from './helper.mjs';\nexport function greetUser(name) { return formatGreeting(name); }\n",
+      "utf8",
+    );
+    writeFileSync(
+      resolve(testRoot, "src", "helper.mjs"),
+      "export function formatGreeting(name) { return `hello ${name}`; }\n",
+      "utf8",
+    );
+
+    const refreshed = await ensureContextIndexFresh({
+      rootDir: testRoot,
+      changedFiles: ["src/alpha.mjs"],
+      useTreeSitter: false,
+      useZoekt: false,
+    });
+
+    expect(refreshed.refreshed).toBe(true);
+    expect(refreshed.reason).toBe("missing");
+    expect(refreshed.status.ready).toBe(true);
+
+    const graph = await getContextGraph("greetUser", {
+      rootDir: testRoot,
+      limit: 10,
+    });
     expect(graph.edges.some((edge) => edge.relationType === "file_imports_file" && String(edge.toPath || "").endsWith("src/helper.mjs"))).toBe(true);
   });
 
