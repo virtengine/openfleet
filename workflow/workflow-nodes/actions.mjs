@@ -166,6 +166,7 @@ import {
   initSharedKnowledge,
   retrieveKnowledgeEntries,
 } from "../../workspace/shared-knowledge.mjs";
+import { findReusableSkillbookStrategies } from "../../workspace/skillbook-store.mjs";
 import { repairCommonMojibake } from "../../lib/mojibake-repair.mjs";
 import { bootstrapWorktreeForPath, fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 
@@ -665,6 +666,88 @@ function resolveTaskMemoryPathHints(node, ctx, taskPayload = null) {
     taskPayload?.meta?.filePaths,
     taskPayload?.metadata?.filePaths,
   );
+}
+
+function normalizeSkillbookGuidancePayload(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const strategies = Array.isArray(value.strategies)
+    ? value.strategies.filter((entry) => entry && typeof entry === "object")
+    : [];
+  const guidanceSummary = String(value.guidanceSummary || value.summary || "").trim();
+  if (!guidanceSummary && strategies.length === 0) return null;
+  return {
+    ...value,
+    strategies,
+    guidanceSummary,
+  };
+}
+
+function buildSkillbookPromptContext(guidance) {
+  const normalized = normalizeSkillbookGuidancePayload(guidance);
+  if (!normalized) return "";
+  return String(normalized.guidanceSummary || "").trim();
+}
+
+async function resolveReusableSkillbookGuidance(ctx, options = {}) {
+  const hasExplicitWorkflowId = Object.prototype.hasOwnProperty.call(options, "workflowId");
+  const repoRoot = String(
+    options.repoRoot
+    || ctx?.data?.repoRoot
+    || process.cwd(),
+  ).trim() || process.cwd();
+  const workflowId = String(
+    hasExplicitWorkflowId
+      ? options.workflowId
+      : (
+          ctx?.data?._workflowId
+          || ctx?.data?.workflowId
+          || ""
+        )
+  ).trim();
+  const category = String(options.category || "strategy").trim() || "strategy";
+  const scopeLevel = String(options.scopeLevel || "").trim();
+  const scope = String(options.scope || "").trim();
+  const status = String(options.status || "").trim() || "promoted";
+  const query = String(options.query || "").trim();
+  const tags = Array.isArray(options.tags) ? options.tags : [];
+  const taskPayload =
+    ctx?.data?.task && typeof ctx.data.task === "object"
+      ? ctx.data.task
+      : null;
+  const relatedPaths = collectPromptPathHints(
+    options.relatedPaths,
+    options.changedFiles,
+    ctx?.data?._taskMemoryPaths,
+    ctx?.data?._changedFiles,
+    ctx?.data?.changedFiles,
+    ctx?.data?.task?.filePaths,
+    ctx?.data?.task?.files,
+    ctx?.data?.task?.meta?.filePaths,
+    ctx?.data?.task?.metadata?.filePaths,
+    taskPayload?.filePaths,
+    taskPayload?.files,
+    taskPayload?.meta?.filePaths,
+    taskPayload?.metadata?.filePaths,
+  );
+  const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.trunc(Number(options.limit))) : 5;
+  const result = await findReusableSkillbookStrategies({
+    repoRoot,
+    workflowId: workflowId || undefined,
+    category,
+    scopeLevel: scopeLevel || undefined,
+    scope: scope || undefined,
+    status: status || undefined,
+    query: query || undefined,
+    tags,
+    relatedPaths,
+    changedFiles: relatedPaths,
+    limit,
+  });
+  return normalizeSkillbookGuidancePayload(result) || {
+    ...result,
+    strategies: Array.isArray(result?.strategies) ? result.strategies : [],
+    guidanceSummary: String(result?.guidanceSummary || "").trim(),
+  };
 }
 
 function classifyWorkflowAgentBlockedStatus(result = {}) {
@@ -7432,6 +7515,7 @@ registerNodeType("action.build_task_prompt", {
         ? ctx.data._plannerFeedback.dagStateSummary
         : null;
     const userParts = [];
+    const taskPromptPaths = resolveTaskMemoryPathHints(node, ctx, taskPayload);
     const stripPromptMemorySection = (content, docName) => {
       const text = String(content || "");
       if (!text) return "";
@@ -7600,7 +7684,6 @@ registerNodeType("action.build_task_prompt", {
       && (existsSync(resolve(normalizedRepoRoot, ".git")) || existsSync(resolve(normalizedRepoRoot, ".bosun")))
     ) {
       try {
-        const taskMemoryPaths = resolveTaskMemoryPathHints(node, ctx, taskPayload);
         const retrievedMemory = await retrieveKnowledgeEntries({
           repoRoot: normalizedRepoRoot,
           teamId: memoryTeamId,
@@ -7617,8 +7700,8 @@ registerNodeType("action.build_task_prompt", {
           ]
             .filter(Boolean)
             .join(" "),
-          changedFiles: taskMemoryPaths,
-          relatedPaths: taskMemoryPaths,
+          changedFiles: taskPromptPaths,
+          relatedPaths: taskPromptPaths,
           limit: 4,
         });
         const memoryBriefing = formatKnowledgeBriefing(retrievedMemory, {
@@ -7628,11 +7711,54 @@ registerNodeType("action.build_task_prompt", {
           userParts.push(memoryBriefing);
           userParts.push("");
           ctx.data._taskRetrievedMemory = retrievedMemory;
-          ctx.data._taskMemoryPaths = taskMemoryPaths;
+          ctx.data._taskMemoryPaths = taskPromptPaths;
         }
       } catch (err) {
         ctx.log(node.id, `Persistent memory retrieval failed (non-fatal): ${err.message}`);
       }
+    }
+
+    const repoHasKnowledgeStore =
+      existsSync(resolve(normalizedRepoRoot, ".git")) || existsSync(resolve(normalizedRepoRoot, ".bosun"));
+    let skillbookGuidance = normalizeSkillbookGuidancePayload(ctx.data?._skillbookGuidance);
+    const shouldRefreshSkillbookGuidance =
+      repoHasKnowledgeStore && (
+        !skillbookGuidance
+        || (
+          taskPromptPaths.length > 0
+          && !skillbookGuidance.strategies?.some(
+            (entry) => Array.isArray(entry?.pathMatchPaths) && entry.pathMatchPaths.length > 0,
+          )
+        )
+      );
+    if (shouldRefreshSkillbookGuidance) {
+      try {
+        skillbookGuidance = await resolveReusableSkillbookGuidance(ctx, {
+          repoRoot: normalizedRepoRoot,
+          workflowId: ctx.data?._workflowId || "",
+          category: "strategy",
+          status: "promoted",
+          query: [
+            normalizedTaskTitle,
+            normalizedTaskDescription,
+            normalizedRetryReason,
+          ].filter(Boolean).join(" "),
+          changedFiles: taskPromptPaths,
+          relatedPaths: taskPromptPaths,
+          limit: 3,
+        });
+        if (skillbookGuidance?.matched > 0) {
+          ctx.data._skillbookGuidance = skillbookGuidance;
+        }
+      } catch (err) {
+        ctx.log(node.id, `Reusable skillbook guidance retrieval failed (non-fatal): ${err.message}`);
+      }
+    }
+    const skillbookPromptContext = buildSkillbookPromptContext(skillbookGuidance);
+    if (skillbookPromptContext) {
+      userParts.push(skillbookPromptContext);
+      userParts.push("");
+      ctx.data._taskSkillbookGuidance = skillbookGuidance;
     }
 
     // Agent status endpoint

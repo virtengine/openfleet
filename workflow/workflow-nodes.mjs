@@ -19022,6 +19022,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
     }
 
     const userParts = [];
+    const taskPromptPaths = resolveTaskMemoryPathHints(node, ctx, taskPayload);
 
     // Header
     userParts.push(`# Task: ${normalizedTaskTitle}`);
@@ -19192,7 +19193,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
 
     if (includeMemory) {
       try {
-        const taskMemoryPaths = resolveTaskMemoryPathHints(node, ctx, taskPayload);
         const retrievedMemory = await retrieveKnowledgeEntries({
           repoRoot: normalizedRepoRoot,
           teamId: memoryTeamId,
@@ -19209,8 +19209,8 @@ registerBuiltinNodeType("action.build_task_prompt", {
           ]
             .filter(Boolean)
             .join(" "),
-          changedFiles: taskMemoryPaths,
-          relatedPaths: taskMemoryPaths,
+          changedFiles: taskPromptPaths,
+          relatedPaths: taskPromptPaths,
           limit: 4,
         });
         const memoryBriefing = formatKnowledgeBriefing(retrievedMemory, {
@@ -19220,11 +19220,54 @@ registerBuiltinNodeType("action.build_task_prompt", {
           userParts.push(memoryBriefing);
           userParts.push("");
           ctx.data._taskRetrievedMemory = retrievedMemory;
-          ctx.data._taskMemoryPaths = taskMemoryPaths;
+          ctx.data._taskMemoryPaths = taskPromptPaths;
         }
       } catch (err) {
         ctx.log(node.id, `Persistent memory retrieval failed (non-fatal): ${err.message}`);
       }
+    }
+
+    const repoHasKnowledgeStore =
+      existsSync(resolve(normalizedRepoRoot, ".git")) || existsSync(resolve(normalizedRepoRoot, ".bosun"));
+    let skillbookGuidance = normalizeSkillbookGuidancePayload(ctx.data?._skillbookGuidance);
+    const shouldRefreshSkillbookGuidance =
+      repoHasKnowledgeStore && (
+        !skillbookGuidance
+        || (
+          taskPromptPaths.length > 0
+          && !skillbookGuidance.strategies?.some(
+            (entry) => Array.isArray(entry?.pathMatchPaths) && entry.pathMatchPaths.length > 0,
+          )
+        )
+      );
+    if (shouldRefreshSkillbookGuidance) {
+      try {
+        skillbookGuidance = await resolveReusableSkillbookGuidance(ctx, {
+          repoRoot: normalizedRepoRoot,
+          workflowId: ctx.data?._workflowId || "",
+          category: "strategy",
+          status: "promoted",
+          query: [
+            normalizedTaskTitle,
+            normalizedTaskDescription,
+            normalizedRetryReason,
+          ].filter(Boolean).join(" "),
+          changedFiles: taskPromptPaths,
+          relatedPaths: taskPromptPaths,
+          limit: 3,
+        });
+        if (skillbookGuidance?.matched > 0) {
+          ctx.data._skillbookGuidance = skillbookGuidance;
+        }
+      } catch (err) {
+        ctx.log(node.id, `Reusable skillbook guidance retrieval failed (non-fatal): ${err.message}`);
+      }
+    }
+    const skillbookPromptContext = buildSkillbookPromptContext(skillbookGuidance);
+    if (skillbookPromptContext) {
+      userParts.push(skillbookPromptContext);
+      userParts.push("");
+      ctx.data._taskSkillbookGuidance = skillbookGuidance;
     }
 
     // Agent status endpoint

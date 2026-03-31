@@ -3126,6 +3126,91 @@ describe("action.build_task_prompt", () => {
       await removeDirAfterLedgerReset(repoRoot);
     }
   });
+
+  it("injects reusable strategy guidance into task prompts with path-aware ranking", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-skillbook-paths-"));
+    try {
+      const skillbookDir = join(repoRoot, ".bosun", "skillbook");
+      mkdirSync(skillbookDir, { recursive: true });
+      writeFileSync(
+        join(skillbookDir, "strategies.json"),
+        JSON.stringify({
+          version: "1.0.0",
+          updatedAt: "2026-03-31T00:00:00.000Z",
+          strategies: [
+            {
+              strategyId: "generic-validation",
+              workflowId: "wf-auth",
+              category: "strategy",
+              scopeLevel: "workspace",
+              status: "promoted",
+              confidence: 0.61,
+              recommendation: "Run the generic validation checklist before shipping.",
+              rationale: "Useful as a baseline safety net.",
+              tags: ["validation"],
+              updatedAt: new Date().toISOString(),
+            },
+            {
+              strategyId: "auth-path-retry",
+              workflowId: "wf-auth",
+              category: "strategy",
+              scopeLevel: "workspace",
+              status: "promoted",
+              confidence: 0.88,
+              recommendation: "Stabilize auth retries before broader validation sweeps.",
+              rationale: "This strategy previously fixed the exact login path under active edit.",
+              tags: ["auth", "retry"],
+              relatedPaths: ["src/auth/login.mjs"],
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+        }, null, 2),
+        "utf8",
+      );
+
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({
+        _workflowId: "wf-auth",
+        _changedFiles: ["src/auth/login.mjs"],
+      });
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "SKILL-1",
+        taskTitle: "Stabilize auth retries",
+        taskDescription: "Fix the login path before running the rest of validation.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-skill-1"),
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      });
+
+      const result = await nt.execute(node, ctx);
+      const userPrompt = result.userPrompt || result.prompt;
+      const guidance = ctx.data._taskSkillbookGuidance;
+
+      expect(userPrompt).toContain("Reusable strategy guidance:");
+      expect(userPrompt).toContain("Stabilize auth retries before broader validation sweeps.");
+      expect(userPrompt).toContain("matched=src/auth/login.mjs");
+      expect(userPrompt.indexOf("Stabilize auth retries before broader validation sweeps."))
+        .toBeLessThan(userPrompt.indexOf("Run the generic validation checklist before shipping."));
+      expect(guidance).toEqual(expect.objectContaining({
+        matched: 2,
+        strategies: expect.arrayContaining([
+          expect.objectContaining({
+            strategyId: "auth-path-retry",
+            pathMatchPaths: ["src/auth/login.mjs"],
+          }),
+        ]),
+      }));
+      expect(guidance.strategies[0]).toEqual(expect.objectContaining({
+        strategyId: "auth-path-retry",
+        pathMatchPaths: ["src/auth/login.mjs"],
+      }));
+      expect(result.systemPrompt).not.toContain("Reusable strategy guidance:");
+      expect(result.systemPrompt).not.toContain("matched=src/auth/login.mjs");
+    } finally {
+      await removeDirAfterLedgerReset(repoRoot);
+    }
+  });
 });
 
 
