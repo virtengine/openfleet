@@ -616,6 +616,30 @@ describe("shared-knowledge", () => {
       ]);
     });
 
+    it("does not write markdown when the authoritative ledger write fails", async () => {
+      const targetFile = "TEST_AGENTS.md";
+      await writeFile(resolve(tempRoot, targetFile), "# Agents\n\nSome content.\n");
+      await writeFile(resolve(tempRoot, ".bosun"), "block-ledger-dir", "utf8");
+      initSharedKnowledge({ repoRoot: tempRoot, targetFile });
+
+      const entry = buildKnowledgeEntry({
+        content: "Never mirror a memory entry into markdown before the ledger accepts it.",
+        scope: "inference",
+        category: "pattern",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        agentId: "test-agent",
+      });
+
+      const result = await appendKnowledgeEntry(entry);
+      expect(result.success).toBe(false);
+      expect(String(result.reason || "")).toContain("write error");
+
+      const content = await readFile(resolve(tempRoot, targetFile), "utf8");
+      expect(content).not.toContain("Never mirror a memory entry into markdown before the ledger accepts it.");
+      expect(content).not.toContain("## Agent Learnings");
+    });
+
     it("rejects invalid entries", async () => {
       initSharedKnowledge({ repoRoot: tempRoot, targetFile: "TEST.md" });
       const entry = buildKnowledgeEntry({ content: "x" });
