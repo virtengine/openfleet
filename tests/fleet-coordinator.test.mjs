@@ -581,10 +581,39 @@ describe("shared-knowledge", () => {
       const result = await appendKnowledgeEntry(entry);
 
       expect(result.success).toBe(true);
+      expect(result.mirrored).toBe(true);
 
       const content = await readFile(resolve(tempRoot, targetFile), "utf8");
       expect(content).toContain("## Agent Learnings");
       expect(content).toContain("deterministic ops");
+    });
+
+    it("persists to the ledger even when the markdown mirror path is invalid", async () => {
+      const targetBlocker = "MIRROR_BLOCKER";
+      await writeFile(resolve(tempRoot, targetBlocker), "blocker", "utf8");
+      initSharedKnowledge({ repoRoot: tempRoot, targetFile: `${targetBlocker}/TEST_AGENTS.md` });
+
+      const entry = buildKnowledgeEntry({
+        content: "Always persist the authoritative ledger entry before attempting markdown mirroring.",
+        scope: "inference",
+        category: "pattern",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        agentId: "test-agent",
+      });
+
+      const result = await appendKnowledgeEntry(entry);
+      expect(result.success).toBe(true);
+      expect(result.mirrored).toBe(false);
+      expect(String(result.mirrorReason || "")).toContain("markdown mirror failed");
+
+      const { listKnowledgeEntriesFromStateLedger } = await import("../lib/state-ledger-sqlite.mjs");
+      expect(listKnowledgeEntriesFromStateLedger({ repoRoot: tempRoot, workspaceId: "workspace-1" })).toEqual([
+        expect.objectContaining({
+          content: "Always persist the authoritative ledger entry before attempting markdown mirroring.",
+          workspaceId: "workspace-1",
+        }),
+      ]);
     });
 
     it("rejects invalid entries", async () => {

@@ -745,6 +745,50 @@ export function isDuplicate(entry) {
 
 // ── Write ────────────────────────────────────────────────────────────────────
 
+async function writeKnowledgeMarkdownMirror(filePath, markdown) {
+  await ensureParentDir(filePath);
+  let content = "";
+  if (existsSync(filePath)) {
+    content = await readFile(filePath, "utf8");
+  }
+
+  const sectionIdx = content.indexOf(knowledgeState.sectionHeader);
+  if (sectionIdx === -1) {
+    const newContent =
+      content.trimEnd() +
+      "\n\n" +
+      knowledgeState.sectionHeader +
+      "\n\n" +
+      markdown +
+      ENTRY_SEPARATOR;
+    await writeFile(filePath, newContent, "utf8");
+    return;
+  }
+
+  const afterSection = content.slice(sectionIdx + knowledgeState.sectionHeader.length);
+  const nextSectionMatch = afterSection.match(/\n## [^#]/);
+  if (nextSectionMatch) {
+    const insertPos =
+      sectionIdx +
+      knowledgeState.sectionHeader.length +
+      nextSectionMatch.index;
+    const before = content.slice(0, insertPos);
+    const after = content.slice(insertPos);
+    await writeFile(
+      filePath,
+      before + "\n" + markdown + ENTRY_SEPARATOR + after,
+      "utf8",
+    );
+    return;
+  }
+
+  await writeFile(
+    filePath,
+    content.trimEnd() + "\n\n" + markdown + ENTRY_SEPARATOR,
+    "utf8",
+  );
+}
+
 export async function appendKnowledgeEntry(entry, options = {}) {
   const normalizedEntry = serializeEntry(entry);
   const validation = validateEntry(normalizedEntry);
@@ -771,54 +815,23 @@ export async function appendKnowledgeEntry(entry, options = {}) {
   }
 
   const markdown = formatEntryAsMarkdown(normalizedEntry);
+  const effectiveRepoRoot = knowledgeState.repoRoot || process.cwd();
   const filePath = resolve(knowledgeState.repoRoot || process.cwd(), knowledgeState.targetFile);
 
   try {
-    await ensureParentDir(filePath);
-    let content = "";
-    if (existsSync(filePath)) {
-      content = await readFile(filePath, "utf8");
-    }
-
-    const sectionIdx = content.indexOf(knowledgeState.sectionHeader);
-    if (sectionIdx === -1) {
-      const newContent =
-        content.trimEnd() +
-        "\n\n" +
-        knowledgeState.sectionHeader +
-        "\n\n" +
-        markdown +
-        ENTRY_SEPARATOR;
-      await writeFile(filePath, newContent, "utf8");
-    } else {
-      const afterSection = content.slice(sectionIdx + knowledgeState.sectionHeader.length);
-      const nextSectionMatch = afterSection.match(/\n## [^#]/);
-      if (nextSectionMatch) {
-        const insertPos =
-          sectionIdx +
-          knowledgeState.sectionHeader.length +
-          nextSectionMatch.index;
-        const before = content.slice(0, insertPos);
-        const after = content.slice(insertPos);
-        await writeFile(
-          filePath,
-          before + "\n" + markdown + ENTRY_SEPARATOR + after,
-          "utf8",
-        );
-      } else {
-        await writeFile(
-          filePath,
-          content.trimEnd() + "\n\n" + markdown + ENTRY_SEPARATOR,
-          "utf8",
-        );
-      }
-    }
-
-    const effectiveRepoRoot = knowledgeState.repoRoot || process.cwd();
     const ledgerResult = appendKnowledgeEntryToStateLedger(normalizedEntry, {
       repoRoot: effectiveRepoRoot,
     });
     await syncRegistryProjectionFromLedger(effectiveRepoRoot);
+
+    let mirrored = true;
+    let mirrorReason = null;
+    try {
+      await writeKnowledgeMarkdownMirror(filePath, markdown);
+    } catch (mirrorError) {
+      mirrored = false;
+      mirrorReason = `markdown mirror failed: ${mirrorError.message}`;
+    }
 
     knowledgeState.entryHashes.add(normalizedEntry.hash);
     knowledgeState.entriesWritten++;
@@ -832,6 +845,8 @@ export async function appendKnowledgeEntry(entry, options = {}) {
       ledgerPath: ledgerResult?.path || resolveStateLedgerPath({
         repoRoot: effectiveRepoRoot,
       }),
+      mirrored,
+      mirrorReason,
     };
   } catch (err) {
     return { success: false, reason: `write error: ${err.message}` };
