@@ -63,6 +63,14 @@ npm run smoke:packed-cli
 # Format: "source_prefix|test_glob_1|test_glob_2|..."
 # Globs are matched against tests/*.test.mjs filenames (basename only).
 ADJACENCY_MAP=(
+  "package.json|prepublish-check|vitest-runner|cli-*|config-validation*"
+  "package-lock.json|prepublish-check|vitest-runner"
+  "pnpm-lock.yaml|prepublish-check|vitest-runner"
+  "yarn.lock|prepublish-check|vitest-runner"
+  "npm-shrinkwrap.json|prepublish-check|vitest-runner"
+  "vitest.config.mjs|vitest-runner"
+  "tests/setup.mjs|vitest-runner|ui-server*|workflow-engine*|task-store*|kanban-adapter*"
+  ".githooks/pre-push|prepublish-check|vitest-runner"
   "workflow/|workflow-*|workflow-task-lifecycle*|workflow-write-file-encoding*|workflow-pipeline-primitives*|workflow-research-evidence-sidecar*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|state-ledger-sqlite*|webhook-gateway*|credential-store*|cron-scheduler*"
   "workflow-templates/|workflow-templates*|workflow-new-templates*|workflow-engine*|manual-flows*"
   "task/|task-*|workflow-task-lifecycle*|kanban-*|state-ledger-sqlite*|ve-orchestrator*|vk-api*|ve-kanban*"
@@ -91,29 +99,26 @@ ADJACENCY_MAP=(
 )
 
 declare -A CHANGED_MAP=()
-RUN_ALL=false
-RUN_ALL_REASON=""
+declare -A BROAD_IMPACT_MAP=()
 
 is_zero_sha() {
   [ "$1" = "0000000000000000000000000000000000000000" ]
 }
 
-should_force_full_suite() {
+is_broad_impact_file() {
   local path="$1"
   case "$path" in
-    # Dependency manifest changes can affect any module.
+    # These files can influence many modules, but local pre-push remains
+    # targeted and defers full-suite coverage to CI.
     package.json|package-lock.json|pnpm-lock.yaml|yarn.lock|npm-shrinkwrap.json)
       return 0
       ;;
-    # Test infrastructure changes affect all tests.
     vitest.config.*|tests/setup.mjs)
       return 0
       ;;
-    # Hook changes → re-validate with full suite for safety.
     .githooks/pre-push|.githooks/pre-commit)
       return 0
       ;;
-    # Top-level setup bootstraps the entire runtime.
     preflight.mjs|setup.mjs)
       return 0
       ;;
@@ -139,9 +144,11 @@ while IFS= read -r line; do
   if is_zero_sha "$REMOTE_SHA"; then
     BASE="$(merge_base_for_new_branch "$LOCAL_SHA")"
     if [ -z "$BASE" ]; then
-      RUN_ALL=true
-      RUN_ALL_REASON="new branch with unknown merge-base"
-      break
+      while IFS= read -r path; do
+        [ -z "$path" ] && continue
+        CHANGED_MAP["$path"]=1
+      done < <(git diff --name-only "$LOCAL_SHA" 2>/dev/null || true)
+      continue
     fi
     RANGE="${BASE}..${LOCAL_SHA}"
   else
@@ -151,21 +158,11 @@ while IFS= read -r line; do
   while IFS= read -r path; do
     [ -z "$path" ] && continue
     CHANGED_MAP["$path"]=1
-    if should_force_full_suite "$path"; then
-      RUN_ALL=true
-      RUN_ALL_REASON="high-risk file changed: $path"
-      break
+    if is_broad_impact_file "$path"; then
+      BROAD_IMPACT_MAP["$path"]=1
     fi
   done < <(git diff --name-only "$RANGE" 2>/dev/null || true)
-
-  $RUN_ALL && break
 done <<< "$PUSH_INPUT"
-
-if $RUN_ALL; then
-  echo "[hooks] running full suite (${RUN_ALL_REASON})"
-  npm test
-  exit 0
-fi
 
 # ── Classify changed files ──────────────────────────────────────────────────
 declare -a CHANGED_FILES=()
@@ -186,15 +183,13 @@ for file in "${!CHANGED_MAP[@]}"; do
   esac
 done
 
-if [ "${#CHANGED_FILES[@]}" -gt 120 ]; then
-  echo "[hooks] running full suite (large push: ${#CHANGED_FILES[@]} files)"
-  npm test
-  exit 0
-fi
-
 if [ "${#CHANGED_RUNTIME[@]}" -eq 0 ] && [ "${#CHANGED_TESTS[@]}" -eq 0 ]; then
   echo "[hooks] no runtime/test files changed — pre-push passed ✓"
   exit 0
+fi
+
+if [ "${#BROAD_IMPACT_MAP[@]}" -gt 0 ]; then
+  echo "[hooks] broad-impact files changed; running targeted local coverage only and deferring full-suite coverage to CI"
 fi
 
 # ── Collect all targeted test files into a single set ────────────────────────
@@ -294,30 +289,78 @@ for file in "${CHANGED_RUNTIME[@]}"; do
   collect_linked_static_tests "$file"
 done
 
-# ── Smart escalation: if we selected too many tests, just run everything ─────
-TOTAL_TESTS="$(find tests -maxdepth 1 -name '*.test.mjs' 2>/dev/null | wc -l | tr -d ' ')"
+# ── Split targeted tests by runner and keep memory bounded ───────────────────
+TOTAL_TESTS="$(find tests -maxdepth 1 \( -name '*.test.mjs' -o -name '*.node.test.mjs' \) 2>/dev/null | wc -l | tr -d ' ')"
 [ "$TOTAL_TESTS" -eq 0 ] && TOTAL_TESTS=187  # fallback
-SELECTED="${#TARGET_TESTS[@]}"
-ESCALATION_THRESHOLD=$(( TOTAL_TESTS * 60 / 100 ))
 
-if [ "$SELECTED" -gt "$ESCALATION_THRESHOLD" ]; then
-  echo "[hooks] targeted set is ${SELECTED}/${TOTAL_TESTS} tests (>${ESCALATION_THRESHOLD}) — running full suite"
-  npm test
-  exit 0
-fi
+declare -a SORTED_TARGET_TESTS=()
+while IFS= read -r test_file; do
+  [ -z "$test_file" ] && continue
+  SORTED_TARGET_TESTS+=("$test_file")
+done < <(printf '%s\n' "${!TARGET_TESTS[@]}" | sort)
 
-# ── Single vitest invocation with all targeted tests ─────────────────────────
-declare -a FINAL_TEST_LIST=()
-for test_file in "${!TARGET_TESTS[@]}"; do
-  FINAL_TEST_LIST+=("$test_file")
-done
-
-if [ "${#FINAL_TEST_LIST[@]}" -eq 0 ]; then
+if [ "${#SORTED_TARGET_TESTS[@]}" -eq 0 ]; then
   echo "[hooks] no related tests found — pre-push passed ✓"
   exit 0
 fi
 
-echo "[hooks] running ${#FINAL_TEST_LIST[@]}/${TOTAL_TESTS} targeted tests…"
-node tools/vitest-runner.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
+declare -a FINAL_VITEST_LIST=()
+declare -a FINAL_NODE_TEST_LIST=()
+for test_file in "${SORTED_TARGET_TESTS[@]}"; do
+  case "$test_file" in
+    *.node.test.mjs)
+      FINAL_NODE_TEST_LIST+=("$test_file")
+      ;;
+    *)
+      FINAL_VITEST_LIST+=("$test_file")
+      ;;
+  esac
+done
+
+echo "[hooks] running ${#SORTED_TARGET_TESTS[@]}/${TOTAL_TESTS} targeted tests…"
+
+run_vitest_batches() {
+  local -a tests=("$@")
+  [ "${#tests[@]}" -eq 0 ] && return 0
+
+  local -a runner_args=(run --config vitest.config.mjs)
+  local batch_size=18
+  if [ "${#tests[@]}" -le "$batch_size" ]; then
+    node tools/vitest-runner.mjs "${runner_args[@]}" "${tests[@]}"
+    return $?
+  fi
+
+  echo "[hooks] splitting vitest target set into batches to keep local memory bounded"
+  local total="${#tests[@]}"
+  local offset=0
+  local batch=1
+  while [ "$offset" -lt "$total" ]; do
+    local -a slice=("${tests[@]:offset:batch_size}")
+    echo "[hooks] vitest batch ${batch}: ${#slice[@]} files"
+    node tools/vitest-runner.mjs "${runner_args[@]}" --maxWorkers 1 "${slice[@]}" || return $?
+    offset=$((offset + batch_size))
+    batch=$((batch + 1))
+  done
+}
+
+run_node_test_batches() {
+  local -a tests=("$@")
+  [ "${#tests[@]}" -eq 0 ] && return 0
+
+  local batch_size=12
+  local total="${#tests[@]}"
+  local offset=0
+  local batch=1
+  while [ "$offset" -lt "$total" ]; do
+    local -a slice=("${tests[@]:offset:batch_size}")
+    echo "[hooks] node-test batch ${batch}: ${#slice[@]} files"
+    node --import ./tests/node-test-bootstrap.mjs --test "${slice[@]}" || return $?
+    offset=$((offset + batch_size))
+    batch=$((batch + 1))
+  done
+}
+
+run_vitest_batches "${FINAL_VITEST_LIST[@]}"
+run_node_test_batches "${FINAL_NODE_TEST_LIST[@]}"
 
 echo "[hooks] pre-push checks passed ✓"
