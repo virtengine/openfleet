@@ -69,6 +69,13 @@ export async function renderInk(element, options = {}) {
       }
       return stripAnsi(buffer).replace(/\r/g, "");
     },
+    lastFrame() {
+      for (let i = frames.length - 1; i >= 0; i--) {
+        const stripped = stripAnsi(frames[i]).replace(/\r/g, "");
+        if (stripped.trim().length > 0) return stripped;
+      }
+      return stripAnsi(buffer).replace(/\r/g, "");
+    },
     async press(chars, waitMs = 40) {
       stdin.write(chars);
       await delay(waitMs);
