@@ -36,8 +36,11 @@ export async function renderInk(element, options = {}) {
   const stdin = options.stdin || createInputTty();
   const stdout = options.stdout || createOutputTty(options);
   let buffer = "";
+  const frames = [];
   stdout.on("data", (chunk) => {
-    buffer += chunk.toString("utf8");
+    const text = chunk.toString("utf8");
+    buffer += text;
+    frames.push(text);
   });
 
   const app = render(element, {

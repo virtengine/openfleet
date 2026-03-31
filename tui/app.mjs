@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import htm from "htm";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 
 import wsBridgeFactory from "./lib/ws-bridge.mjs";
 import { getNextScreenForInput } from "./lib/navigation.mjs";
@@ -96,6 +96,7 @@ async function fallbackRequestJson(host, port, path, options = {}) {
 
 export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient, historyAdapter }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const [screen, setScreen] = useState(initialScreen || "status");
   const [connected, setConnected] = useState(false);
   const [connectionState, setConnectionState] = useState("offline");
