@@ -54,6 +54,8 @@ const telemetrySourceFiles = [
   source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
 }));
 
+const tuiAgentsSource = readFileSync(resolve(process.cwd(), "tui/screens/agents.mjs"), "utf8");
+
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
     it("renders a keyboard-accessible session id pill with copy feedback state", () => {
@@ -587,3 +589,24 @@ for (const relPath of ["ui/tabs/agents.js", "site/ui/tabs/agents.js"]) {
     });
   });
 }
+
+describe("TUI agents harness monitor", () => {
+  it("renders harness detail, approvals, and nudge controls backed by harness APIs", () => {
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/harness/runs?limit=8")');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}`)');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/events?limit=40&direction=desc`)');
+    expect(tuiAgentsSource).toContain('`/api/harness/approvals/${encodeURIComponent(requestId)}/resolve`');
+    expect(tuiAgentsSource).toContain('`/api/harness/runs/${encodeURIComponent(runId)}/nudge`');
+    expect(tuiAgentsSource).toContain("function HarnessDetail(");
+    expect(tuiAgentsSource).toContain("Harness monitor (");
+    expect(tuiAgentsSource).toContain("[H detail · [ / ] select]");
+    expect(tuiAgentsSource).toContain('const [harnessNudgeMode, setHarnessNudgeMode] = React.useState(false);');
+    expect(tuiAgentsSource).toContain('if (harnessDetailView) {');
+    expect(tuiAgentsSource).toContain('if ((input === "a" || input === "A")');
+    expect(tuiAgentsSource).toContain('if ((input === "x" || input === "X")');
+    expect(tuiAgentsSource).toContain('if ((input === "n" || input === "N")');
+    expect(tuiAgentsSource).toContain('if (input === "h" || input === "H") {');
+    expect(tuiAgentsSource).toContain('if (input === "[") {');
+    expect(tuiAgentsSource).toContain('if (input === "]") {');
+  });
+});

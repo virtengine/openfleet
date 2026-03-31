@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 const tasksSource = readFileSync(new URL("../ui/tabs/tasks.js", import.meta.url), "utf8");
 const chatSource = readFileSync(new URL("../ui/tabs/chat.js", import.meta.url), "utf8");
 const settingsSource = readFileSync(new URL("../ui/tabs/settings.js", import.meta.url), "utf8");
+const demoSource = readFileSync(new URL("../ui/demo.html", import.meta.url), "utf8");
+const siteDemoSource = readFileSync(new URL("../site/ui/demo.html", import.meta.url), "utf8");
 const componentsCss = readFileSync(new URL("../ui/styles/components.css", import.meta.url), "utf8");
 const layoutCss = readFileSync(new URL("../ui/styles/layout.css", import.meta.url), "utf8");
 
@@ -40,5 +42,12 @@ describe("mobile layout implementation", () => {
     expect(settingsSource).toContain("setting-input-wrap--secret");
     expect(settingsSource).toContain("InputAdornment");
     expect(settingsSource).toContain("(changeCount > 0 || restartCountdownSeconds != null)");
+  });
+
+  it("lets the demo auto-detect breakpoints unless an explicit layout override is requested", () => {
+    expect(demoSource).toContain('window.__bosunForcedLayoutMode = "auto";');
+    expect(siteDemoSource).toContain('window.__bosunForcedLayoutMode = "auto";');
+    expect(demoSource).not.toContain('window.__bosunForcedLayoutMode = "desktop";');
+    expect(siteDemoSource).not.toContain('window.__bosunForcedLayoutMode = "desktop";');
   });
 });

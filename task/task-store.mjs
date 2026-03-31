@@ -3098,6 +3098,7 @@ export function recoverAutoBlockedTasks(options = {}) {
     task.status = recoveryStatus;
     task.blockedReason = null;
     task.cooldownUntil = null;
+    task.meta = normalizeRecoveredTaskMeta(task, recoveredAt);
     task.updatedAt = recoveredAt;
     task.lastActivityAt = recoveredAt;
     task.syncDirty = true;
@@ -3116,8 +3117,8 @@ export function recoverAutoBlockedTasks(options = {}) {
       fromStatus: previousStatus,
       toStatus: recoveryStatus,
       status: recoveryStatus,
-      action: "unblock_parent_subtasks_complete",
-      message: `Unblocked parent task — all ${childIds.length} subtasks are terminal`,
+      action: "recover_parent_task",
+      message: `Recovered parent task — all ${childIds.length} subtasks settled`,
     });
     markTaskTouched(task, "auto-recovery");
     recoveredTaskIds.push(task.id);
