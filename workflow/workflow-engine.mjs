@@ -81,6 +81,17 @@ function getRuntimeEnv() {
   return getRuntimeProcess()?.env || {};
 }
 
+function shouldQuietWorkflowTraceLogs() {
+  const env = getRuntimeEnv();
+  return (env.VITEST === "true" || env.NODE_ENV === "test")
+    && env.BOSUN_TEST_VERBOSE_WORKFLOW_TRACE !== "1";
+}
+
+function logWorkflowTrace(message) {
+  if (shouldQuietWorkflowTraceLogs()) return;
+  console.log(message);
+}
+
 function getRuntimeCwd() {
   return getRuntimeProcess()?.cwd?.() || ".";
 }
@@ -5634,7 +5645,7 @@ export class WorkflowEngine extends EventEmitter {
           });
           const isTriggerNode = node.type?.startsWith("trigger.");
           if (!isTriggerNode) {
-            console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+            logWorkflowTrace(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
           }
           emitNodeEvent("node:start", node, { status: NodeStatus.RUNNING });
           this._recordLedgerEvent({
@@ -5719,12 +5730,12 @@ export class WorkflowEngine extends EventEmitter {
               // Quiet mode for trigger nodes: only log when they actually fire
               if (isTriggerNode) {
                 if (result?.triggered === true) {
-                  console.log(`${TAG} trigger:fired ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+                  logWorkflowTrace(`${TAG} trigger:fired ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
                 }
                 // triggered: false → silent (reduces noise from non-firing polls)
               } else {
                 const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
-                console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
+                logWorkflowTrace(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
               }
               emitNodeEvent("node:complete", node, {
                 status: NodeStatus.COMPLETED,
@@ -6025,7 +6036,7 @@ export class WorkflowEngine extends EventEmitter {
               markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
               executed.add(targetNodeId);
               const skippedNode = nodeMap.get(targetNodeId);
-              console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
+              logWorkflowTrace(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
               propagateSkippedDependencies(targetNodeId);
             }
           }

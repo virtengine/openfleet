@@ -29,7 +29,6 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
-import { shouldAutoInstallGitHooks } from "./task/task-context.mjs";
 
 const isWin = process.platform === "win32";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +36,11 @@ const BUNDLED_PWSH_DIR = resolve(__dirname, ".cache", "bosun", "pwsh");
 const BUNDLED_PWSH_PATH = resolve(BUNDLED_PWSH_DIR, "pwsh");
 const FALLBACK_PWSH_VERSION = "7.4.6";
 const require = createRequire(import.meta.url);
+const MODE_TASK = "task";
+const MODE_ALWAYS = "always";
+const MODE_OFF = "off";
+const TRUE_VALUES = new Set(["1", "true", "yes", "y", "on"]);
+const FALSE_VALUES = new Set(["0", "false", "no", "n", "off"]);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -69,6 +73,80 @@ function parseBoolEnv(value, fallback) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function normalizeScopedMode(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return null;
+
+  if ([
+    MODE_TASK,
+    "tasks",
+    "task-only",
+    "task_only",
+    "scoped",
+    "task-scoped",
+    "task_scoped",
+  ].includes(raw)) {
+    return MODE_TASK;
+  }
+
+  if ([
+    MODE_ALWAYS,
+    "all",
+    "global",
+    "unscoped",
+  ].includes(raw)) {
+    return MODE_ALWAYS;
+  }
+
+  if ([
+    MODE_OFF,
+    "none",
+    "disabled",
+    "disable",
+  ].includes(raw)) {
+    return MODE_OFF;
+  }
+
+  if (TRUE_VALUES.has(raw)) return MODE_ALWAYS;
+  if (FALSE_VALUES.has(raw)) return MODE_OFF;
+  return null;
+}
+
+function isBosunManagedSession(env = process.env) {
+  return (
+    parseBoolEnv(env.BOSUN_MANAGED, false) ||
+    parseBoolEnv(env.VE_MANAGED, false)
+  );
+}
+
+function resolveBosunTaskId(env = process.env) {
+  const candidates = [env.BOSUN_TASK_ID, env.VE_TASK_ID, env.VK_TASK_ID];
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function hasBosunTaskContext(env = process.env) {
+  return Boolean(resolveBosunTaskId(env)) && isBosunManagedSession(env);
+}
+
+// Keep postinstall self-contained so npm install does not pull in runtime
+// task-store/state-ledger modules that rely on newer Node builtins.
+function shouldAutoInstallGitHooks(options = {}) {
+  const env = options.env || process.env;
+  const mode = normalizeScopedMode(
+    options.mode ??
+      env.BOSUN_AUTO_GIT_HOOKS_MODE ??
+      env.BOSUN_GIT_HOOKS_MODE,
+  ) || MODE_ALWAYS;
+
+  if (mode === MODE_OFF) return false;
+  if (mode === MODE_ALWAYS) return true;
+  return hasBosunTaskContext(env);
 }
 
 function ensureJsonRpcNodeCompatShim() {
@@ -475,5 +553,4 @@ async function main() {
 main().catch((err) => {
   console.error(`  :alert:  postinstall failed: ${err.message}`);
 });
-
 
