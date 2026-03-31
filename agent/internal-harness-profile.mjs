@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+const MAX_SLUG_INPUT_LENGTH = 200;
 const SECRET_KEY_RE = /(api[_-]?key|token|secret|password|client[_-]?secret|pat)/i;
 const SECRET_PLACEHOLDER_ENV_RE = /^(?:\$?\{?[A-Z0-9_:-]+\}?|<[^>]+>)$/;
 const SECRET_PLACEHOLDER_TEXT_RE = /^(?:changeme|replace[-_ ]?me|your[-_ ]?key|your[-_ ]?token)$/i;
@@ -30,7 +31,7 @@ function toTrimmedString(value) {
 }
 
 function slugify(value) {
-  const lower = toTrimmedString(value).slice(0, 200).toLowerCase();
+  const lower = toTrimmedString(value).slice(0, MAX_SLUG_INPUT_LENGTH).toLowerCase();
   let slug = "";
   let prevDash = true; // suppress leading dash
   for (const ch of lower) {

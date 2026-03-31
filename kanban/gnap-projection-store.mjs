@@ -6,6 +6,7 @@ const GNAP_PROTOCOL_VERSION = "1";
 const GNAP_PROJECTION_MANAGER_ID = "bosun-gnap-projection";
 const MAX_TASK_DESCRIPTION_LENGTH = 16000;
 const MAX_MESSAGE_BODY_LENGTH = 12000;
+const MAX_SANITIZE_INPUT_LENGTH = 200;
 const MAX_TIMELINE_ENTRIES = 24;
 const MAX_ATTACHMENT_ENTRIES = 32;
 const MAX_WORKFLOW_RUN_ENTRIES = 24;
@@ -28,7 +29,7 @@ function truncateText(value, maxLength) {
 }
 
 function sanitizeFileComponent(value, fallback) {
-  const lower = String(value ?? "").trim().slice(0, 200).toLowerCase();
+  const lower = String(value ?? "").trim().slice(0, MAX_SANITIZE_INPUT_LENGTH).toLowerCase();
   let normalized = "";
   let prevDash = true; // suppress leading dash
   for (const ch of lower) {
