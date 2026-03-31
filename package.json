@@ -242,6 +242,7 @@
     "infra/tracing.mjs",
     "infra/tui-bridge.mjs",
     "infra/update-check.mjs",
+    "infra/windows-hidden-child-processes.mjs",
     "kanban/kanban-adapter.mjs",
     "lib/codebase-audit-manifests.mjs",
     "lib/codebase-audit.mjs",
