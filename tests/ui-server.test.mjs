@@ -5639,6 +5639,7 @@ describeUiServer("ui-server mini app", () => {
 
     const mod = await import("../server/ui-server.mjs");
     mod._testInjectWorkflowEngine(null, null);
+    let taskId = null;
     mod.injectUiDependencies({
       taskStoreApi: {
         canStartTask: vi.fn(() => ({
@@ -5682,7 +5683,7 @@ describeUiServer("ui-server mini app", () => {
       }),
     }).then((r) => r.json());
     expect(created.ok).toBe(true);
-    const taskId = created.data.id;
+    taskId = created.data.id;
 
     const detailResp = await fetch(
       `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
@@ -5707,6 +5708,13 @@ describeUiServer("ui-server mini app", () => {
     expect(listResp.status).toBe(200);
     expect(listJson.ok).toBe(true);
     expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
+    const listedTask = listJson.data.find((entry) => entry.id === taskId);
+    expect(listedTask?.canStart?.canStart).toBe(false);
+    expect(listedTask?.blockedContext?.category).toBe("dependency_blocked");
+    expect(listedTask?.blockedContext?.blockedBy).toEqual([
+      { taskId: "dep-1", reason: "Waiting for dep-1" },
+    ]);
+    expect(listedTask?.diagnostics?.stableCause?.code).toBe("api_error_cooldown");
   }, 15000);
 
   it("reads task log diagnostics from bounded monitor-log tails on task detail", async () => {
@@ -5747,11 +5755,15 @@ describeUiServer("ui-server mini app", () => {
       const filler = Array.from({ length: 8000 }, (_, index) => `2026-03-04T04:00:${String(index % 60).padStart(2, "0")}.000Z filler line ${index}`);
       filler.push(
         `2026-03-04T04:30:00.000Z [ERROR] Worktree acquisition failed for ${taskId} branch ve/task-log-tail-12345678`,
+        `2026-03-04T04:31:00.000Z [ERROR] Worktree refresh failed for existing branch ve/task-log-tail-12345678; managed worktree was removed after stale refresh state (${taskId})`,
       );
       writeFileSync(monitorErrorPath, `${filler.join("\n")}\n`, "utf8");
 
       const detail = await fetch(
         `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+      ).then((r) => r.json());
+      const list = await fetch(
+        `http://127.0.0.1:${port}/api/tasks?search=${encodeURIComponent(taskId)}&pageSize=50`,
       ).then((r) => r.json());
 
       expect(detail.ok).toBe(true);
@@ -5762,6 +5774,25 @@ describeUiServer("ui-server mini app", () => {
             source: "monitor-error.log",
             message: expect.stringContaining("Worktree acquisition failed"),
           }),
+          expect.objectContaining({
+            source: "monitor-error.log",
+            message: expect.stringContaining("Worktree refresh failed for existing branch"),
+          }),
+        ]),
+      );
+      const listedTask = list.data.find((entry) => entry.id === taskId);
+      expect(listedTask?.blockedContext?.category).toBe("worktree_failure");
+      expect(listedTask?.blockedContext?.worktreeFailureCount).toBeGreaterThan(0);
+      expect(listedTask?.blockedContext?.logEvidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: "monitor-error.log",
+            message: expect.stringContaining("Worktree acquisition failed"),
+          }),
+          expect.objectContaining({
+            source: "monitor-error.log",
+            message: expect.stringContaining("Worktree refresh failed for existing branch"),
+          }),
         ]),
       );
     } finally {
@@ -5771,6 +5802,119 @@ describeUiServer("ui-server mini app", () => {
         writeFileSync(monitorErrorPath, previousMonitorError, "utf8");
       }
     }
+  }, 15000);
+
+  it("classifies blocked task rows from workflow-run worktree failure evidence when local logs are quiet", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    let taskId = "";
+    const fakeEngine = {
+      getRunHistory: vi.fn(() => [
+        {
+          runId: "run-worktree-failure-1",
+          workflowId: "wf-worktree-failure-1",
+          workflowName: "Task Lifecycle",
+          status: "failed",
+          startedAt: "2026-03-31T15:43:05.000Z",
+          endedAt: "2026-03-31T15:43:23.000Z",
+          duration: 18000,
+          taskId,
+          taskIds: [taskId],
+          detail: {
+            data: {
+              taskId,
+            },
+          },
+          meta: {
+            failureKind: "branch_refresh_conflict",
+            error: "Worktree refresh failed for existing branch task/example; managed worktree was removed after stale refresh state",
+            worktreeFailure: {
+              failureKind: "branch_refresh_conflict",
+              blockedReason: "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.",
+              error: "Worktree refresh failed for existing branch task/example; managed worktree was removed after stale refresh state",
+              retryable: false,
+            },
+          },
+        },
+      ]),
+      getRunDetail: vi.fn((runId) => ({
+        runId,
+        workflowId: "wf-worktree-failure-1",
+        workflowName: "Task Lifecycle",
+        status: "failed",
+        endedAt: "2026-03-31T15:43:23.000Z",
+        detail: {
+          data: {
+            taskId,
+          },
+        },
+        meta: {
+          failureKind: "branch_refresh_conflict",
+          error: "Worktree refresh failed for existing branch task/example; managed worktree was removed after stale refresh state",
+          worktreeFailure: {
+            failureKind: "branch_refresh_conflict",
+            blockedReason: "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.",
+            error: "Worktree refresh failed for existing branch task/example; managed worktree was removed after stale refresh state",
+            retryable: false,
+          },
+        },
+      })),
+      getTaskTraceEvents: vi.fn(() => []),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "blocked workflow-run evidence task",
+        description: "derive blocked context from workflow-run metadata",
+        status: "blocked",
+        branchName: "task/example",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    taskId = created.data.id;
+    const taskStore = await import("../task/task-store.mjs");
+    await taskStore.updateTask(taskId, {
+      status: "blocked",
+      branchName: "task/example",
+    });
+    if (typeof taskStore.waitForStoreWrites === "function") {
+      await taskStore.waitForStoreWrites();
+    }
+
+    const list = await fetch(
+      `http://127.0.0.1:${port}/api/tasks?search=${encodeURIComponent(taskId)}&pageSize=50`,
+    ).then((r) => r.json());
+
+    expect(list.ok).toBe(true);
+    const listedTask = list.data.find((entry) => entry.id === taskId);
+    expect(listedTask?.status).toBe("blocked");
+    expect(listedTask?.blockedContext?.category).toBe("worktree_failure");
+    expect(listedTask?.blockedContext?.worktreeFailureCount).toBeGreaterThan(0);
+    expect(listedTask?.blockedContext?.workflowRunEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "workflow-run",
+          failureKind: "branch_refresh_conflict",
+          message: expect.stringContaining("Worktree refresh failed for existing branch"),
+        }),
+      ]),
+    );
+    expect(fakeEngine.getRunDetail).not.toHaveBeenCalled();
+    expect(fakeEngine.getTaskTraceEvents).not.toHaveBeenCalled();
   }, 15000);
 
   it("surfaces repo-area contention summaries on /api/telemetry/summary", async () => {

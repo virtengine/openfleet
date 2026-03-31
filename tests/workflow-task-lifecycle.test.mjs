@@ -2078,8 +2078,18 @@ describe("action.resolve_executor", () => {
       expect(result.success).toBe(true);
       expect(result.sdk).toBe("opencode");
       expect(result.model).toBe("openrouter/moonshotai/kimi-k2");
+      expect(result.provider).toBe("openrouter");
+      expect(result.providerConfig).toEqual({
+        provider: "openrouter",
+        model: "openrouter/moonshotai/kimi-k2",
+      });
       expect(ctx.data.resolvedSdk).toBe("opencode");
       expect(ctx.data.resolvedModel).toBe("openrouter/moonshotai/kimi-k2");
+      expect(ctx.data.resolvedProvider).toBe("openrouter");
+      expect(ctx.data.resolvedProviderConfig).toEqual({
+        provider: "openrouter",
+        model: "openrouter/moonshotai/kimi-k2",
+      });
     } finally {
       loadConfigSpy.mockRestore();
       for (const key of Object.keys(process.env)) {
@@ -2099,9 +2109,21 @@ describe("action.resolve_executor", () => {
     expect(pushBranch?.schema?.properties?.conflictResolverSdk?.enum).toContain("opencode");
   });
 
-  it("forwards an explicit OpenCode SDK through action.run_agent execution", async () => {
+  it("forwards resolved OpenCode executor config through action.run_agent execution", async () => {
     const handler = getNodeType("action.run_agent");
-    const ctx = makeCtx({ worktreePath: "/tmp/opencode-workflow" });
+    const ctx = makeCtx({
+      worktreePath: "/tmp/opencode-workflow",
+      resolvedSdk: "opencode",
+      resolvedModel: "openrouter/moonshotai/kimi-k2",
+      resolvedProvider: "openrouter",
+      resolvedProviderConfig: {
+        provider: "openrouter",
+        baseUrl: "https://openrouter.example/v1",
+        apiKey: "workflow-opencode-key",
+        port: 4222,
+        timeoutMs: 45000,
+      },
+    });
     const launchEphemeralThread = vi.fn().mockResolvedValue({
       success: true,
       output: "opencode-run-complete",
@@ -2119,7 +2141,8 @@ describe("action.resolve_executor", () => {
 
     const node = makeNode("action.run_agent", {
       prompt: "Use OpenCode for this task",
-      sdk: "opencode",
+      sdk: "{{resolvedSdk}}",
+      model: "{{resolvedModel}}",
       autoRecover: false,
       failOnError: true,
     }, "run-agent-opencode");
@@ -2133,8 +2156,77 @@ describe("action.resolve_executor", () => {
     expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
       expect.objectContaining({
         sdk: "opencode",
+        model: "openrouter/moonshotai/kimi-k2",
+        provider: "openrouter",
+        providerConfig: {
+          provider: "openrouter",
+          model: "openrouter/moonshotai/kimi-k2",
+          baseUrl: "https://openrouter.example/v1",
+          apiKey: "workflow-opencode-key",
+          port: 4222,
+          timeoutMs: 45000,
+        },
       }),
     );
+  });
+
+  it("forwards OpenCode restart config through action.restart_agent execution", async () => {
+    const handler = getNodeType("action.restart_agent");
+    const ctx = makeCtx({
+      sessionId: "opencode-session-old",
+      resolvedSdk: "opencode",
+      resolvedModel: "openrouter/moonshotai/kimi-k2",
+      resolvedProvider: "openrouter",
+      resolvedProviderConfig: {
+        provider: "openrouter",
+        baseUrl: "https://openrouter.example/v1",
+        apiKey: "restart-opencode-key",
+      },
+      worktreePath: "/tmp/opencode-workflow",
+    });
+    const killSession = vi.fn().mockResolvedValue(true);
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "opencode-restarted",
+      sdk: "opencode",
+      items: [],
+      threadId: "opencode-thread-2",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          killSession,
+          launchEphemeralThread,
+        },
+      },
+    };
+    const node = makeNode("action.restart_agent", {
+      prompt: "Restart with OpenCode",
+      sdk: "{{resolvedSdk}}",
+      model: "{{resolvedModel}}",
+    }, "restart-agent-opencode");
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(killSession).toHaveBeenCalledWith("opencode-session-old");
+    expect(launchEphemeralThread).toHaveBeenCalledWith(
+      expect.stringContaining("Restart with OpenCode"),
+      "/tmp/opencode-workflow",
+      3600000,
+      expect.objectContaining({
+        sdk: "opencode",
+        model: "openrouter/moonshotai/kimi-k2",
+        provider: "openrouter",
+        providerConfig: {
+          provider: "openrouter",
+          model: "openrouter/moonshotai/kimi-k2",
+          baseUrl: "https://openrouter.example/v1",
+          apiKey: "restart-opencode-key",
+        },
+      }),
+    );
+    expect(ctx.data.threadId).toBe("opencode-thread-2");
   });
 });
 

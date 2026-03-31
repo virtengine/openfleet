@@ -22118,7 +22118,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "$output === true || $output?.result === true || $output?.value === true"
+          "condition": "$output === true || $output?.result === true || $output?.value === true || $output?.triggered === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",
@@ -45440,7 +45440,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "$output === true || $output?.result === true || $output?.value === true"
+          "condition": "$output === true || $output?.result === true || $output?.value === true || $output?.triggered === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",

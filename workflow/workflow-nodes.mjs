@@ -3903,7 +3903,7 @@ registerBuiltinNodeType("trigger.task_low", {
       try {
         const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
         const workspaceId = ctx.data?._workspaceId || cfgOrCtx(node, ctx, "workspaceId") || undefined;
-        const kanban = ctx.data?._services?.kanban;
+        const kanban = engine?.services?.kanban || ctx.data?._services?.kanban;
         let tasks;
         const queryOpts = { status };
         if (workspaceId) queryOpts.workspace = workspaceId;
@@ -4482,6 +4482,8 @@ registerBuiltinNodeType("action.run_agent", {
       systemPrompt: { type: "string", description: "Optional stable system prompt for cache anchoring" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "opencode", "auto"], default: "auto" },
       model: { type: "string", description: "Optional model override for the selected SDK" },
+      provider: { type: "string", description: "Optional provider override for OpenCode executor runs" },
+      providerConfig: { type: "object", description: "Optional OpenCode provider configuration overrides" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
       cwd: { type: "string", description: "Working directory for the agent" },
       mode: { type: "string", enum: ["ask", "agent", "plan", "web", "instant"], default: "agent", description: "Optional framing mode for the agent run" },
@@ -4523,8 +4525,25 @@ registerBuiltinNodeType("action.run_agent", {
   },
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
-    const sdk = node.config?.sdk || "auto";
-    const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
+    const rawSdk = String(
+      ctx.resolve(node.config?.sdk ?? ctx.data?.resolvedSdk ?? "auto") || "auto",
+    ).trim() || "auto";
+    const sdk = normalizeWorkflowSdkKey(rawSdk) || "auto";
+    const model = String(
+      ctx.resolve(node.config?.model ?? ctx.data?.resolvedModel ?? "") || "",
+    ).trim() || undefined;
+    const providerOverride = String(
+      ctx.resolve(node.config?.provider ?? ctx.data?.resolvedProvider ?? "") || "",
+    ).trim();
+    const providerConfigSource =
+      node.config?.providerConfig ?? ctx.data?.resolvedProviderConfig ?? null;
+    const resolvedProviderConfig = resolveWorkflowConfigTemplates(ctx, providerConfigSource);
+    const { provider, providerConfig } = buildWorkflowOpenCodeSelection({
+      sdk,
+      model,
+      provider: providerOverride,
+      providerConfig: resolvedProviderConfig,
+    });
     const configuredCwd = ctx.resolve(node.config?.cwd || "");
     const runtimeWorktreePath = String(ctx.data?.worktreePath || "").trim();
     const cwd = isUnresolvedTemplateToken(configuredCwd)
@@ -5307,6 +5326,8 @@ registerBuiltinNodeType("action.run_agent", {
         if (sessionId) launchExtra.resumeThreadId = sessionId;
         if (sdkOverride) launchExtra.sdk = sdkOverride;
         if (modelOverride) launchExtra.model = modelOverride;
+        if (provider) launchExtra.provider = provider;
+        if (providerConfig) launchExtra.providerConfig = providerConfig;
         if (selectedMcpServers !== undefined) launchExtra.mcpServers = selectedMcpServers;
         const slotOwnerKey = `${recoveryTaskKey}:${node.id}`;
         const slotMeta = {
@@ -5321,6 +5342,7 @@ registerBuiltinNodeType("action.run_agent", {
           cwd,
           sdk: sdkOverride || null,
           model: modelOverride || null,
+          provider: provider || null,
           sessionType: trackedSessionType,
         };
         let slotWaitAnnounced = false;
@@ -12982,6 +13004,9 @@ registerBuiltinNodeType("action.restart_agent", {
       sessionId: { type: "string", description: "Session ID to restart" },
       reason: { type: "string", description: "Reason for restart (logged and given as context)" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "opencode", "auto"], default: "auto" },
+      model: { type: "string", description: "Optional model override for the restarted agent" },
+      provider: { type: "string", description: "Optional provider override for OpenCode restarts" },
+      providerConfig: { type: "object", description: "Optional OpenCode provider configuration overrides" },
       prompt: { type: "string", description: "New prompt for the restarted agent" },
       cwd: { type: "string", description: "Working directory" },
       timeoutMs: { type: "number", default: 3600000 },
@@ -12991,6 +13016,25 @@ registerBuiltinNodeType("action.restart_agent", {
   async execute(node, ctx, engine) {
     const sessionId = ctx.resolve(node.config?.sessionId || ctx.data?.sessionId || "");
     const reason = ctx.resolve(node.config?.reason || "workflow restart");
+    const rawSdk = String(
+      ctx.resolve(node.config?.sdk ?? ctx.data?.resolvedSdk ?? "auto") || "auto",
+    ).trim() || "auto";
+    const sdk = normalizeWorkflowSdkKey(rawSdk) || "auto";
+    const model = String(
+      ctx.resolve(node.config?.model ?? ctx.data?.resolvedModel ?? "") || "",
+    ).trim() || undefined;
+    const providerOverride = String(
+      ctx.resolve(node.config?.provider ?? ctx.data?.resolvedProvider ?? "") || "",
+    ).trim();
+    const providerConfigSource =
+      node.config?.providerConfig ?? ctx.data?.resolvedProviderConfig ?? null;
+    const resolvedProviderConfig = resolveWorkflowConfigTemplates(ctx, providerConfigSource);
+    const { provider, providerConfig } = buildWorkflowOpenCodeSelection({
+      sdk,
+      model,
+      provider: providerOverride,
+      providerConfig: resolvedProviderConfig,
+    });
     const prompt = ctx.resolve(node.config?.prompt || "");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
 
@@ -13013,7 +13057,13 @@ registerBuiltinNodeType("action.restart_agent", {
       const result = await agentPool.launchEphemeralThread(
         `Previous attempt failed (reason: ${reason}). Starting fresh.\n\n${prompt}`,
         cwd,
-        node.config?.timeoutMs || 3600000
+        node.config?.timeoutMs || 3600000,
+        {
+          sdk,
+          model,
+          provider,
+          providerConfig,
+        },
       );
 
       // Propagate new session/thread IDs for downstream chaining
@@ -15253,6 +15303,72 @@ function normalizeWorkflowSdkKey(value) {
   if (raw.includes("opencode")) return "opencode";
   return raw;
 }
+function cloneWorkflowConfigValue(value) {
+  if (value == null) return value;
+  if (typeof globalThis.structuredClone === "function") {
+    return globalThis.structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+function resolveWorkflowConfigTemplates(ctx, value) {
+  if (value == null) return value;
+  if (typeof value === "string") return ctx.resolve(value);
+  if (Array.isArray(value)) {
+    return value.map((entry) => resolveWorkflowConfigTemplates(ctx, entry));
+  }
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        resolveWorkflowConfigTemplates(ctx, entry),
+      ]),
+    );
+  }
+  return value;
+}
+function normalizeWorkflowProviderConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const normalized = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry == null) continue;
+    if (typeof entry === "string") {
+      const trimmed = entry.trim();
+      if (!trimmed) continue;
+      normalized[key] = trimmed;
+      continue;
+    }
+    normalized[key] = entry;
+  }
+  return Object.keys(normalized).length ? normalized : null;
+}
+function buildWorkflowOpenCodeSelection({ sdk, model = "", provider = "", providerConfig = null } = {}) {
+  if (normalizeWorkflowSdkKey(sdk) !== "opencode") {
+    return { provider: null, providerConfig: null };
+  }
+  const normalizedProviderConfig = normalizeWorkflowProviderConfig(providerConfig);
+  const normalizedProvider =
+    String(provider || normalizedProviderConfig?.provider || "").trim() || null;
+  const normalizedModel =
+    String(model || normalizedProviderConfig?.model || "").trim() || "";
+  if (!normalizedProviderConfig && !normalizedProvider && !normalizedModel) {
+    return { provider: null, providerConfig: null };
+  }
+  const mergedProviderConfig = normalizedProviderConfig
+    ? { ...normalizedProviderConfig }
+    : {};
+  if (normalizedProvider && !mergedProviderConfig.provider) {
+    mergedProviderConfig.provider = normalizedProvider;
+  }
+  if (normalizedModel) {
+    mergedProviderConfig.model = normalizedModel;
+  }
+  return {
+    provider: normalizedProvider,
+    providerConfig: Object.keys(mergedProviderConfig).length
+      ? mergedProviderConfig
+      : null,
+  };
+}
 function sdkToComplexityExecutorType(sdk) {
   if (sdk === "copilot") return "COPILOT";
   if (sdk === "codex") return "CODEX";
@@ -15296,6 +15412,10 @@ function resolveWorkflowExecutorPreference(config, defaultSdk) {
         model: Array.isArray(primaryExecutor.models)
           ? String(primaryExecutor.models[0] || "").trim()
           : String(primaryExecutor.providerConfig?.model || "").trim(),
+        provider: String(
+          primaryExecutor.provider || primaryExecutor.providerConfig?.provider || "",
+        ).trim(),
+        providerConfig: cloneWorkflowConfigValue(primaryExecutor.providerConfig || null),
         baseProfile: buildWorkflowBaseExecutorProfile(configuredSdk, {
           name: primaryExecutor.name || configuredSdk,
           variant: primaryExecutor.variant || "DEFAULT",
@@ -17356,6 +17476,8 @@ registerBuiltinNodeType("action.resolve_executor", {
     let configuredExecutorPreference = null;
     ctx.data.resolvedSkillIds = [];
     ctx.data.resolvedLibraryPlan = null;
+    ctx.data.resolvedProvider = null;
+    ctx.data.resolvedProviderConfig = null;
 
     // Check env var overrides (mirrors TaskExecutor behavior)
     const envModel =
@@ -17370,8 +17492,18 @@ registerBuiltinNodeType("action.resolve_executor", {
       const model = modelOverride || envModel || "";
       ctx.data.resolvedSdk = sdkOverride;
       ctx.data.resolvedModel = model;
+      ctx.data.resolvedProvider = null;
+      ctx.data.resolvedProviderConfig = null;
       ctx.log(node.id, `Executor override: sdk=${sdkOverride}, model=${model}`);
-      return { success: true, sdk: sdkOverride, model, tier: "override", profile: null };
+      return {
+        success: true,
+        sdk: sdkOverride,
+        model,
+        provider: null,
+        providerConfig: null,
+        tier: "override",
+        profile: null,
+      };
     }
 
     try {
@@ -17466,8 +17598,16 @@ registerBuiltinNodeType("action.resolve_executor", {
         if (!baseProfile && configuredExecutorPreference?.sdk) {
           const configuredModel =
             modelOverride || envModel || configuredExecutorPreference.model || "";
+          const openCodeSelection = buildWorkflowOpenCodeSelection({
+            sdk: configuredExecutorPreference.sdk,
+            model: configuredModel,
+            provider: configuredExecutorPreference.provider,
+            providerConfig: configuredExecutorPreference.providerConfig,
+          });
           ctx.data.resolvedSdk = configuredExecutorPreference.sdk;
           ctx.data.resolvedModel = configuredModel;
+          ctx.data.resolvedProvider = openCodeSelection.provider;
+          ctx.data.resolvedProviderConfig = openCodeSelection.providerConfig;
           ctx.log(
             node.id,
             `Executor configured: sdk=${configuredExecutorPreference.sdk}, model=${configuredModel}`,
@@ -17476,6 +17616,8 @@ registerBuiltinNodeType("action.resolve_executor", {
             success: true,
             sdk: configuredExecutorPreference.sdk,
             model: configuredModel,
+            provider: openCodeSelection.provider,
+            providerConfig: openCodeSelection.providerConfig,
             tier: "configured",
             profile: null,
             complexity: null,
@@ -17504,14 +17646,30 @@ registerBuiltinNodeType("action.resolve_executor", {
           configuredExecutorPreference?.model ||
           resolved.model ||
           "";
+        const openCodeSelection = buildWorkflowOpenCodeSelection({
+          sdk,
+          model,
+          provider:
+            profileDecision?.profile?.provider ||
+            configuredExecutorPreference?.provider ||
+            null,
+          providerConfig:
+            profileDecision?.profile?.providerConfig ||
+            configuredExecutorPreference?.providerConfig ||
+            null,
+        });
         const tier = profileDecision?.profile ? "profile" : (resolved.tier || "default");
         ctx.data.resolvedSdk = sdk;
         ctx.data.resolvedModel = model;
+        ctx.data.resolvedProvider = openCodeSelection.provider;
+        ctx.data.resolvedProviderConfig = openCodeSelection.providerConfig;
         ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${tier}`);
         return {
           success: true,
           sdk,
           model,
+          provider: openCodeSelection.provider,
+          providerConfig: openCodeSelection.providerConfig,
           tier,
           profile: profileDecision?.id || resolved.name || null,
           complexity: resolved.complexity || null,
@@ -17537,11 +17695,33 @@ registerBuiltinNodeType("action.resolve_executor", {
       profileDecision?.profile?.model ||
       configuredExecutorPreference?.model ||
       "";
+    const openCodeSelection = buildWorkflowOpenCodeSelection({
+      sdk,
+      model,
+      provider:
+        profileDecision?.profile?.provider ||
+        configuredExecutorPreference?.provider ||
+        null,
+      providerConfig:
+        profileDecision?.profile?.providerConfig ||
+        configuredExecutorPreference?.providerConfig ||
+        null,
+    });
     ctx.data.resolvedSdk = sdk;
     ctx.data.resolvedModel = model;
+    ctx.data.resolvedProvider = openCodeSelection.provider;
+    ctx.data.resolvedProviderConfig = openCodeSelection.providerConfig;
     const fallbackTier = profileDecision?.profile ? "profile" : "default";
     ctx.log(node.id, `Executor fallback: sdk=${sdk}`);
-    return { success: true, sdk, model, tier: fallbackTier, profile: profileDecision?.id || null };
+    return {
+      success: true,
+      sdk,
+      model,
+      provider: openCodeSelection.provider,
+      providerConfig: openCodeSelection.providerConfig,
+      tier: fallbackTier,
+      profile: profileDecision?.id || null,
+    };
   },
 });
 

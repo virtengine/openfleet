@@ -8110,7 +8110,10 @@ export function TasksTab() {
     setDetailTask(local || { id: taskId, title: taskId, status: "todo", description: "" });
     setDetailTaskHydrating(true);
     const result = await apiFetch(
-      buildTaskDetailPath(taskId, { includeDag: false }),
+      buildTaskDetailPath(taskId, {
+        includeDag: false,
+        includeWorkflowRuns: false,
+      }),
       { _silent: true },
     ).catch(() => ({ data: local }));
     if (detailRequestIdRef.current !== requestId) return;

@@ -132,7 +132,7 @@ describe("vitest-runner", () => {
   it("caps grouped full-suite worker fan-out on Windows by default", () => {
     const source = readFileSync(resolve(repoRoot, "tools", "vitest-full-suite.mjs"), "utf8");
     expect(source).toContain('process.env.BOSUN_VITEST_MAX_WORKERS || (process.platform === "win32" ? "4" : "")');
-    expect(source).toContain('process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "48" : "0")');
+    expect(source).toContain('process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "12" : "0")');
   });
 
   it("routes the pre-push hook through the worktree-safe runner", () => {
@@ -141,6 +141,7 @@ describe("vitest-runner", () => {
     expect(prePushHook).toContain('local -a runner_args=(run --config vitest.config.mjs)');
     expect(prePushHook).toContain('local -a bounded_runner_args=("${runner_args[@]}" --maxWorkers 1)');
     expect(prePushHook).toContain('node tools/vitest-runner.mjs "${bounded_runner_args[@]}"');
+    expect(prePushHook).toContain('BOSUN_PREPUSH_RUN_PACKED_SMOKE');
     expect(prePushHook).toContain('tests/*workflow*e2e*.test.mjs)');
     expect(prePushHook).toContain('tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs)');
     expect(prePushHook).toContain('local -a slice=("${regular_tests[@]:$offset:$batch_size}")');

@@ -739,6 +739,49 @@ describe("launchEphemeralThread", () => {
     );
   });
 
+  it("forwards full OpenCode provider configuration to the shell adapter", async () => {
+    process.env.__MOCK_OPENCODE_AVAILABLE = "1";
+    mockOpencodeExec.mockResolvedValue({
+      finalResponse: "opencode handled the workflow",
+      items: [],
+      usage: null,
+    });
+
+    const result = await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      5000,
+      {
+        sdk: "opencode",
+        taskKey: "workflow-opencode-provider-config",
+        provider: "openrouter",
+        model: "moonshotai/kimi-k2",
+        providerConfig: {
+          baseUrl: "https://openrouter.example/v1",
+          apiKey: "test-opencode-key",
+          port: 4111,
+          timeoutMs: 12345,
+        },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockOpencodeExec).toHaveBeenCalledTimes(1);
+    expect(mockOpencodeExec.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        sessionId: "workflow-opencode-provider-config",
+        provider: "openrouter",
+        providerConfig: {
+          model: "moonshotai/kimi-k2",
+          baseUrl: "https://openrouter.example/v1",
+          apiKey: "test-opencode-key",
+          port: 4111,
+          timeoutMs: 12345,
+        },
+      }),
+    );
+  });
+
   it("returns success/output/items/error fields", async () => {
     const result = await launchEphemeralThread(
       "test prompt",

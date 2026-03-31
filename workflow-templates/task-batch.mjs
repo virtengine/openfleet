@@ -184,7 +184,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
   ],
   edges: [
     edge("trigger", "check-coordinator"),
-    edge("check-coordinator", "query-tasks", { condition: "$output === true || $output?.result === true || $output?.value === true" }),
+    edge("check-coordinator", "query-tasks", { condition: "$output === true || $output?.result === true || $output?.value === true || $output?.triggered === true" }),
     edge("query-tasks", "dispatch-tasks"),
     edge("dispatch-tasks", "join-dispatch"),
     edge("join-dispatch", "record-results"),

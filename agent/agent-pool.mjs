@@ -3119,6 +3119,8 @@ async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     resumeThreadId = null,
     envOverrides = null,
+    provider = null,
+    providerConfig: rawProviderConfig = null,
     model = null,
     taskKey = null,
   } = extra;
@@ -3152,10 +3154,21 @@ async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
       "",
   ).trim() || null;
   const persistent = Boolean(logicalSessionId);
-  const providerConfig =
-    model && String(model).trim()
-      ? { model: String(model).trim() }
+  const normalizedProviderConfig =
+    rawProviderConfig && typeof rawProviderConfig === "object" && !Array.isArray(rawProviderConfig)
+      ? { ...rawProviderConfig }
       : null;
+  const trimmedModel = String(model || "").trim();
+  const providerConfig =
+    normalizedProviderConfig || trimmedModel
+      ? {
+          ...(normalizedProviderConfig || {}),
+          ...(trimmedModel ? { model: trimmedModel } : {}),
+        }
+      : null;
+  const normalizedProvider = String(
+    provider || providerConfig?.provider || "",
+  ).trim() || null;
 
   if (persistent && typeof onThreadReady === "function") {
     try {
@@ -3179,6 +3192,7 @@ async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
         persistent,
         sessionId: logicalSessionId,
         abortController,
+        provider: normalizedProvider,
         providerConfig,
       }),
     );

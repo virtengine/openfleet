@@ -496,6 +496,7 @@ export function DashboardTab() {
   const headerLine = `${totalActive} active · ${backlog} backlog · ${done} done${
     blocked ? ` · ${blocked} blocked` : ""
   }`;
+  const headerScopeLabel = useLiveTaskCounts ? "Workspace-scoped totals" : "Runtime snapshot totals";
 
   // ── Dynamic headline ──
   const headline =
@@ -896,6 +897,7 @@ export function DashboardTab() {
           <div class="dashboard-eyebrow">Pulse</div>
           <h1 class="dashboard-title ${headlineClass}">${headline}</h1>
           <div class="dashboard-subtitle">${headerLine}</div>
+          <div class="dashboard-meta-copy">${headerScopeLabel}</div>
         </div>
         <div class="dashboard-header-meta">
           <span class="dashboard-chip">Mode ${mode}</span>

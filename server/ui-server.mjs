@@ -2449,9 +2449,13 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
   return merged;
 }
 
-async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
+async function collectWorkflowRunsForTask(taskId, url, limit = 40, options = {}) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return [];
+  const shallow = options?.shallow === true;
+  const historyLimit = Number.isFinite(Number(options?.historyLimit))
+    ? Math.max(limit, Math.trunc(Number(options.historyLimit)))
+    : (shallow ? Math.max(limit, 80) : 240);
   const buildFallbackTaskRun = (summary, data = {}, traceEvents = []) => {
     const fallbackSessionId = (() => {
       for (const value of [
@@ -2516,7 +2520,7 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
     };
   };
   try {
-    let engine = _testDefaultEngine;
+    let engine = options?.engine || _testDefaultEngine;
     if (!engine) {
       const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
       engine = wfCtx?.ok && wfCtx.engine
@@ -2526,7 +2530,7 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
     if (!engine) return [];
     let summaries = [];
     if (typeof engine.getRunHistory === "function") {
-      summaries = await engine.getRunHistory(null, 240);
+      summaries = await engine.getRunHistory(null, historyLimit);
     }
     const out = [];
     for (const summary of summaries) {
@@ -2545,18 +2549,19 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
         ).trim();
         let matches = primaryTaskId === normalizedTaskId || summaryTaskIds.includes(normalizedTaskId);
         let detailRun = null;
-        if (!matches && engine.getRunDetail) {
+        if (!matches && !shallow && engine.getRunDetail) {
           detailRun = await engine.getRunDetail(summary.runId);
           data = detailRun?.detail?.data || data;
           const detailTaskId = String(data.taskId || data.activeTaskId || data?.task?.id || "").trim();
           matches = detailTaskId === normalizedTaskId;
         }
-        if (!matches && typeof engine.getTaskTraceEvents === "function") {
+        if (!matches && !shallow && typeof engine.getTaskTraceEvents === "function") {
           traceEvents = (await engine.getTaskTraceEvents(summary.runId)) || [];
           matches = traceEvents.some((event) => String(event?.taskId || "").trim() === normalizedTaskId);
         }
         if (!matches) continue;
-        const needsObservedRun = (!summary?.proofBundle || !Array.isArray(summary?.plannerTimeline))
+        const needsObservedRun = !shallow
+          && (!summary?.proofBundle || !Array.isArray(summary?.plannerTimeline))
           && typeof engine.getRunDetail === "function";
         const observedRun = needsObservedRun && typeof engine.getRunDetail === "function"
           ? (detailRun && detailRun.runId === summary.runId ? detailRun : await engine.getRunDetail(summary.runId))
@@ -2599,6 +2604,19 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
         const proofBundle = normalizeWorkflowRunProofBundle(observedRun?.proofBundle || summary?.proofBundle || null);
         const proofSummary = buildWorkflowRunProofSummary(observedRun || summary);
         const delegationTopology = normalizeTaskWorkflowRunDelegationTopology(observedRun || summary || {});
+        const runMeta = makeJsonSafe(
+          observedRun?.meta && typeof observedRun.meta === "object"
+            ? observedRun.meta
+            : (summary?.meta && typeof summary.meta === "object" ? summary.meta : null),
+          { maxDepth: 5 },
+        );
+        const failureKind = String(
+          observedRun?.failureKind
+          || summary?.failureKind
+          || runMeta?.failureKind
+          || runMeta?.worktreeFailure?.failureKind
+          || "",
+        ).trim() || null;
         out.push({
           runId: summary.runId,
           workflowId: summary.workflowId,
@@ -2613,7 +2631,9 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40) {
           duration: summary.duration || null,
           sessionId: delegationTopology?.sessionId || primarySessionId,
           primarySessionId,
+          failureKind,
           source: "workflow",
+          meta: runMeta,
           plannerTimeline: proofBundle.plannerTimeline,
           proofBundle,
           proofSummary,
@@ -2731,6 +2751,60 @@ function collectTaskTimelineDiagnostics(task, limit = 8) {
   return relevant.slice(-Math.max(1, limit));
 }
 
+function collectTaskWorkflowRunDiagnostics(task, limit = 8) {
+  const runs = Array.isArray(task?.workflowRuns) ? task.workflowRuns : [];
+  const relevant = [];
+  for (const run of runs) {
+    if (!run || typeof run !== "object") continue;
+    const meta = run?.meta && typeof run.meta === "object" ? run.meta : {};
+    const worktreeFailure =
+      meta?.worktreeFailure && typeof meta.worktreeFailure === "object"
+        ? meta.worktreeFailure
+        : null;
+    const failureKind = String(
+      run?.failureKind
+      || meta?.failureKind
+      || worktreeFailure?.failureKind
+      || "",
+    ).trim();
+    const errorText = sanitizeTaskDiagnosticText(
+      worktreeFailure?.error
+      || meta?.error
+      || meta?.blockedReason
+      || run?.summary
+      || "",
+      320,
+    );
+    const blockedReason = sanitizeTaskDiagnosticText(
+      worktreeFailure?.blockedReason || "",
+      280,
+    );
+    const isWorktreeFailure =
+      failureKind === "branch_refresh_conflict"
+      || failureKind === "worktree_acquisition_failed"
+      || failureKind === "worktree_runtime_setup_incomplete"
+      || /worktree/i.test(errorText)
+      || /refresh conflict/i.test(blockedReason)
+      || /managed worktree/i.test(errorText);
+    if (!isWorktreeFailure) continue;
+    relevant.push({
+      source: "workflow-run",
+      runId: String(run?.runId || "").trim() || null,
+      workflowId: String(run?.workflowId || "").trim() || null,
+      workflowName: String(run?.workflowName || "").trim() || null,
+      message: errorText || blockedReason || "Workflow run recorded a worktree failure.",
+      reason: blockedReason || null,
+      failureKind: failureKind || null,
+      timestamp: run?.endedAt || run?.startedAt || null,
+      kind: "workflow-run",
+      retryable: worktreeFailure?.retryable ?? null,
+      retryAt: worktreeFailure?.retryAt || null,
+      recordedAt: worktreeFailure?.recordedAt || null,
+    });
+  }
+  return relevant.slice(-Math.max(1, limit));
+}
+
 async function collectTaskLogDiagnostics(task, workspaceDir = "", limit = 8) {
   const taskId = String(task?.id || task?.taskId || "").trim();
   if (!taskId) {
@@ -2790,7 +2864,12 @@ async function collectTaskLogDiagnostics(task, workspaceDir = "", limit = 8) {
           counts.prePrValidationFailed += 1;
           matched = true;
         }
-        if (/Worktree failed for/i.test(text) || /Worktree acquisition failed/i.test(text)) {
+        if (
+          /Worktree failed for/i.test(text)
+          || /Worktree acquisition failed/i.test(text)
+          || /Worktree refresh failed/i.test(text)
+          || /managed worktree was removed after stale refresh state/i.test(text)
+        ) {
           counts.worktreeFailed += 1;
           matched = true;
         }
@@ -2836,6 +2915,10 @@ async function buildTaskBlockedContext(task, options = {}) {
       ? currentTask.workflowRuns
       : [];
   const timelineEvidence = collectTaskTimelineDiagnostics(currentTask, 6);
+  const workflowRunEvidence = collectTaskWorkflowRunDiagnostics(
+    { ...currentTask, workflowRuns },
+    6,
+  );
   const logDiagnostics = await collectTaskLogDiagnostics(
     currentTask,
     normalizeCandidatePath(options.workspaceDir),
@@ -2849,6 +2932,7 @@ async function buildTaskBlockedContext(task, options = {}) {
       : null;
   const hasWorktreeFailure =
     Boolean(currentTask?.meta?.worktreeFailure) ||
+    workflowRunEvidence.length > 0 ||
     logDiagnostics.counts.worktreeFailed > 0 ||
     timelineEvidence.some((entry) => /worktree failed/i.test(String(entry?.message || "")));
   const isDependencyBlocked = canStart?.canStart === false && String(canStart?.reason || "") === "dependency_blocked";
@@ -2899,13 +2983,14 @@ async function buildTaskBlockedContext(task, options = {}) {
     reason: explicitReason || sanitizeTaskDiagnosticText(canStart?.reason || ""),
     workflowRunCount: workflowRuns.length,
     prePrValidationFailureCount: logDiagnostics.counts.prePrValidationFailed,
-    worktreeFailureCount: logDiagnostics.counts.worktreeFailed,
+    worktreeFailureCount: Math.max(logDiagnostics.counts.worktreeFailed, workflowRunEvidence.length),
     blockedTransitionCount: logDiagnostics.counts.blockedTransitions,
     createPrFailureCount: logDiagnostics.counts.createPrFailed,
     blockedBy: Array.isArray(canStart?.blockedBy) ? canStart.blockedBy : [],
     blockingTaskIds: Array.isArray(canStart?.blockingTaskIds) ? canStart.blockingTaskIds : [],
     repairArtifacts,
     timelineEvidence,
+    workflowRunEvidence,
     logEvidence: logDiagnostics.entries,
   };
 }
@@ -6272,6 +6357,69 @@ async function applySharedStateToTasks(tasks) {
       ignoreReason: state.ignoreReason,
     };
   });
+}
+
+async function enrichTaskListRuntimeContext(tasks, options = {}) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return [];
+  const adapter = options.adapter || null;
+  const reqUrl = options.reqUrl || null;
+  const workflowEngine = options.workflowEngine || null;
+  const workspaceDir = normalizeCandidatePath(options.workspaceDir) || repoRoot;
+  const supervisor = typeof uiDeps.getAgentSupervisor === "function"
+    ? uiDeps.getAgentSupervisor()
+    : null;
+  return Promise.all(tasks.map(async (task) => {
+    if (!task || typeof task !== "object" || !task.id) {
+      return withTaskRuntimeSnapshot(task);
+    }
+    const nextTask = withTaskRuntimeSnapshot(task);
+    const canStart = await evaluateTaskCanStart({
+      taskId: nextTask.id,
+      task: nextTask,
+      reqUrl,
+      adapter,
+    });
+    const shouldAttachBlockedContext =
+      normalizeTaskStatusKey(nextTask.status) === "blocked"
+      || canStart?.canStart === false;
+    let workflowRuns = Array.isArray(nextTask.workflowRuns) ? nextTask.workflowRuns : [];
+    if (shouldAttachBlockedContext && reqUrl) {
+      const linkedRuns = await collectWorkflowRunsForTask(nextTask.id, reqUrl, 12, {
+        engine: workflowEngine,
+        shallow: true,
+        historyLimit: 80,
+      });
+      workflowRuns = mergeTaskWorkflowRuns(workflowRuns, linkedRuns, 40);
+    }
+    if (workflowRuns.length > 0) {
+      nextTask.workflowRuns = workflowRuns;
+    }
+    const blockedContext = shouldAttachBlockedContext
+      ? await buildTaskBlockedContext(nextTask, {
+        canStart,
+        workflowRuns,
+        workspaceDir,
+      })
+      : null;
+    const supervisorDiagnostics = typeof supervisor?.getTaskDiagnostics === "function"
+      ? supervisor.getTaskDiagnostics(nextTask.id)
+      : null;
+    const diagnostics = buildTaskDiagnostics(nextTask, supervisorDiagnostics);
+    const nextMeta = {
+      ...(nextTask.meta || {}),
+      canStart,
+      ...(workflowRuns.length > 0 ? { workflowRuns } : {}),
+    };
+    if (blockedContext) nextMeta.blockedContext = blockedContext;
+    if (diagnostics) nextMeta.diagnostics = diagnostics;
+    return {
+      ...nextTask,
+      canStart,
+      ...(blockedContext ? { blockedContext } : {}),
+      ...(diagnostics ? { diagnostics } : {}),
+      meta: nextMeta,
+    };
+  }));
 }
 
 
@@ -17937,6 +18085,7 @@ async function handleApi(req, res, url) {
       Math.max(5, Number(url.searchParams.get("pageSize") || "15")),
     );
     try {
+      const workflowContext = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
       const adapter = getKanbanAdapter();
       const projects = await adapter.listProjects();
       const activeProject =
@@ -18014,7 +18163,12 @@ async function handleApi(req, res, url) {
       const start = page * pageSize;
       const slice = filtered.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
-      const withRuntime = enriched.map((task) => withTaskRuntimeSnapshot(task));
+      const withRuntime = await enrichTaskListRuntimeContext(enriched, {
+        adapter,
+        reqUrl: url,
+        workflowEngine: workflowContext?.ok ? workflowContext.engine : null,
+        workspaceDir: workspaceContext?.workspaceDir || repoRoot,
+      });
       const responsePayload = {
         ok: true,
         data: withRuntime,

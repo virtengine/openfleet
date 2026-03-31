@@ -80,7 +80,7 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
     10,
   );
   const groupedBatchSize = Number.parseInt(
-    String(process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "48" : "0")),
+    String(process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "12" : "0")),
     10,
   );
   const isolatedMaxWorkers = Number.parseInt(

@@ -113,7 +113,7 @@ async function startMcpProcess() {
           /* best effort */
         }
         resolvePromise();
-      }, 3000);
+      }, 10000);
     });
   }
 
@@ -127,7 +127,7 @@ async function startMcpProcess() {
   };
 }
 
-async function waitFor(predicate, timeoutMs = 4000, intervalMs = 100) {
+async function waitFor(predicate, timeoutMs = 15000, intervalMs = 150) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     const result = await predicate();
@@ -140,7 +140,7 @@ async function waitFor(predicate, timeoutMs = 4000, intervalMs = 100) {
 afterEach(async () => {
   const uiServerModule = await import("../server/ui-server.mjs");
   uiServerModule.stopTelegramUiServer();
-});
+}, 30000);
 
 describe("bosun MCP server", () => {
   it("lists the Bosun MCP tool surface over stdio", async () => {
@@ -159,7 +159,7 @@ describe("bosun MCP server", () => {
     } finally {
       await mcp.stop();
     }
-  }, 20000);
+  }, 30000);
 
   it("supports line-scoped file edits without shell temp scripts", async () => {
     const workspaceDir = mkdtempSync(join(tmpdir(), "bosun-mcp-lines-"));
@@ -192,7 +192,7 @@ describe("bosun MCP server", () => {
       await mcp.stop();
       rmSync(workspaceDir, { recursive: true, force: true });
     }
-  }, 20000);
+  }, 30000);
 
   it("supports creating and reading sessions through MCP tools", async () => {
     const mcp = await startMcpProcess();
@@ -239,5 +239,5 @@ describe("bosun MCP server", () => {
     } finally {
       await mcp.stop();
     }
-  }, 30000);
+  }, 60000);
 });

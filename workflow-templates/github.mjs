@@ -2704,6 +2704,40 @@ export const PR_FIX_SINGLE_TEMPLATE = {
         "mergeable: String($data?.item?.mergeable || $data?.item?.prDigest?.core?.mergeable || '')" +
         "})",
       isExpression: true,
+      }),
+
+    node("validate-pr-state", "action.run_command", "Validate PR Is Still Open", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const repo=String(process.env.PR_REPO||'').trim();",
+        "const num=String(process.env.PR_NUMBER||'0').trim();",
+        "const fallbackBranch=String(process.env.PR_BRANCH||'').trim();",
+        "const fallbackBase=String(process.env.PR_BASE||'main').trim();",
+        "if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);}",
+        "try{",
+        "  const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();",
+        "  const view=JSON.parse(raw||'{}');",
+        "  const state=String(view?.state||'').trim().toUpperCase();",
+        "  const isDraft=view?.isDraft===true;",
+        "  const open=state==='OPEN'&&!isDraft;",
+        "  const branch=String(view?.headRefName||fallbackBranch||'').trim();",
+        "  const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';",
+        "  console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null}));",
+        "}catch(err){",
+        "  console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase}));",
+        "}",
+      ].join(" ")],
+      parseJson: true,
+      continueOnError: true,
+      failOnError: false,
+      timeoutMs: 60_000,
+      env: {
+        PR_REPO:   "{{prParams.repo}}",
+        PR_BRANCH: "{{prParams.branch}}",
+        PR_BASE:   "{{prParams.base}}",
+        PR_NUMBER: "{{prParams.number}}",
+      },
     }),
 
     // ── 2. Programmatic worktree setup ───────────────────────────────────────
@@ -2753,10 +2787,10 @@ export const PR_FIX_SINGLE_TEMPLATE = {
       failOnError: true,
       timeoutMs: 600_000,   // 10 min for clone
       env: {
-        PR_REPO:   "{{prParams.repo}}",
-        PR_BRANCH: "{{prParams.branch}}",
-        PR_BASE:   "{{prParams.base}}",
-        PR_NUMBER: "{{prParams.number}}",
+        PR_REPO:   "{{validate-pr-state.output.repo || prParams.repo}}",
+        PR_BRANCH: "{{validate-pr-state.output.branch || prParams.branch}}",
+        PR_BASE:   "{{validate-pr-state.output.base || prParams.base}}",
+        PR_NUMBER: "{{validate-pr-state.output.number || prParams.number}}",
       },
     }),
 
@@ -2971,6 +3005,40 @@ export const PR_FIX_SINGLE_TEMPLATE = {
       isExpression: true,
     }),
 
+    node("validate-pr-state", "action.run_command", "Validate PR Is Still Open", {
+      command: "node",
+      args: ["-e", [
+        "const {execFileSync}=require('child_process');",
+        "const repo=String(process.env.PR_REPO||'').trim();",
+        "const num=String(process.env.PR_NUMBER||'0').trim();",
+        "const fallbackBranch=String(process.env.PR_BRANCH||'').trim();",
+        "const fallbackBase=String(process.env.PR_BASE||'main').trim();",
+        "if(!repo||!num){console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'missing_repo_or_number',repo,number:num,branch:fallbackBranch,base:fallbackBase}));process.exit(0);}",
+        "try{",
+        "  const raw=execFileSync('gh',['pr','view',num,'--repo',repo,'--json','state,isDraft,headRefName,baseRefName,url'],{encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:30000}).trim();",
+        "  const view=JSON.parse(raw||'{}');",
+        "  const state=String(view?.state||'').trim().toUpperCase();",
+        "  const isDraft=view?.isDraft===true;",
+        "  const open=state==='OPEN'&&!isDraft;",
+        "  const branch=String(view?.headRefName||fallbackBranch||'').trim();",
+        "  const base=String(view?.baseRefName||fallbackBase||'main').trim()||'main';",
+        "  console.log(JSON.stringify({ok:open,open,skip:!open,reason:open?'open':(isDraft?'draft_pr':'pr_not_open'),state,isDraft,repo,number:num,branch,base,url:String(view?.url||'').trim()||null}));",
+        "}catch(err){",
+        "  console.log(JSON.stringify({ok:false,open:false,skip:true,reason:'pr_view_failed',error:String(err?.message||err),repo,number:num,branch:fallbackBranch,base:fallbackBase}));",
+        "}",
+      ].join(" ")],
+      parseJson: true,
+      continueOnError: true,
+      failOnError: false,
+      timeoutMs: 60_000,
+      env: {
+        PR_REPO:   "{{prParams.repo}}",
+        PR_BRANCH: "{{prParams.branch}}",
+        PR_BASE:   "{{prParams.base}}",
+        PR_NUMBER: "{{prParams.number}}",
+      },
+    }),
+
     // ── 3b. Mark context as agent-workflow-active to prevent delegation ─────
     // Without this flag, action.run_agent delegates to Backend Agent workflow.
     node("mark-active", "action.set_variable", "Mark Agent Workflow Active", {
@@ -3159,7 +3227,9 @@ export const PR_FIX_SINGLE_TEMPLATE = {
     edge("setup-task",         "setup-title"),
     edge("setup-title",        "setup-claim-key"),
     edge("setup-claim-key",    "resolve-pr-params"),
-    edge("resolve-pr-params",  "setup-worktree"),
+    edge("resolve-pr-params",  "validate-pr-state"),
+    edge("validate-pr-state",  "setup-worktree", { condition: "$output?.open === true" }),
+    edge("validate-pr-state",  "release-claim", { condition: "$output?.open !== true" }),
     edge("setup-worktree",     "set-worktree-path"),
     edge("set-worktree-path",  "detect-conflicts"),
     edge("detect-conflicts",   "setup-prompt"),
@@ -3290,10 +3360,10 @@ export const PR_SECURITY_FIX_SINGLE_TEMPLATE = {
       failOnError: true,
       timeoutMs: 600_000,
       env: {
-        PR_REPO:   "{{prParams.repo}}",
-        PR_BRANCH: "{{prParams.branch}}",
-        PR_BASE:   "{{prParams.base}}",
-        PR_NUMBER: "{{prParams.number}}",
+        PR_REPO:   "{{validate-pr-state.output.repo || prParams.repo}}",
+        PR_BRANCH: "{{validate-pr-state.output.branch || prParams.branch}}",
+        PR_BASE:   "{{validate-pr-state.output.base || prParams.base}}",
+        PR_NUMBER: "{{validate-pr-state.output.number || prParams.number}}",
       },
     }),
 
@@ -3497,7 +3567,9 @@ export const PR_SECURITY_FIX_SINGLE_TEMPLATE = {
     edge("setup-task",         "setup-title"),
     edge("setup-title",        "setup-claim-key"),
     edge("setup-claim-key",    "resolve-pr-params"),
-    edge("resolve-pr-params",  "setup-worktree"),
+    edge("resolve-pr-params",  "validate-pr-state"),
+    edge("validate-pr-state",  "setup-worktree", { condition: "$output?.open === true" }),
+    edge("validate-pr-state",  "release-claim", { condition: "$output?.open !== true" }),
     edge("setup-worktree",     "set-worktree-path"),
     edge("set-worktree-path",  "setup-prompt"),
     edge("setup-prompt",       "mark-active"),

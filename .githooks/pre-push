@@ -48,10 +48,15 @@ npm run syntax:check
 # or install failures.
 node tools/prepublish-check.mjs
 
-# Prove the packed npm artifact can still start after install. This catches
-# regressions where the repo works locally but the published tarball is missing
-# a runtime file required by the CLI or main package export.
-npm run smoke:packed-cli
+# The full packed-artifact smoke test currently costs well over a minute on
+# Windows, which delays actual test execution past the point where the hook is
+# useful for local iteration. Keep it opt-in locally and rely on explicit
+# `npm run prepush:check` / CI for the full packaging gate.
+if [ "${BOSUN_PREPUSH_RUN_PACKED_SMOKE:-0}" = "1" ]; then
+  npm run smoke:packed-cli
+else
+  echo "[hooks] skipping packed CLI smoke locally; run with BOSUN_PREPUSH_RUN_PACKED_SMOKE=1 or use prepush:check for the full packaging gate"
+fi
 
 # ── Module adjacency map ────────────────────────────────────────────────────
 # Maps source directory prefixes to glob patterns of tests that MUST run
