@@ -4,7 +4,7 @@ import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 
 const APPROVAL_QUEUE_RELATIVE_PATH = [".bosun", "approvals", "requests.json"];
 const WORKFLOW_RUNS_RELATIVE_PATH = [".bosun", "workflow-runs"];
-const APPROVAL_SCOPE_TYPES = new Set(["workflow-run", "workflow-gate", "workflow-action"]);
+const APPROVAL_SCOPE_TYPES = new Set(["workflow-run", "workflow-gate", "workflow-action", "harness-run"]);
 
 function normalizeText(value) {
   return String(value ?? "").trim();
@@ -272,6 +272,46 @@ function normalizeWorkflowActionApprovalRequest(request = {}, existing = null) {
   };
 }
 
+function normalizeHarnessRunApprovalRequest(request = {}, existing = null) {
+  const runId = normalizeText(request?.runId || existing?.scopeId);
+  const base = buildApprovalRequestBase({
+    ...request,
+    scopeType: "harness-run",
+    scopeId: runId,
+    requestId: runId ? `harness-run:${runId}` : existing?.requestId,
+    requestedAt: request?.requestedAt || request?.updatedAt || existing?.requestedAt,
+    runId,
+    taskId: request?.taskId || existing?.taskId,
+    taskTitle: request?.taskTitle || existing?.taskTitle,
+    reason: request?.reason || existing?.reason || "Harness run is waiting for operator approval.",
+  }, existing, "harness-run");
+  if (!base) return null;
+  const timeoutMs = Number.isFinite(Number(request?.timeoutMs ?? existing?.approval?.timeoutMs))
+    ? Math.max(0, Math.trunc(Number(request?.timeoutMs ?? existing?.approval?.timeoutMs)))
+    : null;
+  const requestedAtMs = Date.parse(base.requestedAt);
+  const expiresAt = timeoutMs != null && Number.isFinite(requestedAtMs)
+    ? new Date(requestedAtMs + timeoutMs).toISOString()
+    : (normalizeText(request?.expiresAt || existing?.expiresAt) || null);
+  return {
+    ...base,
+    stageId: normalizeText(request?.stageId || existing?.stageId) || null,
+    stageType: normalizeText(request?.stageType || existing?.stageType) || null,
+    agentId: normalizeText(request?.agentId || existing?.agentId) || null,
+    artifactId: normalizeText(request?.artifactId || existing?.artifactId) || null,
+    sourceOrigin: normalizeText(request?.sourceOrigin || existing?.sourceOrigin) || null,
+    sourcePath: normalizeText(request?.sourcePath || existing?.sourcePath) || null,
+    requestedBy: normalizeText(request?.requestedBy || existing?.requestedBy) || "harness",
+    preview: normalizeText(request?.preview || existing?.preview) || null,
+    expiresAt,
+    approval: {
+      timeoutMs,
+      mode: normalizeText(request?.mode || existing?.approval?.mode) || "manual",
+      note: normalizeText(request?.approvalNote || existing?.approval?.note) || null,
+    },
+  };
+}
+
 function cleanGateConfig(config = {}) {
   const timeoutMs = Number.isFinite(Number(config?.timeoutMs))
     ? Math.max(0, Math.trunc(Number(config.timeoutMs)))
@@ -398,6 +438,7 @@ function normalizeApprovalRequest(request = {}, existing = null) {
   if (scopeType === "workflow-run") return normalizeWorkflowRunApprovalRequest(request, existing);
   if (scopeType === "workflow-gate") return normalizeWorkflowGateApprovalRequest(request, existing);
   if (scopeType === "workflow-action") return normalizeWorkflowActionApprovalRequest(request, existing);
+  if (scopeType === "harness-run") return normalizeHarnessRunApprovalRequest(request, existing);
   return null;
 }
 
@@ -481,6 +522,19 @@ export function upsertWorkflowActionApprovalRequest(request = {}, options = {}) 
     scopeType: "workflow-action",
     scopeId: buildWorkflowActionScopeId(request?.runId, request?.nodeId),
   }, { repoRoot });
+}
+
+export function upsertHarnessRunApprovalRequest(request = {}, options = {}) {
+  const repoRoot = resolve(String(options.repoRoot || process.cwd()));
+  return upsertApprovalRequest({
+    ...request,
+    scopeType: "harness-run",
+    scopeId: request?.runId,
+  }, { repoRoot });
+}
+
+export function getHarnessRunApprovalRequest(runId, options = {}) {
+  return getApprovalRequest("harness-run", runId, options);
 }
 
 export function listApprovalRequests(options = {}) {
@@ -644,6 +698,51 @@ function updateWorkflowRunApprovalState(repoRoot, request, resolution = {}) {
   };
 }
 
+function resolveHarnessRunRecordPath(repoRoot, runId) {
+  const normalizedRunId = normalizeText(runId);
+  if (!normalizedRunId) return "";
+  const candidates = [
+    resolve(String(repoRoot || process.cwd()), ".cache", "harness", "runs", `${normalizedRunId}.json`),
+    resolve(String(repoRoot || process.cwd()), ".bosun", ".cache", "harness", "runs", `${normalizedRunId}.json`),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) || candidates[0] || "";
+}
+
+function updateHarnessRunApprovalState(repoRoot, request, resolution = {}) {
+  const runId = normalizeText(request?.scopeId || request?.runId);
+  if (!runId) throw new Error("Harness-run approval request is missing scopeId.");
+  const runPath = resolveHarnessRunRecordPath(repoRoot, runId);
+  if (!runPath || !existsSync(runPath)) {
+    return { runId, runRecord: null, runPath };
+  }
+  const runRecord = readJsonFile(runPath, {});
+  const decision = normalizeApprovalRequestStatus(resolution.decision, "approved");
+  const now = normalizeTimestamp(resolution.resolvedAt);
+  const actorId = normalizeText(resolution.actorId) || null;
+  const note = normalizeText(resolution.note) || null;
+  const approvals = Array.isArray(runRecord?.approvals) ? runRecord.approvals.slice() : [];
+  approvals.push({
+    requestId: request.requestId,
+    scopeType: "harness-run",
+    runId,
+    stageId: request.stageId || null,
+    stageType: request.stageType || null,
+    decision,
+    resolvedAt: now,
+    actorId,
+    note,
+  });
+  runRecord.approvals = approvals;
+  runRecord.latestApproval = approvals[approvals.length - 1] || null;
+  writeJsonFile(runPath, runRecord);
+  return {
+    runId,
+    runRecord: cloneJson(runRecord),
+    runPath,
+    latestApproval: cloneJson(runRecord.latestApproval),
+  };
+}
+
 export function resolveApprovalRequest(requestId, options = {}) {
   const repoRoot = resolve(String(options.repoRoot || process.cwd()));
   const decision = normalizeApprovalRequestStatus(options.decision, "");
@@ -671,6 +770,8 @@ export function resolveApprovalRequest(requestId, options = {}) {
     updateResult = recordWorkflowGateLedgerEvent(repoRoot, next, next.resolution);
   } else if (normalizeText(existing?.scopeType) === "workflow-action") {
     updateResult = recordWorkflowActionLedgerEvent(repoRoot, next, next.resolution);
+  } else if (normalizeText(existing?.scopeType) === "harness-run") {
+    updateResult = updateHarnessRunApprovalState(repoRoot, next, next.resolution);
   }
   requests[index] = next;
   writeApprovalQueue(repoRoot, requests);
@@ -703,6 +804,8 @@ export function expireApprovalRequest(requestId, options = {}) {
     updateResult = recordWorkflowGateLedgerEvent(repoRoot, next, next.resolution);
   } else if (normalizeText(existing?.scopeType) === "workflow-action") {
     updateResult = recordWorkflowActionLedgerEvent(repoRoot, next, next.resolution);
+  } else if (normalizeText(existing?.scopeType) === "harness-run") {
+    updateResult = updateHarnessRunApprovalState(repoRoot, next, next.resolution);
   }
   requests[index] = next;
   writeApprovalQueue(repoRoot, requests);

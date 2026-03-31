@@ -1,7 +1,15 @@
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
 import { describe, expect, it } from "vitest";
 
 import { compileInternalHarnessProfile } from "../agent/internal-harness-profile.mjs";
 import { createInternalHarnessSession as createHarnessRuntimeSession } from "../agent/internal-harness-runtime.mjs";
+import {
+  getHarnessRunApprovalRequest,
+  resolveApprovalRequest,
+} from "../workflow/approval-queue.mjs";
 
 describe("internal harness profile compiler", () => {
   it("compiles valid markdown-fenced JSON and returns topology metadata", () => {
@@ -271,4 +279,188 @@ describe("internal harness runtime", () => {
     expect(dryRunResult.dryRun).toBe(true);
     expect(dryRunResult.history.every((entry) => entry.dryRun === true)).toBe(true);
   });
+
+  it("steers the active harness stage and emits intervention events", async () => {
+    const events = [];
+    const steerCalls = [];
+    let releaseTurn = null;
+    let deliveredWhileRunning = null;
+    const turnStarted = new Promise((resolve) => {
+      releaseTurn = resolve;
+    });
+    const executeTurn = async ({ stage }) => {
+      if (stage.id === "plan") {
+        await turnStarted;
+      }
+      return {
+        success: true,
+        outcome: "success",
+        status: "completed",
+      };
+    };
+    const session = createHarnessRuntimeSession({
+      agentId: "bosun-harness",
+      taskKey: "task-harness-steer",
+      entryStageId: "plan",
+      stages: [
+        {
+          id: "plan",
+          type: "prompt",
+          prompt: "Plan.",
+          transitions: [{ on: "success", to: "done" }],
+        },
+        {
+          id: "done",
+          type: "finalize",
+          prompt: "Finish.",
+        },
+      ],
+    }, {
+      executeTurn,
+      steerActiveTurn: (taskKey, prompt) => {
+        steerCalls.push({ taskKey, prompt });
+        return true;
+      },
+      onEvent: (event) => {
+        events.push(event);
+        if (event?.type === "harness:stage-start" && event?.stageId === "plan") {
+          deliveredWhileRunning = session.steer("Inspect failing tests before continuing.", {
+            kind: "steer",
+            actor: "operator",
+            reason: "new_evidence",
+          });
+          releaseTurn?.();
+        }
+      },
+    });
+
+    const result = await session.run();
+
+    expect(result.success).toBe(true);
+    expect(session.canSteer()).toBe(false);
+    expect(deliveredWhileRunning).toMatchObject({
+      ok: true,
+      delivered: true,
+      reason: "steered",
+      interventionType: "steer",
+      stageId: "plan",
+      targetTaskKey: "task-harness-steer",
+    });
+    expect(steerCalls).toEqual([
+      {
+        taskKey: "task-harness-steer",
+        prompt: "Inspect failing tests before continuing.",
+      },
+    ]);
+    expect(events.some((event) => event.type === "harness:intervention-requested" && event.interventionType === "steer")).toBe(true);
+    expect(events.some((event) => event.type === "harness:intervention-delivered" && event.interventionType === "steer")).toBe(true);
+  }, 15000);
+
+  it("pauses gate stages for operator approval and resumes after queue resolution", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bosun-harness-approval-"));
+    const events = [];
+    const session = createHarnessRuntimeSession({
+      agentId: "bosun-harness",
+      taskKey: "task-harness-approval",
+      entryStageId: "plan",
+      stages: [
+        {
+          id: "plan",
+          type: "prompt",
+          prompt: "Plan.",
+          transitions: [{ on: "success", to: "gate" }],
+        },
+        {
+          id: "gate",
+          type: "gate",
+          prompt: "Wait for approval before merge.",
+          tools: ["run_tests", "approval_gate"],
+          transitions: [{ on: "success", to: "done" }],
+        },
+        {
+          id: "done",
+          type: "finalize",
+          prompt: "Finish.",
+        },
+      ],
+    }, {
+      runId: "approval-gate-run",
+      taskTitle: "Harness approval task",
+      approvalRepoRoot: repoRoot,
+      executeTurn: async ({ stage }) => ({
+        success: true,
+        outcome: "success",
+        status: "completed",
+        output: `Completed ${stage.id}`,
+      }),
+      onEvent: (event) => events.push(event),
+    });
+
+    const runPromise = session.run();
+    await new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const timer = setInterval(() => {
+        const request = getHarnessRunApprovalRequest("approval-gate-run", { repoRoot });
+        if (request?.status === "pending") {
+          clearInterval(timer);
+          resolve();
+          return;
+        }
+        if (Date.now() - startedAt > 5000) {
+          clearInterval(timer);
+          reject(new Error("Timed out waiting for harness approval request"));
+        }
+      }, 25);
+    });
+
+    const pendingRequest = getHarnessRunApprovalRequest("approval-gate-run", { repoRoot });
+    expect(pendingRequest).toMatchObject({
+      requestId: "harness-run:approval-gate-run",
+      status: "pending",
+      scopeType: "harness-run",
+      stageId: "gate",
+    });
+    expect(events.some((event) => event.type === "harness:approval-requested" && event.stageId === "gate")).toBe(true);
+
+    resolveApprovalRequest("harness-run:approval-gate-run", {
+      repoRoot,
+      decision: "approved",
+      actorId: "reviewer",
+      note: "Gate approved.",
+    });
+    const wake = session.steer("", {
+      kind: "approval",
+      actor: "reviewer",
+      decision: "approved",
+      note: "Gate approved.",
+      requestId: "harness-run:approval-gate-run",
+      requestedStageId: "gate",
+    });
+
+    const result = await runPromise;
+
+    expect(wake).toMatchObject({
+      ok: true,
+      delivered: true,
+      interventionType: "approval",
+      stageId: "gate",
+      requestId: "harness-run:approval-gate-run",
+      decision: "approved",
+    });
+    expect(result.success).toBe(true);
+    expect(result.status).toBe("completed");
+    expect(result.history.map((entry) => entry.stageId)).toEqual(["plan", "gate", "done"]);
+    expect(result.history[1].approval).toMatchObject({
+      requestId: "harness-run:approval-gate-run",
+      decision: "approved",
+      actorId: "reviewer",
+    });
+    expect(getHarnessRunApprovalRequest("approval-gate-run", { repoRoot })).toMatchObject({
+      status: "approved",
+      resolution: expect.objectContaining({
+        actorId: "reviewer",
+      }),
+    });
+    expect(events.some((event) => event.type === "harness:approval-resolved" && event.stageId === "gate" && event.decision === "approved")).toBe(true);
+  }, 15000);
 });

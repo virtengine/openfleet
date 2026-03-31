@@ -1,3 +1,8 @@
+import {
+  expireApprovalRequest,
+  upsertHarnessRunApprovalRequest,
+} from "../workflow/approval-queue.mjs";
+
 function toTrimmedString(value) {
   return String(value ?? "").trim();
 }
@@ -103,6 +108,42 @@ function buildDryRunResult(stage, mode) {
   };
 }
 
+function stageRequiresOperatorApproval(stage = {}) {
+  const stageType = toTrimmedString(stage?.type).toLowerCase();
+  if (stageType === "gate") return true;
+  if (stage?.approvalRequired === true) return true;
+  if (stage?.approval && typeof stage.approval === "object") {
+    if (stage.approval.required !== false) return true;
+  }
+  const tools = Array.isArray(stage?.tools) ? stage.tools : [];
+  return tools.some((tool) => {
+    const normalized = toTrimmedString(tool).toLowerCase();
+    return normalized === "approval_gate"
+      || normalized === "await_approval"
+      || normalized === "manual_approval";
+  });
+}
+
+function normalizeApprovalDecision(value, fallback = "approved") {
+  const normalized = toTrimmedString(value).toLowerCase();
+  if (["approved", "denied", "expired", "aborted"].includes(normalized)) return normalized;
+  if (normalized === "approve" || normalized === "success") return "approved";
+  if (normalized === "deny" || normalized === "denied" || normalized === "rejected") return "denied";
+  if (normalized === "timeout") return "expired";
+  return fallback;
+}
+
+function buildApprovalPreview(stage, result = {}) {
+  const preview = toTrimmedString(
+    result?.summary
+    || result?.output
+    || result?.error
+    || stage?.prompt
+    || "",
+  );
+  return preview || null;
+}
+
 export function createInternalHarnessSession(compiledProfile, options = {}) {
   const profile = compiledProfile && typeof compiledProfile === "object"
     ? compiledProfile
@@ -112,9 +153,13 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
   const dryRun = options.dryRun === true;
   const taskKey = toTrimmedString(options.taskKey || profile.taskKey || profile.agentId || profile.name || "harness");
   const runId = toTrimmedString(options.runId || "");
+  const taskId = toTrimmedString(options.taskId || profile.taskId || "");
+  const taskTitle = toTrimmedString(options.taskTitle || profile.taskTitle || profile.name || "");
+  const approvalRepoRoot = toTrimmedString(options.approvalRepoRoot || options.repoRoot || "");
   let aborted = false;
   let activeStageId = "";
   let activeStageTaskKey = "";
+  let pendingApproval = null;
 
   function canSteerActiveTurn() {
     if (dryRun || aborted) return false;
@@ -122,9 +167,156 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
     return typeof options.steerActiveTurn === "function";
   }
 
+  function clearPendingApproval() {
+    if (!pendingApproval) return;
+    if (pendingApproval.timer) clearTimeout(pendingApproval.timer);
+    pendingApproval = null;
+  }
+
+  function resolvePendingApproval(payload = {}) {
+    if (!pendingApproval) return false;
+    const current = pendingApproval;
+    pendingApproval = null;
+    if (current.timer) clearTimeout(current.timer);
+    current.resolve({
+      decision: normalizeApprovalDecision(payload?.decision, "approved"),
+      actorId: toTrimmedString(payload?.actorId || payload?.actor || "operator") || "operator",
+      note: toTrimmedString(payload?.note),
+      requestId: toTrimmedString(payload?.requestId || current.requestId) || current.requestId,
+      stageId: current.stageId,
+      stageType: current.stageType,
+      resolvedAt: new Date().toISOString(),
+      prompt: toTrimmedString(payload?.prompt),
+    });
+    return true;
+  }
+
+  async function waitForStageApproval(stage, result, historyEntry) {
+    const approvalConfig = stage?.approval && typeof stage.approval === "object" ? stage.approval : {};
+    const timeoutMs = toPositiveInteger(
+      approvalConfig.timeoutMs ?? stage?.approvalTimeoutMs ?? 0,
+      0,
+    );
+    const approvalMode = toTrimmedString(approvalConfig.mode || "manual") || "manual";
+    const requestRecord = approvalRepoRoot
+      ? upsertHarnessRunApprovalRequest({
+          runId,
+          taskId: taskId || null,
+          taskTitle: taskTitle || null,
+          taskKey,
+          stageId: stage.id,
+          stageType: stage.type || null,
+          agentId: profile.agentId || null,
+          artifactId: toTrimmedString(options.artifactId) || null,
+          sourceOrigin: toTrimmedString(options.sourceOrigin) || null,
+          sourcePath: toTrimmedString(options.sourcePath) || null,
+          requestedBy: toTrimmedString(approvalConfig.requestedBy || options.requestedBy || "harness") || "harness",
+          reason: toTrimmedString(approvalConfig.reason || `Harness stage "${stage.id}" requires operator approval before continuation.`),
+          preview: buildApprovalPreview(stage, result),
+          timeoutMs: timeoutMs || undefined,
+          mode: approvalMode,
+          approvalNote: toTrimmedString(approvalConfig.note),
+        }, { repoRoot: approvalRepoRoot })
+      : {
+          ok: true,
+          request: {
+            requestId: `harness-run:${runId}`,
+            scopeType: "harness-run",
+            scopeId: runId,
+            runId,
+            stageId: stage.id,
+            stageType: stage.type || null,
+            requestedBy: toTrimmedString(approvalConfig.requestedBy || options.requestedBy || "harness") || "harness",
+            status: "pending",
+          },
+        };
+    const request = requestRecord?.request || null;
+    const requestedAt = new Date().toISOString();
+    emitEvent(options.onEvent, {
+      type: "harness:approval-requested",
+      runId,
+      taskKey,
+      stageId: stage.id,
+      stageType: stage.type || null,
+      requestId: request?.requestId || `harness-run:${runId}`,
+      requestedBy: request?.requestedBy || "harness",
+      reason: request?.reason || null,
+      preview: request?.preview || buildApprovalPreview(stage, result),
+      status: "pending",
+      timestamp: requestedAt,
+    });
+    historyEntry.approval = {
+      requestId: request?.requestId || `harness-run:${runId}`,
+      requestedAt,
+      requestedBy: request?.requestedBy || "harness",
+      status: "pending",
+      stageId: stage.id,
+      stageType: stage.type || null,
+    };
+    const approvalOutcome = await new Promise((resolve) => {
+      const timer = timeoutMs > 0
+        ? setTimeout(() => {
+            if (approvalRepoRoot && request?.requestId) {
+              try {
+                expireApprovalRequest(request.requestId, {
+                  repoRoot: approvalRepoRoot,
+                  actorId: "system:timeout",
+                  note: `Harness approval timed out after ${timeoutMs}ms.`,
+                });
+              } catch {
+                // best effort
+              }
+            }
+            resolvePendingApproval({
+              decision: "expired",
+              actorId: "system:timeout",
+              note: `Harness approval timed out after ${timeoutMs}ms.`,
+              requestId: request?.requestId,
+            });
+          }, timeoutMs)
+        : null;
+      pendingApproval = {
+        requestId: request?.requestId || `harness-run:${runId}`,
+        stageId: stage.id,
+        stageType: stage.type || null,
+        resolve,
+        timer,
+      };
+    });
+    if (options.emitApprovalResolutionEvent !== false) {
+      emitEvent(options.onEvent, {
+        type: "harness:approval-resolved",
+        runId,
+        taskKey,
+        stageId: stage.id,
+        stageType: stage.type || null,
+        requestId: approvalOutcome.requestId || request?.requestId || `harness-run:${runId}`,
+        decision: approvalOutcome.decision,
+        actor: approvalOutcome.actorId || null,
+        note: approvalOutcome.note || null,
+        status: approvalOutcome.decision,
+        timestamp: approvalOutcome.resolvedAt || new Date().toISOString(),
+      });
+    }
+    historyEntry.approval = {
+      ...(historyEntry.approval || {}),
+      status: approvalOutcome.decision,
+      decision: approvalOutcome.decision,
+      actorId: approvalOutcome.actorId || null,
+      note: approvalOutcome.note || null,
+      resolvedAt: approvalOutcome.resolvedAt || new Date().toISOString(),
+    };
+    return approvalOutcome;
+  }
+
   return {
     abort(reason = "aborted") {
       aborted = true;
+      resolvePendingApproval({
+        decision: "aborted",
+        actorId: "system:abort",
+        note: toTrimmedString(reason) || "Harness run aborted",
+      });
       emitEvent(options.onEvent, {
         type: "harness:aborted",
         reason,
@@ -137,10 +329,41 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
       return canSteerActiveTurn();
     },
     steer(prompt, meta = {}) {
+      const interventionType = toTrimmedString(meta?.kind || meta?.type || "nudge") || "nudge";
+      if (interventionType === "approval" && pendingApproval) {
+        const pending = pendingApproval;
+        const requestedStageId = toTrimmedString(meta?.requestedStageId || meta?.stageId);
+        if (requestedStageId && requestedStageId !== pending.stageId) {
+          return {
+            ok: false,
+            delivered: false,
+            reason: "stage_mismatch",
+            interventionType,
+            stageId: pending.stageId,
+            targetTaskKey: taskKey,
+          };
+        }
+        const delivered = resolvePendingApproval({
+          decision: meta?.decision || meta?.status || meta?.reason || "approved",
+          actorId: meta?.actor || meta?.actorId || "operator",
+          note: meta?.note || prompt,
+          requestId: meta?.requestId || pending.requestId,
+          prompt,
+        });
+        return {
+          ok: delivered,
+          delivered,
+          reason: delivered ? "approval_recorded" : "not_waiting_for_approval",
+          interventionType,
+          stageId: pending.stageId,
+          targetTaskKey: taskKey,
+          requestId: pending.requestId,
+          decision: normalizeApprovalDecision(meta?.decision || meta?.status || meta?.reason, "approved"),
+        };
+      }
       const instruction = toTrimmedString(prompt);
       const stageId = activeStageId || null;
       const targetTaskKey = activeStageTaskKey || taskKey;
-      const interventionType = toTrimmedString(meta?.kind || meta?.type || "nudge") || "nudge";
       const timestamp = new Date().toISOString();
       if (!instruction) {
         emitEvent(options.onEvent, {
@@ -377,6 +600,62 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
           result,
         });
 
+        if (result.success && !dryRun && stageRequiresOperatorApproval(stage)) {
+          const approvalOutcome = await waitForStageApproval(stage, result, historyEntry);
+          if (approvalOutcome.decision !== "approved") {
+            const deniedTransition = resolveStageTransition(stage, [
+              approvalOutcome.decision === "expired" ? "approval-expired" : "approval-denied",
+              approvalOutcome.decision,
+              "failure",
+              "error",
+            ]);
+            if (deniedTransition?.to) {
+              historyEntry.nextStageId = deniedTransition.to;
+              historyEntry.transitionReason = approvalOutcome.decision === "expired" ? "approval-expired" : "approval-denied";
+              emitEvent(options.onEvent, {
+                type: "harness:stage-transition",
+                runId,
+                taskKey,
+                stageId: stage.id,
+                toStageId: deniedTransition.to,
+                reason: historyEntry.transitionReason,
+                dryRun,
+                timestamp: new Date().toISOString(),
+              });
+              lastCompletedStageId = stage.id;
+              currentStageId = deniedTransition.to;
+              continue;
+            }
+            const blockedAt = Date.now();
+            const blocked = {
+              success: false,
+              status: approvalOutcome.decision === "expired" ? "approval_expired" : "approval_denied",
+              runId,
+              dryRun,
+              currentStageId: stage.id,
+              completedStageId: lastCompletedStageId || null,
+              history,
+              error: approvalOutcome.decision === "expired"
+                ? `Harness approval for stage "${stage.id}" expired`
+                : `Harness approval for stage "${stage.id}" was denied`,
+              durationMs: Math.max(0, blockedAt - startedAt),
+            };
+            emitEvent(options.onEvent, {
+              type: "harness:failed",
+              runId,
+              taskKey,
+              stageId: stage.id,
+              dryRun,
+              timestamp: new Date(blockedAt).toISOString(),
+              result: blocked,
+            });
+            activeStageId = "";
+            activeStageTaskKey = "";
+            clearPendingApproval();
+            return blocked;
+          }
+        }
+
         const directTransition = resolveStageTransition(stage, [result.outcome]);
         if (directTransition?.to) {
           historyEntry.nextStageId = directTransition.to;
@@ -535,6 +814,7 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
         });
         activeStageId = "";
         activeStageTaskKey = "";
+        clearPendingApproval();
         return failed;
       }
 
@@ -561,6 +841,7 @@ export function createInternalHarnessSession(compiledProfile, options = {}) {
       });
       activeStageId = "";
       activeStageTaskKey = "";
+      clearPendingApproval();
       return exhausted;
     },
   };
