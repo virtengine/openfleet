@@ -21,7 +21,7 @@ function panel(title, body, props = {}) {
       ...props,
     },
     React.createElement(Text, { bold: true, color: "cyan" }, title),
-    body,
+    React.Children.toArray(body),
   );
 }
 

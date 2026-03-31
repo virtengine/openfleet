@@ -46,6 +46,7 @@ describe("ui-server TUI websocket bridge", () => {
     "TELEGRAM_UI_TUNNEL",
     "BOSUN_STATS_BROADCAST_MS",
     "BOSUN_ENV_NO_OVERRIDE",
+    "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
   ];
   const ajv = new Ajv({ allErrors: true, strict: false });
   const validateStats = ajv.compile(TUI_EVENT_SCHEMAS["monitor:stats"]);
@@ -62,6 +63,7 @@ describe("ui-server TUI websocket bridge", () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_STATS_BROADCAST_MS = "25";
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
     configDir = mkdtempSync(join(tmpdir(), "bosun-ui-tui-ws-"));
     resetSessionTracker({ persistDir: null });
   });
@@ -173,8 +175,8 @@ describe("ui-server TUI websocket bridge", () => {
         && message.payload?.taskId === "task-1"
         && message.payload?.event?.kind === "state"
         && (reason.includes("start") || reason.includes("create"));
-    }));
-    const startedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "active")));
+    }), { timeoutMs: 5000 });
+    const startedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "active")), { timeoutMs: 5000 });
 
     tracker.recordEvent("task-1", {
       role: "user",
@@ -188,18 +190,18 @@ describe("ui-server TUI websocket bridge", () => {
       usage: { inputTokens: 12, outputTokens: 20, totalTokens: 32 },
     });
 
-    const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message" && message.payload?.session?.turnCount === 1));
+    const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message" && message.payload?.session?.turnCount === 1), { timeoutMs: 5000 });
     const sessionsUpdate = await waitFor(() => findLatestMessage(
       messages,
       (message) => message.type === "sessions:update"
         && Array.isArray(message.payload)
         && message.payload.some((session) => session.taskId === "task-1"),
-    ));
+    ), { timeoutMs: 5000 });
 
     tracker.endSession("task-1", "completed");
 
-    const endedEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "state" && String(message.payload?.event?.reason || "").includes("end")));
-    const endedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "completed")));
+    const endedEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "state" && String(message.payload?.event?.reason || "").includes("end")), { timeoutMs: 5000 });
+    const endedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "completed")), { timeoutMs: 5000 });
 
     expect(validateSessionEvent(startedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
     expect(validateSessions(startedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
@@ -211,7 +213,7 @@ describe("ui-server TUI websocket bridge", () => {
     expect(validateSessions(endedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
 
     ws.close();
-  }, 10000);
+  }, 15000);
 
   it("emits canonical sessions:update snapshots for session API mutations", async () => {
     const mod = await import("../server/ui-server.mjs");

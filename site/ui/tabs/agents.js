@@ -31,7 +31,7 @@ import {
   refreshTab,
   scheduleRefresh,
 } from "../modules/state.js";
-import { navigateTo } from "../modules/router.js";
+import { navigateTo, routeParams, setRouteParams } from "../modules/router.js";
 import {
   activeWorkspaceId,
   loadWorkspaces,
@@ -1560,6 +1560,8 @@ export function AgentsTab() {
   const [sessionSearch, setSessionSearch] = useState("");
   const [harnessFilter, setHarnessFilter] = useState("attention");
   const [harnessActionByRun, setHarnessActionByRun] = useState({});
+  const [focusedHarnessRunId, setFocusedHarnessRunId] = useState("");
+  const [focusedHarnessSource, setFocusedHarnessSource] = useState("");
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -1570,6 +1572,9 @@ export function AgentsTab() {
     (entry) => String(entry?.id || "").trim() === String(activeWorkspaceId.value || "").trim(),
   ) || null;
   const activeWorkspaceExecutors = activeWorkspace?.executors || null;
+  const harnessRouteParams = routeParams.value || {};
+  const routeHarnessRunId = String(harnessRouteParams?.harnessRunId || "").trim();
+  const routeHarnessSource = String(harnessRouteParams?.harnessSource || "").trim();
 
   const filteredSlots = useMemo(() => {
     const q = fleetSearch.trim().toLowerCase();
@@ -1626,7 +1631,7 @@ export function AgentsTab() {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task", workspace: activeWorkspaceId.value || "active" });
+      loadSessions({ type: "task", workspace: "all" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
@@ -1662,6 +1667,13 @@ export function AgentsTab() {
     }
     agentWorkspaceTarget.value = null;
   }, [workspaceTarget, slots]);
+
+  useEffect(() => {
+    if (!routeHarnessRunId) return;
+    setFocusedHarnessRunId(routeHarnessRunId);
+    setFocusedHarnessSource(routeHarnessSource || "workflow approvals");
+    setRouteParams({}, { replace: true, skipGuard: true });
+  }, [routeHarnessRunId, routeHarnessSource]);
 
   useEffect(() => {
     loadWorkspaces().catch(() => {});
@@ -1817,9 +1829,27 @@ export function AgentsTab() {
   const harnessStalledCount = harnessRuns.filter((run) => getHarnessRunState(run) === "stalled").length;
   const harnessWorkingCount = harnessRuns.filter((run) => getHarnessRunState(run) === "working").length;
   const harnessApprovalCount = harnessRuns.filter((run) => run?.approvalPending === true || run?.health?.waitingForOperator === true).length;
+  const targetedHarnessRun = useMemo(
+    () => focusedHarnessRunId
+      ? harnessRuns.find((run) => String(run?.runId || "").trim() === focusedHarnessRunId) || null
+      : null,
+    [focusedHarnessRunId, harnessRuns],
+  );
+  useEffect(() => {
+    if (!focusedHarnessRunId || !targetedHarnessRun) return;
+    if (matchesHarnessMonitorFilter(targetedHarnessRun, harnessFilter)) return;
+    setHarnessFilter("all");
+  }, [focusedHarnessRunId, harnessFilter, targetedHarnessRun]);
   const harnessVisibleRuns = useMemo(
-    () => harnessRuns.filter((run) => matchesHarnessMonitorFilter(run, harnessFilter)).slice(0, 6),
-    [harnessRuns, harnessFilter],
+    () => {
+      const filtered = harnessRuns.filter((run) => matchesHarnessMonitorFilter(run, harnessFilter));
+      if (!focusedHarnessRunId) return filtered.slice(0, 6);
+      const target = harnessRuns.find((run) => String(run?.runId || "").trim() === focusedHarnessRunId);
+      if (!target) return filtered.slice(0, 6);
+      const ordered = [target, ...filtered.filter((run) => String(run?.runId || "").trim() !== focusedHarnessRunId)];
+      return ordered.slice(0, 6);
+    },
+    [focusedHarnessRunId, harnessRuns, harnessFilter],
   );
   const harnessSummaryText = harnessRuns.length
     ? [
@@ -2022,8 +2052,16 @@ export function AgentsTab() {
                     const approvalRequestId = getHarnessApprovalRequestId(run);
                     const actionState = harnessActionByRun[String(run?.runId || "").trim()] || "";
                     const waitingForApproval = run?.health?.waitingForOperator || run?.approvalPending;
+                    const isTargetedRun = focusedHarnessRunId && String(run?.runId || "").trim() === focusedHarnessRunId;
                     return html`
-                      <div class="task-card fleet-turn-card" key=${run.runId}>
+                      <div
+                        class="task-card fleet-turn-card"
+                        key=${run.runId}
+                        style=${isTargetedRun ? {
+                          borderColor: "var(--color-inprogress, #60a5fa)",
+                          boxShadow: "0 0 0 1px rgba(96, 165, 250, 0.35)",
+                        } : {}}
+                      >
                         <div class="task-card-header">
                           <div>
                             <div class="task-card-title">${truncate(run?.name || run?.runId || "(unnamed harness run)", 64)}</div>
@@ -2043,6 +2081,11 @@ export function AgentsTab() {
                             }}
                           />
                         </div>
+                        ${isTargetedRun
+                          ? html`<div class="task-card-meta" style=${{ marginTop: "0.2rem", color: "var(--color-inprogress, #60a5fa)" }}>
+                              Focused from ${focusedHarnessSource || "workflow approvals"}
+                            </div>`
+                          : null}
                         <div class="meta-text">
                           ${attentionDetail}
                         </div>
@@ -3088,7 +3131,7 @@ export function FleetSessionsTab() {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task", workspace: activeWorkspaceId.value || "active" });
+      loadSessions({ type: "task", workspace: "all" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);

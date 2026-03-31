@@ -3077,37 +3077,31 @@ export function recoverAutoBlockedTasks(options = {}) {
     recoveredTaskIds.push(task.id);
   }
 
-  // Auto-unblock parent tasks whose children are all settled (done/cancelled).
-  // When a task is split into subtasks by the replanner, the parent is set to
-  // "blocked" with a blockedReason. Once all child subtasks complete, the parent
-  // should be automatically unblocked so it can proceed.
-  const TERMINAL_CHILD_STATUSES = new Set(["done", "cancelled"]);
+  // --- Parent-task auto-unblock: unblock parents whose children are all done/cancelled ---
+  const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
   for (const task of Object.values(_store.tasks)) {
     if (!task || normalizeTaskStatus(task.status) !== "blocked") continue;
-    if (recoveredTaskIds.includes(task.id)) continue;
-    const childIds = Array.isArray(task.childTaskIds) ? task.childTaskIds.filter(Boolean) : [];
+    const childIds = task.childTaskIds || task.subtaskIds || [];
     if (childIds.length === 0) continue;
-    const allChildrenSettled = childIds.every((childId) => {
+    const allChildrenTerminal = childIds.every((childId) => {
       const child = _store.tasks[childId];
-      if (!child) return true; // deleted children count as settled
-      return TERMINAL_CHILD_STATUSES.has(normalizeTaskStatus(child.status));
+      return child && TERMINAL_STATUSES.has(normalizeTaskStatus(child.status));
     });
-    if (!allChildrenSettled) continue;
+    if (!allChildrenTerminal) continue;
+    // All subtasks are done or cancelled — unblock the parent
     const previousStatus = normalizeTaskStatus(task.status);
-    const hasPr = Boolean(task?.prNumber || task?.pr_number || task?.prUrl || task?.pr_url);
+    const hasPr = Boolean(
+      task?.prNumber || task?.pr_number ||
+      task?.prUrl || task?.pr_url,
+    );
     const recoveryStatus = hasPr ? "inreview" : "todo";
     task.status = recoveryStatus;
-    task.cooldownUntil = null;
     task.blockedReason = null;
-    if (task.meta && typeof task.meta === "object") {
-      const nextMeta = { ...task.meta };
-      delete nextMeta.blockedReason;
-      delete nextMeta.worktreeFailure;
-      task.meta = nextMeta;
-    }
+    task.cooldownUntil = null;
     task.updatedAt = recoveredAt;
     task.lastActivityAt = recoveredAt;
     task.syncDirty = true;
+    task.statusHistory = task.statusHistory || [];
     task.statusHistory.push({
       status: recoveryStatus,
       timestamp: recoveredAt,
@@ -3122,8 +3116,8 @@ export function recoverAutoBlockedTasks(options = {}) {
       fromStatus: previousStatus,
       toStatus: recoveryStatus,
       status: recoveryStatus,
-      action: "recover_parent_task",
-      message: `Auto-unblocked parent task — all ${childIds.length} subtasks settled`,
+      action: "unblock_parent_subtasks_complete",
+      message: `Unblocked parent task — all ${childIds.length} subtasks are terminal`,
     });
     markTaskTouched(task, "auto-recovery");
     recoveredTaskIds.push(task.id);

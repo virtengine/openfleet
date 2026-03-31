@@ -250,6 +250,7 @@ import {
   getStaleInProgressTasks,
   getStaleInReviewTasks,
   getAllTasks as getAllInternalTasks,
+  recoverAutoBlockedTasks,
 } from "../task/task-store.mjs";
 import { createAgentEndpoint } from "../agent/agent-endpoint.mjs";
 import { createAgentEventBus } from "../agent/agent-event-bus.mjs";
@@ -14159,6 +14160,22 @@ safeSetInterval("workflow-review-merge-reconcile", async () => {
     );
   }
 }, scheduleCheckIntervalMs);
+
+// ── Periodic blocked-task recovery: every 2 min ────────────────────────────
+// Recovers worktree-failure blocked tasks past their cooldown and unblocks
+// parent tasks whose child subtasks are all done/cancelled.
+safeSetInterval("blocked-task-recovery", () => {
+  try {
+    const result = recoverAutoBlockedTasks();
+    if (result.recoveredCount > 0) {
+      console.log(
+        `[monitor] auto-recovered ${result.recoveredCount} blocked task(s): ${result.recoveredTaskIds.join(", ")}`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[monitor] blocked-task recovery error: ${err?.message || err}`);
+  }
+}, 2 * 60 * 1000);
 
 // Legacy merged PR check removed (workflow-only control).
 

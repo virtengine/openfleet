@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const tasksSource = readFileSync(new URL("../ui/tabs/tasks.js", import.meta.url), "utf8");
 const chatSource = readFileSync(new URL("../ui/tabs/chat.js", import.meta.url), "utf8");
+const settingsSource = readFileSync(new URL("../ui/tabs/settings.js", import.meta.url), "utf8");
 const componentsCss = readFileSync(new URL("../ui/styles/components.css", import.meta.url), "utf8");
 const layoutCss = readFileSync(new URL("../ui/styles/layout.css", import.meta.url), "utf8");
 
@@ -31,5 +32,13 @@ describe("mobile layout implementation", () => {
     expect(chatSource).toContain("const [drawerOpen, setDrawerOpen] = useState(false);");
     expect(chatSource).toContain('sessionId ? sessionTitle : "New chat"');
     expect(chatSource).toContain('Open sessions or start a new chat');
+  });
+
+  it("keeps mobile settings readable without a persistent clean-state overlay", () => {
+    expect(settingsSource).toContain(".settings-mode-switch .MuiToggleButtonGroup-root");
+    expect(settingsSource).toContain("settings-banner-path");
+    expect(settingsSource).toContain("setting-input-wrap--secret");
+    expect(settingsSource).toContain("InputAdornment");
+    expect(settingsSource).toContain("(changeCount > 0 || restartCountdownSeconds != null)");
   });
 });

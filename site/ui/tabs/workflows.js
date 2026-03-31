@@ -5928,7 +5928,12 @@ function RunHistoryView() {
     const requestRunId = String(request?.runId || "").trim();
     const requestScopeId = String(request?.scopeId || "").trim();
     if (scopeType === "harness-run") {
-      navigateTo("agents");
+      navigateTo("agents", {
+        params: {
+          harnessRunId: requestRunId || requestScopeId,
+          harnessSource: "workflow-approvals",
+        },
+      });
       return;
     }
     if (requestRunId) {

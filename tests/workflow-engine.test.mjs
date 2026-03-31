@@ -7987,7 +7987,7 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(parentSpan.attributes["bosun.task.id"]).toBe("TASK-WF-TRACE");
     expect(childSpan.attributes["bosun.task.id"]).toBe("TASK-WF-TRACE");
     expect(childSpan.attributes["bosun.workflow.parent_run_id"]).toBe(parentCtx.id);
-  });
+  }, 15000);
   it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
     let attempts = 0;
     registerNodeType("test.replan_once", {

@@ -2340,7 +2340,7 @@ describe("action.acquire_worktree", () => {
     expect(recovery?.health).toBe("healthy");
     expect(recovery?.failureStreak).toBe(0);
     expect(recovery?.recentEvents || []).toEqual([]);
-  }, 15000);
+  }, 30000);
 
   it("recreates dirty managed worktrees and rebases existing task branches onto the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");

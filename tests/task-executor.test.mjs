@@ -78,6 +78,7 @@ vi.mock("../config/config.mjs", () => ({
 
 vi.mock("../git/git-safety.mjs", () => ({
   evaluateBranchSafetyForPush: vi.fn(() => ({ safe: true })),
+  sanitizeGitEnv: vi.fn(() => ({})),
   normalizeBaseBranch: vi.fn((baseBranch = "main", remote = "origin") => {
     let branch = String(baseBranch || "main").trim();
     if (!branch) branch = "main";
