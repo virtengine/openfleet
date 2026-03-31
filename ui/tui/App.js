@@ -25,6 +25,7 @@ import { useWebSocket } from "./useWebSocket.js";
 import { useTasks } from "./useTasks.js";
 import { useWorkflows } from "./useWorkflows.js";
 import SettingsScreen from "./SettingsScreen.js";
+import TelemetryScreen from "./TelemetryScreen.js";
 
 const html = htm.bind(React.createElement);
 
@@ -302,3 +303,5 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     <//>
   `;
 }
+
+
