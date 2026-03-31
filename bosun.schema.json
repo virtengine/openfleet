@@ -146,6 +146,31 @@
         }
       }
     },
+    "harness": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "source": {
+          "type": "string",
+          "description": "Path to the internal harness profile source file. Supports JSON or markdown fenced JSON."
+        },
+        "validation": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["off", "report", "enforce"],
+              "default": "report"
+            }
+          }
+        }
+      }
+    },
     "workflows": {
       "type": "array",
       "description": "Opt-in typed workflow templates that resolve to built-in workflow definitions.",

@@ -75,6 +75,19 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("Deny Run");
     });
 
+    it(`${label} exposes workflow team coordination context in run details`, () => {
+      expect(source).toContain("workflowTeamState");
+      expect(source).toContain("teamSummary");
+      expect(source).toContain("Team Coordination");
+      expect(source).toContain("Shared Team Tasks");
+      expect(source).toContain("Team Messages");
+      expect(source).toContain("Coordination Events");
+      expect(source).toContain("Lead:");
+      expect(source).toContain("Default Channel:");
+      expect(source).toContain("summarizeWorkflowTeamTaskEntry");
+      expect(source).toContain("summarizeWorkflowTeamMessageEntry");
+    });
+
     it(`${label} exposes the operator approval queue in run history`, () => {
       expect(source).toContain("Approval Queue");
       expect(source).toContain("Pending Approvals");

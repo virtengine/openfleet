@@ -27,6 +27,46 @@ export const monitorStatsFixture = {
   tokensIn: 12_300,
   tokensOut: 4_560,
   tokensTotal: 16_860,
+  activeSessionCount: 1,
+  completedSessionCount: 1,
+  totalSessionCount: 2,
+  sessionHealth: {
+    live: 1,
+    active: 0,
+    working: 0,
+    editing: 1,
+    committing: 0,
+    idle: 0,
+    stalled: 0,
+    blocked: 0,
+    completed: 1,
+  },
+  context: {
+    liveSessionCount: 1,
+    completedSessionCount: 1,
+    sessionsNearContextLimit: 1,
+    sessionsHighContextPressure: 1,
+    maxContextUsagePercent: 92,
+    avgContextUsagePercent: 92,
+  },
+  rateLimitSummary: {
+    providerCount: 1,
+    providersNearExhaustion: 1,
+    providersExhausted: 0,
+  },
+  toolSummary: {
+    toolCalls: 3,
+    toolResults: 2,
+    errors: 0,
+    editOps: 1,
+    commitOps: 0,
+    sessionsWithEdits: 1,
+    sessionsWithCommits: 0,
+    topTools: [
+      { name: "apply_patch", count: 1 },
+      { name: "command_execution", count: 1 },
+    ],
+  },
 };
 
 export const sessionsFixture = [
@@ -39,9 +79,30 @@ export const sessionsFixture = [
     lastActiveAt: "2026-03-23T00:00:30.000Z",
     turnCount: 3,
     elapsedMs: 30_000,
+    recommendation: "continue",
     lastMessage: "Applied the first fix candidate",
+    branch: "ve/fix-build",
     metadata: { pid: 4120, workspaceId: "ws-1", workspaceDir: "/tmp/ws-1", model: "gpt-5.4", agent: "primary" },
     insights: { contextWindow: { usedTokens: 2300, totalTokens: 32000 } },
+    contextWindow: { usedTokens: 184000, totalTokens: 200000, percent: 92 },
+    contextUsagePercent: 92,
+    contextPressure: "critical",
+    topTools: [{ name: "apply_patch", count: 1 }],
+    recentActions: [{ type: "tool_call", label: "apply_patch", level: "info", timestamp: "2026-03-23T00:00:25.000Z" }],
+    runtimeHealth: {
+      state: "editing",
+      severity: "critical",
+      live: true,
+      idleMs: 1000,
+      contextPressure: "critical",
+      contextUsagePercent: 92,
+      toolCalls: 2,
+      toolResults: 1,
+      errors: 0,
+      hasEdits: true,
+      hasCommits: false,
+      reasons: ["critical_context", "edits"],
+    },
   },
   {
     id: "session-done-2",
@@ -109,6 +170,7 @@ export const FIXTURE_STATS = {
   tokensIn: 1234,
   tokensOut: 5678,
   tokensTotal: 6912,
+  activeSessions: sessionsFixture,
 };
 
 export const FIXTURE_SESSIONS = [
@@ -118,6 +180,8 @@ export const FIXTURE_SESSIONS = [
   },
   ...sessionsFixture.slice(1),
 ];
+
+monitorStatsFixture.activeSessions = sessionsFixture;
 
 export const FIXTURE_TASKS = [
   { id: "task-1", title: "Fix CI failure", status: "todo" },

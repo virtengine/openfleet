@@ -8081,6 +8081,117 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     ]);
   });
 
+  it("hydrates workflow team state into run detail and history read models", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "team-init",
+          type: "action.team_init",
+          config: {
+            teamId: "workflow-team-1",
+            leadId: "lead-1",
+            members: [{ memberId: "dev-1", role: "worker" }],
+          },
+        },
+        {
+          id: "publish",
+          type: "action.team_task_publish",
+          config: {
+            title: "Review API contract",
+            description: "Coordinate the API review inside the workflow team.",
+            createdBy: "lead-1",
+          },
+        },
+        {
+          id: "claim",
+          type: "action.team_task_claim",
+          config: {
+            taskId: "{{publish.publishedTasks.0.taskId}}",
+            memberId: "dev-1",
+          },
+        },
+        {
+          id: "message",
+          type: "action.team_message",
+          config: {
+            fromMemberId: "dev-1",
+            toMemberId: "lead-1",
+            taskId: "{{publish.publishedTasks.0.taskId}}",
+            content: "Claimed the review task and started work.",
+          },
+        },
+        {
+          id: "inbox",
+          type: "action.team_inbox",
+          config: {
+            memberId: "lead-1",
+            markRead: true,
+          },
+        },
+        {
+          id: "complete",
+          type: "action.team_task_complete",
+          config: {
+            taskId: "{{publish.publishedTasks.0.taskId}}",
+            memberId: "dev-1",
+          },
+        },
+        { id: "snapshot", type: "action.team_snapshot", config: {} },
+      ],
+      [
+        { source: "trigger", target: "team-init" },
+        { source: "team-init", target: "publish" },
+        { source: "publish", target: "claim" },
+        { source: "claim", target: "message" },
+        { source: "message", target: "inbox" },
+        { source: "inbox", target: "complete" },
+        { source: "complete", target: "snapshot" },
+      ],
+      { id: "wf-team-coordination", name: "Workflow Team Coordination" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    const snapshot = ctx.getNodeOutput("snapshot");
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("claim")).toEqual(expect.objectContaining({ claimed: true }));
+    expect(ctx.getNodeOutput("inbox").messages).toHaveLength(1);
+    expect(snapshot.teamSummary.completedTaskCount).toBe(1);
+    expect(snapshot.state.messages).toHaveLength(1);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.workflowTeamState).toEqual(expect.objectContaining({
+      teamId: "workflow-team-1",
+      leadId: "lead-1",
+    }));
+    expect(detail?.teamSummary).toEqual(expect.objectContaining({
+      rosterCount: 2,
+      completedTaskCount: 1,
+      messageCount: 1,
+    }));
+    expect(detail?.detail?.data?._workflowTeamState?.tasks?.[0]).toEqual(
+      expect.objectContaining({
+        status: "completed",
+        claimedBy: "dev-1",
+        completedBy: "dev-1",
+      }),
+    );
+    expect(detail?.detail?.data?._workflowTeamState?.messages?.[0]).toEqual(
+      expect.objectContaining({
+        kind: "direct",
+        fromMemberId: "dev-1",
+      }),
+    );
+
+    const historyEntry = engine.getRunHistory(wf.id).find((entry) => entry.runId === ctx.id);
+    expect(historyEntry?.teamSummary).toEqual(expect.objectContaining({
+      teamId: "workflow-team-1",
+      completedTaskCount: 1,
+      messageCount: 1,
+    }));
+  });
+
   it("distinguishes rerun, fix-step, and subgraph replan retry decisions", () => {
     const rerun = engine._chooseRetryModeFromDetail({
       issueAdvisor: { recommendedAction: "resume_remaining", summary: "Resume from verify." },

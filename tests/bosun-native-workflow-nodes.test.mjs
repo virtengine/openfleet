@@ -1777,4 +1777,145 @@ describe("self-improvement workflow nodes", () => {
       ]),
     );
   });
+
+  it("workflow team coordination nodes support init, shared task claims, direct messaging, and completion", async () => {
+    const initHandler = getNodeType("action.team_init");
+    const publishHandler = getNodeType("action.team_task_publish");
+    const claimHandler = getNodeType("action.team_task_claim");
+    const messageHandler = getNodeType("action.team_message");
+    const inboxHandler = getNodeType("action.team_inbox");
+    const completeHandler = getNodeType("action.team_task_complete");
+    const snapshotHandler = getNodeType("action.team_snapshot");
+    expect(initHandler).toBeDefined();
+    expect(publishHandler).toBeDefined();
+    expect(claimHandler).toBeDefined();
+    expect(messageHandler).toBeDefined();
+    expect(inboxHandler).toBeDefined();
+    expect(completeHandler).toBeDefined();
+    expect(snapshotHandler).toBeDefined();
+
+    const ctx = new WorkflowContext({});
+
+    const initResult = await initHandler.execute({
+      id: "team-init",
+      type: "action.team_init",
+      config: {
+        teamId: "team-alpha",
+        leadId: "lead-1",
+        members: [
+          { memberId: "dev-1", role: "worker" },
+          { memberId: "qa-1", role: "reviewer" },
+        ],
+      },
+    }, ctx);
+    expect(initResult.teamSummary.rosterCount).toBe(3);
+
+    const publishResult = await publishHandler.execute({
+      id: "publish",
+      type: "action.team_task_publish",
+      config: {
+        title: "Investigate failing workflow edge",
+        description: "Shared workflow task for the worker pool.",
+        createdBy: "lead-1",
+      },
+    }, ctx);
+    expect(publishResult.count).toBe(1);
+    const publishedTaskId = publishResult.publishedTasks[0].taskId;
+
+    const claimResult = await claimHandler.execute({
+      id: "claim",
+      type: "action.team_task_claim",
+      config: {
+        taskId: publishedTaskId,
+        memberId: "dev-1",
+      },
+    }, ctx);
+    expect(claimResult).toEqual(expect.objectContaining({
+      success: true,
+      claimed: true,
+      outcome: "claimed",
+    }));
+
+    const conflictResult = await claimHandler.execute({
+      id: "claim-conflict",
+      type: "action.team_task_claim",
+      config: {
+        taskId: publishedTaskId,
+        memberId: "qa-1",
+      },
+    }, ctx);
+    expect(conflictResult).toEqual(expect.objectContaining({
+      claimed: false,
+      reason: "already_claimed",
+      outcome: "unavailable",
+      claimedBy: "dev-1",
+    }));
+
+    const messageResult = await messageHandler.execute({
+      id: "message",
+      type: "action.team_message",
+      config: {
+        fromMemberId: "dev-1",
+        toMemberId: "lead-1",
+        taskId: publishedTaskId,
+        content: "I claimed the shared task and started the investigation.",
+      },
+    }, ctx);
+    expect(messageResult).toEqual(expect.objectContaining({
+      success: true,
+      kind: "direct",
+      outcome: "direct",
+    }));
+
+    const inboxResult = await inboxHandler.execute({
+      id: "inbox",
+      type: "action.team_inbox",
+      config: {
+        memberId: "lead-1",
+        markRead: true,
+      },
+    }, ctx);
+    expect(inboxResult.messages).toHaveLength(1);
+    expect(inboxResult.unreadCount).toBe(0);
+    expect(inboxResult.messages[0]).toEqual(expect.objectContaining({
+      fromMemberId: "dev-1",
+      taskId: publishedTaskId,
+    }));
+
+    const completeResult = await completeHandler.execute({
+      id: "complete",
+      type: "action.team_task_complete",
+      config: {
+        taskId: publishedTaskId,
+        memberId: "dev-1",
+      },
+    }, ctx);
+    expect(completeResult).toEqual(expect.objectContaining({
+      success: true,
+      completed: true,
+      outcome: "completed",
+    }));
+
+    const snapshot = await snapshotHandler.execute({
+      id: "snapshot",
+      type: "action.team_snapshot",
+      config: {},
+    }, ctx);
+    expect(snapshot.teamSummary).toEqual(expect.objectContaining({
+      teamId: "team-alpha",
+      completedTaskCount: 1,
+      messageCount: 1,
+      eventCount: 5,
+    }));
+    expect(snapshot.tasks[0]).toEqual(expect.objectContaining({
+      taskId: publishedTaskId,
+      status: "completed",
+      claimedBy: "dev-1",
+      completedBy: "dev-1",
+    }));
+    expect(snapshot.tasks[0].claimHistory).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "claim", memberId: "dev-1" }),
+      expect.objectContaining({ action: "complete", memberId: "dev-1" }),
+    ]));
+  });
 });

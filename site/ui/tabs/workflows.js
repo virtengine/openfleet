@@ -522,6 +522,42 @@ function summarizePlannerTimelineEntry(entry) {
   return parts.join(" · ");
 }
 
+function summarizeWorkflowTeamTaskEntry(task) {
+  if (!task || typeof task !== "object") return "";
+  const parts = [];
+  const title = String(task.title || task.taskId || "task").trim();
+  const status = String(task.status || "").trim();
+  const claimedBy = String(task.claimedBy || "").trim();
+  const completedBy = String(task.completedBy || "").trim();
+  if (title) parts.push(title);
+  if (status) parts.push(status);
+  if (completedBy) parts.push(`done by ${completedBy}`);
+  else if (claimedBy) parts.push(`claimed by ${claimedBy}`);
+  return parts.join(" · ");
+}
+
+function summarizeWorkflowTeamMessageEntry(message) {
+  if (!message || typeof message !== "object") return "";
+  const parts = [];
+  const fromMemberId = String(message.fromMemberId || "member").trim();
+  const kind = String(message.kind || "message").trim();
+  const channelId = String(message.channelId || "").trim();
+  const recipients = Array.isArray(message.toMemberIds)
+    ? message.toMemberIds.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  const content = String(message.content || "").trim();
+  parts.push(fromMemberId);
+  if (kind === "direct" && recipients.length > 0) {
+    parts.push(`to ${recipients.join(", ")}`);
+  } else if (channelId) {
+    parts.push(`#${channelId}`);
+  } else {
+    parts.push(kind);
+  }
+  if (content) parts.push(content.length > 120 ? `${content.slice(0, 117)}…` : content);
+  return parts.join(" · ");
+}
+
 function toRunGraphTimestamp(value) {
   const numeric = Number(value);
   if (Number.isFinite(numeric) && numeric > 0) return numeric;
@@ -5802,6 +5838,26 @@ function RunHistoryView() {
     const proofEvidence = Array.isArray(proofBundle?.evidence) ? proofBundle.evidence : [];
     const proofArtifacts = Array.isArray(proofBundle?.artifacts) ? proofBundle.artifacts : [];
     const governance = readWorkflowGovernance(selectedRun);
+    const workflowTeamState =
+      selectedRun?.workflowTeamState && typeof selectedRun.workflowTeamState === "object"
+        ? selectedRun.workflowTeamState
+        : (selectedRun?.detail?.workflowTeamState && typeof selectedRun.detail.workflowTeamState === "object"
+            ? selectedRun.detail.workflowTeamState
+            : (selectedRun?.detail?.data?._workflowTeamState && typeof selectedRun.detail.data._workflowTeamState === "object"
+                ? selectedRun.detail.data._workflowTeamState
+                : null));
+    const teamSummary =
+      selectedRun?.teamSummary && typeof selectedRun.teamSummary === "object"
+        ? selectedRun.teamSummary
+        : (selectedRun?.detail?.teamSummary && typeof selectedRun.detail.teamSummary === "object"
+            ? selectedRun.detail.teamSummary
+            : (selectedRun?.detail?.data?._workflowTeamSummary && typeof selectedRun.detail.data._workflowTeamSummary === "object"
+                ? selectedRun.detail.data._workflowTeamSummary
+                : null));
+    const teamRoster = Array.isArray(workflowTeamState?.roster) ? workflowTeamState.roster : [];
+    const teamTasks = Array.isArray(workflowTeamState?.tasks) ? workflowTeamState.tasks : [];
+    const teamMessages = Array.isArray(workflowTeamState?.messages) ? workflowTeamState.messages : [];
+    const teamEvents = Array.isArray(workflowTeamState?.events) ? workflowTeamState.events : [];
     const runGraph = selectedRun?.runGraph && typeof selectedRun.runGraph === "object"
       ? selectedRun.runGraph
       : null;
@@ -6098,6 +6154,25 @@ function RunHistoryView() {
 
           <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
             <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#06b6d420; color:#67e8f9;">Team Coordination</span>
+              ${teamSummary?.teamId && html`
+                <span class="wf-badge" style="background:#164e6320; color:#a5f3fc;">
+                  ${teamSummary.teamId}
+                </span>
+              `}
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Lead:</b> ${teamSummary?.leadId || workflowTeamState?.leadId || "—"}</div>
+              <div><b>Members:</b> ${Number(teamSummary?.rosterCount || teamRoster.length || 0)} · <b>Channels:</b> ${Number(teamSummary?.channelCount || workflowTeamState?.channels?.length || 0)}</div>
+              <div><b>Shared Team Tasks:</b> ${Number(teamSummary?.taskCount || teamTasks.length || 0)} · <b>Open:</b> ${Number(teamSummary?.openTaskCount || 0)} · <b>Claimed:</b> ${Number(teamSummary?.claimedTaskCount || 0)} · <b>Completed:</b> ${Number(teamSummary?.completedTaskCount || 0)}</div>
+              <div><b>Team Messages:</b> ${Number(teamSummary?.messageCount || teamMessages.length || 0)} · <b>Coordination Events:</b> ${Number(teamSummary?.eventCount || teamEvents.length || 0)}</div>
+              <div style="margin-top: 6px;"><b>Default Channel:</b> ${teamSummary?.defaultChannel || workflowTeamState?.defaultChannel || "—"}</div>
+              <div><b>Last Updated:</b> ${teamSummary?.lastUpdatedAt ? `${formatDate(teamSummary.lastUpdatedAt)} (${formatRelative(teamSummary.lastUpdatedAt)})` : "—"}</div>
+            </div>
+          </div>
+
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
               <span class="wf-badge" style="background:#22c55e20; color:#86efac;">Planner & Proof</span>
             </div>
             <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
@@ -6146,6 +6221,59 @@ function RunHistoryView() {
             </div>
           </div>
         </div>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Team Coordination (${Number(teamSummary?.rosterCount || teamRoster.length || 0)} members · ${Number(teamSummary?.taskCount || teamTasks.length || 0)} tasks)</summary>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:8px;">
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Team Members</div>
+              ${teamRoster.length === 0
+                ? html`<div style="opacity:0.6;">No workflow team roster recorded for this run.</div>`
+                : teamRoster.map((member, index) => html`
+                  <div key=${`team-member-${index}`} style="margin-bottom:8px;">
+                    <div><b>${member.name || member.memberId || "member"}</b>${member.role ? ` · ${member.role}` : ""}</div>
+                    <div style="opacity:0.8;"><code>${member.memberId || "—"}</code>${member.reportsTo ? ` · reports to ${member.reportsTo}` : ""}</div>
+                    <div style="margin-top:2px;">${Array.isArray(member.channels) && member.channels.length ? `Channels: ${member.channels.join(", ")}` : "Channels: —"}</div>
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Shared Team Tasks</div>
+              ${teamTasks.length === 0
+                ? html`<div style="opacity:0.6;">No workflow-local shared tasks recorded.</div>`
+                : teamTasks.map((task, index) => html`
+                  <div key=${`team-task-${index}`} style="margin-bottom:8px;">
+                    <div><b>${summarizeWorkflowTeamTaskEntry(task) || task.taskId || "task"}</b></div>
+                    <div style="opacity:0.8;"><code>${task.taskId || "—"}</code>${task.channelId ? ` · #${task.channelId}` : ""}</div>
+                    ${task.description && html`<div style="margin-top:2px;">${task.description}</div>`}
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Team Messages</div>
+              ${teamMessages.length === 0
+                ? html`<div style="opacity:0.6;">No direct or channel coordination messages recorded.</div>`
+                : teamMessages.slice().reverse().slice(0, 12).map((message, index) => html`
+                  <div key=${`team-message-${index}`} style="margin-bottom:8px;">
+                    <div><b>${summarizeWorkflowTeamMessageEntry(message) || message.messageId || "message"}</b></div>
+                    <div style="opacity:0.8;">${message.createdAt ? `${formatDate(message.createdAt)} (${formatRelative(message.createdAt)})` : "unknown time"}</div>
+                  </div>
+                `)}
+            </div>
+            <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+              <div style="font-weight:600; margin-bottom:6px;">Coordination Events</div>
+              ${teamEvents.length === 0
+                ? html`<div style="opacity:0.6;">No workflow team coordination events recorded.</div>`
+                : teamEvents.slice().reverse().slice(0, 12).map((event, index) => html`
+                  <div key=${`team-event-${index}`} style="margin-bottom:8px;">
+                    <div><b>${String(event.type || "event").replaceAll("-", " ")}</b>${event.status ? ` · ${event.status}` : ""}</div>
+                    <div style="opacity:0.8;">${event.at ? `${formatDate(event.at)} (${formatRelative(event.at)})` : "unknown time"}</div>
+                    ${event.summary && html`<div style="margin-top:2px;">${event.summary}</div>`}
+                  </div>
+                `)}
+            </div>
+          </div>
+        </details>
 
         <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
           <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Lineage (${runGraphLineage.length})</summary>

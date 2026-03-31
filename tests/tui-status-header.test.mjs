@@ -16,6 +16,17 @@ describe("tui status header", () => {
         tokensIn: 12_300,
         tokensOut: 4_560,
         tokensTotal: 16_860,
+        sessionHealth: {
+          live: 2,
+          blocked: 1,
+          stalled: 1,
+        },
+        context: {
+          sessionsNearContextLimit: 1,
+        },
+        rateLimitSummary: {
+          providersNearExhaustion: 2,
+        },
         rateLimits: {
           openai: { primary: 18, secondary: 9, credits: 2, unit: "min" },
           anthropic: { primary: 0, secondary: 5, credits: 0, unit: "min" },
@@ -38,6 +49,9 @@ describe("tui status header", () => {
     expect(model.row1).toContain("Tokens: in 12.3k | out 4.6k | total 16.9k");
 
     expect(model.row3.connection.label).toBe("Reconnecting");
+    expect(model.row3.healthLabel).toContain("Live  2");
+    expect(model.row3.healthLabel).toContain("blocked  1");
+    expect(model.row3.healthLabel).toContain("near limit  1");
     expect(model.row3.projectLabel).toBe("linear://ENG");
     expect(model.row3.refreshLabel).toBe("Next refresh: 1s");
   });

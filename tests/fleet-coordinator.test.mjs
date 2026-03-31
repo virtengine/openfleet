@@ -237,6 +237,69 @@ describe("fleet-coordinator", () => {
       // Should prefer ws-2 because it has "veid" capability
       expect(result.assignments[0].assignedTo).toBe("ws-2");
     });
+
+    it("prefers same-team peers for coordinated tasks", () => {
+      const waves = [["t1"]];
+      const peers = [
+        { instance_id: "ws-1", instance_label: "worker-a", teamId: "team-alpha" },
+        { instance_id: "ws-2", instance_label: "worker-b", teamId: "team-beta" },
+      ];
+      const taskMap = new Map([[
+        "t1",
+        {
+          id: "t1",
+          title: "alpha task",
+          coordinationTeamId: "team-beta",
+        },
+      ]]);
+
+      const result = assignTasksToWorkstations(waves, peers, taskMap);
+
+      expect(result.assignments[0].assignedTo).toBe("ws-2");
+      expect(result.assignments[0].assignmentReasons).toContain("team-match");
+    });
+
+    it("prefers matching coordination roles ahead of round-robin defaults", () => {
+      const waves = [["t1"]];
+      const peers = [
+        { instance_id: "ws-1", instance_label: "general-worker", workspace_role: "worker" },
+        { instance_id: "ws-2", instance_label: "review-bot", team_role: "reviewer" },
+      ];
+      const taskMap = new Map([[
+        "t1",
+        {
+          id: "t1",
+          title: "review task",
+          coordinationRole: "reviewer",
+        },
+      ]]);
+
+      const result = assignTasksToWorkstations(waves, peers, taskMap);
+
+      expect(result.assignments[0].assignedTo).toBe("ws-2");
+      expect(result.assignments[0].assignmentReasons).toContain("role-match");
+    });
+
+    it("prefers peers in the expected reports-to chain", () => {
+      const waves = [["t1"]];
+      const peers = [
+        { instance_id: "ws-1", instance_label: "impl-a", reports_to: "planner-a" },
+        { instance_id: "ws-2", instance_label: "impl-b", reports_to: "planner-b" },
+      ];
+      const taskMap = new Map([[
+        "t1",
+        {
+          id: "t1",
+          title: "planned task",
+          coordinationReportsTo: "planner-b",
+        },
+      ]]);
+
+      const result = assignTasksToWorkstations(waves, peers, taskMap);
+
+      expect(result.assignments[0].assignedTo).toBe("ws-2");
+      expect(result.assignments[0].assignmentReasons).toContain("reports-to-match");
+    });
   });
 
   describe("calculateBacklogDepth", () => {

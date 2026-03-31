@@ -7395,6 +7395,663 @@ registerBuiltinNodeType("action.set_variable", {
   },
 });
 
+registerBuiltinNodeType("action.team_init", {
+  describe: () =>
+    "Initialize a workflow-local agent team roster, channels, and leadership state for team workflows.",
+  schema: {
+    type: "object",
+    properties: {
+      teamId: { type: "string", description: "Stable workflow-local team identifier." },
+      name: { type: "string", description: "Optional display name for the team." },
+      leadId: { type: "string", description: "Lead/member id for the team coordinator." },
+      defaultChannel: { type: "string", default: "team", description: "Default shared coordination channel." },
+      reset: { type: "boolean", default: false, description: "When true, replace any existing workflow team state." },
+      members: {
+        type: "array",
+        items: { type: "object" },
+        description: "Initial team roster members.",
+      },
+      channels: {
+        type: "array",
+        items: { type: "object" },
+        description: "Optional extra channels available to the team.",
+      },
+      outputVariable: { type: "string", description: "Optional context key to store the team init result." },
+    },
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const members = Array.isArray(resolveWorkflowNodeValue(node.config?.members ?? [], ctx))
+      ? resolveWorkflowNodeValue(node.config?.members ?? [], ctx)
+      : [];
+    const channels = Array.isArray(resolveWorkflowNodeValue(node.config?.channels ?? [], ctx))
+      ? resolveWorkflowNodeValue(node.config?.channels ?? [], ctx)
+      : [];
+    const reset = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.reset ?? false, ctx), false);
+    const teamId = normalizeTeamId(
+      ctx.resolve(node.config?.teamId || "") ||
+      ctx.data?.coordinationTeamId ||
+      ctx.data?.teamId ||
+      ctx.data?._workflowId ||
+      `workflow-team-${ctx.id.slice(0, 8)}`,
+    );
+    const leadId = normalizeTeamId(
+      ctx.resolve(node.config?.leadId || "") ||
+      ctx.data?.coordinationReportsTo ||
+      ctx.data?.leadId ||
+      ctx.data?.agentId ||
+      ctx.data?.agentProfile,
+    );
+    const defaultChannel = normalizeTeamId(ctx.resolve(node.config?.defaultChannel || "team")) || "team";
+    const teamName = normalizeTeamId(ctx.resolve(node.config?.name || "")) || teamId;
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      const next = reset
+        ? {
+            version: 1,
+            teamId: null,
+            name: null,
+            leadId: null,
+            defaultChannel: "team",
+            initializedAt: null,
+            updatedAt: null,
+            roster: [],
+            channels: [],
+            tasks: [],
+            messages: [],
+            events: [],
+          }
+        : current;
+      next.teamId = teamId;
+      next.name = teamName;
+      next.leadId = leadId || next.leadId || null;
+      next.defaultChannel = defaultChannel;
+      next.initializedAt = next.initializedAt || now;
+      next.updatedAt = now;
+      ensureTeamChannel(next, { channelId: defaultChannel, name: defaultChannel });
+      for (const channel of channels) ensureTeamChannel(next, channel);
+      if (next.leadId) {
+        ensureTeamMember(next, { memberId: next.leadId, name: next.leadId, role: "lead" });
+      }
+      for (const member of members) ensureTeamMember(next, member);
+      appendWorkflowTeamEvent(next, reset ? "team-reset" : "team-init", {
+        actorId: next.leadId,
+        memberId: next.leadId,
+        summary: `${reset ? "Reset" : "Initialized"} workflow team ${teamId}`,
+        status: "ready",
+      });
+      return next;
+    });
+
+    ctx.data.teamId = teamState.teamId;
+    ctx.data.leadId = teamState.leadId;
+    ctx.data._workflowTeamId = teamState.teamId;
+    ctx.data._workflowTeamLeadId = teamState.leadId;
+    ctx.data._workflowTeamChannel = teamState.defaultChannel;
+
+    const result = {
+      success: true,
+      teamId: teamState.teamId,
+      leadId: teamState.leadId,
+      state: teamState,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      reset,
+    };
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(node.id, `Initialized workflow team ${teamState.teamId} (${result.teamSummary.rosterCount} members)`);
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_task_publish", {
+  describe: () =>
+    "Publish one or more workflow-local shared team tasks that teammates can claim inside the current run.",
+  schema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Single team task title." },
+      description: { type: "string", description: "Single team task description." },
+      tasks: {
+        type: "array",
+        items: { type: "object" },
+        description: "Optional batch of team tasks to publish.",
+      },
+      createdBy: { type: "string", description: "Member id publishing the task(s)." },
+      priority: { type: "string" },
+      channelId: { type: "string" },
+      labels: { type: "array", items: { type: "string" } },
+      tags: { type: "array", items: { type: "string" } },
+      availableTo: { type: "array", items: { type: "string" } },
+      metadata: { type: "object" },
+      outputVariable: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const createdBy = resolveTeamActorId(node, ctx, "createdBy");
+    const publishedTasks = [];
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.tasks = Array.isArray(current.tasks) ? current.tasks : [];
+      current.events = Array.isArray(current.events) ? current.events : [];
+      current.updatedAt = now;
+      if (createdBy) ensureTeamMember(current, { memberId: createdBy, name: createdBy });
+      const batch = Array.isArray(resolveWorkflowNodeValue(node.config?.tasks ?? [], ctx))
+        ? resolveWorkflowNodeValue(node.config?.tasks ?? [], ctx)
+        : [];
+      const singleTask = {
+        title: ctx.resolve(node.config?.title || ""),
+        description: ctx.resolve(node.config?.description || ""),
+        priority: ctx.resolve(node.config?.priority || ""),
+        channelId: ctx.resolve(node.config?.channelId || ""),
+        labels: resolveWorkflowNodeValue(node.config?.labels ?? [], ctx),
+        tags: resolveWorkflowNodeValue(node.config?.tags ?? [], ctx),
+        availableTo: resolveWorkflowNodeValue(node.config?.availableTo ?? [], ctx),
+        metadata: resolveWorkflowNodeValue(node.config?.metadata ?? {}, ctx),
+      };
+      const sourceTasks = batch.length > 0
+        ? batch
+        : (singleTask.title || singleTask.description ? [singleTask] : []);
+      for (const entry of sourceTasks) {
+        const taskId = normalizeTeamId(entry.taskId || entry.id) || randomUUID();
+        const existing = current.tasks.find((task) => task.taskId === taskId);
+        const nextTask = {
+          taskId,
+          title: String(entry.title || entry.summary || taskId).trim(),
+          description: typeof entry.description === "string" && entry.description.trim() ? entry.description.trim() : null,
+          status: "open",
+          priority: normalizeTeamId(entry.priority) || null,
+          availableTo: normalizeTeamList(entry.availableTo),
+          labels: normalizeTeamList(entry.labels),
+          tags: normalizeTeamList(entry.tags),
+          channelId: normalizeTeamId(entry.channelId),
+          createdBy,
+          claimedBy: null,
+          completedBy: null,
+          releasedBy: null,
+          createdAt: existing?.createdAt || now,
+          claimedAt: null,
+          completedAt: null,
+          releasedAt: null,
+          claimHistory: Array.isArray(existing?.claimHistory) ? existing.claimHistory : [],
+          metadata:
+            entry.metadata && typeof entry.metadata === "object" && !Array.isArray(entry.metadata)
+              ? cloneWorkflowTeamValue(entry.metadata)
+              : {},
+        };
+        if (existing) {
+          Object.assign(existing, nextTask);
+          publishedTasks.push({ ...existing });
+        } else {
+          current.tasks.push(nextTask);
+          publishedTasks.push({ ...nextTask });
+        }
+        appendWorkflowTeamEvent(current, "team-task-published", {
+          actorId: createdBy,
+          memberId: createdBy,
+          taskId,
+          status: "open",
+          summary: `Published workflow team task ${taskId}`,
+        });
+      }
+      return current;
+    });
+    const result = {
+      success: true,
+      teamId: teamState.teamId,
+      publishedTasks,
+      count: publishedTasks.length,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(node.id, `Published ${publishedTasks.length} workflow team task(s)`);
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_task_claim", {
+  describe: () =>
+    "Claim a workflow-local shared team task for a specific teammate or worker inside the current run.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Specific team task to claim." },
+      memberId: { type: "string", description: "Teammate claiming the task." },
+      actorId: { type: "string", description: "Alias for memberId." },
+      match: { type: "object", description: "Optional matcher for first-available task selection." },
+      failIfUnavailable: { type: "boolean", default: false },
+      routeByOutcome: { type: "boolean", default: false, description: "When true, emit claimed/unavailable output ports." },
+      outputVariable: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const memberId = resolveTeamActorId(node, ctx);
+    const requestedTaskId = normalizeTeamId(ctx.resolve(node.config?.taskId || ""));
+    const failIfUnavailable = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.failIfUnavailable ?? false, ctx),
+      false,
+    );
+    const routeByOutcome = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.routeByOutcome ?? false, ctx),
+      false,
+    );
+    const match = resolveWorkflowNodeValue(node.config?.match ?? {}, ctx);
+    let claimResult = null;
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.tasks = Array.isArray(current.tasks) ? current.tasks : [];
+      current.events = Array.isArray(current.events) ? current.events : [];
+      current.updatedAt = now;
+      if (memberId) ensureTeamMember(current, { memberId, name: memberId });
+      const candidate = requestedTaskId
+        ? current.tasks.find((task) => task.taskId === requestedTaskId)
+        : current.tasks.find((task) => (
+          (task.status === "open" || task.status === "released") &&
+          matchesTeamTask(task, match)
+        ));
+      if (!candidate) {
+        claimResult = {
+          success: !failIfUnavailable,
+          claimed: false,
+          outcome: "unavailable",
+          reason: requestedTaskId ? "task_not_found" : "no_matching_task",
+        };
+        return current;
+      }
+      if (candidate.availableTo.length > 0 && memberId && !candidate.availableTo.includes(memberId)) {
+        claimResult = {
+          success: !failIfUnavailable,
+          claimed: false,
+          outcome: "unavailable",
+          reason: "member_not_eligible",
+          task: { ...candidate },
+        };
+        return current;
+      }
+      if (candidate.status === "claimed" && candidate.claimedBy && candidate.claimedBy !== memberId) {
+        claimResult = {
+          success: !failIfUnavailable,
+          claimed: false,
+          outcome: "unavailable",
+          reason: "already_claimed",
+          claimedBy: candidate.claimedBy,
+          task: { ...candidate },
+        };
+        return current;
+      }
+      candidate.status = "claimed";
+      candidate.claimedBy = memberId;
+      candidate.claimedAt = now;
+      candidate.releasedAt = null;
+      candidate.releasedBy = null;
+      candidate.claimHistory = Array.isArray(candidate.claimHistory) ? candidate.claimHistory : [];
+      candidate.claimHistory.push({
+        action: "claim",
+        memberId,
+        at: now,
+        note: null,
+      });
+      appendWorkflowTeamEvent(current, "team-task-claimed", {
+        actorId: memberId,
+        memberId,
+        taskId: candidate.taskId,
+        status: "claimed",
+        summary: `${memberId || "member"} claimed workflow team task ${candidate.taskId}`,
+      });
+      claimResult = {
+        success: true,
+        claimed: true,
+        outcome: "claimed",
+        task: { ...candidate },
+      };
+      return current;
+    });
+
+    if (!claimResult) {
+      claimResult = {
+        success: !failIfUnavailable,
+        claimed: false,
+        outcome: "unavailable",
+        reason: "unknown",
+      };
+    }
+    const result = {
+      ...claimResult,
+      teamId: teamState.teamId,
+      memberId,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    if (routeByOutcome) result.matchedPort = claimResult.outcome;
+    if (claimResult.success === false && failIfUnavailable) {
+      throw new Error(`action.team_task_claim: ${claimResult.reason}`);
+    }
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(
+      node.id,
+      result.claimed
+        ? `Claimed workflow team task ${result.task?.taskId || requestedTaskId}`
+        : `Workflow team claim unavailable (${result.reason})`,
+      result.claimed ? "info" : "warn",
+    );
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_task_complete", {
+  describe: () =>
+    "Complete or release a claimed workflow-local team task while preserving auditable task history.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Workflow team task to complete or release." },
+      memberId: { type: "string", description: "Member completing or releasing the task." },
+      actorId: { type: "string", description: "Alias for memberId." },
+      release: { type: "boolean", default: false, description: "Release the claim instead of completing the task." },
+      force: { type: "boolean", default: false, description: "Allow completion/release by someone other than the claimant." },
+      note: { type: "string", description: "Optional completion or release note." },
+      routeByOutcome: { type: "boolean", default: false, description: "When true, emit completed/released output ports." },
+      outputVariable: { type: "string" },
+    },
+    required: ["taskId"],
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const taskId = normalizeTeamId(ctx.resolve(node.config?.taskId || ""));
+    const memberId = resolveTeamActorId(node, ctx);
+    const release = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.release ?? false, ctx), false);
+    const force = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.force ?? false, ctx), false);
+    const routeByOutcome = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.routeByOutcome ?? false, ctx), false);
+    const note = typeof ctx.resolve(node.config?.note || "") === "string"
+      ? String(ctx.resolve(node.config?.note || "")).trim() || null
+      : null;
+    let transitionResult = null;
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.tasks = Array.isArray(current.tasks) ? current.tasks : [];
+      current.events = Array.isArray(current.events) ? current.events : [];
+      current.updatedAt = now;
+      const task = current.tasks.find((entry) => entry.taskId === taskId);
+      if (!task) {
+        transitionResult = { success: false, taskId, reason: "task_not_found", outcome: release ? "released" : "completed" };
+        return current;
+      }
+      if (!force && task.claimedBy && memberId && task.claimedBy !== memberId) {
+        transitionResult = {
+          success: false,
+          taskId,
+          reason: "claim_owner_mismatch",
+          claimedBy: task.claimedBy,
+          task: { ...task },
+          outcome: release ? "released" : "completed",
+        };
+        return current;
+      }
+      if (release) {
+        task.status = "released";
+        task.releasedBy = memberId;
+        task.releasedAt = now;
+        task.claimedBy = null;
+        task.claimedAt = null;
+        task.claimHistory = Array.isArray(task.claimHistory) ? task.claimHistory : [];
+        task.claimHistory.push({ action: "release", memberId, at: now, note });
+        appendWorkflowTeamEvent(current, "team-task-released", {
+          actorId: memberId,
+          memberId,
+          taskId,
+          status: "released",
+          summary: `${memberId || "member"} released workflow team task ${taskId}`,
+        });
+      } else {
+        task.status = "completed";
+        task.completedBy = memberId;
+        task.completedAt = now;
+        task.claimHistory = Array.isArray(task.claimHistory) ? task.claimHistory : [];
+        task.claimHistory.push({ action: "complete", memberId, at: now, note });
+        appendWorkflowTeamEvent(current, "team-task-completed", {
+          actorId: memberId,
+          memberId,
+          taskId,
+          status: "completed",
+          summary: `${memberId || "member"} completed workflow team task ${taskId}`,
+        });
+      }
+      transitionResult = {
+        success: true,
+        taskId,
+        released: release,
+        completed: !release,
+        outcome: release ? "released" : "completed",
+        task: { ...task },
+      };
+      return current;
+    });
+
+    const result = {
+      ...transitionResult,
+      teamId: teamState.teamId,
+      memberId,
+      note,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    if (routeByOutcome) result.matchedPort = transitionResult.outcome;
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(
+      node.id,
+      result.success
+        ? `${release ? "Released" : "Completed"} workflow team task ${taskId}`
+        : `Workflow team task transition failed (${result.reason})`,
+      result.success ? "info" : "warn",
+    );
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_message", {
+  describe: () =>
+    "Send a direct or channel message between teammates inside the current workflow run.",
+  schema: {
+    type: "object",
+    properties: {
+      fromMemberId: { type: "string", description: "Sender member id." },
+      toMemberId: { type: "string", description: "Single direct recipient." },
+      toMemberIds: { type: "array", items: { type: "string" }, description: "Multiple direct recipients." },
+      channelId: { type: "string", description: "Channel to publish to when not sending direct." },
+      subject: { type: "string" },
+      content: { type: "string", description: "Message body." },
+      taskId: { type: "string", description: "Optional related workflow team task id." },
+      metadata: { type: "object" },
+      routeByOutcome: { type: "boolean", default: false, description: "When true, emit direct/channel output ports." },
+      outputVariable: { type: "string" },
+    },
+    required: ["content"],
+  },
+  async execute(node, ctx) {
+    const now = new Date().toISOString();
+    const fromMemberId = resolveTeamActorId(node, ctx, "fromMemberId");
+    let deliveredMessage = null;
+    const directRecipients = Array.from(new Set([
+      ...normalizeTeamList(resolveWorkflowNodeValue(node.config?.toMemberIds ?? [], ctx)),
+      ...normalizeTeamList(ctx.resolve(node.config?.toMemberId || "")),
+    ]));
+    const channelId = normalizeTeamId(
+      ctx.resolve(node.config?.channelId || "") ||
+      ctx.data?._workflowTeamChannel ||
+      ctx.data?.channelId,
+    );
+    const content = String(ctx.resolve(node.config?.content || "") || "").trim();
+    if (!content) throw new Error("action.team_message: 'content' is required");
+    const subject = typeof ctx.resolve(node.config?.subject || "") === "string"
+      ? String(ctx.resolve(node.config?.subject || "")).trim() || null
+      : null;
+    const taskId = normalizeTeamId(ctx.resolve(node.config?.taskId || ""));
+    const metadata = resolveWorkflowNodeValue(node.config?.metadata ?? {}, ctx);
+    const kind = directRecipients.length > 0 ? "direct" : "channel";
+    const routeByOutcome = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.routeByOutcome ?? false, ctx), false);
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.messages = Array.isArray(current.messages) ? current.messages : [];
+      current.events = Array.isArray(current.events) ? current.events : [];
+      current.updatedAt = now;
+      if (fromMemberId) ensureTeamMember(current, { memberId: fromMemberId, name: fromMemberId });
+      for (const memberId of directRecipients) ensureTeamMember(current, { memberId, name: memberId });
+      const resolvedChannelId = kind === "channel"
+        ? (channelId || current.defaultChannel || "team")
+        : null;
+      if (resolvedChannelId) ensureTeamChannel(current, { channelId: resolvedChannelId, name: resolvedChannelId });
+      const message = {
+        messageId: randomUUID(),
+        kind,
+        fromMemberId,
+        toMemberIds: directRecipients,
+        channelId: resolvedChannelId,
+        subject,
+        content,
+        taskId,
+        metadata:
+          metadata && typeof metadata === "object" && !Array.isArray(metadata)
+            ? cloneWorkflowTeamValue(metadata)
+            : {},
+        readBy: fromMemberId ? [fromMemberId] : [],
+        createdAt: now,
+      };
+      current.messages.push(message);
+      appendWorkflowTeamEvent(current, "team-message", {
+        actorId: fromMemberId,
+        memberId: fromMemberId,
+        taskId,
+        messageId: message.messageId,
+        status: kind,
+        summary: `${fromMemberId || "member"} sent a ${kind} workflow team message`,
+      });
+      deliveredMessage = { ...message };
+      return current;
+    });
+
+    const result = {
+      success: true,
+      kind,
+      outcome: kind,
+      message: deliveredMessage,
+      teamId: teamState.teamId,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    if (routeByOutcome) result.matchedPort = kind;
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(node.id, `Sent ${kind} workflow team message${deliveredMessage?.messageId ? ` (${deliveredMessage.messageId})` : ""}`);
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_inbox", {
+  describe: () =>
+    "Read workflow-local direct and channel messages for a specific teammate inside the current run.",
+  schema: {
+    type: "object",
+    properties: {
+      memberId: { type: "string", description: "Teammate whose inbox should be read." },
+      channelId: { type: "string", description: "Optional channel filter." },
+      limit: { type: "number", default: 50, description: "Maximum number of messages to return." },
+      includeDirect: { type: "boolean", default: true },
+      includeChannels: { type: "boolean", default: true },
+      includeBroadcast: { type: "boolean", default: true },
+      markRead: { type: "boolean", default: false, description: "Mark returned messages as read by the member." },
+      outputVariable: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const memberId = resolveTeamActorId(node, ctx);
+    const channelId = normalizeTeamId(ctx.resolve(node.config?.channelId || ""));
+    const limit = Math.max(1, Math.min(500, Number(resolveWorkflowNodeValue(node.config?.limit ?? 50, ctx)) || 50));
+    const includeDirect = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeDirect ?? true, ctx), true);
+    const includeChannels = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeChannels ?? true, ctx), true);
+    const includeBroadcast = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeBroadcast ?? true, ctx), true);
+    const markRead = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.markRead ?? false, ctx), false);
+    let inboxMessages = [];
+
+    const teamState = updateWorkflowTeamState(ctx, (current) => {
+      current.messages = Array.isArray(current.messages) ? current.messages : [];
+      current.updatedAt = new Date().toISOString();
+      inboxMessages = current.messages.filter((message) => {
+        if (channelId && normalizeTeamId(message.channelId) !== channelId) return false;
+        const directHit = includeDirect && normalizeTeamList(message.toMemberIds).includes(memberId);
+        const channelHit = includeChannels && message.channelId && memberCanSeeChannel(current, memberId, message.channelId);
+        const broadcastHit = includeBroadcast && !message.channelId && normalizeTeamList(message.toMemberIds).length === 0;
+        return directHit || channelHit || broadcastHit;
+      }).slice(-limit);
+      if (markRead) {
+        for (const message of inboxMessages) {
+          message.readBy = Array.isArray(message.readBy) ? message.readBy : [];
+          if (memberId && !message.readBy.includes(memberId)) message.readBy.push(memberId);
+        }
+      }
+      return current;
+    });
+
+    const result = {
+      success: true,
+      teamId: teamState.teamId,
+      memberId,
+      channelId: channelId || null,
+      messages: inboxMessages.map((message) => ({ ...message })),
+      unreadCount: inboxMessages.filter((message) => !normalizeTeamList(message.readBy).includes(memberId)).length,
+      teamSummary: summarizeWorkflowTeamState(teamState),
+      state: teamState,
+    };
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = result;
+    ctx.log(node.id, `Read ${result.messages.length} workflow team inbox message(s) for ${memberId || "member"}`);
+    return result;
+  },
+});
+
+registerBuiltinNodeType("action.team_snapshot", {
+  describe: () =>
+    "Return the current workflow team roster, task board, message history, and compact summary for downstream decisions.",
+  schema: {
+    type: "object",
+    properties: {
+      includeRoster: { type: "boolean", default: true },
+      includeTasks: { type: "boolean", default: true },
+      includeMessages: { type: "boolean", default: true },
+      includeEvents: { type: "boolean", default: true },
+      messageLimit: { type: "number", default: 100 },
+      outputVariable: { type: "string" },
+    },
+  },
+  async execute(node, ctx) {
+    const state = getWorkflowTeamState(ctx);
+    const includeRoster = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeRoster ?? true, ctx), true);
+    const includeTasks = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeTasks ?? true, ctx), true);
+    const includeMessages = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeMessages ?? true, ctx), true);
+    const includeEvents = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeEvents ?? true, ctx), true);
+    const messageLimit = Math.max(1, Math.min(500, Number(resolveWorkflowNodeValue(node.config?.messageLimit ?? 100, ctx)) || 100));
+    const snapshot = {
+      success: true,
+      teamId: state.teamId || null,
+      leadId: state.leadId || null,
+      teamSummary: summarizeWorkflowTeamState(state),
+      roster: includeRoster ? cloneWorkflowTeamValue(state.roster || []) : [],
+      tasks: includeTasks ? cloneWorkflowTeamValue(state.tasks || []) : [],
+      messages: includeMessages ? cloneWorkflowTeamValue((state.messages || []).slice(-messageLimit)) : [],
+      events: includeEvents ? cloneWorkflowTeamValue(state.events || []) : [],
+      state,
+    };
+    const outputVariable = normalizeTeamId(ctx.resolve(node.config?.outputVariable || ""));
+    if (outputVariable) ctx.data[outputVariable] = snapshot;
+    ctx.log(node.id, `Captured workflow team snapshot for ${snapshot.teamId || "team"}`);
+    return snapshot;
+  },
+});
+
 registerBuiltinNodeType("action.delay", {
   describe: () => "Wait for a specified duration before continuing (supports ms, seconds, minutes, hours)",
   schema: {
@@ -14284,8 +14941,8 @@ function resolveTeamActorId(node, ctx, preferredKey = "memberId") {
     ctx?.data?.agentId ||
     ctx?.data?.agentProfile ||
     ctx?.data?.task?.assignee ||
-    ctx?.data?.coordinationRole ||
-    ctx?.data?.leadId,
+    ctx?.data?.leadId ||
+    ctx?.data?._workflowTeamLeadId,
   );
 }
 

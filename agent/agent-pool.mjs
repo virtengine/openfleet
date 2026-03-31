@@ -4595,11 +4595,15 @@ export async function execWithRetry(prompt, options = {}) {
 }
 
 function formatHarnessValidationError(validationReport) {
-  if (!validationReport?.issues?.length) {
+  const errorIssues = Array.isArray(validationReport?.errors)
+    ? validationReport.errors
+    : Array.isArray(validationReport?.issues)
+      ? validationReport.issues.filter((issue) => issue?.level === "error")
+      : [];
+  if (errorIssues.length === 0) {
     return "Internal harness profile is invalid.";
   }
-  return validationReport.issues
-    .filter((issue) => issue?.level === "error")
+  return errorIssues
     .map((issue) =>
       issue?.path
         ? `${issue.code} (${issue.path}): ${issue.message}`
@@ -4865,5 +4869,4 @@ export const __testables = {
   normalizeRetryFailureFingerprint,
   classifyRetryCircuitBreak,
 };
-
 

@@ -502,6 +502,7 @@ function applyProfileOverrides(configData, profile) {
     failover: overrides.failover ?? configData.failover,
     distribution: overrides.distribution ?? configData.distribution,
     agentPrompts: overrides.agentPrompts ?? configData.agentPrompts,
+    harness: overrides.harness ?? configData.harness,
   };
 }
 
@@ -2385,6 +2386,37 @@ export function loadConfig(argv = process.argv, options = {}) {
       ),
     }),
   });
+  const harnessData =
+    configData.harness && typeof configData.harness === "object"
+      ? configData.harness
+      : {};
+  const harnessValidationData =
+    harnessData.validation && typeof harnessData.validation === "object"
+      ? harnessData.validation
+      : {};
+  const harnessValidationModeRaw = String(
+    process.env.BOSUN_HARNESS_VALIDATION_MODE ??
+      harnessValidationData.mode ??
+      "report",
+  )
+    .trim()
+    .toLowerCase();
+  const harness = Object.freeze({
+    enabled: isEnvEnabled(
+      process.env.BOSUN_HARNESS_ENABLED ?? harnessData.enabled,
+      false,
+    ),
+    source: String(
+      process.env.BOSUN_HARNESS_SOURCE ??
+        harnessData.source ??
+        "",
+    ).trim(),
+    validation: Object.freeze({
+      mode: ["off", "report", "enforce"].includes(harnessValidationModeRaw)
+        ? harnessValidationModeRaw
+        : "report",
+    }),
+  });
 
   // ── Status file ──────────────────────────────────────────
   const configuredCacheDir =
@@ -2534,6 +2566,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
     // Workflow template defaults + opt-in typed workflow entries
     workflowDefaults: Object.freeze(workflowDefaults),
+    harness,
 
     // Paths
     statusPath,
@@ -2653,4 +2686,3 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
-
