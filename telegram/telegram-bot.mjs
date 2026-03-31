@@ -1744,8 +1744,9 @@ async function editDirect(chatId, messageId, text, options = {}) {
     const body = await res.text().catch(() => "");
     // "message is not modified" is fine — content didn't change
     if (body.includes("message is not modified")) return messageId;
-    // "message can't be edited" — send new message instead
+    // Missing or immutable messages should fall back to a fresh send.
     if (
+      body.includes("message to edit not found") ||
       body.includes("can't be edited") ||
       body.includes("MESSAGE_ID_INVALID")
     ) {

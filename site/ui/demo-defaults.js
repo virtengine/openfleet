@@ -22959,8 +22959,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 62,
-      "edgeCount": 71,
+      "nodeCount": 73,
+      "edgeCount": 84,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -22977,6 +22977,9 @@
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
         "autoMergeMethod": "squash",
+        "prBody": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1,
         "maxRetries": 2,
         "maxContinues": 3,
         "protectedBranches": [
@@ -23430,33 +23433,199 @@
           ]
         },
         {
-          "id": "log-validation-failed",
-          "type": "notify.log",
-          "label": "Log Validation Failed",
+          "id": "set-fix-summary",
+          "type": "action.set_variable",
+          "label": "Set Fix Summary",
           "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
-            "level": "warn"
+            "variable": "validationFixSummary",
+            "value": "Pre-PR validation failed for task {{taskId}}. Apply the smallest viable fix and rerun validation."
           },
           "position": {
-            "x": 300,
-            "y": 2000
+            "x": 160,
+            "y": 1940
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "set-todo-validation-failed",
-          "type": "action.update_task_status",
-          "label": "Set Todo (Validation Fail)",
+          "id": "auto-fix-validation",
+          "type": "action.run_agent",
+          "label": "Auto Fix Validation",
           "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 1. The previous pre-PR validation failed. Fix only the validation issue, then stop.",
             "taskId": "{{taskId}}",
-            "status": "todo",
-            "taskTitle": "{{taskTitle}}"
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
           },
           "position": {
-            "x": 300,
-            "y": 2130
+            "x": 160,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Retry Pre-PR Validation",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 160,
+            "y": 2180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-validation-ok",
+          "type": "condition.expression",
+          "label": "Retry Validation Passed?",
+          "config": {
+            "expression": "(() => { const out = $ctx.getNodeOutput('retry-pre-pr-validation'); if (!out) return false; if (out.success === true) return true; const code = Number(out.exitCode); return Number.isFinite(code) && code === 0; })()"
+          },
+          "position": {
+            "x": 160,
+            "y": 2300
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-fix2-summary",
+          "type": "action.set_variable",
+          "label": "Set Fix Summary 2",
+          "config": {
+            "variable": "validationFixSummary2",
+            "value": "Validation retry still failed for task {{taskId}}. Attempt one final focused repair before blocking the task."
+          },
+          "position": {
+            "x": 320,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix-validation-2",
+          "type": "action.run_agent",
+          "label": "Auto Fix Validation 2",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 2. Retry only the remaining validation failures, then stop.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 320,
+            "y": 2180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Retry Pre-PR Validation 2",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 320,
+            "y": 2300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-validation-ok",
+          "type": "condition.expression",
+          "label": "Retry Validation 2 Passed?",
+          "config": {
+            "expression": "(() => { const out = $ctx.getNodeOutput('retry2-pre-pr-validation'); if (!out) return false; if (out.success === true) return true; const code = Number(out.exitCode); return Number.isFinite(code) && code === 0; })()"
+          },
+          "position": {
+            "x": 320,
+            "y": 2420
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after two autofix attempts, blocking task",
+            "level": "warn"
+          },
+          "position": {
+            "x": 460,
+            "y": 2180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-validation-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (Validation Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "pre_pr_validation_failed"
+          },
+          "position": {
+            "x": 460,
+            "y": 2300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-validation-blocked",
+          "type": "notify.telegram",
+          "label": "Notify Validation Blocked",
+          "config": {
+            "message": "⚠️ Task \"{{taskTitle}}\" ({{taskId}}) blocked after repeated pre-PR validation failures."
+          },
+          "position": {
+            "x": 460,
+            "y": 2420
           },
           "outputs": [
             "default"
@@ -23502,12 +23671,28 @@
           ]
         },
         {
+          "id": "build-pr-body",
+          "type": "action.set_variable",
+          "label": "Build PR Body",
+          "config": {
+            "variable": "prBody",
+            "value": "{{prBody}}"
+          },
+          "position": {
+            "x": 0,
+            "y": 2195
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "body": "{{prBody}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -23681,12 +23866,28 @@
           ]
         },
         {
+          "id": "build-pr-body-stolen",
+          "type": "action.set_variable",
+          "label": "Build PR Body (Recovered)",
+          "config": {
+            "variable": "prBody",
+            "value": "{{prBody}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Recover PR Link",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "body": "{{prBody}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -23820,7 +24021,7 @@
               "set-todo-push-failed",
               "set-blocked-push-failed",
               "set-todo-cooldown",
-              "set-todo-validation-failed",
+              "notify-validation-blocked",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -24284,21 +24485,91 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "pre-pr-validation-ok->log-validation-failed",
+          "id": "pre-pr-validation-ok->set-fix-summary",
           "source": "pre-pr-validation-ok",
+          "target": "set-fix-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-fix-summary->auto-fix-validation",
+          "source": "set-fix-summary",
+          "target": "auto-fix-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-validation->retry-pre-pr-validation",
+          "source": "auto-fix-validation",
+          "target": "retry-pre-pr-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-pre-pr-validation->retry-validation-ok",
+          "source": "retry-pre-pr-validation",
+          "target": "retry-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-validation-ok->push-branch",
+          "source": "retry-validation-ok",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-validation-ok->set-fix2-summary",
+          "source": "retry-validation-ok",
+          "target": "set-fix2-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-fix2-summary->auto-fix-validation-2",
+          "source": "set-fix2-summary",
+          "target": "auto-fix-validation-2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-validation-2->retry2-pre-pr-validation",
+          "source": "auto-fix-validation-2",
+          "target": "retry2-pre-pr-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-pre-pr-validation->retry2-validation-ok",
+          "source": "retry2-pre-pr-validation",
+          "target": "retry2-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-validation-ok->push-branch",
+          "source": "retry2-validation-ok",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry2-validation-ok->log-validation-failed",
+          "source": "retry2-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "log-validation-failed->set-todo-validation-failed",
+          "id": "log-validation-failed->set-blocked-validation-failed",
           "source": "log-validation-failed",
-          "target": "set-todo-validation-failed",
+          "target": "set-blocked-validation-failed",
           "sourcePort": "default"
         },
         {
-          "id": "set-todo-validation-failed->join-outcomes",
-          "source": "set-todo-validation-failed",
+          "id": "set-blocked-validation-failed->notify-validation-blocked",
+          "source": "set-blocked-validation-failed",
+          "target": "notify-validation-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "notify-validation-blocked->join-outcomes",
+          "source": "notify-validation-blocked",
           "target": "join-outcomes",
           "sourcePort": "default"
         },
@@ -24309,11 +24580,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->create-pr",
+          "id": "push-ok->build-pr-body",
           "source": "push-ok",
-          "target": "create-pr",
+          "target": "build-pr-body",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "build-pr-body->create-pr",
+          "source": "build-pr-body",
+          "target": "create-pr",
+          "sourcePort": "default"
         },
         {
           "id": "create-pr->pr-created",
@@ -24406,11 +24683,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->create-pr-retry",
+          "id": "claim-stolen->build-pr-body-stolen",
           "source": "claim-stolen",
-          "target": "create-pr-retry",
+          "target": "build-pr-body-stolen",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "build-pr-body-stolen->create-pr-retry",
+          "source": "build-pr-body-stolen",
+          "target": "create-pr-retry",
+          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->pr-created-stolen",
@@ -46750,7 +47033,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 62,
+      "nodeCount": 73,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -46765,6 +47048,9 @@
         "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
         "autoMergeMethod": "squash",
+        "prBody": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+        "delegationWatchdogTimeoutMs": 300000,
+        "delegationWatchdogMaxRecoveries": 1,
         "maxRetries": 2,
         "maxContinues": 3,
         "protectedBranches": [
@@ -47186,33 +47472,199 @@
           ]
         },
         {
-          "id": "log-validation-failed",
-          "type": "notify.log",
-          "label": "Log Validation Failed",
+          "id": "set-fix-summary",
+          "type": "action.set_variable",
+          "label": "Set Fix Summary",
           "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
-            "level": "warn"
+            "variable": "validationFixSummary",
+            "value": "Pre-PR validation failed for task {{taskId}}. Apply the smallest viable fix and rerun validation."
           },
           "position": {
-            "x": 300,
-            "y": 2000
+            "x": 160,
+            "y": 1940
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "set-todo-validation-failed",
-          "type": "action.update_task_status",
-          "label": "Set Todo (Validation Fail)",
+          "id": "auto-fix-validation",
+          "type": "action.run_agent",
+          "label": "Auto Fix Validation",
           "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 1. The previous pre-PR validation failed. Fix only the validation issue, then stop.",
             "taskId": "{{taskId}}",
-            "status": "todo",
-            "taskTitle": "{{taskTitle}}"
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
           },
           "position": {
-            "x": 300,
-            "y": 2130
+            "x": 160,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Retry Pre-PR Validation",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 160,
+            "y": 2180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-validation-ok",
+          "type": "condition.expression",
+          "label": "Retry Validation Passed?",
+          "config": {
+            "expression": "(() => { const out = $ctx.getNodeOutput('retry-pre-pr-validation'); if (!out) return false; if (out.success === true) return true; const code = Number(out.exitCode); return Number.isFinite(code) && code === 0; })()"
+          },
+          "position": {
+            "x": 160,
+            "y": 2300
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-fix2-summary",
+          "type": "action.set_variable",
+          "label": "Set Fix Summary 2",
+          "config": {
+            "variable": "validationFixSummary2",
+            "value": "Validation retry still failed for task {{taskId}}. Attempt one final focused repair before blocking the task."
+          },
+          "position": {
+            "x": 320,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix-validation-2",
+          "type": "action.run_agent",
+          "label": "Auto Fix Validation 2",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 2. Retry only the remaining validation failures, then stop.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 320,
+            "y": 2180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Retry Pre-PR Validation 2",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 320,
+            "y": 2300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry2-validation-ok",
+          "type": "condition.expression",
+          "label": "Retry Validation 2 Passed?",
+          "config": {
+            "expression": "(() => { const out = $ctx.getNodeOutput('retry2-pre-pr-validation'); if (!out) return false; if (out.success === true) return true; const code = Number(out.exitCode); return Number.isFinite(code) && code === 0; })()"
+          },
+          "position": {
+            "x": 320,
+            "y": 2420
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after two autofix attempts, blocking task",
+            "level": "warn"
+          },
+          "position": {
+            "x": 460,
+            "y": 2180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-validation-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (Validation Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "pre_pr_validation_failed"
+          },
+          "position": {
+            "x": 460,
+            "y": 2300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-validation-blocked",
+          "type": "notify.telegram",
+          "label": "Notify Validation Blocked",
+          "config": {
+            "message": "⚠️ Task \"{{taskTitle}}\" ({{taskId}}) blocked after repeated pre-PR validation failures."
+          },
+          "position": {
+            "x": 460,
+            "y": 2420
           },
           "outputs": [
             "default"
@@ -47258,12 +47710,28 @@
           ]
         },
         {
+          "id": "build-pr-body",
+          "type": "action.set_variable",
+          "label": "Build PR Body",
+          "config": {
+            "variable": "prBody",
+            "value": "{{prBody}}"
+          },
+          "position": {
+            "x": 0,
+            "y": 2195
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "body": "{{prBody}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -47437,12 +47905,28 @@
           ]
         },
         {
+          "id": "build-pr-body-stolen",
+          "type": "action.set_variable",
+          "label": "Build PR Body (Recovered)",
+          "config": {
+            "variable": "prBody",
+            "value": "{{prBody}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Recover PR Link",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "body": "{{prBody}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
@@ -47576,7 +48060,7 @@
               "set-todo-push-failed",
               "set-blocked-push-failed",
               "set-todo-cooldown",
-              "set-todo-validation-failed",
+              "notify-validation-blocked",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -48040,21 +48524,91 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "pre-pr-validation-ok->log-validation-failed",
+          "id": "pre-pr-validation-ok->set-fix-summary",
           "source": "pre-pr-validation-ok",
+          "target": "set-fix-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-fix-summary->auto-fix-validation",
+          "source": "set-fix-summary",
+          "target": "auto-fix-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-validation->retry-pre-pr-validation",
+          "source": "auto-fix-validation",
+          "target": "retry-pre-pr-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-pre-pr-validation->retry-validation-ok",
+          "source": "retry-pre-pr-validation",
+          "target": "retry-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-validation-ok->push-branch",
+          "source": "retry-validation-ok",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-validation-ok->set-fix2-summary",
+          "source": "retry-validation-ok",
+          "target": "set-fix2-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-fix2-summary->auto-fix-validation-2",
+          "source": "set-fix2-summary",
+          "target": "auto-fix-validation-2",
+          "sourcePort": "default"
+        },
+        {
+          "id": "auto-fix-validation-2->retry2-pre-pr-validation",
+          "source": "auto-fix-validation-2",
+          "target": "retry2-pre-pr-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-pre-pr-validation->retry2-validation-ok",
+          "source": "retry2-pre-pr-validation",
+          "target": "retry2-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry2-validation-ok->push-branch",
+          "source": "retry2-validation-ok",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry2-validation-ok->log-validation-failed",
+          "source": "retry2-validation-ok",
           "target": "log-validation-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
-          "id": "log-validation-failed->set-todo-validation-failed",
+          "id": "log-validation-failed->set-blocked-validation-failed",
           "source": "log-validation-failed",
-          "target": "set-todo-validation-failed",
+          "target": "set-blocked-validation-failed",
           "sourcePort": "default"
         },
         {
-          "id": "set-todo-validation-failed->join-outcomes",
-          "source": "set-todo-validation-failed",
+          "id": "set-blocked-validation-failed->notify-validation-blocked",
+          "source": "set-blocked-validation-failed",
+          "target": "notify-validation-blocked",
+          "sourcePort": "default"
+        },
+        {
+          "id": "notify-validation-blocked->join-outcomes",
+          "source": "notify-validation-blocked",
           "target": "join-outcomes",
           "sourcePort": "default"
         },
@@ -48065,11 +48619,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "push-ok->create-pr",
+          "id": "push-ok->build-pr-body",
           "source": "push-ok",
-          "target": "create-pr",
+          "target": "build-pr-body",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "build-pr-body->create-pr",
+          "source": "build-pr-body",
+          "target": "create-pr",
+          "sourcePort": "default"
         },
         {
           "id": "create-pr->pr-created",
@@ -48162,11 +48722,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->create-pr-retry",
+          "id": "claim-stolen->build-pr-body-stolen",
           "source": "claim-stolen",
-          "target": "create-pr-retry",
+          "target": "build-pr-body-stolen",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "build-pr-body-stolen->create-pr-retry",
+          "source": "build-pr-body-stolen",
+          "target": "create-pr-retry",
+          "sourcePort": "default"
         },
         {
           "id": "create-pr-retry->pr-created-stolen",

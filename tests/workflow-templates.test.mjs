@@ -289,6 +289,22 @@ describe("workflow-templates", () => {
     expect(replenishNode?.config?.repoMapFileLimit).toBe(8);
   });
 
+  it("recover blocked worktrees summary uses a precomputed count variable", () => {
+    const template = getTemplate("template-recover-blocked-worktrees");
+    expect(template).toBeTruthy();
+
+    const countNode = template.nodes.find((node) => node.id === "count-blocked");
+    expect(countNode?.type).toBe("action.set_variable");
+    expect(countNode?.config).toMatchObject({
+      key: "blockedTaskCount",
+      isExpression: true,
+    });
+
+    const summaryNode = template.nodes.find((node) => node.id === "log-summary");
+    expect(summaryNode?.config?.message).toContain("{{blockedTaskCount}} task(s)");
+    expect(summaryNode?.config?.message).not.toContain("{{$ctx");
+  });
+
   it("every template has required fields", () => {
     for (const t of WORKFLOW_TEMPLATES) {
       expect(t.id).toMatch(/^template-/);

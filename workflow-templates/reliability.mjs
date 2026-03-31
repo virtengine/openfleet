@@ -1731,6 +1731,12 @@ export const RECOVER_BLOCKED_WORKTREES_TEMPLATE = {
       parseJson: true,
     }, { x: 400, y: 190 }),
 
+    node("count-blocked", "action.set_variable", "Count Blocked Tasks", {
+      key: "blockedTaskCount",
+      value: "$ctx.getNodeOutput('query-blocked')?.output?.length || 0",
+      isExpression: true,
+    }, { x: 250, y: 280 }),
+
     node("check-has-tasks", "condition.expression", "Any Blocked Tasks?", {
       expression: "Array.isArray($ctx.getNodeOutput('query-blocked')?.output) && $ctx.getNodeOutput('query-blocked').output.length > 0",
     }, { x: 400, y: 360, outputs: ["yes", "no"] }),
@@ -1753,7 +1759,7 @@ export const RECOVER_BLOCKED_WORKTREES_TEMPLATE = {
     node("log-summary", "notify.log", "Log Recovery Summary", {
       message:
         ":broom: Blocked worktree recovery sweep dispatched for " +
-        "{{$ctx.getNodeOutput('query-blocked')?.output?.length || 0}} task(s). " +
+        "{{blockedTaskCount}} task(s). " +
         "maxConcurrent={{maxConcurrent}} maxPerSweep={{maxPerSweep}}",
       level: "info",
     }, { x: 250, y: 790 }),
@@ -1765,7 +1771,8 @@ export const RECOVER_BLOCKED_WORKTREES_TEMPLATE = {
   ],
   edges: [
     edge("trigger",         "query-blocked"),
-    edge("query-blocked",   "check-has-tasks"),
+    edge("query-blocked",   "count-blocked"),
+    edge("count-blocked",   "check-has-tasks"),
     edge("check-has-tasks", "recover-each",  { condition: "$output?.result === true",  port: "yes" }),
     edge("check-has-tasks", "log-idle",      { condition: "$output?.result !== true",  port: "no" }),
     edge("recover-each",    "prune-worktrees"),

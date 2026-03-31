@@ -4370,12 +4370,33 @@ registerBuiltinNodeType("condition.expression", {
   async execute(node, ctx, engine) {
     const expr = node.config?.expression;
     if (!expr) throw new Error("Expression is required");
+    const normalizedExpr = String(expr).trim();
+    const blockedPatterns = [
+      /(?:^|[^\\w$.])(globalThis|global|window|document|process|require|module|exports)(?:[^\\w$]|$)/,
+      /(?:^|[^\\w$.])(Function|eval)(?:[^\\w$]|$)/,
+    ];
+    if (blockedPatterns.some((pattern) => pattern.test(normalizedExpr))) {
+      throw new Error("Expression contains unsupported syntax");
+    }
+    const serializedExpr = normalizedExpr.replace(/\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}/g, (match, path) => {
+      const resolved = ctx.resolve(`{{${path}}}`);
+      if (resolved === match || typeof resolved === "undefined") return "undefined";
+      if (resolved === null) return "null";
+      if (typeof resolved === "string") return JSON.stringify(resolved);
+      if (typeof resolved === "number") return Number.isFinite(resolved) ? String(resolved) : "null";
+      if (typeof resolved === "boolean") return resolved ? "true" : "false";
+      try {
+        return JSON.stringify(resolved);
+      } catch {
+        return JSON.stringify(String(resolved));
+      }
+    });
     try {
-      const fn = new Function("$data", "$ctx", "$output", `return (${expr});`);
+      const fn = new Function("$data", "$ctx", "$output", `"use strict"; return (${serializedExpr});`);
       const allOutputs = {};
       for (const [k, v] of ctx.nodeOutputs) allOutputs[k] = v;
       const result = fn(ctx.data, ctx, allOutputs);
-      ctx.log(node.id, `Expression "${expr}" → ${result}`);
+      ctx.log(node.id, `Expression "${serializedExpr}" → ${result}`);
       return { result: !!result, value: result };
     } catch (err) {
       throw new Error(`Expression error: ${err.message}`);

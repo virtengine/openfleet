@@ -122,6 +122,26 @@ describe("WorkflowContext", () => {
     expect(json.nodeStatuses).toBeDefined();
   });
 
+  it("condition.expression resolves template placeholders as JS literals", async () => {
+    const nt = getNodeType("condition.expression");
+    const ctx = new WorkflowContext({ churnThreshold: 10, expectedLabel: "Truncated" });
+    ctx.setNodeOutput("hot-files", { maxChurn: "Truncated" });
+
+    const stringResult = await nt.execute({
+      id: "string-guard",
+      config: { expression: "{{hot-files.maxChurn}} === {{expectedLabel}}" },
+    }, ctx, engine);
+
+    expect(stringResult).toEqual({ result: true, value: true });
+
+    const numericResult = await nt.execute({
+      id: "numeric-guard",
+      config: { expression: "{{hot-files.maxChurn}} > {{churnThreshold}}" },
+    }, ctx, engine);
+
+    expect(numericResult).toEqual({ result: false, value: false });
+  });
+
   it("resolve() interpolates templates from data and node outputs", () => {
     const ctx = new WorkflowContext({ name: "Alice" });
     ctx.setNodeOutput("step1", { count: 5 });
