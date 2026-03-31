@@ -44,3 +44,27 @@
     - the Work board still opens the detail modal successfully;
     - the modal now renders the task shell and blocked-context content immediately from the fast detail payload;
     - the modal still shows a background `Refreshing task details…` indicator while hydration completes, so there is remaining polish/perf work if we want that status to settle faster or lazy-load richer evidence explicitly.
+- Follow-up on 2026-04-01 (current runtime + UI sweep after PR-fix preflight patch):
+  - Pinned runtime checks remain healthy on the current source daemon:
+    - `node cli.mjs --daemon-status --config-dir .bosun --repo-root .` => running (`PID 53868`).
+    - `/api/health` => `ok=true`, uptime ~947s during this pass, `wsClients=4`.
+    - pinned task stats unchanged from the earlier post-restart snapshot: `draft=45`, `todo=12`, `inprogress=8`, `inreview=0`, `done=104`, `blocked=10`, `total=182`.
+  - Current PR Watchdog behavior looks stable in the live monitor window after the `validate-pr-state` source change:
+    - recent `monitor.log` cycles (`18:20:56Z` through `18:30:59Z`) show `Bosun PR Watchdog` completing with `fix-needed=false` and no new `dispatch-fix` fan-out in that window.
+    - `/api/workflows/runs?limit=12` still lists failed `template-pr-fix-single` runs for PRs `#437`, `#438`, and `#449`, but those are historical runs from the earlier failure epoch, not new failures from the current watch window.
+    - `/api/workflows/template-updates` is healthy again and reports `template-pr-fix-single` + `template-pr-security-fix-single` as `updateAvailable=false`.
+  - Runtime store/template note:
+    - direct file inspection of `.bosun/.bosun/workflows/template-pr-fix-single.json` and `.bosun/.bosun/workflows/template-pr-security-fix-single.json` still shows older on-disk branch wiring without the new `validate-pr-state` node, while the live engine/template metadata says those templates are current.
+    - treat this as a store/adoption inconsistency to keep monitoring, but not a proven live execution blocker in this current epoch because the watchdog is not currently dispatching fix agents.
+  - Additional Playwright smoke coverage completed against the existing browser session:
+    - `Run Flows` remains functional and populated.
+    - `Telemetry` loads meaningful analytics cards and charts.
+    - `Bench` loads the full benchmark controls/preset forms.
+    - `Settings` loads the app preference accordions and account/version section.
+  - Remaining live UI signal:
+    - browser console still reports one persistent warning: `[h-guard] Array passed as element type — rendering as Fragment 17 items` from `ui/app.js:81`.
+    - current narrowing points to the `Run Flows` / `manual-flows` composition path; the page still renders correctly, so this is currently a warning-quality issue rather than a user-visible break.
+  - Next concrete actions:
+    1. isolate the `manual-flows` / `Run Flows` array-as-element warning and patch both `ui/` + `site/ui/` copies if the misuse is confirmed.
+    2. keep watching fresh watchdog cycles to confirm no new merged-PR clone failures reappear.
+    3. continue deeper workflow/market/chat/fleet interaction sweeps from the same Playwright session instead of opening more browser processes.

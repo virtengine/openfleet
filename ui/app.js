@@ -79,8 +79,7 @@ function normalizeRenderableType(type) {
 
 function h(type, props, ...rest) {
   if (Array.isArray(type)) {
-    console.warn("[h-guard] Array passed as element type — rendering as Fragment", type.length, "items");
-    return _h(_PreactFragment, null, ...type);
+    return _h(_PreactFragment, props, ...type, ...rest);
   }
   const normalizedType = normalizeRenderableType(type);
   if (normalizedType == null) {
