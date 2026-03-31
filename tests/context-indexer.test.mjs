@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  getContextGraph,
   runContextIndex,
   searchContextIndex,
   getContextIndexStatus,
@@ -39,7 +40,13 @@ describe("context-indexer", () => {
 
     writeFileSync(
       resolve(testRoot, "src", "alpha.mjs"),
-      "// alpha module\nexport function greetUser(name) { return `hello ${name}`; }\n",
+      "// alpha module\nimport { formatGreeting } from \"./helper.mjs\";\nexport function greetUser(name) { return formatGreeting(name); }\n",
+      "utf8",
+    );
+
+    writeFileSync(
+      resolve(testRoot, "src", "helper.mjs"),
+      "// helper module\nexport function formatGreeting(name) { return `hello ${name}`; }\n",
       "utf8",
     );
 
@@ -84,6 +91,43 @@ describe("context-indexer", () => {
     expect(status.ready).toBe(true);
     expect(status.fileCount).toBeGreaterThan(0);
     expect(status.symbolCount).toBeGreaterThan(0);
+    expect(status.graph.nodeCount).toBeGreaterThan(0);
+    expect(status.graph.edgeCount).toBeGreaterThan(0);
+    expect(status.graph.relationTypes.some((entry) => entry.relationType === "file_imports_file")).toBe(true);
+  });
+
+  it("returns a graph neighborhood for seed symbols and imported files", async () => {
+    mkdirSync(resolve(testRoot, "src"), { recursive: true });
+
+    writeFileSync(
+      resolve(testRoot, "src", "alpha.mjs"),
+      "// alpha module\nimport { formatGreeting } from \"./helper.mjs\";\nexport function greetUser(name) { return formatGreeting(name); }\n",
+      "utf8",
+    );
+
+    writeFileSync(
+      resolve(testRoot, "src", "helper.mjs"),
+      "// helper module\nexport function formatGreeting(name) { return `hello ${name}`; }\n",
+      "utf8",
+    );
+
+    await runContextIndex({
+      rootDir: testRoot,
+      includeTests: true,
+      useTreeSitter: false,
+      useZoekt: false,
+    });
+
+    const graph = await getContextGraph("greetUser", {
+      rootDir: testRoot,
+      limit: 10,
+    });
+
+    expect(graph.nodes.some((node) => node.type === "symbol" && node.name === "greetUser")).toBe(true);
+    expect(graph.nodes.some((node) => node.type === "file" && String(node.path || "").endsWith("src/alpha.mjs"))).toBe(true);
+    expect(graph.nodes.some((node) => node.type === "file" && String(node.path || "").endsWith("src/helper.mjs"))).toBe(true);
+    expect(graph.edges.some((edge) => edge.relationType === "file_defines_symbol" && edge.toName === "greetUser")).toBe(true);
+    expect(graph.edges.some((edge) => edge.relationType === "file_imports_file" && String(edge.toPath || "").endsWith("src/helper.mjs"))).toBe(true);
   });
 
   it("supports task-type scoped search with optional fallback", async () => {

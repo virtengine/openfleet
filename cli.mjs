@@ -94,7 +94,7 @@ function showHelp() {
     --doctor                    Validate bosun .env/config setup
     --tool-log <ID|list|prune>  Retrieve/list/prune cached tool outputs
     node:create <name>          Scaffold a custom workflow node in custom-nodes/
-    --context-index [mode]      Run context index workflow (run|status|search)
+    --context-index [mode]      Run context index workflow (run|status|search|graph)
     --context-index-query <text> Query text for context index search mode
     --context-index-limit <n>   Max results for context index search (default: 25)
     --context-index-task-type <type> Task scope for search (auto|ci-cd|frontend|backend|infra|docs|security)
@@ -1585,10 +1585,10 @@ async function main() {
 
   if (args.includes("--context-index")) {
     const modeRaw = (getArgValue("--context-index") || "run").toLowerCase();
-    const validModes = new Set(["run", "status", "search"]);
+    const validModes = new Set(["run", "status", "search", "graph"]);
     if (!validModes.has(modeRaw)) {
       console.error(`Invalid --context-index mode: ${modeRaw}`);
-      console.error("Valid modes: run, status, search");
+      console.error("Valid modes: run, status, search, graph");
       process.exit(1);
     }
 
@@ -1596,6 +1596,7 @@ async function main() {
       const {
         runContextIndex,
         searchContextIndex,
+        getContextGraph,
         getContextIndexStatus,
       } = await import("./workspace/context-indexer.mjs");
 
@@ -1631,6 +1632,15 @@ async function main() {
 
       const taskType = getArgValue("--context-index-task-type") || "auto";
       const fallbackToGlobal = !args.includes("--context-index-no-fallback");
+
+      if (modeRaw === "graph") {
+        const graph = await getContextGraph(query, {
+          rootDir: runtimeRepoRoot,
+          limit,
+        });
+        console.log(JSON.stringify(graph, null, 2));
+        process.exit(0);
+      }
 
       const results = await searchContextIndex(query, {
         rootDir: runtimeRepoRoot,
