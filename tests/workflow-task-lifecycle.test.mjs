@@ -3032,6 +3032,98 @@ describe("action.build_task_prompt", () => {
       await removeDirAfterLedgerReset(repoRoot);
     }
   });
+
+  it("passes changed-file context into prompt-time memory retrieval", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-memory-paths-"));
+    try {
+      const {
+        initSharedKnowledge,
+        buildKnowledgeEntry,
+        appendKnowledgeEntry,
+      } = await import("../workspace/shared-knowledge.mjs");
+
+      initSharedKnowledge({ repoRoot, targetFile: "AGENTS.md" });
+      mkdirSync(join(repoRoot, ".bosun", "context-index"), { recursive: true });
+      writeFileSync(
+        join(repoRoot, ".bosun", "context-index", "agent-index.json"),
+        JSON.stringify({
+          relations: [
+            {
+              relationType: "file_imports_file",
+              fromPath: "src/auth/login.mjs",
+              toPath: "src/auth/session-store.mjs",
+            },
+          ],
+        }, null, 2),
+        "utf8",
+      );
+
+      const memories = [
+        buildKnowledgeEntry({
+          content: "Workspace memory: reseed fixtures in src/auth/login.mjs before retrying auth flows.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-direct",
+          relatedPaths: ["src/auth/login.mjs"],
+        }),
+        buildKnowledgeEntry({
+          content: "Workspace memory: session-store snapshots must stay deterministic across retries.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-adjacent",
+          relatedPaths: ["src/auth/session-store.mjs"],
+        }),
+      ];
+
+      for (const memory of memories) {
+        const appendResult = await appendKnowledgeEntry(memory);
+        expect(appendResult.success).toBe(true);
+      }
+
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({
+        _changedFiles: ["src/auth/login.mjs"],
+      });
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "MEM-PATH-1",
+        taskTitle: "Stabilize auth retries",
+        taskDescription: "Keep login retries deterministic after fixture reseeds.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-3"),
+        includeMemory: true,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+      });
+
+      const result = await nt.execute(node, ctx);
+      const retrievedMemory = ctx.data._taskRetrievedMemory || [];
+      const userPrompt = result.userPrompt || result.prompt;
+
+      expect(ctx.data._taskMemoryPaths).toEqual(["src/auth/login.mjs"]);
+      expect(retrievedMemory[0]).toEqual(expect.objectContaining({
+        content: "Workspace memory: reseed fixtures in src/auth/login.mjs before retrying auth flows.",
+        directPathHits: ["src/auth/login.mjs"],
+      }));
+      expect(retrievedMemory[1]).toEqual(expect.objectContaining({
+        content: "Workspace memory: session-store snapshots must stay deterministic across retries.",
+        adjacentPathHits: ["src/auth/session-store.mjs"],
+      }));
+      expect(userPrompt).toContain("reseed fixtures in src/auth/login.mjs");
+      expect(userPrompt).toContain("session-store snapshots must stay deterministic");
+    } finally {
+      await removeDirAfterLedgerReset(repoRoot);
+    }
+  });
 });
 
 

@@ -615,6 +615,57 @@ function appendWorkflowTaskPromptContext(prompt, promptState) {
   return nextPrompt;
 }
 
+function normalizePromptPathHint(value) {
+  return String(value || "").trim().replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function collectPromptPathHints(...sources) {
+  const out = [];
+  const seen = new Set();
+  const pushValue = (value) => {
+    const normalized = normalizePromptPathHint(value);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(normalized);
+  };
+  const visit = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    if (typeof value === "string") {
+      if (value.includes(",")) {
+        for (const part of value.split(",")) pushValue(part);
+        return;
+      }
+      pushValue(value);
+    }
+  };
+  for (const source of sources) visit(source);
+  return out;
+}
+
+function resolveTaskMemoryPathHints(node, ctx, taskPayload = null) {
+  return collectPromptPathHints(
+    node?.config?.changedFiles,
+    node?.config?.relatedPaths,
+    node?.config?.filePaths,
+    ctx?.data?._changedFiles,
+    ctx?.data?.changedFiles,
+    ctx?.data?.task?.filePaths,
+    ctx?.data?.task?.files,
+    ctx?.data?.task?.meta?.filePaths,
+    ctx?.data?.task?.metadata?.filePaths,
+    taskPayload?.filePaths,
+    taskPayload?.files,
+    taskPayload?.meta?.filePaths,
+    taskPayload?.metadata?.filePaths,
+  );
+}
+
 function classifyWorkflowAgentBlockedStatus(result = {}) {
   const fragments = [];
   if (result?.error) fragments.push(String(result.error));
@@ -7440,6 +7491,7 @@ registerNodeType("action.build_task_prompt", {
 
     if (includeMemory) {
       try {
+        const taskMemoryPaths = resolveTaskMemoryPathHints(node, ctx, taskPayload);
         const retrievedMemory = await retrieveKnowledgeEntries({
           repoRoot: normalizedRepoRoot,
           teamId: memoryTeamId,
@@ -7456,6 +7508,8 @@ registerNodeType("action.build_task_prompt", {
           ]
             .filter(Boolean)
             .join(" "),
+          changedFiles: taskMemoryPaths,
+          relatedPaths: taskMemoryPaths,
           limit: 4,
         });
         const memoryBriefing = formatKnowledgeBriefing(retrievedMemory, {
@@ -7465,6 +7519,7 @@ registerNodeType("action.build_task_prompt", {
           userParts.push(memoryBriefing);
           userParts.push("");
           ctx.data._taskRetrievedMemory = retrievedMemory;
+          ctx.data._taskMemoryPaths = taskMemoryPaths;
         }
       } catch (err) {
         ctx.log(node.id, `Persistent memory retrieval failed (non-fatal): ${err.message}`);
