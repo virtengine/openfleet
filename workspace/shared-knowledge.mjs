@@ -32,12 +32,6 @@ async function getStateLedgerModule() {
   }
   return _stateLedgerModule;
 }
-function getStateLedgerModuleSync() {
-  if (!_stateLedgerModule) {
-    throw new Error("state-ledger-sqlite not yet loaded; call getStateLedgerModule() first");
-  }
-  return _stateLedgerModule;
-}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -620,30 +614,23 @@ export async function appendKnowledgeEntry(entry, options = {}) {
     const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
     registry.entries.push(normalizedEntry);
     await saveRegistryEntries(knowledgeState.repoRoot || process.cwd(), registry);
-    let ledgerResult;
+    let ledgerPath = null;
     try {
       const mod = await getStateLedgerModule();
-      ledgerResult = mod.appendKnowledgeEntryToStateLedger(normalizedEntry, {
+      const ledgerResult = mod.appendKnowledgeEntryToStateLedger(normalizedEntry, {
+        repoRoot: knowledgeState.repoRoot || process.cwd(),
+      });
+      ledgerPath = ledgerResult?.path || mod.resolveStateLedgerPath({
         repoRoot: knowledgeState.repoRoot || process.cwd(),
       });
     } catch {
-      // SQLite unavailable — skip ledger write
+      // SQLite unavailable on this Node version — skip ledger write
     }
 
     knowledgeState.entryHashes.add(normalizedEntry.hash);
     knowledgeState.entriesWritten++;
     knowledgeState.lastWriteAt = Date.now();
     knowledgeState.lastWriteByAgent.set(agentId, knowledgeState.lastWriteAt);
-
-    let ledgerPath;
-    try {
-      const mod = await getStateLedgerModule();
-      ledgerPath = ledgerResult?.path || mod.resolveStateLedgerPath({
-        repoRoot: knowledgeState.repoRoot || process.cwd(),
-      });
-    } catch {
-      ledgerPath = null;
-    }
 
     return {
       success: true,
