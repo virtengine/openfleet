@@ -72,6 +72,14 @@ function detectChildSpawnBlocked() {
   }
 }
 
+function resolveVitestHeapMb() {
+  const explicit = Number.parseInt(String(process.env.BOSUN_VITEST_HEAP_MB || ""), 10);
+  if (Number.isFinite(explicit) && explicit >= 2048) {
+    return explicit;
+  }
+  return process.platform === "win32" ? 6144 : 4096;
+}
+
 export function resolveVitestArgs(
   args = process.argv.slice(2),
   { startDir = process.cwd(), packageRoot = findPackageRoot({ startDir }) } = {},
@@ -149,6 +157,7 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
       nodeArgs.push("--import", pathToFileURL(realpathShimPath).href);
     }
   }
+  nodeArgs.push(`--max-old-space-size=${resolveVitestHeapMb()}`);
 
   const esbuildBinaryPath = resolveWindowsEsbuildBinary({ startDir });
   const env = {

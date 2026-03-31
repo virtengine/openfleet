@@ -100,6 +100,7 @@ describe("vitest-runner", () => {
 
     expect(packageJson.scripts.test).toContain("tools/vitest-full-suite.mjs");
     expect(packageJson.scripts["test:vitest"]).toContain("tools/vitest-full-suite.mjs");
+    expect(packageJson.scripts["prepush:check"]).toContain("npm run test:all");
     expect(packageJson.scripts.test).not.toContain("node_modules/vitest/vitest.mjs");
     expect(packageJson.scripts["test:vitest"]).not.toContain("node_modules/vitest/vitest.mjs");
   });
@@ -167,6 +168,8 @@ describe("vitest-runner", () => {
     const source = readFileSync(resolve(repoRoot, "tools", "vitest-runner.mjs"), "utf8");
     expect(source).toContain("vite-windows-realpath-shim.mjs");
     expect(source).toContain('nodeArgs.push("--import"');
+    expect(source).toContain("--max-old-space-size=");
+    expect(source).toContain("BOSUN_VITEST_HEAP_MB");
   });
 
   it("patches net use probes for Windows realpath handling", () => {
