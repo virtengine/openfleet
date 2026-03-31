@@ -79,9 +79,8 @@ function toRefreshSeconds(value) {
 }
 
 function isCtrlPaletteShortcut(input, key) {
-  if (!key?.ctrl) return false;
-  const name = String(key?.name || "").toLowerCase();
-  return name === "p" || key?.sequence === "\u0010" || input === "\u0010";
+  // In Ink 5, Ctrl+P arrives as input='p' with key.ctrl=true (not as '\u0010')
+  return key?.ctrl === true && input === "p";
 }
 
 function isPaletteShortcut(input, key) {

@@ -54,7 +54,7 @@ describe("command palette integration", () => {
     await waitFor(() => view.text().includes("Kill MT-734"));
 
     await view.press("\r");
-    await waitFor(() => !view.text().includes("Command Palette"));
+    await waitFor(() => !view.latestText().includes("Command Palette"));
 
     expect(global.fetch).toHaveBeenCalledWith(
       expect.stringContaining("/api/sessions/MT-734/kill?workspace=all"),
@@ -83,7 +83,7 @@ describe("command palette integration", () => {
     await view.press(":");
     await waitFor(() => view.text().includes("Command Palette"));
     await view.press("\u001b");
-    await waitFor(() => !view.text().includes("Command Palette"));
+    await waitFor(() => !view.latestText().includes("Command Palette"));
 
     const lockedView = await renderInk(
       React.createElement(App, {
@@ -99,8 +99,8 @@ describe("command palette integration", () => {
     );
 
     await waitFor(() => lockedView.text().includes("Tasks"));
-    await lockedView.press("e");
-    await waitFor(() => lockedView.lastFrame()?.includes("Edit task") || lockedView.lastFrame()?.includes("Create task"));
+    await lockedView.press("n");
+    await waitFor(() => lockedView.lastFrame()?.includes("New Task"));
     await lockedView.press(":");
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(lockedView.text().includes("Command Palette")).toBe(false);
@@ -138,14 +138,14 @@ describe("command palette integration", () => {
 
     const beforeClose = view.lastFrame();
     await view.press("\u001b");
-    await waitFor(() => !view.text().includes("Command Palette"));
+    await waitFor(() => !view.latestText().includes("Command Palette"));
     expect(view.lastFrame()).not.toContain("Recent actions");
     expect(view.lastFrame()).not.toBe(beforeClose);
 
     await view.press("\u0010");
     await waitFor(() => view.text().includes("Command Palette"));
     await view.press("\r");
-    await waitFor(() => !view.text().includes("Command Palette"));
+    await waitFor(() => !view.latestText().includes("Command Palette"));
     expect(save).toHaveBeenCalledWith({
       actionId: "session:kill:MT-734",
       recentActionIds: ["session:kill:MT-734"],
