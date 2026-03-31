@@ -5187,12 +5187,60 @@ function getLatestHarnessControlEvent(events = []) {
   return controlEvents.length ? controlEvents[controlEvents.length - 1] : null;
 }
 
+function getHarnessAttentionMeta({ state = "", latestEvent = null, latestControlEvent = null, latestApprovalEvent = null, eventSummary = {}, run = {} } = {}) {
+  const normalizedState = String(state || "").trim().toLowerCase();
+  const terminalState = eventSummary?.terminalState && typeof eventSummary.terminalState === "object"
+    ? eventSummary.terminalState
+    : null;
+  if (normalizedState === "waiting") {
+    return {
+      category: "approval",
+      reason: String(latestApprovalEvent?.summary || latestControlEvent?.summary || "Awaiting operator approval.").trim(),
+      sinceAt: latestApprovalEvent?.timestamp || latestControlEvent?.timestamp || latestEvent?.timestamp || run?.updatedAt || run?.startedAt || null,
+    };
+  }
+  if (normalizedState === "stalled") {
+    return {
+      category: "stalled",
+      reason: String(latestEvent?.summary || "Harness activity appears stalled.").trim(),
+      sinceAt: latestEvent?.timestamp || run?.updatedAt || run?.startedAt || null,
+    };
+  }
+  if (normalizedState === "stop_requested") {
+    return {
+      category: "stop_requested",
+      reason: String(latestControlEvent?.summary || "Stop requested by operator.").trim(),
+      sinceAt: run?.stopRequestedAt || latestControlEvent?.timestamp || latestEvent?.timestamp || run?.updatedAt || run?.startedAt || null,
+    };
+  }
+  if (normalizedState === "failed") {
+    return {
+      category: "failure",
+      reason: String(terminalState?.summary || latestEvent?.summary || "Harness run failed.").trim(),
+      sinceAt: terminalState?.timestamp || latestEvent?.timestamp || run?.finishedAt || run?.updatedAt || run?.startedAt || null,
+    };
+  }
+  if (normalizedState === "aborted") {
+    return {
+      category: "aborted",
+      reason: String(terminalState?.summary || latestEvent?.summary || "Harness run aborted.").trim(),
+      sinceAt: terminalState?.timestamp || latestEvent?.timestamp || run?.finishedAt || run?.updatedAt || run?.startedAt || null,
+    };
+  }
+  return {
+    category: null,
+    reason: null,
+    sinceAt: null,
+  };
+}
+
 function buildHarnessRunHealth(run = {}, eventSummary = {}) {
   const events = Array.isArray(eventSummary?.normalizedEvents) ? eventSummary.normalizedEvents : [];
   const latestEventAt = eventSummary?.latestEventAt || run?.updatedAt || run?.finishedAt || run?.startedAt || null;
   const latestActivityMs = latestEventAt ? Date.parse(String(latestEventAt)) : NaN;
   const idleMs = Number.isFinite(latestActivityMs) ? Math.max(0, Date.now() - latestActivityMs) : 0;
   const latestControlEvent = getLatestHarnessControlEvent(events);
+  const latestEvent = events.length ? events[events.length - 1] : null;
   const byType = eventSummary?.byType && typeof eventSummary.byType === "object" ? eventSummary.byType : {};
   const approvalRequestedCount = Number(byType["harness:approval-requested"] || 0);
   const approvalResolvedCount = Number(byType["harness:approval-resolved"] || 0);
@@ -5215,6 +5263,14 @@ function buildHarnessRunHealth(run = {}, eventSummary = {}) {
   } else if (status) {
     state = "failed";
   }
+  const attention = getHarnessAttentionMeta({
+    state,
+    latestEvent,
+    latestControlEvent,
+    latestApprovalEvent,
+    eventSummary,
+    run,
+  });
   return {
     state,
     activeStageId: eventSummary?.latestStageId || run?.currentStageId || null,
@@ -5228,6 +5284,13 @@ function buildHarnessRunHealth(run = {}, eventSummary = {}) {
     approvalStageId: String(latestApprovalEvent?.stageId || "").trim() || null,
     lastControlEventAt: latestControlEvent?.timestamp || null,
     lastControlEventType: latestControlEvent?.type || null,
+    lastControlEventSummary: latestControlEvent?.summary || null,
+    lastEventAt: latestEvent?.timestamp || latestEventAt,
+    lastEventType: latestEvent?.type || null,
+    lastEventSummary: latestEvent?.summary || null,
+    attentionCategory: attention.category || null,
+    attentionReason: attention.reason || null,
+    attentionSinceAt: attention.sinceAt || null,
   };
 }
 
@@ -5577,6 +5640,14 @@ async function executeHarnessRunRequest(body = {}, options = {}) {
     dryRun,
     runId,
     taskKey: effectiveTaskKey,
+    taskId: linkedTaskId || null,
+    taskTitle: String(body?.taskTitle || "").trim() || null,
+    artifactId: runPlan.artifact?.artifactId || null,
+    sourceOrigin: runPlan.sourceOrigin,
+    sourcePath: runPlan.sourcePath,
+    approvalRepoRoot: resolveHarnessApprovalRepoRoot(),
+    requestedBy: "api",
+    emitApprovalResolutionEvent: false,
     timeoutMs: Number.isFinite(Number(body?.timeoutMs)) && Number(body.timeoutMs) > 0
       ? Number(body.timeoutMs)
       : undefined,
@@ -6390,9 +6461,10 @@ function resolveSessionWorkspaceMeta(session) {
   };
 }
 
-function sessionMatchesWorkspaceContext(session, workspaceContext) {
+function sessionMatchesWorkspaceContext(session, workspaceContext, options = {}) {
   if (!session) return false;
   if (!workspaceContext || workspaceContext.allWorkspaces) return true;
+  const allowLegacyWithoutWorkspace = options.allowLegacyWithoutWorkspace === true;
   const sessionWorkspace = resolveSessionWorkspaceMeta(session);
   const hasWorkspaceMeta =
     Boolean(sessionWorkspace.workspaceId)
@@ -6407,7 +6479,7 @@ function sessionMatchesWorkspaceContext(session, workspaceContext) {
       || Boolean(activeWorkspaceDir)
       || Boolean(activeWorkspaceRoot);
     if (!filter || filter === "active") {
-      return hasConcreteWorkspaceScope ? false : true;
+      return hasConcreteWorkspaceScope ? allowLegacyWithoutWorkspace : true;
     }
     return false;
   }
@@ -8256,7 +8328,7 @@ function mergeSessionRecords(primarySession, fallbackSession) {
   };
 }
 
-function listDurableSessionsFromLedger(workspaceContext = null) {
+function listDurableSessionsFromLedger(workspaceContext = null, options = {}) {
   const ledgerOptions = {
     ...resolveUiStateLedgerOptions(workspaceContext),
     limit: 5000,
@@ -8270,10 +8342,10 @@ function listDurableSessionsFromLedger(workspaceContext = null) {
       );
     })
     .filter(Boolean)
-    .filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext));
+    .filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, options));
 }
 
-function mergeTrackerAndLedgerSessions(baseSessions = [], workspaceContext = null) {
+function mergeTrackerAndLedgerSessions(baseSessions = [], workspaceContext = null, options = {}) {
   const ledgerOptions = resolveUiStateLedgerOptions(workspaceContext);
   const byId = new Map();
   for (const session of Array.isArray(baseSessions) ? baseSessions : []) {
@@ -8287,7 +8359,7 @@ function mergeTrackerAndLedgerSessions(baseSessions = [], workspaceContext = nul
       directLedgerSession ? mergeSessionRecords(session, directLedgerSession) : session,
     );
   }
-  for (const session of listDurableSessionsFromLedger(workspaceContext)) {
+  for (const session of listDurableSessionsFromLedger(workspaceContext, options)) {
     const sessionId = String(session?.id || session?.taskId || "").trim();
     if (!sessionId) continue;
     const existing = byId.get(sessionId) || null;
@@ -8301,7 +8373,9 @@ function mergeTrackerAndLedgerSessions(baseSessions = [], workspaceContext = nul
 function getLiveSessionSnapshot({ includeHidden = false } = {}) {
   const tracker = getSessionTracker();
   const workspaceContext = resolveWorkspaceContextFromRequest(new URL("http://localhost/?workspace=active"), { allowAll: false });
-  let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions(), workspaceContext);
+  let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions(), workspaceContext, {
+    allowLegacyWithoutWorkspace: true,
+  });
   if (!includeHidden) {
     sessions = sessions.filter((session) => !shouldHideSessionFromDefaultList(session));
   }
@@ -13451,10 +13525,7 @@ function broadcastCanonicalEvent(channels, type, payload = {}) {
 
 function getCurrentSessionSnapshot() {
   try {
-    const tracker = getSessionTracker();
-    return buildSessionsUpdatePayload(
-      tracker?.listAllSessions?.({ includePersisted: false }) || [],
-    );
+    return buildSessionsUpdatePayload(getLiveSessionSnapshot());
   } catch {
     return [];
   }
@@ -14312,7 +14383,7 @@ function broadcastSessionMessage(payload) {
     session: payload?.session || {},
     event: {
       kind: "message",
-      message: payload?.message ?? null,
+      message: payload?.message || payload?.payload || null,
     },
   });
   if (sessionEvent.sessionId && sessionEvent.taskId) {
@@ -16140,6 +16211,10 @@ function withinDays(entry, days) {
   return ts >= Date.now() - days * 24 * 60 * 60 * 1000;
 }
 
+function getEffectiveRepoRoot() {
+  return normalizeCandidatePath(process.env.REPO_ROOT) || normalizeCandidatePath(repoRoot) || repoRoot;
+}
+
 async function readCompletedSessionEntries(maxLines = 100_000) {
   // Check multiple candidate paths — repoRoot may be the monorepo root
   // while data lives under the bosun subdirectory.
@@ -16148,15 +16223,16 @@ async function readCompletedSessionEntries(maxLines = 100_000) {
   // path is added first so we find the data written by task-executor
   // (__dirname-relative) even when resolveRepoRoot() returns a workspace clone
   // path instead of the module root.
-  const repoRootNorm = resolve(repoRoot).replace(/\\/g, "/");
+  const activeRepoRoot = getEffectiveRepoRoot();
+  const repoRootNorm = resolve(activeRepoRoot).replace(/\\/g, "/");
   const isWorkspaceClone = repoRootNorm.includes("/.bosun/workspaces/");
   const useModuleRelative = !process.env.REPO_ROOT || isWorkspaceClone;
   const candidates = [
     ...(useModuleRelative
       ? [resolve(__dirname, "..", ".cache", "session-accumulator.jsonl")]
       : []),
-    resolve(repoRoot, ".cache", "session-accumulator.jsonl"),
-    resolve(repoRoot, "bosun", ".cache", "session-accumulator.jsonl"),
+    resolve(activeRepoRoot, ".cache", "session-accumulator.jsonl"),
+    resolve(activeRepoRoot, "bosun", ".cache", "session-accumulator.jsonl"),
   ];
   let sessionLogPath = candidates[0];
   for (const candidate of candidates) {
@@ -16493,7 +16569,7 @@ async function buildUsageAnalytics(days) {
 
 function resolveAgentWorkLogDir() {
   const explicitTestCacheDir = normalizeCandidatePath(process.env.BOSUN_TEST_CACHE_DIR);
-  if (explicitTestCacheDir) {
+  if (explicitTestCacheDir && !normalizeCandidatePath(process.env.REPO_ROOT)) {
     return resolve(explicitTestCacheDir, "agent-work-logs");
   }
   // When REPO_ROOT is not explicitly set, OR when repoRoot resolves to a
@@ -16501,22 +16577,23 @@ function resolveAgentWorkLogDir() {
   // path is added first so we find the data written by task-executor
   // (__dirname-relative) even when resolveRepoRoot() returns a workspace clone
   // path instead of the module root.
-  const repoRootNorm = resolve(repoRoot).replace(/\\/g, "/");
+  const activeRepoRoot = getEffectiveRepoRoot();
+  const repoRootNorm = resolve(activeRepoRoot).replace(/\\/g, "/");
   const isWorkspaceClone = repoRootNorm.includes("/.bosun/workspaces/");
   const useModuleRelative = !process.env.REPO_ROOT || isWorkspaceClone;
   const candidates = [
-    ...(explicitTestCacheDir
-      ? [resolve(explicitTestCacheDir, "agent-work-logs")]
-      : []),
     ...(useModuleRelative
       ? [resolve(__dirname, "..", ".cache", "agent-work-logs")]
       : []),
-    resolve(repoRoot, ".cache", "agent-work-logs"),
+    resolve(activeRepoRoot, ".cache", "agent-work-logs"),
     // When repoRoot is the monorepo root, data lives under bosun/.cache
-    resolve(repoRoot, "bosun", ".cache", "agent-work-logs"),
+    resolve(activeRepoRoot, "bosun", ".cache", "agent-work-logs"),
     // Legacy path used by older task-executor builds.
-    resolve(repoRoot, "..", "..", ".cache", "agent-work-logs"),
-    resolve(repoRoot, "..", ".cache", "agent-work-logs"),
+    resolve(activeRepoRoot, "..", "..", ".cache", "agent-work-logs"),
+    resolve(activeRepoRoot, "..", ".cache", "agent-work-logs"),
+    ...(explicitTestCacheDir
+      ? [resolve(explicitTestCacheDir, "agent-work-logs")]
+      : []),
   ];
   // Prefer directories that actually contain data (non-empty stream file).
   for (const dir of candidates) {
@@ -16617,19 +16694,44 @@ function buildReplayOverview(events = []) {
   return { totals, shortSteps };
 }
 
-async function listReplayableAgentRuns(options = {}) {
+async function readReplayableAgentRunEntryMap() {
   const logDir = resolveAgentWorkLogDir();
   const sessionsDir = resolve(logDir, "agent-sessions");
-  const limit = Math.max(1, Math.min(100, Number(options.limit) || 25));
-  const taskIdFilter = String(options.taskId || "").trim();
+  const runs = new Map();
   const files = await readdir(sessionsDir).catch(() => []);
-  const runs = [];
 
   for (const name of files) {
     if (!name.endsWith(".jsonl")) continue;
     const attemptId = name.replace(/\.jsonl$/i, "");
     const filePath = resolve(sessionsDir, name);
     const entries = await readJsonlTail(filePath, 5000, 10000000).catch(() => []);
+    if (entries.length) runs.set(attemptId, entries);
+  }
+
+  const streamPath = resolve(logDir, "agent-work-stream.jsonl");
+  const streamEntries = await readJsonlTail(streamPath, 20000, 25000000).catch(() => []);
+  const streamRuns = new Map();
+  for (const entry of streamEntries) {
+    const attemptId = String(entry?.attempt_id || entry?.attemptId || "").trim();
+    if (!attemptId || runs.has(attemptId)) continue;
+    const entries = streamRuns.get(attemptId) || [];
+    entries.push(entry);
+    streamRuns.set(attemptId, entries);
+  }
+  for (const [attemptId, entries] of streamRuns.entries()) {
+    entries.sort((a, b) => getEntryTimestamp(a) - getEntryTimestamp(b));
+    runs.set(attemptId, entries);
+  }
+  return runs;
+}
+
+async function listReplayableAgentRuns(options = {}) {
+  const limit = Math.max(1, Math.min(100, Number(options.limit) || 25));
+  const taskIdFilter = String(options.taskId || "").trim();
+  const runs = [];
+  const entryMap = await readReplayableAgentRunEntryMap();
+
+  for (const [attemptId, entries] of entryMap.entries()) {
     if (!entries.length) continue;
     const replayEvents = entries.map((entry, index) => toTrajectoryReplayEvent(entry, index));
     const first = replayEvents[0] || null;
@@ -16669,9 +16771,8 @@ async function readReplayableAgentRun(attemptId) {
   // Ensure attemptId cannot perform path traversal or escape the intended directory.
   // Only allow simple identifiers composed of letters, digits, underscore, and dash.
   if (!/^[a-zA-Z0-9_-]+$/.test(normalizedAttemptId)) return null;
-  const filePath = resolve(resolveAgentWorkLogDir(), "agent-sessions", `${normalizedAttemptId}.jsonl`);
-  if (!existsSync(filePath)) return null;
-  const entries = await readJsonlTail(filePath, 20000, 25000000).catch(() => []);
+  const entryMap = await readReplayableAgentRunEntryMap();
+  const entries = entryMap.get(normalizedAttemptId) || [];
   if (!entries.length) return null;
   const events = entries.map((entry, index) => toTrajectoryReplayEvent(entry, index));
   const first = events[0] || null;
@@ -26599,16 +26700,25 @@ if (path === "/api/agent-logs/context") {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions(), workspaceContext);
       const includeHidden = /^(1|true|yes)$/i.test(String(url.searchParams.get("includeHidden") || "").trim());
       const typeFilter = url.searchParams.get("type");
       const statusFilter = url.searchParams.get("status");
+      const requestedWorkspace = String(url.searchParams.get("workspace") || "").trim().toLowerCase();
+      const allowLegacyWithoutWorkspace =
+        !typeFilter
+        && !statusFilter
+        && (!requestedWorkspace || requestedWorkspace === "active");
+      let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions(), workspaceContext, {
+        allowLegacyWithoutWorkspace,
+      });
       if (!includeHidden) {
         sessions = sessions.filter((session) => !shouldHideSessionFromDefaultList(session));
       }
       if (typeFilter) sessions = sessions.filter((s) => s.type === typeFilter);
       if (statusFilter) sessions = sessions.filter((s) => s.status === statusFilter);
-      sessions = sessions.filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext));
+      sessions = sessions.filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, {
+        allowLegacyWithoutWorkspace,
+      }));
       jsonResponse(res, 200, {
         ok: true,
         sessions,

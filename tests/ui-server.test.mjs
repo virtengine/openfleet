@@ -3664,11 +3664,21 @@ describeUiServer("ui-server mini app", () => {
       expect(waitingRunDetail.run?.health).toMatchObject({
         state: "waiting",
         waitingForOperator: true,
+        attentionCategory: "approval",
+        attentionReason: "Harness approval requested for stage plan.",
+        lastEventType: "harness:approval-requested",
+        lastEventSummary: "Harness approval requested for stage plan.",
       });
+      expect(waitingRunDetail.run?.health?.attentionSinceAt).toEqual(expect.any(String));
+      expect(waitingRunDetail.run?.health?.lastEventAt).toEqual(expect.any(String));
 
       const waitingRuns = await fetch(`http://127.0.0.1:${port}/api/harness/runs?state=waiting&waitingForOperator=true&limit=10`).then((r) => r.json());
       expect(waitingRuns.ok).toBe(true);
       expect(waitingRuns.items.some((item) => item?.runId === "nudge-harness-run")).toBe(true);
+      expect(waitingRuns.items.find((item) => item?.runId === "nudge-harness-run")?.health).toMatchObject({
+        attentionCategory: "approval",
+        attentionReason: "Harness approval requested for stage plan.",
+      });
 
       const approvalListJson = await fetch(`http://127.0.0.1:${port}/api/harness/approvals?status=pending`).then((r) => r.json());
       expect(approvalListJson.ok).toBe(true);
