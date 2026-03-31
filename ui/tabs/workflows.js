@@ -127,7 +127,7 @@ function buildWorkflowRunApiPath(path) {
   return url.pathname + url.search;
 }
 
-
+function getWorkflowNameById(workflowId) {
   const id = String(workflowId || "").trim();
   if (!id) return "";
   return (workflows.value || []).find((workflow) => workflow?.id === id)?.name || id;
@@ -4744,6 +4744,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                     value=${binding.requestedSourcePort}
                     onChange=${(e) => updateEdgePortMapping(binding.edge.id, { sourcePort: e.target.value })}
                   >
+                    <option value="" disabled>Select source port</option>
                     ${sourceOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
                   </select>
                 </div>
@@ -4754,6 +4755,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                     value=${binding.requestedTargetPort}
                     onChange=${(e) => updateEdgePortMapping(binding.edge.id, { targetPort: e.target.value })}
                   >
+                    <option value="" disabled>Select target port</option>
                     ${targetOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
                   </select>
                 </div>
