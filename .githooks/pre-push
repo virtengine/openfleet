@@ -126,6 +126,11 @@ is_broad_impact_file() {
   return 1
 }
 
+has_broad_impact_path() {
+  local path="$1"
+  [ -n "${BROAD_IMPACT_MAP["$path"]+x}" ]
+}
+
 merge_base_for_new_branch() {
   local local_sha="$1"
   git merge-base "$local_sha" origin/main 2>/dev/null \
@@ -190,6 +195,27 @@ fi
 
 if [ "${#BROAD_IMPACT_MAP[@]}" -gt 0 ]; then
   echo "[hooks] broad-impact files changed; running targeted local coverage only and deferring full-suite coverage to CI"
+fi
+
+should_fast_run_full_suite() {
+  local runtime_count="${#CHANGED_RUNTIME[@]}"
+  local changed_count="${#CHANGED_FILES[@]}"
+  local changed_test_count="${#CHANGED_TESTS[@]}"
+  local runtime_limit="${BOSUN_PREPUSH_FULL_SUITE_RUNTIME_THRESHOLD:-40}"
+  local changed_limit="${BOSUN_PREPUSH_FULL_SUITE_FILE_THRESHOLD:-120}"
+  local test_limit="${BOSUN_PREPUSH_FULL_SUITE_TEST_THRESHOLD:-30}"
+
+  [ "$runtime_count" -ge "$runtime_limit" ] && return 0
+  [ "$changed_count" -ge "$changed_limit" ] && return 0
+  [ "$changed_test_count" -ge "$test_limit" ] && return 0
+  return 1
+}
+
+if should_fast_run_full_suite; then
+  echo "[hooks] large diff detected (${#CHANGED_FILES[@]} files, ${#CHANGED_RUNTIME[@]} runtime, ${#CHANGED_TESTS[@]} tests) — skipping discovery and running the full suite immediately"
+  npm run test:all
+  echo "[hooks] pre-push checks passed ✓"
+  exit 0
 fi
 
 # ── Collect all targeted test files into a single set ────────────────────────
@@ -284,9 +310,11 @@ collect_linked_static_tests() {
 }
 
 for file in "${CHANGED_RUNTIME[@]}"; do
-  collect_import_linked_tests "$file"
   collect_adjacent_tests "$file"
-  collect_linked_static_tests "$file"
+  if ! has_broad_impact_path "$file"; then
+    collect_import_linked_tests "$file"
+    collect_linked_static_tests "$file"
+  fi
 done
 
 # ── Split targeted tests by runner and keep memory bounded ───────────────────
