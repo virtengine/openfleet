@@ -1042,6 +1042,73 @@ Always use deterministic TF ops.
       expect(retrieved[1].adjacentPathHits).toEqual([]);
       expect(retrieved[0].score).toBeGreaterThan(retrieved[1].score);
     });
+
+    it("uses the context index database for graph-adjacent boosts when the json projection is missing", async () => {
+      const { runContextIndex } = await import("../workspace/context-indexer.mjs");
+
+      await mkdir(resolve(tempRoot, "src", "auth"), { recursive: true });
+      await writeFile(
+        resolve(tempRoot, "src", "auth", "session-store.mjs"),
+        "export function createSessionStore() { return new Map(); }\n",
+        "utf8",
+      );
+      await writeFile(
+        resolve(tempRoot, "src", "auth", "login.mjs"),
+        "import { createSessionStore } from './session-store.mjs';\nexport function retryLogin() { return createSessionStore(); }\n",
+        "utf8",
+      );
+
+      await runContextIndex({
+        rootDir: tempRoot,
+        includeTests: true,
+        useTreeSitter: false,
+        useZoekt: false,
+      });
+      await rm(resolve(tempRoot, ".bosun", "context-index", "agent-index.json"), { force: true });
+
+      const adjacentResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: session-store retries need deterministic token snapshots.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-2",
+        runId: "run-2",
+        agentId: "agent-adjacent-db",
+        relatedPaths: ["src/auth/session-store.mjs"],
+      }));
+      expect(adjacentResult.success).toBe(true);
+
+      const unrelatedResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: billing retries also need deterministic token snapshots.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-3",
+        runId: "run-3",
+        agentId: "agent-unrelated-db",
+        relatedPaths: ["src/billing/invoice-runner.mjs"],
+      }));
+      expect(unrelatedResult.success).toBe(true);
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-9",
+        runId: "run-9",
+        query: "deterministic token snapshots for retries",
+        changedFiles: ["src/auth/login.mjs"],
+        limit: 5,
+      });
+
+      expect(retrieved[0]).toEqual(expect.objectContaining({
+        content: "Workspace memory: session-store retries need deterministic token snapshots.",
+        adjacentPathHits: ["src/auth/session-store.mjs"],
+      }));
+      expect(retrieved[1].adjacentPathHits).toEqual([]);
+    });
   });
 
 

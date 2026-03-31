@@ -1402,6 +1402,58 @@ function mapRelationRow(row) {
   };
 }
 
+function normalizeGraphPath(value) {
+  return String(value || "").trim().replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+export async function getContextPathAdjacency(paths = [], opts = {}) {
+  const rootDir = opts.rootDir || process.cwd();
+  const normalizedPaths = [...new Set(
+    (Array.isArray(paths) ? paths : [paths])
+      .map((value) => normalizeGraphPath(value))
+      .filter(Boolean),
+  )];
+  if (normalizedPaths.length === 0) return new Map();
+  const relationTypes = [...new Set(
+    (Array.isArray(opts.relationTypes) ? opts.relationTypes : ["file_imports_file"])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  )];
+  if (relationTypes.length === 0) return new Map();
+
+  const { db } = await openDb(rootDir);
+  try {
+    const typePlaceholders = relationTypes.map(() => "?").join(", ");
+    const pathPlaceholders = normalizedPaths.map(() => "?").join(", ");
+    const rows = db.prepare(`
+      SELECT *
+      FROM relations
+      WHERE relation_type IN (${typePlaceholders})
+        AND (
+          from_path IN (${pathPlaceholders})
+          OR to_path IN (${pathPlaceholders})
+        )
+      ORDER BY relation_type ASC, edge_id ASC
+    `).all(...relationTypes, ...normalizedPaths, ...normalizedPaths);
+    const adjacency = new Map();
+    const addEdge = (fromPath, toPath) => {
+      const from = normalizeGraphPath(fromPath);
+      const to = normalizeGraphPath(toPath);
+      if (!from || !to || from === to) return;
+      if (!adjacency.has(from)) adjacency.set(from, new Set());
+      adjacency.get(from).add(to);
+    };
+    for (const row of rows) {
+      const relation = mapRelationRow(row);
+      addEdge(relation.fromPath, relation.toPath);
+      addEdge(relation.toPath, relation.fromPath);
+    }
+    return adjacency;
+  } finally {
+    db.close();
+  }
+}
+
 function buildGraphNode(nodeId, nodeType, details = {}, seeded = false) {
   return {
     id: nodeId,

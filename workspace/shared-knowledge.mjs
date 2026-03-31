@@ -28,6 +28,7 @@ import {
   listKnowledgeEntriesFromStateLedger,
   resolveStateLedgerPath,
 } from "../lib/state-ledger-sqlite.mjs";
+import { getContextPathAdjacency } from "./context-indexer.mjs";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -415,7 +416,18 @@ function isEntryVisibleForContext(entry, context) {
   return false;
 }
 
-async function loadContextPathAdjacency(repoRoot) {
+async function loadContextPathAdjacency(repoRoot, directPaths = []) {
+  const contextIndexDbPath = resolve(repoRoot, ".bosun", "context-index", "index.db");
+  if (existsSync(contextIndexDbPath)) {
+    try {
+      return await getContextPathAdjacency(directPaths, {
+        rootDir: repoRoot,
+        relationTypes: [...PATH_ADJACENCY_RELATION_TYPES],
+      });
+    } catch {
+      return new Map();
+    }
+  }
   const indexPath = resolve(repoRoot, CONTEXT_INDEX_FILE);
   if (!existsSync(indexPath)) {
     return new Map();
@@ -450,7 +462,7 @@ async function buildPathContext(options = {}, repoRoot = knowledgeState.repoRoot
   if (directPaths.size === 0) {
     return { directPaths, adjacentPaths: new Set() };
   }
-  const adjacency = await loadContextPathAdjacency(repoRoot);
+  const adjacency = await loadContextPathAdjacency(repoRoot, [...directPaths]);
   const adjacentPaths = new Set();
   for (const directPath of directPaths) {
     const neighbors = adjacency.get(directPath);
