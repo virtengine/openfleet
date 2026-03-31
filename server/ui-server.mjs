@@ -23208,6 +23208,7 @@ if (path === "/api/agent-logs/context") {
       authRequired: !isAllowUnsafe(),
       sdk: process.env.EXECUTOR_SDK || "auto",
       kanbanBackend: runtimeKanbanBackend,
+      harness: getHarnessRuntimeConfig(),
       regions,
       prAutomation: normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true }),
       gates: normalizeGatesPolicy(configData?.gates, {
@@ -23588,6 +23589,116 @@ if (path === "/api/agent-logs/context") {
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/harness/active" && req.method === "GET") {
+    try {
+      const harnessConfig = getHarnessRuntimeConfig();
+      const activeState = readActiveHarnessState(resolveUiConfigDir());
+      let artifact = null;
+      if (activeState?.artifactPath) {
+        try {
+          artifact = readHarnessArtifact(activeState.artifactPath);
+        } catch {
+          artifact = null;
+        }
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        harnessConfig,
+        activeState,
+        artifact: artifact
+          ? {
+              artifactId: artifact.artifactId,
+              artifactPath: artifact.artifactPath,
+              isValid: artifact.isValid,
+              sourceOrigin: artifact.sourceOrigin,
+              sourcePath: artifact.sourcePath,
+              compiledProfile: artifact.compiledProfile,
+              validationReport: artifact.validationReport,
+            }
+          : null,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/harness/compile" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const harnessConfig = getHarnessRuntimeConfig();
+      const sourceInfo = resolveHarnessCompileSource(body || {}, harnessConfig);
+      const validationMode = String(body?.validationMode || harnessConfig.validationMode || "report")
+        .trim()
+        .toLowerCase() || "report";
+      const compiled = compileHarnessSourceToArtifact(sourceInfo.source, {
+        configDir: resolveUiConfigDir(),
+        repoRoot,
+        sourceOrigin: sourceInfo.sourceOrigin,
+        sourcePath: sourceInfo.sourcePath,
+        validationMode,
+      });
+      const payload = buildHarnessCompilePayload(compiled, harnessConfig);
+      jsonResponse(res, payload.ok ? 200 : 400, payload);
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/harness/activate" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const harnessConfig = getHarnessRuntimeConfig();
+      const validationMode = String(body?.validationMode || harnessConfig.validationMode || "report")
+        .trim()
+        .toLowerCase() || "report";
+      let artifact = null;
+      let compiled = null;
+      if (typeof body?.artifactPath === "string" && body.artifactPath.trim()) {
+        artifact = readHarnessArtifact(body.artifactPath);
+      } else {
+        const sourceInfo = resolveHarnessCompileSource(body || {}, harnessConfig);
+        compiled = compileHarnessSourceToArtifact(sourceInfo.source, {
+          configDir: resolveUiConfigDir(),
+          repoRoot,
+          sourceOrigin: sourceInfo.sourceOrigin,
+          sourcePath: sourceInfo.sourcePath,
+          validationMode,
+        });
+        artifact = compiled.artifact;
+      }
+
+      if (artifact?.isValid !== true && shouldEnforceHarnessValidation(validationMode)) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "Harness validation failed in enforce mode",
+          validationReport: artifact?.validationReport || null,
+          artifactPath: artifact?.artifactPath || null,
+        });
+        return;
+      }
+
+      const activeState = activateHarnessArtifact(artifact.artifactPath, {
+        configDir: resolveUiConfigDir(),
+        actor: "api",
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        harnessConfig,
+        artifactPath: artifact.artifactPath,
+        artifactId: artifact.artifactId,
+        activeState,
+        compiledProfile: artifact.compiledProfile,
+        validationReport: artifact.validationReport,
+        compiledProfileJson: compiled?.compiledProfileJson || artifact.compiledProfileJson || null,
+      });
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
     }
     return;
   }

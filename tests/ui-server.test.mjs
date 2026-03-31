@@ -129,6 +129,9 @@ describeUiServer("ui-server mini app", () => {
     "EXECUTORS",
     "FLEET_ENABLED",
     "FLEET_SYNC_INTERVAL_MS",
+    "BOSUN_HARNESS_ENABLED",
+    "BOSUN_HARNESS_SOURCE",
+    "BOSUN_HARNESS_VALIDATION_MODE",
     "OPENAI_API_KEY",
     "STATUS_FILE",
     "BOSUN_FLOW_REQUIRE_REVIEW",
@@ -1209,6 +1212,9 @@ describeUiServer("ui-server mini app", () => {
           INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED: "false",
           INTERNAL_EXECUTOR_REPLENISH_ENABLED: "true",
           PROJECT_REQUIREMENTS_PROFILE: "system",
+          BOSUN_HARNESS_ENABLED: "true",
+          BOSUN_HARNESS_SOURCE: ".bosun/harness/internal-harness.md",
+          BOSUN_HARNESS_VALIDATION_MODE: "enforce",
           TELEGRAM_UI_PORT: "4400",
           TELEGRAM_INTERVAL_MIN: "15",
           FLEET_ENABLED: "false",
@@ -1231,6 +1237,9 @@ describeUiServer("ui-server mini app", () => {
         "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
         "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
         "PROJECT_REQUIREMENTS_PROFILE",
+        "BOSUN_HARNESS_ENABLED",
+        "BOSUN_HARNESS_SOURCE",
+        "BOSUN_HARNESS_VALIDATION_MODE",
         "TELEGRAM_UI_PORT",
         "TELEGRAM_INTERVAL_MIN",
         "FLEET_ENABLED",
@@ -1252,6 +1261,9 @@ describeUiServer("ui-server mini app", () => {
     expect(config.internalExecutor?.reviewAgentEnabled).toBe(false);
     expect(config.internalExecutor?.backlogReplenishment?.enabled).toBe(true);
     expect(config.projectRequirements?.profile).toBe("system");
+    expect(config.harness?.enabled).toBe(true);
+    expect(config.harness?.source).toBe(".bosun/harness/internal-harness.md");
+    expect(config.harness?.validation?.mode).toBe("enforce");
     expect(config.telegramUiPort).toBe(4400);
     expect(config.telegramIntervalMin).toBe(15);
     expect(config.fleetEnabled).toBe(false);
@@ -2852,6 +2864,105 @@ describeUiServer("ui-server mini app", () => {
     expect(payload.stats.totalRetriesToday).toBe(7);
     expect(getRetryQueue).toHaveBeenCalled();
   });
+
+  it("compiles and activates harness profiles from configured source files", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const harnessSourcePath = join(tmpDir, "internal-harness.md");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      harnessSourcePath,
+      [
+        "```json",
+        JSON.stringify({
+          name: "Bosun API Harness",
+          entryStageId: "plan",
+          skills: [{ ref: "/skills/checks/SKILL.md", pinned: true }],
+          stages: [
+            {
+              id: "plan",
+              type: "prompt",
+              prompt: "Plan the implementation and gather context.",
+              transitions: [{ on: "success", to: "gate" }],
+            },
+            {
+              id: "gate",
+              type: "gate",
+              prompt: "Run tests and wait for approval.",
+              tools: ["run_tests", "approval_gate"],
+              transitions: [{ on: "success", to: "done" }],
+            },
+            {
+              id: "done",
+              type: "finalize",
+              prompt: "Summarize the completed work.",
+            },
+          ],
+        }, null, 2),
+        "```",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        $schema: "./bosun.schema.json",
+        harness: {
+          enabled: true,
+          source: harnessSourcePath,
+          validation: {
+            mode: "report",
+          },
+        },
+      }, null, 2) + "\n",
+      "utf8",
+    );
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const compileRes = await fetch(`http://127.0.0.1:${port}/api/harness/compile`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const compileJson = await compileRes.json();
+
+    expect(compileRes.status).toBe(200);
+    expect(compileJson.ok).toBe(true);
+    expect(compileJson.isValid).toBe(true);
+    expect(compileJson.sourceOrigin).toBe("config-file");
+    expect(compileJson.sourcePath).toBe(harnessSourcePath);
+    expect(compileJson.compiledProfile?.entryStageId).toBe("plan");
+    expect(existsSync(compileJson.artifactPath)).toBe(true);
+
+    const activateRes = await fetch(`http://127.0.0.1:${port}/api/harness/activate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ artifactPath: compileJson.artifactPath }),
+    });
+    const activateJson = await activateRes.json();
+
+    expect(activateRes.status).toBe(200);
+    expect(activateJson.ok).toBe(true);
+    expect(activateJson.activeState?.artifactPath).toBe(compileJson.artifactPath);
+    expect(activateJson.activeState?.compiledProfile?.entryStageId).toBe("plan");
+
+    const activeRes = await fetch(`http://127.0.0.1:${port}/api/harness/active`);
+    const activeJson = await activeRes.json();
+
+    expect(activeRes.status).toBe(200);
+    expect(activeJson.ok).toBe(true);
+    expect(activeJson.activeState?.artifactPath).toBe(compileJson.artifactPath);
+    expect(activeJson.artifact?.compiledProfile?.name).toBe("Bosun API Harness");
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 15000);
 
   it("retries tasks immediately and clears retry queue entries via the event bus", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
