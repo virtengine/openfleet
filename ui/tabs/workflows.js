@@ -41,6 +41,7 @@ import {
 } from "./workflow-canvas-utils.mjs";
 import { createSession } from "../components/session-list.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
+import { activeWorkspaceId } from "../components/workspace-switcher.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 import {
   Typography, Box, Stack, Card as MuiCard, CardContent, Button, IconButton, Chip,
@@ -108,7 +109,25 @@ const workflowsLoading = signal(false);
 const templatesLoading = signal(false);
 const nodeTypesLoading = signal(false);
 
-function getWorkflowNameById(workflowId) {
+function appendQueryParams(path, params = {}) {
+  const url = new URL(path, "https://placeholder.internal");
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.pathname + (url.search || "");
+}
+
+function buildWorkflowRunApiPath(path) {
+  const workspaceId = activeWorkspaceId.value;
+  if (!workspaceId) return path;
+  const url = new URL(path, "https://placeholder.internal");
+  url.searchParams.set("workspace", workspaceId);
+  return url.pathname + url.search;
+}
+
+
   const id = String(workflowId || "").trim();
   if (!id) return "";
   return (workflows.value || []).find((workflow) => workflow?.id === id)?.name || id;

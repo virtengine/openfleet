@@ -33,8 +33,8 @@ function slugify(value) {
   return toTrimmedString(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "") || "harness";
+    .replace(/^-/, "")
+    .replace(/-$/, "") || "harness";
 }
 
 function safeClone(value) {

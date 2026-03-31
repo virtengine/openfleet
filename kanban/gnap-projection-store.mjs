@@ -32,8 +32,8 @@ function sanitizeFileComponent(value, fallback) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "")
+    .replace(/^-/, "")
+    .replace(/-$/, "")
     .slice(0, 64);
   return normalized || fallback;
 }
