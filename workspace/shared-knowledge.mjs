@@ -23,11 +23,21 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import crypto from "node:crypto";
-import {
-  appendKnowledgeEntryToStateLedger,
-  listKnowledgeEntriesFromStateLedger,
-  resolveStateLedgerPath,
-} from "../lib/state-ledger-sqlite.mjs";
+// Lazy-load state-ledger-sqlite functions to avoid pulling in node:sqlite on
+// Node < 22 runtimes (e.g. Node 20 CI) where the built-in module doesn't exist.
+let _stateLedgerModule;
+async function getStateLedgerModule() {
+  if (!_stateLedgerModule) {
+    _stateLedgerModule = await import("../lib/state-ledger-sqlite.mjs");
+  }
+  return _stateLedgerModule;
+}
+function getStateLedgerModuleSync() {
+  if (!_stateLedgerModule) {
+    throw new Error("state-ledger-sqlite not yet loaded; call getStateLedgerModule() first");
+  }
+  return _stateLedgerModule;
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -211,11 +221,13 @@ async function loadLegacyRegistryEntries(repoRoot = knowledgeState.repoRoot || p
 }
 
 async function backfillLedgerEntries(repoRoot, entries = []) {
+  let mod;
+  try { mod = await getStateLedgerModule(); } catch { return; }
   for (const rawEntry of Array.isArray(entries) ? entries : []) {
     const entry = normalizeRegistryEntry(rawEntry);
     if (!entry) continue;
     try {
-      appendKnowledgeEntryToStateLedger(entry, { repoRoot });
+      mod.appendKnowledgeEntryToStateLedger(entry, { repoRoot });
     } catch {
       // best-effort migration only
     }
@@ -224,7 +236,8 @@ async function backfillLedgerEntries(repoRoot, entries = []) {
 
 async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
   try {
-    const entries = listKnowledgeEntriesFromStateLedger({ repoRoot, limit: 5000 })
+    const mod = await getStateLedgerModule();
+    const entries = mod.listKnowledgeEntriesFromStateLedger({ repoRoot, limit: 5000 })
       .map((entry) => normalizeRegistryEntry(entry))
       .filter(Boolean);
     if (entries.length > 0) {
@@ -607,22 +620,36 @@ export async function appendKnowledgeEntry(entry, options = {}) {
     const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
     registry.entries.push(normalizedEntry);
     await saveRegistryEntries(knowledgeState.repoRoot || process.cwd(), registry);
-    const ledgerResult = appendKnowledgeEntryToStateLedger(normalizedEntry, {
-      repoRoot: knowledgeState.repoRoot || process.cwd(),
-    });
+    let ledgerResult;
+    try {
+      const mod = await getStateLedgerModule();
+      ledgerResult = mod.appendKnowledgeEntryToStateLedger(normalizedEntry, {
+        repoRoot: knowledgeState.repoRoot || process.cwd(),
+      });
+    } catch {
+      // SQLite unavailable — skip ledger write
+    }
 
     knowledgeState.entryHashes.add(normalizedEntry.hash);
     knowledgeState.entriesWritten++;
     knowledgeState.lastWriteAt = Date.now();
     knowledgeState.lastWriteByAgent.set(agentId, knowledgeState.lastWriteAt);
 
+    let ledgerPath;
+    try {
+      const mod = await getStateLedgerModule();
+      ledgerPath = ledgerResult?.path || mod.resolveStateLedgerPath({
+        repoRoot: knowledgeState.repoRoot || process.cwd(),
+      });
+    } catch {
+      ledgerPath = null;
+    }
+
     return {
       success: true,
       hash: normalizedEntry.hash,
       registryPath: getRegistryPath(knowledgeState.repoRoot || process.cwd()),
-      ledgerPath: ledgerResult?.path || resolveStateLedgerPath({
-        repoRoot: knowledgeState.repoRoot || process.cwd(),
-      }),
+      ledgerPath,
     };
   } catch (err) {
     return { success: false, reason: `write error: ${err.message}` };
