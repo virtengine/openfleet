@@ -3,6 +3,7 @@ import htm from "htm";
 import * as ink from "ink";
 
 const React = ReactModule.default ?? ReactModule;
+const useEffect = ReactModule.useEffect ?? React.useEffect;
 const useMemo = ReactModule.useMemo ?? React.useMemo;
 const useState = ReactModule.useState ?? React.useState;
 const Box = ink.Box ?? ink.default?.Box;
@@ -19,6 +20,7 @@ import {
   TAB_ORDER,
 } from "./constants.js";
 import HelpScreen, { getFooterHints, SHORTCUT_GROUPS } from "./HelpScreen.js";
+import { formatVisibleLogLine } from "./logs-screen-helpers.js";
 import { useWebSocket } from "./useWebSocket.js";
 import { useTasks } from "./useTasks.js";
 import { useWorkflows } from "./useWorkflows.js";
@@ -250,7 +252,9 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     body = html`<${ScreenFrame} title="Tasks" subtitle=${`Tracked tasks: ${combinedTasks.length}.`}>${renderTable(taskRows)}<//>`;
   } else if (activeTab === "logs") {
     body = html`<${ScreenFrame} title="Logs" subtitle="Recent monitor and transport events.">
-      ${wsState.logs.length ? wsState.logs.slice(0, 12).map((entry, index) => html`<${Text} key=${index}>${entry}<//>`) : html`<${Text} color=${ANSI_COLORS.muted}>No log entries yet.<//>`}
+      ${wsState.logs.length
+        ? wsState.logs.slice(0, 12).map((entry, index) => html`<${Text} key=${index}>${formatVisibleLogLine(entry)}<//>`)
+        : html`<${Text} color=${ANSI_COLORS.muted}>No log entries yet.<//>`}
     <//>`;
   } else if (activeTab === "workflows") {
     body = html`<${ScreenFrame} title="Workflows" subtitle=${workflowState.loading ? "Loading configured workflows…" : `Loaded ${workflowState.workflows.length} workflow(s).`}>
@@ -298,4 +302,3 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     <//>
   `;
 }
-

@@ -3,7 +3,15 @@ import htm from "htm";
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import Ajv2020 from "ajv/dist/2020.js";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 import { ANSI_COLORS, GLYPHS } from "./constants.js";
@@ -192,10 +200,31 @@ function coerceValue(text, field) {
   return value;
 }
 
-function atomicWriteJson(path, config) {
-  const tempPath = `${path}.tmp`;
+function atomicWriteJson(filePath, config) {
+  const tempPath = `${filePath}.${process.pid}.tmp`;
   writeFileSync(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  renameSync(tempPath, path);
+  try {
+    renameSync(tempPath, filePath);
+  } catch (renameError) {
+    try {
+      rmSync(filePath, { force: true });
+      renameSync(tempPath, filePath);
+    } catch {
+      try {
+        copyFileSync(tempPath, filePath);
+        unlinkSync(tempPath);
+      } catch (copyError) {
+        rmSync(tempPath, { force: true });
+        throw copyError;
+      }
+    }
+    if (existsSync(tempPath)) {
+      rmSync(tempPath, { force: true });
+    }
+    if (!existsSync(filePath)) {
+      throw renameError;
+    }
+  }
 }
 
 function normalizeInstancePath(instancePath = "") {
