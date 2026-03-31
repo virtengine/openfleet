@@ -2150,13 +2150,22 @@ body.is-resizing * {
 @media (min-width: 768px) and (max-width: 1199px) {
   .app-tablet-grid {
     display: grid;
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-    grid-template-areas: "sidebar main";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "main";
   }
   :root[data-desktop="true"] .app-shell,
   .app-shell {
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-    grid-template-areas: "sidebar main";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "main";
+  }
+
+  .app-main {
+    grid-area: main;
+    min-width: 0;
+  }
+
+  .main-panel {
+    min-width: 0;
   }
 
   .app-shell[data-has-rail="true"] .session-rail,
@@ -2165,6 +2174,75 @@ body.is-resizing * {
   }
 
   .bottom-nav {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header .MuiToolbar-root {
+    min-height: 44px;
+    gap: 8px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .app-header-toolbar {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .app-header .MuiToolbar-root > * {
+    min-width: 0;
+  }
+
+  .app-header .MuiTypography-h6 {
+    margin-left: 0 !important;
+    font-size: 0.95rem;
+    flex-shrink: 0;
+  }
+
+  .app-header-workspace {
+    margin-left: 0 !important;
+    min-width: 0;
+  }
+
+  .app-header-status-stack {
+    gap: 6px !important;
+    min-width: 0;
+    flex-shrink: 1;
+  }
+
+  .app-header-status-stack .MuiChip-root,
+  .app-header-status-stack .connection-badge {
+    flex-shrink: 1;
+    min-width: 0;
+  }
+
+  .app-header-status-stack .connection-badge-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-header-freshness {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-breadcrumbs {
+    display: none;
+  }
+
+  .app-header-status-stack {
+    gap: 4px !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-header-latency-chip,
+  .app-header-user-chip {
     display: none;
   }
 }
@@ -2183,4 +2261,3 @@ body.is-resizing * {
     display: none;
   }
 }
-

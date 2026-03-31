@@ -515,6 +515,16 @@
     padding-bottom: 0;
   }
 
+  .app-header-toolbar {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .app-header .MuiToolbar-root > * {
+    min-width: 0;
+  }
+
   .app-header-logo {
     width: 34px;
     height: 34px;
@@ -529,6 +539,32 @@
   }
 
   .header-status {
+    display: none;
+  }
+
+  .app-header-workspace {
+    min-width: 0;
+  }
+
+  .app-header-status-stack {
+    min-width: 0;
+    gap: 6px !important;
+    flex-shrink: 1;
+  }
+
+  .app-header-status-stack .MuiChip-root,
+  .app-header-status-stack .connection-badge {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+
+  .app-header-status-stack .connection-badge-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-header-freshness {
     display: none;
   }
 
@@ -579,7 +615,9 @@
   }
 
   .app-header-user,
-  .header-freshness {
+  .header-freshness,
+  .app-header-latency-chip,
+  .app-header-user-chip {
     display: none;
   }
 

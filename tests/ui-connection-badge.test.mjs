@@ -33,6 +33,9 @@ describe("portal websocket connection badge", () => {
     expect(appSource).toContain("<${ConnectionBadge} />");
     expect(appSource).toContain("last reconnect");
     expect(appSource).toContain("Reconnecting...");
+    expect(appSource).toContain('className="app-header-status-stack"');
+    expect(appSource).toContain('className="app-header-latency-chip"');
+    expect(appSource).toContain('className="app-header-freshness"');
   });
 
   it("defines themed badge color css variables and pulse animation", () => {

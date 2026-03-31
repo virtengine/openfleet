@@ -923,7 +923,7 @@ function Header() {
   const userLabel = user ? `@${user.username || user.first_name}` : "";
   return html`
     <${AppBar} position="static" elevation=${0} sx=${{zIndex: 10, flexShrink: 0}} className="app-header">
-      <${Toolbar} variant="dense">
+      <${Toolbar} variant="dense" className="app-header-toolbar">
         <img src=${logoSrc} alt="Bosun" style=${{height: 24, width: 24, marginRight: 4}} data-logo-fallback-index="0" onError=${handleAppLogoLoadError} />
         <${Typography} variant="h6" sx=${{ml: 1, flexGrow: 0}}>Bosun</${Typography}>
         <div class="app-breadcrumbs" aria-label="Breadcrumb">
@@ -934,24 +934,25 @@ function Header() {
             </span>
           `)}
         </div>
-        <${Box} sx=${{ml: 2}}>
+        <${Box} sx=${{ml: 2}} className="app-header-workspace">
           <${WorkspaceSwitcher} />
         </${Box}>
         <${Box} sx=${{flexGrow: 1}} />
-        <${Stack} direction="row" spacing=${1} alignItems="center">
+        <${Stack} direction="row" spacing=${1} alignItems="center" className="app-header-status-stack">
           <${ConnectionBadge} />
           <${Chip}
             size="small"
             label=${connLabel}
             color=${connColor}
             variant="outlined"
+            className="app-header-latency-chip"
             sx=${{fontSize: "0.7rem"}}
           />
           ${freshnessLabel
-            ? html`<${Typography} variant="caption" sx=${{opacity: 0.7}}>${freshnessLabel}</${Typography}>`
+            ? html`<${Typography} variant="caption" className="app-header-freshness" sx=${{opacity: 0.7}}>${freshnessLabel}</${Typography}>`
             : null}
           ${user
-            ? html`<${Chip} size="small" label=${userLabel} variant="outlined" />`
+            ? html`<${Chip} size="small" label=${userLabel} variant="outlined" className="app-header-user-chip" />`
             : null}
         </${Stack}>
       </${Toolbar}>

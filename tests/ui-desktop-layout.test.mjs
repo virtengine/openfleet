@@ -28,6 +28,12 @@ describe("desktop layout implementation", () => {
     expect(layoutCss).toContain('.inspector-collapse-btn');
   });
 
+  it("keeps the tablet shell on a single main column while drawers are hidden", () => {
+    expect(layoutCss).toContain('.app-tablet-grid');
+    expect(layoutCss).toContain('grid-template-areas: "main";');
+    expect(layoutCss).toContain('.app-main {');
+  });
+
   it("supports desktop keyboard shortcuts for sidebar and inspector", () => {
     expect(source).toContain('key === "b"');
     expect(source).toContain('key === "i"');
