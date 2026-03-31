@@ -42,6 +42,13 @@ describe("repo-map", () => {
         { path: "agent/primary-agent.mjs", name: "execPrimaryPrompt", kind: "function", line: 200, signature: "execPrimaryPrompt(userMessage, options)" },
         { path: "tests/primary-agent.runtime.test.mjs", name: "primaryAgentRuntime", kind: "test", line: 10, signature: "primary agent framing tests" },
       ],
+      relations: [
+        {
+          relationType: "file_imports_file",
+          fromPath: "agent/primary-agent.mjs",
+          toPath: "workflow/workflow-nodes.mjs",
+        },
+      ],
     }, null, 2), "utf8");
 
     const repoMap = buildRepoMap({
@@ -54,6 +61,7 @@ describe("repo-map", () => {
     expect(repoMap.files).toHaveLength(2);
     expect(repoMap.files[0].path).toBe("agent/primary-agent.mjs");
     expect(repoMap.files[0].symbols).toContain("buildArchitectEditorFrame");
+    expect(repoMap.files[0].adjacentPaths).toContain("workflow/workflow-nodes.mjs");
   });
 
   it("prepends architect/editor framing with explicit repo maps", () => {
@@ -92,6 +100,30 @@ describe("repo-map", () => {
     expect(topology).toContain("workflow/workflow-engine.mjs");
     expect(topology).toContain("owner: workflow");
     expect(topology).toContain("adjacent: workflow/workflow-nodes.mjs, tests/workflow-engine.test.mjs");
+  });
+
+  it("prefers graph adjacency over heuristic adjacency when available", () => {
+    const topology = formatRepoTopology({
+      root: "C:/repo",
+      files: [
+        {
+          path: "agent/primary-agent.mjs",
+          summary: "primary agent runtime",
+          adjacentPaths: ["workflow/workflow-nodes.mjs"],
+        },
+        {
+          path: "tests/primary-agent.runtime.test.mjs",
+          summary: "runtime coverage for primary agent framing",
+        },
+        {
+          path: "workflow/workflow-nodes.mjs",
+          summary: "workflow nodes",
+        },
+      ],
+    });
+
+    expect(topology).toContain("adjacent: workflow/workflow-nodes.mjs");
+    expect(topology).not.toContain("adjacent: tests/primary-agent.runtime.test.mjs");
   });
 
   it("caps repo topology summaries to protect prompt budget", () => {

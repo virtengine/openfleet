@@ -75,9 +75,13 @@ describe("context-indexer", () => {
 
     const dbPath = resolve(testRoot, ".bosun", "context-index", "index.db");
     const agentIndexPath = resolve(testRoot, ".bosun", "context-index", "AGENT_INDEX.md");
+    const agentIndexJsonPath = resolve(testRoot, ".bosun", "context-index", "agent-index.json");
 
     expect(existsSync(dbPath)).toBe(true);
     expect(existsSync(agentIndexPath)).toBe(true);
+    const agentIndexJson = JSON.parse(readFileSync(agentIndexJsonPath, "utf8"));
+    expect(Array.isArray(agentIndexJson.relations)).toBe(true);
+    expect(agentIndexJson.relations.some((entry) => entry.relationType === "file_imports_file")).toBe(true);
 
     const hits = await searchContextIndex("greetUser", {
       rootDir: testRoot,

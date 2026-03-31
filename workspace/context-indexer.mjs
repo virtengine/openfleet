@@ -979,6 +979,30 @@ function writeAgentIndexJson(db, indexDir, rootDir) {
   const symbols = db
     .prepare("SELECT path, name, kind, line, signature, parser FROM symbols ORDER BY path ASC, line ASC")
     .all();
+  const relations = db
+    .prepare(`
+      SELECT edge_id, from_node_id, from_node_type, from_path, from_name,
+             to_node_id, to_node_type, to_path, to_name, relation_type,
+             line, weight, metadata_json
+      FROM relations
+      ORDER BY relation_type ASC, edge_id ASC
+    `)
+    .all()
+    .map((row) => ({
+      edgeId: row.edge_id,
+      fromNodeId: row.from_node_id,
+      fromNodeType: row.from_node_type,
+      fromPath: row.from_path || null,
+      fromName: row.from_name || null,
+      toNodeId: row.to_node_id,
+      toNodeType: row.to_node_type,
+      toPath: row.to_path || null,
+      toName: row.to_name || null,
+      relationType: row.relation_type,
+      line: Number.isFinite(Number(row.line)) ? Number(row.line) : null,
+      weight: Number.isFinite(Number(row.weight)) ? Number(row.weight) : 1,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : null,
+    }));
 
   const payload = {
     generatedAt: new Date().toISOString(),
@@ -988,6 +1012,7 @@ function writeAgentIndexJson(db, indexDir, rootDir) {
     graph: buildGraphSummary(db),
     files,
     symbols,
+    relations,
   };
 
   writeFileSync(resolve(indexDir, "agent-index.json"), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
