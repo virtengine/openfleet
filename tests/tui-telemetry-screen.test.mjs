@@ -131,7 +131,7 @@ describe("tui telemetry screen helpers", () => {
 
 describe("tui navigation telemetry tab", () => {
   it("adds telemetry as the fourth screen", () => {
-    expect(SCREEN_ORDER).toEqual(["status", "tasks", "agents", "telemetry"]);
+    expect(SCREEN_ORDER).toEqual(["status", "tasks", "agents", "telemetry", "logs"]);
     expect(getNextScreenForInput("status", "4")).toBe("telemetry");
   });
 });
