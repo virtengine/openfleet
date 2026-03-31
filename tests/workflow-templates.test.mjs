@@ -289,8 +289,8 @@ describe("workflow-templates", () => {
     expect(replenishNode?.config?.repoMapFileLimit).toBe(8);
   });
 
-  it("recover blocked worktrees summary uses a precomputed count variable", () => {
-    const template = getTemplate("template-recover-blocked-worktrees");
+  it("recover blocked worktrees summary uses a precomputed count variable", async () => {
+    const { RECOVER_BLOCKED_WORKTREES_TEMPLATE: template } = await import("../workflow-templates/reliability.mjs");
     expect(template).toBeTruthy();
 
     const countNode = template.nodes.find((node) => node.id === "count-blocked");

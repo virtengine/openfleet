@@ -396,6 +396,9 @@ export const HEALTH_CHECK_TEMPLATE = {
     node("collect-recent-runs", "action.run_command", "Collect Recent Runs", {
       command:
         "node -e \"const fs=require('node:fs');const path=require('node:path');const base=path.join(process.cwd(),'.bosun','workflow-runs');const entries=fs.existsSync(base)?fs.readdirSync(base).filter((name)=>name.endsWith('.json')).sort().slice(-Number(process.env.BOSUN_HEALTH_MAX_BENCHMARK_RUNS||12)):[];const runIds=entries.map((name)=>path.basename(name,'.json'));process.stdout.write(JSON.stringify({runIds,latestRunId:runIds.at(-1)||''}));\"",
+      env: {
+        BOSUN_HEALTH_MAX_BENCHMARK_RUNS: "{{maxBenchmarkRuns}}",
+      },
       continueOnError: true,
     }, { x: 400, y: 640 }),
 
