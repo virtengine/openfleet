@@ -157,15 +157,33 @@ export function getConfigValueAtPath(obj, pathParts = []) {
   return cursor;
 }
 
+const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 export function setConfigValueAtPath(obj, pathParts = [], value) {
   let cursor = obj;
   for (let index = 0; index < pathParts.length; index += 1) {
     const part = pathParts[index];
-    if (index === pathParts.length - 1) {
-      cursor[part] = value;
+    if (DANGEROUS_KEYS.has(part)) {
+      console.warn(`[config-editor] setConfigValueAtPath: rejected dangerous key "${part}"`);
       return obj;
     }
-    if (!isPlainObject(cursor[part])) cursor[part] = {};
+    if (index === pathParts.length - 1) {
+      Object.defineProperty(cursor, part, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+      return obj;
+    }
+    if (!isPlainObject(cursor[part])) {
+      Object.defineProperty(cursor, part, {
+        value: {},
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
     cursor = cursor[part];
   }
   return obj;

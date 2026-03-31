@@ -3982,8 +3982,12 @@ function isCodexResumeTimeoutError(errorValue) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null }>}
  */
 async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
-  // Coerce to number — prevents string concatenation in setTimeout arithmetic
-  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
+  // Coerce to a positive integer and cap at DEFAULT_TIMEOUT_MS (6 h) to prevent
+  // resource exhaustion from arbitrarily large user-controlled timer durations.
+  const parsedMs = Number(timeoutMs);
+  timeoutMs = (Number.isFinite(parsedMs) && parsedMs > 0)
+    ? Math.min(Math.trunc(parsedMs), DEFAULT_TIMEOUT_MS)
+    : DEFAULT_TIMEOUT_MS;
   const { onEvent, abortController: externalAC, envOverrides = null } = extra;
 
   let CodexClass;
