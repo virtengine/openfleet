@@ -268,3 +268,63 @@
     - `npm test -- tests/kanban-adapter.test.mjs`
   - Immediate next action:
     1. restart the pinned daemon so both the session-list filter fix and this adapter fix are live in runtime before further API/Playwright verification.
+- Follow-up on 2026-04-01 (Fleet task-session snapshot isolation fix):
+  - Diagnosed the remaining Fleet/Sessions mismatch as a client-side shared-store overwrite issue, not another server/session-filter bug.
+  - Root cause:
+    - `ui/components/session-list.js` exposes a single global `sessionsData` signal.
+    - both the Fleet overview (`AgentsTab`) and standalone `FleetSessionsTab` were reading from that shared signal after calling `loadSessions({ type: "task", workspace: "all" })`.
+    - other tabs/loaders can later overwrite the same signal with different filters (`workspace=active`, other session types), causing Fleet overview/session cards to show `0` or `No sessions yet` even while the standalone Sessions flow had recently loaded non-empty task sessions.
+  - Source fix applied:
+    - `ui/components/session-list.js`
+    - `site/ui/components/session-list.js`
+    - `ui/tabs/agents.js`
+    - `site/ui/tabs/agents.js`
+    - `tests/fleet-tab-render.test.mjs`
+  - Behavioral change:
+    - `loadSessions(...)` now returns the loaded session array on success (or `null` on failure) in addition to updating the shared signal.
+    - Fleet overview and standalone Fleet Sessions now keep a local `fleetSessionsSnapshot` sourced from their own `loadSessions({ type: "task", workspace: "all" })` refresh loop.
+    - `FleetSessionsPanel` now renders from the passed task-session snapshot instead of the mutable global `sessionsData` store, so Fleet metrics/session cards stay aligned with the same task-session query they requested.
+    - mirrored the same fix into `site/ui/` to preserve hosted demo parity.
+  - Validation passed:
+    - `npm run syntax:check`
+    - `npm test -- tests/fleet-tab-render.test.mjs tests/session-api.test.mjs`
+    - `npm run build`
+  - Current live-runtime verification status:
+    - restarted Bosun on pinned roots:
+      - `node cli.mjs --stop-daemon --config-dir .bosun --repo-root .`
+      - `node cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-auto-update`
+    - current daemon is now `PID 52752`.
+    - direct HTTPS checks against `https://192.168.0.183:4400` show the UI server is live again and still normalizes tokenized URLs with `302` redirects to clean paths.
+    - Playwright browser verification against the restarted Fleet/Sessions UI is in progress at this checkpoint; no new code blocker found in local validation.
+  - Next concrete actions:
+    1. finish the post-restart Playwright Fleet/Sessions smoke and confirm the Fleet overview no longer shows `0` while Sessions is populated.
+    2. if Fleet still diverges visually, capture the redirected/authenticated DOM text plus in-page fetch results from the same browser context to isolate any remaining client-only render path.
+    3. resume broader runtime triage for the remaining `no_output` / `stalled` task sessions once Fleet metrics are visually confirmed stable.
+- Follow-up on 2026-04-01 (Pulse/Telemetry durable runtime zero-summary fix):
+  - Diagnosed the remaining Pulse `Durable Runtime` and Telemetry `Durable Session Runtime` zero cards as an API projection gap, not another UI rendering bug.
+  - Root cause:
+    - `ui/tabs/dashboard.js` and `ui/tabs/telemetry.js` already expect:
+      - `sessionHealth`
+      - `context`
+      - `toolSummary`
+      - `activeSessionCount`
+      - `completedSessionCount`
+      - `totalSessionCount`
+    - `infra/runtime-accumulator.mjs` already computes the completed-session aggregates (`healthBuckets`, `contextSummary`, `toolSummary`, `sessionCount`).
+    - `server/ui-server.mjs` `/api/status` and `/api/telemetry/summary` were not exposing those durable-runtime fields, so the live cards fell back to zero even while Fleet/Sessions showed active and historic task sessions.
+  - Source fix applied:
+    - `server/ui-server.mjs`
+    - `tests/ui-server.test.mjs`
+  - Behavioral change:
+    - added shared `buildDurableRuntimeSurface()` in `server/ui-server.mjs`.
+    - `/api/status` now merges durable runtime/session/context/tool fields into the top-level `data` payload.
+    - `/api/telemetry/summary` now merges the same durable runtime/session/context/tool fields into the returned telemetry summary.
+    - live-session counts come from `buildCurrentTuiMonitorStats()`; completed-session/context/tool aggregates come from `getRuntimeStats()`.
+  - Validation passed:
+    - `npm test -- tests/ui-server.test.mjs`
+    - `npm run syntax:check`
+    - `npm run build`
+  - Current next actions:
+    1. restart Bosun on pinned roots so the `server/` change is live.
+    2. re-check `/api/status` and `/api/telemetry/summary` against the live daemon for non-zero durable-runtime fields.
+    3. verify Pulse and Telemetry cards in the authenticated browser context with Playwright CLI.

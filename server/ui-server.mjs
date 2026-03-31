@@ -13971,6 +13971,70 @@ function buildCurrentTuiMonitorStats() {
   });
 }
 
+function buildDurableRuntimeSurface() {
+  const runtimeStats = getRuntimeStats() || {};
+  const monitor = buildCurrentTuiMonitorStats();
+  const monitorSessions = Array.isArray(monitor?.sessions) ? monitor.sessions : [];
+  const activeSessionCount = monitorSessions.filter((entry) => entry?.live === true).length;
+  const completedSessionCount = Number(runtimeStats?.sessionCount || 0);
+  const totalSessionCount = activeSessionCount + completedSessionCount;
+  const liveBuckets = {};
+
+  for (const session of monitorSessions) {
+    const state = String(
+      session?.runtimeHealth?.state
+      || session?.status
+      || session?.state
+      || "",
+    ).trim().toLowerCase();
+    if (!state) continue;
+    liveBuckets[state] = Number(liveBuckets[state] || 0) + 1;
+  }
+
+  const contextSummary = runtimeStats?.contextSummary && typeof runtimeStats.contextSummary === "object"
+    ? runtimeStats.contextSummary
+    : {};
+
+  return {
+    activeSessionCount,
+    completedSessionCount,
+    totalSessionCount,
+    sessionHealth: {
+      live: activeSessionCount,
+      completed: completedSessionCount,
+      total: totalSessionCount,
+      ...((runtimeStats?.healthBuckets && typeof runtimeStats.healthBuckets === "object")
+        ? runtimeStats.healthBuckets
+        : {}),
+      liveBuckets,
+    },
+    context: {
+      liveSessionCount: activeSessionCount,
+      completedSessionCount,
+      sessionsNearContextLimit: Number(contextSummary.sessionsNearLimit || 0),
+      sessionsHighContextPressure: Number(contextSummary.sessionsHighPressure || 0),
+      maxContextUsagePercent: Number.isFinite(Number(contextSummary.maxUsagePercent))
+        ? Number(contextSummary.maxUsagePercent)
+        : null,
+      avgContextUsagePercent: Number.isFinite(Number(contextSummary.avgUsagePercent))
+        ? Number(contextSummary.avgUsagePercent)
+        : null,
+    },
+    toolSummary: runtimeStats?.toolSummary && typeof runtimeStats.toolSummary === "object"
+      ? runtimeStats.toolSummary
+      : {
+          toolCalls: 0,
+          toolResults: 0,
+          errors: 0,
+          editOps: 0,
+          commitOps: 0,
+          sessionsWithEdits: 0,
+          sessionsWithCommits: 0,
+          topTools: [],
+        },
+  };
+}
+
 function isTerminalSharedAttemptStatus(status) {
   const normalized = String(status || "").trim().toLowerCase();
   return normalized === "complete"
@@ -17628,14 +17692,17 @@ async function handleApi(req, res, url) {
       details: false,
     });
     const rawData = await readStatusSnapshot();
+    const durableRuntime = buildDurableRuntimeSurface();
     const data = serverState?.enabled === true
       ? {
           ...(rawData && typeof rawData === "object" ? rawData : {}),
+          ...durableRuntime,
           serverState,
           harness: buildHarnessOverview(),
         }
       : {
           ...((rawData && typeof rawData === "object") ? rawData : {}),
+          ...durableRuntime,
           harness: buildHarnessOverview(),
         };
     const payload = { ok: true, data };
@@ -22169,6 +22236,7 @@ async function handleApi(req, res, url) {
       }
 
       summary.lifetimeTotals = lifetimeTotals;
+      Object.assign(summary, buildDurableRuntimeSurface());
       summary.repoAreaContention = summarizeRepoAreaLockContention(
         uiDeps.getInternalExecutor?.()?.getStatus?.()?.repoAreaLocks || null,
         { now: "2026-03-24T12:00:00.000Z" },

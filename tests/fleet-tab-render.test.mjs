@@ -152,6 +152,9 @@ for (const { relPath, source } of sourceFiles) {
     it("scopes Fleet metrics to workspace slot summaries and separates session-only activity", () => {
       expect(source).toContain("const workspaceSummary = execData?.workspaceSummary || null;");
       expect(source).toContain('loadSessions({ type: "task", workspace: "all" });');
+      expect(source).toContain("const [fleetSessionsSnapshot, setFleetSessionsSnapshot] = useState([]);");
+      expect(source).toContain('const sessions = await loadSessions({ type: "task", workspace: "all" });');
+      expect(source).toContain("setFleetSessionsSnapshot(sessions);");
       expect(source).not.toContain("Math.max(activeSlots, activeSessionCount)");
       expect(source).toContain('label: "Dedicated Slots"');
       expect(source).toContain('label: "Session Only"');
@@ -160,6 +163,13 @@ for (const { relPath, source } of sourceFiles) {
       expect(source).toContain("getFleetEntryMetaLabel(entry)");
       expect(source).toContain("getFleetEntryOriginLabel(selectedEntry)");
       expect(source).toContain('return isFleetEntryActive(entry) ? "Session only" : "Session history";');
+    });
+
+    it("pins Fleet session views to task-session snapshots instead of the shared session store", () => {
+      expect(source).toContain("const allSessions = fleetSessionsSnapshot;");
+      expect(source).toContain("function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], onOpenWorkspace, onForceStop })");
+      expect(source).toContain("const allSessions = Array.isArray(sessions) ? sessions : [];");
+      expect(source).toContain("sessions=${fleetSessionsSnapshot}");
     });
 
     it("preserves backend slot indexes when workspace-filtered slots are rendered", () => {

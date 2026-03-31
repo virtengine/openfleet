@@ -6174,6 +6174,13 @@ describeUiServer("ui-server mini app", () => {
       inputTokens: 1_200,
       outputTokens: 300,
       tokenCount: 1_500,
+      toolCalls: 3,
+      toolResults: 3,
+      hasEdits: true,
+      hasCommits: true,
+      topTools: [{ name: "apply_patch", count: 2 }],
+      contextWindow: { usedTokens: 9_200, totalTokens: 10_000, percent: 92 },
+      runtimeHealth: { state: "completed", severity: "info", contextUsagePercent: 92 },
       status: "completed",
     });
 
@@ -6187,9 +6194,40 @@ describeUiServer("ui-server mini app", () => {
     const port = server.address().port;
 
     try {
+      const statusResponse = await fetch(`http://127.0.0.1:${port}/api/status`);
+      const statusPayload = await statusResponse.json();
       const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
       const payload = await response.json();
 
+      expect(statusResponse.status).toBe(200);
+      expect(statusPayload.ok).toBe(true);
+      expect(statusPayload.data).toEqual(expect.objectContaining({
+        activeSessionCount: 0,
+        completedSessionCount: 1,
+        totalSessionCount: 1,
+        sessionHealth: expect.objectContaining({
+          live: 0,
+          completed: 1,
+          total: 1,
+        }),
+        context: expect.objectContaining({
+          liveSessionCount: 0,
+          completedSessionCount: 1,
+          sessionsNearContextLimit: 1,
+          sessionsHighContextPressure: 1,
+          maxContextUsagePercent: 92,
+          avgContextUsagePercent: 92,
+        }),
+        toolSummary: expect.objectContaining({
+          toolCalls: 3,
+          toolResults: 3,
+          sessionsWithEdits: 1,
+          sessionsWithCommits: 1,
+          topTools: expect.arrayContaining([
+            expect.objectContaining({ name: "apply_patch", count: 2 }),
+          ]),
+        }),
+      }));
       expect(response.status).toBe(200);
       expect(payload.ok).toBe(true);
       expect(payload.data.lifetimeTotals).toEqual(expect.objectContaining({
@@ -6198,6 +6236,34 @@ describeUiServer("ui-server mini app", () => {
         inputTokens: Number(baselineTotals.inputTokens || 0) + 1_200,
         outputTokens: Number(baselineTotals.outputTokens || 0) + 300,
         durationMs: Number(baselineTotals.durationMs || 0) + 8_000,
+      }));
+      expect(payload.data).toEqual(expect.objectContaining({
+        activeSessionCount: 0,
+        completedSessionCount: 1,
+        totalSessionCount: 1,
+        sessionHealth: expect.objectContaining({
+          live: 0,
+          completed: 1,
+          total: 1,
+          completed: 1,
+        }),
+        context: expect.objectContaining({
+          liveSessionCount: 0,
+          completedSessionCount: 1,
+          sessionsNearContextLimit: 1,
+          sessionsHighContextPressure: 1,
+          maxContextUsagePercent: 92,
+          avgContextUsagePercent: 92,
+        }),
+        toolSummary: expect.objectContaining({
+          toolCalls: 3,
+          toolResults: 3,
+          sessionsWithEdits: 1,
+          sessionsWithCommits: 1,
+          topTools: expect.arrayContaining([
+            expect.objectContaining({ name: "apply_patch", count: 2 }),
+          ]),
+        }),
       }));
     } finally {
       runtimeAccumulator._resetRuntimeAccumulatorForTests();

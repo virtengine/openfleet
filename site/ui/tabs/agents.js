@@ -1661,6 +1661,7 @@ export function AgentsTab() {
   const [agentLiveness, setAgentLiveness] = useState([]);
   const [agentErrorPatterns, setAgentErrorPatterns] = useState([]);
   const [agentRecentEvents, setAgentRecentEvents] = useState([]);
+  const [fleetSessionsSnapshot, setFleetSessionsSnapshot] = useState([]);
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -1684,7 +1685,7 @@ export function AgentsTab() {
     });
   }, [slots, fleetSearch]);
 
-  const allSessions = sessionsData.value || [];
+  const allSessions = fleetSessionsSnapshot;
   const slotTaskIds = new Set(
     slots.map((slot) => String(slot?.taskId || "").trim()).filter(Boolean),
   );
@@ -1728,11 +1729,15 @@ export function AgentsTab() {
 
   useEffect(() => {
     let active = true;
-    const refreshTaskSessions = () => {
+    const refreshTaskSessions = async () => {
       if (!active) return;
-      loadSessions({ type: "task", workspace: "all" });
+      const sessions = await loadSessions({ type: "task", workspace: "all" });
+      if (!active) return;
+      if (Array.isArray(sessions)) {
+        setFleetSessionsSnapshot(sessions);
+      }
     };
-    refreshTaskSessions();
+    void refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
     return () => {
       active = false;
@@ -2905,7 +2910,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
 }
 
 /* ─── Fleet Full Session View ─── */
-function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, onForceStop }) {
+function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], onOpenWorkspace, onForceStop }) {
   const [detailTab, setDetailTab] = useState("stream");
   const [sessionScope, setSessionScope] = useState(FLEET_SESSION_SCOPE.all);
   const [sessionSearch, setSessionSearch] = useState("");
@@ -2913,7 +2918,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
   const [copiedSessionId, setCopiedSessionId] = useState("");
   const [logText, setLogText] = useState("(no logs yet)");
   const logRef = useRef(null);
-  const allSessions = sessionsData.value || [];
+  const allSessions = Array.isArray(sessions) ? sessions : [];
 
   const copySessionId = (sessionId) => {
     if (!sessionId) return;
@@ -3400,14 +3405,19 @@ export function FleetSessionsTab() {
   const execData = executor?.data;
   const slots = execData?.workspaceSummary?.slots || execData?.slots || [];
   const [taskFallbackEntries, setTaskFallbackEntries] = useState([]);
+  const [fleetSessionsSnapshot, setFleetSessionsSnapshot] = useState([]);
 
   useEffect(() => {
     let active = true;
-    const refreshTaskSessions = () => {
+    const refreshTaskSessions = async () => {
       if (!active) return;
-      loadSessions({ type: "task", workspace: "all" });
+      const sessions = await loadSessions({ type: "task", workspace: "all" });
+      if (!active) return;
+      if (Array.isArray(sessions)) {
+        setFleetSessionsSnapshot(sessions);
+      }
     };
-    refreshTaskSessions();
+    void refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
     return () => {
       active = false;
@@ -3472,6 +3482,7 @@ export function FleetSessionsTab() {
       <div class="fleet-span">
         <${FleetSessionsPanel}
           slots=${slots}
+          sessions=${fleetSessionsSnapshot}
           taskFallbackEntries=${taskFallbackEntries}
           onOpenWorkspace=${openWorkspace}
           onForceStop=${handleForceStop}

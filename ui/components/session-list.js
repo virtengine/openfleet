@@ -151,6 +151,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
       responseMeta.lastSuccessAt || Date.now(),
     );
     sessionsError.value = null;
+    return Array.isArray(res?.sessions) ? res.sessions : [];
   } catch (error) {
     const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek(), Date.now(), {
       staleReason: deriveSessionStaleReason(error),
@@ -160,6 +161,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
     const nextErrorState = classifySessionRequestError(error);
     const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
     sessionsError.value = hasCachedData ? null : nextErrorState;
+    return null;
   } finally {
     sessionsLoading.value = false;
   }
@@ -1447,5 +1449,4 @@ export function SessionList({
     </${Paper}>
   `;
 }
-
 

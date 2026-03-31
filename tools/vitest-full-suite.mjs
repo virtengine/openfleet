@@ -120,7 +120,7 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
     10,
   );
   const isolatedHeapMb = Number.parseInt(
-    String(process.env.BOSUN_VITEST_ISOLATED_HEAP_MB || (process.platform === "win32" ? "8192" : "4096")),
+    String(process.env.BOSUN_VITEST_ISOLATED_HEAP_MB || (process.platform === "win32" ? "12288" : "4096")),
     10,
   );
 
