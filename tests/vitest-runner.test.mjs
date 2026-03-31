@@ -139,8 +139,10 @@ describe("vitest-runner", () => {
     const prePushHook = readFileSync(resolve(repoRoot, ".githooks", "pre-push"), "utf8");
 
     expect(prePushHook).toContain('local -a runner_args=(run --config vitest.config.mjs)');
-    expect(prePushHook).toContain('local -a bounded_runner_args=("${runner_args[@]}" --maxWorkers 1)');
-    expect(prePushHook).toContain('node tools/vitest-runner.mjs "${bounded_runner_args[@]}"');
+    expect(prePushHook).toContain('local -a serialized_runner_args=("${runner_args[@]}" --maxWorkers 1)');
+    expect(prePushHook).toContain('local -a regular_runner_args=("${runner_args[@]}")');
+    expect(prePushHook).toContain('node tools/vitest-runner.mjs "${serialized_runner_args[@]}"');
+    expect(prePushHook).toContain('node tools/vitest-runner.mjs "${regular_runner_args[@]}"');
     expect(prePushHook).toContain('BOSUN_PREPUSH_RUN_PACKED_SMOKE');
     expect(prePushHook).toContain('tests/*workflow*e2e*.test.mjs)');
     expect(prePushHook).toContain('tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs)');

@@ -380,10 +380,12 @@ run_vitest_batches() {
   [ "${#tests[@]}" -eq 0 ] && return 0
 
   local -a runner_args=(run --config vitest.config.mjs)
-  local -a bounded_runner_args=("${runner_args[@]}" --maxWorkers 1)
+  local -a serialized_runner_args=("${runner_args[@]}" --maxWorkers 1)
+  local -a regular_runner_args=("${runner_args[@]}")
   local -a standalone_serialized_tests=()
   local -a serialized_tests=()
   local -a regular_tests=()
+  local batching_enabled="${BOSUN_PREPUSH_ENABLE_BATCHING:-0}"
   local test_file
   for test_file in "${tests[@]}"; do
     case "$test_file" in
@@ -396,25 +398,44 @@ run_vitest_batches() {
       *)
         regular_tests+=("$test_file")
         ;;
-    esac
+      esac
   done
+
+  if [ "$batching_enabled" != "1" ]; then
+    if [ "${#serialized_tests[@]}" -gt 0 ]; then
+      echo "[hooks] serialized vitest run: ${#serialized_tests[@]} file(s)"
+      node tools/vitest-runner.mjs "${serialized_runner_args[@]}" "${serialized_tests[@]}" || return $?
+    fi
+
+    local standalone_serialized
+    for standalone_serialized in "${standalone_serialized_tests[@]}"; do
+      echo "[hooks] standalone serialized vitest file: ${standalone_serialized}"
+      node tools/vitest-runner.mjs "${serialized_runner_args[@]}" "$standalone_serialized" || return $?
+    done
+
+    if [ "${#regular_tests[@]}" -gt 0 ]; then
+      echo "[hooks] vitest run: ${#regular_tests[@]} file(s)"
+      node tools/vitest-runner.mjs "${regular_runner_args[@]}" "${regular_tests[@]}" || return $?
+    fi
+    return 0
+  fi
 
   if [ "${#serialized_tests[@]}" -gt 0 ]; then
     local serialized_batch_size="${BOSUN_PREPUSH_SERIAL_BATCH_SIZE:-4}"
     if [ "${#serialized_tests[@]}" -le "$serialized_batch_size" ]; then
       echo "[hooks] serialized vitest batch: ${#serialized_tests[@]} file(s)"
-      node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${serialized_tests[@]}" || return $?
+      node tools/vitest-runner.mjs "${serialized_runner_args[@]}" "${serialized_tests[@]}" || return $?
     else
       echo "[hooks] splitting serialized vitest tests into batches to reduce process churn"
       local serialized_total="${#serialized_tests[@]}"
       local serialized_offset=0
-      local serialized_batch=1
+      local serialized_batch_index=1
       while [ "$serialized_offset" -lt "$serialized_total" ]; do
         local -a serialized_slice=("${serialized_tests[@]:$serialized_offset:$serialized_batch_size}")
-        echo "[hooks] serialized vitest batch ${serialized_batch}: ${#serialized_slice[@]} files"
-        node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${serialized_slice[@]}" || return $?
+        echo "[hooks] serialized vitest batch ${serialized_batch_index}: ${#serialized_slice[@]} files"
+        node tools/vitest-runner.mjs "${serialized_runner_args[@]}" "${serialized_slice[@]}" || return $?
         serialized_offset=$((serialized_offset + serialized_batch_size))
-        serialized_batch=$((serialized_batch + 1))
+        serialized_batch_index=$((serialized_batch_index + 1))
       done
     fi
   fi
@@ -422,14 +443,14 @@ run_vitest_batches() {
   local standalone_serialized
   for standalone_serialized in "${standalone_serialized_tests[@]}"; do
     echo "[hooks] standalone serialized vitest file: ${standalone_serialized}"
-    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "$standalone_serialized" || return $?
+    node tools/vitest-runner.mjs "${serialized_runner_args[@]}" "$standalone_serialized" || return $?
   done
 
   [ "${#regular_tests[@]}" -eq 0 ] && return 0
 
-  local batch_size=12
+  local batch_size="${BOSUN_PREPUSH_BATCH_SIZE:-12}"
   if [ "${#regular_tests[@]}" -le "$batch_size" ]; then
-    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${regular_tests[@]}"
+    node tools/vitest-runner.mjs "${regular_runner_args[@]}" "${regular_tests[@]}"
     return $?
   fi
 
@@ -440,7 +461,7 @@ run_vitest_batches() {
   while [ "$offset" -lt "$total" ]; do
     local -a slice=("${regular_tests[@]:$offset:$batch_size}")
     echo "[hooks] vitest batch ${batch_index}: ${#slice[@]} files"
-    node tools/vitest-runner.mjs "${bounded_runner_args[@]}" "${slice[@]}" || return $?
+    node tools/vitest-runner.mjs "${regular_runner_args[@]}" "${slice[@]}" || return $?
     offset=$((offset + batch_size))
     batch_index=$((batch_index + 1))
   done
@@ -450,16 +471,23 @@ run_node_test_batches() {
   local -a tests=("$@")
   [ "${#tests[@]}" -eq 0 ] && return 0
 
-  local batch_size=12
+  local batching_enabled="${BOSUN_PREPUSH_ENABLE_BATCHING:-0}"
+  if [ "$batching_enabled" != "1" ]; then
+    echo "[hooks] node-test run: ${#tests[@]} file(s)"
+    node --no-warnings=ExperimentalWarning --import ./tests/node-test-bootstrap.mjs --test "${tests[@]}" || return $?
+    return 0
+  fi
+
+  local batch_size="${BOSUN_PREPUSH_NODE_BATCH_SIZE:-12}"
   local total="${#tests[@]}"
   local offset=0
-  local batch_index=1
+  local node_batch_index=1
   while [ "$offset" -lt "$total" ]; do
     local -a slice=("${tests[@]:$offset:$batch_size}")
-    echo "[hooks] node-test batch ${batch_index}: ${#slice[@]} files"
+    echo "[hooks] node-test batch ${node_batch_index}: ${#slice[@]} files"
     node --no-warnings=ExperimentalWarning --import ./tests/node-test-bootstrap.mjs --test "${slice[@]}" || return $?
     offset=$((offset + batch_size))
-    batch_index=$((batch_index + 1))
+    node_batch_index=$((node_batch_index + 1))
   done
 }
 

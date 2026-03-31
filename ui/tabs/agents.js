@@ -1508,7 +1508,7 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
     const requestId = latestTaskRequestRef.current + 1;
     latestTaskRequestRef.current = requestId;
     setTasksLoading(true);
-    apiFetch("/api/tasks?limit=1000", { _silent: true })
+    apiFetch("/api/tasks?page=0&pageSize=200", { _silent: true })
       .then((res) => {
         if (!mountedRef.current || latestTaskRequestRef.current !== requestId) return;
         const choices = normalizeDispatchTaskChoices(res?.data);

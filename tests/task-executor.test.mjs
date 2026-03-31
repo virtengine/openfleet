@@ -1558,6 +1558,44 @@ describe("task-executor", () => {
           source: "task-executor-recovery-stale-workflow-claim",
         }),
       );
+      expect(invalidateThread).toHaveBeenCalledWith("wf-stale-claim-1");
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("resets workflow-owned tasks when a stale workflow claim is masked by a lingering thread record", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: true });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-stale-thread-1",
+          title: "Workflow-owned stale claim with thread record",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([
+        { taskKey: "wf-stale-thread-1" },
+      ]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-dead-thread-owner",
+        ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "wf-stale-thread-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(invalidateThread).toHaveBeenCalledWith("wf-stale-thread-1");
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -1609,6 +1647,7 @@ describe("task-executor", () => {
           source: "task-executor-recovery-stale-workflow-claim",
         }),
       );
+      expect(invalidateThread).toHaveBeenCalledWith("wf-dead-pid-1");
       expect(executeSpy).not.toHaveBeenCalled();
     });
 

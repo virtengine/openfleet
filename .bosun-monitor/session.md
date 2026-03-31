@@ -128,3 +128,86 @@
     1. continue monitoring this task through agent execution/finalization to ensure it completes rather than stalling later in the lifecycle.
     2. resume Playwright CLI/browser validation now that the highest-value live pipeline loop is fixed.
     3. investigate the remaining daemon-status/process-accounting inconsistency (`--daemon-status` seeing multiple active Bosun processes) only if it causes operational confusion or restart issues.
+- Follow-up on 2026-04-01 (workflow-owned stale-claim recovery after bridge fix):
+  - Fresh pinned-runtime verification showed task `5d0cd537-2dcc-4ced-a001-130b77aea729` was no longer actively looping after the `baseBranch` repair, but it was still stranded:
+    - `/api/tasks/detail?...includeWorkflowRuns=0` reported `status=inprogress`, `runtimeSnapshot.reason=no_active_executor_slot`, `auditActivity.summary.eventCount=0`.
+    - `task-claims.json` and `shared-task-states.json` still held owner `wf-056c56fa` with the last renewals at `2026-03-31T19:26:08Z`.
+    - `_active-runs.json` did not list the task anymore, so the executor had lost workflow ownership while the stale claim/thread state remained.
+  - Root cause:
+    - workflow-owned in-progress recovery still treated `getActiveThreads()` as authoritative liveness even when the workflow run was gone and the shared-state owner was stale.
+    - that let resumable thread-registry entries mask stale workflow claims, leaving tasks pinned in `inprogress` indefinitely with `No live execution detected`.
+  - Source fix applied:
+    - `task/task-executor.mjs`
+    - `tests/task-executor.test.mjs`
+  - Behavioral change:
+    - in workflow-owned mode, stale shared-state ownership is now resolved before the thread-registry shortcut.
+    - workflow-owned resets for stale/missing ownership now also call `invalidateThread(taskId)` so dead resumable thread records cannot keep the task stranded on the next recovery pass.
+  - Focused validation passed:
+    - `npm test -- tests/task-executor.test.mjs -t "stale workflow claim|fresh workflow-owned tasks when no active workflow run or claim exists|active workflow run exists|dead local pid"`
+    - result: `4 passed`
+  - Next concrete actions:
+    1. restart Bosun on pinned roots so the recovery patch is live.
+    2. verify task `5d0cd537-...` is either reset to `todo` or re-dispatched cleanly instead of remaining orphaned in `inprogress`.
+    3. continue UI/Playwright sweeps once the pipeline state is confirmed live again.
+- Follow-up on 2026-04-01 (worker bridge taskKey normalization):
+  - Confirmed the live `run-agent-plan` failure at `logs/daemon.log:7792` was still `[agent-pool] execWithRetry requires a taskKey for thread persistence` in the current daemon epoch after the stale-claim recovery patch.
+  - Source-side `action.run_agent` fallback logic already produced a `recoveryTaskKey`, so the remaining suspect path was the worker/main-thread service bridge.
+  - Patch applied in `server/ui-server.mjs`:
+    - worker service dispatch now normalizes `agentPool.execWithRetry` / `launchOrResumeThread` args before invoking the in-process pool;
+    - if `taskKey` is blank, it is rehydrated from `slotMeta.taskKey`, `taskId`, `linkedTaskId`, `targetTaskKey`, `workflowRunId`, or `workflowId`.
+  - Regression updated in `tests/workflow-worker-recovery-regression.test.mjs` to lock the new bridge normalization in place.
+  - Validation passed:
+    - `npm test -- tests/workflow-worker-recovery-regression.test.mjs`
+    - `npm run build`
+  - Next concrete action:
+    1. restart daemon on pinned roots and verify `5d0cd537-...` moves past `run-agent-plan` without the missing-taskKey failure.
+- Follow-up on 2026-04-01 (post-restart runtime + Playwright CLI status):
+  - Restarted daemon successfully onto the patched source checkout; current pinned daemon PID is `20880`.
+  - Immediate post-restart polling has not yet re-exercised task `5d0cd537-2dcc-4ced-a001-130b77aea729` through a fresh `run-agent-plan` attempt in the new epoch, so the worker-bridge taskKey normalization fix is validated in tests/build but still awaiting live confirmation.
+  - Pinned task stats remain stable after restart: `draft=45 todo=12 inprogress=9 inreview=0 done=104 blocked=10 total=183`.
+  - Playwright CLI browser session was reopened, but the portal still hard-fails navigation with `net::ERR_CERT_AUTHORITY_INVALID` against `https://127.0.0.1:4400/` even after adding local `.playwright/cli.config.json` attempts for `contextOptions.ignoreHTTPSErrors` and Chrome launch args `--ignore-certificate-errors`.
+  - Next concrete action:
+    1. use a different Playwright control path or browser-certificate bypass approach before resuming the remaining Fleet/Control/Infra/Logs/Library/Market/Chat sweep.
+    2. keep watching for the first fresh post-restart Task Lifecycle poll that exercises `5d0cd537-...` through `run-agent-plan`.
+- Follow-up on 2026-04-01 (Pulse project-summary scope/count repair):
+  - Confirmed a live Pulse inconsistency before the patch:
+    - `/api/tasks?page=0&pageSize=200` returned workspace-scoped counts `draft=45 backlog=12 blocked=6 inProgress=8 inReview=0 done=96`.
+    - `/api/project-summary` returned global-ish/stale card data `taskCount=183 completedCount=104`, then after the first scope patch still `taskCount=167 completedCount=93`.
+  - Source fix applied in `server/ui-server.mjs`:
+    - `/api/project-summary` now uses `resolveInjectedTaskStoreApi() || getKanbanAdapter()`.
+    - the endpoint now filters tasks through `taskMatchesWorkspaceContext(...)` before computing the summary card payload.
+    - `completedCount` now uses `mapTaskStatusToBoardColumn(task.status) === "done"` so merged/closed/done states stay aligned with the main Pulse buckets.
+  - Regression added in `tests/ui-server.test.mjs` to lock active-workspace scoping on `/api/project-summary`.
+  - Validation passed:
+    - `npm test -- tests/ui-server.test.mjs -t "project-summary to the active workspace"`
+    - `npm run build`
+  - Live runtime confirmation after restart onto the patched source:
+    - current daemon PID is `13280`.
+    - `/api/tasks?page=0&pageSize=200` => `{"draft":45,"backlog":12,"blocked":6,"inProgress":8,"inReview":0,"done":96}`
+    - `/api/project-summary` => `{"taskCount":167,"completedCount":96}`
+    - `/api/status` remains broader runtime snapshot scope => `done=104 blocked=10 total=180`, so remaining dashboard confusion should now be limited to intentionally different scope labels rather than a mismatched Project card.
+  - Next concrete actions:
+    1. use Playwright on the authenticated Pulse tab to visually confirm the Project card now shows `167` tasks / `96` completed and no longer contradicts the overview metrics.
+    2. continue the remaining authenticated tab sweep (`Fleet`, `Control`, `Infra`, `Logs`, `Library`, `Market`, `Chat`) on daemon `PID 13280`.
+    3. keep watching whether task `5d0cd537-2dcc-4ced-a001-130b77aea729` reaches a fresh `run-agent-plan` in the current daemon epoch.
+- Follow-up on 2026-04-01 (Fleet dispatch pagination contract + session-state evidence):
+  - Confirmed the Fleet `Dispatch` task picker was querying `/api/tasks?limit=1000`, but `server/ui-server.mjs` ignores `limit` and still paginates with `pageSize` (default `15`, max `200`).
+  - Live authenticated API evidence on daemon `PID 13280`:
+    - `/api/tasks?page=0&pageSize=200` returns `total=167` with workspace-scoped counts `draft=45 backlog=12 blocked=6 inProgress=8 inReview=0 done=96`.
+    - `/api/sessions?type=task&workspace=all` currently groups to:
+      - `12 active/active/active`
+      - `21 no_output/no_output/no_output`
+      - `11 stalled/stalled/stalled`
+      - `49 completed/completed/completed`
+    - `no_output` sessions already serialize as explicit non-live runtime state (`runtimeState=no_output`, `turnCount=0`), so the immediate Fleet loader defect was the task query cap rather than response unwrapping.
+  - Source fix applied:
+    - `ui/tabs/agents.js`
+    - `site/ui/tabs/agents.js`
+  - Behavioral change:
+    - Fleet `Dispatch` now requests `/api/tasks?page=0&pageSize=200`, matching the server pagination contract and exposing the full backlog/draft pool instead of the first 15 tasks only.
+  - Regression coverage added:
+    - `tests/session-api.test.mjs` now locks `runtimeState=no_output` as explicit non-live runtime state to preserve the current Fleet liveness semantics while the deeper task-pipeline triage continues.
+  - Next concrete actions:
+    1. run `npm test -- tests/session-api.test.mjs`, `npm run syntax:check`, `npm test`, and `npm run build`.
+    2. refresh the authenticated Fleet tab and verify the Dispatch picker now shows backlog/draft tasks beyond the previous first-page cap.
+    3. continue deeper runtime triage on the still-stranded `no_output` / `stalled` task sessions after the UI loader fix is live.

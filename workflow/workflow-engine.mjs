@@ -2607,9 +2607,12 @@ export class WorkflowEngine extends EventEmitter {
     const issueFindings = nodes.flatMap((node) => Array.isArray(node?.issueFindings) ? node.issueFindings : []);
     const completionEvidence = nodes.flatMap((node) => Array.isArray(node?.completionEvidence) ? node.completionEvidence : []);
     const firstFinding = issueFindings[0] || null;
+    const terminalCompleted = dagState.status === WorkflowStatus.COMPLETED;
 
     let recommendedAction = "continue";
-    let summary = "Workflow is ready to continue.";
+    let summary = terminalCompleted
+      ? "Workflow completed successfully."
+      : "Workflow is ready to continue.";
     if (failedNodes.length > 0) {
       const preferredAction = firstFinding?.recommendedAction || null;
       recommendedAction = preferredAction;
@@ -2621,7 +2624,7 @@ export class WorkflowEngine extends EventEmitter {
         : (firstFailed?.lastError
             ? `Failed at ${firstFailed.label || firstFailed.nodeId}: ${firstFailed.lastError}`
             : `Workflow has ${failedNodes.length} failed node(s).`);
-    } else if (pendingNodes.length > 0 && counts.completed > 0) {
+    } else if (!terminalCompleted && pendingNodes.length > 0 && counts.completed > 0) {
       recommendedAction = "resume_remaining";
       summary = `Resume from ${firstPending?.label || firstPending?.nodeId || "the next pending node"}.`;
     }
@@ -2639,12 +2642,14 @@ export class WorkflowEngine extends EventEmitter {
         firstFinding?.suggestedRerun ? `Suggested rerun: ${firstFinding.suggestedRerun}` : null,
         firstFailed?.lastError ? `Address failure: ${firstFailed.lastError}` : null,
       ].filter(Boolean).join(" ")
-      : (pendingNodes.length > 0 && counts.completed > 0
+      : (!terminalCompleted && pendingNodes.length > 0 && counts.completed > 0
         ? [
           "Preserve completed work and continue from the next pending node.",
           firstPending?.label ? `Next step: ${firstPending.label}.` : null,
         ].filter(Boolean).join(" ")
-        : "Plan is healthy; continue executing the remaining graph.");
+        : (terminalCompleted
+            ? "Workflow reached a terminal completed state; no further action is required."
+            : "Plan is healthy; continue executing the remaining graph."));
 
     const issueAdvisor = {
       status: dagState.status,

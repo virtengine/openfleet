@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addConfigReloadListener } from "../infra/config-reload-bus.mjs";
 import {
+  getSessionActivityFromStateLedger,
   appendOperatorActionToStateLedger,
   appendTaskTraceEventToStateLedger,
   resetStateLedgerCache,
@@ -2230,6 +2231,72 @@ describeUiServer("ui-server mini app", () => {
     expect(hiddenListRes.status).toBe(200);
     expect(hiddenListJson.ok).toBe(true);
     expect(hiddenListJson.sessions.some((session) => session.id === "primary-voice-http-test-hidden")).toBe(true);
+  }, 15000);
+
+  it("hides synthetic historic session ids from the default session list", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const ledgerPath = process.env.BOSUN_STATE_LEDGER_PATH;
+    upsertSessionRecordToStateLedger({
+      sessionId: "hist-live-100",
+      type: "primary",
+      workspaceId: "ws-main",
+      taskId: "hist-live-100",
+      taskTitle: "Historic Session 100",
+      status: "completed",
+      latestEventType: "assistant",
+      updatedAt: "2026-03-31T09:56:38.106Z",
+      startedAt: "2026-03-31T09:56:38.106Z",
+      eventCount: 1,
+      preview: "historic 100",
+      document: {
+        id: "hist-live-100",
+        taskId: "hist-live-100",
+        taskTitle: "Historic Session 100",
+        title: "Historic Session 100",
+        type: "primary",
+        status: "completed",
+        lifecycleStatus: "completed",
+        workspaceId: "ws-main",
+        createdAt: "2026-03-31T09:56:38.106Z",
+        lastActiveAt: "2026-03-31T09:56:38.106Z",
+        totalEvents: 1,
+        turnCount: 0,
+        messages: [
+          { role: "assistant", content: "historic 100", timestamp: "2026-03-31T09:56:38.106Z" },
+        ],
+        metadata: {
+          workspaceId: "ws-main",
+        },
+      },
+    }, { ledgerPath });
+    expect(
+      getSessionActivityFromStateLedger("hist-live-100", {
+        ledgerPath,
+      }),
+    ).toEqual(expect.objectContaining({
+      sessionId: "hist-live-100",
+      workspaceId: "ws-main",
+      latestTaskTitle: "Historic Session 100",
+    }));
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.ok).toBe(true);
+      expect(listJson.sessions.some((session) => session.id === "hist-live-100")).toBe(false);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   }, 15000);
 
   it("hides leaked synthetic fixture sessions from the default session list", async () => {
@@ -5524,6 +5591,78 @@ describeUiServer("ui-server mini app", () => {
     expect("debug" in detailJson.data.canStart.raw).toBe(false);
   });
 
+  it("scopes /api/project-summary to the active workspace like /api/tasks", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-project-summary-workspace-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const wsAlphaRepo = join(tmpDir, "workspaces", "alpha", "virtengine");
+    const wsBetaRepo = join(tmpDir, "workspaces", "beta", "virtengine");
+    mkdirSync(join(wsAlphaRepo, ".git"), { recursive: true });
+    mkdirSync(join(wsBetaRepo, ".git"), { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    process.env.BOSUN_HOME = tmpDir;
+    process.env.BOSUN_DIR = tmpDir;
+    process.env.CODEX_MONITOR_HOME = tmpDir;
+    process.env.CODEX_MONITOR_DIR = tmpDir;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "alpha",
+          workspaces: [
+            {
+              id: "alpha",
+              name: "Alpha Workspace",
+              path: join(tmpDir, "workspaces", "alpha"),
+              activeRepo: "virtengine",
+              repos: [{ name: "virtengine", path: wsAlphaRepo, primary: true }],
+            },
+            {
+              id: "beta",
+              name: "Beta Workspace",
+              path: join(tmpDir, "workspaces", "beta"),
+              activeRepo: "virtengine",
+              repos: [{ name: "virtengine", path: wsBetaRepo, primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        listProjects: vi.fn(async () => [{ id: "internal", name: "Internal Task Store" }]),
+        listTasks: vi.fn(async () => ([
+          { id: "task-alpha-done", title: "alpha done", status: "done", workspace: "alpha" },
+          { id: "task-alpha-merged", title: "alpha merged", status: "merged", workspace: "alpha" },
+          { id: "task-alpha-progress", title: "alpha working", status: "inprogress", workspace: "alpha" },
+          { id: "task-beta-done", title: "beta done", status: "done", workspace: "beta" },
+        ])),
+      },
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const summaryResp = await fetch(`http://127.0.0.1:${port}/api/project-summary`);
+    const summaryJson = await summaryResp.json();
+    expect(summaryResp.status).toBe(200);
+    expect(summaryJson.ok).toBe(true);
+    expect(summaryJson.data.taskCount).toBe(3);
+    expect(summaryJson.data.completedCount).toBe(2);
+
+  }, 15000);
+
   it("blocks /api/tasks/start when can-start guard fails unless force override is set", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.EXECUTOR_MODE = "internal";
@@ -6359,6 +6498,108 @@ describeUiServer("ui-server mini app", () => {
         "active-workspace",
         "blocked-workspace",
         "legacy-no-workspace",
+      ]);
+    } finally {
+      taskStore.configureTaskStore({ storePath: originalStorePath });
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
+    }
+  }, 15000);
+
+  it("sorts /api/tasks by the most recent task activity before pagination", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-sort-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const storePath = join(tmpDir, ".bosun", ".cache", "kanban-state.json");
+    mkdirSync(join(tmpDir, ".bosun", ".cache"), { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        $schema: "./bosun.schema.json",
+        activeWorkspace: "virtengine-gh",
+        workspaces: [
+          {
+            id: "virtengine-gh",
+            name: "virtengine-gh",
+            repos: [{ name: "bosun", primary: true }],
+            activeRepo: "bosun",
+          },
+        ],
+      }, null, 2) + "\n",
+      "utf8",
+    );
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    process.env.BOSUN_HOME = tmpDir;
+    process.env.BOSUN_DIR = tmpDir;
+    process.env.CODEX_MONITOR_HOME = tmpDir;
+    process.env.CODEX_MONITOR_DIR = tmpDir;
+
+    const taskStore = await import("../task/task-store.mjs");
+    const originalStorePath = taskStore.getStorePath();
+    taskStore.configureTaskStore({ storePath });
+    taskStore.loadStore();
+    taskStore.addTask({
+      id: "task-oldest",
+      title: "Oldest updated task",
+      status: "todo",
+      workspace: "virtengine-gh",
+      updatedAt: "2026-03-31T08:00:00.000Z",
+    });
+    taskStore.addTask({
+      id: "task-newer-update",
+      title: "Newer updated task",
+      status: "todo",
+      workspace: "virtengine-gh",
+      updatedAt: "2026-03-31T10:00:00.000Z",
+    });
+    taskStore.addTask({
+      id: "task-latest-activity",
+      title: "Latest activity task",
+      status: "todo",
+      workspace: "virtengine-gh",
+    });
+    const persistedStore = {
+      _meta: {
+        version: 1,
+        updatedAt: "2026-03-31T11:30:00.000Z",
+        taskCount: 3,
+        stats: {},
+      },
+      tasks: Object.fromEntries(
+        taskStore.getAllTasks().map((task) => [task.id, { ...task }]),
+      ),
+    };
+    persistedStore.tasks["task-oldest"].updatedAt = "2026-03-31T08:00:00.000Z";
+    persistedStore.tasks["task-oldest"].lastActivityAt = "2026-03-31T08:00:00.000Z";
+    persistedStore.tasks["task-newer-update"].updatedAt = "2026-03-31T10:00:00.000Z";
+    persistedStore.tasks["task-newer-update"].lastActivityAt = "2026-03-31T10:00:00.000Z";
+    persistedStore.tasks["task-latest-activity"].updatedAt = "2026-03-31T09:00:00.000Z";
+    persistedStore.tasks["task-latest-activity"].lastActivityAt = "2026-03-31T11:30:00.000Z";
+    writeFileSync(storePath, JSON.stringify(persistedStore, null, 2) + "\n", "utf8");
+    taskStore.loadStore();
+
+    const mod = await import("../server/ui-server.mjs");
+    try {
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+      taskStore.configureTaskStore({ storePath });
+      taskStore.loadStore();
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/tasks?pageSize=50`);
+      const json = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.data.map((task) => task.id)).toEqual([
+        "task-latest-activity",
+        "task-newer-update",
+        "task-oldest",
       ]);
     } finally {
       taskStore.configureTaskStore({ storePath: originalStorePath });

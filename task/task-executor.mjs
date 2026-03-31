@@ -4323,10 +4323,6 @@ class TaskExecutor {
       // then the shared-state owner. If none of those exist, the task is
       // ownerless and must be reset even when still "fresh".
       if (this.workflowOwnsTaskLifecycle) {
-        if (hasWorkflowRun || hasThread) {
-          skippedForActiveClaim++;
-          continue;
-        }
         if (hasStaleSharedClaim) {
           try {
             await transitionTaskStatus(id, "todo", {
@@ -4344,9 +4340,14 @@ class TaskExecutor {
           } catch {
             /* best effort */
           }
+          invalidateThread(id);
           this._removeRuntimeSlot(id);
           resetToTodo++;
           workflowOwnerlessResetCount++;
+          continue;
+        }
+        if (hasWorkflowRun || hasThread) {
+          skippedForActiveClaim++;
           continue;
         }
         try {
@@ -4365,6 +4366,7 @@ class TaskExecutor {
         } catch {
           /* best effort */
         }
+        invalidateThread(id);
         this._removeRuntimeSlot(id);
         resetToTodo++;
         workflowOwnerlessResetCount++;

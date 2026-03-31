@@ -308,6 +308,26 @@ describe("session lifecycle/runtime metadata", () => {
     );
   });
 
+  it("treats no-output task sessions as non-live runtime state", () => {
+    expect(
+      getSessionRuntimeState({
+        lifecycleStatus: "active",
+        status: "no_output",
+        runtimeState: "no_output",
+        turnCount: 0,
+        lastActiveAt: "2026-03-31T19:24:37.199Z",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "no_output",
+        label: "No Output",
+        isLive: false,
+        isStale: false,
+        source: "runtime",
+      }),
+    );
+  });
+
   it("reports non-live runtime for terminal lifecycle states", () => {
     expect(
       getSessionRuntimeState({

@@ -42,7 +42,7 @@ const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for agentic tasks (matches 
 const MAX_TIMER_DELAY_MS = 2_147_483_647; // Node.js timer clamp (2^31 - 1)
 // MAX_STREAM_RETRIES, isTransientStreamError, streamRetryDelay ← imported from ./stream-resilience.mjs
 const STATE_FILE = resolve(__dirname, "..", "logs", "codex-shell-state.json");
-const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
+const SESSIONS_DIR = resolve(__dirname, "..", "logs", "codex-shell-sessions");
 const MAX_PERSISTENT_TURNS = 50;
 const timeoutNormalizationWarningKey = new Set();
 
@@ -1329,7 +1329,14 @@ export function getActiveSessionId() {
 }
 
 /**
- * List all saved sessions from logs/sessions/.
+ * Get the shell-private session store directory.
+ */
+export function getSessionStoreDir() {
+  return SESSIONS_DIR;
+}
+
+/**
+ * List all saved sessions from logs/codex-shell-sessions/.
  */
 export async function listSessions() {
   try {

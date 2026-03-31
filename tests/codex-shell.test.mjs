@@ -85,6 +85,7 @@ vi.mock("node:fs/promises", () => ({
 
 const {
   execCodexPrompt,
+  getSessionStoreDir,
   resetThread,
 } = await import("../shell/codex-shell.mjs");
 const {
@@ -184,6 +185,12 @@ describe("codex-shell stream safeguards", () => {
     expect(receivedPrompt).toContain("replace_lines");
     expect(receivedPrompt).toContain("Never leave repo-root scratch artifacts behind");
     expect(receivedPrompt).toContain("do not create `.tmp-*`");
+  });
+
+  it("stores shell-private session state outside the chat history session directory", async () => {
+    const normalized = getSessionStoreDir().replace(/\\/g, "/");
+    expect(normalized.endsWith("/logs/codex-shell-sessions")).toBe(true);
+    expect(normalized.endsWith("/logs/sessions")).toBe(false);
   });
 
   it("retries when first stream event never arrives", async () => {

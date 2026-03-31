@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 const describeVoiceHttpRoutes = (
   process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
@@ -33,14 +37,25 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
     "BOSUN_UI_AUTO_OPEN_BROWSER",
     "BOSUN_ENV_NO_OVERRIDE",
+    "BOSUN_HOME",
+    "BOSUN_DIR",
+    "BOSUN_TEST_CACHE_DIR",
+    "BOSUN_STATE_LEDGER_PATH",
+    "CODEX_MONITOR_HOME",
+    "CODEX_MONITOR_DIR",
+    "REPO_ROOT",
     "WORKFLOW_DEFAULT_AUTOINSTALL",
     "WORKFLOW_AUTOMATION_ENABLED",
     "WORKFLOW_EVENT_DEDUP_WINDOW_MS",
   ];
   let envSnapshot = {};
+  let testSandboxRoot = null;
 
   beforeEach(async () => {
     envSnapshot = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+    testSandboxRoot = mkdtempSync(join(tmpdir(), "bosun-voice-http-test-"));
+    const { ensureTestRuntimeSandbox } = await import("../infra/test-runtime.mjs");
+    const sandbox = ensureTestRuntimeSandbox({ rootDir: testSandboxRoot, force: true });
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "true";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -50,6 +65,13 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     process.env.WORKFLOW_DEFAULT_AUTOINSTALL = "false";
     process.env.WORKFLOW_AUTOMATION_ENABLED = "true";
     process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS = "1";
+    process.env.BOSUN_HOME = sandbox.configDir;
+    process.env.BOSUN_DIR = sandbox.configDir;
+    process.env.BOSUN_TEST_CACHE_DIR = sandbox.cacheDir;
+    process.env.BOSUN_STATE_LEDGER_PATH = sandbox.stateLedgerPath;
+    process.env.CODEX_MONITOR_HOME = sandbox.configDir;
+    process.env.CODEX_MONITOR_DIR = sandbox.configDir;
+    delete process.env.REPO_ROOT;
     vi.mocked(analyzeVisionFrame).mockClear();
     // Inject the shared mock engine so dispatchWorkflowEvent uses it
     const mod = await import("../server/ui-server.mjs");
@@ -64,9 +86,14 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     // into subsequent tests or persist to disk.
     const { _resetSingleton } = await import("../infra/session-tracker.mjs");
     _resetSingleton({ persistDir: null });
+    resetStateLedgerCache();
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
       else process.env[key] = envSnapshot[key];
+    }
+    if (testSandboxRoot) {
+      rmSync(testSandboxRoot, { recursive: true, force: true });
+      testSandboxRoot = null;
     }
   });
 

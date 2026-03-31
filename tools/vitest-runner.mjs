@@ -80,6 +80,18 @@ function resolveVitestHeapMb() {
   return process.platform === "win32" ? 6144 : 4096;
 }
 
+function mergeNodeOptions(existingOptions, heapMb) {
+  const existing = String(existingOptions || "").trim();
+  const heapFlag = `--max-old-space-size=${heapMb}`;
+  if (!existing) return heapFlag;
+  const withoutHeap = existing
+    .replace(/(?:^|\s)--max-old-space-size=\S+/g, " ")
+    .replace(/(?:^|\s)--max_old_space_size=\S+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return withoutHeap ? `${withoutHeap} ${heapFlag}` : heapFlag;
+}
+
 export function resolveVitestArgs(
   args = process.argv.slice(2),
   { startDir = process.cwd(), packageRoot = findPackageRoot({ startDir }) } = {},
@@ -147,6 +159,7 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
   }
 
   const vitestArgs = resolveVitestArgs(args, { startDir });
+  const heapMb = resolveVitestHeapMb();
   const nodeArgs = [];
   if (process.platform === "win32") {
     const packageRoot = findPackageRoot({ startDir });
@@ -158,11 +171,12 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
     }
   }
   nodeArgs.push("--no-warnings=ExperimentalWarning");
-  nodeArgs.push(`--max-old-space-size=${resolveVitestHeapMb()}`);
+  nodeArgs.push(`--max-old-space-size=${heapMb}`);
 
   const esbuildBinaryPath = resolveWindowsEsbuildBinary({ startDir });
   const env = {
     ...process.env,
+    NODE_OPTIONS: mergeNodeOptions(process.env.NODE_OPTIONS, heapMb),
     BOSUN_TEST_CHILD_SPAWN_BLOCKED: detectChildSpawnBlocked() ? "1" : "0",
     ...(esbuildBinaryPath && !process.env.ESBUILD_BINARY_PATH
       ? { ESBUILD_BINARY_PATH: esbuildBinaryPath }

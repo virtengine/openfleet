@@ -12757,13 +12757,14 @@
         "recovery",
         "autofix"
       ],
-      "nodeCount": 8,
-      "edgeCount": 8,
+      "nodeCount": 9,
+      "edgeCount": 9,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
       "variables": {
-        "maxRetries": 3
+        "maxRetries": 3,
+        "recoveryStrategyLimit": 5
       },
       "metadata": {
         "author": "bosun",
@@ -12821,16 +12822,35 @@
           ]
         },
         {
+          "id": "load-recovery-strategies",
+          "type": "action.load_skillbook_strategies",
+          "label": "Load Recovery Strategies",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "workflowId": "template-error-recovery",
+            "query": "Recovery guidance for task {{taskTitle}}. Last error: {{lastError}}. Changed files: {{$data?._changedFiles || []}}",
+            "limit": "{{recoveryStrategyLimit}}",
+            "outputVariable": "reusableStrategies"
+          },
+          "position": {
+            "x": 200,
+            "y": 250
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "analyze-error",
           "type": "action.run_agent",
           "label": "Analyze Failure",
           "config": {
-            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}",
+            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nReusable prior strategies:\n{{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'None found.'}}\n\nLast error:\n{{lastError}}",
             "timeoutMs": 300000
           },
           "position": {
             "x": 200,
-            "y": 330
+            "y": 360
           },
           "outputs": [
             "default"
@@ -12841,7 +12861,7 @@
           "type": "action.run_agent",
           "label": "Retry Task",
           "config": {
-            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
+            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- reusableStrategies: {{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || ''}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
             "timeoutMs": 3600000,
             "failOnError": true,
             "maxRetries": "{{maxRetries}}",
@@ -12850,7 +12870,7 @@
           },
           "position": {
             "x": 200,
-            "y": 480
+            "y": 520
           },
           "outputs": [
             "default"
@@ -12929,9 +12949,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "check-retries->analyze-error",
+          "id": "check-retries->load-recovery-strategies",
           "source": "check-retries",
-          "target": "analyze-error",
+          "target": "load-recovery-strategies",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -12941,6 +12961,12 @@
           "target": "escalate",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "load-recovery-strategies->analyze-error",
+          "source": "load-recovery-strategies",
+          "target": "analyze-error",
+          "sourcePort": "default"
         },
         {
           "id": "analyze-error->retry-task",
@@ -12990,13 +13016,14 @@
         "doctor",
         "monitoring"
       ],
-      "nodeCount": 7,
-      "edgeCount": 8,
+      "nodeCount": 15,
+      "edgeCount": 17,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.schedule",
       "variables": {
-        "intervalMs": 3600000
+        "intervalMs": 3600000,
+        "maxBenchmarkRuns": 12
       },
       "metadata": {
         "author": "bosun",
@@ -13130,6 +13157,138 @@
           "outputs": [
             "default"
           ]
+        },
+        {
+          "id": "collect-recent-runs",
+          "type": "action.run_command",
+          "label": "Collect Recent Runs",
+          "config": {
+            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const base=path.join(process.cwd(),'.bosun','workflow-runs');const entries=fs.existsSync(base)?fs.readdirSync(base).filter((name)=>name.endsWith('.json')).sort().slice(-Number(process.env.BOSUN_HEALTH_MAX_BENCHMARK_RUNS||12)):[];const runIds=entries.map((name)=>path.basename(name,'.json'));process.stdout.write(JSON.stringify({runIds,latestRunId:runIds.at(-1)||''}));\"",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-recent-runs",
+          "type": "condition.expression",
+          "label": "Recent Runs Available?",
+          "config": {
+            "expression": "(() => { const output = String($ctx.getNodeOutput('collect-recent-runs')?.output || '').trim(); if (!output) return false; try { const parsed = JSON.parse(output); return Array.isArray(parsed?.runIds) && parsed.runIds.length > 0; } catch { return false; } })()"
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "evaluate-latest-run",
+          "type": "action.evaluate_run",
+          "label": "Evaluate Latest Run",
+          "config": {
+            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output ? JSON.parse($ctx.getNodeOutput('collect-recent-runs')?.output).latestRunId || '' : ''}}",
+            "repoRoot": "{{repoRoot}}",
+            "includeTrend": true,
+            "recordHistory": true,
+            "outputVariable": "healthCheckEvaluation"
+          },
+          "position": {
+            "x": 220,
+            "y": 900
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "apply-ratchet",
+          "type": "action.apply_self_improvement_ratchet",
+          "label": "Apply Ratchet",
+          "config": {
+            "evaluationNodeId": "evaluate-latest-run",
+            "repoRoot": "{{repoRoot}}",
+            "outputVariable": "healthCheckRatchet"
+          },
+          "position": {
+            "x": 220,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "ratchet-applied",
+          "type": "condition.expression",
+          "label": "Ratchet Applied?",
+          "config": {
+            "expression": "['apply_candidate','capture_baseline','promote_strategy'].includes(String($ctx.getNodeOutput('apply-ratchet')?.decision || ''))"
+          },
+          "position": {
+            "x": 160,
+            "y": 1160
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "ratchet-reverted",
+          "type": "condition.expression",
+          "label": "Ratchet Reverted?",
+          "config": {
+            "expression": "['revert_to_baseline','keep_baseline'].includes(String($ctx.getNodeOutput('apply-ratchet')?.decision || ''))"
+          },
+          "position": {
+            "x": 360,
+            "y": 1160
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-ratchet-revert",
+          "type": "notify.log",
+          "label": "Log Ratchet Revert",
+          "config": {
+            "message": "Health check reverted or held baseline after latest run evaluation: {{$ctx.getNodeOutput('apply-ratchet')?.summary || $ctx.getNodeOutput('apply-ratchet')?.decision || 'no decision'}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 480,
+            "y": 1290
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-ratchet-applied",
+          "type": "notify.log",
+          "label": "Log Ratchet Applied",
+          "config": {
+            "message": "Health check ratchet updated from latest run evaluation: {{$ctx.getNodeOutput('apply-ratchet')?.summary || $ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 160,
+            "y": 1290
+          },
+          "outputs": [
+            "default"
+          ]
         }
       ],
       "edges": [
@@ -13182,6 +13341,63 @@
           "target": "all-ok",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "alert->collect-recent-runs",
+          "source": "alert",
+          "target": "collect-recent-runs",
+          "sourcePort": "default"
+        },
+        {
+          "id": "all-ok->collect-recent-runs",
+          "source": "all-ok",
+          "target": "collect-recent-runs",
+          "sourcePort": "default"
+        },
+        {
+          "id": "collect-recent-runs->has-recent-runs",
+          "source": "collect-recent-runs",
+          "target": "has-recent-runs",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-recent-runs->evaluate-latest-run",
+          "source": "has-recent-runs",
+          "target": "evaluate-latest-run",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "evaluate-latest-run->apply-ratchet",
+          "source": "evaluate-latest-run",
+          "target": "apply-ratchet",
+          "sourcePort": "default"
+        },
+        {
+          "id": "apply-ratchet->ratchet-applied",
+          "source": "apply-ratchet",
+          "target": "ratchet-applied",
+          "sourcePort": "default"
+        },
+        {
+          "id": "apply-ratchet->ratchet-reverted",
+          "source": "apply-ratchet",
+          "target": "ratchet-reverted",
+          "sourcePort": "default"
+        },
+        {
+          "id": "ratchet-applied->log-ratchet-applied",
+          "source": "ratchet-applied",
+          "target": "log-ratchet-applied",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "ratchet-reverted->log-ratchet-revert",
+          "source": "ratchet-reverted",
+          "target": "log-ratchet-revert",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
         }
       ]
     },
@@ -36870,10 +37086,11 @@
       "description": "Automated error recovery flow when an agent crashes or fails. Analyzes logs, attempts auto-fix, and escalates if needed.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 8,
+      "nodeCount": 9,
       "trigger": "trigger.event",
       "variables": {
-        "maxRetries": 3
+        "maxRetries": 3,
+        "recoveryStrategyLimit": 5
       },
       "nodes": [
         {
@@ -36907,16 +37124,35 @@
           ]
         },
         {
+          "id": "load-recovery-strategies",
+          "type": "action.load_skillbook_strategies",
+          "label": "Load Recovery Strategies",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "workflowId": "template-error-recovery",
+            "query": "Recovery guidance for task {{taskTitle}}. Last error: {{lastError}}. Changed files: {{$data?._changedFiles || []}}",
+            "limit": "{{recoveryStrategyLimit}}",
+            "outputVariable": "reusableStrategies"
+          },
+          "position": {
+            "x": 200,
+            "y": 250
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "analyze-error",
           "type": "action.run_agent",
           "label": "Analyze Failure",
           "config": {
-            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}",
+            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nReusable prior strategies:\n{{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'None found.'}}\n\nLast error:\n{{lastError}}",
             "timeoutMs": 300000
           },
           "position": {
             "x": 200,
-            "y": 330
+            "y": 360
           },
           "outputs": [
             "default"
@@ -36927,7 +37163,7 @@
           "type": "action.run_agent",
           "label": "Retry Task",
           "config": {
-            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
+            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- reusableStrategies: {{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || ''}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
             "timeoutMs": 3600000,
             "failOnError": true,
             "maxRetries": "{{maxRetries}}",
@@ -36936,7 +37172,7 @@
           },
           "position": {
             "x": 200,
-            "y": 480
+            "y": 520
           },
           "outputs": [
             "default"
@@ -37015,9 +37251,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "check-retries->analyze-error",
+          "id": "check-retries->load-recovery-strategies",
           "source": "check-retries",
-          "target": "analyze-error",
+          "target": "load-recovery-strategies",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -37027,6 +37263,12 @@
           "target": "escalate",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "load-recovery-strategies->analyze-error",
+          "source": "load-recovery-strategies",
+          "target": "analyze-error",
+          "sourcePort": "default"
         },
         {
           "id": "analyze-error->retry-task",
@@ -37081,10 +37323,11 @@
       "description": "Periodic system health check: validates config, verifies SDK availability, checks git state, and reports any issues found.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 7,
+      "nodeCount": 15,
       "trigger": "trigger.schedule",
       "variables": {
-        "intervalMs": 3600000
+        "intervalMs": 3600000,
+        "maxBenchmarkRuns": 12
       },
       "nodes": [
         {
@@ -37196,6 +37439,138 @@
           "outputs": [
             "default"
           ]
+        },
+        {
+          "id": "collect-recent-runs",
+          "type": "action.run_command",
+          "label": "Collect Recent Runs",
+          "config": {
+            "command": "node -e \"const fs=require('node:fs');const path=require('node:path');const base=path.join(process.cwd(),'.bosun','workflow-runs');const entries=fs.existsSync(base)?fs.readdirSync(base).filter((name)=>name.endsWith('.json')).sort().slice(-Number(process.env.BOSUN_HEALTH_MAX_BENCHMARK_RUNS||12)):[];const runIds=entries.map((name)=>path.basename(name,'.json'));process.stdout.write(JSON.stringify({runIds,latestRunId:runIds.at(-1)||''}));\"",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-recent-runs",
+          "type": "condition.expression",
+          "label": "Recent Runs Available?",
+          "config": {
+            "expression": "(() => { const output = String($ctx.getNodeOutput('collect-recent-runs')?.output || '').trim(); if (!output) return false; try { const parsed = JSON.parse(output); return Array.isArray(parsed?.runIds) && parsed.runIds.length > 0; } catch { return false; } })()"
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "evaluate-latest-run",
+          "type": "action.evaluate_run",
+          "label": "Evaluate Latest Run",
+          "config": {
+            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output ? JSON.parse($ctx.getNodeOutput('collect-recent-runs')?.output).latestRunId || '' : ''}}",
+            "repoRoot": "{{repoRoot}}",
+            "includeTrend": true,
+            "recordHistory": true,
+            "outputVariable": "healthCheckEvaluation"
+          },
+          "position": {
+            "x": 220,
+            "y": 900
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "apply-ratchet",
+          "type": "action.apply_self_improvement_ratchet",
+          "label": "Apply Ratchet",
+          "config": {
+            "evaluationNodeId": "evaluate-latest-run",
+            "repoRoot": "{{repoRoot}}",
+            "outputVariable": "healthCheckRatchet"
+          },
+          "position": {
+            "x": 220,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "ratchet-applied",
+          "type": "condition.expression",
+          "label": "Ratchet Applied?",
+          "config": {
+            "expression": "['apply_candidate','capture_baseline','promote_strategy'].includes(String($ctx.getNodeOutput('apply-ratchet')?.decision || ''))"
+          },
+          "position": {
+            "x": 160,
+            "y": 1160
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "ratchet-reverted",
+          "type": "condition.expression",
+          "label": "Ratchet Reverted?",
+          "config": {
+            "expression": "['revert_to_baseline','keep_baseline'].includes(String($ctx.getNodeOutput('apply-ratchet')?.decision || ''))"
+          },
+          "position": {
+            "x": 360,
+            "y": 1160
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-ratchet-revert",
+          "type": "notify.log",
+          "label": "Log Ratchet Revert",
+          "config": {
+            "message": "Health check reverted or held baseline after latest run evaluation: {{$ctx.getNodeOutput('apply-ratchet')?.summary || $ctx.getNodeOutput('apply-ratchet')?.decision || 'no decision'}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 480,
+            "y": 1290
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-ratchet-applied",
+          "type": "notify.log",
+          "label": "Log Ratchet Applied",
+          "config": {
+            "message": "Health check ratchet updated from latest run evaluation: {{$ctx.getNodeOutput('apply-ratchet')?.summary || $ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 160,
+            "y": 1290
+          },
+          "outputs": [
+            "default"
+          ]
         }
       ],
       "edges": [
@@ -37248,6 +37623,63 @@
           "target": "all-ok",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "alert->collect-recent-runs",
+          "source": "alert",
+          "target": "collect-recent-runs",
+          "sourcePort": "default"
+        },
+        {
+          "id": "all-ok->collect-recent-runs",
+          "source": "all-ok",
+          "target": "collect-recent-runs",
+          "sourcePort": "default"
+        },
+        {
+          "id": "collect-recent-runs->has-recent-runs",
+          "source": "collect-recent-runs",
+          "target": "has-recent-runs",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-recent-runs->evaluate-latest-run",
+          "source": "has-recent-runs",
+          "target": "evaluate-latest-run",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "evaluate-latest-run->apply-ratchet",
+          "source": "evaluate-latest-run",
+          "target": "apply-ratchet",
+          "sourcePort": "default"
+        },
+        {
+          "id": "apply-ratchet->ratchet-applied",
+          "source": "apply-ratchet",
+          "target": "ratchet-applied",
+          "sourcePort": "default"
+        },
+        {
+          "id": "apply-ratchet->ratchet-reverted",
+          "source": "apply-ratchet",
+          "target": "ratchet-reverted",
+          "sourcePort": "default"
+        },
+        {
+          "id": "ratchet-applied->log-ratchet-applied",
+          "source": "ratchet-applied",
+          "target": "log-ratchet-applied",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "ratchet-reverted->log-ratchet-revert",
+          "source": "ratchet-reverted",
+          "target": "log-ratchet-revert",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
         }
       ],
       "metadata": {

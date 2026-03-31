@@ -550,6 +550,7 @@ function resetExecutorTaskThrottleState(taskId, options = {}) {
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
+const sourceRepoRoot = resolve(__dirname, "..");
 const uiRootPreferred = resolve(__dirname, "..", "ui");
 const uiRootFallback = resolve(__dirname, "..", "site", "ui");
 const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
@@ -1516,16 +1517,43 @@ class WorkflowEngineProxy {
     }
   }
 
+  _normalizeAgentPoolBridgeArgs(fn, args = []) {
+    if (!Array.isArray(args)) return args;
+    if (fn !== "execWithRetry" && fn !== "launchOrResumeThread") {
+      return args;
+    }
+    const index = fn === "execWithRetry" ? 1 : 3;
+    const options = args[index] && typeof args[index] === "object"
+      ? { ...args[index] }
+      : {};
+    if (!String(options.taskKey || "").trim()) {
+      options.taskKey =
+        String(
+          options.slotMeta?.taskKey ||
+          options.taskId ||
+          options.linkedTaskId ||
+          options.targetTaskKey ||
+          options.workflowRunId ||
+          options.workflowId ||
+          "",
+        ).trim() || null;
+    }
+    const normalizedArgs = [...args];
+    normalizedArgs[index] = options;
+    return normalizedArgs;
+  }
+
   async _executeService(method, args) {
     /* Dispatch to in-process service functions */
     const [svc, fn] = method.split(".");
     switch (svc) {
       case "agentPool": {
-        if (fn === "launchEphemeralThread") return launchEphemeralThread(...args);
-        if (fn === "launchOrResumeThread")  return launchOrResumeThread(...args);
-        if (fn === "execWithRetry")         return execWithRetry(args[0], args[1] || {});
+        const normalizedArgs = this._normalizeAgentPoolBridgeArgs(fn, args);
+        if (fn === "launchEphemeralThread") return launchEphemeralThread(...normalizedArgs);
+        if (fn === "launchOrResumeThread")  return launchOrResumeThread(...normalizedArgs);
+        if (fn === "execWithRetry")         return execWithRetry(normalizedArgs[0], normalizedArgs[1] || {});
         if (fn === "continueSession") {
-          const [sessionId, prompt, opts = {}] = args;
+          const [sessionId, prompt, opts = {}] = normalizedArgs;
           return launchEphemeralThread(prompt, opts.cwd || process.cwd(), opts.timeout || 3600000, { resumeThreadId: sessionId, sdk: opts.sdk });
         }
         if (fn === "killSession") {
@@ -4031,9 +4059,81 @@ async function listTasksForWorkspaceContext(workspaceContext, { status = "", pro
 
 function sortTasksByRecency(tasks = []) {
   return [...tasks].sort((a, b) => {
-    const aTs = Date.parse(a?.updatedAt || a?.createdAt || 0) || 0;
-    const bTs = Date.parse(b?.updatedAt || b?.createdAt || 0) || 0;
+    const aTs = resolveTaskUpdatedSortTimestamp(a);
+    const bTs = resolveTaskUpdatedSortTimestamp(b);
     return bTs - aTs;
+  });
+}
+
+const TASK_PRIORITY_SORT_ORDER = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+function parseTaskSortTimestamp(...values) {
+  for (const value of values) {
+    if (value == null || value === "") continue;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    const parsed = Date.parse(String(value));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function resolveTaskUpdatedSortTimestamp(task = {}) {
+  return parseTaskSortTimestamp(
+    task?.lastActivityAt,
+    task?.last_activity_at,
+    task?.updatedAt,
+    task?.updated_at,
+    task?.reviewedAt,
+    task?.reviewed_at,
+    task?.createdAt,
+    task?.created_at,
+  );
+}
+
+function resolveTaskCreatedSortTimestamp(task = {}) {
+  return parseTaskSortTimestamp(
+    task?.createdAt,
+    task?.created_at,
+    task?.updatedAt,
+    task?.updated_at,
+  );
+}
+
+function compareTaskTitleThenId(left = {}, right = {}) {
+  return String(left?.title || left?.id || "")
+    .localeCompare(String(right?.title || right?.id || ""));
+}
+
+function sortTasksForApi(tasks = [], sortBy = "updated") {
+  const normalizedSort = String(sortBy || "updated").trim().toLowerCase() || "updated";
+  return [...tasks].sort((left, right) => {
+    if (normalizedSort === "created") {
+      const delta =
+        resolveTaskCreatedSortTimestamp(right) - resolveTaskCreatedSortTimestamp(left);
+      return delta || compareTaskTitleThenId(left, right);
+    }
+    if (normalizedSort === "priority") {
+      const leftRank =
+        TASK_PRIORITY_SORT_ORDER[String(left?.priority || "").trim().toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
+      const rightRank =
+        TASK_PRIORITY_SORT_ORDER[String(right?.priority || "").trim().toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      const recencyDelta =
+        resolveTaskUpdatedSortTimestamp(right) - resolveTaskUpdatedSortTimestamp(left);
+      return recencyDelta || compareTaskTitleThenId(left, right);
+    }
+    if (normalizedSort === "title") {
+      return compareTaskTitleThenId(left, right)
+        || (resolveTaskUpdatedSortTimestamp(right) - resolveTaskUpdatedSortTimestamp(left));
+    }
+    const recencyDelta =
+      resolveTaskUpdatedSortTimestamp(right) - resolveTaskUpdatedSortTimestamp(left);
+    return recencyDelta || compareTaskTitleThenId(left, right);
   });
 }
 
@@ -8378,18 +8478,30 @@ function normalizeLedgerSessionDocument(activity, options = {}) {
   };
 }
 
+function resolveRepoLocalStateLedgerPath(rootPath = "") {
+  const normalizedRoot = normalizeCandidatePath(rootPath);
+  if (!normalizedRoot) return "";
+  return resolve(normalizedRoot, ".bosun", ".cache", "state-ledger.sqlite");
+}
+
 function resolveUiStateLedgerOptions(workspaceContext = null) {
   const explicitRepoRoot = normalizeCandidatePath(process.env.REPO_ROOT);
   const repoRootPath = explicitRepoRoot || normalizeCandidatePath(repoRoot);
   const workspaceRoot = normalizeCandidatePath(workspaceContext?.workspaceRoot);
   const workspaceDir = normalizeCandidatePath(workspaceContext?.workspaceDir);
   const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
+  const defaultRepoLocalLedgerPath = !explicitRepoRoot
+    ? resolveRepoLocalStateLedgerPath(sourceRepoRoot)
+    : "";
   if (workspaceContext?.allWorkspaces === true) {
     if (explicitRepoRoot) {
       return { repoRoot: explicitRepoRoot };
     }
     if (explicitLedgerPath) {
       return { ledgerPath: explicitLedgerPath };
+    }
+    if (defaultRepoLocalLedgerPath) {
+      return { ledgerPath: defaultRepoLocalLedgerPath };
     }
     if (repoRootPath) {
       return { repoRoot: repoRootPath };
@@ -8407,6 +8519,9 @@ function resolveUiStateLedgerOptions(workspaceContext = null) {
   }
   if (workspaceDir) {
     return { repoRoot: workspaceDir };
+  }
+  if (defaultRepoLocalLedgerPath) {
+    return { ledgerPath: defaultRepoLocalLedgerPath };
   }
   if (repoRootPath) {
     return { repoRoot: repoRootPath };
@@ -10258,6 +10373,10 @@ function shouldHideSessionFromDefaultList(session) {
   if (internalTransportSession) return true;
   const hasSmokeIdentifier = identifiers.some((value) => /^smoke(?:-vision)?-/i.test(String(value || "").trim()));
   if (hasSmokeIdentifier) return true;
+  const hasSyntheticHistoricIdentifier = identifiers.some((value) =>
+    /^(?:hist(?:-live)?-\d+)$/i.test(String(value || "").trim()),
+  );
+  if (hasSyntheticHistoricIdentifier) return true;
   const normalizedWorkspaceId = String(session.workspaceId || metadata.workspaceId || "").trim();
   const tempWorkspacePattern = /(?:\\|\/)(?:temp|tmp)(?:\\|\/)/i;
   const looksTemporaryWorkspace =
@@ -18069,6 +18188,7 @@ async function handleApi(req, res, url) {
     const cached = getCachedApiResponse(cacheKey, 3000);
     if (cached) { jsonResponse(res, 200, cached); return; }
     const status = url.searchParams.get("status") || "";
+    const sortBy = String(url.searchParams.get("sort") || "updated").trim().toLowerCase() || "updated";
     const projectId = url.searchParams.get("project") || "";
     const workspaceQueryRaw = String(url.searchParams.get("workspace") || "").trim();
     let workspaceFilter = workspaceQueryRaw.toLowerCase();
@@ -18150,7 +18270,8 @@ async function handleApi(req, res, url) {
           .toLowerCase();
         return hay.includes(search);
       });
-      const total = filtered.length;
+      const sorted = sortTasksForApi(filtered, sortBy);
+      const total = sorted.length;
       const statusCounts = {
         draft: 0,
         backlog: 0,
@@ -18159,12 +18280,12 @@ async function handleApi(req, res, url) {
         inReview: 0,
         done: 0,
       };
-      for (const task of filtered) {
+      for (const task of sorted) {
         const bucket = mapTaskStatusToBoardColumn(task?.status);
         statusCounts[bucket] = (statusCounts[bucket] || 0) + 1;
       }
       const start = page * pageSize;
-      const slice = filtered.slice(start, start + pageSize);
+      const slice = sorted.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
       const withRuntime = await enrichTaskListRuntimeContext(enriched, {
         adapter,
@@ -26214,22 +26335,25 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/project-summary") {
     try {
-      const adapter = getKanbanAdapter();
+      const adapter = resolveInjectedTaskStoreApi() || getKanbanAdapter();
       const projects = await adapter.listProjects();
       const project = projects?.[0] || null;
       if (project) {
+        const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
         const tasks = await adapter.listTasks(project.id || project.name).catch(() => []);
-        const completedCount = tasks.filter(
-          (t) => t.status === "done" || t.status === "closed" || t.status === "completed",
-        ).length;
+        const scopedTasks = (Array.isArray(tasks) ? tasks : []).filter((task) =>
+          taskMatchesWorkspaceContext(task, workspaceContext),
+        );
         jsonResponse(res, 200, {
           ok: true,
           data: {
             id: project.id || project.name,
             name: project.name || project.title || project.id,
             description: project.description || project.body || null,
-            taskCount: tasks.length,
-            completedCount,
+            taskCount: scopedTasks.length,
+            completedCount: scopedTasks.filter(
+              (t) => mapTaskStatusToBoardColumn(t?.status) === "done",
+            ).length,
           },
         });
       } else {

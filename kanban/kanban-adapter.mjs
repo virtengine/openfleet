@@ -1729,8 +1729,7 @@ function resolveBaseBranchInput(payload) {
     payload.upstream ||
     payload.target_branch ||
     payload.targetBranch ||
-    payload.base ||
-    payload.target;
+    payload.base;
   return normalizeBranchName(candidate);
 }
 

@@ -59,13 +59,25 @@ export function buildVitestBatchArgs(files, { maxWorkers } = {}) {
   return args;
 }
 
-function runBatch(files, { startDir = process.cwd(), maxWorkers, label } = {}) {
+function runBatch(files, { startDir = process.cwd(), maxWorkers, label, heapMb } = {}) {
   const args = buildVitestBatchArgs(files, { maxWorkers });
   if (args.length === 0) return 0;
   if (label) {
     console.log(`[vitest-full-suite] ${label}: ${files.length} file(s)`);
   }
-  return runVitest(args, { startDir });
+  const previousHeap = process.env.BOSUN_VITEST_HEAP_MB;
+  if (Number.isFinite(heapMb) && heapMb >= 2048) {
+    process.env.BOSUN_VITEST_HEAP_MB = String(heapMb);
+  }
+  try {
+    return runVitest(args, { startDir });
+  } finally {
+    if (previousHeap == null) {
+      delete process.env.BOSUN_VITEST_HEAP_MB;
+    } else {
+      process.env.BOSUN_VITEST_HEAP_MB = previousHeap;
+    }
+  }
 }
 
 function runFullSuite({ startDir = process.cwd() } = {}) {
@@ -85,6 +97,10 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
   );
   const isolatedMaxWorkers = Number.parseInt(
     String(process.env.BOSUN_VITEST_ISOLATED_MAX_WORKERS || "1"),
+    10,
+  );
+  const isolatedHeapMb = Number.parseInt(
+    String(process.env.BOSUN_VITEST_ISOLATED_HEAP_MB || (process.platform === "win32" ? "8192" : "4096")),
     10,
   );
 
@@ -113,6 +129,7 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
       startDir,
       maxWorkers: Number.isFinite(isolatedMaxWorkers) && isolatedMaxWorkers > 0 ? isolatedMaxWorkers : 1,
       label: `isolated suite ${suite}`,
+      heapMb: Number.isFinite(isolatedHeapMb) && isolatedHeapMb >= 2048 ? isolatedHeapMb : undefined,
     });
     if (code !== 0) return code;
   }

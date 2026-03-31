@@ -32,6 +32,10 @@ describe("workflow worker recovery regressions", () => {
     expect(workerSource).toContain('return callMainService("agentPool.launchOrResumeThread", [prompt, cwd, timeout, opts]);');
     expect(workerSource).toContain('async execWithRetry(prompt, opts) {');
     expect(workerSource).toContain('return callMainService("agentPool.execWithRetry", [prompt, opts]);');
-    expect(uiServerSource).toContain('if (fn === "execWithRetry")         return execWithRetry(args[0], args[1] || {});');
+    expect(uiServerSource).toContain("_normalizeAgentPoolBridgeArgs(fn, args = [])");
+    expect(uiServerSource).toContain("options.slotMeta?.taskKey ||");
+    expect(uiServerSource).toContain("options.targetTaskKey ||");
+    expect(uiServerSource).toContain("const normalizedArgs = this._normalizeAgentPoolBridgeArgs(fn, args);");
+    expect(uiServerSource).toContain('if (fn === "execWithRetry")         return execWithRetry(normalizedArgs[0], normalizedArgs[1] || {});');
   });
 });

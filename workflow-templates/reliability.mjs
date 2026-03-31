@@ -37,6 +37,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
   trigger: "trigger.event",
   variables: {
     maxRetries: 3,
+    recoveryStrategyLimit: 5,
   },
   nodes: [
     node("trigger", "trigger.event", "Agent Failed", {
@@ -47,6 +48,16 @@ export const ERROR_RECOVERY_TEMPLATE = {
       expression: "($data?.retryCount || 0) < ($data?.maxRetries || 3)",
     }, { x: 400, y: 180 }),
 
+    node("load-recovery-strategies", "action.load_skillbook_strategies", "Load Recovery Strategies", {
+      repoRoot: "{{repoRoot}}",
+      workflowId: "template-error-recovery",
+      query:
+        "Recovery guidance for task {{taskTitle}}. Last error: {{lastError}}. " +
+        "Changed files: {{$data?._changedFiles || []}}",
+      limit: "{{recoveryStrategyLimit}}",
+      outputVariable: "reusableStrategies",
+    }, { x: 200, y: 250 }),
+
     node("analyze-error", "action.run_agent", "Analyze Failure", {
       prompt:
         "Analyze the following task failure and suggest the most likely minimal fix.\n\n" +
@@ -55,9 +66,10 @@ export const ERROR_RECOVERY_TEMPLATE = {
         "Branch: {{branch}}\n" +
         "Base branch: {{baseBranch}}\n" +
         "Worktree: {{worktreePath}}\n\n" +
+        "Reusable prior strategies:\n{{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || 'None found.'}}\n\n" +
         "Last error:\n{{lastError}}",
       timeoutMs: 300000,
-    }, { x: 200, y: 330 }),
+    }, { x: 200, y: 360 }),
 
     node("retry-task", "action.run_agent", "Retry Task", {
       prompt:
@@ -70,6 +82,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
         "- worktreePath: {{worktreePath}}\n" +
         "- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n" +
         "- lastError: {{lastError}}\n" +
+        "- reusableStrategies: {{$ctx.getNodeOutput('load-recovery-strategies')?.guidanceSummary || ''}}\n" +
         "- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\n" +
         "Use the analysis to choose a different approach if the previous attempt failed.",
       timeoutMs: 3600000,
@@ -77,7 +90,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
       maxRetries: "{{maxRetries}}",
       retryDelayMs: 15000,
       continueOnError: true,
-    }, { x: 200, y: 480 }),
+    }, { x: 200, y: 520 }),
 
     node("retry-succeeded", "condition.expression", "Retry Succeeded?", {
       expression: "$ctx.getNodeOutput('retry-task')?.success === true",
@@ -104,8 +117,9 @@ export const ERROR_RECOVERY_TEMPLATE = {
   ],
   edges: [
     edge("trigger", "check-retries"),
-    edge("check-retries", "analyze-error", { condition: "$output?.result === true" }),
+    edge("check-retries", "load-recovery-strategies", { condition: "$output?.result === true" }),
     edge("check-retries", "escalate", { condition: "$output?.result !== true" }),
+    edge("load-recovery-strategies", "analyze-error"),
     edge("analyze-error", "retry-task"),
     edge("retry-task", "retry-succeeded"),
     edge("retry-succeeded", "notify-recovered", { condition: "$output?.result === true", port: "yes" }),
@@ -343,6 +357,7 @@ export const HEALTH_CHECK_TEMPLATE = {
   trigger: "trigger.schedule",
   variables: {
     intervalMs: 3600000,
+    maxBenchmarkRuns: 12,
   },
   nodes: [
     node("trigger", "trigger.schedule", "Hourly Health Check", {
@@ -377,6 +392,54 @@ export const HEALTH_CHECK_TEMPLATE = {
       message: "Health check passed — all systems operational",
       level: "info",
     }, { x: 600, y: 540 }),
+
+    node("collect-recent-runs", "action.run_command", "Collect Recent Runs", {
+      command:
+        "node -e \"const fs=require('node:fs');const path=require('node:path');const base=path.join(process.cwd(),'.bosun','workflow-runs');const entries=fs.existsSync(base)?fs.readdirSync(base).filter((name)=>name.endsWith('.json')).sort().slice(-Number(process.env.BOSUN_HEALTH_MAX_BENCHMARK_RUNS||12)):[];const runIds=entries.map((name)=>path.basename(name,'.json'));process.stdout.write(JSON.stringify({runIds,latestRunId:runIds.at(-1)||''}));\"",
+      continueOnError: true,
+    }, { x: 400, y: 640 }),
+
+    node("has-recent-runs", "condition.expression", "Recent Runs Available?", {
+      expression:
+        "(() => { const output = String($ctx.getNodeOutput('collect-recent-runs')?.output || '').trim(); if (!output) return false; try { const parsed = JSON.parse(output); return Array.isArray(parsed?.runIds) && parsed.runIds.length > 0; } catch { return false; } })()",
+    }, { x: 400, y: 760, outputs: ["yes", "no"] }),
+
+    node("evaluate-latest-run", "action.evaluate_run", "Evaluate Latest Run", {
+      runId:
+        "{{$ctx.getNodeOutput('collect-recent-runs')?.output ? JSON.parse($ctx.getNodeOutput('collect-recent-runs')?.output).latestRunId || '' : ''}}",
+      repoRoot: "{{repoRoot}}",
+      includeTrend: true,
+      recordHistory: true,
+      outputVariable: "healthCheckEvaluation",
+    }, { x: 220, y: 900 }),
+
+    node("apply-ratchet", "action.apply_self_improvement_ratchet", "Apply Ratchet", {
+      evaluationNodeId: "evaluate-latest-run",
+      repoRoot: "{{repoRoot}}",
+      outputVariable: "healthCheckRatchet",
+    }, { x: 220, y: 1030 }),
+
+    node("ratchet-applied", "condition.expression", "Ratchet Applied?", {
+      expression:
+        "['apply_candidate','capture_baseline','promote_strategy'].includes(String($ctx.getNodeOutput('apply-ratchet')?.decision || ''))",
+    }, { x: 160, y: 1160, outputs: ["yes", "no"] }),
+
+    node("ratchet-reverted", "condition.expression", "Ratchet Reverted?", {
+      expression:
+        "['revert_to_baseline','keep_baseline'].includes(String($ctx.getNodeOutput('apply-ratchet')?.decision || ''))",
+    }, { x: 360, y: 1160, outputs: ["yes", "no"] }),
+
+    node("log-ratchet-revert", "notify.log", "Log Ratchet Revert", {
+      message:
+        "Health check reverted or held baseline after latest run evaluation: {{$ctx.getNodeOutput('apply-ratchet')?.summary || $ctx.getNodeOutput('apply-ratchet')?.decision || 'no decision'}}",
+      level: "warn",
+    }, { x: 480, y: 1290 }),
+
+    node("log-ratchet-applied", "notify.log", "Log Ratchet Applied", {
+      message:
+        "Health check ratchet updated from latest run evaluation: {{$ctx.getNodeOutput('apply-ratchet')?.summary || $ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}}",
+      level: "info",
+    }, { x: 160, y: 1290 }),
   ],
   edges: [
     edge("trigger", "check-config"),
@@ -387,6 +450,15 @@ export const HEALTH_CHECK_TEMPLATE = {
     edge("check-agents", "has-issues"),
     edge("has-issues", "alert", { condition: "$output?.result === true" }),
     edge("has-issues", "all-ok", { condition: "$output?.result !== true" }),
+    edge("alert", "collect-recent-runs"),
+    edge("all-ok", "collect-recent-runs"),
+    edge("collect-recent-runs", "has-recent-runs"),
+    edge("has-recent-runs", "evaluate-latest-run", { condition: "$output?.result === true", port: "yes" }),
+    edge("evaluate-latest-run", "apply-ratchet"),
+    edge("apply-ratchet", "ratchet-applied"),
+    edge("apply-ratchet", "ratchet-reverted"),
+    edge("ratchet-applied", "log-ratchet-applied", { condition: "$output?.result === true", port: "yes" }),
+    edge("ratchet-reverted", "log-ratchet-revert", { condition: "$output?.result === true", port: "yes" }),
   ],
   metadata: {
     author: "bosun",

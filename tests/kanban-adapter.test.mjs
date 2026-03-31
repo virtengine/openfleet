@@ -1679,6 +1679,29 @@ describe("kanban-adapter internal backend", () => {
     expect(created.baseBranch).toBe("origin/main");
   });
 
+  it("does not treat generic target payload fields as a base-branch alias", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "Generic target should not become a branch",
+      description: "Dispatch work to the entire repo.",
+      status: "todo",
+      target: "entire",
+    });
+
+    expect(created.baseBranch).toBeNull();
+    expect(created.meta?.baseBranch ?? null).toBeNull();
+
+    const explicit = await adapter.createTask("internal", {
+      title: "Explicit target branch still works",
+      description: "Dispatch work to the main branch.",
+      status: "todo",
+      targetBranch: "origin/main",
+    });
+
+    expect(explicit.baseBranch).toBe("origin/main");
+  });
+
   it("clears persisted base branch metadata when explicitly unset", async () => {
     const adapter = getKanbanAdapter();
 

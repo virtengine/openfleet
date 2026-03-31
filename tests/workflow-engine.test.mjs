@@ -1104,6 +1104,27 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.dagState?.edges?.[0]?.source).toBe("trigger");
   });
 
+  it("does not mark completed runs with skipped branches as resumable", () => {
+    const ctx = new WorkflowContext({
+      _dagState: {
+        nodes: {
+          trigger: { nodeId: "trigger", label: "Trigger", status: NodeStatus.COMPLETED },
+          gate: { nodeId: "gate", label: "Gate", status: NodeStatus.SKIPPED },
+          followup: { nodeId: "followup", label: "Follow Up", status: NodeStatus.PENDING },
+        },
+      },
+    });
+
+    const advisor = engine._refreshDagState(ctx, WorkflowStatus.COMPLETED);
+
+    expect(advisor?.status).toBe(WorkflowStatus.COMPLETED);
+    expect(advisor?.recommendedAction).toBe("continue");
+    expect(advisor?.summary).toBe("Workflow completed successfully.");
+    expect(advisor?.nextStepGuidance).toBe(
+      "Workflow reached a terminal completed state; no further action is required.",
+    );
+  });
+
   it("hydrates delegation audit trail and guard maps into run detail and history", async () => {
     const engine = new WorkflowEngine({ persistRuns: true, runRetention: 20 });
     const wf = makeSimpleWorkflow(

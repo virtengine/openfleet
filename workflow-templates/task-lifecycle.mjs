@@ -73,6 +73,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     prePrValidationCommand: "auto",
     autoMergeOnCreate: false,
     autoMergeMethod: "squash",
+    prBody: "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+    delegationWatchdogTimeoutMs: 300000,
+    delegationWatchdogMaxRecoveries: 1,
     maxRetries: 2,
     maxContinues: 3,
     protectedBranches: ["main", "master", "develop", "production"],
@@ -236,16 +239,63 @@ export const TASK_LIFECYCLE_TEMPLATE = {
         "})()",
     }, { x: -120, y: 2060, outputs: ["yes", "no"] }),
 
-    node("log-validation-failed", "notify.log", "Log Validation Failed", {
-      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
-      level: "warn",
-    }, { x: 300, y: 2000 }),
+    node("set-fix-summary", "action.set_variable", "Set Fix Summary", {
+      variable: "validationFixSummary",
+      value: "Pre-PR validation failed for task {{taskId}}. Apply the smallest viable fix and rerun validation.",
+    }, { x: 160, y: 1940 }),
 
-    node("set-todo-validation-failed", "action.update_task_status", "Set Todo (Validation Fail)", {
+    agentPhase("auto-fix-validation", "Auto Fix Validation",
+      "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 1. The previous pre-PR validation failed. Fix only the validation issue, then stop.",
+      {}, { x: 160, y: 2060 }),
+
+    node("retry-pre-pr-validation", "action.run_command", "Retry Pre-PR Validation", {
+      command: "{{prePrValidationCommand}}",
+      commandType: "qualityGate",
+      cwd: "{{worktreePath}}",
+      failOnError: false,
+    }, { x: 160, y: 2180 }),
+
+    node("retry-validation-ok", "condition.expression", "Retry Validation Passed?", {
+      expression:
+        "(() => { const out = $ctx.getNodeOutput('retry-pre-pr-validation'); if (!out) return false; if (out.success === true) return true; const code = Number(out.exitCode); return Number.isFinite(code) && code === 0; })()",
+    }, { x: 160, y: 2300, outputs: ["yes", "no"] }),
+
+    node("set-fix2-summary", "action.set_variable", "Set Fix Summary 2", {
+      variable: "validationFixSummary2",
+      value: "Validation retry still failed for task {{taskId}}. Attempt one final focused repair before blocking the task.",
+    }, { x: 320, y: 2060 }),
+
+    agentPhase("auto-fix-validation-2", "Auto Fix Validation 2",
+      "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 2. Retry only the remaining validation failures, then stop.",
+      {}, { x: 320, y: 2180 }),
+
+    node("retry2-pre-pr-validation", "action.run_command", "Retry Pre-PR Validation 2", {
+      command: "{{prePrValidationCommand}}",
+      commandType: "qualityGate",
+      cwd: "{{worktreePath}}",
+      failOnError: false,
+    }, { x: 320, y: 2300 }),
+
+    node("retry2-validation-ok", "condition.expression", "Retry Validation 2 Passed?", {
+      expression:
+        "(() => { const out = $ctx.getNodeOutput('retry2-pre-pr-validation'); if (!out) return false; if (out.success === true) return true; const code = Number(out.exitCode); return Number.isFinite(code) && code === 0; })()",
+    }, { x: 320, y: 2420, outputs: ["yes", "no"] }),
+
+    node("log-validation-failed", "notify.log", "Log Validation Failed", {
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed after two autofix attempts, blocking task",
+      level: "warn",
+    }, { x: 460, y: 2180 }),
+
+    node("set-blocked-validation-failed", "action.update_task_status", "Set Blocked (Validation Fail)", {
       taskId: "{{taskId}}",
-      status: "todo",
+      status: "blocked",
       taskTitle: "{{taskTitle}}",
-    }, { x: 300, y: 2130 }),
+      blockedReason: "pre_pr_validation_failed",
+    }, { x: 460, y: 2300 }),
+
+    node("notify-validation-blocked", "notify.telegram", "Notify Validation Blocked", {
+      message: "⚠️ Task \"{{taskTitle}}\" ({{taskId}}) blocked after repeated pre-PR validation failures.",
+    }, { x: 460, y: 2420 }),
     // ── SUCCESS PATH: Push branch (with rebase + empty-diff guard) ───────
     node("push-branch", "action.push_branch", "Push Branch", {
       worktreePath: "{{worktreePath}}",
@@ -264,10 +314,15 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       expression: "$ctx.getNodeOutput('push-branch')?.pushed === true",
     }, { x: 0, y: 2130, outputs: ["yes", "no"] }),
 
+    node("build-pr-body", "action.set_variable", "Build PR Body", {
+      variable: "prBody",
+      value: "{{prBody}}",
+    }, { x: 0, y: 2195 }),
+
     // ── SUCCESS PATH: Create PR ──────────────────────────────────────────
     node("create-pr", "action.create_pr", "Create PR", {
       title: "{{taskTitle}}",
-      body: "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+      body: "{{prBody}}",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       cwd: "{{worktreePath}}",
@@ -338,9 +393,14 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 360, y: 2325 }),
 
     // ── CLAIM STOLEN PATH: Log ───────────────────────────────────────────
+    node("build-pr-body-stolen", "action.set_variable", "Build PR Body (Recovered)", {
+      variable: "prBody",
+      value: "{{prBody}}",
+    }, { x: 400, y: 1680 }),
+
     node("create-pr-retry", "action.create_pr", "Recover PR Link", {
       title: "{{taskTitle}}",
-      body: "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+      body: "{{prBody}}",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       cwd: "{{worktreePath}}",
@@ -392,7 +452,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     node("join-outcomes", "flow.join", "Join Outcome Paths", {
       mode: "all",
-      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-blocked-push-failed", "set-todo-cooldown", "set-todo-validation-failed", "set-todo-stolen", "log-claim-stolen-recovered"],
+      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-blocked-push-failed", "set-todo-cooldown", "notify-validation-blocked", "set-todo-stolen", "log-claim-stolen-recovered"],
       includeSkipped: true,
     }, { x: 200, y: 2560 }),
 
@@ -543,11 +603,23 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("has-commits", "pre-pr-validation", { condition: "$output?.result === true", port: "yes" }),
     edge("pre-pr-validation", "pre-pr-validation-ok"),
     edge("pre-pr-validation-ok", "push-branch", { condition: "$output?.result === true", port: "yes" }),
-    edge("pre-pr-validation-ok", "log-validation-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("log-validation-failed", "set-todo-validation-failed"),
-    edge("set-todo-validation-failed", "join-outcomes"),
+    edge("pre-pr-validation-ok", "set-fix-summary", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-fix-summary", "auto-fix-validation"),
+    edge("auto-fix-validation", "retry-pre-pr-validation"),
+    edge("retry-pre-pr-validation", "retry-validation-ok"),
+    edge("retry-validation-ok", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+    edge("retry-validation-ok", "set-fix2-summary", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-fix2-summary", "auto-fix-validation-2"),
+    edge("auto-fix-validation-2", "retry2-pre-pr-validation"),
+    edge("retry2-pre-pr-validation", "retry2-validation-ok"),
+    edge("retry2-validation-ok", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+    edge("retry2-validation-ok", "log-validation-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("log-validation-failed", "set-blocked-validation-failed"),
+    edge("set-blocked-validation-failed", "notify-validation-blocked"),
+    edge("notify-validation-blocked", "join-outcomes"),
     edge("push-branch", "push-ok"),
-    edge("push-ok", "create-pr", { condition: "$output?.result === true", port: "yes" }),
+    edge("push-ok", "build-pr-body", { condition: "$output?.result === true", port: "yes" }),
+    edge("build-pr-body", "create-pr"),
     edge("create-pr", "pr-created"),
     edge("pr-created", "set-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("pr-created", "set-todo-push-failed", { condition: "$output?.result !== true", port: "no" }),
@@ -568,7 +640,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("set-todo-cooldown", "join-outcomes"),
 
     // Claim stolen path
-    edge("claim-stolen", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
+    edge("claim-stolen", "build-pr-body-stolen", { condition: "$output?.result === true", port: "yes" }),
+    edge("build-pr-body-stolen", "create-pr-retry"),
     edge("create-pr-retry", "pr-created-stolen"),
     edge("pr-created-stolen", "set-inreview-stolen", { condition: "$output?.result === true", port: "yes" }),
     edge("set-inreview-stolen", "handoff-pr-progressor-stolen"),
