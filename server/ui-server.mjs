@@ -10108,24 +10108,23 @@ function shouldHideSessionFromDefaultList(session) {
       )
     );
   if (internalTransportSession) return true;
-  const fixturePattern = /^(?:manual-visible-session|tokens-visible-session|freshness-visible-session|chat-runtime|meeting-(?:1|vision)|workspace-scope-test(?:-.+)?|session-linked-task-1)$/i;
-  const hasFixtureIdentifier = identifiers.some((value) => fixturePattern.test(String(value || "").trim()));
-  if (hasFixtureIdentifier) return true;
   const hasSmokeIdentifier = identifiers.some((value) => /^smoke(?:-vision)?-/i.test(String(value || "").trim()));
   if (hasSmokeIdentifier) return true;
-  const looksLikeSyntheticType =
-    normalizedType.endsWith("-test")
-    || normalizedType.includes("scope-test")
-    || normalizedType === "workspace-scope-test";
-  if (looksLikeSyntheticType) return true;
   const tempWorkspacePattern = /(?:\\|\/)(?:temp|tmp)(?:\\|\/)/i;
   const looksTemporaryWorkspace =
     tempWorkspacePattern.test(normalizedWorkspaceDir)
     || tempWorkspacePattern.test(normalizedWorkspaceRoot);
+  if (!looksTemporaryWorkspace) return false;
+  const fixturePattern = /^(?:meeting-(?:1|vision)|session-linked-task-1|workspace-scope-test(?:-.+)?|task-\d+)$/i;
+  const hasFixtureIdentifier = identifiers.some((value) => fixturePattern.test(String(value || "").trim()));
+  const looksLikeSyntheticType =
+    normalizedType.endsWith("-test")
+    || normalizedType.includes("scope-test")
+    || normalizedType === "workspace-scope-test";
   const syntheticTempSource =
     normalizedSource === "workflow-meeting"
     || identifiers.some((value) => /workflow linked task/i.test(String(value || "")));
-  return looksTemporaryWorkspace && syntheticTempSource;
+  return hasFixtureIdentifier || looksLikeSyntheticType || syntheticTempSource;
 }
 
 function buildInternalVoiceSessionMetadata(base = {}, source = "voice-http") {

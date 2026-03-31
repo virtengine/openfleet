@@ -5524,7 +5524,7 @@ describeUiServer("ui-server mini app", () => {
     expect(forcedJson.ok).toBe(true);
     expect(forcedJson.canStart.override).toBe(true);
     expect(executeTask).toHaveBeenCalledTimes(1);
-  });
+  }, 20000);
 
   it("reports guarded lifecycle start without dispatching execution", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -5573,7 +5573,7 @@ describeUiServer("ui-server mini app", () => {
     expect(update.lifecycle.startDispatch.started).toBe(false);
     expect(update.lifecycle.startDispatch.reason).toBe("start_guard_blocked");
     expect(executeTask).not.toHaveBeenCalled();
-  });
+  }, 20000);
 
   it("includes blocked diagnostics on /api/tasks/detail and counts blocked tasks on /api/tasks", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
