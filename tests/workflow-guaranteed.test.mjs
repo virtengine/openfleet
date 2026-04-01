@@ -36,6 +36,7 @@ import {
   createTemplateHarness,
   ensureExperimentalNodeTypes,
 } from "./sandbox/template-harness.mjs";
+import { skipLocallyForSpeed } from "./test-speed-gates.mjs";
 
 // ══════════════════════════════════════════════════════════════════════════
 //  Mutable sandbox dispatch — the vi.mock captures this reference so that
@@ -356,7 +357,7 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  it("template-custom-agent: dispatches custom task to agent", async () => {
+  it.skipIf(skipLocallyForSpeed)("template-custom-agent: dispatches custom task to agent", async () => {
     const { harness, fixtures } = setupHarness("template-custom-agent");
     const { ctx } = await harness.run(fixtures.inputVars);
     harness.assertions.noEngineErrors(ctx);
@@ -685,7 +686,7 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  it("template-incident-response: handles incident without crash", async () => {
+  it.skipIf(skipLocallyForSpeed)("template-incident-response: handles incident without crash", async () => {
     const { harness, fixtures } = setupHarness("template-incident-response");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);
@@ -731,7 +732,7 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  it("template-task-batch-pr: creates PRs for a batch of tasks", async () => {
+  it.skipIf(skipLocallyForSpeed)("template-task-batch-pr: creates PRs for a batch of tasks", async () => {
     const { harness, fixtures } = setupHarness("template-task-batch-pr");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);

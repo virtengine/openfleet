@@ -99,10 +99,15 @@ describe("vitest-runner", () => {
     const packageJson = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
 
     expect(packageJson.scripts.test).toContain("tools/vitest-full-suite.mjs");
+    expect(packageJson.scripts["test:quick"]).toContain("tools/vitest-runner.mjs");
     expect(packageJson.scripts["test:vitest"]).toContain("tools/vitest-full-suite.mjs");
+    expect(packageJson.scripts["test:watch"]).toContain("tools/vitest-runner.mjs");
+    expect(packageJson.scripts["test:voice-provider-smoke"]).toContain("tools/vitest-runner.mjs");
+    expect(packageJson.scripts["check:native-call-parity"]).toContain("tools/vitest-runner.mjs");
     expect(packageJson.scripts["prepush:check"]).toContain("npm run test:all");
     expect(packageJson.scripts["test:node"]).toContain("--no-warnings=ExperimentalWarning");
     expect(packageJson.scripts.test).not.toContain("node_modules/vitest/vitest.mjs");
+    expect(packageJson.scripts["test:quick"]).not.toContain("node_modules/vitest/vitest.mjs");
     expect(packageJson.scripts["test:vitest"]).not.toContain("node_modules/vitest/vitest.mjs");
   });
 
@@ -162,9 +167,30 @@ describe("vitest-runner", () => {
   it("keeps the slow template full-pipeline execution opt-in for local runs", () => {
     const source = readFileSync(resolve(repoRoot, "tests", "workflow-templates-e2e.test.mjs"), "utf8");
 
-    expect(source).toContain('process.env.BOSUN_RUN_HEAVY_TESTS === "1"');
+    expect(source).toContain('import { isCiOnlyTestRun } from "./test-speed-gates.mjs";');
+    expect(source).toContain("const runFullTemplatePipelineE2E = isCiOnlyTestRun;");
     expect(source).toContain("const fullPipelineIt = runFullTemplatePipelineE2E ? it : it.skip;");
     expect(source).toContain('fullPipelineIt("installs and executes every template in sequence without cross-contamination"');
+  });
+
+  it("keeps the local speed-gate helper wired for CI-only tests", () => {
+    const source = readFileSync(resolve(repoRoot, "tests", "test-speed-gates.mjs"), "utf8");
+
+    expect(source).toContain('process.env.GITHUB_ACTIONS === "true" || process.env.CI === "true"');
+    expect(source).toContain("export const skipLocallyForSpeed = !isCiOnlyTestRun;");
+  });
+
+  it("scopes file discovery and splits fast versus isolated Vitest projects", () => {
+    const source = readFileSync(resolve(repoRoot, "vitest.config.mjs"), "utf8");
+
+    expect(source).toContain('dir: "tests"');
+    expect(source).toContain('fsModuleCache: process.env.BOSUN_VITEST_FS_CACHE !== "0"');
+    expect(source).toContain('name: "fast"');
+    expect(source).toContain('pool: "threads"');
+    expect(source).toContain('isolate: process.env.BOSUN_VITEST_FAST_ISOLATE === "1"');
+    expect(source).toContain('name: "isolated"');
+    expect(source).toContain('pool: "forks"');
+    expect(source).toContain('include: isolatedProjectSuites');
   });
 
   it("keeps workflow-template e2e command and agent nodes shimmed for local determinism", () => {
@@ -232,12 +258,19 @@ describe("vitest-runner", () => {
     expect(source).toContain("syncBuiltinESMExports()");
   });
 
-  it("runs a one-time Vitest global setup to sync generated demo defaults", () => {
+  it("keeps demo-default syncing out of Vitest global setup", () => {
     const source = readFileSync(resolve(repoRoot, "vitest.config.mjs"), "utf8");
-    const setupSource = readFileSync(resolve(repoRoot, "tests", "vitest-global-setup.mjs"), "utf8");
 
-    expect(source).toContain('globalSetup: ["tests/vitest-global-setup.mjs"]');
-    expect(setupSource).toContain('import { syncDemoDefaults } from "../tools/generate-demo-defaults.mjs";');
-    expect(setupSource).toContain('await syncDemoDefaults({ silent: true });');
+    expect(source).not.toContain("globalSetup");
+    expect(source).not.toContain("syncDemoDefaults");
+  });
+
+  it("keeps child-spawn detection out of the per-file test setup", () => {
+    const configSource = readFileSync(resolve(repoRoot, "vitest.config.mjs"), "utf8");
+    const setupSource = readFileSync(resolve(repoRoot, "tests", "setup.mjs"), "utf8");
+
+    expect(configSource).toContain("function detectBlockedChildSpawn()");
+    expect(setupSource).not.toContain("spawnSync");
+    expect(setupSource).not.toContain("detectBlockedChildSpawn");
   });
 });

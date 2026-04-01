@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
+import { isCiOnlyTestRun } from "./test-speed-gates.mjs";
 
 // ── Mock child_process so node types that shell-out complete instantly ──
 vi.mock("node:child_process", async (importOriginal) => {
@@ -69,7 +70,7 @@ import {
   getNodeType,
 } from "../workflow/workflow-engine.mjs";
 
-const runFullTemplatePipelineE2E = process.env.BOSUN_RUN_HEAVY_TESTS === "1";
+const runFullTemplatePipelineE2E = isCiOnlyTestRun;
 const fullPipelineIt = runFullTemplatePipelineE2E ? it : it.skip;
 
 // ═══════════════════════════════════════════════════════════════════════════

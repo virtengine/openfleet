@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
+import { skipLocallyForSpeed } from "./test-speed-gates.mjs";
 
 const repoRoot = process.cwd();
 const serverPath = resolve(repoRoot, "server", "bosun-mcp-server.mjs");
@@ -143,7 +144,7 @@ afterEach(async () => {
 }, 30000);
 
 describe("bosun MCP server", () => {
-  it("lists the Bosun MCP tool surface over stdio", async () => {
+  it.skipIf(skipLocallyForSpeed)("lists the Bosun MCP tool surface over stdio", async () => {
     const mcp = await startMcpProcess();
     try {
       const init = await mcp.initialize();
@@ -227,7 +228,7 @@ describe("bosun MCP server", () => {
     }
   }, 20000);
 
-  it("supports creating and reading sessions through MCP tools", async () => {
+  it.skipIf(skipLocallyForSpeed)("supports creating and reading sessions through MCP tools", async () => {
     const mcp = await startMcpProcess();
     try {
       await mcp.initialize();

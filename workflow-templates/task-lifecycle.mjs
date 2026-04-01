@@ -196,6 +196,39 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
       { delegationWatchdogTimeoutMs: "{{delegationWatchdogTimeoutMs}}", delegationWatchdogMaxRecoveries: "{{delegationWatchdogMaxRecoveries}}" }, { x: 200, y: 1610 }),
 
+    node("plan-agent-ok", "condition.expression", "Plan Agent Succeeded?", {
+      expression: "$ctx.getNodeOutput('run-agent-plan')?.success === true",
+    }, { x: 380, y: 1740, outputs: ["yes", "no"] }),
+
+    node("tests-agent-ok", "condition.expression", "Tests Agent Succeeded?", {
+      expression: "$ctx.getNodeOutput('run-agent-tests')?.success === true",
+    }, { x: 380, y: 1545, outputs: ["yes", "no"] }),
+
+    node("implement-agent-ok", "condition.expression", "Implement Agent Succeeded?", {
+      expression: "$ctx.getNodeOutput('run-agent-implement')?.success === true",
+    }, { x: 380, y: 1610, outputs: ["yes", "no"] }),
+
+    node("set-blocked-agent-plan-failed", "action.update_task_status", "Set Blocked (Plan Fail)", {
+      taskId: "{{taskId}}",
+      status: "blocked",
+      taskTitle: "{{taskTitle}}",
+      blockedReason: "{{$ctx.getNodeOutput('run-agent-plan')?.blockedReason || $ctx.getNodeOutput('run-agent-plan')?.failureKind || $ctx.getNodeOutput('run-agent-plan')?.error || 'agent_plan_failed'}}",
+    }, { x: 560, y: 1740 }),
+
+    node("set-blocked-agent-tests-failed", "action.update_task_status", "Set Blocked (Tests Fail)", {
+      taskId: "{{taskId}}",
+      status: "blocked",
+      taskTitle: "{{taskTitle}}",
+      blockedReason: "{{$ctx.getNodeOutput('run-agent-tests')?.blockedReason || $ctx.getNodeOutput('run-agent-tests')?.failureKind || $ctx.getNodeOutput('run-agent-tests')?.error || 'agent_tests_failed'}}",
+    }, { x: 560, y: 1545 }),
+
+    node("set-blocked-agent-implement-failed", "action.update_task_status", "Set Blocked (Implement Fail)", {
+      taskId: "{{taskId}}",
+      status: "blocked",
+      taskTitle: "{{taskTitle}}",
+      blockedReason: "{{$ctx.getNodeOutput('run-agent-implement')?.blockedReason || $ctx.getNodeOutput('run-agent-implement')?.failureKind || $ctx.getNodeOutput('run-agent-implement')?.error || 'agent_implement_failed'}}",
+    }, { x: 560, y: 1610 }),
+
     // ── Check if claim was stolen during agent execution ─────────────────
     node("claim-stolen", "condition.expression", "Claim Stolen?", {
       expression: "$data._claimStolen === true",
@@ -590,9 +623,18 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("read-workflow-contract", "workflow-contract-validation"),
     edge("workflow-contract-validation", "build-prompt"),
     edge("build-prompt", "run-agent-plan"),
-    edge("run-agent-plan", "run-agent-tests"),
-    edge("run-agent-tests", "run-agent-implement"),
-    edge("run-agent-implement", "claim-stolen"),
+    edge("run-agent-plan", "plan-agent-ok"),
+    edge("plan-agent-ok", "run-agent-tests", { condition: "$output?.result === true", port: "yes" }),
+    edge("plan-agent-ok", "set-blocked-agent-plan-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-blocked-agent-plan-failed", "join-outcomes"),
+    edge("run-agent-tests", "tests-agent-ok"),
+    edge("tests-agent-ok", "run-agent-implement", { condition: "$output?.result === true", port: "yes" }),
+    edge("tests-agent-ok", "set-blocked-agent-tests-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-blocked-agent-tests-failed", "join-outcomes"),
+    edge("run-agent-implement", "implement-agent-ok"),
+    edge("implement-agent-ok", "claim-stolen", { condition: "$output?.result === true", port: "yes" }),
+    edge("implement-agent-ok", "set-blocked-agent-implement-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-blocked-agent-implement-failed", "join-outcomes"),
 
     // Post-agent: check claim
     edge("claim-stolen", "auto-commit-dirty", { condition: "$output?.result !== true", port: "no" }),

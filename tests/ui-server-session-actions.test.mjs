@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { skipLocallyForSpeed } from "./test-speed-gates.mjs";
 
 const ENV_KEYS = [
   "BOSUN_ENV_NO_OVERRIDE",
@@ -28,7 +29,7 @@ describe("ui-server session actions", () => {
     }
   });
 
-  it("pauses and resumes a session through the HTTP session routes", async () => {
+  it.skipIf(skipLocallyForSpeed)("pauses and resumes a session through the HTTP session routes", async () => {
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: 0,

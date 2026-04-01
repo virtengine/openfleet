@@ -23038,8 +23038,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 73,
-      "edgeCount": 84,
+      "nodeCount": 79,
+      "edgeCount": 93,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -23413,6 +23413,108 @@
           },
           "position": {
             "x": 200,
+            "y": 1610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-agent-ok",
+          "type": "condition.expression",
+          "label": "Plan Agent Succeeded?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('run-agent-plan')?.success === true"
+          },
+          "position": {
+            "x": 380,
+            "y": 1740
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "tests-agent-ok",
+          "type": "condition.expression",
+          "label": "Tests Agent Succeeded?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('run-agent-tests')?.success === true"
+          },
+          "position": {
+            "x": 380,
+            "y": 1545
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "implement-agent-ok",
+          "type": "condition.expression",
+          "label": "Implement Agent Succeeded?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('run-agent-implement')?.success === true"
+          },
+          "position": {
+            "x": 380,
+            "y": 1610
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-blocked-agent-plan-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (Plan Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "{{$ctx.getNodeOutput('run-agent-plan')?.blockedReason || $ctx.getNodeOutput('run-agent-plan')?.failureKind || $ctx.getNodeOutput('run-agent-plan')?.error || 'agent_plan_failed'}}"
+          },
+          "position": {
+            "x": 560,
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-agent-tests-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (Tests Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "{{$ctx.getNodeOutput('run-agent-tests')?.blockedReason || $ctx.getNodeOutput('run-agent-tests')?.failureKind || $ctx.getNodeOutput('run-agent-tests')?.error || 'agent_tests_failed'}}"
+          },
+          "position": {
+            "x": 560,
+            "y": 1545
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-agent-implement-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (Implement Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "{{$ctx.getNodeOutput('run-agent-implement')?.blockedReason || $ctx.getNodeOutput('run-agent-implement')?.failureKind || $ctx.getNodeOutput('run-agent-implement')?.error || 'agent_implement_failed'}}"
+          },
+          "position": {
+            "x": 560,
             "y": 1610
           },
           "outputs": [
@@ -24513,21 +24615,81 @@
           "sourcePort": "default"
         },
         {
-          "id": "run-agent-plan->run-agent-tests",
+          "id": "run-agent-plan->plan-agent-ok",
           "source": "run-agent-plan",
+          "target": "plan-agent-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-agent-ok->run-agent-tests",
+          "source": "plan-agent-ok",
           "target": "run-agent-tests",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "plan-agent-ok->set-blocked-agent-plan-failed",
+          "source": "plan-agent-ok",
+          "target": "set-blocked-agent-plan-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-agent-plan-failed->join-outcomes",
+          "source": "set-blocked-agent-plan-failed",
+          "target": "join-outcomes",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent-tests->run-agent-implement",
+          "id": "run-agent-tests->tests-agent-ok",
           "source": "run-agent-tests",
-          "target": "run-agent-implement",
+          "target": "tests-agent-ok",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent-implement->claim-stolen",
+          "id": "tests-agent-ok->run-agent-implement",
+          "source": "tests-agent-ok",
+          "target": "run-agent-implement",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "tests-agent-ok->set-blocked-agent-tests-failed",
+          "source": "tests-agent-ok",
+          "target": "set-blocked-agent-tests-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-agent-tests-failed->join-outcomes",
+          "source": "set-blocked-agent-tests-failed",
+          "target": "join-outcomes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-implement->implement-agent-ok",
           "source": "run-agent-implement",
+          "target": "implement-agent-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-agent-ok->claim-stolen",
+          "source": "implement-agent-ok",
           "target": "claim-stolen",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "implement-agent-ok->set-blocked-agent-implement-failed",
+          "source": "implement-agent-ok",
+          "target": "set-blocked-agent-implement-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-agent-implement-failed->join-outcomes",
+          "source": "set-blocked-agent-implement-failed",
+          "target": "join-outcomes",
           "sourcePort": "default"
         },
         {
@@ -47193,7 +47355,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 73,
+      "nodeCount": 79,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -47533,6 +47695,108 @@
           },
           "position": {
             "x": 200,
+            "y": 1610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-agent-ok",
+          "type": "condition.expression",
+          "label": "Plan Agent Succeeded?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('run-agent-plan')?.success === true"
+          },
+          "position": {
+            "x": 380,
+            "y": 1740
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "tests-agent-ok",
+          "type": "condition.expression",
+          "label": "Tests Agent Succeeded?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('run-agent-tests')?.success === true"
+          },
+          "position": {
+            "x": 380,
+            "y": 1545
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "implement-agent-ok",
+          "type": "condition.expression",
+          "label": "Implement Agent Succeeded?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('run-agent-implement')?.success === true"
+          },
+          "position": {
+            "x": 380,
+            "y": 1610
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-blocked-agent-plan-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (Plan Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "{{$ctx.getNodeOutput('run-agent-plan')?.blockedReason || $ctx.getNodeOutput('run-agent-plan')?.failureKind || $ctx.getNodeOutput('run-agent-plan')?.error || 'agent_plan_failed'}}"
+          },
+          "position": {
+            "x": 560,
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-agent-tests-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (Tests Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "{{$ctx.getNodeOutput('run-agent-tests')?.blockedReason || $ctx.getNodeOutput('run-agent-tests')?.failureKind || $ctx.getNodeOutput('run-agent-tests')?.error || 'agent_tests_failed'}}"
+          },
+          "position": {
+            "x": 560,
+            "y": 1545
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-blocked-agent-implement-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (Implement Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}",
+            "blockedReason": "{{$ctx.getNodeOutput('run-agent-implement')?.blockedReason || $ctx.getNodeOutput('run-agent-implement')?.failureKind || $ctx.getNodeOutput('run-agent-implement')?.error || 'agent_implement_failed'}}"
+          },
+          "position": {
+            "x": 560,
             "y": 1610
           },
           "outputs": [
@@ -48633,21 +48897,81 @@
           "sourcePort": "default"
         },
         {
-          "id": "run-agent-plan->run-agent-tests",
+          "id": "run-agent-plan->plan-agent-ok",
           "source": "run-agent-plan",
+          "target": "plan-agent-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-agent-ok->run-agent-tests",
+          "source": "plan-agent-ok",
           "target": "run-agent-tests",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "plan-agent-ok->set-blocked-agent-plan-failed",
+          "source": "plan-agent-ok",
+          "target": "set-blocked-agent-plan-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-agent-plan-failed->join-outcomes",
+          "source": "set-blocked-agent-plan-failed",
+          "target": "join-outcomes",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent-tests->run-agent-implement",
+          "id": "run-agent-tests->tests-agent-ok",
           "source": "run-agent-tests",
-          "target": "run-agent-implement",
+          "target": "tests-agent-ok",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent-implement->claim-stolen",
+          "id": "tests-agent-ok->run-agent-implement",
+          "source": "tests-agent-ok",
+          "target": "run-agent-implement",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "tests-agent-ok->set-blocked-agent-tests-failed",
+          "source": "tests-agent-ok",
+          "target": "set-blocked-agent-tests-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-agent-tests-failed->join-outcomes",
+          "source": "set-blocked-agent-tests-failed",
+          "target": "join-outcomes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-implement->implement-agent-ok",
           "source": "run-agent-implement",
+          "target": "implement-agent-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-agent-ok->claim-stolen",
+          "source": "implement-agent-ok",
           "target": "claim-stolen",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "implement-agent-ok->set-blocked-agent-implement-failed",
+          "source": "implement-agent-ok",
+          "target": "set-blocked-agent-implement-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-agent-implement-failed->join-outcomes",
+          "source": "set-blocked-agent-implement-failed",
+          "target": "join-outcomes",
           "sourcePort": "default"
         },
         {

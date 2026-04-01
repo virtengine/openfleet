@@ -536,3 +536,38 @@
   - Playwright CLI:
     - `npx --yes --package @playwright/cli playwright-cli --session bosun-smoke open https://192.168.0.183:4400 --persistent --profile output/playwright/profile`
     - browser smoke reached the portal after bypassing the local certificate warning, but the session landed on `Unauthorized`, so authenticated end-to-end clicking of run history could not be completed from a fresh Playwright profile in this turn.
+
+## 2026-04-02 - Task throughput stall diagnosis and lifecycle failure hardening
+
+- Runtime evidence collected:
+  - current local time during triage: `2026-04-02T07:11:11+11:00`
+  - daemon state: `node cli.mjs --daemon-status --config-dir .bosun --repo-root .` returned `bosun daemon is not running`
+  - latest workflow-run artifacts stopped at about `2026-04-02 05:30 +11:00`
+  - latest `done` task update remained `2026-03-31T15:42:58.087Z`, so there were no completed tasks in the last 12h and in practice no new task completions for much longer
+- Root-cause findings:
+  - `Task Batch Processor` kept logging dispatch-only success (`Task batch completed: 1/1 succeeded`, `2/2 succeeded`, `8/8 succeeded`) while task completion was not advancing.
+  - `Task Lifecycle` was repeatedly moving tasks into `inprogress`, then stale-claim recovery moved them back to `todo` (`source: task-executor-recovery-stale-workflow-claim`), creating churn instead of completion.
+  - monitor logs captured deterministic agent infrastructure failures during those cycles, including:
+    - `primary SDK "codex" missing prerequisites: @openai/codex-sdk not installed`
+    - `attempt 1 hit deterministic SDK failure; retry suppressed: [agent-pool] no SDK available...`
+    - `Codex SDK runtime missing at ...codex.exe`
+  - after the churn window, the daemon stopped entirely, which explains why run history later went quiet.
+- Systemic fix applied:
+  - updated `workflow-templates/task-lifecycle.mjs`
+  - added explicit success gates after `run-agent-plan`, `run-agent-tests`, and `run-agent-implement`
+  - agent-phase failure now blocks the task with the phase error/failure kind and routes into normal cleanup instead of falling through to commit detection / no-commit retry loops
+- Validation:
+  - `npm run syntax:check` passed
+  - `npm test -- tests/workflow-task-lifecycle.test.mjs tests/workflow-templates.test.mjs` passed (`344` tests)
+  - `npm run build` passed
+  - full `npm test` still fails in the suite runner before completion:
+    - `tools/vitest-full-suite.mjs` batch 1 exits `No test files found` for its generated Vitest filter set
+- Runtime recovery:
+  - restarted Bosun with:
+    - `node cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-auto-update`
+  - verified running:
+    - `node cli.mjs --daemon-status --config-dir .bosun --repo-root .` → `bosun daemon is running (PID 12428)`
+  - verified fresh workflow activity after restart:
+    - `Bosun PR Watchdog` run `7e0553f9-fd36-4fa0-ba42-5550cf99603f`
+    - `Task Batch Processor` run `3b22b475-7b77-4cb7-b20e-26a63024e3ba`
+    - `Task Lifecycle` run `2fa9f5fb-2da0-439a-8f19-e4c5ffdfab8f`

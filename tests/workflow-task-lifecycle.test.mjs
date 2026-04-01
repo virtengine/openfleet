@@ -4166,6 +4166,8 @@ describe("template-task-lifecycle", () => {
       "claim-ok", "set-inprogress", "acquire-worktree", "worktree-ok",
       "resolve-executor", "record-head", "read-workflow-contract",
       "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
+      "plan-agent-ok", "tests-agent-ok", "implement-agent-ok",
+      "set-blocked-agent-plan-failed", "set-blocked-agent-tests-failed", "set-blocked-agent-implement-failed",
       "claim-stolen", "detect-commits", "has-commits",
       "pre-pr-validation", "pre-pr-validation-ok", "set-fix-summary", "auto-fix-validation", "retry-pre-pr-validation", "retry-validation-ok", "log-validation-failed", "set-blocked-validation-failed", "notify-validation-blocked",
       "push-branch", "push-ok", "build-pr-body", "create-pr", "set-inreview", "handoff-pr-progressor", "log-success",
@@ -4196,12 +4198,18 @@ describe("template-task-lifecycle", () => {
     expect(resolveEdge.source).toBe("worktree-ok");
   });
 
-  it("has claim-stolen check after the 3-phase agent sequence", () => {
+  it("gates each agent phase before entering the next stage or cleanup", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t.edges.find((e) => e.source === "build-prompt" && e.target === "run-agent-plan")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "run-agent-plan" && e.target === "run-agent-tests")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "run-agent-tests" && e.target === "run-agent-implement")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "run-agent-implement" && e.target === "claim-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-plan" && e.target === "plan-agent-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "plan-agent-ok" && e.target === "run-agent-tests")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "plan-agent-ok" && e.target === "set-blocked-agent-plan-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-tests" && e.target === "tests-agent-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "tests-agent-ok" && e.target === "run-agent-implement")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "tests-agent-ok" && e.target === "set-blocked-agent-tests-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-implement" && e.target === "implement-agent-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "implement-agent-ok" && e.target === "claim-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "implement-agent-ok" && e.target === "set-blocked-agent-implement-failed")).toBeDefined();
   });
 
   it("push-branch uses merge-based push config", () => {
