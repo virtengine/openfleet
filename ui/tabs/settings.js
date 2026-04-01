@@ -147,6 +147,16 @@ const SETTINGS_STYLES = `
   font-weight: 600;
 }
 .settings-category-tab-icon { font-size: 15px; }
+.settings-mode-switch .MuiToggleButtonGroup-root {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.settings-mode-switch .MuiToggleButton-root {
+  min-width: 0;
+  padding-inline: 10px;
+  line-height: 1.2;
+}
 /* Search wrapper */
 .settings-search { margin-bottom: 8px; }
 /* Floating save bar */
@@ -355,6 +365,15 @@ const SETTINGS_STYLES = `
 .setting-input-wrap select {
   appearance: auto;
 }
+.setting-input-wrap--secret {
+  align-items: stretch;
+}
+.setting-secret-field {
+  width: 100%;
+}
+.setting-secret-field .MuiOutlinedInput-root {
+  padding-right: 4px;
+}
 .setting-input-wrap select option {
   background: #ffffff;
   color: #111827;
@@ -376,7 +395,7 @@ const SETTINGS_STYLES = `
   border-radius: 10px;
   margin-bottom: 12px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   font-size: 13px;
 }
@@ -396,9 +415,44 @@ const SETTINGS_STYLES = `
   color: var(--accent, #5a7cff);
 }
 .settings-banner-text { flex: 1; }
+.settings-banner-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary, #fff);
+  margin-bottom: 8px;
+}
+.settings-banner-paths {
+  gap: 12px;
+}
+.settings-banner-paths .settings-banner-text {
+  min-width: 0;
+}
+.settings-banner-path-list {
+  display: grid;
+  gap: 8px;
+}
+.settings-banner-path {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-card, rgba(17, 24, 39, 0.82)) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border, rgba(148, 163, 184, 0.22)) 88%, transparent);
+}
+.settings-banner-path-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #94a3b8);
+}
 .settings-banner code {
+  display: block;
   overflow-wrap: anywhere;
   word-break: break-word;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.45;
 }
 /* Diff display for confirm dialog */
 .settings-diff {
@@ -575,6 +629,10 @@ body.settings-save-open .main-content {
     width: 100%;
     justify-content: flex-end;
   }
+  .settings-mode-switch .MuiToggleButton-root {
+    font-size: 12px;
+    padding-inline: 8px;
+  }
   .setting-input-wrap {
     flex-direction: column;
     align-items: stretch;
@@ -602,6 +660,12 @@ body.settings-save-open .main-content {
 @media (max-width: 640px) {
   .settings-category-tabs {
     display: none;
+  }
+  .settings-mode-switch .MuiToggleButtonGroup-root {
+    grid-template-columns: 1fr;
+  }
+  .settings-mode-switch .MuiToggleButton-root {
+    justify-content: flex-start;
   }
   .setting-row .segmented-btn {
     flex: 1 1 calc(50% - 4px);
@@ -1307,27 +1371,34 @@ function ServerConfigMode() {
 
         case "secret": {
           control = html`
-            <div class="setting-input-wrap">
+            <div class="setting-input-wrap setting-input-wrap--secret">
               <${TextField}
                 type=${secretVisible ? "text" : "password"}
                 size="small"
                 variant="outlined"
                 fullWidth
+                className="setting-secret-field"
                 value=${value}
                 placeholder="Enter value…"
                 onInput=${(e) => handleChange(def.key, e.target.value)}
-              />
-              <${IconButton}
-                size="small"
-                onClick=${(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  toggleSecret(def.key);
+                InputProps=${{
+                  endAdornment: html`
+                    <${InputAdornment} position="end">
+                      <${IconButton}
+                        size="small"
+                        onClick=${(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleSecret(def.key);
+                        }}
+                        title=${secretVisible ? "Hide" : "Show"}
+                      >
+                        ${resolveIcon(secretVisible ? ":eyeOff:" : ":eye:")}
+                      <//>
+                    </${InputAdornment}>
+                  `,
                 }}
-                title=${secretVisible ? "Hide" : "Show"}
-              >
-                ${resolveIcon(secretVisible ? ":eyeOff:" : ":eye:")}
-              <//>
+              />
             </div>
           `;
           break;
@@ -1469,11 +1540,21 @@ function ServerConfigMode() {
     ${serverMeta?.configPath &&
     !loadError &&
     html`
-      <div class="settings-banner settings-banner-info">
+      <div class="settings-banner settings-banner-info settings-banner-paths">
         <span>${resolveIcon(":compass:")}</span>
-        <span class="settings-banner-text">
-          Settings are saved to <code>${serverMeta.envPath}</code> and synced to <code>${serverMeta.configPath}</code> for supported keys.
-        </span>
+        <div class="settings-banner-text">
+          <div class="settings-banner-title">Server settings write to these files</div>
+          <div class="settings-banner-path-list">
+            <div class="settings-banner-path">
+              <div class="settings-banner-path-label">.env file</div>
+              <code>${serverMeta.envPath}</code>
+            </div>
+            <div class="settings-banner-path">
+              <div class="settings-banner-path-label">Config JSON</div>
+              <code>${serverMeta.configPath}</code>
+            </div>
+          </div>
+        </div>
       </div>
     `}
 
@@ -1659,37 +1740,37 @@ function ServerConfigMode() {
       <//>
     `}
 
-    <!-- Floating save bar - always visible -->
-    <div class=${`settings-save-bar ${changeCount > 0 ? 'settings-save-bar--dirty' : 'settings-save-bar--clean'}`}>
-      <div class="save-bar-info">
-        <span class=${`setting-modified-dot ${changeCount === 0 ? 'setting-modified-dot--clean' : ''}`}></span>
-        <span>
-          ${changeCount > 0
-            ? `${changeCount} unsaved change${changeCount !== 1 ? "s" : ""}`
-            : restartCountdownSeconds != null
-              ? restartCountdownSeconds > 0
+    <!-- Floating save bar - only when action or reload state exists -->
+    ${(changeCount > 0 || restartCountdownSeconds != null) && html`
+      <div class=${`settings-save-bar ${changeCount > 0 ? 'settings-save-bar--dirty' : 'settings-save-bar--clean'}`}>
+        <div class="save-bar-info">
+          <span class=${`setting-modified-dot ${changeCount === 0 ? 'setting-modified-dot--clean' : ''}`}></span>
+          <span>
+            ${changeCount > 0
+              ? `${changeCount} unsaved change${changeCount !== 1 ? "s" : ""}`
+              : restartCountdownSeconds > 0
                 ? `Reload scheduled in ${restartCountdownSeconds}s`
-                : (wsOk ? "Waiting for runtime reload" : "Restarting now")
-              : "All changes saved"}
-        </span>
+                : (wsOk ? "Waiting for runtime reload" : "Restarting now")}
+          </span>
+        </div>
+        <div class="save-bar-actions">
+          ${changeCount > 0 && html`
+            <${Button} variant="text" size="small" onClick=${handleDiscard}>
+              Discard
+            <//>
+            <${Button}
+              variant="contained"
+              color="primary"
+              size="small"
+              onClick=${handleSaveClick}
+              disabled=${saving}
+            >
+              ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Save Changes"}
+            <//>
+          `}
+        </div>
       </div>
-      <div class="save-bar-actions">
-        ${changeCount > 0 && html`
-          <${Button} variant="text" size="small" onClick=${handleDiscard}>
-            Discard
-          <//>
-          <${Button}
-            variant="contained"
-            color="primary"
-            size="small"
-            onClick=${handleSaveClick}
-            disabled=${saving}
-          >
-            ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Save Changes"}
-          <//>
-        `}
-      </div>
-    </div>
+    `}
 
     <!-- Confirm dialog with diff -->
     ${confirmOpen &&
@@ -3967,7 +4048,7 @@ export function SettingsTab() {
   return html`
     <div class="settings-content-constrained">
       <!-- Top-level mode switcher -->
-      <div style="margin-bottom:12px">
+      <div class="settings-mode-switch" style="margin-bottom:12px">
         <${SegmentedControl}
           options=${[
             { value: "preferences", label: "App Preferences" },
