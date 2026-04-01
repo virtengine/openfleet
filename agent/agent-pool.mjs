@@ -3758,8 +3758,10 @@ function isCodexResumeTimeoutError(errorValue) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null }>}
  */
 async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
-  // Coerce to number — prevents string concatenation in setTimeout arithmetic
-  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
+  // Coerce to number and clamp to Node.js setTimeout max (2^31-1 ms ≈ 24.8 days)
+  // to prevent resource exhaustion via user-controlled duration values.
+  const MAX_SET_TIMEOUT_MS = 2_147_483_647;
+  timeoutMs = Math.min(Number(timeoutMs) || DEFAULT_TIMEOUT_MS, MAX_SET_TIMEOUT_MS);
   const { onEvent, abortController: externalAC, envOverrides = null } = extra;
 
   let CodexClass;

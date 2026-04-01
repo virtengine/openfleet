@@ -24,6 +24,10 @@ function hasOwn(obj, key) {
   return Boolean(obj) && Object.prototype.hasOwnProperty.call(obj, key);
 }
 
+function isSafeKey(key) {
+  return key !== "__proto__" && key !== "constructor" && key !== "prototype";
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -161,6 +165,7 @@ export function setConfigValueAtPath(obj, pathParts = [], value) {
   let cursor = obj;
   for (let index = 0; index < pathParts.length; index += 1) {
     const part = pathParts[index];
+    if (!isSafeKey(part)) return obj;
     if (index === pathParts.length - 1) {
       cursor[part] = value;
       return obj;
