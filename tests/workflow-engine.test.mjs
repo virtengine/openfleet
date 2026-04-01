@@ -1499,7 +1499,7 @@ describe("WorkflowEngine - run history details", () => {
 
     const indexPath = join(tmpDir, "runs", "index.json");
     const index = JSON.parse(readFileSync(indexPath, "utf8"));
-    const nextIndex = index.map((entry) => (
+    const nextIndex = (Array.isArray(index?.runs) ? index.runs : []).map((entry) => (
       entry?.runId === runId
         ? {
             ...entry,
@@ -1514,7 +1514,7 @@ describe("WorkflowEngine - run history details", () => {
           }
         : entry
     ));
-    writeFileSync(indexPath, JSON.stringify(nextIndex, null, 2), "utf8");
+    writeFileSync(indexPath, JSON.stringify({ runs: nextIndex }, null, 2), "utf8");
 
     const page = engine.getRunHistoryPage(wf.id, { offset: 0, limit: 1 });
     expect(page.runs[0]).toEqual(expect.objectContaining({

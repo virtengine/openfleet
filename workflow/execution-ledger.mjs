@@ -752,13 +752,35 @@ export class WorkflowExecutionLedger {
     const ledger = this.getRunLedger(runId);
     if (!ledger) return [];
     const rootRunId = ledger.rootRunId || ledger.runId;
-    return this.listRunLedgers()
+    const cached = this._readCached(this._runFamilyCache, rootRunId);
+    if (cached) return cached;
+    if (this._canReadStateLedger()) {
+      try {
+        const family = listWorkflowRunFamilyFromStateLedger(runId, { anchorPath: this.runsDir })
+          .filter(Boolean)
+          .sort((left, right) => {
+            const delta = toTimestamp(left?.startedAt || left?.updatedAt) - toTimestamp(right?.startedAt || right?.updatedAt);
+            if (delta !== 0) return delta;
+            return String(left?.runId || "").localeCompare(String(right?.runId || ""));
+          });
+        if (family.length > 0) {
+          for (const entry of family) {
+            if (entry?.runId) this._writeCached(this._runLedgerCache, entry.runId, entry);
+          }
+          return this._writeCached(this._runFamilyCache, rootRunId, family);
+        }
+      } catch {
+        /* file fallback below */
+      }
+    }
+    const family = this.listRunLedgers()
       .filter((entry) => (entry?.rootRunId || entry?.runId) === rootRunId)
       .sort((left, right) => {
         const delta = toTimestamp(left?.startedAt || left?.updatedAt) - toTimestamp(right?.startedAt || right?.updatedAt);
         if (delta !== 0) return delta;
         return String(left?.runId || "").localeCompare(String(right?.runId || ""));
       });
+    return this._writeCached(this._runFamilyCache, rootRunId, family);
   }
 
   getTaskIdentity(runId) {
