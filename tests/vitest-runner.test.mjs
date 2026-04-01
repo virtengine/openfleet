@@ -162,7 +162,7 @@ describe("vitest-runner", () => {
   it("keeps the slow template full-pipeline execution opt-in for local runs", () => {
     const source = readFileSync(resolve(repoRoot, "tests", "workflow-templates-e2e.test.mjs"), "utf8");
 
-    expect(source).toContain('process.env.CI === "true" || process.env.BOSUN_RUN_HEAVY_TESTS === "1"');
+    expect(source).toContain('process.env.BOSUN_RUN_HEAVY_TESTS === "1"');
     expect(source).toContain("const fullPipelineIt = runFullTemplatePipelineE2E ? it : it.skip;");
     expect(source).toContain('fullPipelineIt("installs and executes every template in sequence without cross-contamination"');
   });

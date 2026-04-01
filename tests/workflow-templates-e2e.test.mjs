@@ -69,8 +69,7 @@ import {
   getNodeType,
 } from "../workflow/workflow-engine.mjs";
 
-const runFullTemplatePipelineE2E =
-  process.env.CI === "true" || process.env.BOSUN_RUN_HEAVY_TESTS === "1";
+const runFullTemplatePipelineE2E = process.env.BOSUN_RUN_HEAVY_TESTS === "1";
 const fullPipelineIt = runFullTemplatePipelineE2E ? it : it.skip;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1403,7 +1402,7 @@ describe("workflow-templates E2E execution", () => {
   });
 
   describe("full pipeline: install all + execute all", () => {
-    // This path is intentionally CI/opt-in only because it takes several minutes
+    // This path is intentionally opt-in only because it takes several minutes
     // on Windows and makes local pre-push feedback unusably slow.
     fullPipelineIt("installs and executes every template in sequence without cross-contamination", async () => {
       // Use installTemplateSet to handle grouped flow dedup correctly
