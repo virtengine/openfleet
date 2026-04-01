@@ -776,6 +776,11 @@ function clampTimerDelayMs(delayMs, label = "timer") {
   return clamped;
 }
 
+// Application-level guardrail for harness turn timeouts, independent of the
+// underlying Node.js timer maximum. This prevents user-controlled values from
+// keeping Codex threads alive for unbounded durations.
+const MAX_HARNESS_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
+
 function getFirstEventTimeoutMs(totalTimeoutMs) {
   return resolveCodexStreamSafety(totalTimeoutMs).firstEventTimeoutMs;
 }
@@ -4732,7 +4737,17 @@ function buildHarnessTurnExecutor(options = {}) {
     timeoutMs,
   }) {
     const cwd = stage.cwd || options.cwd || profile.cwd || REPO_ROOT;
-    const resolvedTimeoutMs = timeoutMs || stage.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS;
+    let resolvedTimeoutMs = timeoutMs || stage.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS;
+    // Clamp user-controlled timeouts to a reasonable application-level range to
+    // avoid resource exhaustion via excessively long-running harness turns.
+    if (!Number.isFinite(Number(resolvedTimeoutMs)) || Number(resolvedTimeoutMs) <= 0) {
+      resolvedTimeoutMs = DEFAULT_TIMEOUT_MS;
+    } else {
+      resolvedTimeoutMs = Math.min(
+        Math.max(1, Math.trunc(Number(resolvedTimeoutMs))),
+        MAX_HARNESS_TIMEOUT_MS,
+      );
+    }
     const sessionType = stage.sessionType || profile.sessionType || options.sessionType || "task";
     const sdk = stage.sdk || options.sdk || profile.sdk || undefined;
     const model = stage.model || options.model || profile.model || undefined;
