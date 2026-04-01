@@ -14,14 +14,24 @@
  *   - Persistent scoped memory retrieval for team/workspace/session/run
  *
  * Knowledge entries are appended to a `## Agent Learnings` section at the
- * bottom of the target file (default: AGENTS.md) and indexed in a persistent
- * JSON registry for lightweight retrieval during later runs.
+ * bottom of the target file (default: AGENTS.md), mirrored into the SQLite
+ * state ledger, and projected into a compatibility JSON registry for later
+ * runs.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import crypto from "node:crypto";
+// Lazy-load state-ledger-sqlite functions to avoid pulling in node:sqlite on
+// Node < 22 runtimes (e.g. Node 20 CI) where the built-in module doesn't exist.
+let _stateLedgerModule;
+async function getStateLedgerModule() {
+  if (!_stateLedgerModule) {
+    _stateLedgerModule = await import("../lib/state-ledger-sqlite.mjs");
+  }
+  return _stateLedgerModule;
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -64,6 +74,33 @@ function normalizeText(value) {
 function normalizeNullable(value) {
   const text = normalizeText(value);
   return text || null;
+}
+
+function normalizeStringList(value, { maxItems = 12, maxLength = 240 } = {}) {
+  const rawValues = Array.isArray(value)
+    ? value
+    : (typeof value === "string" && value.includes(",")
+        ? value.split(",")
+        : [value]);
+  const out = [];
+  const seen = new Set();
+  for (const entry of rawValues) {
+    const text = normalizeText(entry);
+    if (!text) continue;
+    const clipped = text.length > maxLength ? `${text.slice(0, maxLength - 1).trimEnd()}…` : text;
+    const key = clipped.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clipped);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function normalizeConfidence(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.min(1, parsed));
 }
 
 function normalizeScopeLevel(value) {
@@ -130,6 +167,13 @@ function serializeEntry(entry) {
     workspaceId: normalizeNullable(entry?.workspaceId),
     sessionId: normalizeNullable(entry?.sessionId),
     runId: normalizeNullable(entry?.runId),
+    workflowId: normalizeNullable(entry?.workflowId),
+    strategyId: normalizeNullable(entry?.strategyId),
+    confidence: normalizeConfidence(entry?.confidence),
+    verificationStatus: normalizeNullable(entry?.verificationStatus),
+    verifiedAt: normalizeNullable(entry?.verifiedAt),
+    provenance: normalizeStringList(entry?.provenance),
+    evidence: normalizeStringList(entry?.evidence),
     tags: Array.isArray(entry?.tags)
       ? entry.tags.map((tag) => normalizeText(tag)).filter(Boolean)
       : [],
@@ -151,7 +195,7 @@ function normalizeRegistryEntry(raw) {
   return entry;
 }
 
-async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
+async function loadLegacyRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
   const registryPath = getRegistryPath(repoRoot);
   if (!existsSync(registryPath)) return createEmptyRegistry();
 
@@ -168,6 +212,44 @@ async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process
   } catch {
     return createEmptyRegistry();
   }
+}
+
+async function backfillLedgerEntries(repoRoot, entries = []) {
+  let mod;
+  try { mod = await getStateLedgerModule(); } catch { return; }
+  for (const rawEntry of Array.isArray(entries) ? entries : []) {
+    const entry = normalizeRegistryEntry(rawEntry);
+    if (!entry) continue;
+    try {
+      mod.appendKnowledgeEntryToStateLedger(entry, { repoRoot });
+    } catch {
+      // best-effort migration only
+    }
+  }
+}
+
+async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
+  try {
+    const mod = await getStateLedgerModule();
+    const entries = mod.listKnowledgeEntriesFromStateLedger({ repoRoot, limit: 5000 })
+      .map((entry) => normalizeRegistryEntry(entry))
+      .filter(Boolean);
+    if (entries.length > 0) {
+      return {
+        version: REGISTRY_VERSION,
+        updatedAt: entries[0]?.timestamp || new Date().toISOString(),
+        entries,
+      };
+    }
+  } catch {
+    // fall back to legacy registry
+  }
+
+  const legacyRegistry = await loadLegacyRegistryEntries(repoRoot);
+  if (legacyRegistry.entries.length > 0) {
+    await backfillLedgerEntries(repoRoot, legacyRegistry.entries);
+  }
+  return legacyRegistry;
 }
 
 async function saveRegistryEntries(repoRoot, registry) {
@@ -234,6 +316,11 @@ function buildSearchText(entry) {
     entry.workspaceId,
     entry.sessionId,
     entry.runId,
+    entry.workflowId,
+    entry.strategyId,
+    entry.verificationStatus,
+    ...(Array.isArray(entry.provenance) ? entry.provenance : []),
+    ...(Array.isArray(entry.evidence) ? entry.evidence : []),
     ...(Array.isArray(entry.tags) ? entry.tags : []),
   ]
     .filter(Boolean)
@@ -306,6 +393,13 @@ export function buildKnowledgeEntry(opts = {}) {
     workspaceId: normalizeNullable(opts.workspaceId),
     sessionId: normalizeNullable(opts.sessionId),
     runId: normalizeNullable(opts.runId),
+    workflowId: normalizeNullable(opts.workflowId),
+    strategyId: normalizeNullable(opts.strategyId),
+    confidence: normalizeConfidence(opts.confidence),
+    verificationStatus: normalizeNullable(opts.verificationStatus),
+    verifiedAt: normalizeNullable(opts.verifiedAt),
+    provenance: normalizeStringList(opts.provenance),
+    evidence: normalizeStringList(opts.evidence),
     tags: Array.isArray(opts.tags)
       ? opts.tags.map((tag) => normalizeText(tag)).filter(Boolean)
       : [],
@@ -331,6 +425,25 @@ export function formatEntryAsMarkdown(entry) {
   lines.push("");
   lines.push(`> **Agent:** ${entry.agentId} (${entry.agentType})`);
   lines.push(`> **Memory Scope:** ${scopeLevel}:${scopeId}`);
+  if (entry.workflowId) {
+    lines.push(`> **Workflow:** ${entry.workflowId}`);
+  }
+  if (entry.strategyId) {
+    lines.push(`> **Strategy ID:** ${entry.strategyId}`);
+  }
+  if (entry.confidence != null) {
+    lines.push(`> **Confidence:** ${entry.confidence.toFixed(2)}`);
+  }
+  if (entry.verificationStatus || entry.verifiedAt) {
+    const verifiedParts = [entry.verificationStatus, entry.verifiedAt].filter(Boolean);
+    lines.push(`> **Verification:** ${verifiedParts.join(" @ ")}`);
+  }
+  if (Array.isArray(entry.provenance) && entry.provenance.length > 0) {
+    lines.push(`> **Provenance:** ${entry.provenance.join(" | ")}`);
+  }
+  if (Array.isArray(entry.evidence) && entry.evidence.length > 0) {
+    lines.push(`> **Evidence:** ${entry.evidence.join(" | ")}`);
+  }
   if (Array.isArray(entry.tags) && entry.tags.length > 0) {
     lines.push(`> **Tags:** ${entry.tags.join(", ")}`);
   }
@@ -381,6 +494,9 @@ export function validateEntry(entry) {
     "convention",
     "tip",
     "bug",
+    "strategy",
+    "benchmark",
+    "evaluation",
   ];
   if (entry.category && !validCategories.includes(entry.category)) {
     return {
@@ -426,7 +542,7 @@ export function isDuplicate(entry) {
 
 // ── Write ────────────────────────────────────────────────────────────────────
 
-export async function appendKnowledgeEntry(entry) {
+export async function appendKnowledgeEntry(entry, options = {}) {
   const normalizedEntry = serializeEntry(entry);
   const validation = validateEntry(normalizedEntry);
   if (!validation.valid) {
@@ -435,7 +551,8 @@ export async function appendKnowledgeEntry(entry) {
 
   const agentId = normalizeText(normalizedEntry.agentId || "unknown");
   const lastWriteForAgent = knowledgeState.lastWriteByAgent.get(agentId) || 0;
-  if (lastWriteForAgent) {
+  const skipRateLimit = options?.skipRateLimit === true;
+  if (!skipRateLimit && lastWriteForAgent) {
     const elapsed = Date.now() - lastWriteForAgent;
     if (elapsed < RATE_LIMIT_MS) {
       return {
@@ -497,6 +614,18 @@ export async function appendKnowledgeEntry(entry) {
     const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
     registry.entries.push(normalizedEntry);
     await saveRegistryEntries(knowledgeState.repoRoot || process.cwd(), registry);
+    let ledgerPath = null;
+    try {
+      const mod = await getStateLedgerModule();
+      const ledgerResult = mod.appendKnowledgeEntryToStateLedger(normalizedEntry, {
+        repoRoot: knowledgeState.repoRoot || process.cwd(),
+      });
+      ledgerPath = ledgerResult?.path || mod.resolveStateLedgerPath({
+        repoRoot: knowledgeState.repoRoot || process.cwd(),
+      });
+    } catch {
+      // SQLite unavailable on this Node version — skip ledger write
+    }
 
     knowledgeState.entryHashes.add(normalizedEntry.hash);
     knowledgeState.entriesWritten++;
@@ -507,6 +636,7 @@ export async function appendKnowledgeEntry(entry) {
       success: true,
       hash: normalizedEntry.hash,
       registryPath: getRegistryPath(knowledgeState.repoRoot || process.cwd()),
+      ledgerPath,
     };
   } catch (err) {
     return { success: false, reason: `write error: ${err.message}` };
@@ -661,4 +791,3 @@ export function formatKnowledgeSummary() {
       : "No writes this session",
   ].join("\n");
 }
-
