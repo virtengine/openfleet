@@ -342,6 +342,126 @@ function ensureExperimentalNodeTypes() {
   const registerForE2E = (type, handler) => {
     registerNodeType(type, handler, { source: "test-e2e" });
   };
+  const resolveNodeString = (value, ctx) => {
+    if (typeof value === "string") return ctx.resolve(value);
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    return "";
+  };
+  const buildCommandText = (node, ctx) => {
+    const command = String(ctx.resolve(node.config?.command || "") || "").trim();
+    const rawArgs = node.config?.args ?? [];
+    const args = Array.isArray(rawArgs)
+      ? rawArgs.map((value) => resolveNodeString(value, ctx)).filter(Boolean)
+      : [resolveNodeString(rawArgs, ctx)].filter(Boolean);
+    return { command, args, text: [command, ...args].filter(Boolean).join(" ").trim() };
+  };
+  const buildMockReviewSignals = (node, ctx) => {
+    const repo = String(ctx.resolve(node.config?.env?.DIRECT_REPO || "") || ctx.data?.repo || "virtengine/bosun");
+    const prNumber = Number(ctx.resolve(node.config?.env?.DIRECT_PR_NUMBER || "") || ctx.data?.prNumber || 42);
+    const prUrl = String(ctx.resolve(node.config?.env?.DIRECT_PR_URL || "") || ctx.data?.prUrl || `https://github.com/${repo}/pull/${prNumber}`);
+    const actionable = [
+      {
+        kind: "comment",
+        severity: "medium",
+        summary: "Tighten failing review feedback into a focused repair plan.",
+      },
+    ];
+    const qualityChecks = [
+      {
+        name: "unit-tests",
+        conclusion: "failure",
+        summary: "Mock quality check failure",
+      },
+    ];
+    const sonarChecks = [
+      {
+        name: "SonarQube",
+        conclusion: "failure",
+        summary: "Mock SonarQube issue set",
+      },
+    ];
+    return {
+      repo,
+      prNumber,
+      prUrl,
+      sourceKind: String(ctx.resolve(node.config?.env?.DIRECT_EVENT || "") || "schedule"),
+      prDigest: {
+        core: { number: prNumber, url: prUrl, title: "Mock PR" },
+        body: "Mock PR body",
+        files: [{ path: "src/mock.js", additions: 5, deletions: 1 }],
+        issueComments: [],
+        reviews: [],
+        reviewComments: [],
+        checks: qualityChecks,
+        digestSummary: "Mock PR digest summary",
+      },
+      signals: {
+        commentFindings: actionable,
+        qualityChecks,
+        sonarChecks,
+      },
+      commentFindings: actionable,
+      qualityChecks,
+      sonarChecks,
+      actionable,
+      hasSonarFailure: true,
+    };
+  };
+  const buildMockCommandOutput = (node, ctx) => {
+    const { text } = buildCommandText(node, ctx);
+    if (node.config?.parseJson === true) {
+      if (node.id === "fetch-review-signals" || node.id === "fetch-sonar-signals") {
+        return buildMockReviewSignals(node, ctx);
+      }
+      return { ok: true, command: text };
+    }
+    if (/git describe --tags --abbrev=0/i.test(text)) return "v0.0.0";
+    if (/gh pr list --state merged/i.test(text)) {
+      return JSON.stringify([
+        {
+          number: 1,
+          title: "feat: mock release item",
+          labels: [{ name: "feature" }],
+          author: { login: "bosun-bot" },
+          mergedAt: "2026-04-01T00:00:00Z",
+        },
+      ]);
+    }
+    if (/git log /i.test(text)) return "feat: mock release item (#1)\nfix: stabilize tests (#2)";
+    if (/gh pr view/i.test(text)) return '{"number":1,"title":"mock","mergeable":"MERGEABLE","labels":[]}';
+    if (/gh (issue|pr) /i.test(text)) return "[]";
+    if (/npm (run )?build/i.test(text)) return "build ok";
+    if (/npm test/i.test(text)) return "tests ok";
+    if (/npm run lint/i.test(text)) return "lint ok";
+    if (/npm audit/i.test(text)) return '{"vulnerabilities":{}}';
+    if (/git /i.test(text)) return "";
+    return "ok";
+  };
+  const buildMockAgentOutput = (node, ctx) => {
+    if (node.id === "draft-notes") {
+      return {
+        output: [
+          "# What's Changed",
+          "",
+          "## :rocket: Features",
+          "- Added mock release automation (#1)",
+          "",
+          "## :bug: Bug Fixes",
+          "- Stabilized workflow template E2E coverage (#2)",
+        ].join("\n"),
+        releaseNotes: [
+          "# What's Changed",
+          "",
+          "## :rocket: Features",
+          "- Added mock release automation (#1)",
+        ].join("\n"),
+      };
+    }
+    return {
+      output: `mock agent response for ${node.id}`,
+      summary: `mock summary for ${node.id}`,
+    };
+  };
 
   registerIfMissing("meeting.start", {
     describe: () => "Start a meeting session",
@@ -431,6 +551,39 @@ function ensureExperimentalNodeTypes() {
           },
         ],
         guidanceSummary: "Retry with narrower verification scope and preserve current worktree state.",
+      };
+    },
+  });
+
+  registerForE2E("action.run_command", {
+    describe: () => "Execute a deterministic command result for e2e tests",
+    schema: { type: "object", properties: {} },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        output: buildMockCommandOutput(node, ctx),
+        exitCode: 0,
+      };
+    },
+  });
+
+  registerForE2E("action.run_agent", {
+    describe: () => "Return deterministic agent output for e2e tests",
+    schema: { type: "object", properties: {} },
+    async execute(node, ctx) {
+      const { output, summary, releaseNotes } = buildMockAgentOutput(node, ctx);
+      return {
+        success: true,
+        output,
+        summary,
+        releaseNotes,
+        sdk: String(node.config?.sdk || "mock"),
+        items: [],
+        threadId: `agent-${node.id}-${Date.now()}`,
+        sessionId: `agent-${node.id}-${Date.now()}`,
+        attempts: 1,
+        continues: 0,
+        resumed: false,
       };
     },
   });

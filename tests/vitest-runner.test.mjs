@@ -167,6 +167,15 @@ describe("vitest-runner", () => {
     expect(source).toContain('fullPipelineIt("installs and executes every template in sequence without cross-contamination"');
   });
 
+  it("keeps workflow-template e2e command and agent nodes shimmed for local determinism", () => {
+    const source = readFileSync(resolve(repoRoot, "tests", "workflow-templates-e2e.test.mjs"), "utf8");
+
+    expect(source).toContain('registerForE2E("action.run_command"');
+    expect(source).toContain('registerForE2E("action.run_agent"');
+    expect(source).toContain("Execute a deterministic command result for e2e tests");
+    expect(source).toContain("Return deterministic agent output for e2e tests");
+  });
+
   it("detects direct execution for Windows-style script paths", () => {
     const scriptPath = resolve(repoRoot, "tools", "vitest-runner.mjs");
 
