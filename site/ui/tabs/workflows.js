@@ -169,6 +169,19 @@ function mergeWorkflowRunPages(existingRuns, nextRuns) {
   return merged;
 }
 
+function mergeWorkflowRunRefresh(existingRuns, nextRuns) {
+  const merged = [];
+  const seen = new Set();
+  for (const run of [...(nextRuns || []), ...(existingRuns || [])]) {
+    const runId = String(run?.runId || "").trim();
+    const dedupeKey = runId || JSON.stringify(run);
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    merged.push(run);
+  }
+  return merged;
+}
+
 function cloneVars(input) {
   if (!input || typeof input !== "object") return {};
   try {
@@ -2202,6 +2215,7 @@ async function relayoutInstalledTemplateWorkflows() {
 
 async function loadRuns(workflowId, opts = {}) {
   const append = opts.append === true;
+  const preserveExisting = opts.preserveExisting === true && !append;
   const hasScopedWorkflowId = workflowId !== undefined;
   const scopedWorkflowId = hasScopedWorkflowId
     ? (workflowId ? String(workflowId) : null)
@@ -2213,7 +2227,7 @@ async function loadRuns(workflowId, opts = {}) {
     const rawLimit =
       opts.limit != null
         ? Number(opts.limit)
-        : (append ? WORKFLOW_RUN_PAGE_SIZE : Number(workflowRunsLimit.value));
+        : (append || preserveExisting ? WORKFLOW_RUN_PAGE_SIZE : Number(workflowRunsLimit.value));
     const rawOffset =
       opts.offset != null
         ? Number(opts.offset)
@@ -2232,21 +2246,27 @@ async function loadRuns(workflowId, opts = {}) {
     if (append) workflowRunsLoadingMore.value = true;
     else workflowRunsLoading.value = true;
     workflowRunsError.value = "";
+    const existingRunCount = Array.isArray(workflowRuns.value) ? workflowRuns.value.length : 0;
     const data = await apiFetch(buildWorkflowRunApiPath(`${baseUrl}?limit=${limit}&offset=${offset}`));
     if (data?.runs) {
       const pageRuns = Array.isArray(data.runs) ? data.runs : [];
       const mergedRuns = append
         ? mergeWorkflowRunPages(workflowRuns.value, pageRuns)
-        : pageRuns;
+        : (preserveExisting ? mergeWorkflowRunRefresh(workflowRuns.value, pageRuns) : pageRuns);
       const total = Number(data?.pagination?.total);
       const nextOffset = Number(data?.pagination?.nextOffset);
       const hasMore = data?.pagination?.hasMore === true;
+      const effectiveLoadedCount = preserveExisting
+        ? Math.max(existingRunCount, mergedRuns.length)
+        : mergedRuns.length;
       workflowRuns.value = mergedRuns;
       workflowRunsScopeId.value = scopedWorkflowId;
       workflowRunsLimit.value = mergedRuns.length;
-      workflowRunsTotal.value = Number.isFinite(total) ? total : mergedRuns.length;
-      workflowRunsNextOffset.value = Number.isFinite(nextOffset) ? nextOffset : mergedRuns.length;
-      workflowRunsHasMore.value = hasMore || mergedRuns.length < workflowRunsTotal.value;
+      workflowRunsTotal.value = Number.isFinite(total) ? total : effectiveLoadedCount;
+      workflowRunsNextOffset.value = preserveExisting
+        ? Math.max(effectiveLoadedCount, Number.isFinite(nextOffset) ? nextOffset : 0)
+        : (Number.isFinite(nextOffset) ? nextOffset : mergedRuns.length);
+      workflowRunsHasMore.value = hasMore || effectiveLoadedCount < workflowRunsTotal.value;
     }
   } catch (err) {
     workflowRunsError.value = String(err?.message || "Failed to load workflow runs");
@@ -6397,11 +6417,11 @@ function RunHistoryView() {
 
   useEffect(() => {
     let cancelled = false;
-    const pollMs = hasRunningRuns || selectedRunIsRunning ? 3000 : 15000;
+    const pollMs = hasRunningRuns || selectedRunIsRunning ? 8000 : 20000;
 
     const poll = async () => {
       if (cancelled) return;
-      await loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) }).catch(() => {});
+      await loadRuns(undefined, { preserveExisting: true }).catch(() => {});
       await loadApprovals(approvalStatusFilter).catch(() => {});
       if (!cancelled && selectedRunId.value && selectedRunIsRunning) {
         await loadRunDetail(selectedRunId.value).catch(() => {});
@@ -6414,7 +6434,7 @@ function RunHistoryView() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [approvalStatusFilter, hasRunningRuns, loadApprovals, runs.length, selectedRunIsRunning, selectedRunId.value]);
+  }, [approvalStatusFilter, hasRunningRuns, loadApprovals, selectedRunIsRunning, selectedRunId.value]);
 
   const workflowOptions = useMemo(() => {
     const map = new Map();
@@ -8070,7 +8090,7 @@ function RunHistoryView() {
         <${Button}
           variant="text"
           size="small"
-          onClick=${() => loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) })}
+          onClick=${() => loadRuns(undefined, { preserveExisting: true })}
           disabled=${runsLoading}
         >
           ${runsLoading ? html`<${CircularProgress} size=${14} sx=${{ mr: 0.5 }} /> Refreshing…` : "Refresh"}
@@ -8098,7 +8118,7 @@ function RunHistoryView() {
         <${Alert}
           severity="warning"
           sx=${{ mb: 1.5 }}
-          action=${html`<${Button} color="inherit" size="small" onClick=${() => loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) })}>Retry<//>`}
+          action=${html`<${Button} color="inherit" size="small" onClick=${() => loadRuns(undefined, { preserveExisting: true })}>Retry<//>`}
         >
           ${runsError}
         </${Alert}>

@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
+import { skipLocallyForSpeed } from "./test-speed-gates.mjs";
 
 // CLAUDE:SUMMARY - workflow-task-lifecycle tests
 // Exercises task lifecycle workflow nodes and template wiring, including prompt assembly and cache anchoring.
@@ -2543,7 +2544,7 @@ describe("action.acquire_worktree", () => {
     expect(recovery?.recentEvents || []).toEqual([]);
   }, 30000);
 
-  it("recreates dirty managed worktrees and rebases existing task branches onto the latest base", async () => {
+  it.skipIf(skipLocallyForSpeed)("recreates dirty managed worktrees and rebases existing task branches onto the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const branch = "task/recreate-dirty-behind";
     const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));
@@ -2631,7 +2632,7 @@ describe("action.acquire_worktree", () => {
     }
   }, 30000);
 
-  it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
+  it.skipIf(skipLocallyForSpeed)("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const branch = "task/recreate-conflict-behind";
     const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));

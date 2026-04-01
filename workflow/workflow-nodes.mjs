@@ -71,13 +71,17 @@ function spawnAsync(command, args, opts = {}) {
       child.stderr?.on("data", (chunk) => { stderr += chunk; });
     }
     let timedOut = false;
+    let killTimer = null;
     const timer = opts.timeout > 0 ? setTimeout(() => {
       timedOut = true;
       try { child.kill("SIGTERM"); } catch {}
-      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
+      killTimer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
+      if (killTimer?.unref) killTimer.unref();
     }, opts.timeout) : null;
+    if (timer?.unref) timer.unref();
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       if (timedOut) {
         const err = new Error(`Command timed out after ${opts.timeout}ms: ${command}`);
         err.killed = true; err.stdout = stdout; err.stderr = stderr; err.status = null;
@@ -92,10 +96,33 @@ function spawnAsync(command, args, opts = {}) {
     });
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       err.stdout = stdout; err.stderr = stderr;
       reject(err);
     });
   });
+}
+
+function createManagedTimeout(callback, ms) {
+  let timer = null;
+  return {
+    promise: new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
+        try {
+          resolve(callback());
+        } catch (error) {
+          reject(error);
+        }
+      }, ms);
+      if (timer?.unref) timer.unref();
+    }),
+    clear() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  };
 }
 
 function resolveWorkflowCwdValue(rawValue, fallback = process.cwd()) {
@@ -6415,7 +6442,21 @@ registerBuiltinNodeType("action.execute_workflow", {
     }
 
     ctx.log(node.id, `Executing workflow "${workflowId}" (sync)`);
-    const childCtx = await engine.execute(workflowId, childInput, childRunOpts);
+    const timeoutMs = Number(node.config?.timeout) > 0 ? Number(node.config.timeout) : 300000;
+    const timeoutControl = createManagedTimeout(() => {
+      throw new Error(`Workflow "${workflowId}" timed out after ${timeoutMs}ms`);
+    }, timeoutMs);
+
+    let childCtx;
+    try {
+      childCtx = await Promise.race([
+        engine.execute(workflowId, childInput, childRunOpts),
+        timeoutControl.promise,
+      ]);
+    } finally {
+      timeoutControl.clear();
+    }
+
     const childErrors = Array.isArray(childCtx?.errors)
       ? childCtx.errors.map((entry) => ({
           nodeId: entry?.nodeId || null,
@@ -21422,9 +21463,9 @@ registerBuiltinNodeType("flow.parallel", {
 
     if (strategy === "fail-fast") {
       // Use Promise.all — first rejection aborts
-      const timeout$ = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Parallel branches timed out after ${timeoutMs}ms`)), timeoutMs),
-      );
+      const timeoutControl = createManagedTimeout(() => {
+        throw new Error(`Parallel branches timed out after ${timeoutMs}ms`);
+      }, timeoutMs);
       try {
         const raw = await Promise.race([
           Promise.all(branches.map((b) => {
@@ -21433,18 +21474,18 @@ registerBuiltinNodeType("flow.parallel", {
               return r;
             });
           })),
-          timeout$,
+          timeoutControl.promise,
         ]);
         branchResults = raw;
       } catch (err) {
         // One branch failed fast
         branchResults = [{ name: err.branchName || "unknown", success: false, error: err.message }];
+      } finally {
+        timeoutControl.clear();
       }
     } else {
       // all-settled — wait for every branch
-      const timeout$ = new Promise((resolve) =>
-        setTimeout(() => resolve("__timeout__"), timeoutMs),
-      );
+      const timeoutControl = createManagedTimeout(() => "__timeout__", timeoutMs);
       const allSettled$ = Promise.allSettled(branches.map(makeBranchPromise)).then((settled) =>
         settled.map((s, i) =>
           s.status === "fulfilled"
@@ -21453,11 +21494,15 @@ registerBuiltinNodeType("flow.parallel", {
         ),
       );
 
-      const winner = await Promise.race([allSettled$, timeout$]);
-      if (winner === "__timeout__") {
-        branchResults = branches.map((b) => ({ name: b.name, success: false, error: "Timed out" }));
-      } else {
-        branchResults = winner;
+      try {
+        const winner = await Promise.race([allSettled$, timeoutControl.promise]);
+        if (winner === "__timeout__") {
+          branchResults = branches.map((b) => ({ name: b.name, success: false, error: "Timed out" }));
+        } else {
+          branchResults = winner;
+        }
+      } finally {
+        timeoutControl.clear();
       }
     }
 
