@@ -77,6 +77,10 @@ const TAG = "[workflow-engine]";
 const RUN_HISTORY_CACHE_TTL_MS = 2000;
 const RUN_HISTORY_CACHE = new Map();
 
+function clearRunHistoryCache() {
+  RUN_HISTORY_CACHE.clear();
+}
+
 const WORKFLOW_DIR_NAME = "workflows";
 const WORKFLOW_RUNS_DIR = "workflow-runs";
 const WORKFLOW_TRAJECTORIES_DIR = "trajectories";
@@ -4464,7 +4468,7 @@ export class WorkflowEngine extends EventEmitter {
   getRunHistory(workflowId, limit = null) {
     // TTL cache for run history to reduce repeated hydration cost.
     const cache = RUN_HISTORY_CACHE;
-    const key = `${String(workflowId ?? 'ALL')}|${String(limit ?? '')}`;
+    const key = `${String(this.runsDir || "")}|${String(workflowId ?? 'ALL')}|${String(limit ?? '')}`;
     const now = Date.now();
     const cached = cache.get(key);
     if (cached && (now - cached.ts) <= RUN_HISTORY_CACHE_TTL_MS) {
@@ -4476,7 +4480,9 @@ export class WorkflowEngine extends EventEmitter {
     const targetCount = hasLimit
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(resolvedLimit, 200))
       : MAX_PERSISTED_RUNS;
-    const persisted = this._listPersistedRunSummaries(workflowId || null, targetCount).runs;
+    const persisted = this._hydrateRunIndexFromDetails(targetCount)
+      .map((entry) => this._normalizeRunSummary(entry))
+      .filter(Boolean);
 
     const active = this.getActiveRuns();
     const activeRunIds = new Set(active.map((run) => run.runId));
@@ -4545,10 +4551,8 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _hydrateRunIndexFromDetails(targetCount = MAX_PERSISTED_RUNS) {
-    // Invalidate run history cache to avoid stale runs being cached
-    if (globalThis._RUN_HISTORY_CACHE) {
-      globalThis._RUN_HISTORY_CACHE.clear();
-    }
+    // Invalidate run history cache to avoid stale runs being cached.
+    clearRunHistoryCache();
     const normalizedTarget = Number.isFinite(Number(targetCount)) && Number(targetCount) > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(20, Math.floor(Number(targetCount))))
       : MAX_PERSISTED_RUNS;
@@ -7345,6 +7349,7 @@ export class WorkflowEngine extends EventEmitter {
       // Keep last N runs
       if (runs.length > MAX_PERSISTED_RUNS) runs = runs.slice(-MAX_PERSISTED_RUNS);
       this._writeRunIndex(runs);
+      clearRunHistoryCache();
 
       // Save full run detail
       this._writeRunDetail(runId, detail);
@@ -7369,6 +7374,7 @@ export class WorkflowEngine extends EventEmitter {
     const indexPath = resolve(this.runsDir, "index.json");
     writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
     this._runIndexCache = runs;
+    clearRunHistoryCache();
     try {
       this._runIndexCacheMtime = statSync(indexPath).mtimeMs || Date.now();
     } catch {

@@ -36,6 +36,7 @@ import {
   listTaskClaimEventsFromStateLedger,
   listTaskTopologiesFromStateLedger,
   listToolCallsFromStateLedger,
+  listWorkflowRunSummariesPageFromStateLedger,
   listWorkflowEventsFromStateLedger,
   listWorkflowTaskRunEntriesFromStateLedger,
   resetStateLedgerCache,
@@ -177,6 +178,22 @@ describe("state ledger sqlite workflow integration", () => {
 
     const events = listWorkflowEventsFromStateLedger("run-1", { anchorPath: runsDir });
     expect(events.map((event) => event.eventType)).toEqual(["run.start", "run.end"]);
+
+    const pagedSummaries = listWorkflowRunSummariesPageFromStateLedger({
+      anchorPath: runsDir,
+      offset: 0,
+      limit: 10,
+    });
+    expect(pagedSummaries.total).toBe(1);
+    expect(pagedSummaries.runs).toEqual([
+      expect.objectContaining({
+        runId: "run-1",
+        workflowId: "wf-1",
+        status: "completed",
+        taskId: "task-1",
+        sessionId: "session-1",
+      }),
+    ]);
 
     rmSync(join(runsDir, "execution-ledger", "run-1.json"), { force: true });
 

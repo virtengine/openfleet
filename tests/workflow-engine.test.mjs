@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -1459,6 +1459,29 @@ describe("WorkflowEngine - run history details", () => {
     engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
 
     expect(hydrateSpy).toHaveBeenCalledWith(50);
+  });
+
+  it("reads paged run history from SQL-backed summaries when the legacy index is missing", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "SQL History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+
+    const indexPath = join(tmpDir, "runs", "index.json");
+    unlinkSync(indexPath);
+
+    const page = engine.getRunHistoryPage(wf.id, { offset: 0, limit: 10 });
+    expect(page.total).toBeGreaterThanOrEqual(2);
+    expect(page.runs).toHaveLength(2);
+    expect(page.runs[0]).toEqual(expect.objectContaining({
+      workflowId: wf.id,
+      workflowName: "SQL History Workflow",
+    }));
   });
 
   it("paginates global run history beyond the initial page size", async () => {
