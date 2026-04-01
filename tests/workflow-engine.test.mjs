@@ -8092,6 +8092,22 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 
+  it("reads task trace events from lightweight run detail", () => {
+    const getRunDetailSpy = vi.spyOn(engine, "getRunDetail").mockReturnValue({
+      runId: "run-lightweight-trace",
+      detail: {
+        data: {
+          _taskWorkflowEvents: [{ eventType: "workflow.run.start", taskId: "TASK-LIGHTWEIGHT" }],
+        },
+      },
+    });
+
+    const events = engine.getTaskTraceEvents("run-lightweight-trace");
+
+    expect(events).toEqual([{ eventType: "workflow.run.start", taskId: "TASK-LIGHTWEIGHT" }]);
+    expect(getRunDetailSpy).toHaveBeenCalledWith("run-lightweight-trace", { decorate: false });
+  });
+
   it("includes benchmark hints on workflow end events after in-run evaluation", async () => {
     registerNodeType("test.trace.evaluate_current_run", {
       describe: () => "Evaluate current run",

@@ -29,6 +29,7 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
+import { installGitHooks } from "./tools/install-git-hooks.mjs";
 
 const isWin = process.platform === "win32";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -549,13 +550,13 @@ async function main() {
 
   // Auto-install git hooks when inside the repo and hooks are present.
   try {
-    const skipHooks = parseBoolEnv(process.env.BOSUN_SKIP_GIT_HOOKS, false);
-    if (!skipHooks && shouldAutoInstallGitHooks()) {
-      const cwd = process.cwd();
-      const hooksDir = resolve(cwd, ".githooks");
-      if (existsSync(resolve(cwd, ".git")) && existsSync(hooksDir)) {
-        execSync("git config core.hooksPath .githooks", { stdio: "ignore" });
-      }
+    const hookInstall = installGitHooks({ silent: true });
+    if (hookInstall.ok && hookInstall.changed) {
+      const action = hookInstall.repaired ? "repaired" : "installed";
+      console.log(`  :check: Git hooks ${action} (.githooks)`);
+    } else if (!hookInstall.ok && !hookInstall.skipped) {
+      console.warn(`  :alert:  Git hooks not installed: ${hookInstall.error || "unknown git config error"}`);
+      console.warn("     Run: npm run hooks:install");
     }
   } catch {
     // Non-blocking; hooks can be installed via `npm run hooks:install`

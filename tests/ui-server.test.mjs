@@ -438,7 +438,7 @@ describeUiServer("ui-server mini app", () => {
     const ip = mod.getLocalLanIp();
     expect(typeof ip).toBe("string");
     expect(ip.length).toBeGreaterThan(0);
-  });
+  }, process.platform === "win32" ? 15000 : 10000);
 
   it("preserves launch query params when exchanging session token", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

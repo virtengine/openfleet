@@ -6426,9 +6426,13 @@ function RunHistoryView() {
 
     const poll = async () => {
       if (cancelled) return;
-      await loadRuns(undefined, { preserveExisting: true }).catch(() => {});
-      await loadApprovals(approvalStatusFilter).catch(() => {});
-      if (!cancelled && selectedRunId.value && selectedRunIsRunning) {
+      const activeRunId = String(selectedRunId.value || "").trim();
+      if (!activeRunId) {
+        await loadRuns(undefined, { preserveExisting: true }).catch(() => {});
+        await loadApprovals(approvalStatusFilter).catch(() => {});
+        return;
+      }
+      if (!cancelled && selectedRunIsRunning) {
         await loadRunDetail(selectedRunId.value).catch(() => {});
       }
     };
@@ -6839,10 +6843,12 @@ function RunHistoryView() {
       setSelectedRunEvaluation(null);
       setSelectedRunForensics(null);
       setSelectedRunSnapshots([]);
-      return;
+    } else {
+      setSelectedRunEvaluation(null);
+      setSelectedRunForensics(null);
+      setSelectedRunSnapshots([]);
     }
-    refreshRunDiagnostics(selectedRunId.value).catch(() => {});
-  }, [refreshRunDiagnostics, selectedRunId.value]);
+  }, [selectedRunId.value]);
 
   if (selectedRunId.value && runDetailLoading && !selectedRun) {
     return html`

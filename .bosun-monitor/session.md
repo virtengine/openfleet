@@ -609,3 +609,50 @@
     - `npm test` now gets through syntax/import validation and the full-suite runner starts successfully, but it still fails in unrelated pre-existing agent-pool coverage.
     - observed blocker:
       - `tests/async-safety-guards.test.mjs` expecting older `agent/agent-pool.mjs` fire-and-forget registry guard text while the repo currently contains a much larger unrelated agent-pool rewrite.
+
+## 2026-04-02 - SQL-first workflow detail fallback and harness persistence follow-through
+
+- Goal:
+  - continue the SQL migration past run-history pages so workflow run detail can load from SQLite even when `workflow-runs/<runId>.json` is missing, while keeping harness API read paths SQL-first.
+- Source changes:
+  - `lib/state-ledger-sqlite.mjs`
+  - `workflow/workflow-engine.mjs`
+  - `workflow/execution-ledger.mjs`
+  - `tests/state-ledger-sqlite.test.mjs`
+  - `tests/workflow-engine.test.mjs`
+- Behavioral change:
+  - workflow run rows now reserve `workflow_runs.detail_json` in the SQLite state ledger.
+  - workflow checkpoints, active-run snapshots, and final persisted run detail now sync into SQLite in addition to the legacy detail file.
+  - `WorkflowEngine#getRunDetail()` now prefers the SQL detail snapshot before falling back to `workflow-runs/<runId>.json`.
+  - execution-ledger normalization now derives terminal `status`, `endedAt`, and `updatedAt` from the event stream when stored summary fields are stale, which makes file and SQL fallback reads more resilient.
+- Validation:
+  - focused regression set passed:
+    - `npx vitest run tests/state-ledger-sqlite.test.mjs tests/workflow-engine.test.mjs tests/ui-server.test.mjs -t "mirrors workflow execution ledgers into sqlite and falls back to sqlite reads|loads persisted run detail from sqlite when the detail file is missing|runs harness profiles through the API with dry-run, persisted run records, and task-linked history|stops active harness runs through the API and persists aborted task history|nudges active harness runs and resolves approval interventions through the API"`
+  - build passed:
+    - `npm run build`
+- Remaining SQL-first work:
+  - workflow snapshots/forensics/history-adjacent features still retain legacy file dependencies for some richer artifact surfaces (`snapshots`, trajectory exports, and legacy `index.json` maintenance).
+  - harness approval queue persistence is still file-backed through `workflow/approval-queue.mjs`; harness run records/events are SQL-first, but approval request storage itself is not yet migrated.
+
+## 2026-04-02 - SQL-first approval queue persistence
+
+- Goal:
+  - migrate workflow and harness approval queue storage off `requests.json` so approval inbox/API reads come from SQLite first and approval resolution still works when only SQL run state exists.
+- Source changes:
+  - `lib/state-ledger-sqlite.mjs`
+  - `workflow/approval-queue.mjs`
+  - `tests/workflow-approval-queue.test.mjs`
+- Behavioral change:
+  - approval requests now persist into the state ledger using the existing `operator_actions` table with `action_type = "approval_request"`.
+  - approval queue reads (`get`, `getById`, `list`) are now SQL-first with the legacy `.bosun/approvals/requests.json` file kept as a fallback/mirror during migration.
+  - workflow-run approval resolution now updates SQL run detail even if the legacy `workflow-runs/<runId>.json` file is missing.
+  - harness-run approval resolution now updates SQL harness run state even if the legacy `.cache/harness/runs/<runId>.json` record is missing.
+  - `listOperatorActionsFromStateLedger` now supports `actionId`, `actionType`, `scopeId`, and `status` filters for narrower state-ledger queries.
+- Validation:
+  - focused approval suites passed:
+    - `npx vitest run tests/workflow-approval-queue.test.mjs tests/internal-harness.test.mjs tests/ui-server.test.mjs -t "approval|approvals"`
+  - build passed:
+    - `npm run build`
+- Remaining SQL-first work:
+  - workflow snapshots/trajectory exports and parts of `index.json` maintenance are still file-backed.
+  - some workflow approval state updates still mirror back into legacy files for compatibility; storage authority is now SQL-first, but the compatibility write path remains intentionally enabled during migration.

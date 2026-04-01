@@ -1,6 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
+import {
+  getApprovalRequestByScopeFromStateLedger,
+  getApprovalRequestFromStateLedger,
+  getHarnessRunFromStateLedger,
+  getWorkflowRunDetailFromStateLedger,
+  listApprovalRequestsFromStateLedger,
+  upsertApprovalRequestToStateLedger,
+  writeHarnessRunToStateLedger,
+  writeWorkflowRunDetailToStateLedger,
+} from "../lib/state-ledger-sqlite.mjs";
 
 const APPROVAL_QUEUE_RELATIVE_PATH = [".bosun", "approvals", "requests.json"];
 const WORKFLOW_RUNS_RELATIVE_PATH = [".bosun", "workflow-runs"];
@@ -41,6 +51,22 @@ function resolveWorkflowRunsDir(repoRoot) {
   return resolve(String(repoRoot || process.cwd()), ...WORKFLOW_RUNS_RELATIVE_PATH);
 }
 
+function resolveWorkflowLedgerOptions(repoRoot) {
+  return {
+    anchorPath: resolveWorkflowRunsDir(repoRoot),
+  };
+}
+
+function resolveHarnessRunsDir(repoRoot) {
+  return resolve(String(repoRoot || process.cwd()), ".cache", "harness", "runs");
+}
+
+function resolveHarnessLedgerOptions(repoRoot) {
+  return {
+    anchorPath: resolveHarnessRunsDir(repoRoot),
+  };
+}
+
 function resolveRunDetailPath(repoRoot, runId) {
   return resolve(resolveWorkflowRunsDir(repoRoot), `${runId}.json`);
 }
@@ -56,11 +82,24 @@ export function resolveApprovalQueuePath(repoRoot) {
 function readApprovalQueue(repoRoot) {
   const filePath = resolveApprovalQueuePath(repoRoot);
   const data = readJsonFile(filePath, { version: 1, requests: [] });
+  let requests = Array.isArray(data?.requests) ? data.requests : [];
+  try {
+    const sqlRequests = listApprovalRequestsFromStateLedger({
+      ...resolveWorkflowLedgerOptions(repoRoot),
+      includeResolved: true,
+      limit: 500,
+    });
+    if (Array.isArray(sqlRequests) && sqlRequests.length > 0) {
+      requests = sqlRequests;
+    }
+  } catch {
+    // fall back to the legacy JSON queue
+  }
   return {
     path: filePath,
     data: {
       version: Number(data?.version || 1) || 1,
-      requests: Array.isArray(data?.requests) ? data.requests : [],
+      requests,
     },
   };
 }
@@ -454,6 +493,16 @@ function getApprovalRequestIndex(requests, scopeType, scopeId) {
 
 export function getApprovalRequest(scopeType, scopeId, options = {}) {
   const repoRoot = resolve(String(options.repoRoot || process.cwd()));
+  try {
+    const sqlRequest = getApprovalRequestByScopeFromStateLedger(
+      scopeType,
+      scopeId,
+      resolveWorkflowLedgerOptions(repoRoot),
+    );
+    if (sqlRequest) return sqlRequest;
+  } catch {
+    // fall back to legacy JSON queue below
+  }
   const queue = readApprovalQueue(repoRoot);
   const requests = Array.isArray(queue.data.requests) ? queue.data.requests : [];
   const index = getApprovalRequestIndex(requests, scopeType, scopeId);
@@ -462,6 +511,15 @@ export function getApprovalRequest(scopeType, scopeId, options = {}) {
 
 export function getApprovalRequestById(requestId, options = {}) {
   const repoRoot = resolve(String(options.repoRoot || process.cwd()));
+  try {
+    const sqlRequest = getApprovalRequestFromStateLedger(
+      requestId,
+      resolveWorkflowLedgerOptions(repoRoot),
+    );
+    if (sqlRequest) return sqlRequest;
+  } catch {
+    // fall back to legacy JSON queue below
+  }
   const queue = readApprovalQueue(repoRoot);
   const normalizedRequestId = normalizeText(requestId);
   const request = (queue.data.requests || []).find(
@@ -480,6 +538,7 @@ export function upsertApprovalRequest(request = {}, options = {}) {
   if (!next) return { ok: false, request: null, path: queue.path };
   if (existingIndex >= 0) requests[existingIndex] = next;
   else requests.push(next);
+  upsertApprovalRequestToStateLedger(next, resolveWorkflowLedgerOptions(repoRoot));
   writeApprovalQueue(repoRoot, requests);
   const created = existingIndex < 0;
   const reopened = existing && normalizeApprovalRequestStatus(existing?.status, "pending") !== "pending";
@@ -539,12 +598,26 @@ export function getHarnessRunApprovalRequest(runId, options = {}) {
 
 export function listApprovalRequests(options = {}) {
   const repoRoot = resolve(String(options.repoRoot || process.cwd()));
-  const queue = readApprovalQueue(repoRoot);
   const status = normalizeText(options.status).toLowerCase();
   const scopeType = normalizeText(options.scopeType).toLowerCase();
   const includeResolved = options.includeResolved === true;
   const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.min(500, Math.trunc(Number(options.limit)))) : 100;
-  let requests = Array.isArray(queue.data.requests) ? queue.data.requests.slice() : [];
+  let requests = [];
+  try {
+    requests = listApprovalRequestsFromStateLedger({
+      ...resolveWorkflowLedgerOptions(repoRoot),
+      scopeType,
+      status,
+      includeResolved,
+      limit,
+    });
+  } catch {
+    requests = [];
+  }
+  if (!Array.isArray(requests) || requests.length === 0) {
+    const queue = readApprovalQueue(repoRoot);
+    requests = Array.isArray(queue.data.requests) ? queue.data.requests.slice() : [];
+  }
   if (scopeType) {
     requests = requests.filter((entry) => normalizeText(entry?.scopeType).toLowerCase() === scopeType);
   }
@@ -559,7 +632,7 @@ export function listApprovalRequests(options = {}) {
     ));
   return {
     ok: true,
-    path: queue.path,
+    path: resolveApprovalQueuePath(repoRoot),
     requests: requests.slice(0, limit).map((entry) => cloneJson(entry)),
   };
 }
@@ -603,10 +676,12 @@ function updateWorkflowRunApprovalState(repoRoot, request, resolution = {}) {
   const runId = normalizeText(request?.scopeId);
   if (!runId) throw new Error("Workflow-run approval request is missing scopeId.");
   const detailPath = resolveRunDetailPath(repoRoot, runId);
-  if (!existsSync(detailPath)) {
+  const detail = existsSync(detailPath)
+    ? readJsonFile(detailPath, {})
+    : getWorkflowRunDetailFromStateLedger(runId, resolveWorkflowLedgerOptions(repoRoot));
+  if (!detail || typeof detail !== "object") {
     throw new Error(`Workflow run detail not found for ${runId}.`);
   }
-  const detail = readJsonFile(detailPath, {});
   const now = normalizeTimestamp(resolution.resolvedAt);
   const actorId = normalizeText(resolution.actorId) || null;
   const note = normalizeText(resolution.note) || null;
@@ -646,6 +721,7 @@ function updateWorkflowRunApprovalState(repoRoot, request, resolution = {}) {
     note,
   };
   writeJsonFile(detailPath, detail);
+  writeWorkflowRunDetailToStateLedger(runId, detail, resolveWorkflowLedgerOptions(repoRoot));
 
   const indexPath = resolveRunIndexPath(repoRoot);
   const indexData = readJsonFile(indexPath, { runs: [] });
@@ -712,10 +788,12 @@ function updateHarnessRunApprovalState(repoRoot, request, resolution = {}) {
   const runId = normalizeText(request?.scopeId || request?.runId);
   if (!runId) throw new Error("Harness-run approval request is missing scopeId.");
   const runPath = resolveHarnessRunRecordPath(repoRoot, runId);
-  if (!runPath || !existsSync(runPath)) {
+  const runRecord = runPath && existsSync(runPath)
+    ? readJsonFile(runPath, {})
+    : getHarnessRunFromStateLedger(runId, resolveHarnessLedgerOptions(repoRoot));
+  if (!runRecord || typeof runRecord !== "object") {
     return { runId, runRecord: null, runPath };
   }
-  const runRecord = readJsonFile(runPath, {});
   const decision = normalizeApprovalRequestStatus(resolution.decision, "approved");
   const now = normalizeTimestamp(resolution.resolvedAt);
   const actorId = normalizeText(resolution.actorId) || null;
@@ -734,7 +812,10 @@ function updateHarnessRunApprovalState(repoRoot, request, resolution = {}) {
   });
   runRecord.approvals = approvals;
   runRecord.latestApproval = approvals[approvals.length - 1] || null;
-  writeJsonFile(runPath, runRecord);
+  if (runPath) {
+    writeJsonFile(runPath, runRecord);
+  }
+  writeHarnessRunToStateLedger(runRecord, resolveHarnessLedgerOptions(repoRoot));
   return {
     runId,
     runRecord: cloneJson(runRecord),
@@ -774,6 +855,7 @@ export function resolveApprovalRequest(requestId, options = {}) {
     updateResult = updateHarnessRunApprovalState(repoRoot, next, next.resolution);
   }
   requests[index] = next;
+  upsertApprovalRequestToStateLedger(next, resolveWorkflowLedgerOptions(repoRoot));
   writeApprovalQueue(repoRoot, requests);
   return {
     ok: true,
@@ -808,6 +890,7 @@ export function expireApprovalRequest(requestId, options = {}) {
     updateResult = updateHarnessRunApprovalState(repoRoot, next, next.resolution);
   }
   requests[index] = next;
+  upsertApprovalRequestToStateLedger(next, resolveWorkflowLedgerOptions(repoRoot));
   writeApprovalQueue(repoRoot, requests);
   return {
     ok: true,

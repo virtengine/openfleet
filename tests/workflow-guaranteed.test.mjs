@@ -45,6 +45,7 @@ import { skipLocallyForSpeed } from "./test-speed-gates.mjs";
 
 let _activeDispatch = (_cmd) => "";
 let _activeExecSandbox = null;
+let _pendingChildProcessOps = 0;
 
 function isoDaysAgo(daysAgo = 0, hour = 10) {
   const date = new Date(Date.now() - (Number(daysAgo) * 24 * 60 * 60 * 1000));
@@ -87,14 +88,15 @@ vi.mock("node:child_process", async (importOriginal) => {
       }
     },
 
-    spawn: vi.fn((cmd, args) => {
+    spawn: (cmd, args) => {
       const proc = new EventEmitter();
       proc.stdout = new EventEmitter();
       proc.stderr = new EventEmitter();
-      proc.stdout.pipe = vi.fn();
-      proc.stderr.pipe = vi.fn();
-      proc.kill = vi.fn();
+      proc.stdout.pipe = () => proc.stdout;
+      proc.stderr.pipe = () => proc.stderr;
+      proc.kill = () => {};
       proc.pid = 9999;
+      _pendingChildProcessOps += 1;
       setImmediate(() => {
         try {
           const output = String(_activeDispatch(renderSpawnCommand(cmd, args)) || "");
@@ -106,21 +108,44 @@ vi.mock("node:child_process", async (importOriginal) => {
           if (stdout) proc.stdout.emit("data", stdout);
           if (stderr) proc.stderr.emit("data", stderr);
           proc.emit("close", err?.status ?? err?.exitCode ?? 1);
+        } finally {
+          _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
         }
       });
       return proc;
-    }),
+    },
 
-    exec: vi.fn((cmd, opts, cb) => {
+    exec: (cmd, opts, cb) => {
       const callback = typeof opts === "function" ? opts : cb;
+      _pendingChildProcessOps += 1;
       try {
         const result = String(_activeDispatch(cmd) || "");
-        if (callback) setImmediate(() => callback(null, result, ""));
+        if (callback) {
+          setImmediate(() => {
+            try {
+              callback(null, result, "");
+            } finally {
+              _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
+            }
+          });
+        } else {
+          _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
+        }
       } catch (err) {
-        if (callback) setImmediate(() => callback(err, "", err.message));
+        if (callback) {
+          setImmediate(() => {
+            try {
+              callback(err, "", err.message);
+            } finally {
+              _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
+            }
+          });
+        } else {
+          _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
+        }
       }
-      return { kill: vi.fn() };
-    }),
+      return { kill: () => {} };
+    },
   };
 });
 
@@ -183,10 +208,15 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+  if (process.env.BOSUN_TEST_HARNESS_DEBUG_CLEANUP === "1") {
+    console.error(`[workflow-guaranteed] pendingChildProcessOps=${_pendingChildProcessOps}`);
+  }
   currentHarness?.cleanup();
   currentHarness   = null;
   _activeDispatch  = (_cmd) => "";
   _activeExecSandbox = null;
+  _pendingChildProcessOps = 0;
+  vi.clearAllMocks();
 });
 
 // ══════════════════════════════════════════════════════════════════════════

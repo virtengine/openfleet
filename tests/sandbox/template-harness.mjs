@@ -237,26 +237,28 @@ export function createTemplateHarness(templateId, scenario = {}, varOverrides = 
       // can execute these sub-workflow chains without production errors.
       for (const [, wf] of engine._workflows) {
         for (const node of wf.nodes ?? []) {
-          if (node.type === "action.execute_workflow") {
-            if (node.config?.mode === "dispatch") {
-              // Tests need deterministic teardown. Dispatch mode leaves child
-              // workflows running after the parent test completes.
-              node.config.mode = "sync";
-              node.config.timeoutMs = Math.min(Number(node.config.timeoutMs || 5000), 5000);
+          if (node.config?.mode === "dispatch") {
+            // Tests need deterministic teardown. Dispatch mode leaves child
+            // workflows running after the parent test completes.
+            node.config.mode = "sync";
+            if ("timeoutMs" in (node.config || {}) || "timeout" in (node.config || {})) {
+              const timeoutKey = "timeoutMs" in node.config ? "timeoutMs" : "timeout";
+              node.config[timeoutKey] = Math.min(Number(node.config[timeoutKey] || 5000), 5000);
             }
+          }
 
-            if (
-              typeof node.config?.input === "string" &&
-              node.config.input.trim().startsWith("(")
-            ) {
-              // Replace the JS expression with a {{variable}} object map.
-              // Extract identifiers referenced as $data?.KEY → {{ KEY }}.
-              const keys = [...node.config.input.matchAll(/\$data\??\.\s*(\w+)/g)]
-                .map((m) => m[1]);
-              node.config.input = Object.fromEntries(
-                keys.map((k) => [k, `{{${k}}}`]),
-              );
-            }
+          if (
+            node.type === "action.execute_workflow" &&
+            typeof node.config?.input === "string" &&
+            node.config.input.trim().startsWith("(")
+          ) {
+            // Replace the JS expression with a {{variable}} object map.
+            // Extract identifiers referenced as $data?.KEY → {{ KEY }}.
+            const keys = [...node.config.input.matchAll(/\$data\??\.\s*(\w+)/g)]
+              .map((m) => m[1]);
+            node.config.input = Object.fromEntries(
+              keys.map((k) => [k, `{{${k}}}`]),
+            );
           }
         }
       }

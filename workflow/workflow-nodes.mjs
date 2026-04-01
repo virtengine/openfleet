@@ -13647,12 +13647,13 @@ registerBuiltinNodeType("action.invoke_workflow", {
 
     let childCtx;
     const timeoutMs = node.config?.timeout || 300000;
+    const timeoutControl = createManagedTimeout(() => {
+      throw new Error(`Workflow "${workflowId}" timed out after ${timeoutMs}ms`);
+    }, timeoutMs);
     try {
       childCtx = await Promise.race([
         engine.execute(workflowId, childInput, childRunOpts),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`Workflow "${workflowId}" timed out after ${timeoutMs}ms`)), timeoutMs),
-        ),
+        timeoutControl.promise,
       ]);
     } catch (err) {
       ctx.log(node.id, `Workflow "${workflowId}" failed: ${err.message}`, "error");
@@ -13665,6 +13666,8 @@ registerBuiltinNodeType("action.invoke_workflow", {
         matchedPort: "error",
         port: "error",
       };
+    } finally {
+      timeoutControl.clear();
     }
 
     const childErrors = Array.isArray(childCtx?.errors) ? childCtx.errors : [];

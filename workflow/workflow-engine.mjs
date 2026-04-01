@@ -52,8 +52,11 @@ import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../
 import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
 import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 import {
+  getWorkflowSnapshotFromStateLedger,
   getWorkflowRunDetailFromStateLedger,
+  listWorkflowSnapshotsFromStateLedger,
   listWorkflowRunSummariesPageFromStateLedger,
+  writeWorkflowSnapshotToStateLedger,
   writeWorkflowRunDetailToStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
 
@@ -5410,11 +5413,19 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {Array<object>}
    */
   getTaskTraceEvents(runId) {
-    const detail = this.getRunDetail(runId)?.detail;
+    const detail = this.getRunDetail(runId, { decorate: false })?.detail;
     const events = Array.isArray(detail?.data?._taskWorkflowEvents)
       ? detail.data._taskWorkflowEvents
       : [];
     return events.map((event) => sanitizeJsonValue(event) || {});
+  }
+
+  _ensureForensicsRunSurfaces(run) {
+    if (!run || typeof run !== "object") return run;
+    if (Array.isArray(run.plannerTimeline) && run.proofBundle && typeof run.proofBundle === "object") {
+      return run;
+    }
+    return this._decorateRunDetail(run);
   }
 
   /**
@@ -5424,7 +5435,9 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {object|null}
    */
   getNodeForensics(runId, nodeId, preloadedRun = null) {
-    const run = preloadedRun || this.getRunDetail(runId, { decorate: false });
+    const run = this._ensureForensicsRunSurfaces(
+      preloadedRun || this.getRunDetail(runId, { decorate: false }),
+    );
     if (!run) return null;
     const detail = run.detail || {};
     const nodeStatuses = detail.nodeStatuses || {};
@@ -5467,7 +5480,9 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {object|null}
    */
   getRunForensics(runId) {
-    const run = this.getRunDetail(runId, { decorate: false });
+    const run = this._ensureForensicsRunSurfaces(
+      this.getRunDetail(runId, { decorate: false }),
+    );
     if (!run) return null;
     const detail = run.detail || {};
     const nodeStatuses = detail.nodeStatuses || {};
@@ -5524,6 +5539,11 @@ export class WorkflowEngine extends EventEmitter {
       replayTrajectory,
       stepSummaries: detail.stepSummaries || [],
     };
+    try {
+      writeWorkflowSnapshotToStateLedger(snapshot, { anchorPath: this.runsDir });
+    } catch (err) {
+      console.warn(`${TAG} workflow snapshot sync failed: ${String(err?.message || err)}`);
+    }
     writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8");
     writeFileSync(trajectoryPath, JSON.stringify(replayTrajectory, null, 2), "utf8");
     return { snapshotId, path: snapshotPath, trajectoryPath };
@@ -5539,10 +5559,18 @@ export class WorkflowEngine extends EventEmitter {
    */
   async restoreFromSnapshot(snapshotId, opts = {}) {
     const snapshotPath = resolve(this.runsDir, "snapshots", `${snapshotId}.json`);
-    if (!existsSync(snapshotPath)) {
+    let snapshot = null;
+    try {
+      snapshot = getWorkflowSnapshotFromStateLedger(snapshotId, { anchorPath: this.runsDir });
+    } catch (err) {
+      console.warn(`${TAG} workflow snapshot lookup failed: ${String(err?.message || err)}`);
+    }
+    if (!snapshot && existsSync(snapshotPath)) {
+      snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
+    }
+    if (!snapshot) {
       throw new Error(`Snapshot "${snapshotId}" not found`);
     }
-    const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
     const workflowId = snapshot.workflowId;
     const def = this.get(workflowId);
     if (!def) {
@@ -5636,6 +5664,17 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {Array<object>}
    */
   listSnapshots(workflowId) {
+    try {
+      const sqlSnapshots = listWorkflowSnapshotsFromStateLedger({
+        anchorPath: this.runsDir,
+        workflowId,
+      });
+      if (Array.isArray(sqlSnapshots) && sqlSnapshots.length > 0) {
+        return sqlSnapshots;
+      }
+    } catch (err) {
+      console.warn(`${TAG} workflow snapshot list failed: ${String(err?.message || err)}`);
+    }
     const snapshotsDir = resolve(this.runsDir, "snapshots");
     if (!existsSync(snapshotsDir)) return [];
     const files = readdirSync(snapshotsDir).filter((f) => f.endsWith(".json"));
