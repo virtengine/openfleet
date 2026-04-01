@@ -13,9 +13,13 @@ vi.mock("node:child_process", () => ({
   spawnSync: spawnSyncMock,
 }));
 
-vi.mock("node:fs", () => ({
-  existsSync: existsSyncMock,
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    existsSync: existsSyncMock,
+  };
+});
 
 vi.mock("../shell/pwsh-runtime.mjs", () => ({
   resolvePwshRuntime: resolvePwshRuntimeMock,
