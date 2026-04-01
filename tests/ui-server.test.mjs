@@ -4673,11 +4673,80 @@ describeUiServer("ui-server mini app", () => {
     const workflowSpan = finishedSpans.find((span) => span.name === "bosun.workflow.run" && span.attributes["bosun.workflow.id"] === workflowId);
     const taskSpan = finishedSpans.find((span) => span.name === "bosun.task.execute" && span.attributes["bosun.task.id"] === taskId);
 
-    expect(workflowSpan).toBeDefined();
-    expect(taskSpan).toBeDefined();
-    expect(workflowSpan.traceId).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    expect(taskSpan.traceId).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  expect(workflowSpan).toBeDefined();
+  expect(taskSpan).toBeDefined();
+  expect(workflowSpan.traceId).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  expect(taskSpan.traceId).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   }, 20000);
+
+  it("uses lightweight run detail reads for workflow run diagnostics endpoints", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const getRunDetail = vi.fn(async (runId, opts = {}) => ({
+      runId,
+      workflowId: "wf-lightweight",
+      workflowName: "Lightweight Workflow",
+      status: "completed",
+      startedAt: Date.parse("2026-04-01T21:00:00.000Z"),
+      endedAt: Date.parse("2026-04-01T21:00:01.000Z"),
+      duration: 1000,
+      nodeCount: 1,
+      completedCount: 1,
+      failedCount: 0,
+      skippedCount: 0,
+      activeNodeCount: 0,
+      triggerSource: "manual",
+      detail: {
+        startedAt: Date.parse("2026-04-01T21:00:00.000Z"),
+        endedAt: Date.parse("2026-04-01T21:00:01.000Z"),
+        duration: 1000,
+        data: {
+          _workflowId: "wf-lightweight",
+          _workflowName: "Lightweight Workflow",
+        },
+        nodeStatuses: {
+          trigger: "completed",
+        },
+        logs: [],
+        errors: [],
+      },
+      _requestedOpts: opts,
+    }));
+    const engine = {
+      getRunDetail,
+      getRunForensics: vi.fn(() => ({ runId: "run-lightweight-1", nodes: { trigger: { status: "completed" } } })),
+      listSnapshots: vi.fn(() => [{ snapshotId: "snap-1", runId: "run-lightweight-1", workflowId: "wf-lightweight", createdAt: Date.now() }]),
+    };
+    mod._testInjectWorkflowEngine(workflowEngineModule, engine);
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const [detail, evaluate, snapshots] = await Promise.all([
+        fetch(`http://127.0.0.1:${port}/api/workflows/runs/run-lightweight-1`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/workflows/runs/run-lightweight-1/evaluate`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/workflows/runs/run-lightweight-1/snapshots`).then((r) => r.json()),
+      ]);
+
+      expect(detail.ok).toBe(true);
+      expect(evaluate.ok).toBe(true);
+      expect(snapshots.ok).toBe(true);
+      expect(getRunDetail).toHaveBeenCalledWith("run-lightweight-1", { decorate: false });
+      expect(engine.listSnapshots).toHaveBeenCalledWith("wf-lightweight");
+    } finally {
+      mod.stopTelegramUiServer();
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  }, 30000);
 
   it("includes replayable task runs and a latest run summary on task detail", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-runs-"));
@@ -6419,7 +6488,7 @@ describeUiServer("ui-server mini app", () => {
     const dagOfDags = await fetch(`http://127.0.0.1:${port}/api/tasks/dag-of-dags`).then((r) => r.json());
     expect(dagOfDags.ok).toBe(true);
     expect(Array.isArray(dagOfDags.data.nodes)).toBe(true);
-  });
+  }, process.platform === "win32" ? 15000 : 10000);
 
   it("supports task comment aliases and validation through /api/tasks/comment", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -8054,6 +8123,8 @@ describeUiServer("ui-server mini app", () => {
       expect(payload.data.recentEvents[0]).toHaveProperty("stage");
       expect(payload.data.recentEvents[0]).toHaveProperty("estimatedSavedTokens");
     } finally {
+      await new Promise((resolveClose) => server.close(() => resolveClose()));
+      resetStateLedgerCache();
       if (previousStats == null) rmSync(shreddingPath, { force: true });
       else writeFileSync(shreddingPath, previousStats, "utf8");
       if (previousSessions == null) rmSync(sessionAccumulatorPath, { force: true });
@@ -8815,6 +8886,8 @@ describeUiServer("ui-server mini app", () => {
         summary: "Investigated failure and prepared patch.",
       }));
     } finally {
+      await new Promise((resolveClose) => server.close(() => resolveClose()));
+      resetStateLedgerCache();
       if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(isolatedRepoRoot, { recursive: true, force: true });

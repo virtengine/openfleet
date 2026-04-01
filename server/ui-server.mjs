@@ -2579,7 +2579,7 @@ async function collectWorkflowRunsForTask(taskId, url, limit = 40, options = {})
         let matches = primaryTaskId === normalizedTaskId || summaryTaskIds.includes(normalizedTaskId);
         let detailRun = null;
         if (!matches && !shallow && engine.getRunDetail) {
-          detailRun = await engine.getRunDetail(summary.runId);
+          detailRun = await engine.getRunDetail(summary.runId, { decorate: false });
           data = detailRun?.detail?.data || data;
           const detailTaskId = String(data.taskId || data.activeTaskId || data?.task?.id || "").trim();
           matches = detailTaskId === normalizedTaskId;
@@ -4157,7 +4157,7 @@ async function collectBenchmarkWorkflowRuns(url, taskIds = new Set(), limit = 12
         matches = summaryTaskIds.some((taskId) => taskIds.has(taskId));
       }
       if (!matches && typeof wfCtx.engine.getRunDetail === "function") {
-        const detail = await wfCtx.engine.getRunDetail(summary.runId);
+        const detail = await wfCtx.engine.getRunDetail(summary.runId, { decorate: false });
         if (detail?.detail) {
           const data = detail.detail?.data || {};
           const detailTaskId = String(
