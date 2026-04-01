@@ -265,7 +265,6 @@
     "shell/codex-config.mjs",
     "shell/codex-sdk-import.mjs",
     "shell/codex-model-profiles.mjs",
-    "shell/codex-sdk-import.mjs",
     "shell/codex-shell.mjs",
     "shell/copilot-shell.mjs",
     "shell/gemini-shell.mjs",
