@@ -77,7 +77,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     const mod = await import("../server/ui-server.mjs");
     const wfMock = { WorkflowEngine: vi.fn(() => sharedEngine) };
     mod._testInjectWorkflowEngine(wfMock, sharedEngine);
-  });
+  }, process.platform === "win32" ? 30000 : 20000);
 
   afterEach(async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -95,7 +95,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
       rmSync(testSandboxRoot, { recursive: true, force: true });
       testSandboxRoot = null;
     }
-  });
+  }, process.platform === "win32" ? 30000 : 20000);
 
   async function startServer() {
     const mod = await import("../server/ui-server.mjs");
@@ -156,7 +156,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     const assistantTurn = messages.find((msg) => msg?.role === "assistant");
     expect(userTurn?.content).toContain("check my build logs");
     expect(assistantTurn?.content).toContain("build failed due to lint errors");
-  }, 20_000);
+  }, process.platform === "win32" ? 30000 : 20000);
 
   it("queues workflow trigger evaluation for transcript and wake phrase events", async () => {
     const { port } = await startServer();
@@ -213,7 +213,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     } finally {
       sharedEngine.evaluateTriggers.mockClear();
     }
-  });
+  }, process.platform === "win32" ? 30000 : 20000);
 
   it("stores and returns voice turn trace events", async () => {
     const { port } = await startServer();

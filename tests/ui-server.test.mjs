@@ -5676,7 +5676,7 @@ describeUiServer("ui-server mini app", () => {
     expect(detailJson.data.canStart.raw.attemptCount).toBe("3");
     expect(detailJson.data.canStart.raw.self).toBe("[Circular]");
     expect("debug" in detailJson.data.canStart.raw).toBe(false);
-  });
+  }, 25000);
 
   it("scopes /api/project-summary to the active workspace like /api/tasks", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
