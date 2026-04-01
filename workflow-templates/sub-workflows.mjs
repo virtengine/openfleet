@@ -49,9 +49,15 @@ export const VALIDATE_AND_PR_SUB = subWorkflow(
       continueOnError: true,
     }, { x: 400, y: 260 }),
     node("push", "action.push_branch", "Push Branch", {
-      cwd: "{{worktreePath}}",
+      worktreePath: "{{worktreePath}}",
       branch: "{{branch}}",
+      baseBranch: "{{baseBranch}}",
+      mergeBaseBeforePush: true,
+      autoResolveMergeConflicts: true,
     }, { x: 400, y: 390 }),
+    node("push-ok", "condition.expression", "Push OK?", {
+      expression: "$ctx.getNodeOutput('push')?.pushed === true",
+    }, { x: 400, y: 455, outputs: ["yes", "no"] }),
     node("create-pr", "action.create_pr", "Create / Update PR", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
@@ -64,7 +70,8 @@ export const VALIDATE_AND_PR_SUB = subWorkflow(
     edge("build", "test"),
     edge("test", "lint"),
     edge("lint", "push"),
-    edge("push", "create-pr"),
+    edge("push", "push-ok"),
+    edge("push-ok", "create-pr", { port: "yes" }),
   ],
   {
     entryNode: "build",
@@ -245,6 +252,5 @@ export const PR_CHECK_HANDOFF_SUB = subWorkflow(
     description: "Check PR result, transition task to in-review, dispatch PR progressor.",
   },
 );
-
 
 

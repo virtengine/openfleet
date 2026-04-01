@@ -2676,7 +2676,7 @@ describe("action.build_task_prompt", () => {
       } else {
         process.env.BOSUN_AGENT_ENDPOINT_PORT = prevPort;
       }
-      rmSync(repoRoot, { recursive: true, force: true });
+      await removeDirAfterLedgerReset(repoRoot);
     }
   });
 

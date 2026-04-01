@@ -6,6 +6,7 @@
   --font-ui: "Instrument Sans", "SF Pro Text", "SF Pro Display", -apple-system,
     BlinkMacSystemFont, "IBM Plex Sans", "Segoe UI", sans-serif;
   --font-mono: "DM Mono", "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
+  --font-variant-numeric-portal: tabular-nums slashed-zero;
 
   /* Bosun Brand Colors */
   --color-primary: #da7756;
@@ -669,4 +670,9 @@
 @keyframes fadeInOut {
   0%, 100% { opacity: 0.5; }
   50%       { opacity: 1; }
+}
+
+.numeral {
+  font-variant-numeric: var(--font-variant-numeric-portal);
+  letter-spacing: 0.01em;
 }

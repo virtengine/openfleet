@@ -8110,7 +8110,10 @@ export function TasksTab() {
     setDetailTask(local || { id: taskId, title: taskId, status: "todo", description: "" });
     setDetailTaskHydrating(true);
     const result = await apiFetch(
-      buildTaskDetailPath(taskId, { includeDag: false }),
+      buildTaskDetailPath(taskId, {
+        includeDag: false,
+        includeWorkflowRuns: false,
+      }),
       { _silent: true },
     ).catch(() => ({ data: local }));
     if (detailRequestIdRef.current !== requestId) return;
@@ -8538,7 +8541,7 @@ export function TasksTab() {
                       html`<${MenuItem} key=${o.value} value=${o.value}>${o.label}</${MenuItem}>`,
                   )}
                 </${Select}>
-                <span class="pill">${visible.length} shown</span>
+                <span class="pill"><span class="numeral">${visible.length}</span> shown</span>
               </div>
             </div>
             <div class="tasks-filter-section">
@@ -8700,7 +8703,7 @@ export function TasksTab() {
             }}
           >
             <span class="snapshot-dot" style="background:${m.color};" />
-            <strong class="snapshot-val">${m.value}</strong>
+            <strong class="snapshot-val numeral">${m.value}</strong>
             <span class="snapshot-lbl">${m.label}</span>
           <//><//>
         `)}
@@ -8717,12 +8720,12 @@ export function TasksTab() {
             class=${`snapshot-pill-btn ${dagFocusMode === option.id ? "snapshot-pill-active" : ""}`}
             onClick=${() => setDagFocusMode(option.id)}
           >
-            ${option.label} · ${option.count}
+            ${option.label} · <span class="numeral">${option.count}</span>
           </button>
         `)}
-        <span class="pill">Sprint nodes: ${dagSprintGraphView.nodes.length}</span>
-        <span class="pill">Global nodes: ${dagGlobalGraphView.nodes.length}</span>
-        <span class="pill">Epic nodes: ${dagEpicGraphView.nodes.length}</span>
+        <span class="pill">Sprint nodes: <span class="numeral">${dagSprintGraphView.nodes.length}</span></span>
+        <span class="pill">Global nodes: <span class="numeral">${dagGlobalGraphView.nodes.length}</span></span>
+        <span class="pill">Epic nodes: <span class="numeral">${dagEpicGraphView.nodes.length}</span></span>
       </div>
     `}
 
@@ -9087,7 +9090,7 @@ export function TasksTab() {
         >
           ← Prev
         <//>
-        <span class="pager-info">Page ${page + 1} / ${totalPages}</span>
+        <span class="pager-info">Page <span class="numeral">${page + 1}</span> / <span class="numeral">${totalPages}</span></span>
         <${Button}
           variant="outlined" size="small"
           onClick=${handleNext}

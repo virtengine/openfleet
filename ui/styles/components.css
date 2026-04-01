@@ -2347,6 +2347,8 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  width: 100%;
+  min-width: 0;
   max-width: 1200px;
   margin: 0 auto;
   padding: 16px;
@@ -2596,6 +2598,12 @@ select.input {
   border-color: rgba(255, 255, 255, 0.15);
   transform: translateY(-4px);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.dashboard-metric:focus-visible,
+.dashboard-action-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .dashboard-metric-label {
@@ -3081,7 +3089,7 @@ select.input {
   }
 }
 
-@media (max-width: 480px) {
+@media (max-width: 599px) {
   .dashboard-shell {
     gap: 16px;
     padding: 8px 0 16px;
@@ -3172,6 +3180,34 @@ select.input {
     min-height: 108px;
     padding: 16px;
     border-radius: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .dashboard-shell {
+    gap: 14px;
+    padding: 6px 0 14px;
+  }
+
+  .dashboard-header-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .dashboard-card {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .dashboard-actions-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .dashboard-action-btn {
+    min-height: 108px;
+    padding: 14px;
+    border-radius: 14px;
   }
 }
 

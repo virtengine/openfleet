@@ -74,6 +74,216 @@ function formatDuration(ms) {
   return `${seconds}s`;
 }
 
+function formatMsDuration(ms) {
+  const value = Number(ms || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0s";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return formatDuration(value);
+}
+
+function normalizeAgentLiveness(payload) {
+  if (Array.isArray(payload?.agents)) return payload.agents;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function normalizeAgentErrorPatterns(payload) {
+  if (Array.isArray(payload?.patterns)) return payload.patterns;
+  if (Array.isArray(payload?.errors)) return payload.errors;
+  return [];
+}
+
+function describeLivenessRow(entry, width = 72) {
+  const id = String(entry?.agentId || entry?.sessionId || entry?.taskId || "agent").trim();
+  const state = String(entry?.status || entry?.state || entry?.health || "unknown").trim();
+  const heartbeat = String(entry?.lastHeartbeatAt || entry?.updatedAt || entry?.lastSeenAt || "").trim();
+  const detail = String(entry?.summary || entry?.reason || entry?.taskTitle || "").replace(/\s+/g, " ").trim();
+  return pad(`${truncate(id, 16).padEnd(17, " ")} ${truncate(state, 12).padEnd(12, " ")} ${truncate(heartbeat || "n/a", 24).padEnd(24, " ")} ${truncate(detail || "-", width - 55)}`, width);
+}
+
+function describeErrorPatternRow(entry, width = 72) {
+  const label = String(entry?.pattern || entry?.error || entry?.message || entry?.reason || "error").replace(/\s+/g, " ").trim();
+  const count = Number(entry?.count || entry?.hits || entry?.occurrences || 0);
+  const scope = String(entry?.taskId || entry?.sessionId || entry?.agentId || entry?.source || "").trim();
+  return pad(`${truncate(label, 44).padEnd(45, " ")} ${String(count).padStart(4, " ")} ${truncate(scope || "-", width - 51)}`, width);
+}
+
+function buildAgentMonitorDetailLines(statusPayload, livenessItems, errorItems) {
+  const status = statusPayload && typeof statusPayload === "object" ? statusPayload : {};
+  const listenerCount = Number(status?.listenerCount || 0);
+  const eventLogSize = Number(status?.eventLogSize || 0);
+  const trackedAgents = Number(status?.trackedAgents || livenessItems.length || 0);
+  const started = status?.started === true ? "yes" : "no";
+  const lines = [
+    `Started       ${started}`,
+    `Tracked agents ${trackedAgents}`,
+    `Event log size ${eventLogSize}`,
+    `Listeners     ${listenerCount}`,
+    `Alive agents  ${livenessItems.filter((entry) => entry?.alive !== false).length}`,
+    `Stale agents  ${livenessItems.filter((entry) => entry?.alive === false).length}`,
+    `Error patterns ${errorItems.length}`,
+  ];
+  return lines;
+}
+
+function AgentMonitorDetail({ statusPayload, livenessItems, errorItems, recentEvents }) {
+  const metadataLines = buildAgentMonitorDetailLines(statusPayload, livenessItems, errorItems);
+  const visibleLiveness = (Array.isArray(livenessItems) ? livenessItems : []).slice(0, 10);
+  const visibleErrors = (Array.isArray(errorItems) ? errorItems : []).slice(0, 8);
+  const visibleEvents = (Array.isArray(recentEvents) ? recentEvents : []).slice(0, 12);
+
+  return html`
+    <${Box} flexDirection="column" paddingY=${1}>
+      <${Text} bold>Agent Live Monitor Detail<//>
+      ${metadataLines.map((line) => html`<${Text} key=${line}>${line}<//>`)}
+      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} bold>Liveness Detail<//>
+        ${visibleLiveness.length
+          ? visibleLiveness.map((entry, index) => html`
+              <${Text} key=${entry?.agentId || entry?.sessionId || entry?.taskId || index} wrap="truncate-end">
+                ${describeLivenessRow(entry, 96)}
+              <//>
+            `)
+          : html`<${Text} dimColor>No liveness detail reported<//>`}
+      <//>
+      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} bold>Error Pattern Detail<//>
+        ${visibleErrors.length
+          ? visibleErrors.map((entry, index) => html`
+              <${Text} key=${entry?.pattern || entry?.error || index} wrap="truncate-end">
+                ${describeErrorPatternRow(entry, 96)}
+              <//>
+            `)
+          : html`<${Text} dimColor>No recurring error patterns<//>`}
+      <//>
+      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} bold>Recent Agent Events<//>
+        ${visibleEvents.length
+          ? visibleEvents.map((entry, index) => html`
+              <${Text} key=${entry?.id || `${entry?.type || entry?.eventType || "event"}-${index}`} wrap="truncate-end">
+                ${agentEventToLogLine(entry)}
+              <//>
+            `)
+          : html`<${Text} dimColor>No recent agent events recorded<//>`}
+      <//>
+      <${Box} marginTop=${1}>
+        <${Text} dimColor>[M] refresh monitor  [Esc] close<//>
+      <//>
+    <//>
+  `;
+}
+
+function getHarnessRunState(run) {
+  return String(
+    run?.health?.state
+    || run?.status
+    || run?.outcome
+    || run?.result?.status
+    || run?.result?.outcome
+    || "unknown",
+  ).trim().toLowerCase();
+}
+
+function getHarnessStateColor(state) {
+  if (state === "working") return "blue";
+  if (state === "waiting") return "yellow";
+  if (state === "stalled" || state === "failed" || state === "aborted") return "red";
+  if (state === "completed") return "green";
+  return undefined;
+}
+
+function getHarnessStateLabel(state) {
+  if (!state) return "unknown";
+  return state.replace(/[_-]+/g, " ");
+}
+
+function getHarnessRunTimestamp(run) {
+  const value = run?.updatedAt || run?.endedAt || run?.startedAt || run?.createdAt || 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function normalizeHarnessRuns(items) {
+  const deduped = new Map();
+  for (const run of Array.isArray(items) ? items : []) {
+    if (!run || typeof run !== "object") continue;
+    const runId = String(run?.runId || "").trim();
+    if (!runId) continue;
+    const existing = deduped.get(runId);
+    if (!existing || getHarnessRunTimestamp(run) >= getHarnessRunTimestamp(existing)) {
+      deduped.set(runId, run);
+    }
+  }
+  return Array.from(deduped.values()).sort((a, b) => getHarnessRunTimestamp(b) - getHarnessRunTimestamp(a));
+}
+
+function formatHarnessStage(run) {
+  return String(
+    run?.currentStageId
+    || run?.health?.approvalStageId
+    || run?.stageId
+    || run?.completedStageId
+    || run?.result?.completedStageId
+    || "—",
+  ).trim() || "—";
+}
+
+function getHarnessApprovalRequestId(run) {
+  return String(
+    run?.health?.approvalRequestId
+    || run?.approvalRequestId
+    || run?.requestId
+    || run?.latestApproval?.requestId
+    || "",
+  ).trim();
+}
+
+function getHarnessLatestEventSummary(run) {
+  return String(
+    run?.health?.lastEventSummary
+    || run?.latestEvent?.summary
+    || run?.summary
+    || "",
+  ).trim();
+}
+
+function getHarnessAttentionDetail(run) {
+  const state = getHarnessRunState(run);
+  const approvalRequestId = getHarnessApprovalRequestId(run);
+  const detail = String(run?.health?.attentionReason || run?.summary || "").trim();
+  if (state === "waiting") {
+    const base = detail || "Awaiting operator approval.";
+    return approvalRequestId ? `${base} · ${approvalRequestId}` : base;
+  }
+  return detail || getHarnessLatestEventSummary(run) || "No summary yet";
+}
+
+function getHarnessApprovalStatusLabel(approval) {
+  const request = approval?.request || approval || {};
+  const status = String(request?.status || "").trim().toLowerCase();
+  if (status) return status;
+  if (approval?.approvalPending === true) return "pending";
+  return "none";
+}
+
+function projectHarnessRow(run, isSelected, width = 72) {
+  const runId = String(run?.runId || "").trim();
+  const state = getHarnessRunState(run);
+  const stage = formatHarnessStage(run);
+  const idleMs = Number(run?.health?.idleMs || 0) || 0;
+  const summary = getHarnessLatestEventSummary(run) || getHarnessAttentionDetail(run);
+  const left = `${runId.slice(0, 8) || "unknown"} ${stage} ${getHarnessStateLabel(state)}`;
+  const right = idleMs > 0 ? `idle ${formatMsDuration(idleMs)}` : (run?.active ? "live" : "history");
+  const head = `${left} ${right}`.trim();
+  const text = `${head} · ${summary}`.trim();
+  return {
+    key: runId || head,
+    color: getHarnessStateColor(state),
+    inverse: isSelected,
+    text: pad(text, width),
+  };
+}
+
 function summarizeDiff(diffPayload) {
   const diff = diffPayload?.diff || {};
   const files = Array.isArray(diff.files) ? diff.files : [];
@@ -136,6 +346,23 @@ function streamPayloadToLogLine(payload) {
   return `${timestamp}  ${level} ${message}`.trimEnd();
 }
 
+function agentEventToLogLine(event) {
+  if (!event || typeof event !== "object") return "";
+  const timestamp = formatTimestamp(event.timestamp || event.createdAt || event.time);
+  const eventType = String(event.type || event.eventType || "event").padEnd(18, " ");
+  const taskId = String(event.taskId || event.agentId || event.sessionId || "").trim();
+  const summary = String(
+    event.message
+      || event.summary
+      || event.payload?.message
+      || event.payload?.summary
+      || event.payload?.reason
+      || event.payload?.status
+      || "",
+  ).replace(/\s+/g, " ").trim();
+  return `${timestamp}  ${eventType} ${taskId ? `${taskId} ` : ""}${summary}`.trimEnd();
+}
+
 function readSession(sessionPayload) {
   return sessionPayload?.session || sessionPayload || {};
 }
@@ -191,6 +418,61 @@ function clampOffset(next, size, visible) {
   return Math.max(0, Math.min(next, Math.max(0, size - visible)));
 }
 
+function HarnessDetail({
+  harnessPayload,
+  harnessEvents,
+  harnessApproval,
+  harnessNudgeMode,
+  harnessNudgeValue,
+}) {
+  const run = harnessPayload?.run || harnessPayload || {};
+  const state = getHarnessRunState(run);
+  const approvalRequestId = getHarnessApprovalRequestId(run);
+  const approvalStatus = getHarnessApprovalStatusLabel(harnessApproval);
+  const canApprove = approvalStatus === "pending" || run?.health?.waitingForOperator === true || run?.approvalPending === true;
+  const lines = [
+    `Run ID        ${run?.runId || "-"}`,
+    `Name          ${run?.name || "-"}`,
+    `State         ${getHarnessStateLabel(state)}`,
+    `Stage         ${formatHarnessStage(run)}`,
+    `Started       ${formatTimestamp(run?.startedAt)}`,
+    `Updated       ${formatTimestamp(run?.updatedAt || run?.endedAt)}`,
+    `Approval      ${approvalRequestId || "none"}`,
+    `Approval State ${approvalStatus}`,
+    `Summary       ${getHarnessAttentionDetail(run)}`,
+  ];
+  const visibleEvents = (Array.isArray(harnessEvents) ? harnessEvents : []).slice(0, 10);
+
+  return html`
+    <${Box} flexDirection="column" paddingY=${1}>
+      <${Text} bold>Harness Detail<//>
+      ${lines.map((line) => html`<${Text} key=${line}>${line}<//>`)}
+      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} bold>Recent Events<//>
+        ${visibleEvents.length
+          ? visibleEvents.map((event, index) => {
+              const eventLine = `${formatTimestamp(event?.timestamp || event?.createdAt)}  ${String(event?.type || event?.kind || "event")}  ${String(event?.summary || event?.message || event?.label || "").replace(/\s+/g, " ").trim()}`;
+              return html`<${Text} key=${event?.id || `${index}-${eventLine}`} wrap="truncate-end">${eventLine}<//>`;
+            })
+          : html`<${Text} dimColor>No harness events yet<//>`}
+      <//>
+      <${Box} marginTop=${1} flexDirection="column">
+        <${Text} dimColor>
+          ${canApprove
+            ? "[A]pprove  [X] deny  [N] nudge  [Esc] close"
+            : "[N] nudge  [Esc] close"}
+        <//>
+        ${harnessNudgeMode
+          ? html`
+              <${Text}>Nudge: ${harnessNudgeValue || ""}<//>
+              <${Text} dimColor>[Enter] send  [Esc] cancel<//>
+            `
+          : null}
+      <//>
+    <//>
+  `;
+}
+
 function SessionDetail({
   sessionPayload,
   diffView,
@@ -210,59 +492,59 @@ function SessionDetail({
 
   return html`
     <${Box} position="relative" flexDirection="column" paddingY=${1}>
-      <${Text} bold>Session Detail<//>
-      <${Box} marginTop=${1} flexDirection=${rightPanel ? "row" : "column"}>
-        <${Box} flexDirection="column" width=${rightPanel ? Math.max(100, terminalColumns - 70) : undefined} flexGrow=${1}>
-          <${Text} bold>Metadata<//>
-          ${metadataLines.map((line) => html`<${Text} key=${line}>${line}<//>`) }
+      <${Text} key="session-detail-title" bold>Session Detail<//>
+      <${Box} key="session-detail-panels" marginTop=${1} flexDirection=${rightPanel ? "row" : "column"}>
+        <${Box} key="session-detail-left" flexDirection="column" width=${rightPanel ? Math.max(100, terminalColumns - 70) : undefined} flexGrow=${1}>
+          <${Text} key="session-detail-metadata-title" bold>Metadata<//>
+          ${metadataLines.map((line, index) => html`<${Text} key=${`metadata-${index}`}>${line}<//>`) }
 
-          <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-            <${Text} bold>Turn Timeline<//>
-            <${Text} dimColor>turn | timestamp              | Δtokens | duration | event<//>
+          <${Box} key="session-detail-timeline" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+            <${Text} key="session-detail-timeline-title" bold>Turn Timeline<//>
+            <${Text} key="session-detail-timeline-header" dimColor>turn | timestamp              | Δtokens | duration | event<//>
             ${visibleTurns.length
-              ? visibleTurns.map((turn) => html`
-                  <${Text} key=${turn.key}>
+              ? visibleTurns.map((turn, index) => html`
+                  <${Text} key=${turn.key || `turn-${timelineOffset + index}`}>
                     ${pad(turn.number, 4, "right")} | ${pad(turn.timestamp, 23)} | ${pad(turn.tokenDelta, 7, "right")} | ${pad(turn.duration, 8)} | ${turn.eventType}
                   <//>
                 `)
-              : html`<${Text} dimColor>No turns yet<//>`}
-            <${Text} dimColor>↑/↓ scroll  PgUp/PgDn jump<//>
+              : html`<${Text} key="session-detail-no-turns" dimColor>No turns yet<//>`}
+            <${Text} key="session-detail-timeline-help" dimColor>↑/↓ scroll  PgUp/PgDn jump<//>
           <//>
 
-          <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-            <${Text} bold>Latest Diff<//>
-            <${Text}>${diffView?.summary || "(loading diff...)"}<//>
-            ${omitted ? html`<${Text} dimColor>… ${omitted} lines omitted<//>` : null}
+          <${Box} key="session-detail-diff" marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+            <${Text} key="session-detail-diff-title" bold>Latest Diff<//>
+            <${Text} key="session-detail-diff-summary">${diffView?.summary || "(loading diff...)"}<//>
+            ${omitted ? html`<${Text} key="session-detail-diff-omitted" dimColor>… ${omitted} lines omitted<//>` : null}
             ${diffLines.length
               ? diffLines.map((line, index) => html`
                   <${Text}
-                    key=${`${index}-${line}`}
+                    key=${`diff-${index}`}
                     color=${line.startsWith("+") && !line.startsWith("+++") ? "green" : line.startsWith("-") && !line.startsWith("---") ? "red" : undefined}
                   >
                     ${line}
                   <//>
                 `)
-              : html`<${Text} dimColor>No diff lines available<//>`}
+              : html`<${Text} key="session-detail-no-diff-lines" dimColor>No diff lines available<//>`}
           <//>
         <//>
 
         ${rightPanel
           ? html`
-              <${Box} marginLeft=${1} flexDirection="column" width=${44} borderStyle="single" paddingX=${1}>
-                <${Text} bold>Stdout<//>
+              <${Box} key="session-detail-stdout" marginLeft=${1} flexDirection="column" width=${44} borderStyle="single" paddingX=${1}>
+                <${Text} key="session-detail-stdout-title" bold>Stdout<//>
                 ${(logLines || []).slice(-MAX_LOG_LINES).map((line, index) => html`
-                  <${Text} key=${index} wrap="truncate-end">${line}<//>
+                  <${Text} key=${`stdout-${index}`} wrap="truncate-end">${line}<//>
                 `)}
-                ${!(logLines || []).length ? html`<${Text} dimColor>No stdout yet<//>` : null}
+                ${!(logLines || []).length ? html`<${Text} key="session-detail-no-stdout" dimColor>No stdout yet<//>` : null}
               <//>
             `
           : null}
       <//>
-      <${Box} marginTop=${1} flexDirection="column">
-        <${Text} dimColor>[S]teer  [F]orce new thread  [K]ill  [Esc] close modal<//>
+      <${Box} key="session-detail-actions-box" marginTop=${1} flexDirection="column">
+        <${Text} key="session-detail-actions" dimColor>[S]teer  [F]orce new thread  [K]ill  [Esc] close modal<//>
         ${steerMode
           ? html`
-              <${Text}>Steer message: ${steerValue || ""}<//>
+              <${Text} key="session-detail-steer-message">Steer message: ${steerValue || ""}<//>
             `
           : null}
       <//>
@@ -278,6 +560,10 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const detailPollRef = React.useRef(null);
   const [entries, setEntries] = React.useState([]);
   const [retryQueue, setRetryQueue] = React.useState({ count: 0, items: [] });
+  const [agentEventStatus, setAgentEventStatus] = React.useState(null);
+  const [agentLiveness, setAgentLiveness] = React.useState([]);
+  const [agentErrorPatterns, setAgentErrorPatterns] = React.useState([]);
+  const [agentRecentEvents, setAgentRecentEvents] = React.useState([]);
   const [selectedId, setSelectedId] = React.useState("");
   const [showBackoff, setShowBackoff] = React.useState(true);
   const [detailView, setDetailView] = React.useState(null);
@@ -289,6 +575,14 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const [timelineOffset, setTimelineOffset] = React.useState(0);
   const [steerMode, setSteerMode] = React.useState(false);
   const [steerValue, setSteerValue] = React.useState("");
+  const [harnessRuns, setHarnessRuns] = React.useState([]);
+  const [selectedHarnessRunId, setSelectedHarnessRunId] = React.useState("");
+  const [harnessDetailView, setHarnessDetailView] = React.useState(null);
+  const [harnessEvents, setHarnessEvents] = React.useState([]);
+  const [harnessApprovalView, setHarnessApprovalView] = React.useState(null);
+  const [agentMonitorDetailOpen, setAgentMonitorDetailOpen] = React.useState(false);
+  const [harnessNudgeMode, setHarnessNudgeMode] = React.useState(false);
+  const [harnessNudgeValue, setHarnessNudgeValue] = React.useState("");
 
   const terminalColumns = stdout?.columns || 120;
   const terminalRows = stdout?.rows || 40;
@@ -298,12 +592,23 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     () => entries.find((entry) => entry.id === selectedId)?.session || entries[0]?.session || null,
     [entries, selectedId],
   );
+  const selectedHarnessRun = React.useMemo(
+    () => harnessRuns.find((run) => String(run?.runId || "").trim() === selectedHarnessRunId) || harnessRuns[0] || null,
+    [harnessRuns, selectedHarnessRunId],
+  );
 
   const applyRetryQueue = React.useCallback((payload) => {
     setRetryQueue({
       count: Number(payload?.count || 0),
       items: Array.isArray(payload?.items) ? payload.items : [],
     });
+  }, []);
+
+  const applyAgentMonitoring = React.useCallback((statusPayload, livenessPayload, errorPayload, recentEventsPayload) => {
+    setAgentEventStatus(statusPayload || null);
+    setAgentLiveness(normalizeAgentLiveness(livenessPayload));
+    setAgentErrorPatterns(normalizeAgentErrorPatterns(errorPayload));
+    setAgentRecentEvents(Array.isArray(recentEventsPayload?.events) ? recentEventsPayload.events : []);
   }, []);
 
   const applySessionSnapshot = React.useCallback((incomingSessions, now = Date.now()) => {
@@ -353,22 +658,40 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     setTimelineOffset(0);
     setSteerMode(false);
     setSteerValue("");
+    setHarnessDetailView(null);
+    setHarnessEvents([]);
+    setHarnessApprovalView(null);
+    setAgentMonitorDetailOpen(false);
+    setHarnessNudgeMode(false);
+    setHarnessNudgeValue("");
   }, [clearDetailPoll]);
 
   const refreshData = React.useCallback(async () => {
     try {
-      const [sessionsPayload, retryPayload] = await Promise.all([
+      const [sessionsPayload, retryPayload, harnessPayload, eventStatusPayload, livenessPayload, errorPayload, recentEventsPayload] = await Promise.all([
         fetchJson(resolvedHost, resolvedPort, "/api/sessions?workspace=all"),
         fetchJson(resolvedHost, resolvedPort, "/api/retry-queue"),
+        fetchJson(resolvedHost, resolvedPort, "/api/harness/runs?limit=8"),
+        fetchJson(resolvedHost, resolvedPort, "/api/agents/events/status"),
+        fetchJson(resolvedHost, resolvedPort, "/api/agents/events/liveness"),
+        fetchJson(resolvedHost, resolvedPort, "/api/agents/events/errors"),
+        fetchJson(resolvedHost, resolvedPort, "/api/agents/events?limit=25"),
       ]);
       const now = Date.now();
       applyRetryQueue(retryPayload);
+      applyAgentMonitoring(eventStatusPayload, livenessPayload, errorPayload, recentEventsPayload);
       applySessionSnapshot(sessionsPayload.sessions || [], now);
+      const nextHarnessRuns = normalizeHarnessRuns(harnessPayload?.items || harnessPayload?.runs || []);
+      setHarnessRuns(nextHarnessRuns);
+      setSelectedHarnessRunId((current) => {
+        if (current && nextHarnessRuns.some((run) => String(run?.runId || "").trim() === current)) return current;
+        return String(nextHarnessRuns[0]?.runId || "").trim();
+      });
       setStatusLine("");
     } catch (error) {
       setStatusLine(error.message || String(error));
     }
-  }, [applyRetryQueue, applySessionSnapshot, resolvedHost, resolvedPort]);
+  }, [applyAgentMonitoring, applyRetryQueue, applySessionSnapshot, resolvedHost, resolvedPort]);
 
   React.useEffect(() => {
     applySessionSnapshot(sessions, Date.now());
@@ -536,12 +859,124 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }
   }, [loadDetail, resolvedHost, resolvedPort, selectedSession, steerValue]);
 
+  const loadHarnessDetail = React.useCallback(async (runId) => {
+    if (!runId) return;
+    const [runPayload, eventPayload, approvalPayload] = await Promise.all([
+      fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}`),
+      fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/events?limit=40&direction=desc`),
+      fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/approval`),
+    ]);
+    setHarnessDetailView(runPayload);
+    setHarnessEvents(Array.isArray(eventPayload?.items) ? eventPayload.items : Array.isArray(eventPayload?.events) ? eventPayload.events : []);
+    setHarnessApprovalView(approvalPayload || null);
+  }, [resolvedHost, resolvedPort]);
+
+  const openHarnessDetail = React.useCallback(async () => {
+    const runId = String(selectedHarnessRun?.runId || "").trim();
+    if (!runId) return;
+    setHarnessDetailView({ run: selectedHarnessRun });
+    setHarnessEvents([]);
+      setHarnessNudgeMode(false);
+      setHarnessNudgeValue("");
+      try {
+        await loadHarnessDetail(runId);
+        setStatusLine("");
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [loadHarnessDetail, selectedHarnessRun]);
+
+  const resolveHarnessApproval = React.useCallback(async (decision) => {
+    const run = harnessDetailView?.run || harnessDetailView || selectedHarnessRun;
+    const runId = String(run?.runId || "").trim();
+    const requestId = getHarnessApprovalRequestId(run);
+    if (!runId || !requestId) {
+      setStatusLine("Harness approval request is missing metadata.");
+      return;
+    }
+    try {
+      await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        `/api/harness/approvals/${encodeURIComponent(requestId)}/resolve`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            decision,
+            actor: "operator",
+            note: decision === "approved"
+              ? `Approved from harness monitor for stage ${formatHarnessStage(run)}.`
+              : `Denied from harness monitor for stage ${formatHarnessStage(run)}.`,
+          }),
+        },
+      );
+      setStatusLine(decision === "approved" ? "Harness approval granted." : "Harness approval denied.");
+      await refreshData();
+      await loadHarnessDetail(runId);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [harnessDetailView, loadHarnessDetail, refreshData, resolvedHost, resolvedPort, selectedHarnessRun]);
+
+  const sendHarnessNudge = React.useCallback(async () => {
+    const run = harnessDetailView?.run || harnessDetailView || selectedHarnessRun;
+    const runId = String(run?.runId || "").trim();
+    const prompt = harnessNudgeValue.trim();
+    if (!runId || !prompt) return;
+    try {
+      await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        `/api/harness/runs/${encodeURIComponent(runId)}/nudge`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            prompt,
+            actor: "operator",
+            mode: "steer",
+            reason: "manual_intervention",
+            stageId: formatHarnessStage(run),
+          }),
+        },
+      );
+      setHarnessNudgeMode(false);
+      setHarnessNudgeValue("");
+      setStatusLine("Harness nudge sent.");
+      await refreshData();
+      await loadHarnessDetail(runId);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [harnessDetailView, harnessNudgeValue, loadHarnessDetail, refreshData, resolvedHost, resolvedPort, selectedHarnessRun]);
+
   useInput((input, key) => {
     if (confirmKill) {
       if (input === "y" || input === "Y") {
         void runAction("kill");
       } else if (key.escape || input === "n" || input === "N" || key.return) {
         setConfirmKill(false);
+      }
+      return;
+    }
+
+    if (harnessNudgeMode) {
+      if (key.escape) {
+        setHarnessNudgeMode(false);
+        setHarnessNudgeValue("");
+        return;
+      }
+      if (key.return || input === "`r") {
+        void sendHarnessNudge();
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setHarnessNudgeValue((current) => current.slice(0, -1));
+        return;
+      }
+      if (input) {
+        setHarnessNudgeValue((current) => current + input);
       }
       return;
     }
@@ -566,6 +1001,42 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       return;
     }
 
+    if (harnessDetailView) {
+      const run = harnessDetailView?.run || harnessDetailView;
+      const canApprove = getHarnessApprovalStatusLabel(harnessApprovalView) === "pending"
+        || run?.health?.waitingForOperator === true
+        || run?.approvalPending === true;
+      if (key.escape) {
+        closeModal();
+        return;
+      }
+      if ((input === "a" || input === "A") && canApprove) {
+        void resolveHarnessApproval("approved");
+        return;
+      }
+      if ((input === "x" || input === "X") && canApprove) {
+        void resolveHarnessApproval("denied");
+        return;
+      }
+      if ((input === "n" || input === "N")) {
+        setHarnessNudgeMode(true);
+        setHarnessNudgeValue("");
+        return;
+      }
+      return;
+    }
+
+    if (agentMonitorDetailOpen) {
+      if (key.escape) {
+        setAgentMonitorDetailOpen(false);
+        return;
+      }
+      if (input === "m" || input === "M") {
+        void refreshData();
+      }
+      return;
+    }
+
     if (detailView) {
       const timeline = deriveTurnTimeline(detailView);
       if (key.escape) {
@@ -585,6 +1056,14 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         return;
       }
       if (key.pageDown) {
+        setTimelineOffset((current) => clampOffset(current + PAGE_SCROLL, timeline.length, visibleTimelineRows));
+        return;
+      }
+      if (input === "\u001b[5~") {
+        setTimelineOffset((current) => clampOffset(current - PAGE_SCROLL, timeline.length, visibleTimelineRows));
+        return;
+      }
+      if (input === "\u001b[6~") {
         setTimelineOffset((current) => clampOffset(current + PAGE_SCROLL, timeline.length, visibleTimelineRows));
         return;
       }
@@ -646,9 +1125,33 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       setShowBackoff((current) => !current);
       return;
     }
+    if (input === "h" || input === "H") {
+      void openHarnessDetail();
+      return;
+    }
+    if (input === "m" || input === "M") {
+      setAgentMonitorDetailOpen(true);
+      return;
+    }
+    if (input === "[") {
+      if (!harnessRuns.length) return;
+      const index = harnessRuns.findIndex((run) => String(run?.runId || "").trim() === String(selectedHarnessRun?.runId || "").trim());
+      const nextIndex = index <= 0 ? harnessRuns.length - 1 : index - 1;
+      setSelectedHarnessRunId(String(harnessRuns[nextIndex]?.runId || "").trim());
+      return;
+    }
+    if (input === "]") {
+      if (!harnessRuns.length) return;
+      const index = harnessRuns.findIndex((run) => String(run?.runId || "").trim() === String(selectedHarnessRun?.runId || "").trim());
+      const nextIndex = index === -1 || index >= harnessRuns.length - 1 ? 0 : index + 1;
+      setSelectedHarnessRunId(String(harnessRuns[nextIndex]?.runId || "").trim());
+      return;
+    }
     if (key.escape) {
       closeModal();
     }
+  }, {
+    isActive: true,
   });
 
   const eventWidth = Math.max(12, terminalColumns - FIXED_TABLE_WIDTH);
@@ -659,10 +1162,13 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     onFooterHintsChange(getFooterHints("agents", {
       confirmKill,
       detailOpen: Boolean(detailView),
+      harnessDetailOpen: Boolean(harnessDetailView),
+      agentMonitorDetailOpen,
+      harnessNudgeMode,
       logsOpen: logLines.length > 0,
       diffOpen: Boolean(diffView),
     }));
-  }, [confirmKill, detailView, diffView, logLines.length, onFooterHintsChange]);
+  }, [agentMonitorDetailOpen, confirmKill, detailView, diffView, harnessDetailView, harnessNudgeMode, logLines.length, onFooterHintsChange]);
 
 
   return html`
@@ -675,10 +1181,27 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
               logLines=${logLines}
               timelineOffset=${timelineOffset}
               visibleTimelineRows=${visibleTimelineRows}
-              steerMode=${steerMode}
-              steerValue=${steerValue}
-              terminalColumns=${terminalColumns}
+               steerMode=${steerMode}
+               steerValue=${steerValue}
+               terminalColumns=${terminalColumns}
             />`
+        : harnessDetailView
+          ? html`
+              <${HarnessDetail}
+                harnessPayload=${harnessDetailView}
+                harnessEvents=${harnessEvents}
+                harnessApproval=${harnessApprovalView}
+                harnessNudgeMode=${harnessNudgeMode}
+                harnessNudgeValue=${harnessNudgeValue}
+              />`
+        : agentMonitorDetailOpen
+          ? html`
+              <${AgentMonitorDetail}
+                statusPayload=${agentEventStatus}
+                livenessItems=${agentLiveness}
+                errorItems=${agentErrorPatterns}
+                recentEvents=${agentRecentEvents}
+              />`
         : html`
             <${Box} borderStyle="single" paddingX=${1}>
               ${renderCell("", 2, { keyName: "header-status" })}
@@ -761,13 +1284,54 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
                     <//>
                   `)
                 : null}
-              ${showBackoff && !(retryQueue.items || []).length
-                ? html`<${Text} dimColor>No tasks cooling down<//>`
-                : null}
-            <//>
+             ${showBackoff && !(retryQueue.items || []).length
+                 ? html`<${Text} dimColor>No tasks cooling down<//>`
+                 : null}
+             <//>
 
-            ${confirmKill && selectedSession
-              ? html`
+             <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+               <${Text} bold>Agent Live Monitor (${agentLiveness.length})<//>
+               <${Text} dimColor>
+                 Event bus ${agentEventStatus?.ok === false ? "degraded" : "online"} ·
+                 errors ${agentErrorPatterns.length} ·
+                  sessions ${entries.length}
+               <//>
+               <${Text} dimColor>[M detail]<//>
+               ${agentLiveness.length
+                 ? agentLiveness.slice(0, 5).map((entry, index) => html`
+                     <${Text} key=${entry?.agentId || entry?.sessionId || entry?.taskId || index} wrap="truncate-end">
+                       ${describeLivenessRow(entry, Math.max(40, terminalColumns - 4))}
+                     <//>
+                   `)
+                 : html`<${Text} dimColor>No agent liveness data reported yet<//>`}
+               <${Box} marginTop=${1} flexDirection="column">
+                 <${Text} bold>Error Patterns<//>
+                 ${agentErrorPatterns.length
+                   ? agentErrorPatterns.slice(0, 4).map((entry, index) => html`
+                       <${Text} key=${entry?.pattern || entry?.error || `${index}`} wrap="truncate-end">
+                         ${describeErrorPatternRow(entry, Math.max(40, terminalColumns - 4))}
+                       <//>
+                     `)
+                   : html`<${Text} dimColor>No recurring agent error patterns<//>`}
+               <//>
+             <//>
+
+             <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+               <${Text} bold>Harness monitor (${harnessRuns.length})<//>
+               <${Text} dimColor>[H detail · [ / ] select]<//>
+               ${harnessRuns.length
+                 ? harnessRuns.slice(0, 6).map((run) => {
+                     const isSelected = String(run?.runId || "").trim() === String(selectedHarnessRun?.runId || "").trim();
+                     const row = projectHarnessRow(run, isSelected, Math.max(40, terminalColumns - 4));
+                     return html`
+                       <${Text} key=${row.key} color=${row.color} inverse=${row.inverse}>${row.text}<//>
+                     `;
+                   })
+                 : html`<${Text} dimColor>No harness runs reported yet<//>`}
+             <//>
+
+             ${confirmKill && selectedSession
+               ? html`
                   <${Box} marginTop=${1}>
                     <${Text} color="red">Kill ${describeSelection(selectedSession)}? [y/N]<//>
                   <//>

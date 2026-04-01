@@ -807,6 +807,18 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       },
     }, { x: 250, y: 1020 }),
 
+    node("clear-repair-blocked-success", "action.bosun_function", "Clear Repair Blocked State", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{taskId}}",
+        patch: {
+          blockedReason: null,
+          blockedContext: null,
+          repairState: "completed",
+        },
+      },
+    }, { x: 450, y: 1020 }),
+
     node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
       workflowId: "template-bosun-pr-progressor",
       mode: "dispatch",
@@ -862,7 +874,8 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     edge("create-pr", "create-pr-success"),
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo", { condition: "$output?.result !== true", port: "no" }),
-    edge("mark-inreview", "handoff-pr-progressor"),
+    edge("mark-inreview", "clear-repair-blocked-success"),
+    edge("clear-repair-blocked-success", "handoff-pr-progressor"),
     edge("handoff-pr-progressor", "notify-success"),
     edge("mark-todo", "notify-escalate"),
     edge("no-worktree", "notify-escalate"),

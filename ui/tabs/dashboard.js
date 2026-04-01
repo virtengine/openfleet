@@ -154,6 +154,95 @@ function normalizeCommitMessage(message) {
   );
 }
 
+function getHarnessRunState(run) {
+  return String(
+    run?.health?.state
+    || run?.status
+    || run?.outcome
+    || run?.result?.status
+    || run?.result?.outcome
+    || "unknown",
+  ).trim().toLowerCase();
+}
+
+function getHarnessStateTone(state) {
+  if (state === "working") return "info";
+  if (state === "waiting") return "warning";
+  if (state === "stalled" || state === "failed" || state === "aborted") return "error";
+  if (state === "completed") return "success";
+  return "default";
+}
+
+function getHarnessStateColor(state) {
+  if (state === "working") return "var(--color-inprogress)";
+  if (state === "waiting") return "var(--color-inreview)";
+  if (state === "stalled" || state === "failed" || state === "aborted") return "var(--color-error)";
+  if (state === "completed") return "var(--color-done)";
+  return "var(--text-secondary)";
+}
+
+function formatHarnessStateLabel(state) {
+  return String(state || "unknown").replace(/[_-]+/g, " ");
+}
+
+function formatHarnessStage(run) {
+  return String(
+    run?.currentStageId
+    || run?.health?.approvalStageId
+    || run?.stageId
+    || run?.completedStageId
+    || run?.result?.completedStageId
+    || "—",
+  ).trim() || "—";
+}
+
+function getHarnessRunTimestamp(run) {
+  const value = run?.updatedAt || run?.endedAt || run?.startedAt || run?.createdAt || 0;
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function getHarnessApprovalRequestId(run) {
+  return String(
+    run?.health?.approvalRequestId
+    || run?.approvalRequestId
+    || run?.requestId
+    || run?.latestApproval?.requestId
+    || "",
+  ).trim();
+}
+
+function getHarnessAttentionDetail(run) {
+  const state = getHarnessRunState(run);
+  const detail = String(
+    run?.health?.attentionReason
+    || run?.health?.lastEventSummary
+    || run?.latestEvent?.summary
+    || run?.summary
+    || "",
+  ).trim();
+  if (state === "waiting") {
+    const requestId = getHarnessApprovalRequestId(run);
+    const base = detail || "Awaiting operator approval.";
+    return requestId ? `${base} · ${requestId}` : base;
+  }
+  return detail || "No summary yet";
+}
+
+function normalizeHarnessRuns(items) {
+  const deduped = new Map();
+  for (const run of Array.isArray(items) ? items : []) {
+    if (!run || typeof run !== "object") continue;
+    const runId = String(run?.runId || "").trim();
+    if (!runId) continue;
+    const existing = deduped.get(runId);
+    if (!existing || getHarnessRunTimestamp(run) >= getHarnessRunTimestamp(existing)) {
+      deduped.set(runId, run);
+    }
+  }
+  return Array.from(deduped.values()).sort((a, b) => getHarnessRunTimestamp(b) - getHarnessRunTimestamp(a));
+}
+
 /* ─── CreateTaskModal ─── */
 export function CreateTaskModal({ onClose }) {
   const [title, setTitle] = useState("");
@@ -330,6 +419,7 @@ export function DashboardTab() {
   const [commitSearch, setCommitSearch] = useState("");
   const [activitySearch, setActivitySearch] = useState("");
   const [healthStatsReady, setHealthStatsReady] = useState(false);
+  const [harnessRuns, setHarnessRuns] = useState([]);
   const prevCounts = useRef(null);
   const status = statusData.value;
   const executor = executorData.value;
@@ -355,6 +445,16 @@ export function DashboardTab() {
     ? status.toolSummary
     : {};
   const topRuntimeTool = Array.isArray(toolSummary.topTools) ? toolSummary.topTools[0] : null;
+  const harnessActiveCount = harnessRuns.filter((run) => run?.active === true || getHarnessRunState(run) === "working").length;
+  const harnessWaitingCount = harnessRuns.filter((run) => run?.approvalPending === true || run?.health?.waitingForOperator === true || getHarnessRunState(run) === "waiting").length;
+  const harnessStalledCount = harnessRuns.filter((run) => getHarnessRunState(run) === "stalled").length;
+  const harnessAttentionRuns = harnessRuns.filter((run) => {
+    const state = getHarnessRunState(run);
+    return ["waiting", "stalled", "failed", "aborted", "stop_requested"].includes(state)
+      || run?.approvalPending === true
+      || run?.health?.waitingForOperator === true;
+  });
+  const harnessVisibleRuns = (harnessAttentionRuns.length ? harnessAttentionRuns : harnessRuns).slice(0, 4);
 
   const running = useLiveTaskCounts
     ? Number(liveTaskCounts.inProgress || 0)
@@ -406,6 +506,7 @@ export function DashboardTab() {
   const headerLine = `${totalActive} active · ${backlog} backlog · ${done} done${
     blocked ? ` · ${blocked} blocked` : ""
   }`;
+  const headerScopeLabel = useLiveTaskCounts ? "Workspace-scoped totals" : "Runtime snapshot totals";
 
   // ── Dynamic headline ──
   const headline =
@@ -492,6 +593,26 @@ export function DashboardTab() {
 
   useEffect(() => {
     loadRetryQueue().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadHarnessMonitor = () => {
+      apiFetch("/api/harness/runs?limit=8", { _silent: true })
+        .then((res) => {
+          if (!active) return;
+          setHarnessRuns(normalizeHarnessRuns(res?.items || res?.runs || []));
+        })
+        .catch(() => {
+          if (active) setHarnessRuns([]);
+        });
+    };
+    loadHarnessMonitor();
+    const timer = setInterval(loadHarnessMonitor, 15_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -781,11 +902,12 @@ export function DashboardTab() {
 
   return html`
     <div class="dashboard-shell">
-      <div class="dashboard-header">
+      <div class="dashboard-header" role="banner" aria-label="Dashboard status header">
         <div class="dashboard-header-text">
           <div class="dashboard-eyebrow">Pulse</div>
-          <div class="dashboard-title ${headlineClass}">${headline}</div>
+          <h1 class="dashboard-title ${headlineClass}">${headline}</h1>
           <div class="dashboard-subtitle">${headerLine}</div>
+          <div class="dashboard-meta-copy">${headerScopeLabel}</div>
         </div>
         <div class="dashboard-header-meta">
           <span class="dashboard-chip">Mode ${mode}</span>
@@ -925,75 +1047,158 @@ export function DashboardTab() {
           >`}
           className="dashboard-card dashboard-overview"
         >
-          ${fleetAtRest
-            ? html`
-              <div class="fleet-rest-badge">
-                <div class="fleet-rest-icon">${resolveIcon("check")}</div>
-                <div class="fleet-rest-label">Fleet at rest</div>
-                <div class="fleet-rest-sub">${done} task${done !== 1 ? "s" : ""} completed · zero pending</div>
-              </div>
-            `
-            : html`
-              <div class="dashboard-metric-grid stat-flash" key=${flashKey}>
-                ${overviewMetrics.map(
-                  (metric) => html`
-                    <div
-                      class="dashboard-metric"
-                      style="cursor:pointer;"
-                      role="button"
-                      tabindex="0"
-                      onClick=${() => navigateTo(metric.tab || "tasks")}
-                      onKeyDown=${(e) => e.key === "Enter" && navigateTo(metric.tab || "tasks")}
-                    >
-                      <div class="dashboard-metric-label">${metric.label}</div>
+          <section role="region" aria-label="Dashboard overview">
+            ${fleetAtRest
+              ? html`
+                <div class="fleet-rest-badge">
+                  <div class="fleet-rest-icon">${resolveIcon("check")}</div>
+                  <div class="fleet-rest-label">Fleet at rest</div>
+                  <div class="fleet-rest-sub">${done} task${done !== 1 ? "s" : ""} completed · zero pending</div>
+                </div>
+              `
+              : html`
+                <div class="dashboard-metric-grid stat-flash" key=${flashKey} aria-label="Overview metrics">
+                  ${overviewMetrics.map(
+                    (metric) => html`
                       <div
-                        class="dashboard-metric-value"
-                        style="color: ${metric.color}"
+                        class="dashboard-metric"
+                        style="cursor:pointer;"
+                        role="button"
+                        tabindex="0"
+                        onClick=${() => navigateTo(metric.tab || "tasks")}
+                        onKeyDown=${(e) => (e.key === "Enter" || e.key === " ") && navigateTo(metric.tab || "tasks")}
                       >
-                        ${typeof metric.value === "number"
-                          ? html`<${AnimatedNumber} value=${metric.value} />`
-                          : metric.value} ${trend(metric.trend)}
+                        <div class="dashboard-metric-label">${metric.label}</div>
+                        <div
+                          class="dashboard-metric-value"
+                          style="color: ${metric.color}"
+                        >
+                          ${typeof metric.value === "number"
+                            ? html`<${AnimatedNumber} value=${metric.value} />`
+                            : metric.value} ${trend(metric.trend)}
+                        </div>
+                        <div class="dashboard-metric-spark">
+                          <${MiniSparkline}
+                            data=${sparkData(metric.spark)}
+                            color=${metric.color}
+                            height=${20}
+                            width=${90}
+                          />
+                        </div>
                       </div>
-                      <div class="dashboard-metric-spark">
-                        <${MiniSparkline}
-                          data=${sparkData(metric.spark)}
-                          color=${metric.color}
-                          height=${20}
-                          width=${90}
-                        />
+                    `,
+                  )}
+                </div>
+              `}
+            ${segments.length > 0 && html`
+              <div class="dashboard-work-layout" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+                <div class="dashboard-work-list">
+                  ${workItems.map(
+                    (item) => html`
+                      <div class="dashboard-work-item">
+                        <div class="dashboard-work-left">
+                          <span
+                            class="dashboard-work-dot"
+                            style="background: ${item.color}"
+                          ></span>
+                          <span class="dashboard-work-label">${item.label}</span>
+                        </div>
+                        <span class="dashboard-work-value">${item.value}</span>
                       </div>
-                    </div>
-                  `,
-                )}
+                    `,
+                  )}
+                </div>
+                <div class="dashboard-work-chart">
+                  <${DonutChart} segments=${segments} size=${90} strokeWidth=${9} />
+                  <div class="dashboard-work-meta">
+                    ${progressPct}% engaged
+                  </div>
+                  <${ProgressBar} percent=${progressPct} />
+                </div>
               </div>
             `}
-          ${segments.length > 0 && html`
-            <div class="dashboard-work-layout" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-              <div class="dashboard-work-list">
-                ${workItems.map(
-                  (item) => html`
-                    <div class="dashboard-work-item">
-                      <div class="dashboard-work-left">
-                        <span
-                          class="dashboard-work-dot"
-                          style="background: ${item.color}"
-                        ></span>
-                        <span class="dashboard-work-label">${item.label}</span>
-                      </div>
-                      <span class="dashboard-work-value">${item.value}</span>
-                    </div>
-                  `,
-                )}
-              </div>
-              <div class="dashboard-work-chart">
-                <${DonutChart} segments=${segments} size=${90} strokeWidth=${9} />
-                <div class="dashboard-work-meta">
-                  ${progressPct}% engaged
-                </div>
-                <${ProgressBar} percent=${progressPct} />
-              </div>
+          </section>
+        <//>
+
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.activity || resolveIcon("activity")}</span>Harness Attention</span
+          >`}
+          className="dashboard-card dashboard-harness"
+        >
+          <div class="dashboard-harness-summary">
+            <div class="dashboard-harness-summary-item">
+              <div class="dashboard-harness-summary-label">Active</div>
+              <div class="dashboard-harness-summary-value numeral">${harnessActiveCount}</div>
             </div>
-          `}
+            <div class="dashboard-harness-summary-item">
+              <div class="dashboard-harness-summary-label">Waiting</div>
+              <div class="dashboard-harness-summary-value numeral" style=${{ color: "var(--color-inreview)" }}>${harnessWaitingCount}</div>
+            </div>
+            <div class="dashboard-harness-summary-item">
+              <div class="dashboard-harness-summary-label">Stalled</div>
+              <div class="dashboard-harness-summary-value numeral" style=${{ color: "var(--color-error)" }}>${harnessStalledCount}</div>
+            </div>
+          </div>
+          ${harnessVisibleRuns.length
+            ? html`
+                <div class="dashboard-harness-list">
+                  ${harnessVisibleRuns.map((run) => {
+                    const state = getHarnessRunState(run);
+                    return html`
+                      <button
+                        type="button"
+                        key=${run.runId}
+                        class="task-card dashboard-harness-item"
+                        data-status=${state}
+                        onClick=${() => navigateTo("agents", {
+                          params: {
+                            harnessRunId: String(run?.runId || "").trim(),
+                            harnessSource: "dashboard attention",
+                          },
+                        })}
+                      >
+                        <div class="task-card-header">
+                          <div>
+                            <div class="task-card-title">${truncate(run?.name || run?.runId || "(unnamed harness run)", 60)}</div>
+                            <div class="task-card-meta">
+                              ${run?.runId || "unknown"} · stage ${formatHarnessStage(run)}
+                            </div>
+                          </div>
+                          <${Chip}
+                            size="small"
+                            label=${formatHarnessStateLabel(state)}
+                            color=${getHarnessStateTone(state)}
+                            variant="outlined"
+                            sx=${{
+                              color: getHarnessStateColor(state),
+                              borderColor: getHarnessStateColor(state),
+                            }}
+                          />
+                        </div>
+                        <div class="task-card-meta">${getHarnessAttentionDetail(run)}</div>
+                        <div class="task-card-meta" style=${{ marginTop: "0.35rem" }}>
+                          ${run?.startedAt ? `Started ${formatRelative(run.startedAt)}` : "Start time unavailable"}
+                          ${run?.updatedAt ? ` · Updated ${formatRelative(run.updatedAt)}` : ""}
+                        </div>
+                      </button>
+                    `;
+                  })}
+                </div>
+              `
+            : html`<${EmptyState}
+                title="No harness runs need attention"
+                description="Active, waiting, and stalled harness runs will appear here with one-click routing into the Agents tab."
+              />`}
+          <div class="dashboard-inline-actions" style=${{ marginTop: "0.75rem" }}>
+            <${Button}
+              variant="outlined"
+              size="small"
+              onClick=${() => navigateTo("agents")}
+            >
+              Open Agents
+            <//>
+          </div>
         <//>
 
         <${Card}
@@ -1033,7 +1238,7 @@ export function DashboardTab() {
           >`}
           className="dashboard-card dashboard-actions"
         >
-          <div class="dashboard-actions-grid">
+          <div class="dashboard-actions-grid" aria-label="Quick actions">
             ${QUICK_ACTIONS.map(
               (a) => html`
                 <${Button}

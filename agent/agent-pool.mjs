@@ -488,7 +488,83 @@ function hasOptionalModule(specifier) {
 }
 
 async function importCodexSdkModule() {
-  return import(CODEX_SDK_SPECIFIER);
+  if (process.env.VITEST) {
+    const mockCtor = globalThis.__agentPoolMockCodexCtor;
+    const mockStartThread = globalThis.__agentPoolMockCodexStartThread;
+    const mockResumeThread = globalThis.__agentPoolMockCodexResumeThread;
+    if (
+      typeof mockCtor === "function" ||
+      typeof mockStartThread === "function" ||
+      typeof mockResumeThread === "function"
+    ) {
+      return {
+        Codex: class MockCodex {
+          constructor(...args) {
+            if (typeof mockCtor === "function") {
+              mockCtor(...args);
+            }
+          }
+
+          startThread(...args) {
+            if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
+              return {
+                id: "mock-codex-unavailable",
+                runStreamed: async () => {
+                  throw new Error("Codex SDK not available: mocked unavailable");
+                },
+              };
+            }
+            if (typeof mockStartThread === "function") {
+              const injected = mockStartThread(...args);
+              if (injected !== undefined) return injected;
+            }
+            return {
+              id: "mock-codex-thread-new",
+              runStreamed: async () => ({
+                events: {
+                  async *[Symbol.asyncIterator]() {
+                    yield {
+                      type: "item.completed",
+                      item: { type: "agent_message", text: "codex-output" },
+                    };
+                  },
+                },
+              }),
+            };
+          }
+
+          resumeThread(...args) {
+            if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
+              throw new Error("Codex SDK not available: mocked unavailable");
+            }
+            if (typeof mockResumeThread === "function") {
+              const injected = mockResumeThread(...args);
+              if (injected !== undefined) return injected;
+            }
+            const [threadId] = args;
+            return {
+              id: threadId || "mock-codex-thread-resumed",
+              runStreamed: async () => ({
+                events: {
+                  async *[Symbol.asyncIterator]() {
+                    yield {
+                      type: "item.completed",
+                      item: {
+                        type: "agent_message",
+                        text: "codex-resumed-output",
+                      },
+                    };
+                  },
+                },
+              }),
+            };
+          }
+        },
+      };
+    }
+  }
+  // Keep the specifier literal so Vitest can intercept the dynamic import.
+  return import("@openai/codex-sdk");
 }
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max

@@ -40,7 +40,7 @@ import {
 import { ICONS } from "../modules/icons.js";
 import { formatCompactCount } from "../modules/session-insights.js";
 import { formatRelative, truncate } from "../modules/utils.js";
-import { resolveSessionWorkspaceHint } from "../modules/session-api.js";
+import { getSessionRuntimeState, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import {
   Card,
   Badge,
@@ -222,6 +222,30 @@ function getHarnessAttentionDetail(run) {
   }
   if (attentionReason) return attentionReason;
   return String(run?.summary || run?.health?.state || "No summary yet").trim();
+}
+
+function normalizeAgentLiveness(payload) {
+  if (Array.isArray(payload?.agents)) return payload.agents;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function normalizeAgentErrorPatterns(payload) {
+  if (Array.isArray(payload?.patterns)) return payload.patterns;
+  if (Array.isArray(payload?.errors)) return payload.errors;
+  return [];
+}
+
+function getAgentMonitorSummary(event) {
+  return String(
+    event?.message
+    || event?.summary
+    || event?.payload?.message
+    || event?.payload?.summary
+    || event?.payload?.reason
+    || event?.payload?.status
+    || "",
+  ).replace(/\s+/g, " ").trim();
 }
 
 function formatTurnTokens(turn) {
@@ -425,18 +449,84 @@ function getFleetEntryTitle(entry) {
   );
 }
 
+function formatFleetStateLabel(value, fallback = "Unknown") {
+  const normalized = String(value || "").trim();
+  if (!normalized) return fallback;
+  return normalized
+    .replace(/[_-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function getFleetEntryStatus(entry) {
-  return String(
-    entry?.slot?.status
-    || entry?.session?.status
-    || (entry?.isHistory ? "historic" : "unknown"),
-  ).toLowerCase();
+  return getFleetEntryStatusMeta(entry).key;
 }
 
 function isFleetEntryActive(entry) {
   if (!entry || typeof entry !== "object") return false;
   const status = getFleetEntryStatus(entry);
   return status === "active" || status === "running" || status === "busy" || status === "inprogress";
+}
+
+function getFleetEntryStatusMeta(entry) {
+  if (!entry || typeof entry !== "object") {
+    return { key: "unknown", label: "Unknown", tone: "historic", isActive: false };
+  }
+
+  const slotStatus = String(entry?.slot?.status || "").trim().toLowerCase();
+  if (slotStatus) {
+    if (["running", "busy", "active", "working", "inprogress"].includes(slotStatus)) {
+      return { key: slotStatus, label: "Active", tone: "active", isActive: true };
+    }
+    if (slotStatus === "inreview") {
+      return { key: slotStatus, label: "Review", tone: "warning", isActive: false };
+    }
+    if (slotStatus === "idle" || slotStatus === "queued" || slotStatus === "pending") {
+      return {
+        key: slotStatus,
+        label: slotStatus === "queued" ? "Queued" : slotStatus === "pending" ? "Pending" : "Idle",
+        tone: "warning",
+        isActive: false,
+      };
+    }
+    if (slotStatus === "error" || slotStatus === "failed" || slotStatus === "stalled") {
+      return { key: slotStatus, label: slotStatus === "error" ? "Error" : formatFleetStateLabel(slotStatus), tone: "error", isActive: false };
+    }
+    if (slotStatus === "done" || slotStatus === "completed") {
+      return { key: slotStatus, label: "Completed", tone: "historic", isActive: false };
+    }
+  }
+
+  if (entry?.session) {
+    const runtimeState = getSessionRuntimeState(entry.session);
+    if (runtimeState?.key === "running") {
+      return { key: "running", label: "Active", tone: "active", isActive: true };
+    }
+    if (runtimeState?.key === "recent") {
+      return { key: "recent", label: "Recent", tone: "active", isActive: true };
+    }
+    if (runtimeState?.key === "idle" || runtimeState?.key === "queued" || runtimeState?.key === "paused") {
+      return { key: runtimeState.key, label: runtimeState.label || "Idle", tone: "warning", isActive: false };
+    }
+    if (runtimeState?.key === "stalled" || runtimeState?.key === "stale") {
+      return { key: runtimeState.key, label: runtimeState.label || "Stale", tone: "error", isActive: false };
+    }
+    if (runtimeState?.key === "stopped") {
+      return { key: "historic", label: entry?.isHistory ? "Historic" : "Not live", tone: "historic", isActive: false };
+    }
+    if (runtimeState?.label) {
+      return { key: runtimeState.key || "unknown", label: runtimeState.label, tone: "historic", isActive: false };
+    }
+  }
+
+  return {
+    key: entry?.isHistory ? "historic" : "unknown",
+    label: entry?.isHistory ? "Historic" : "Unknown",
+    tone: "historic",
+    isActive: false,
+  };
 }
 
 function getFleetEntryTimestamp(entry) {
@@ -515,9 +605,8 @@ function getFleetEntryRelativeTime(entry) {
 
 function isActiveSessionRecord(session) {
   if (!session || typeof session !== "object") return false;
-  if (session.active === true) return true;
-  const status = String(session.status || session.state || "").trim().toLowerCase();
-  return ["active", "running", "busy", "working", "inprogress", "streaming"].includes(status);
+  const runtimeState = getSessionRuntimeState(session);
+  return runtimeState?.key === "running" || runtimeState?.key === "recent";
 }
 
 function getFleetEntryOriginLabel(entry) {
@@ -1419,7 +1508,7 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
     const requestId = latestTaskRequestRef.current + 1;
     latestTaskRequestRef.current = requestId;
     setTasksLoading(true);
-    apiFetch("/api/tasks?limit=1000", { _silent: true })
+    apiFetch("/api/tasks?page=0&pageSize=200", { _silent: true })
       .then((res) => {
         if (!mountedRef.current || latestTaskRequestRef.current !== requestId) return;
         const choices = normalizeDispatchTaskChoices(res?.data);
@@ -1563,6 +1652,11 @@ export function AgentsTab() {
   const [harnessActionByRun, setHarnessActionByRun] = useState({});
   const [focusedHarnessRunId, setFocusedHarnessRunId] = useState("");
   const [focusedHarnessSource, setFocusedHarnessSource] = useState("");
+  const [agentEventStatus, setAgentEventStatus] = useState(null);
+  const [agentLiveness, setAgentLiveness] = useState([]);
+  const [agentErrorPatterns, setAgentErrorPatterns] = useState([]);
+  const [agentRecentEvents, setAgentRecentEvents] = useState([]);
+  const [fleetSessionsSnapshot, setFleetSessionsSnapshot] = useState([]);
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -1586,7 +1680,7 @@ export function AgentsTab() {
     });
   }, [slots, fleetSearch]);
 
-  const allSessions = sessionsData.value || [];
+  const allSessions = fleetSessionsSnapshot;
   const slotTaskIds = new Set(
     slots.map((slot) => String(slot?.taskId || "").trim()).filter(Boolean),
   );
@@ -1621,7 +1715,7 @@ export function AgentsTab() {
     const sessions = sessionsData.value || [];
     if (current || sessions.length === 0) return;
     const activeSession =
-      sessions.find((s) => s.status === "active" || s.status === "running") ||
+      sessions.find((s) => isActiveSessionRecord(s)) ||
       sessions[0];
     if (activeSession?.id) {
       selectedSessionId.value = activeSession.id;
@@ -1630,12 +1724,16 @@ export function AgentsTab() {
 
   useEffect(() => {
     let active = true;
-    const refreshTaskSessions = () => {
+    const refreshTaskSessions = async () => {
+      if (!active || document.hidden) return;
+      const sessions = await loadSessions({ type: "task", workspace: "all" });
       if (!active) return;
-      loadSessions({ type: "task", workspace: "all" });
+      if (Array.isArray(sessions)) {
+        setFleetSessionsSnapshot(sessions);
+      }
     };
-    refreshTaskSessions();
-    const interval = setInterval(refreshTaskSessions, 5000);
+    void refreshTaskSessions();
+    const interval = setInterval(refreshTaskSessions, 15000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -1675,6 +1773,36 @@ export function AgentsTab() {
     setFocusedHarnessSource(routeHarnessSource || "workflow approvals");
     setRouteParams({}, { replace: true, skipGuard: true });
   }, [routeHarnessRunId, routeHarnessSource]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadAgentMonitor = async () => {
+      if (cancelled || document.hidden) return;
+      try {
+        const [statusPayload, livenessPayload, errorPayload, recentEventsPayload] = await Promise.all([
+          apiFetch("/api/agents/events/status"),
+          apiFetch("/api/agents/events/liveness"),
+          apiFetch("/api/agents/events/errors"),
+          apiFetch("/api/agents/events?limit=25"),
+        ]);
+        if (cancelled) return;
+        setAgentEventStatus(statusPayload || null);
+        setAgentLiveness(normalizeAgentLiveness(livenessPayload));
+        setAgentErrorPatterns(normalizeAgentErrorPatterns(errorPayload));
+        setAgentRecentEvents(Array.isArray(recentEventsPayload?.events) ? recentEventsPayload.events : []);
+      } catch {
+        if (cancelled) return;
+      }
+    };
+    void loadAgentMonitor();
+    const interval = setInterval(() => {
+      void loadAgentMonitor();
+    }, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     loadWorkspaces().catch(() => {});
@@ -1868,6 +1996,25 @@ export function AgentsTab() {
     { key: "stalled", label: `Stalled (${harnessStalledCount})` },
     { key: "all", label: `All (${harnessRuns.length})` },
   ];
+  const trackedAgentCount = Math.max(
+    Number(agentEventStatus?.trackedAgents || 0) || 0,
+    agentLiveness.length,
+  );
+  const aliveAgentCount = agentLiveness.filter((entry) => entry?.alive !== false).length;
+  const staleAgentCount = agentLiveness.filter((entry) => entry?.alive === false).length;
+  const agentEventLogSize = Number(agentEventStatus?.eventLogSize || 0) || 0;
+  const agentListenerCount = Number(agentEventStatus?.listenerCount || 0) || 0;
+  const agentMonitorSummaryText = trackedAgentCount > 0 || agentEventLogSize > 0
+    ? [
+        `${trackedAgentCount} tracked`,
+        `${aliveAgentCount} alive`,
+        `${staleAgentCount} stale`,
+        `${agentErrorPatterns.length} patterns`,
+      ].join(" · ")
+    : "Agent event-bus telemetry appears here once live activity is recorded.";
+  const visibleAgentLiveness = agentLiveness.slice(0, 6);
+  const visibleAgentErrorPatterns = agentErrorPatterns.slice(0, 5);
+  const visibleAgentEvents = agentRecentEvents.slice(0, 6);
 
   const handleFleetRefresh = () => {
     haptic();
@@ -2166,6 +2313,131 @@ export function AgentsTab() {
                 },
               )}
             </div>
+          <//>
+        <//>
+
+        <${Card} className="fleet-slotmap-card">
+          <${Collapsible}
+            title=${trackedAgentCount > 0
+              ? html`Agent Live Monitor · <span class="numeral">${trackedAgentCount}</span> tracked`
+              : "Agent Live Monitor"}
+            defaultOpen=${!isCompact}
+          >
+            <div class="meta-text mb-sm">${agentMonitorSummaryText}</div>
+            <div class="fleet-metrics" style=${{ marginBottom: "0.75rem" }}>
+              ${[
+                { label: "Tracked", value: trackedAgentCount },
+                { label: "Alive", value: aliveAgentCount },
+                { label: "Stale", value: staleAgentCount },
+                { label: "Patterns", value: agentErrorPatterns.length },
+                { label: "Events", value: agentEventLogSize },
+                { label: "Listeners", value: agentListenerCount },
+              ].map((metric) => html`
+                <div class="fleet-metric" key=${metric.label}>
+                  <div class="fleet-metric-label">${metric.label}</div>
+                  <div class="fleet-metric-value numeral">${metric.value}</div>
+                </div>
+              `)}
+            </div>
+            <div class="task-card-meta" style=${{ marginBottom: "0.5rem" }}>
+              Event bus started: ${agentEventStatus?.started === true ? "yes" : "no"}
+            </div>
+            <div class="task-card-meta" style=${{ marginBottom: "0.35rem", fontWeight: 700 }}>
+              Liveness Detail
+            </div>
+            ${visibleAgentLiveness.length
+              ? html`<div class="fleet-turn-timeline">
+                  ${visibleAgentLiveness.map((entry, index) => {
+                    const key = String(entry?.agentId || entry?.sessionId || entry?.taskId || `agent-${index}`).trim();
+                    const staleMs = Number(entry?.staleSinceMs || 0) || 0;
+                    const summary = String(entry?.summary || entry?.reason || entry?.taskTitle || "").trim();
+                    return html`
+                      <div class="task-card fleet-turn-card" key=${key}>
+                        <div class="task-card-header">
+                          <div>
+                            <div class="task-card-title">${truncate(key, 64)}</div>
+                            <div class="task-card-meta">
+                              ${String(entry?.status || entry?.state || entry?.health || (entry?.alive === false ? "stale" : "alive")).trim() || "unknown"}
+                              ${entry?.lastHeartbeatAt ? ` · heartbeat ${formatRelative(entry.lastHeartbeatAt)}` : ""}
+                              ${staleMs > 0 ? ` · stale ${formatMsDuration(staleMs)}` : ""}
+                            </div>
+                          </div>
+                          <${Chip}
+                            size="small"
+                            label=${entry?.alive === false ? "stale" : "alive"}
+                            sx=${{
+                              fontWeight: 700,
+                              background: entry?.alive === false ? "rgba(239, 68, 68, 0.16)" : "rgba(16, 185, 129, 0.16)",
+                              color: entry?.alive === false ? "var(--color-error)" : "var(--color-done)",
+                            }}
+                          />
+                        </div>
+                        <div class="meta-text">${summary || "No liveness summary reported."}</div>
+                      </div>
+                    `;
+                  })}
+                </div>`
+              : html`<${EmptyState} message="No liveness detail reported yet." />`}
+            <div class="task-card-meta" style=${{ marginTop: "0.75rem", marginBottom: "0.35rem", fontWeight: 700 }}>
+              Error Pattern Detail
+            </div>
+            ${visibleAgentErrorPatterns.length
+              ? html`<div class="fleet-turn-timeline">
+                  ${visibleAgentErrorPatterns.map((entry, index) => {
+                    const key = String(entry?.pattern || entry?.error || entry?.message || `pattern-${index}`).trim();
+                    const count = Number(entry?.count || entry?.hits || entry?.occurrences || 0) || 0;
+                    const scope = String(entry?.taskId || entry?.sessionId || entry?.agentId || entry?.source || "").trim();
+                    return html`
+                      <div class="task-card fleet-turn-card" key=${key}>
+                        <div class="task-card-header">
+                          <div>
+                            <div class="task-card-title">${truncate(key, 64)}</div>
+                            <div class="task-card-meta">
+                              <span class="numeral">${count}</span> hits
+                              ${scope ? ` · ${scope}` : ""}
+                            </div>
+                          </div>
+                          <${Chip}
+                            size="small"
+                            label=${count > 0 ? "active" : "clear"}
+                            sx=${{
+                              fontWeight: 700,
+                              background: count > 0 ? "rgba(245, 158, 11, 0.18)" : "rgba(16, 185, 129, 0.16)",
+                              color: count > 0 ? "var(--color-warning, #f59e0b)" : "var(--color-done)",
+                            }}
+                          />
+                        </div>
+                      </div>
+                    `;
+                  })}
+                </div>`
+              : html`<${EmptyState} message="No recurring error patterns detected." />`}
+            <div class="task-card-meta" style=${{ marginTop: "0.75rem", marginBottom: "0.35rem", fontWeight: 700 }}>
+              Recent Agent Events
+            </div>
+            ${visibleAgentEvents.length
+              ? html`<div class="fleet-turn-timeline">
+                  ${visibleAgentEvents.map((event, index) => {
+                    const eventType = String(event?.type || event?.eventType || "event").trim() || "event";
+                    const taskScope = String(event?.taskId || event?.agentId || event?.sessionId || "").trim();
+                    const summary = getAgentMonitorSummary(event);
+                    return html`
+                      <div class="task-card fleet-turn-card" key=${String(event?.id || `${eventType}-${index}`)}>
+                        <div class="task-card-header">
+                          <div>
+                            <div class="task-card-title">${eventType}</div>
+                            <div class="task-card-meta">
+                              ${event?.timestamp ? formatRelative(event.timestamp) : "timestamp unavailable"}
+                              ${taskScope ? ` · ${taskScope}` : ""}
+                            </div>
+                          </div>
+                        </div>
+                        <div class="meta-text">${summary || "No event summary available."}</div>
+                      </div>
+                    `;
+                  })}
+                </div>`
+              : html`<${EmptyState} message="No recent agent events recorded." />`}
           <//>
         <//>
       </div>
@@ -2634,7 +2906,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
 }
 
 /* ─── Fleet Full Session View ─── */
-function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, onForceStop }) {
+function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], onOpenWorkspace, onForceStop }) {
   const [detailTab, setDetailTab] = useState("stream");
   const [sessionScope, setSessionScope] = useState(FLEET_SESSION_SCOPE.all);
   const [sessionSearch, setSessionSearch] = useState("");
@@ -2642,7 +2914,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
   const [copiedSessionId, setCopiedSessionId] = useState("");
   const [logText, setLogText] = useState("(no logs yet)");
   const logRef = useRef(null);
-  const allSessions = sessionsData.value || [];
+  const allSessions = Array.isArray(sessions) ? sessions : [];
 
   const copySessionId = (sessionId) => {
     if (!sessionId) return;
@@ -2929,7 +3201,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                         : "No sessions yet"}
                 </div>`
               : html`${visibleEntries.map((entry) => {
-                  const entryStatus = getFleetEntryStatus(entry);
+                  const entryStatus = getFleetEntryStatusMeta(entry);
                   const relativeTime = getFleetEntryRelativeTime(entry);
                   const sessionId = resolveFleetEntrySessionId(entry);
                   return html`
@@ -2956,8 +3228,8 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                       </div>
                       <div class="fleet-slot-item-meta fleet-slot-item-meta-secondary">
                         <span class="fleet-slot-meta-turns">Turns ${Number(entry.session?.turnCount || 0)}</span>
-                        <span class=${`fleet-slot-state-badge ${isFleetEntryActive(entry) ? "active" : "historic"}`}>
-                          ${entryStatus || "unknown"}
+                        <span class=${`fleet-slot-state-badge ${entryStatus.tone || "historic"}`}>
+                          ${entryStatus.label || "Unknown"}
                         </span>
                         ${sessionId
                           ? html`<button
@@ -2973,7 +3245,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                               }}
                             >
                               <span class="fleet-session-id-pill-text mono">${sessionId.slice(0, 8)}</span>
-                              <span class="fleet-session-id-pill-icon" aria-hidden="true">${copiedSessionId === sessionId ? "✓" : ICONS.copy}</span>
+                              <span class="fleet-session-id-pill-icon fleet-icon-clamp" aria-hidden="true">${copiedSessionId === sessionId ? "✓" : ICONS.copy}</span>
                             </button>`
                           : null}
                         ${entry.slot?.branch
@@ -3129,15 +3401,20 @@ export function FleetSessionsTab() {
   const execData = executor?.data;
   const slots = execData?.workspaceSummary?.slots || execData?.slots || [];
   const [taskFallbackEntries, setTaskFallbackEntries] = useState([]);
+  const [fleetSessionsSnapshot, setFleetSessionsSnapshot] = useState([]);
 
   useEffect(() => {
     let active = true;
-    const refreshTaskSessions = () => {
+    const refreshTaskSessions = async () => {
+      if (!active || document.hidden) return;
+      const sessions = await loadSessions({ type: "task", workspace: "all" });
       if (!active) return;
-      loadSessions({ type: "task", workspace: "all" });
+      if (Array.isArray(sessions)) {
+        setFleetSessionsSnapshot(sessions);
+      }
     };
-    refreshTaskSessions();
-    const interval = setInterval(refreshTaskSessions, 5000);
+    void refreshTaskSessions();
+    const interval = setInterval(refreshTaskSessions, 15000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -3147,7 +3424,7 @@ export function FleetSessionsTab() {
   useEffect(() => {
     let active = true;
     const loadFallbackTasks = () => {
-      if (!active) return;
+      if (!active || document.hidden) return;
       apiFetch("/api/tasks?limit=1000", { _silent: true })
         .then((res) => {
           if (!active) return;
@@ -3163,7 +3440,7 @@ export function FleetSessionsTab() {
         });
     };
     loadFallbackTasks();
-    const interval = setInterval(loadFallbackTasks, 5000);
+    const interval = setInterval(loadFallbackTasks, 20000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -3201,6 +3478,7 @@ export function FleetSessionsTab() {
       <div class="fleet-span">
         <${FleetSessionsPanel}
           slots=${slots}
+          sessions=${fleetSessionsSnapshot}
           taskFallbackEntries=${taskFallbackEntries}
           onOpenWorkspace=${openWorkspace}
           onForceStop=${handleForceStop}

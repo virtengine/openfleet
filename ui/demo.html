@@ -4276,6 +4276,128 @@
             ],
           };
         }
+        if (route === '/api/guardrails' || route === '/api/guardrails/policy') {
+          return {
+            ok: true,
+            policy: {
+              mode: 'advisory',
+              reviewRequired: true,
+              blockPushOnCritical: true,
+              allowOverride: true,
+            },
+          };
+        }
+        if (route === '/api/guardrails/runtime') {
+          return {
+            ok: true,
+            runtime: {
+              status: 'healthy',
+              activeWorkspaceId: getActiveDemoWorkspace()?.id || 'demo',
+              summary: 'Demo guardrails runtime is active.',
+              lastCheckAt: new Date().toISOString(),
+            },
+          };
+        }
+        if (route === '/api/guardrails/assess') {
+          return {
+            ok: true,
+            assessment: {
+              verdict: 'allow',
+              severity: 'low',
+              issues: [],
+              summary: 'Demo assessment completed without blocking issues.',
+            },
+          };
+        }
+        if (route === '/api/env/detect') {
+          return {
+            ok: true,
+            environment: {
+              shell: 'demo',
+              platform: 'browser',
+              repoRoot: getActiveDemoWorkspaceDir(),
+            },
+          };
+        }
+        if (route === '/api/repos/environment') {
+          return {
+            ok: true,
+            repos: [
+              {
+                id: getActiveDemoWorkspace()?.id || 'demo',
+                name: getActiveDemoWorkspace()?.name || 'Bosun Demo',
+                repoRoot: getActiveDemoWorkspaceDir(),
+                environment: 'demo',
+              },
+            ],
+          };
+        }
+        if (route === '/api/env/templates') {
+          return {
+            ok: true,
+            templates: [
+              { id: 'default', label: 'Default Demo Environment', env: { NODE_ENV: 'development' } },
+            ],
+          };
+        }
+        if (route === '/api/vault/status') {
+          return {
+            ok: true,
+            status: {
+              initialized: true,
+              locked: false,
+              provider: 'demo',
+              secretCount: 3,
+            },
+          };
+        }
+        if (route === '/api/vault/init') {
+          return {
+            ok: true,
+            initialized: true,
+            provider: 'demo',
+          };
+        }
+        if (route === '/api/vault/integrations') {
+          return {
+            ok: true,
+            integrations: [
+              { id: 'github', label: 'GitHub', connected: true },
+              { id: 'openai', label: 'OpenAI', connected: true },
+            ],
+          };
+        }
+        if (route === '/api/vault/secrets') {
+          return {
+            ok: true,
+            secrets: [
+              { id: 'openai-api-key', label: 'OpenAI API Key', provider: 'demo', masked: true },
+              { id: 'github-token', label: 'GitHub Token', provider: 'demo', masked: true },
+            ],
+          };
+        }
+        if (route === '/api/vault/env') {
+          return {
+            ok: true,
+            env: {
+              OPENAI_API_KEY: 'demo-present',
+              GITHUB_TOKEN: 'demo-present',
+            },
+          };
+        }
+        const vaultSecretMatch = route.match(/^\/api\/vault\/([^/]+)$/);
+        if (vaultSecretMatch) {
+          const secretId = decodeURIComponent(vaultSecretMatch[1] || 'demo-secret');
+          return {
+            ok: true,
+            secret: {
+              id: secretId,
+              label: secretId.replace(/[-_]/g, ' '),
+              provider: 'demo',
+              masked: true,
+            },
+          };
+        }
         if (route === '/api/telemetry/summary')
           return { data: { status: 'ok', updatedAt: Date.now(), totals: { tasks: STATE.tasks.length, executors: STATE.executors.length } } };
         if (route === '/api/telemetry/errors')

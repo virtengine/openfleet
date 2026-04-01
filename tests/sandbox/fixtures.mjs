@@ -271,10 +271,14 @@ export const scenarios = {
 
 export const TEMPLATE_FIXTURES = {
   "template-pr-merge-strategy":            { scenario: scenarios.greenPR(42),      inputVars: { prNumber: 42,  branch: "feat/login",      baseBranch: "main" } },
+  "template-pr-review-quality-striker":    { scenario: scenarios.greenPR(43),      inputVars: { prNumber: 43, repo: "virtengine/bosun", prUrl: "https://github.com/virtengine/bosun/pull/43", event: "review_requested" } },
   "template-pr-triage":                    { scenario: scenarios.greenPR(100),     inputVars: { prNumber: 100, prTitle: "feat: dark mode", prBody: "Adds dark mode", prAuthor: "dev-user" } },
   "template-pr-conflict-resolver":         { scenario: scenarios.conflictPR(55),   inputVars: { prNumber: 55,  branch: "feat/conflicts" } },
+  "template-pr-fix-single":                { scenario: scenarios.greenPR(56),      inputVars: { item: { repo: "virtengine/bosun", number: 56, n: 56, branch: "feat/pr-fix", baseBranch: "main", title: "Fix PR #56", reason: "ci_failed", prDigest: { core: { branch: "feat/pr-fix", baseBranch: "main", title: "Fix PR #56" }, files: [], reviews: [], reviewComments: [], issueComments: [], checks: [] } } } },
+  "template-pr-security-fix-single":       { scenario: scenarios.greenPR(57),      inputVars: { item: { repo: "virtengine/bosun", number: 57, n: 57, branch: "feat/pr-security-fix", baseBranch: "main", title: "Fix security PR #57", failedCheckNames: ["CodeQL"], securityCheckNames: ["CodeQL"], alerts: [], prDigest: { core: { branch: "feat/pr-security-fix", baseBranch: "main", title: "Fix security PR #57" }, files: [], reviews: [], reviewComments: [], checks: [] } } } },
   "template-stale-pr-reaper":              { scenario: scenarios.stalePRs(),        inputVars: {} },
   "template-release-drafter":              { scenario: scenarios.releaseReady(),    inputVars: { tagName: "v1.1.0" } },
+  "template-sonarqube-pr-striker":         { scenario: scenarios.greenPR(44),      inputVars: { prNumber: 44, repo: "virtengine/bosun" } },
   "template-bosun-pr-progressor":          { scenario: scenarios.greenPR(60),      inputVars: { taskId: "TASK-PR-1", taskTitle: "Progress PR", prNumber: 60, prUrl: "https://github.com/virtengine/bosun/pull/60", repo: "virtengine/bosun", branch: "feat/pr-progress", baseBranch: "main" } },
   "template-bosun-pr-watchdog":            { scenario: scenarios.greenPR(60),      inputVars: { prNumber: 60 } },
   "template-github-kanban-sync":           { scenario: scenarios.kanbanState(),     inputVars: {} },
@@ -335,4 +339,3 @@ export const TEMPLATE_FIXTURES = {
   "template-task-cicd":                  { scenario: scenarios.cicdDeploy(),      inputVars: { taskId: "TASK-CI-1", worktreePath: "/tmp/wt/cicd", branch: "feat/cicd", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
   "template-task-design":                { scenario: scenarios.greenPR(214),      inputVars: { taskId: "TASK-DS-1", worktreePath: "/tmp/wt/design", branch: "feat/design", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
 };
-

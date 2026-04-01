@@ -34,6 +34,7 @@ import {
 } from "../infra/stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const BOSUN_ROOT = resolve(__dirname, "..");
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -409,8 +410,12 @@ function resolveCodexTransport() {
   return "auto";
 }
 
-function shouldUseBareCodexSdkImport() {
-  return Boolean(import.meta.vitest || process.env.VITEST);
+function shouldUseBareCodexSdkImport(resolvedSdk = null) {
+  if (import.meta.vitest || process.env.VITEST || process.env.VITEST_WORKER_ID) {
+    return true;
+  }
+  const resolvedRoot = String(resolvedSdk?.rootDir || "").trim();
+  return Boolean(resolvedRoot && resolve(resolvedRoot) === BOSUN_ROOT);
 }
 
 /**
@@ -444,8 +449,12 @@ function repairCodexSdkPackageJson() {
 }
 
 async function importCodexSdkModule(resolvedSdk) {
-  if (shouldUseBareCodexSdkImport()) {
-    return import(CODEX_SDK_SPECIFIER);
+  if (shouldUseBareCodexSdkImport(resolvedSdk)) {
+    try {
+      return await import("./codex-sdk-import.mjs");
+    } catch (err) {
+      if (!resolvedSdk?.entryPath) throw err;
+    }
   }
   return import(pathToFileURL(resolvedSdk.entryPath).href);
 }
