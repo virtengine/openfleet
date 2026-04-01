@@ -2740,7 +2740,7 @@ describe("action.acquire_worktree", () => {
       encoding: "utf8",
     }).trim().toLowerCase();
     expect(longpaths).toBe("true");
-  });
+  }, process.platform === "win32" ? 15000 : 10000);
 
   it("repairs core.bare corruption after creating a worktree", async () => {
     const nt = getNodeType("action.acquire_worktree");

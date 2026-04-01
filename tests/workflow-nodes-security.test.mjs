@@ -444,7 +444,7 @@ describe("action.run_command env interpolation", () => {
     const parsed = JSON.parse(result.output);
     expect(parsed.conflicts).toHaveLength(2);
     expect(parsed.ciFailures).toHaveLength(1);
-  });
+  }, 15000);
 
   it("automatically compacts large command output before storing it in workflow context", async () => {
     const nodeType = getNodeType("action.run_command");

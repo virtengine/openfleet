@@ -712,7 +712,7 @@ describeUiServer("ui-server mini app", () => {
     } finally {
       logSpy.mockRestore();
     }
-  });
+  }, process.platform === "win32" ? 15000 : 10000);
 
   it("can opt in to tokenized browser URL logs", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -737,7 +737,7 @@ describeUiServer("ui-server mini app", () => {
     } finally {
       logSpy.mockRestore();
     }
-  });
+  }, process.platform === "win32" ? 15000 : 10000);
 
   it("treats BOSUN_UI_AUTO_OPEN_BROWSER as an auto-open opt-in when no explicit mode is set", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

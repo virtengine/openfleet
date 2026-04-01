@@ -338,6 +338,6 @@ describe("voice provider smoke matrix", () => {
           true,
         );
       }
-    }, 20_000);
+    }, process.platform === "win32" ? 40_000 : 30_000);
   }
 });

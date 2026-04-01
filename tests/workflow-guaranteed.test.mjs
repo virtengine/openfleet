@@ -29,6 +29,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { PassThrough } from "node:stream";
 
 import { TEMPLATE_FIXTURES } from "./sandbox/fixtures.mjs";
 import { createExecSandbox  } from "./sandbox/exec-sandbox.mjs";
@@ -90,24 +91,30 @@ vi.mock("node:child_process", async (importOriginal) => {
 
     spawn: (cmd, args) => {
       const proc = new EventEmitter();
-      proc.stdout = new EventEmitter();
-      proc.stderr = new EventEmitter();
-      proc.stdout.pipe = () => proc.stdout;
-      proc.stderr.pipe = () => proc.stderr;
+      proc.stdout = new PassThrough();
+      proc.stderr = new PassThrough();
+      proc.stdin = new PassThrough();
       proc.kill = () => {};
       proc.pid = 9999;
       _pendingChildProcessOps += 1;
       setImmediate(() => {
         try {
           const output = String(_activeDispatch(renderSpawnCommand(cmd, args)) || "");
-          if (output) proc.stdout.emit("data", output);
-          proc.emit("close", 0);
+          if (output) proc.stdout.write(output);
+          proc.stdout.end();
+          proc.stderr.end();
+          proc.emit("exit", 0, null);
+          proc.emit("close", 0, null);
         } catch (err) {
           const stdout = String(err?.stdout || "");
           const stderr = String(err?.stderr || err?.message || err || "");
-          if (stdout) proc.stdout.emit("data", stdout);
-          if (stderr) proc.stderr.emit("data", stderr);
-          proc.emit("close", err?.status ?? err?.exitCode ?? 1);
+          if (stdout) proc.stdout.write(stdout);
+          if (stderr) proc.stderr.write(stderr);
+          proc.stdout.end();
+          proc.stderr.end();
+          const exitCode = err?.status ?? err?.exitCode ?? 1;
+          proc.emit("exit", exitCode, null);
+          proc.emit("close", exitCode, null);
         } finally {
           _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
         }
