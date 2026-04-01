@@ -15,6 +15,7 @@ import { buildContextEnvelope } from "../workspace/context-cache.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
 import { createProviderRegistry, executorToAdapterName, normalizeProviderAdapterName } from "./provider-registry.mjs";
+import { getBosunSessionManager } from "./session-manager.mjs";
 import { buildToolCapabilityContract } from "./tool-orchestrator.mjs";
 import {
   execCodexPrompt,
@@ -89,6 +90,7 @@ const MODE_ALIASES = Object.freeze({
 
 /** Current interaction mode — affects how prompts are framed */
 let agentMode = "agent";
+const primarySessionManager = getBosunSessionManager();
 
 /**
  * Mode-specific prompt prefixes prepended to user messages.
@@ -952,12 +954,34 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     await initPrimaryAgent();
   }
   const selectedProfile = buildPrimaryAgentProfileContract(options);
-  const sessionId =
-    (options && options.sessionId ? String(options.sessionId) : "") ||
-    `primary-${activeAdapter.name}`;
   const sessionType =
     (options && options.sessionType ? String(options.sessionType) : "") ||
     "primary";
+  const existingPrimarySessionId = primarySessionManager.getActiveSessionId("primary");
+  const defaultSessionId = existingPrimarySessionId || `primary-${activeAdapter.name}`;
+  const sessionId =
+    (options && options.sessionId ? String(options.sessionId) : "") ||
+    defaultSessionId;
+  const sessionRecord = primarySessionManager.ensureSession({
+    sessionId,
+    scope: "primary",
+    sessionType,
+    providerSelection: activeExecutorSelection || activeAdapter.name,
+    adapterName: activeAdapter.name,
+    taskKey: sessionId,
+    cwd: options.cwd || "",
+    metadata: {
+      mode: options.mode || agentMode,
+    },
+  });
+  primarySessionManager.switchSession(sessionRecord.sessionId, {
+    scope: "primary",
+    sessionType,
+    providerSelection: activeExecutorSelection || activeAdapter.name,
+    adapterName: activeAdapter.name,
+    taskKey: sessionRecord.taskKey,
+    cwd: options.cwd || sessionRecord.cwd || "",
+  });
   const effectiveMode = normalizeAgentMode(
     options.mode || selectedProfile.preferredMode || agentMode,
     agentMode,
@@ -1028,6 +1052,20 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         },
       });
     }
+    primarySessionManager.registerExecution(sessionId, {
+      scope: "primary",
+      sessionType,
+      providerSelection: activeExecutorSelection || activeAdapter.name,
+      adapterName: activeAdapter.name,
+      taskKey: sessionId,
+      cwd: options.cwd || "",
+      status: "active",
+      threadId: pooled?.threadId || null,
+      metadata: {
+        isolatedPool: true,
+        mode: effectiveMode,
+      },
+    });
     return pooled;
   }
 
@@ -1122,6 +1160,20 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
           });
         }
       }
+      primarySessionManager.registerExecution(sessionId, {
+        scope: "primary",
+        sessionType,
+        providerSelection: activeExecutorSelection || adapterName,
+        adapterName,
+        taskKey: sessionId,
+        cwd: options.cwd || "",
+        status: "active",
+        threadId: result?.threadId || result?.sessionId || null,
+        providerSessionId: result?.sessionId || null,
+        metadata: {
+          mode: effectiveMode,
+        },
+      });
       clearAdapterFailureState(adapterName);
       return result;
     } catch (err) {
@@ -1187,6 +1239,21 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
                 },
               });
             }
+            primarySessionManager.registerExecution(sessionId, {
+              scope: "primary",
+              sessionType,
+              providerSelection: activeExecutorSelection || adapterName,
+              adapterName,
+              taskKey: sessionId,
+              cwd: options.cwd || "",
+              status: "active",
+              threadId: retryResult?.threadId || retryResult?.sessionId || null,
+              providerSessionId: retryResult?.sessionId || null,
+              metadata: {
+                mode: effectiveMode,
+                recovered: true,
+              },
+            });
             clearAdapterFailureState(adapterName);
             return retryResult;
           } catch (retryErr) {
@@ -1215,6 +1282,20 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
           content: `:warning: ${adapterName} error: ${lastError?.message || "unknown error"}. Failover suppressed (${waitReason}).`,
           timestamp: new Date().toISOString(),
         });
+        primarySessionManager.registerExecution(sessionId, {
+          scope: "primary",
+          sessionType,
+          providerSelection: activeExecutorSelection || adapterName,
+          adapterName,
+          taskKey: sessionId,
+          cwd: options.cwd || "",
+          status: "failed",
+          error: lastError?.message || "unknown error",
+          metadata: {
+            mode: effectiveMode,
+            failoverSuppressed: true,
+          },
+        });
         return {
           finalResponse: `:warning: ${adapterName} error: ${lastError?.message || "unknown error"}. Failover suppressed (${waitReason}).`,
           items: [],
@@ -1237,6 +1318,20 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   }
 
   // All adapters failed
+  primarySessionManager.registerExecution(sessionId, {
+    scope: "primary",
+    sessionType,
+    providerSelection: activeExecutorSelection || activeAdapter.name,
+    adapterName: activeAdapter.name,
+    taskKey: sessionId,
+    cwd: options.cwd || "",
+    status: "failed",
+    error: lastError?.message || "unknown",
+    metadata: {
+      mode: effectiveMode,
+      allAdaptersFailed: true,
+    },
+  });
   return {
     finalResponse: `:close: All agent adapters failed. Last error: ${lastError?.message || "unknown"}`,
     items: [],
@@ -1281,19 +1376,68 @@ export async function resetPrimaryAgent() {
 }
 
 export function getPrimarySessionId() {
-  return activeAdapter.getSessionId ? activeAdapter.getSessionId() : null;
+  return primarySessionManager.getActiveSessionId("primary")
+    || (activeAdapter.getSessionId ? activeAdapter.getSessionId() : null);
 }
 
 export async function listPrimarySessions() {
-  return activeAdapter.listSessions ? activeAdapter.listSessions() : [];
+  const managed = primarySessionManager.listSessions({ scope: "primary" });
+  const adapterSessions = activeAdapter.listSessions ? await activeAdapter.listSessions() : [];
+  if (!managed.length) {
+    return adapterSessions;
+  }
+  const merged = new Map();
+  for (const entry of managed) {
+    merged.set(entry.sessionId, {
+      id: entry.sessionId,
+      sessionId: entry.sessionId,
+      type: entry.sessionType,
+      status: entry.status,
+      adapter: entry.adapterName || activeAdapter.name,
+      providerSelection: entry.providerSelection || null,
+      createdAt: entry.createdAt,
+      lastActiveAt: entry.lastActiveAt,
+    });
+  }
+  for (const entry of adapterSessions) {
+    const candidateId = String(entry?.id || entry?.sessionId || entry?.threadId || "").trim();
+    if (!candidateId || merged.has(candidateId)) continue;
+    merged.set(candidateId, entry);
+  }
+  return [...merged.values()];
 }
 
 export async function switchPrimarySession(id) {
-  return activeAdapter.switchSession ? activeAdapter.switchSession(id) : undefined;
+  const result = activeAdapter.switchSession ? await activeAdapter.switchSession(id) : undefined;
+  primarySessionManager.switchSession(id, {
+    scope: "primary",
+    sessionType: "primary",
+    providerSelection: activeExecutorSelection || activeAdapter.name,
+    adapterName: activeAdapter.name,
+    taskKey: id,
+  });
+  return result;
 }
 
 export async function createPrimarySession(id) {
-  return activeAdapter.createSession ? activeAdapter.createSession(id) : undefined;
+  const result = activeAdapter.createSession ? await activeAdapter.createSession(id) : undefined;
+  const createdId = String(result?.id || result?.sessionId || id || "").trim() || id;
+  primarySessionManager.createSession(createdId, {
+    scope: "primary",
+    sessionType: "primary",
+    providerSelection: activeExecutorSelection || activeAdapter.name,
+    adapterName: activeAdapter.name,
+    taskKey: createdId,
+    status: "idle",
+  });
+  primarySessionManager.switchSession(createdId, {
+    scope: "primary",
+    sessionType: "primary",
+    providerSelection: activeExecutorSelection || activeAdapter.name,
+    adapterName: activeAdapter.name,
+    taskKey: createdId,
+  });
+  return result;
 }
 
 // ── Agent mode & SDK command API ─────────────────────────────────────────────

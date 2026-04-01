@@ -48,6 +48,11 @@ describe("session-tracker", () => {
       expect(session.totalEvents).toBe(0);
     });
 
+    it("uses a bounded default history budget for primary chat sessions", () => {
+      const session = tracker.createSession({ id: "chat-default-budget", type: "primary" });
+      expect(session.maxMessages).toBe(600);
+    });
+
     it("ends a session with status", () => {
       tracker.startSession("task-1", "Test Task");
       tracker.endSession("task-1", "completed");

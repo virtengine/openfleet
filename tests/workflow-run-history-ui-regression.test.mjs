@@ -51,6 +51,12 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("Refreshing…");
     });
 
+    it(`${label} refreshes live run history incrementally instead of refetching the full loaded list`, () => {
+      expect(source).toContain("mergeWorkflowRunRefresh");
+      expect(source).toContain("preserveExisting: true");
+      expect(source).not.toContain("limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE)");
+    });
+
     it(`${label} keeps older workflow pagination manual-only`, () => {
       expect(source).not.toContain("tailSentinelRef");
       expect(source).not.toContain("autoLoadMoreRef");
@@ -173,5 +179,14 @@ describe("workflow run history UI pagination", () => {
     expect(uiSource).toContain("Source:");
     expect(uiSource).toContain("state ledger / SQLite");
     expect(uiSource).toContain("All Sessions:");
+  });
+
+  it("server caps and caches durable session list reads for session polling", () => {
+    const serverSource = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
+
+    expect(serverSource).toContain("const DURABLE_SESSION_LIST_LIMIT = 750;");
+    expect(serverSource).toContain("const DURABLE_SESSION_LIST_CACHE_TTL_MS = 5000;");
+    expect(serverSource).toContain("const durableSessionListCache = new Map();");
+    expect(serverSource).toContain("cloneSessionSummaryRecords");
   });
 });

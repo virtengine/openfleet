@@ -406,4 +406,27 @@ describe("primary-agent runtime safeguards", () => {
     expect(mockExecCopilotPrompt).toHaveBeenCalledTimes(1);
     expect(third.finalResponse).toBe("copilot-ok");
   });
+
+  it("manages primary sessions through the session manager facade", async () => {
+    mockCreateCodexSession.mockResolvedValueOnce({ id: "session-created" });
+    mockListCodexSessions.mockResolvedValueOnce([{ id: "adapter-only-session" }]);
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.createPrimarySession("session-created");
+    expect(primaryAgent.getPrimarySessionId()).toBe("session-created");
+
+    await primaryAgent.switchPrimarySession("session-switched");
+    expect(primaryAgent.getPrimarySessionId()).toBe("session-switched");
+    expect(mockSwitchCodexSession).toHaveBeenCalledWith("session-switched");
+
+    const sessions = await primaryAgent.listPrimarySessions();
+    expect(sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "session-created", sessionId: "session-created" }),
+      expect.objectContaining({ id: "session-switched", sessionId: "session-switched" }),
+      expect.objectContaining({ id: "adapter-only-session" }),
+    ]));
+  });
 });

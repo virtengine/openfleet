@@ -42,8 +42,8 @@ const TAG = "[session-tracker]";
  *  Previously 10 — far too few for historic session review. */
 const DEFAULT_MAX_MESSAGES = 300;
 
-/** Default: keep a larger history for manual/primary chat sessions. */
-const DEFAULT_CHAT_MAX_MESSAGES = 2000;
+/** Default: keep a bounded history for manual/primary chat sessions. */
+const DEFAULT_CHAT_MAX_MESSAGES = 600;
 
 /** Maximum characters per message entry to prevent pathological memory bloat.
  *  100 000 chars (~25 000 words) is generous enough for any real agent response

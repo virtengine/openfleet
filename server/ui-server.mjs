@@ -8673,17 +8673,65 @@ function mergeSessionRecords(primarySession, fallbackSession) {
   };
 }
 
+const DURABLE_SESSION_LIST_LIMIT = 750;
+const DURABLE_SESSION_LIST_CACHE_TTL_MS = 5000;
+const durableSessionListCache = new Map();
+
+function buildDurableSessionListCacheKey(workspaceContext = null) {
+  try {
+    return JSON.stringify(resolveUiStateLedgerOptions(workspaceContext));
+  } catch {
+    return "__default__";
+  }
+}
+
+function cloneSessionSummaryRecords(sessions = []) {
+  return (Array.isArray(sessions) ? sessions : []).map((session) => ({
+    ...session,
+    metadata:
+      session?.metadata && typeof session.metadata === "object"
+        ? { ...session.metadata }
+        : {},
+    turns: Array.isArray(session?.turns)
+      ? session.turns.map((turn) => ({ ...turn }))
+      : [],
+    messages: Array.isArray(session?.messages)
+      ? session.messages.map((message) => ({ ...message }))
+      : [],
+  }));
+}
+
 function listDurableSessionsFromLedger(workspaceContext = null, options = {}) {
+  const cacheKey = buildDurableSessionListCacheKey(workspaceContext);
+  const now = Date.now();
+  const cached = durableSessionListCache.get(cacheKey);
+  if (
+    cached
+    && Array.isArray(cached.sessions)
+    && now - Number(cached.loadedAt || 0) < DURABLE_SESSION_LIST_CACHE_TTL_MS
+  ) {
+    return cloneSessionSummaryRecords(
+      cached.sessions.filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, options)),
+    );
+  }
+
   const ledgerOptions = {
     ...resolveUiStateLedgerOptions(workspaceContext),
-    limit: 5000,
+    limit: DURABLE_SESSION_LIST_LIMIT,
   };
   try {
-    return listSessionActivitiesFromStateLedger(ledgerOptions)
+    const sessions = listSessionActivitiesFromStateLedger(ledgerOptions)
       .map((activity) => normalizeLedgerSessionDocument(activity))
-      .filter(Boolean)
-      .filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, options));
+      .filter(Boolean);
+    durableSessionListCache.set(cacheKey, {
+      loadedAt: now,
+      sessions,
+    });
+    return cloneSessionSummaryRecords(
+      sessions.filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, options)),
+    );
   } catch {
+    durableSessionListCache.delete(cacheKey);
     return [];
   }
 }

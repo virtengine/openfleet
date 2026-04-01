@@ -63,16 +63,39 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
-import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
 import { createInternalHarnessSession as createHarnessRuntimeSession } from "./internal-harness-runtime.mjs";
 import {
   createCompiledHarnessSession as createManagedCompiledHarnessSession,
+  getBosunSessionManager,
   createHarnessSession as createManagedHarnessSession,
   runCompiledHarnessSession as runManagedCompiledHarnessSession,
   runHarnessSession as runManagedHarnessSession,
 } from "./session-manager.mjs";
+import {
+  addActiveSessionListener as addManagedActiveSessionListener,
+  getActiveSessions as getManagedActiveSessions,
+  hasActiveSession as hasManagedActiveSession,
+  registerActiveSession as registerManagedActiveSession,
+  steerActiveThread as steerManagedActiveThread,
+  unregisterActiveSession as unregisterManagedActiveSession,
+} from "./subagent-control.mjs";
+import {
+  clearThreadRegistry as clearManagedThreadRegistry,
+  ensureThreadRegistryLoaded as ensureManagedThreadRegistryLoaded,
+  getActiveThreads as getManagedActiveThreads,
+  getThreadRecord as getManagedThreadRecord,
+  invalidateThread as invalidateManagedThread,
+  invalidateThreadAsync as invalidateManagedThreadAsync,
+  MAX_THREAD_TURNS,
+  persistThreadRegistry,
+  pruneAllExhaustedThreads as pruneManagedAllExhaustedThreads,
+  sdkSupportsPersistentThreads,
+  THREAD_MAX_ABSOLUTE_AGE_MS,
+  THREAD_MAX_AGE_MS,
+  threadRegistry,
+} from "./thread-registry.mjs";
 
 // Upper bound for externally supplied harness timeouts to avoid unbounded runs.
 const MAX_HARNESS_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -1995,6 +2018,9 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
           signal: controller?.signal,
         })
         .catch(() => {});
+    }, {
+      parentSessionId: extra.parentSessionId || null,
+      rootSessionId: extra.rootSessionId || extra.parentSessionId || steerKey,
     });
   }
 
@@ -2408,6 +2434,9 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       if (hasSendMethod) {
         registerActiveSession(steerKey, "copilot", copilotSessionId, (steerPrompt) => {
           session.send({ prompt: steerPrompt }).catch(() => {});
+        }, {
+          parentSessionId: extra.parentSessionId || null,
+          rootSessionId: extra.rootSessionId || extra.parentSessionId || steerKey,
         });
       }
     }
@@ -2870,6 +2899,9 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     if (steerKey) {
       registerActiveSession(steerKey, "claude", resumeThreadId, (steerPrompt) => {
         msgQueue.push(makeUserMessage(steerPrompt));
+      }, {
+        parentSessionId: extra.parentSessionId || null,
+        rootSessionId: extra.rootSessionId || extra.parentSessionId || steerKey,
       });
     }
 
@@ -3691,275 +3723,55 @@ export async function execPooledPrompt(userMessage, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Thread Persistence & Resume Registry
+// Thread Persistence & Active Session Compatibility Adapters
 // ---------------------------------------------------------------------------
 
 /**
  * @typedef {Object} ThreadRecord
- * @property {string}      threadId   SDK-specific thread/session ID.
- * @property {string}      sdk        Which SDK owns this thread.
- * @property {string}      taskKey    Caller-defined key (task ID, PR#, etc.).
- * @property {string}      cwd        Working directory used.
- * @property {number}      turnCount  How many turns have been run.
- * @property {number}      createdAt  Unix ms when first created.
- * @property {number}      lastUsedAt Unix ms of most recent run.
- * @property {string|null} lastError  Last error message if any.
- * @property {boolean}     alive      Whether this thread is still usable.
+ * @property {string}      threadId
+ * @property {string}      sdk
+ * @property {string}      taskKey
+ * @property {string}      cwd
+ * @property {number}      turnCount
+ * @property {number}      createdAt
+ * @property {number}      lastUsedAt
+ * @property {string|null} lastError
+ * @property {boolean}     alive
  */
 
-/** @type {Map<string, ThreadRecord>} In-memory registry keyed by taskKey */
-const threadRegistry = new Map();
-
-const testSandbox = ensureTestRuntimeSandbox();
-const THREAD_REGISTRY_FILE = testSandbox?.cacheDir
-  ? resolve(testSandbox.cacheDir, "thread-registry.json")
-  : resolve(__dirname, "..", "logs", "thread-registry.json");
-const THREAD_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
-
-/** Maximum turns before a thread is considered exhausted and must be replaced */
-const MAX_THREAD_TURNS = 100;
-
-/** Maximum absolute age for a thread (regardless of lastUsedAt) */
-const THREAD_MAX_ABSOLUTE_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-/** SDKs that provide real resumable thread IDs */
-const PERSISTENT_THREAD_SDKS = new Set(["codex", "copilot", "claude", "opencode"]);
-
-function sdkSupportsPersistentThreads(sdkName) {
-  return PERSISTENT_THREAD_SDKS.has(String(sdkName || "").toLowerCase());
-}
-
-// ---------------------------------------------------------------------------
-// Active Session Store — steering support
-// ---------------------------------------------------------------------------
-// Stores live session/thread/queue references so the supervisor can inject
-// prompts into running agents (mid-session steering).
-//
-// Each entry is keyed by taskKey and holds a `send(prompt)` function that
-// abstracts over the SDK-specific injection mechanism:
-//   - Codex:   thread.runStreamed(prompt) (steer feature)
-//   - Copilot: session.send({ prompt })
-//   - Claude:  msgQueue.push(makeUserMessage(prompt))
-
-/**
- * @typedef {Object} ActiveSession
- * @property {string} sdk          SDK name ("codex" | "copilot" | "claude")
- * @property {string|null} threadId SDK-specific thread/session ID
- * @property {Function} send        (prompt: string) => void — inject a follow-up message
- * @property {number} registeredAt  Unix ms when this session was registered
- */
-
-/** @type {Map<string, ActiveSession>} */
-const activeSessions = new Map();
-const ACTIVE_SESSION_LISTENERS = new Set();
-
-function notifyActiveSessionListeners(reason = "update", taskKey = null) {
-  if (ACTIVE_SESSION_LISTENERS.size === 0) return;
-  const snapshot = getActiveSessions();
-  for (const listener of ACTIVE_SESSION_LISTENERS) {
-    try {
-      listener(snapshot, { reason, taskKey });
-    } catch {
-      /* best effort */
-    }
-  }
-}
-
-/** Threshold for approaching-exhaustion warning (80% of MAX_THREAD_TURNS). */
 const THREAD_EXHAUSTION_WARNING_THRESHOLD = Math.floor(MAX_THREAD_TURNS * 0.8);
 
-/**
- * Register an active session so the supervisor can steer it mid-execution.
- * Called by each launch function when the session/thread/queue is established.
- *
- * @param {string} taskKey
- * @param {string} sdk
- * @param {string|null} threadId
- * @param {Function} sendFn  (prompt: string) => void
- */
-function registerActiveSession(taskKey, sdk, threadId, sendFn) {
-  if (!taskKey || typeof sendFn !== "function") return;
-  activeSessions.set(taskKey, {
-    sdk,
-    threadId,
-    send: sendFn,
-    registeredAt: Date.now(),
-  });
-  notifyActiveSessionListeners("start", taskKey);
+async function saveThreadRegistry() {
+  return persistThreadRegistry();
 }
 
-/**
- * Unregister an active session (called when the launch function completes).
- * @param {string} taskKey
- */
+export async function ensureThreadRegistryLoaded() {
+  return ensureManagedThreadRegistryLoaded();
+}
+
+function registerActiveSession(taskKey, sdk, threadId, sendFn, metadata = {}) {
+  return registerManagedActiveSession(taskKey, sdk, threadId, sendFn, metadata);
+}
+
 function unregisterActiveSession(taskKey) {
-  activeSessions.delete(taskKey);
-  notifyActiveSessionListeners("end", taskKey);
+  return unregisterManagedActiveSession(taskKey);
 }
 
-/**
- * Inject a prompt into an active (running) agent session.
- *
- * This is the core steering capability: the supervisor calls this to send
- * follow-up instructions, recovery prompts, or continue signals to agents
- * that are currently executing.
- *
- * Returns true if the injection was sent, false if no active session exists.
- *
- * @param {string} taskKey  The task identifier (same key used in threadRegistry)
- * @param {string} prompt   The prompt/instruction to inject
- * @returns {boolean}
- */
 export function steerActiveThread(taskKey, prompt) {
-  const session = activeSessions.get(taskKey);
-  if (!session) {
-    console.warn(`${TAG} steerActiveThread: no active session for task "${taskKey}"`);
-    return false;
-  }
-  try {
-    session.send(prompt);
-    console.log(
-      `${TAG} steered active ${session.sdk} session for task "${taskKey}" (thread: ${session.threadId})`,
-    );
-    return true;
-  } catch (err) {
-    console.error(
-      `${TAG} steerActiveThread failed for task "${taskKey}":`,
-      err.message || err,
-    );
-    return false;
-  }
+  return steerManagedActiveThread(taskKey, prompt);
 }
 
-/**
- * Check if a specific task has a steerable active session.
- * @param {string} taskKey
- * @returns {boolean}
- */
 export function hasActiveSession(taskKey) {
-  return activeSessions.has(taskKey);
+  return hasManagedActiveSession(taskKey);
 }
 
-/**
- * Get info about which tasks have active (steerable) sessions.
- * @returns {Array<{ taskKey: string, sdk: string, threadId: string|null, age: number }>}
- */
 export function addActiveSessionListener(listener) {
-  if (typeof listener !== "function") return () => {};
-  ACTIVE_SESSION_LISTENERS.add(listener);
-  return () => ACTIVE_SESSION_LISTENERS.delete(listener);
+  return addManagedActiveSessionListener(listener);
 }
 
 export function getActiveSessions() {
-  const now = Date.now();
-  const result = [];
-  for (const [key, session] of activeSessions) {
-    const record = threadRegistry.get(key) || null;
-    const createdAt = Number(record?.createdAt || session.registeredAt || now);
-    const lastUsedAt = Number(record?.lastUsedAt || now);
-    result.push({
-      id: key,
-      taskId: key,
-      taskKey: key,
-      sdk: session.sdk,
-      threadId: session.threadId,
-      type: "task",
-      status: "active",
-      turnCount: Number(record?.turnCount || 0),
-      createdAt: new Date(createdAt).toISOString(),
-      lastActiveAt: new Date(lastUsedAt).toISOString(),
-      age: Math.max(0, now - createdAt),
-    });
-  }
-  return result;
+  return getManagedActiveSessions();
 }
-
-/** @type {Promise<void>|null} */
-let threadRegistryLoadPromise = null;
-let threadRegistryLoaded = false;
-
-/**
- * Load thread registry from disk (best-effort).
- */
-async function loadThreadRegistry() {
-  try {
-    const { readFile } = await import("node:fs/promises");
-    const raw = await readFile(THREAD_REGISTRY_FILE, "utf8");
-    const entries = JSON.parse(raw);
-    const now = Date.now();
-    let pruned = 0;
-    for (const [key, record] of Object.entries(entries)) {
-      const recordSdk = String(record?.sdk || "").toLowerCase();
-
-      // Expire old threads (by lastUsedAt)
-      if (now - record.lastUsedAt > THREAD_MAX_AGE_MS) {
-        pruned++;
-        continue;
-      }
-      // Expire threads that have been alive too long (absolute age)
-      if (now - record.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS) {
-        pruned++;
-        continue;
-      }
-      // Expire high-turn threads (context exhaustion)
-      if (record.turnCount >= MAX_THREAD_TURNS) {
-        console.log(
-          `${TAG} expiring exhausted thread for task "${key}" (${record.turnCount} turns)`,
-        );
-        pruned++;
-        continue;
-      }
-      if (!record.alive) {
-        pruned++;
-        continue;
-      }
-      threadRegistry.set(key, record);
-    }
-    // Persist the cleaned registry back to disk so stale entries don't linger
-    if (pruned > 0) {
-      saveThreadRegistry().catch(() => {});
-    }
-  } catch {
-    // No registry file yet — that's fine
-  }
-}
-
-/**
- * Persist thread registry to disk (best-effort).
- */
-async function saveThreadRegistry() {
-  try {
-    const { writeFile, mkdir } = await import("node:fs/promises");
-    await mkdir(dirname(THREAD_REGISTRY_FILE), { recursive: true });
-    const obj = Object.fromEntries(threadRegistry);
-    await writeFile(THREAD_REGISTRY_FILE, JSON.stringify(obj, null, 2), "utf8");
-  } catch {
-    // Non-critical — registry is an optimisation, not a requirement
-  }
-}
-
-/**
- * Ensure thread registry has been loaded from disk before use.
- * This avoids a startup race where first tasks run before registry restore.
- */
-export async function ensureThreadRegistryLoaded() {
-  if (threadRegistryLoaded) return;
-  if (!threadRegistryLoadPromise) {
-    threadRegistryLoadPromise = loadThreadRegistry()
-      .catch(() => {
-        /* best-effort */
-      })
-      .finally(() => {
-        threadRegistryLoaded = true;
-      });
-  }
-  await threadRegistryLoadPromise;
-}
-
-// Kick off async load at module init (non-blocking), callers can await explicitly.
-ensureThreadRegistryLoaded().catch((err) => {
-  console.warn(TAG + " thread registry warm-up failed: " + (err?.message || err));
-});
 
 // ---------------------------------------------------------------------------
 // Per-SDK Resume Launchers
@@ -4268,6 +4080,37 @@ export async function launchOrResumeThread(
   return await withAgentExecutionSlot(cwd, extra, async (slotLease) => {
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
+  const sessionManager = getBosunSessionManager();
+  const managedSessionId = String(restExtra.sessionId || taskKey || "").trim() || null;
+  if (managedSessionId) {
+    if (restExtra.parentSessionId) {
+      sessionManager.createChildSession(restExtra.parentSessionId, {
+        sessionId: managedSessionId,
+        scope: restExtra.sessionScope || "task",
+        sessionType: restExtra.sessionType || "task",
+        providerSelection: restExtra.sdk || "",
+        adapterName: restExtra.sdk || "",
+        taskKey,
+        cwd,
+        metadata: {
+          source: "agent-pool",
+        },
+      });
+    } else {
+      sessionManager.ensureSession({
+        sessionId: managedSessionId,
+        scope: restExtra.sessionScope || "task",
+        sessionType: restExtra.sessionType || "task",
+        providerSelection: restExtra.sdk || "",
+        adapterName: restExtra.sdk || "",
+        taskKey,
+        cwd,
+        metadata: {
+          source: "agent-pool",
+        },
+      });
+    }
+  }
   const resolvedGithubToken = await resolveGithubSessionToken();
   const restBaseEnv =
     restExtra?.envOverrides && typeof restExtra.envOverrides === "object"
@@ -4563,6 +4406,21 @@ export async function launchOrResumeThread(
         /* caller errors must not break execution */
       }
     }
+    if (managedSessionId) {
+      sessionManager.registerExecution(managedSessionId, {
+        scope: launchExtra.sessionScope || "task",
+        sessionType: launchExtra.sessionType || "task",
+        providerSelection: resolvedSdk,
+        adapterName: resolvedSdk,
+        taskKey,
+        cwd,
+        threadId,
+        status: "active",
+        metadata: {
+          source: "agent-pool",
+        },
+      });
+    }
   };
 
   const result = await launchEphemeralThread(
@@ -4599,6 +4457,23 @@ export async function launchOrResumeThread(
   };
   threadRegistry.set(taskKey, record);
   saveThreadRegistry().catch(() => {});
+  if (managedSessionId) {
+    sessionManager.registerExecution(managedSessionId, {
+      scope: restExtra.sessionScope || "task",
+      sessionType: restExtra.sessionType || "task",
+      providerSelection: resultSdk,
+      adapterName: resultSdk,
+      taskKey,
+      cwd,
+      threadId: finalThreadId,
+      status: result.success ? "active" : "failed",
+      error: result.success ? null : result.error,
+      metadata: {
+        source: "agent-pool",
+        resumed: false,
+      },
+    });
+  }
 
   // Apply tiered context compression for persistent threads
   // Estimate context usage so shredding only kicks in above 50% fill.
@@ -5131,16 +5006,7 @@ export async function runInternalHarnessProfile(profileSource, options = {}) {
  * @returns {ThreadRecord|null}
  */
 export function getThreadRecord(taskKey) {
-  return threadRegistry.get(taskKey) || null;
-}
-
-function markThreadRecordDead(taskKey) {
-  const record = threadRegistry.get(taskKey);
-  if (!record) return false;
-  if (!record.alive) return false;
-  record.alive = false;
-  threadRegistry.set(taskKey, record);
-  return true;
+  return getManagedThreadRecord(taskKey);
 }
 
 /**
@@ -5151,11 +5017,7 @@ function markThreadRecordDead(taskKey) {
  * @returns {Promise<void>}
  */
 export async function invalidateThreadAsync(taskKey) {
-  if (!taskKey) return;
-  await ensureThreadRegistryLoaded();
-  if (markThreadRecordDead(taskKey)) {
-    await saveThreadRegistry().catch(() => {});
-  }
+  return invalidateManagedThreadAsync(taskKey);
 }
 
 /**
@@ -5163,19 +5025,7 @@ export async function invalidateThreadAsync(taskKey) {
  * @param {string} taskKey
  */
 export function invalidateThread(taskKey) {
-  if (!taskKey) return;
-  if (markThreadRecordDead(taskKey)) {
-    saveThreadRegistry().catch(() => {});
-    return;
-  }
-  // If registry hasn't loaded yet, defer invalidation until load completes.
-  if (!threadRegistryLoaded) {
-    invalidateThreadAsync(taskKey).catch((err) => {
-      console.warn(
-        TAG + " deferred invalidateThreadAsync failed for \"" + taskKey + "\": " + (err?.message || err),
-      );
-    });
-  }
+  return invalidateManagedThread(taskKey);
 }
 
 /**
@@ -5198,8 +5048,7 @@ export function forceNewThread(taskKey, reason = "manual") {
  * Clear all thread records (e.g. on monitor restart).
  */
 export function clearThreadRegistry() {
-  threadRegistry.clear();
-  saveThreadRegistry().catch(() => {});
+  return clearManagedThreadRegistry();
 }
 
 /**
@@ -5208,29 +5057,7 @@ export function clearThreadRegistry() {
  * @returns {number} Number of threads pruned
  */
 export function pruneAllExhaustedThreads() {
-  let pruned = 0;
-  const now = Date.now();
-  for (const [key, record] of threadRegistry) {
-    let reason = null;
-    if (record.turnCount >= MAX_THREAD_TURNS) {
-      reason = `${record.turnCount} turns (max ${MAX_THREAD_TURNS})`;
-    } else if (now - record.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS) {
-      reason = `absolute age ${Math.round((now - record.createdAt) / 3600000)}h`;
-    } else if (!record.alive) {
-      reason = "already dead";
-    }
-    if (reason) {
-      console.log(`${TAG} pruning thread for task "${key}": ${reason}`);
-      record.alive = false;
-      threadRegistry.set(key, record);
-      pruned++;
-    }
-  }
-  if (pruned > 0) {
-    saveThreadRegistry().catch(() => {});
-    console.log(`${TAG} pruned ${pruned} exhausted/stale threads`);
-  }
-  return pruned;
+  return pruneManagedAllExhaustedThreads();
 }
 
 /**
@@ -5238,22 +5065,7 @@ export function pruneAllExhaustedThreads() {
  * @returns {Array<{ taskKey: string, sdk: string, threadId: string|null, turnCount: number, age: number }>}
  */
 export function getActiveThreads() {
-  const now = Date.now();
-  const result = [];
-  for (const [key, record] of threadRegistry) {
-    if (!record.alive) continue;
-    if (now - record.lastUsedAt > THREAD_MAX_AGE_MS) continue;
-    if (now - record.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS) continue;
-    if (record.turnCount >= MAX_THREAD_TURNS) continue;
-    result.push({
-      taskKey: key,
-      sdk: record.sdk,
-      threadId: record.threadId,
-      turnCount: record.turnCount,
-      age: now - record.createdAt,
-    });
-  }
-  return result;
+  return getManagedActiveThreads();
 }
 
 

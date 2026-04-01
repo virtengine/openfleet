@@ -1443,6 +1443,24 @@ describe("WorkflowEngine - run history details", () => {
     expect(detailSpy).not.toHaveBeenCalled();
   });
 
+  it("limits paged run-history hydration to the active page window floor", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Bounded History Hydration Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const hydrateSpy = vi.spyOn(engine, "_hydrateRunIndexFromDetails");
+    engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+
+    expect(hydrateSpy).toHaveBeenCalledWith(50);
+  });
+
   it("paginates global run history beyond the initial page size", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],

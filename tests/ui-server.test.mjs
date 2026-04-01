@@ -9070,4 +9070,5 @@ describeUiServer("ui-server mini app", () => {
     expect(source).toContain('await digest.notify(message, 4, {');
     expect(source).toContain('category: "workflow"');
   });
+
 });

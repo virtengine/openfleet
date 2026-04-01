@@ -4453,14 +4453,14 @@ export class WorkflowEngine extends EventEmitter {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
       : 20;
-      const persisted = this._hydrateRunIndexFromDetails(Math.max(offset + limit, 200))
-        .map((entry) => this._normalizeRunSummary(entry))
-        .filter(Boolean);
-      const active = this.getActiveRuns();
-      const activeRunIds = new Set(active.map((run) => run.runId));
-      let allRuns = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
-      if (workflowId) allRuns = allRuns.filter((run) => run.workflowId === workflowId);
-      allRuns.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
+    const persisted = this._hydrateRunIndexFromDetails(Math.max(offset + limit, 50))
+      .map((entry) => this._normalizeRunSummary(entry))
+      .filter(Boolean);
+    const active = this.getActiveRuns();
+    const activeRunIds = new Set(active.map((run) => run.runId));
+    let allRuns = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
+    if (workflowId) allRuns = allRuns.filter((run) => run.workflowId === workflowId);
+    allRuns.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     const total = allRuns.length;
     const runs = allRuns.slice(offset, offset + limit);
     const nextOffset = offset + runs.length;
@@ -7439,4 +7439,3 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-

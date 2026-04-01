@@ -13,6 +13,7 @@ import {
 } from "../agent/tool-orchestrator.mjs";
 import {
   createCompiledHarnessSession,
+  createBosunSessionManager,
   createHarnessSessionManager,
 } from "../agent/session-manager.mjs";
 
@@ -242,5 +243,59 @@ describe("session manager foundation", () => {
     });
     expect(sourceRun.isValid).toBe(true);
     expect(sourceRun.result.success).toBe(true);
+  });
+
+  it("tracks Bosun-native sessions, child lineage, and replay snapshots", async () => {
+    const trackerMod = await import("../infra/session-tracker.mjs");
+    trackerMod._resetSingleton();
+    const tracker = trackerMod.getSessionTracker();
+    const manager = createBosunSessionManager();
+
+    manager.switchSession("primary-session", {
+      scope: "primary",
+      sessionType: "primary",
+      adapterName: "codex-sdk",
+      providerSelection: "codex-sdk",
+      taskKey: "primary-session",
+      cwd: "C:/repo",
+    });
+    manager.createChildSession("primary-session", {
+      sessionId: "child-session",
+      scope: "task",
+      sessionType: "task",
+      adapterName: "codex",
+      providerSelection: "codex",
+      taskKey: "child-session",
+      cwd: "C:/repo",
+    });
+    tracker.recordEvent("primary-session", {
+      role: "user",
+      content: "resume this task",
+      timestamp: new Date().toISOString(),
+    });
+
+    const sessions = manager.listSessions({ scope: "primary" });
+    const replay = manager.getReplaySnapshot("primary-session");
+
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        sessionId: "primary-session",
+        scope: "primary",
+        sessionType: "primary",
+      }),
+    ]);
+    expect(replay).toEqual(expect.objectContaining({
+      sessionId: "primary-session",
+      taskKey: "primary-session",
+      lineage: expect.objectContaining({
+        childSessionIds: ["child-session"],
+      }),
+      messages: [
+        expect.objectContaining({
+          role: "user",
+          content: "resume this task",
+        }),
+      ],
+    }));
   });
 });
