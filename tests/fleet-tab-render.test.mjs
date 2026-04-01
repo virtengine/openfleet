@@ -83,6 +83,14 @@ for (const { relPath, source } of sourceFiles) {
       expect(source).toContain('return runtimeState?.key === "running";');
     });
 
+    it("does not count synthetic task fallbacks as active without a live session", () => {
+      expect(source).toContain("const isSyntheticFallback = entry?.isTaskFallback || entry?.slot?.synthetic;");
+      expect(source).toContain("if (isSyntheticFallback && !entry?.session) {");
+      expect(source).toContain('key: slotStatus || "task_only"');
+      expect(source).toContain('label: slotStatus ? formatFleetStateLabel(slotStatus) : "Task only"');
+      expect(source).toContain('isActive: false,');
+    });
+
     it("surfaces response freshness and dedupes session identities in the fleet rail", () => {
       expect(source).toContain("function getFleetEntryResponseTimestamp(entry)");
       expect(source).toContain("function getFleetEntryActivityLabel(entry)");

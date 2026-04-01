@@ -1,4 +1,5 @@
 import { getProviderCapabilities, normalizeProviderCapabilityId } from "./provider-capabilities.mjs";
+import { getProviderAuthAdapter } from "./auth/index.mjs";
 import { getBuiltinProviderEnvHints } from "./providers/index.mjs";
 
 const AUTH_METHOD_ORDER = Object.freeze([
@@ -32,6 +33,35 @@ function getProviderEnvHints(providerId) {
   return getBuiltinProviderEnvHints(providerId);
 }
 
+function resolveAdapterSettings(providerId, options = {}) {
+  const adapter = getProviderAuthAdapter(providerId);
+  if (!adapter) {
+    return {
+      providerId: normalizeProviderCapabilityId(providerId),
+      enabled: true,
+      enabledSource: "default",
+      authMode: null,
+      authModeSource: null,
+      defaultModel: null,
+      defaultModelSource: null,
+      baseUrl: null,
+      baseUrlSource: null,
+      endpoint: null,
+      endpointSource: null,
+      deployment: null,
+      deploymentSource: null,
+      apiVersion: null,
+      apiVersionSource: null,
+      workspace: null,
+      workspaceSource: null,
+    };
+  }
+  return adapter.resolveSettings({
+    settings: options.settings || process.env,
+    env: options.env || process.env,
+  });
+}
+
 function readEnvHints(env = process.env, keys = []) {
   for (const key of keys) {
     const value = toTrimmedString(env?.[key]);
@@ -52,6 +82,10 @@ function readEnvHints(env = process.env, keys = []) {
 }
 
 export function listProviderAuthModes(providerId, capabilities = null) {
+  const adapter = getProviderAuthAdapter(providerId);
+  if (adapter?.driver?.auth?.supportedModes?.length > 0) {
+    return unique(adapter.driver.auth.supportedModes.map(normalizeMethodName));
+  }
   const capabilitySnapshot = capabilities && typeof capabilities === "object"
     ? { ...capabilities }
     : getProviderCapabilities(providerId);
@@ -66,6 +100,10 @@ export function listProviderAuthModes(providerId, capabilities = null) {
 
 export function resolveProviderAuthEnv(providerId, env = process.env) {
   const normalizedProviderId = normalizeProviderCapabilityId(providerId);
+  const adapter = getProviderAuthAdapter(normalizedProviderId);
+  if (adapter) {
+    return adapter.resolveEnv(env);
+  }
   const hints = getProviderEnvHints(normalizedProviderId);
   return {
     providerId: normalizedProviderId,
@@ -178,9 +216,15 @@ export function normalizeProviderAuthState(providerId, authState = {}, options =
   const capabilitySnapshot = options.capabilities && typeof options.capabilities === "object"
     ? { ...getProviderCapabilities(normalizedProviderId), ...options.capabilities }
     : getProviderCapabilities(normalizedProviderId);
+  const settingsState = resolveAdapterSettings(normalizedProviderId, options);
   const envState = resolveProviderAuthEnv(normalizedProviderId, options.env || process.env);
   const supportedModes = listProviderAuthModes(normalizedProviderId, capabilitySnapshot);
-  const requestedMode = normalizeMethodName(options.preferredMode || authState.mode || authState.authMode);
+  const requestedMode = normalizeMethodName(
+    options.preferredMode
+    || authState.mode
+    || authState.authMode
+    || settingsState.authMode,
+  );
   const methods = supportedModes
     .map((mode) => normalizeMethodState(mode, authState, envState, capabilitySnapshot))
     .sort((left, right) => AUTH_METHOD_ORDER.indexOf(left.type) - AUTH_METHOD_ORDER.indexOf(right.type));
@@ -191,15 +235,21 @@ export function normalizeProviderAuthState(providerId, authState = {}, options =
     || methods[0]
     || null;
   const authenticated = capabilitySnapshot.auth === false || methods.some((entry) => entry.authenticated);
-  const available = capabilitySnapshot.auth === false
+  const enabled = settingsState.enabled !== false;
+  const available = enabled && (
+    capabilitySnapshot.auth === false
     || methods.length === 0
-    || methods.some((entry) => entry.available !== false);
-  const requiresAction = capabilitySnapshot.auth !== false
+    || methods.some((entry) => entry.available !== false)
+  );
+  const requiresAction = enabled
+    && capabilitySnapshot.auth !== false
     && !!preferredMethod
     && preferredMethod.type !== "local"
     && !authenticated;
   let status = "unavailable";
-  if (capabilitySnapshot.auth === false) {
+  if (!enabled) {
+    status = "disabled";
+  } else if (capabilitySnapshot.auth === false) {
     status = "ready";
   } else if (!available) {
     status = "unavailable";
@@ -215,9 +265,10 @@ export function normalizeProviderAuthState(providerId, authState = {}, options =
   return {
     providerId: normalizedProviderId,
     status,
+    enabled,
     available,
     authenticated,
-    canRun: capabilitySnapshot.auth === false || authenticated || status === "local_ready",
+    canRun: enabled && (capabilitySnapshot.auth === false || authenticated || status === "local_ready"),
     requiresAction,
     preferredMode: preferredMethod?.type || null,
     supportedModes: unique(methods.map((entry) => entry.type)),
@@ -225,6 +276,7 @@ export function normalizeProviderAuthState(providerId, authState = {}, options =
     methods,
     lastError: preferredMethod?.lastError || null,
     expiresAt: preferredMethod?.expiresAt || null,
+    settings: settingsState,
     env: envState,
   };
 }

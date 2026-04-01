@@ -117,13 +117,13 @@ function resolvePersistentStorePath() {
   if (explicitRepoRoot) {
     return resolve(explicitRepoRoot, ".bosun", ".cache", "kanban-state.json");
   }
-  const bosunHome = resolveBosunHomeDir();
-  if (bosunHome) {
-    return resolve(bosunHome, ".cache", "kanban-state.json");
-  }
   const repoRoot = inferRepoRoot(process.cwd());
   if (repoRoot) {
     return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+  }
+  const bosunHome = resolveBosunHomeDir();
+  if (bosunHome) {
+    return resolve(bosunHome, ".cache", "kanban-state.json");
   }
   return resolve(__dirname, "..", ".cache", "kanban-state.json");
 }

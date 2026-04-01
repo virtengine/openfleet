@@ -143,6 +143,65 @@ describe("task-store corruption recovery", () => {
     expect(ts.getAllTasks()).toEqual([]);
     expect(existsSync(`${storePath}.bak`)).toBe(false);
   });
+
+  it("configures the repo-local store under baseDir even when Bosun home exists", async () => {
+    const repoDir = makeTempDir("task-store-repo-root-");
+    const repoStoreDir = join(repoDir, ".bosun", ".cache");
+    mkdirSync(repoStoreDir, { recursive: true });
+    writeFileSync(
+      join(repoStoreDir, "kanban-state.json"),
+      JSON.stringify({
+        _meta: { version: 1, updatedAt: new Date().toISOString(), taskCount: 1, stats: { todo: 1 } },
+        tasks: {
+          "repo-task-1": {
+            id: "repo-task-1",
+            title: "Repo-local task",
+            status: "todo",
+          },
+        },
+        sprints: {},
+      }, null, 2),
+      "utf8",
+    );
+
+    const homeDir = makeTempDir("task-store-home-");
+    const bosunHomeDir = join(homeDir, "bosun", ".cache");
+    mkdirSync(bosunHomeDir, { recursive: true });
+
+    const env = {
+      APPDATA: process.env.APPDATA,
+      LOCALAPPDATA: process.env.LOCALAPPDATA,
+      USERPROFILE: process.env.USERPROFILE,
+      HOME: process.env.HOME,
+      BOSUN_HOME: process.env.BOSUN_HOME,
+      BOSUN_DIR: process.env.BOSUN_DIR,
+    };
+    try {
+      process.env.APPDATA = homeDir;
+      process.env.LOCALAPPDATA = homeDir;
+      process.env.USERPROFILE = homeDir;
+      process.env.HOME = homeDir;
+      delete process.env.BOSUN_HOME;
+      delete process.env.BOSUN_DIR;
+
+      const ts = await loadTaskStoreModule();
+      ts.configureTaskStore({ baseDir: repoDir });
+      ts.loadStore();
+
+      expect(ts.getAllTasks()).toEqual([
+        expect.objectContaining({
+          id: "repo-task-1",
+          title: "Repo-local task",
+          status: "todo",
+        }),
+      ]);
+    } finally {
+      for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 });
 
 // ── Atomic Rename Fallback ─────────────────────────────────────────────────

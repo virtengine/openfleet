@@ -568,6 +568,18 @@ function getFleetEntryStatusMeta(entry) {
   }
 
   const slotStatus = String(entry?.slot?.status || "").trim().toLowerCase();
+  const isSyntheticFallback = entry?.isTaskFallback || entry?.slot?.synthetic;
+  if (isSyntheticFallback && !entry?.session) {
+    if (slotStatus === "inreview") {
+      return { key: slotStatus, label: "Review", tone: "warning", isActive: false };
+    }
+    return {
+      key: slotStatus || "task_only",
+      label: slotStatus ? formatFleetStateLabel(slotStatus) : "Task only",
+      tone: "historic",
+      isActive: false,
+    };
+  }
   if (slotStatus) {
     if (["running", "busy", "active", "working", "inprogress"].includes(slotStatus)) {
       return { key: slotStatus, label: "Active", tone: "active", isActive: true };

@@ -1341,6 +1341,112 @@
         }
       }
     },
+    "providers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Unified provider-kernel settings for auth mode, enablement, and model selection across chat, workflow, TUI, and Telegram surfaces.",
+      "properties": {
+        "defaultProvider": {
+          "type": "string",
+          "enum": ["openai-responses", "openai-codex-subscription", "azure-openai-responses", "anthropic-messages", "claude-subscription-shim", "openai-compatible", "ollama", "copilot-oauth"],
+          "default": "openai-responses"
+        },
+        "defaultModel": {
+          "type": "string"
+        },
+        "openai": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "defaultModel": { "type": "string" }
+          }
+        },
+        "chatgptCodex": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "mode": {
+              "type": "string",
+              "enum": ["subscription", "oauth", "apiKey"],
+              "default": "subscription"
+            },
+            "defaultModel": { "type": "string" },
+            "workspace": { "type": "string" }
+          }
+        },
+        "azureOpenai": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "mode": {
+              "type": "string",
+              "enum": ["apiKey", "oauth"],
+              "default": "apiKey"
+            },
+            "defaultModel": { "type": "string" },
+            "endpoint": { "type": "string" },
+            "deployment": { "type": "string" },
+            "apiVersion": { "type": "string" }
+          }
+        },
+        "anthropic": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "defaultModel": { "type": "string" }
+          }
+        },
+        "claudeSubscription": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "mode": {
+              "type": "string",
+              "enum": ["subscription", "oauth"],
+              "default": "subscription"
+            },
+            "defaultModel": { "type": "string" },
+            "workspace": { "type": "string" }
+          }
+        },
+        "openaiCompatible": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "mode": {
+              "type": "string",
+              "enum": ["apiKey", "local"],
+              "default": "apiKey"
+            },
+            "defaultModel": { "type": "string" },
+            "baseUrl": { "type": "string" }
+          }
+        },
+        "ollama": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "defaultModel": { "type": "string" },
+            "baseUrl": { "type": "string" }
+          }
+        },
+        "copilot": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "defaultModel": { "type": "string" }
+          }
+        }
+      }
+    },
     "profiles": {
       "$ref": "#/$defs/profiles"
     },

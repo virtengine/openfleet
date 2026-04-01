@@ -1,11 +1,9 @@
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { connect as connectHttp2 } from "node:http2";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import WebSocket from "ws";
 import { addConfigReloadListener } from "../infra/config-reload-bus.mjs";
 import {
   getSessionActivityFromStateLedger,
@@ -77,8 +75,7 @@ describeUiServer("ui-server mini app", () => {
     "TELEGRAM_MINIAPP_ENABLED",
     "TELEGRAM_UI_PORT",
     "TELEGRAM_UI_HOST",
-    "BOSUN_UI_HTTP2_DISABLE",
-    "BOSUN_UI_HTTP2_MAX_STREAMS",
+    "BOSUN_WORKFLOW_WORKER_START_TIMEOUT_MS",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
     "TELEGRAM_UI_TUNNEL",
@@ -208,49 +205,6 @@ describeUiServer("ui-server mini app", () => {
 
   async function getFreePort() {
     return 0;
-  }
-
-  async function requestHttp2Json(authority, path) {
-    const client = connectHttp2(authority, { rejectUnauthorized: false });
-    return await new Promise((resolve, reject) => {
-      let settled = false;
-      const request = client.request({ ":method": "GET", ":path": path });
-      const finish = (fn, value) => {
-        if (settled) return;
-        settled = true;
-        try {
-          client.close();
-        } catch {
-          /* noop */
-        }
-        fn(value);
-      };
-      const chunks = [];
-      let responseHeaders = null;
-
-      client.once("error", (error) => finish(reject, error));
-      request.once("response", (headers) => {
-        responseHeaders = headers;
-      });
-      request.on("data", (chunk) => {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      });
-      request.once("end", () => {
-        const body = Buffer.concat(chunks).toString("utf8");
-        try {
-          finish(resolve, {
-            headers: responseHeaders || {},
-            body,
-            json: JSON.parse(body),
-            alpnProtocol: client.socket?.alpnProtocol || null,
-          });
-        } catch (error) {
-          finish(reject, error);
-        }
-      });
-      request.once("error", (error) => finish(reject, error));
-      request.end();
-    });
   }
 
   function signBody(secret, body) {
@@ -713,78 +667,6 @@ describeUiServer("ui-server mini app", () => {
 
     expect(url).toBe(`http://127.0.0.1:${port}`);
   });
-
-  it("serves HTTPS requests over HTTP/2 when TLS is enabled", async () => {
-    delete process.env.TELEGRAM_UI_TLS_DISABLE;
-    delete process.env.BOSUN_UI_HTTP2_DISABLE;
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      publicHost: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    try {
-      const port = server.address().port;
-      expect(mod.getTelegramUiUrl()).toBe(`https://127.0.0.1:${port}`);
-
-      const response = await requestHttp2Json(`https://127.0.0.1:${port}`, "/healthz");
-      expect(response.alpnProtocol).toBe("h2");
-      expect(Number(response.headers[":status"])).toBe(200);
-      expect(response.json.status).toBe("ok");
-    } finally {
-      await new Promise((resolveClose) => server.close(resolveClose));
-    }
-  }, 30000);
-
-  it("preserves secure websocket upgrades when HTTP/2 is enabled", async () => {
-    delete process.env.TELEGRAM_UI_TLS_DISABLE;
-    delete process.env.BOSUN_UI_HTTP2_DISABLE;
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      publicHost: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    try {
-      const port = server.address().port;
-      await new Promise((resolveOpen, rejectOpen) => {
-        const socket = new WebSocket(`wss://127.0.0.1:${port}/ws`, {
-          rejectUnauthorized: false,
-        });
-        const timer = setTimeout(() => {
-          socket.terminate();
-          rejectOpen(new Error("Timed out waiting for WebSocket hello"));
-        }, 10000);
-        const finish = (fn, value) => {
-          clearTimeout(timer);
-          try {
-            socket.close();
-          } catch {
-            /* noop */
-          }
-          fn(value);
-        };
-        socket.once("message", (raw) => {
-          try {
-            const payload = JSON.parse(String(raw || "{}"));
-            expect(payload.type).toBe("hello");
-            finish(resolveOpen);
-          } catch (error) {
-            finish(rejectOpen, error);
-          }
-        });
-        socket.once("error", (error) => finish(rejectOpen, error));
-      });
-    } finally {
-      await new Promise((resolveClose) => server.close(resolveClose));
-    }
-  }, 30000);
 
   it("keeps /api/health public when auth is enabled", async () => {
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
@@ -5740,6 +5622,79 @@ describeUiServer("ui-server mini app", () => {
     expect(blockedJson.canStart.reason).toBe("epic_dependencies_unresolved");
     expect(blockedJson.canStart.raw.blockingEpicIds).toEqual(["EPIC-B"]);
     expect(executeTask).not.toHaveBeenCalled();
+  });
+
+  it("shares a single workflow engine cold start across concurrent workflow requests", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+
+    let engineConstructCount = 0;
+    let engineLoadCount = 0;
+    let releaseLoad = null;
+    const loadGate = new Promise((resolve) => {
+      releaseLoad = resolve;
+    });
+    let loadEnteredResolve = null;
+    const loadEntered = new Promise((resolve) => {
+      loadEnteredResolve = resolve;
+    });
+
+    class MockWorkflowEngine {
+      constructor() {
+        engineConstructCount += 1;
+      }
+
+      async load() {
+        engineLoadCount += 1;
+        loadEnteredResolve();
+        await loadGate;
+      }
+
+      on() {}
+      off() {}
+      list() { return []; }
+      registerTaskTraceHook() {}
+    }
+
+    mod._testInjectWorkflowEngine({
+      WorkflowEngine: MockWorkflowEngine,
+      listNodeTypes: () => [],
+    }, null);
+
+    try {
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const requests = [
+        fetch(`http://127.0.0.1:${port}/api/workflows`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/workflows/templates`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/workflows/node-types`).then((r) => r.json()),
+      ];
+
+      await loadEntered;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(engineConstructCount).toBe(1);
+      expect(engineLoadCount).toBe(1);
+
+      releaseLoad();
+      const [workflows, templates, nodeTypes] = await Promise.all(requests);
+
+      expect(workflows.ok).toBe(true);
+      expect(templates.ok).toBe(true);
+      expect(nodeTypes.ok).toBe(true);
+      expect(nodeTypes.nodeTypes).toEqual([]);
+    } finally {
+      releaseLoad?.();
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
   });
 
   it("keeps task detail responses JSON-safe when can-start guards return circular raw data", async () => {

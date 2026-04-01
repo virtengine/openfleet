@@ -6529,7 +6529,7 @@ export class WorkflowEngine extends EventEmitter {
     }
 
     // Resolve config templates against context
-    const resolvedConfig = this._resolveConfig(node.config || {}, ctx);
+    const resolvedConfig = this._resolveConfig(node.config || {}, ctx, node.type);
 
     // Capture resolved input snapshot for forensics
     ctx.setNodeInput(node.id, resolvedConfig);
@@ -6600,9 +6600,9 @@ export class WorkflowEngine extends EventEmitter {
     );
   }
 
-  _resolveConfig(config, ctx) {
+  _resolveConfig(config, ctx, nodeType = "", path = []) {
     if (Array.isArray(config)) {
-      return config.map((item) => this._resolveConfig(item, ctx));
+      return config.map((item, index) => this._resolveConfig(item, ctx, nodeType, [...path, index]));
     }
     if (config == null || typeof config !== "object") {
       return config;
@@ -6610,9 +6610,13 @@ export class WorkflowEngine extends EventEmitter {
     const resolved = {};
     for (const [key, value] of Object.entries(config)) {
       if (typeof value === "string") {
-        resolved[key] = ctx.resolve(value);
+        const preserveRawConditionExpression =
+          nodeType === "condition.expression"
+          && path.length === 0
+          && key === "expression";
+        resolved[key] = preserveRawConditionExpression ? value : ctx.resolve(value);
       } else if (typeof value === "object" && value !== null) {
-        resolved[key] = this._resolveConfig(value, ctx);
+        resolved[key] = this._resolveConfig(value, ctx, nodeType, [...path, key]);
       } else {
         resolved[key] = value;
       }

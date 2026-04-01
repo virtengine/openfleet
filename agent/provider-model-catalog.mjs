@@ -1,4 +1,5 @@
 import { getModelsForExecutor } from "../task/task-complexity.mjs";
+import { getProviderAuthAdapter } from "./auth/index.mjs";
 import { normalizeProviderCapabilityId } from "./provider-capabilities.mjs";
 import { getBuiltinProviderDefinition } from "./providers/index.mjs";
 
@@ -53,6 +54,11 @@ function uniqueEntries(values) {
 export function listProviderModels(providerId, options = {}) {
   const normalizedProviderId = normalizeProviderCapabilityId(providerId);
   const providerDefinition = getBuiltinProviderDefinition(normalizedProviderId);
+  const authAdapter = getProviderAuthAdapter(normalizedProviderId);
+  const settingsState = authAdapter?.resolveSettings({
+    settings: options.settings || process.env,
+    env: options.env || process.env,
+  }) || {};
   const configured = Array.isArray(options.configuredModels) ? options.configuredModels : [];
   const adapterModels = Array.isArray(options.adapterModels)
     ? options.adapterModels
@@ -75,7 +81,7 @@ export function listProviderModels(providerId, options = {}) {
     .map((entry) => normalizeModelEntry(entry, {
       providerId: normalizedProviderId,
       providerDefinition,
-      defaultModel: options.defaultModel || providerDefinition?.defaultModel,
+      defaultModel: options.defaultModel || settingsState.defaultModel || providerDefinition?.defaultModel,
       local: options.local === true || providerDefinition?.capabilities?.local === true,
     }))
     .filter(Boolean);
@@ -84,14 +90,23 @@ export function listProviderModels(providerId, options = {}) {
 export function getProviderModelCatalog(providerId, options = {}) {
   const normalizedProviderId = normalizeProviderCapabilityId(providerId);
   const providerDefinition = getBuiltinProviderDefinition(normalizedProviderId);
+  const authAdapter = getProviderAuthAdapter(normalizedProviderId);
+  const settingsState = authAdapter?.resolveSettings({
+    settings: options.settings || process.env,
+    env: options.env || process.env,
+  }) || {};
   const models = listProviderModels(normalizedProviderId, options);
-  const defaultModel = models.find((entry) => entry.default)
+  const defaultModel = models.find((entry) => entry.id === settingsState.defaultModel)
+    || models.find((entry) => entry.default)
     || models.find((entry) => entry.id === providerDefinition?.defaultModel)
     || models[0]
     || null;
   return {
     providerId: normalizedProviderId,
-    defaultModel: defaultModel?.id || providerDefinition?.defaultModel || null,
+    enabled: settingsState.enabled !== false,
+    catalogSource: providerDefinition?.models?.catalogSource || "static",
+    defaultModel: defaultModel?.id || settingsState.defaultModel || providerDefinition?.defaultModel || null,
+    supportsCustomModel: providerDefinition?.models?.supportsCustomModel !== false,
     models,
   };
 }

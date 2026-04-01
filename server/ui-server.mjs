@@ -160,6 +160,10 @@ import {
   execWithRetry,
   invalidateThread,
 } from "../agent/agent-pool.mjs";
+import { normalizeProviderAuthState } from "../agent/provider-auth-manager.mjs";
+import { getProviderCapabilities } from "../agent/provider-capabilities.mjs";
+import { getProviderModelCatalog } from "../agent/provider-model-catalog.mjs";
+import { listBuiltInProviderDrivers, normalizeProviderDefinitionId } from "../agent/providers/index.mjs";
 import { withTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 import { resolveAgentPrompts } from "../agent/agent-prompts.mjs";
 import {
@@ -1416,12 +1420,31 @@ class WorkflowEngineProxy {
     if (this._initPromise !== null) return this._initPromise;
     this._initPromise = new Promise((resolve, reject) => {
       const workerPath = fileURLToPath(new URL("./workflow-engine-worker.mjs", import.meta.url));
+      if (!existsSync(workerPath)) {
+        const err = new Error(`workflow engine worker module is missing at ${workerPath}`);
+        this._handleWorkerUnavailable(err);
+        reject(err);
+        return;
+      }
+
+      const workerStartTimeoutMs = Math.max(
+        250,
+        Math.trunc(Number(process.env.BOSUN_WORKFLOW_WORKER_START_TIMEOUT_MS) || 4000),
+      );
+      let settled = false;
+      let startTimer = null;
       this._worker = new Worker(workerPath, {
         workerData: cfg,
         /* stdout/stderr inherit so worker logs appear in the same console */
       });
 
       const failStart = (err) => {
+        if (settled) return;
+        settled = true;
+        if (startTimer) {
+          clearTimeout(startTimer);
+          startTimer = null;
+        }
         if (!this._worker) {
           this._handleWorkerUnavailable(err);
           reject(err);
@@ -1440,6 +1463,12 @@ class WorkflowEngineProxy {
 
       const onReady = (msg) => {
         if (!msg || msg.type !== "ready") return;
+        if (settled) return;
+        settled = true;
+        if (startTimer) {
+          clearTimeout(startTimer);
+          startTimer = null;
+        }
         this._worker.off("message", onReady);
         this._worker.off("message", onInitError);
         this._ready = true;
@@ -1455,6 +1484,12 @@ class WorkflowEngineProxy {
       this._worker.on("message", onReady);
       this._worker.on("message", onInitError);
       this._worker.once("error", failStart);
+      startTimer = setTimeout(() => {
+        failStart(new Error(`Workflow engine worker startup timed out after ${workerStartTimeoutMs}ms`));
+      }, workerStartTimeoutMs);
+      if (typeof startTimer.unref === "function") {
+        startTimer.unref();
+      }
 
       this._worker.on("message", (msg) => this._onMessage(msg));
       this._worker.on("error", (err) => {
@@ -1470,6 +1505,7 @@ class WorkflowEngineProxy {
           ),
         );
       });
+          const _wfEngineInitByWorkspace = new Map();
 
       /* Send init after attaching all listeners */
       this._worker.postMessage({ type: "init", workerData: cfg });
@@ -1728,6 +1764,7 @@ export function _testInjectWorkflowEngine(mockModule, mockEngine) {
   _wfInitPromise = null;
   _testDefaultEngine = mockEngine || null;
   _wfEngineByWorkspace.clear();
+  _wfEngineInitByWorkspace.clear();
 }
 
 function traceHttpServerAction(req, span = {}, fn) {
@@ -3551,42 +3588,53 @@ async function getWorkflowRequestContext(reqUrl, options = {}) {
     engine = null;
   }
   if (!engine) {
-    if (_testDefaultEngine) {
-      engine = _testDefaultEngine;
-    } else {
-      const preferInProcessEngine = Boolean(process.env.VITEST);
-      if (!preferInProcessEngine) {
-        /* Use Worker thread proxy for complete decoupling from the HTTP event loop */
-        const proxy = new WorkflowEngineProxy();
-        try {
-          await proxy._start({
-            repoRoot,
-            workflowDir: paths.workflowDir,
-            runsDir:     paths.runsDir,
-          });
-          engine = proxy;
-        } catch (startErr) {
-          console.warn("[workflows] Worker thread unavailable, using in-process engine:", startErr.message);
+    let initPromise = _wfEngineInitByWorkspace.get(workspaceKey);
+    if (!initPromise) {
+      initPromise = (async () => {
+        let nextEngine = null;
+        if (_testDefaultEngine) {
+          nextEngine = _testDefaultEngine;
+        } else {
+          const preferInProcessEngine = Boolean(process.env.VITEST);
+          if (!preferInProcessEngine) {
+            /* Use Worker thread proxy for complete decoupling from the HTTP event loop */
+            const proxy = new WorkflowEngineProxy();
+            try {
+              await proxy._start({
+                repoRoot,
+                workflowDir: paths.workflowDir,
+                runsDir:     paths.runsDir,
+              });
+              nextEngine = proxy;
+            } catch (startErr) {
+              console.warn("[workflows] Worker thread unavailable, using in-process engine:", startErr.message);
+            }
+          }
+          if (!nextEngine) {
+            nextEngine = new wfMod.WorkflowEngine({
+              workflowDir: paths.workflowDir,
+              runsDir: paths.runsDir,
+              detectInterruptedRuns: false,
+              services: _wfServices || {},
+              onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
+            });
+            if (typeof nextEngine.registerTaskTraceHook === "function") {
+              nextEngine.registerTaskTraceHook((event) => {
+                handleTaskWorkflowTraceEvent(event);
+              });
+            }
+            await nextEngine.load();
+          }
+          attachWorkflowEngineLiveBridge(nextEngine);
         }
-      }
-      if (!engine) {
-        engine = new wfMod.WorkflowEngine({
-          workflowDir: paths.workflowDir,
-          runsDir: paths.runsDir,
-          detectInterruptedRuns: false,
-          services: _wfServices || {},
-          onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
-        });
-        if (typeof engine.registerTaskTraceHook === "function") {
-          engine.registerTaskTraceHook((event) => {
-            handleTaskWorkflowTraceEvent(event);
-          });
-        }
-        await engine.load();
-      }
-      attachWorkflowEngineLiveBridge(engine);
+        _wfEngineByWorkspace.set(workspaceKey, nextEngine);
+        return nextEngine;
+      })().finally(() => {
+        _wfEngineInitByWorkspace.delete(workspaceKey);
+      });
+      _wfEngineInitByWorkspace.set(workspaceKey, initPromise);
     }
-    _wfEngineByWorkspace.set(workspaceKey, engine);
+    engine = await initPromise;
   }
   if (options.bootstrapTemplates !== false) {
     maybeBootstrapWorkspaceWorkflowTemplates(
@@ -8133,7 +8181,33 @@ const CONFIG_PATH_OVERRIDES = {
   BOSUN_HARNESS_SOURCE: ["harness", "source"],
   BOSUN_HARNESS_VALIDATION_MODE: ["harness", "validation", "mode"],
   SELF_RESTART_QUIET_MS: ["monitor", "selfRestartQuietMs"],
-
+  BOSUN_PROVIDER_DEFAULT: ["providers", "defaultProvider"],
+  BOSUN_PROVIDER_DEFAULT_MODEL: ["providers", "defaultModel"],
+  BOSUN_PROVIDER_OPENAI_RESPONSES_ENABLED: ["providers", "openai", "enabled"],
+  BOSUN_PROVIDER_OPENAI_RESPONSES_MODEL: ["providers", "openai", "defaultModel"],
+  BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED: ["providers", "chatgptCodex", "enabled"],
+  BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODE: ["providers", "chatgptCodex", "mode"],
+  BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODEL: ["providers", "chatgptCodex", "defaultModel"],
+  BOSUN_PROVIDER_AZURE_OPENAI_ENABLED: ["providers", "azureOpenai", "enabled"],
+  BOSUN_PROVIDER_AZURE_OPENAI_MODE: ["providers", "azureOpenai", "mode"],
+  BOSUN_PROVIDER_AZURE_OPENAI_MODEL: ["providers", "azureOpenai", "defaultModel"],
+  BOSUN_PROVIDER_AZURE_OPENAI_ENDPOINT: ["providers", "azureOpenai", "endpoint"],
+  BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT: ["providers", "azureOpenai", "deployment"],
+  BOSUN_PROVIDER_AZURE_OPENAI_API_VERSION: ["providers", "azureOpenai", "apiVersion"],
+  BOSUN_PROVIDER_ANTHROPIC_ENABLED: ["providers", "anthropic", "enabled"],
+  BOSUN_PROVIDER_ANTHROPIC_MODEL: ["providers", "anthropic", "defaultModel"],
+  BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED: ["providers", "claudeSubscription", "enabled"],
+  BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODE: ["providers", "claudeSubscription", "mode"],
+  BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODEL: ["providers", "claudeSubscription", "defaultModel"],
+  BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED: ["providers", "openaiCompatible", "enabled"],
+  BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODE: ["providers", "openaiCompatible", "mode"],
+  BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL: ["providers", "openaiCompatible", "defaultModel"],
+  BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL: ["providers", "openaiCompatible", "baseUrl"],
+  BOSUN_PROVIDER_OLLAMA_ENABLED: ["providers", "ollama", "enabled"],
+  BOSUN_PROVIDER_OLLAMA_MODEL: ["providers", "ollama", "defaultModel"],
+  BOSUN_PROVIDER_OLLAMA_BASE_URL: ["providers", "ollama", "baseUrl"],
+  BOSUN_PROVIDER_COPILOT_OAUTH_ENABLED: ["providers", "copilot", "enabled"],
+  BOSUN_PROVIDER_COPILOT_OAUTH_MODEL: ["providers", "copilot", "defaultModel"],
 };
 const ROOT_PREFIX_ALLOWLIST = [
   "TELEGRAM_",
@@ -9834,9 +9908,10 @@ function resolveDerivedSettingsValue(key) {
   return null;
 }
 
-function buildSettingsResponseData() {
+function buildResolvedSettingsState() {
   const data = {};
   const sources = {};
+  const rawValues = {};
   const schema = getConfigSchema();
   const defsByKey = new Map(
     SETTINGS_SCHEMA.map((def) => [String(def?.key || ""), def]),
@@ -9885,9 +9960,96 @@ function buildSettingsResponseData() {
       data[key] = displayValue;
     }
     sources[key] = source;
+    rawValues[key] = rawValue;
   }
 
+  return { data, sources, rawValues };
+}
+
+function buildSettingsResponseData() {
+  const { data, sources } = buildResolvedSettingsState();
   return { data, sources };
+}
+
+function sanitizeProviderAuthState(auth = {}) {
+  const methods = Array.isArray(auth.methods)
+    ? auth.methods.map((entry) => ({
+        type: entry.type,
+        supported: entry.supported,
+        available: entry.available,
+        configured: entry.configured,
+        authenticated: entry.authenticated,
+        source: entry.source,
+        credentialKey: entry.credentialKey,
+        lastError: entry.lastError || null,
+        expiresAt: entry.expiresAt || null,
+      }))
+    : [];
+  const sanitizeEnvEntry = (entry) => ({
+    configured: entry?.configured === true,
+    key: entry?.key || null,
+    source: entry?.source || null,
+    keys: Array.isArray(entry?.keys) ? entry.keys.slice() : undefined,
+  });
+  return {
+    providerId: auth.providerId || null,
+    status: auth.status || "unknown",
+    enabled: auth.enabled !== false,
+    available: auth.available === true,
+    authenticated: auth.authenticated === true,
+    canRun: auth.canRun === true,
+    requiresAction: auth.requiresAction === true,
+    preferredMode: auth.preferredMode || null,
+    supportedModes: Array.isArray(auth.supportedModes) ? auth.supportedModes.slice() : [],
+    lastError: auth.lastError || null,
+    expiresAt: auth.expiresAt || null,
+    settings: auth.settings && typeof auth.settings === "object" ? { ...auth.settings } : {},
+    methods,
+    env: auth.env && typeof auth.env === "object"
+      ? Object.fromEntries(
+          Object.entries(auth.env).map(([key, value]) => [key, sanitizeEnvEntry(value)]),
+        )
+      : {},
+  };
+}
+
+function buildProviderInventory(settings = null) {
+  const effectiveSettings = settings && typeof settings === "object"
+    ? settings
+    : buildResolvedSettingsState().rawValues;
+  const items = listBuiltInProviderDrivers().map((driver) => {
+    const auth = normalizeProviderAuthState(driver.id, {}, {
+      env: process.env,
+      settings: effectiveSettings,
+    });
+    return {
+      providerId: driver.id,
+      label: driver.name,
+      description: driver.description || "",
+      adapterId: driver.adapterId || driver.adapterHints?.adapterId || null,
+      advanced: driver.visibility?.advanced === true,
+      defaultEnabled: driver.visibility?.defaultEnabled === true,
+      enabled: auth.enabled !== false,
+      capabilities: getProviderCapabilities(driver.id),
+      transport: driver.transport ? { ...driver.transport } : null,
+      auth: sanitizeProviderAuthState(auth),
+      modelCatalog: getProviderModelCatalog(driver.id, {
+        env: process.env,
+        settings: effectiveSettings,
+      }),
+    };
+  });
+  const requestedDefaultProviderId = normalizeProviderDefinitionId(
+    effectiveSettings.BOSUN_PROVIDER_DEFAULT || "",
+    "",
+  );
+  const defaultProviderId = items.find((entry) => entry.providerId === requestedDefaultProviderId)?.providerId
+    || items[0]?.providerId
+    || null;
+  return {
+    defaultProviderId,
+    items,
+  };
 }
 
 function buildEnvOverrideMapForConfigEditor(schema) {
@@ -25657,7 +25819,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/settings") {
     try {
-      const { data, sources } = buildSettingsResponseData();
+      const { data, sources, rawValues } = buildResolvedSettingsState();
       const envPath = resolve(resolveUiConfigDir(), ".env");
       const configPath = resolveConfigPath();
       const configExists = existsSync(configPath);
@@ -25666,6 +25828,7 @@ if (path === "/api/agent-logs/context") {
         ok: true,
         data,
         sources,
+        providers: buildProviderInventory(rawValues),
         meta: {
           envPath,
           configPath,
@@ -25676,6 +25839,19 @@ if (path === "/api/agent-logs/context") {
           tunnel: getTunnelStatus(),
           fallbackAuth: getFallbackAuthStatus(),
         },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/providers" && req.method === "GET") {
+    try {
+      const { rawValues } = buildResolvedSettingsState();
+      jsonResponse(res, 200, {
+        ok: true,
+        ...buildProviderInventory(rawValues),
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
