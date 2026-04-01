@@ -27,9 +27,9 @@ import {
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, execSync, spawn } from "node:child_process";
 import os from "node:os";
-import { Worker } from "node:worker_threads";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
+import { safeBanner, BOX } from "./lib/safe-box.mjs";
 import {
   applyAllCompatibility,
   detectLegacySetup,
@@ -842,9 +842,7 @@ function startDaemon() {
   writePidFile(child.pid);
 
   console.log(`
-  ╭──────────────────────────────────────────────────────────╮
-  │ bosun daemon started (PID ${String(child.pid).padEnd(24)}│
-  ╰──────────────────────────────────────────────────────────╯
+${safeBanner([`bosun daemon started (PID ${child.pid})`])}
 
   Logs: ${DAEMON_LOG}
   PID:  ${DAEMON_PID_FILE}
@@ -926,7 +924,7 @@ function stopDaemon() {
   }
 }
 
-function daemonStatus() {
+async function daemonStatus() {
   const pid = getDaemonPid();
   if (pid) {
     console.log(`  bosun daemon is running (PID ${pid})`);
@@ -942,7 +940,8 @@ function daemonStatus() {
       }
       console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
-      const existingMonitorOwner = detectExistingMonitorLockOwner();
+      const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+      const existingMonitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);
       if (existingMonitorOwner) {
         console.log(
           `  bosun daemon is not running in daemon mode, but bosun monitor is active (PID ${existingMonitorOwner.pid}).`,
@@ -1570,11 +1569,11 @@ async function main() {
 
     // Print the full original tool output
     const entry = result.entry;
-    console.log(`\n── Tool Log ${entry.id} ──`);
+    console.log(`\n${BOX.h.repeat(2)} Tool Log ${entry.id} ${BOX.h.repeat(2)}`);
     console.log(`Tool:  ${entry.toolName}`);
     console.log(`Args:  ${entry.argsPreview || "(none)"}`);
     console.log(`Time:  ${new Date(entry.ts).toISOString()}`);
-    console.log(`${"─".repeat(60)}\n`);
+    console.log(`${BOX.h.repeat(60)}\n`);
 
     const item = entry.item;
     const output =
@@ -1678,7 +1677,7 @@ async function main() {
     return;
   }
   if (args.includes("--daemon-status")) {
-    daemonStatus();
+    await daemonStatus();
     return;
   }
 
@@ -1897,11 +1896,7 @@ async function main() {
 
   // ── Startup banner with update check ──────────────────────────────────────
   console.log("");
-  console.log("  ╭──────────────────────────────────────────────────────────╮");
-  console.log(
-    `  │ >_ bosun (v${VERSION})${" ".repeat(Math.max(0, 39 - VERSION.length))}│`,
-  );
-  console.log("  ╰──────────────────────────────────────────────────────────╯");
+  console.log(safeBanner([`>_ bosun (v${VERSION})`]));
 
   // Non-blocking update check (don't delay startup)
   if (!args.includes("--no-update-check")) {
@@ -2490,9 +2485,9 @@ function shouldPauseDaemonRestartStorm(options) {
   return { pause: true, reasons: signals.reasons };
 }
 
-function detectExistingMonitorLockOwner(excludePid = null) {
+function detectExistingMonitorLockOwner(excludePid = null, extraCacheDirs = []) {
   try {
-    for (const pidFile of getMonitorPidFileCandidates()) {
+    for (const pidFile of getMonitorPidFileCandidates(extraCacheDirs)) {
       let ownerPid = null;
       try {
         ownerPid = readAlivePid(pidFile);
@@ -2579,24 +2574,15 @@ function runMonitor({ restartReason = "" } = {}) {
         } else {
           delete childEnv.BOSUN_MONITOR_RESTART_REASON;
         }
-        monitorChild = new Worker(
-          `
-            import { workerData } from "node:worker_threads";
-
-            process.argv.splice(0, process.argv.length, ...workerData.argv);
-            Object.assign(process.env, workerData.env);
-            await import(workerData.monitorModuleUrl);
-          `,
+        const runAsNode = process.versions?.electron ? ["--run-as-node"] : [];
+        monitorChild = spawn(
+          process.execPath,
+          [...runAsNode, monitorPath, ...process.argv.slice(2)],
           {
-            eval: true,
-            type: "module",
-            stdout: true,
-            stderr: true,
-            workerData: {
-              argv: [process.execPath, monitorPath, ...process.argv.slice(2)],
-              env: childEnv,
-              monitorModuleUrl: pathToFileURL(monitorPath).href,
-            },
+            env: childEnv,
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: process.platform === "win32",
+            cwd: process.cwd(),
           },
         );
         monitorChild.stdout?.on("data", (chunk) => {
@@ -2607,9 +2593,8 @@ function runMonitor({ restartReason = "" } = {}) {
         });
         daemonCrashTracker.markStart();
 
-        monitorChild.on("exit", (code) => {
-          const childPid = process.pid;
-          const signal = null;
+        monitorChild.on("exit", (code, signal) => {
+          const childPid = Number(monitorChild?.pid || 0) || null;
           monitorChild = null;
           if (code === SELF_RESTART_EXIT_CODE) {
             console.log(

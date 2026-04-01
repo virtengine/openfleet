@@ -32,6 +32,9 @@ describe("tui utility helpers", () => {
     expect(getNextScreenForInput("status", "2")).toBe("tasks");
     expect(getNextScreenForInput("tasks", "3")).toBe("agents");
     expect(getNextScreenForInput("agents", "1")).toBe("status");
+    expect(getNextScreenForInput("logs", "5")).toBe("workflows");
+    expect(getNextScreenForInput("workflows", "6")).toBe("telemetry");
+    expect(getNextScreenForInput("telemetry", "7")).toBe("settings");
     expect(getNextScreenForInput("agents", "x")).toBe("agents");
   });
 });

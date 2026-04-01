@@ -22,7 +22,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
   category: "reliability",
   enabled: true,
   recommended: false,
-  trigger: "trigger.manual",
+  trigger: "trigger.task_available",
   variables: {
     taskId: "",
     worktreePath: "",

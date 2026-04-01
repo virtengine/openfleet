@@ -57,8 +57,15 @@ function paletteColor(palette, index) {
 
 function formatCount(value) {
   if (value == null) return "–";
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
-  return String(value);
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "–";
+  const abs = Math.abs(numeric);
+  const formatCompact = (scaled, suffix) => `${Number(scaled.toFixed(1)).toString()}${suffix}`;
+  if (abs >= 1_000_000_000_000) return formatCompact(numeric / 1_000_000_000_000, "T");
+  if (abs >= 1_000_000_000) return formatCompact(numeric / 1_000_000_000, "B");
+  if (abs >= 1_000_000) return formatCompact(numeric / 1_000_000, "M");
+  if (abs >= 1_000) return formatCompact(numeric / 1_000, "K");
+  return String(numeric);
 }
 
 function formatRelative(isoStr) {
@@ -636,10 +643,10 @@ function ShreddingPanel({ period }) {
                     <//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption">${formatBytes(ev.originalChars)}<//>
+                    <${Typography} variant="caption" className="numeral">${formatBytes(ev.originalChars)}<//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption">${formatBytes(ev.compressedChars)}<//>
+                    <${Typography} variant="caption" className="numeral">${formatBytes(ev.compressedChars)}<//>
                   <//>
                   <${TableCell} align="right">
                     <${Typography} variant="caption" color="success.main">
@@ -655,10 +662,10 @@ function ShreddingPanel({ period }) {
                     />
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption">${formatCount(ev.estimatedSavedTokens || 0)}<//>
+                    <${Typography} variant="caption" className="numeral">${formatCount(ev.estimatedSavedTokens || 0)}<//>
                   <//>
                   <${TableCell} align="right">
-                    <${Typography} variant="caption">
+                    <${Typography} variant="caption" className="numeral">
                       ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}
                     <//>
                   <//>

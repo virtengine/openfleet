@@ -23,6 +23,51 @@
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
 
+function requireNonEmptyBatchString(item, index, key) {
+  const value = typeof item?.[key] === "string" ? item[key].trim() : "";
+  if (!value) {
+    throw new Error(`Invalid task-batch payload: item[${index}].${key} must be a non-empty string`);
+  }
+  return value;
+}
+
+function normalizeOptionalBatchString(value, maxLength = 128) {
+  if (value == null) return value;
+  const normalized = String(value).trim();
+  if (!normalized) return "";
+  return normalized.slice(0, maxLength);
+}
+
+export function validateTaskBatchPayload(payload) {
+  if (!Array.isArray(payload)) {
+    throw new Error("Invalid task-batch payload: expected an array of task batch items");
+  }
+
+  return payload.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`Invalid task-batch payload: item[${index}] must be an object`);
+    }
+
+    const normalized = {
+      ...item,
+      taskId: requireNonEmptyBatchString(item, index, "taskId"),
+      taskTitle: requireNonEmptyBatchString(item, index, "taskTitle"),
+      status: requireNonEmptyBatchString(item, index, "status"),
+      repository: requireNonEmptyBatchString(item, index, "repository"),
+      workspace: requireNonEmptyBatchString(item, index, "workspace"),
+    };
+
+    if (Object.prototype.hasOwnProperty.call(item, "branch")) {
+      normalized.branch = normalizeOptionalBatchString(item.branch, 128);
+    }
+    if (Object.prototype.hasOwnProperty.call(item, "scope")) {
+      normalized.scope = normalizeOptionalBatchString(item.scope, 128);
+    }
+
+    return normalized;
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Task Batch Processor — Parallel Task Dispatch
 // ═══════════════════════════════════════════════════════════════════════════
@@ -76,6 +121,8 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
           const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
           if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
         }
+        process.env.REPO_ROOT = repoRoot;
+        process.env.BOSUN_STORE_PATH = path.join(repoRoot, ".bosun", ".cache", "kanban-state.json");
         const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
@@ -95,6 +142,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
           .catch(e => { console.error(e.message); process.exit(1); });
       `],
       env: { MAX_BATCH: "{{maxBatchSize}}" },
+      cwd: "{{repoRoot}}",
       parseJson: true,
     }, { x: 400, y: 310 }),
 
@@ -199,6 +247,8 @@ export const TASK_BATCH_PR_TEMPLATE = {
           const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
           if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
         }
+        process.env.REPO_ROOT = repoRoot;
+        process.env.BOSUN_STORE_PATH = path.join(repoRoot, ".bosun", ".cache", "kanban-state.json");
         const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
@@ -216,6 +266,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
           .catch(e => { console.error(e.message); process.exit(1); });
       `],
       env: { MAX_BATCH: "{{maxBatchSize}}" },
+      cwd: "{{repoRoot}}",
       parseJson: true,
     }, { x: 400, y: 180 }),
 
@@ -255,7 +306,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
 
     node("create-pr", "action.create_pr", "Create PR", {
       title: "{{task.taskTitle}}",
-      body: "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
+      body: "## Summary\n\n{{task.taskDescription}}\n\n---\nTask-ID: {{task.taskId}}",
       base: "{{defaultBaseBranch}}",
       branch: "{{task.branch}}",
       draft: "{{draftPR}}",
@@ -309,9 +360,9 @@ export const TASK_BATCH_PR_TEMPLATE = {
   ],
   metadata: {
     author: "bosun",
-    version: 1,
+    version: 2,
     createdAt: "2026-03-15T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.1.0",
     tags: ["task", "batch", "pr", "agent", "autonomous"],
     requiredTemplates: ["template-bosun-pr-progressor"],
   },

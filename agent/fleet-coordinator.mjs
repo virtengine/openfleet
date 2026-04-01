@@ -61,6 +61,138 @@ function buildGitEnv() {
   return sanitizeGitEnv();
 }
 
+function normalizeRoutingToken(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
+function readHierarchyField(source, candidates = []) {
+  if (!source || typeof source !== "object") return "";
+  for (const key of candidates) {
+    const value = source?.[key];
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function listPeerCapabilities(peer) {
+  return Array.isArray(peer?.capabilities)
+    ? peer.capabilities
+        .map((value) => normalizeRoutingToken(value))
+        .filter(Boolean)
+    : [];
+}
+
+function getTaskRoutingProfile(task) {
+  return {
+    scope: readHierarchyField(task, ["scope"]),
+    teamId: readHierarchyField(task, ["coordinationTeamId", "teamId"]),
+    role: readHierarchyField(task, ["coordinationRole", "teamRole", "role"]),
+    reportsTo: readHierarchyField(task, ["coordinationReportsTo", "reportsTo"]),
+    level: readHierarchyField(task, ["coordinationLevel", "teamLevel", "level"]),
+  };
+}
+
+function getPeerRoutingProfile(peer) {
+  return {
+    teamId: readHierarchyField(peer, ["teamId", "team_id", "coordinationTeamId"]),
+    role: readHierarchyField(peer, ["teamRole", "team_role", "coordinationRole", "workspace_role", "role"]),
+    reportsTo: readHierarchyField(peer, ["reportsTo", "reports_to", "coordinationReportsTo"]),
+    level: readHierarchyField(peer, ["teamLevel", "team_level", "coordinationLevel"]),
+    capabilities: listPeerCapabilities(peer),
+  };
+}
+
+function scorePeerForTask(peer, task) {
+  const taskProfile = getTaskRoutingProfile(task);
+  const peerProfile = getPeerRoutingProfile(peer);
+  const reasons = [];
+  let score = 0;
+
+  const taskTeam = normalizeRoutingToken(taskProfile.teamId);
+  const peerTeam = normalizeRoutingToken(peerProfile.teamId);
+  if (taskTeam && peerTeam && taskTeam === peerTeam) {
+    score += 80;
+    reasons.push("team-match");
+  }
+
+  const taskRole = normalizeRoutingToken(taskProfile.role);
+  const peerRole = normalizeRoutingToken(peerProfile.role);
+  if (taskRole && peerRole && taskRole === peerRole) {
+    score += 60;
+    reasons.push("role-match");
+  }
+
+  const taskReportsTo = normalizeRoutingToken(taskProfile.reportsTo);
+  const peerReportsTo = normalizeRoutingToken(peerProfile.reportsTo);
+  const peerId = normalizeRoutingToken(peer?.instance_id);
+  const peerLabel = normalizeRoutingToken(peer?.instance_label);
+  if (
+    taskReportsTo &&
+    (
+      taskReportsTo === peerReportsTo ||
+      taskReportsTo === peerId ||
+      taskReportsTo === peerLabel
+    )
+  ) {
+    score += 40;
+    reasons.push("reports-to-match");
+  }
+
+  const taskLevel = normalizeRoutingToken(taskProfile.level);
+  const peerLevel = normalizeRoutingToken(peerProfile.level);
+  if (taskLevel && peerLevel && taskLevel === peerLevel) {
+    score += 20;
+    reasons.push("level-match");
+  }
+
+  const taskScope = normalizeRoutingToken(taskProfile.scope);
+  if (
+    taskScope &&
+    peerProfile.capabilities.some((value) => value.includes(taskScope))
+  ) {
+    score += 25;
+    reasons.push("capability-match");
+  }
+
+  if (
+    taskRole &&
+    peerProfile.capabilities.some((value) =>
+      value === taskRole || value.includes(taskRole),
+    )
+  ) {
+    score += 15;
+    reasons.push("role-capability-match");
+  }
+
+  return { score, reasons };
+}
+
+function selectBestPeerForTask(task, peers, defaultPeer) {
+  if (!task || !Array.isArray(peers) || peers.length === 0) {
+    return { peer: defaultPeer, reasons: [] };
+  }
+  let bestPeer = defaultPeer;
+  let bestReasons = [];
+  let bestScore = -1;
+  for (const peer of peers) {
+    const candidate = scorePeerForTask(peer, task);
+    if (candidate.score > bestScore) {
+      bestScore = candidate.score;
+      bestPeer = peer;
+      bestReasons = candidate.reasons;
+    }
+  }
+  if (bestScore <= 0) {
+    return { peer: defaultPeer, reasons: [] };
+  }
+  return { peer: bestPeer, reasons: bestReasons };
+}
+
 /**
  * Generate a stable fingerprint for a git repository.
  * Two workstations with the same repo will produce the same fingerprint.
@@ -419,32 +551,21 @@ export function assignTasksToWorkstations(waves, peers, taskMap = new Map()) {
     const waveAssignments = [];
 
     // Round-robin distribute tasks in this wave across peers
-    for (let i = 0; i < wave.length; i++) {
-      const taskId = wave[i];
-      const peer = peers[i % peers.length];
-      const task = taskMap.get(taskId);
+      for (let i = 0; i < wave.length; i++) {
+        const taskId = wave[i];
+        const peer = peers[i % peers.length];
+        const task = taskMap.get(taskId);
+        const { peer: bestPeer, reasons } = selectBestPeerForTask(task, peers, peer);
 
-      // Try capability-based routing: if task has a scope/capability hint
-      // and a peer has matching capabilities, prefer that peer
-      let bestPeer = peer;
-      if (task?.scope) {
-        const capMatch = peers.find((p) =>
-          Array.isArray(p.capabilities) &&
-          p.capabilities.some((c) =>
-            c.toLowerCase().includes(task.scope.toLowerCase()),
-          ),
-        );
-        if (capMatch) bestPeer = capMatch;
+        waveAssignments.push({
+          taskId,
+          taskTitle: task?.title || taskId,
+          wave: waveIndex,
+          assignedTo: bestPeer.instance_id,
+          assignedToLabel: bestPeer.instance_label || bestPeer.instance_id,
+          assignmentReasons: reasons,
+        });
       }
-
-      waveAssignments.push({
-        taskId,
-        taskTitle: task?.title || taskId,
-        wave: waveIndex,
-        assignedTo: bestPeer.instance_id,
-        assignedToLabel: bestPeer.instance_label || bestPeer.instance_id,
-      });
-    }
 
     assignments.push(...waveAssignments);
   }

@@ -20,6 +20,8 @@ import {
   chmodSync,
   mkdtempSync,
   copyFileSync,
+  readFileSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -349,7 +351,36 @@ async function main() {
   }
 
   // npm-installed tools (bundled with this package)
-  console.log(`  :check: @openai/codex-sdk (bundled)`);
+  // Fix @openai/codex-sdk if its package.json lacks entry points
+  // (published "latest" sometimes ships a stub manifest).
+  try {
+    const codexPkgPath = resolve(__dirname, "node_modules", "@openai", "codex-sdk", "package.json");
+    if (existsSync(codexPkgPath)) {
+      const codexPkg = JSON.parse(readFileSync(codexPkgPath, "utf8"));
+      if (!codexPkg.main && !codexPkg.exports) {
+        const distIndex = resolve(__dirname, "node_modules", "@openai", "codex-sdk", "dist", "index.js");
+        if (existsSync(distIndex)) {
+          codexPkg.main = "dist/index.js";
+          codexPkg.type = "module";
+          codexPkg.exports = { ".": { import: "./dist/index.js" } };
+          if (existsSync(distIndex.replace(/\.js$/, ".d.ts"))) {
+            codexPkg.types = "dist/index.d.ts";
+            codexPkg.exports["."].types = "./dist/index.d.ts";
+          }
+          writeFileSync(codexPkgPath, JSON.stringify(codexPkg, null, 2), "utf8");
+          console.log(`  :check: @openai/codex-sdk (bundled, fixed stub package.json)`);
+        } else {
+          console.log(`  :alert:  @openai/codex-sdk — dist/index.js missing`);
+        }
+      } else {
+        console.log(`  :check: @openai/codex-sdk (bundled)`);
+      }
+    } else {
+      console.log(`  :alert:  @openai/codex-sdk — package.json not found`);
+    }
+  } catch (codexFixErr) {
+    console.log(`  :alert:  @openai/codex-sdk — postinstall fix failed: ${codexFixErr.message}`);
+  }
   console.log(`  :check: @github/copilot-sdk (bundled)`);
   console.log(`  :check: @anthropic-ai/claude-agent-sdk (bundled)`);
   console.log(`  :check: @github/copilot-sdk (bundled)`);
@@ -444,3 +475,5 @@ async function main() {
 main().catch((err) => {
   console.error(`  :alert:  postinstall failed: ${err.message}`);
 });
+
+

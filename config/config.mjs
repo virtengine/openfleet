@@ -369,20 +369,41 @@ function resolveKanbanBackendSource({ envPaths = [], configFilePath, configData 
   });
 }
 
-function validateKanbanBackendConfig({ kanbanBackend, kanban, jira }) {
-  if (kanbanBackend !== "jira") return;
-  const missing = [];
-  if (!jira?.baseUrl) missing.push("JIRA_BASE_URL");
-  if (!jira?.email) missing.push("JIRA_EMAIL");
-  if (!jira?.apiToken) missing.push("JIRA_API_TOKEN");
-  const hasProjectKey = Boolean(jira?.projectKey || kanban?.projectId);
-  if (!hasProjectKey) {
-    missing.push("JIRA_PROJECT_KEY (or KANBAN_PROJECT_ID)");
+function validateKanbanBackendConfig({ kanbanBackend, kanban, jira, gnap }) {
+  if (kanbanBackend === "jira") {
+    const missing = [];
+    if (!jira?.baseUrl) missing.push("JIRA_BASE_URL");
+    if (!jira?.email) missing.push("JIRA_EMAIL");
+    if (!jira?.apiToken) missing.push("JIRA_API_TOKEN");
+    const hasProjectKey = Boolean(jira?.projectKey || kanban?.projectId);
+    if (!hasProjectKey) {
+      missing.push("JIRA_PROJECT_KEY (or KANBAN_PROJECT_ID)");
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `[config] KANBAN_BACKEND=jira requires ${missing.join(", ")}. ` +
+          `Either configure Jira credentials/project key or switch KANBAN_BACKEND=internal.`,
+      );
+    }
+    return;
   }
-  if (missing.length > 0) {
+
+  if (kanbanBackend !== "gnap") return;
+
+  const invalid = [];
+  if (!gnap?.enabled) invalid.push("GNAP_ENABLED=true");
+  if (!gnap?.repoPath) invalid.push("GNAP_REPO_PATH");
+  if (gnap?.syncMode !== "projection") invalid.push("GNAP_SYNC_MODE=projection");
+  if (!["git", "local"].includes(gnap?.runStorage)) {
+    invalid.push("GNAP_RUN_STORAGE=git|local");
+  }
+  if (!["off", "git", "local"].includes(gnap?.messageStorage)) {
+    invalid.push("GNAP_MESSAGE_STORAGE=off|git|local");
+  }
+  if (invalid.length > 0) {
     throw new Error(
-      `[config] KANBAN_BACKEND=jira requires ${missing.join(", ")}. ` +
-        `Either configure Jira credentials/project key or switch KANBAN_BACKEND=internal.`,
+      `[config] KANBAN_BACKEND=gnap requires ${invalid.join(", ")}. ` +
+        `GNAP is projection-only in this build and must be explicitly enabled before selection.`,
     );
   }
 }
@@ -483,6 +504,7 @@ function applyProfileOverrides(configData, profile) {
     failover: overrides.failover ?? configData.failover,
     distribution: overrides.distribution ?? configData.distribution,
     agentPrompts: overrides.agentPrompts ?? configData.agentPrompts,
+    harness: overrides.harness ?? configData.harness,
   };
 }
 
@@ -946,11 +968,33 @@ function normalizeKanbanBackend(value) {
   if (
     backend === "internal" ||
     backend === "github" ||
-    backend === "jira"
+    backend === "jira" ||
+    backend === "gnap"
   ) {
     return backend;
   }
   return "internal";
+}
+
+function normalizeGnapSyncMode(value) {
+  const mode = String(value || "")
+    .trim()
+    .toLowerCase();
+  return mode || "projection";
+}
+
+function normalizeGnapRunStorage(value) {
+  const storage = String(value || "")
+    .trim()
+    .toLowerCase();
+  return storage || "git";
+}
+
+function normalizeGnapMessageStorage(value) {
+  const storage = String(value || "")
+    .trim()
+    .toLowerCase();
+  return storage || "off";
 }
 
 function normalizeKanbanSyncPolicy(value) {
@@ -1642,7 +1686,32 @@ export function loadConfig(argv = process.argv, options = {}) {
         "",
     }),
   });
-  validateKanbanBackendConfig({ kanbanBackend, kanban, jira });
+  const gnap = Object.freeze({
+    enabled: isEnvEnabled(
+      process.env.GNAP_ENABLED ?? configData.kanban?.gnap?.enabled,
+      false,
+    ),
+    repoPath:
+      String(
+        process.env.GNAP_REPO_PATH || configData.kanban?.gnap?.repoPath || "",
+      ).trim(),
+    syncMode: normalizeGnapSyncMode(
+      process.env.GNAP_SYNC_MODE || configData.kanban?.gnap?.syncMode,
+    ),
+    runStorage: normalizeGnapRunStorage(
+      process.env.GNAP_RUN_STORAGE || configData.kanban?.gnap?.runStorage,
+    ),
+    messageStorage: normalizeGnapMessageStorage(
+      process.env.GNAP_MESSAGE_STORAGE ||
+        configData.kanban?.gnap?.messageStorage,
+    ),
+    publicRoadmapEnabled: isEnvEnabled(
+      process.env.GNAP_PUBLIC_ROADMAP_ENABLED ??
+        configData.kanban?.gnap?.publicRoadmapEnabled,
+      false,
+    ),
+  });
+  validateKanbanBackendConfig({ kanbanBackend, kanban, jira, gnap });
 
   const internalExecutorConfig = configData.internalExecutor || {};
   const workflowRecoveryConfig =
@@ -2258,6 +2327,37 @@ export function loadConfig(argv = process.argv, options = {}) {
       ),
     }),
   });
+  const harnessData =
+    configData.harness && typeof configData.harness === "object"
+      ? configData.harness
+      : {};
+  const harnessValidationData =
+    harnessData.validation && typeof harnessData.validation === "object"
+      ? harnessData.validation
+      : {};
+  const harnessValidationModeRaw = String(
+    process.env.BOSUN_HARNESS_VALIDATION_MODE ??
+      harnessValidationData.mode ??
+      "report",
+  )
+    .trim()
+    .toLowerCase();
+  const harness = Object.freeze({
+    enabled: isEnvEnabled(
+      process.env.BOSUN_HARNESS_ENABLED ?? harnessData.enabled,
+      false,
+    ),
+    source: String(
+      process.env.BOSUN_HARNESS_SOURCE ??
+        harnessData.source ??
+        "",
+    ).trim(),
+    validation: Object.freeze({
+      mode: ["off", "report", "enforce"].includes(harnessValidationModeRaw)
+        ? harnessValidationModeRaw
+        : "report",
+    }),
+  });
 
   // ── Status file ──────────────────────────────────────────
   const cacheDir = resolve(
@@ -2338,6 +2438,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     kanbanSource,
     githubProjectSync,
     jira,
+    gnap,
     projectRequirements,
 
     // Voice assistant
@@ -2409,6 +2510,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
     // Workflow template defaults + opt-in typed workflow entries
     workflowDefaults: Object.freeze(workflowDefaults),
+    harness,
 
     // Paths
     statusPath,
@@ -2527,4 +2629,3 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
-

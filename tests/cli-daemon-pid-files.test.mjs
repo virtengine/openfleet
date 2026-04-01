@@ -78,10 +78,10 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("duplicate daemon-child ignored");
   });
 
-  it("launches the foreground monitor via worker bootstrap instead of fork IPC", () => {
-    expect(cliSource).toContain("monitorChild = new Worker(");
-    expect(cliSource).toContain("monitorModuleUrl: pathToFileURL(monitorPath).href");
-    expect(cliSource).not.toContain("monitorChild = fork(monitorPath");
+  it("launches the foreground monitor as a child process instead of a worker thread", () => {
+    expect(cliSource).toContain("monitorChild = spawn(");
+    expect(cliSource).toContain("[...runAsNode, monitorPath, ...process.argv.slice(2)]");
+    expect(cliSource).not.toContain("monitorChild = new Worker(");
   });
 
 
@@ -107,7 +107,10 @@ describe("cli daemon pid tracking", () => {
   });
 
   it("reports a live monitor lock owner before falling back to broad daemon-status process scans", () => {
-    expect(cliSource).toContain("const existingMonitorOwner = detectExistingMonitorLockOwner();");
+    expect(cliSource).toContain("const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();");
+    expect(cliSource).toContain(
+      "const existingMonitorOwner = detectExistingMonitorLockOwner(null, configuredCacheDirs);",
+    );
     expect(cliSource).toContain("bosun daemon is not running in daemon mode, but bosun monitor is active");
     expect(cliSource).toContain("Bosun is running in monitor mode with lock file");
     expect(cliSource).toContain("Use 'bosun --terminate' to stop it, or 'bosun --daemon' only after it is fully stopped.");

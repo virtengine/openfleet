@@ -9,6 +9,7 @@ import {
   searchContextIndex,
   getContextIndexStatus,
 } from "../workspace/context-indexer.mjs";
+import { readFileSync } from "node:fs";
 
 let testRoot;
 
@@ -139,5 +140,11 @@ describe("context-indexer", () => {
 
     expect(scopedFrontend.fallbackUsed).toBe(false);
     expect(scopedFrontend.results.some((hit) => String(hit.path || "").includes("src/ui/button.tsx"))).toBe(true);
+  });
+
+  it("keeps PDF files excluded from the Bosun-native context index boundary", () => {
+    const source = readFileSync(resolve(process.cwd(), "workspace", "context-indexer.mjs"), "utf8");
+    expect(source).toContain('".pdf"');
+    expect(source).toMatch(/BINARY_EXTENSIONS\s*=\s*new Set\(/);
   });
 });

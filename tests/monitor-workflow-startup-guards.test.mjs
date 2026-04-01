@@ -60,13 +60,14 @@ describe("monitor workflow startup guards", () => {
   });
 
   it("resumes interrupted workflow runs after monitor services are wired", () => {
-    expect(monitorSource).toContain('if (typeof engine.resumeInterruptedRuns === "function") {');
-    expect(monitorSource).toContain('engine.resumeInterruptedRuns().catch((err) => {');
-    expect(monitorSource).toContain('[workflows] Failed to resume interrupted runs:');
+    expect(monitorSource).toContain('operationType: "workflow-history-unstick"');
+    expect(monitorSource).toContain('if (!engine?.resumeInterruptedRuns) {');
+    expect(monitorSource).toContain('throw new Error("workflow engine resumeInterruptedRuns unavailable")');
+    expect(monitorSource).toContain('await engine.resumeInterruptedRuns();');
     expect(
       monitorSource.indexOf("bindWorkflowEngineToAnomalyDetector(engine);"),
     ).toBeLessThan(
-      monitorSource.indexOf('engine.resumeInterruptedRuns().catch((err) => {'),
+      monitorSource.indexOf('await engine.resumeInterruptedRuns();'),
     );
   });
 
@@ -97,7 +98,10 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain('pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(');
     expect(monitorSource).toContain('const includeTaskPoll = opts?.includeTaskPoll !== false;');
     expect(monitorSource).not.toContain('_lastRunAt: Date.now()');
-    expect(monitorSource).toContain('if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {');
+    expect(monitorSource).toContain('const isTaskPollTrigger =');
+    expect(monitorSource).toContain('triggerNode?.type === "trigger.task_available" ||');
+    expect(monitorSource).toContain('triggerNode?.type === "trigger.task_low";');
+    expect(monitorSource).toContain('if (!includeTaskPoll && isTaskPollTrigger) {');
     expect(monitorSource).toContain('"stale-dispatch-unstick"');
     expect(monitorSource).toContain('"stale-dispatch-task-poll-unstick"');
     expect(monitorSource).toContain('throwOnError: true');

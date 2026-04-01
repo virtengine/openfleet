@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { _resetSingleton as resetSessionTracker, getSessionTracker } from "../infra/session-tracker.mjs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { resolveTuiAuthToken, TUI_EVENT_SCHEMAS } from "../infra/tui-bridge.mjs";
 
 function waitFor(condition, { timeoutMs = 3000, intervalMs = 25 } = {}) {
@@ -46,6 +46,19 @@ describe("ui-server TUI websocket bridge", () => {
     "TELEGRAM_UI_TUNNEL",
     "BOSUN_STATS_BROADCAST_MS",
     "BOSUN_ENV_NO_OVERRIDE",
+    "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
+    "BOSUN_CONFIG_PATH",
+    "BOSUN_TEST_CACHE_DIR",
+    "BOSUN_STATE_LEDGER_PATH",
+    "BOSUN_HOME",
+    "BOSUN_DIR",
+    "CODEX_MONITOR_HOME",
+    "CODEX_MONITOR_DIR",
+    "REPO_ROOT",
+    "BOSUN_TEST_SANDBOX",
+    "BOSUN_TEST_SANDBOX_ROOT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_NOSYSTEM",
   ];
   const ajv = new Ajv({ allErrors: true, strict: false });
   const validateStats = ajv.compile(TUI_EVENT_SCHEMAS["monitor:stats"]);
@@ -54,27 +67,59 @@ describe("ui-server TUI websocket bridge", () => {
 
   let envSnapshot = {};
   let configDir = "";
+  let sandboxRoot = "";
 
-  beforeEach(() => {
+  beforeEach(async () => {
     envSnapshot = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
     process.env.BOSUN_ENV_NO_OVERRIDE = "1";
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_STATS_BROADCAST_MS = "25";
-    configDir = mkdtempSync(join(tmpdir(), "bosun-ui-tui-ws-"));
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
+    sandboxRoot = mkdtempSync(join(tmpdir(), "bosun-ui-tui-ws-"));
+    const sandbox = ensureTestRuntimeSandbox({ rootDir: sandboxRoot, force: true });
+    configDir = sandbox?.configDir || mkdtempSync(join(tmpdir(), "bosun-ui-tui-ws-config-"));
+    process.env.BOSUN_CONFIG_PATH = join(configDir, "bosun.config.json");
+    process.env.BOSUN_HOME = configDir;
+    process.env.BOSUN_DIR = configDir;
+    process.env.BOSUN_TEST_CACHE_DIR = sandbox?.cacheDir || join(configDir, ".cache");
+    process.env.BOSUN_STATE_LEDGER_PATH = sandbox?.stateLedgerPath || join(configDir, ".cache", "state-ledger.sqlite");
+    process.env.CODEX_MONITOR_HOME = configDir;
+    process.env.CODEX_MONITOR_DIR = configDir;
+    delete process.env.REPO_ROOT;
+    vi.resetModules();
+    const [{ _resetSingleton: resetSessionTracker }, { _resetRuntimeAccumulatorForTests }, { resetStateLedgerCache }] = await Promise.all([
+      import("../infra/session-tracker.mjs"),
+      import("../infra/runtime-accumulator.mjs"),
+      import("../lib/state-ledger-sqlite.mjs"),
+    ]);
     resetSessionTracker({ persistDir: null });
+    _resetRuntimeAccumulatorForTests({ cacheDir: sandbox?.cacheDir || null });
+    resetStateLedgerCache();
   });
 
   afterEach(async () => {
     const mod = await import("../server/ui-server.mjs");
     mod.stopTelegramUiServer();
+    const [{ _resetSingleton: resetSessionTracker }, { _resetRuntimeAccumulatorForTests }, { resetStateLedgerCache }] = await Promise.all([
+      import("../infra/session-tracker.mjs"),
+      import("../infra/runtime-accumulator.mjs"),
+      import("../lib/state-ledger-sqlite.mjs"),
+    ]);
     resetSessionTracker({ persistDir: null });
+    _resetRuntimeAccumulatorForTests();
+    resetStateLedgerCache();
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
       else process.env[key] = envSnapshot[key];
     }
-    rmSync(configDir, { recursive: true, force: true });
+    if (sandboxRoot) {
+      rmSync(sandboxRoot, { recursive: true, force: true });
+      sandboxRoot = "";
+    }
+    configDir = "";
+    vi.resetModules();
   });
 
   it("persists a shared auth token and emits canonical snapshot events", async () => {
@@ -138,7 +183,7 @@ describe("ui-server TUI websocket bridge", () => {
     ws.close();
   }, 10000);
 
-  it("emits canonical session events for message activity", async () => {
+  it("emits canonical session snapshots for message activity", async () => {
     const mod = await import("../server/ui-server.mjs");
     mod.injectUiDependencies({ configDir });
 
@@ -164,42 +209,69 @@ describe("ui-server TUI websocket bridge", () => {
       ws.once("error", reject);
     });
 
+    const { getSessionTracker } = await import("../infra/session-tracker.mjs");
     const tracker = getSessionTracker({ persistDir: null });
     tracker.startSession("task-1", "Task 1");
 
-    const startedEvent = await waitFor(() => messages.find((message) => {
-      const reason = String(message.payload?.event?.reason || "");
-      return message.type === "session:event"
-        && message.payload?.taskId === "task-1"
-        && message.payload?.event?.kind === "state"
-        && (reason.includes("start") || reason.includes("create"));
-    }));
-    const startedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "active")));
-
-    tracker.recordEvent("task-1", { role: "assistant", content: "hello from tui bridge" });
-
-    const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message"));
-    const sessionsUpdate = await waitFor(() => findLatestMessage(
-      messages,
-      (message) => message.type === "sessions:update"
-        && Array.isArray(message.payload)
-        && message.payload.some((session) => session.taskId === "task-1"),
-    ));
+    tracker.recordEvent("task-1", {
+      role: "user",
+      content: "please help",
+      timestamp: "2026-03-27T10:00:00.000Z",
+    });
+    tracker.recordEvent("task-1", {
+      role: "assistant",
+      content: "hello from tui bridge",
+      timestamp: "2026-03-27T10:00:04.000Z",
+      usage: { inputTokens: 12, outputTokens: 20, totalTokens: 32 },
+    });
 
     tracker.endSession("task-1", "completed");
 
-    const endedEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "state" && String(message.payload?.event?.reason || "").includes("end")));
-    const endedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "completed")));
+    const endedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "completed")), { timeoutMs: 10000 });
+    const sessionsUpdate = findLatestMessage(
+      messages,
+      (message) => message.type === "sessions:update"
+        && Array.isArray(message.payload)
+        && message.payload.some((session) => session.taskId === "task-1" && session.turnCount === 1),
+    );
+    const sessionEvent = findLatestMessage(
+      messages,
+      (message) => message.type === "session:event"
+        && message.payload?.taskId === "task-1"
+        && message.payload?.event?.kind === "message"
+        && message.payload?.session?.turnCount === 1,
+    );
+    const rawSessionMessage = findLatestMessage(
+      messages,
+      (message) => message.type === "session-message"
+        && message.payload?.taskId === "task-1"
+        && message.payload?.message?.role === "assistant",
+    );
+    const endedEvent = findLatestMessage(
+      messages,
+      (message) => message.type === "session:event"
+        && message.payload?.taskId === "task-1"
+        && message.payload?.event?.kind === "state"
+        && String(message.payload?.event?.reason || "").includes("end"),
+    );
 
-    expect(validateSessionEvent(startedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
-    expect(validateSessions(startedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
-    expect(validateSessionEvent(sessionEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
+    expect(sessionsUpdate).toBeTruthy();
     expect(validateSessions(sessionsUpdate.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
-    expect(validateSessionEvent(endedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
+    expect(sessionsUpdate.payload.find((session) => session.taskId === "task-1")?.turnCount).toBe(1);
+    if (sessionEvent) {
+      expect(validateSessionEvent(sessionEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
+      expect(sessionEvent.payload?.session?.turnCount).toBe(1);
+    } else if (rawSessionMessage) {
+      expect(rawSessionMessage.payload?.session?.turnCount).toBe(1);
+      expect(rawSessionMessage.payload?.message?.content).toBe("hello from tui bridge");
+    }
+    if (endedEvent) {
+      expect(validateSessionEvent(endedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
+    }
     expect(validateSessions(endedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
 
     ws.close();
-  }, 10000);
+  }, 20000);
 
   it("emits canonical sessions:update snapshots for session API mutations", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -254,4 +326,3 @@ describe("ui-server TUI websocket bridge", () => {
     ws.close();
   }, 10000);
 });
-

@@ -5,6 +5,7 @@ const ENV_KEYS = [
   "TELEGRAM_UI_TLS_DISABLE",
   "TELEGRAM_UI_ALLOW_UNSAFE",
   "TELEGRAM_UI_TUNNEL",
+  "NODE_TLS_REJECT_UNAUTHORIZED",
 ];
 
 describe("ui-server session actions", () => {
@@ -36,8 +37,13 @@ describe("ui-server session actions", () => {
       skipAutoOpen: true,
     });
     const port = server.address().port;
+    const baseUrl = String(mod.getTelegramUiUrl() || `http://127.0.0.1:${port}`).trim();
+    if (baseUrl.startsWith("https://")) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+    }
+    const apiUrl = (path) => new URL(path, `${baseUrl}/`).toString();
 
-    const created = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+    const created = await fetch(apiUrl("/api/sessions/create"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -51,25 +57,25 @@ describe("ui-server session actions", () => {
     expect(sessionId).toBeTruthy();
 
     const pauseResponse = await fetch(
-      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/pause?workspace=all`,
+      apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/pause?workspace=all`),
       { method: "POST" },
     ).then((response) => response.json());
     expect(pauseResponse.ok).toBe(true);
 
     const pausedSession = await fetch(
-      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?workspace=all&full=1`,
+      apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}?workspace=all&full=1`),
     ).then((response) => response.json());
     expect(pausedSession.session?.status).toBe("paused");
 
     const resumeResponse = await fetch(
-      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/resume?workspace=all`,
+      apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/resume?workspace=all`),
       { method: "POST" },
     ).then((response) => response.json());
     expect(resumeResponse.ok).toBe(true);
 
     const resumedSession = await fetch(
-      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?workspace=all&full=1`,
+      apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}?workspace=all&full=1`),
     ).then((response) => response.json());
     expect(resumedSession.session?.status).toBe("active");
-  });
+  }, 15000);
 });

@@ -20,6 +20,27 @@ const TEST_GIT_IDENTITY_KEYS = [
 
 let cachedSandboxContext = null;
 
+function getRuntimeProcess() {
+  return globalThis.process;
+}
+
+function getRuntimeEnv() {
+  return getRuntimeProcess()?.env || {};
+}
+
+function getRuntimePlatform() {
+  return getRuntimeProcess()?.platform || "";
+}
+
+function getRuntimeArgv() {
+  const argv = getRuntimeProcess()?.argv;
+  return Array.isArray(argv) ? argv : [];
+}
+
+function getRuntimePid() {
+  return getRuntimeProcess()?.pid || 0;
+}
+
 function sanitizeToken(value, fallback) {
   const normalized = String(value || "")
     .trim()
@@ -32,18 +53,19 @@ function sanitizeToken(value, fallback) {
 function pathsEqual(left, right) {
   const a = resolve(String(left || ""));
   const b = resolve(String(right || ""));
-  if (process.platform === "win32") {
+  if (getRuntimePlatform() === "win32") {
     return a.toLowerCase() === b.toLowerCase();
   }
   return a === b;
 }
 
 function getWorkerToken() {
+  const env = getRuntimeEnv();
   return sanitizeToken(
-    process.env.VITEST_POOL_ID ||
-      process.env.VITEST_WORKER_ID ||
-      process.env.JEST_WORKER_ID ||
-      process.pid,
+    env.VITEST_POOL_ID ||
+      env.VITEST_WORKER_ID ||
+      env.JEST_WORKER_ID ||
+      getRuntimePid(),
     "default",
   );
 }
@@ -67,6 +89,7 @@ function buildSandboxContext(rootDir) {
   const workflowDir = resolve(bosunDataDir, "workflows");
   const runsDir = resolve(bosunDataDir, "workflow-runs");
   const cacheDir = resolve(bosunDataDir, ".cache");
+  const stateLedgerPath = resolve(cacheDir, "state-ledger.sqlite");
   const gitGlobalConfigPath = resolve(homeDir, ".gitconfig");
 
   return {
@@ -79,6 +102,7 @@ function buildSandboxContext(rootDir) {
     workflowDir,
     runsDir,
     cacheDir,
+    stateLedgerPath,
     gitGlobalConfigPath,
   };
 }
@@ -104,19 +128,21 @@ function ensureSandboxFiles(context) {
 }
 
 function setEnvValue(key, value, force) {
-  if (!force && process.env[key]) return;
-  process.env[key] = value;
+  const runtimeProcess = getRuntimeProcess();
+  const env = runtimeProcess?.env;
+  if (!env) return;
+  if (!force && env[key]) return;
+  env[key] = value;
 }
 
 export function isTestRuntime() {
-  if (process.env.BOSUN_TEST_SANDBOX === "1") return true;
+  const env = getRuntimeEnv();
+  if (env.BOSUN_TEST_SANDBOX === "1") return true;
   for (const key of TEST_RUNTIME_ENV_KEYS) {
-    if (process.env[key]) return true;
+    if (env[key]) return true;
   }
-  if (process.env.NODE_ENV === "test") return true;
-  const argv = Array.isArray(process.argv)
-    ? process.argv.join(" ").toLowerCase()
-    : "";
+  if (env.NODE_ENV === "test") return true;
+  const argv = getRuntimeArgv().join(" ").toLowerCase();
   return argv.includes("vitest") || argv.includes("--test");
 }
 
@@ -131,9 +157,10 @@ function isPathInside(parentPath, childPath) {
 export function ensureTestRuntimeSandbox(options = {}) {
   if (!isTestRuntime()) return null;
   const force = options.force === true;
+  const env = getRuntimeEnv();
   const requestedRoot =
     options.rootDir ||
-    process.env.BOSUN_TEST_SANDBOX_ROOT ||
+    env.BOSUN_TEST_SANDBOX_ROOT ||
     buildDefaultSandboxRoot();
   const context =
     cachedSandboxContext && pathsEqual(cachedSandboxContext.sandboxRoot, requestedRoot)
@@ -145,12 +172,17 @@ export function ensureTestRuntimeSandbox(options = {}) {
 
   setEnvValue("BOSUN_TEST_SANDBOX", "1", force);
   setEnvValue("BOSUN_TEST_SANDBOX_ROOT", context.sandboxRoot, force);
+  setEnvValue("BOSUN_TEST_CACHE_DIR", context.cacheDir, force);
+  setEnvValue("BOSUN_STATE_LEDGER_PATH", context.stateLedgerPath, force);
   setEnvValue("GIT_CONFIG_GLOBAL", context.gitGlobalConfigPath, force);
   setEnvValue("GIT_CONFIG_NOSYSTEM", "1", force);
 
   if (force) {
+    const runtimeProcess = getRuntimeProcess();
+    const runtimeEnv = runtimeProcess?.env;
+    if (!runtimeEnv) return context;
     for (const key of TEST_GIT_IDENTITY_KEYS) {
-      delete process.env[key];
+      delete runtimeEnv[key];
     }
   }
 

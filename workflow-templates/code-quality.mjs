@@ -267,7 +267,7 @@ A small, clean, tested PR is always better than nothing.`,
     // ── 7a. Create PR ──────────────────────────────────────────────────────
     node("create-pr", "action.create_pr", "Open Quality PR", {
       title: "refactor: code quality pass",
-      body: "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
+      body: "## Summary\n\nAutomated code-quality session. Structural refactor only — zero functional changes.\n\nSee `.bosun-monitor/code-quality-striker.md` for session details.",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
       labels: ["refactor", "code-quality", "automated"],

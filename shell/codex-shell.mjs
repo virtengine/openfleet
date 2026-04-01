@@ -12,16 +12,19 @@
  * thread_id so we can resume the same conversation across restarts.
  */
 
+import "../infra/windows-hidden-child-processes.mjs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { resolveAgentSdkConfig } from "../agent/agent-sdk.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveAgentSdkConfig, resolveCodexSdkInstall } from "../agent/agent-sdk.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import {
   resolveCodexProfileRuntime,
   readCodexConfigRuntimeDefaults,
+  getProviderEndpointEnvKeys,
 } from "./codex-model-profiles.mjs";
 import { buildTaskWritableRoots } from "./codex-config.mjs";
 import {
@@ -31,6 +34,7 @@ import {
 } from "../infra/stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const BOSUN_ROOT = resolve(__dirname, "..");
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -127,6 +131,7 @@ function buildInjectedSandboxConfig(envInput, workingDirectory) {
 function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, workingDirectory = DEFAULT_WORKING_DIRECTORY) {
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
+  const runtimeDefaults = readCodexConfigRuntimeDefaults(envInput) || {};
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const hasCustomBaseUrl = Boolean(String(baseUrl || "").trim());
@@ -161,6 +166,16 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
         if (!unsetEnvKeys.includes(otherEnvKey)) {
           unsetEnvKeys.push(otherEnvKey);
         }
+        // Also remove endpoint/base URL env keys associated with the non-selected provider
+        const endpointKeys = getProviderEndpointEnvKeys(sectionName, "azure");
+        for (const epKey of endpointKeys) {
+          if (epKey in env) {
+            delete env[epKey];
+            if (!unsetEnvKeys.includes(epKey)) {
+              unsetEnvKeys.push(epKey);
+            }
+          }
+        }
       }
     } catch {
       // best effort — do not block SDK startup if config inspection fails
@@ -168,6 +183,11 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
   }
 
   const providerName = isAzure ? "azure" : "openai";
+  const providerSectionNameResolved = isAzure
+    ? providerSectionName
+    : hasCustomBaseUrl
+      ? (configProvider?.name || "openai-direct")
+      : null;
   const config = isAzure
     ? {
         model_providers: {
@@ -185,18 +205,22 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
       }
     : hasCustomBaseUrl
       ? {
-          model_providers: {
-            [providerSectionName]: {
-              ...streamProviderOverrides,
-            },
-          },
+          model_providers: providerSectionNameResolved
+            ? {
+                [providerSectionNameResolved]: {
+                  ...streamProviderOverrides,
+                },
+              }
+            : undefined,
         }
       : {};
 
   Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
 
-  if (isAzure && env.CODEX_MODEL) {
-    config.model_provider = providerSectionName;
+  if (providerSectionNameResolved) {
+    config.model_provider = providerSectionNameResolved;
+  }
+  if (env.CODEX_MODEL) {
     config.model = env.CODEX_MODEL;
   }
 
@@ -338,6 +362,7 @@ const DEFAULT_WORKING_DIRECTORY = REPO_ROOT;
 // ── State ────────────────────────────────────────────────────────────────────
 
 let CodexClass = null; // The Codex class from SDK
+const CODEX_SDK_SPECIFIER = "@openai/codex-sdk"; // Define the SDK specifier
 let codexInstance = null; // Singleton Codex instance
 let activeThread = null; // Current persistent Thread
 let activeThreadId = null; // Thread ID for resume
@@ -385,6 +410,55 @@ function resolveCodexTransport() {
   return "auto";
 }
 
+function shouldUseBareCodexSdkImport(resolvedSdk = null) {
+  if (import.meta.vitest || process.env.VITEST || process.env.VITEST_WORKER_ID) {
+    return true;
+  }
+  const resolvedRoot = String(resolvedSdk?.rootDir || "").trim();
+  return Boolean(resolvedRoot && resolve(resolvedRoot) === BOSUN_ROOT);
+}
+
+/**
+ * Repair @openai/codex-sdk package.json if main/exports are missing.
+ * npm install can leave the package.json in a broken state when the
+ * SDK ships without proper entry points. The postinstall script normally
+ * patches this, but the fix can be lost if npm re-extracts from cache
+ * or if the install runs on a different lifecycle order.
+ */
+function repairCodexSdkPackageJson() {
+  try {
+    const codexPkgPath = resolve(__dirname, "..", "node_modules", "@openai", "codex-sdk", "package.json");
+    if (!existsSync(codexPkgPath)) return;
+    const codexPkg = JSON.parse(readFileSync(codexPkgPath, "utf8"));
+    if (codexPkg.main || codexPkg.exports) return; // already valid
+    const distIndex = resolve(__dirname, "..", "node_modules", "@openai", "codex-sdk", "dist", "index.js");
+    if (!existsSync(distIndex)) return;
+    codexPkg.main = "dist/index.js";
+    codexPkg.type = "module";
+    codexPkg.exports = { ".": { import: "./dist/index.js" } };
+    const distTypes = distIndex.replace(/\.js$/, ".d.ts");
+    if (existsSync(distTypes)) {
+      codexPkg.types = "dist/index.d.ts";
+      codexPkg.exports["."].types = "./dist/index.d.ts";
+    }
+    writeFileSync(codexPkgPath, JSON.stringify(codexPkg, null, 2), "utf8");
+    console.log("[codex-shell] repaired @openai/codex-sdk package.json (missing main/exports)");
+  } catch {
+    // best-effort — postinstall may have already fixed it
+  }
+}
+
+async function importCodexSdkModule(resolvedSdk) {
+  if (shouldUseBareCodexSdkImport(resolvedSdk)) {
+    try {
+      return await import("./codex-sdk-import.mjs");
+    } catch (err) {
+      if (!resolvedSdk?.entryPath) throw err;
+    }
+  }
+  return import(pathToFileURL(resolvedSdk.entryPath).href);
+}
+
 // ── SDK Loading ──────────────────────────────────────────────────────────────
 
 async function loadCodexSdk() {
@@ -403,9 +477,14 @@ async function loadCodexSdk() {
   }
   if (CodexClass) return CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const resolvedSdk = resolveCodexSdkInstall({ extraRoots: [getWorkingDirectory()] });
+    if (!resolvedSdk?.entryPath) {
+      console.error("[codex-shell] failed to load SDK: no complete @openai/codex-sdk install found");
+      return null;
+    }
+    const mod = await importCodexSdkModule(resolvedSdk);
     CodexClass = mod.Codex;
-    console.log("[codex-shell] SDK loaded successfully");
+    console.log(`[codex-shell] SDK loaded successfully from ${resolvedSdk.rootDir}`);
     return CodexClass;
   } catch (err) {
     console.error(`[codex-shell] failed to load SDK: ${err.message}`);
@@ -541,6 +620,26 @@ You have FULL ACCESS to:
 - File read/write: read any file, create/edit any file
 - MCP servers configured in this environment (availability varies)
 
+## File Editing Strategy — IMPORTANT
+
+When editing files, use the strongest structured edit primitive available:
+
+1. **PREFER native Codex edit tools first** — if the runtime exposes built-in file editing tools such as
+   \`apply_patch\` or direct file-write tools, use those before shell commands or ad hoc scripts.
+2. **Use Bosun MCP file tools as the fallback structured path** when native edit tools are unavailable:
+   - \`grep_search\` to locate code
+   - \`read_file\` to confirm exact text
+   - \`replace_lines\` for scoped block edits once line numbers are known
+   - \`str_replace_editor\` for exact unique-string replacements
+   - \`write_file\` only for new files or intentional full rewrites
+3. **Never use shell-based patching when a structured edit tool exists** — avoid \`node -e\`, \`python -c\`,
+   \`powershell -Command\`, \`sed -i\`, temp patch scripts, or one-off \`.cjs\` helpers just to edit files.
+4. **Never leave repo-root scratch artifacts behind** — do not create \`.tmp-*\`, \`*.patch\`, \`*.cjs\`, or redirected
+   \`*.log\` files in the workspace root for edit workflows. If a shell fallback is truly unavoidable, use \`tmp/codex/\`
+   inside the repo or the OS temp directory, and delete those scratch files before finishing the turn.
+5. **Prefer read/verify/edit cycles over blind rewrites** so the agent does not compensate for weak matches by
+   materializing temporary files in the repository.
+
 Key files:
   ${REPO_ROOT} — Repository root
   .cache/orchestrator-status.json — Live status data (if enabled)
@@ -601,6 +700,9 @@ async function getThread() {
     codexInstance = new Cls({
       config: {
         ...runtime.config,
+        model_provider: runtime.config?.model_provider,
+        model_providers: runtime.config?.model_providers,
+        model: runtime.config?.model,
         features: {
           ...(runtime.config?.features || {}),
           child_agents_md: true,

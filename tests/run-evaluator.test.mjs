@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { RunEvaluator } from "../workflow/run-evaluator.mjs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -264,6 +264,122 @@ describe("RunEvaluator", () => {
       expect(result.score).toBe(0);
       expect(result.grade).toBe("F");
     });
+
+    it("emits benchmark, strategy, and promotion insights", () => {
+      const now = Date.now();
+      const run = makeRunDetail({
+        duration: 12_000,
+        nodeStatuses: { n1: "completed", n2: "failed", n3: "completed" },
+        retryAttempts: { n2: 1 },
+        errors: [{ nodeId: "n2", error: "Node timed out after 10000ms", timestamp: now }],
+        nodeTimings: {
+          n1: { startedAt: now - 12_000, endedAt: now - 8_000 },
+          n2: { startedAt: now - 8_000, endedAt: now - 2_000 },
+          n3: { startedAt: now - 2_000, endedAt: now },
+        },
+        data: {
+          _workflowId: "wf-self-improve",
+          _taskWorkflowEvents: [
+            { eventType: "workflow.run.start", taskId: "TASK-1", nodeId: null },
+            { eventType: "workflow.node.start", taskId: "TASK-1", nodeId: "n2" },
+            { eventType: "workflow.node.error", taskId: "TASK-1", nodeId: "n2" },
+            { eventType: "workflow.run.error", taskId: "TASK-1", nodeId: null },
+          ],
+        },
+      });
+      const result = evaluator.evaluate(run, { workflowId: "wf-self-improve" });
+      expect(result.benchmark.traceEventCount).toBe(4);
+      expect(result.benchmark.dominantFailureMode).toMatch(/isolated_failure|high_error_rate|retry_thrash/);
+      expect(Array.isArray(result.strategies)).toBe(true);
+      expect(result.strategies.length).toBeGreaterThan(0);
+      expect(result.strategies[0].strategyId).toContain("wf-self-improve");
+      expect(result.promotion).toEqual(expect.objectContaining({
+        workflowId: "wf-self-improve",
+        decision: expect.any(String),
+        summary: expect.any(String),
+      }));
+      expect(result.ratchet).toEqual(expect.objectContaining({
+        workflowId: "wf-self-improve",
+        decision: expect.any(String),
+        summary: expect.any(String),
+      }));
+      expect(result.insights.strategyIds).toContain(result.strategies[0].strategyId);
+      expect(result.insights.traceSample.length).toBeGreaterThan(0);
+    });
+
+    it("incorporates governance state into issues, remediation, and promotion decisions", () => {
+      const run = makeRunDetail({
+        data: {
+          _workflowId: "wf-governance",
+          goalAncestry: [
+            { goalId: "goal-root", title: "Root Goal", depth: 0 },
+            { goalId: "goal-child", title: "Implement Governance", depth: 1 },
+          ],
+          heartbeatRun: {
+            runId: "hb-1",
+            status: "waiting",
+            sourceRunId: "run-parent",
+            wakeAt: "2026-03-31T10:00:00.000Z",
+          },
+          wakeupRequest: {
+            requestId: "wake-1",
+            source: "scheduler",
+            requestedAt: "2026-03-31T09:55:00.000Z",
+            wakeAt: "2026-03-31T10:00:00.000Z",
+          },
+          budgetPolicy: {
+            budgetCents: 1000,
+            spentCents: 950,
+            reservedCents: 100,
+            nearLimitThresholdCents: 150,
+            currency: "USD",
+            approvalRequired: true,
+          },
+          executionPolicy: {
+            mode: "strict",
+            approvalRequired: true,
+            approvalState: "pending",
+            violations: [
+              {
+                ruleId: "scope-lock",
+                message: "Scope lock required before implementation.",
+                blocking: true,
+                nodeId: "n2",
+              },
+            ],
+          },
+        },
+      });
+      const result = evaluator.evaluate(run, { workflowId: "wf-governance" });
+      expect(result.governance).toEqual(expect.objectContaining({
+        primaryGoalId: "goal-child",
+        goalDepth: 1,
+        heartbeatRun: expect.objectContaining({ runId: "hb-1" }),
+        wakeupRequest: expect.objectContaining({ requestId: "wake-1" }),
+        budgetOutcome: expect.objectContaining({ status: "exceeded" }),
+        policyOutcome: expect.objectContaining({ status: "blocked", blockingViolationCount: 1 }),
+        blocked: true,
+        approvalPending: true,
+      }));
+      expect(result.metrics.governanceBlocked).toBe(true);
+      expect(result.metrics.budgetStatus).toBe("exceeded");
+      expect(result.metrics.policyStatus).toBe("blocked");
+      expect(result.issues.some((issue) => issue.message.includes("budget exceeded"))).toBe(true);
+      expect(result.issues.some((issue) => issue.message.includes("Policy violation"))).toBe(true);
+      expect(result.remediation.fixActions.map((action) => action.type)).toEqual(expect.arrayContaining([
+        "request_budget_approval",
+        "request_execution_approval",
+        "resolve_policy_violation",
+      ]));
+      expect(result.remediation.canAutoRetry).toBe(false);
+      expect(result.strategies.some((strategy) => strategy.category === "governance")).toBe(true);
+      expect(result.promotion.blockedByGovernance).toBe(true);
+      expect(result.promotion.shouldPromote).toBe(false);
+      expect(result.insights.governance).toEqual(expect.objectContaining({
+        primaryGoalId: "goal-child",
+        policyOutcome: expect.objectContaining({ status: "blocked" }),
+      }));
+    });
   });
 });
 
@@ -343,6 +459,28 @@ describe("RunEvaluator history & trends", () => {
     expect(reloaded).toHaveLength(2);
   });
 
+  it("upserts durable history when evaluate records the same run more than once", () => {
+    const dir = makeTmpDir();
+    const ev = new RunEvaluator({ configDir: dir });
+    const run = {
+      runId: "run-upsert-1",
+      ...makeRunDetail(),
+    };
+
+    ev.evaluate(run, { workflowId: "wf-upsert", recordHistory: true });
+    ev.evaluate(run, { workflowId: "wf-upsert", recordHistory: true });
+
+    const history = ev.getHistory("wf-upsert");
+    expect(history).toHaveLength(1);
+    expect(history[0].runId).toBe("run-upsert-1");
+
+    const historyPath = join(dir, ".bosun", "evaluation-history.json");
+    expect(existsSync(historyPath)).toBe(true);
+    const persisted = JSON.parse(readFileSync(historyPath, "utf8"));
+    expect(persisted["wf-upsert"]).toHaveLength(1);
+    expect(persisted["wf-upsert"][0].runId).toBe("run-upsert-1");
+  });
+
   it("getTrend computes average and stable trend", () => {
     const dir = makeTmpDir();
     const ev = new RunEvaluator({ configDir: dir });
@@ -364,6 +502,69 @@ describe("RunEvaluator history & trends", () => {
     expect(trend.avgScore).toBeGreaterThanOrEqual(90);
     expect(trend.trend).toBe("stable");
     expect(trend.recentGrades).toHaveLength(5);
+    expect(trend.recentEntries).toHaveLength(5);
+  });
+
+  it("persists ratchet baselines and can revert to the previous baseline after regression", () => {
+    const dir = makeTmpDir();
+    const ev = new RunEvaluator({ configDir: dir });
+
+    const baselineRun = {
+      runId: "run-baseline-1",
+      ...makeRunDetail({
+        retryAttempts: { n1: 1 },
+      }),
+    };
+    const baselineEval = ev.evaluate(baselineRun, { workflowId: "wf-ratchet" });
+    expect(baselineEval.ratchet.decision).toBe("capture_baseline");
+    ev.recordRatchetDecision("wf-ratchet", {
+      ...baselineEval.ratchet,
+      runId: baselineRun.runId,
+      candidate: baselineEval.ratchet.candidate,
+      targetStrategy: baselineEval.ratchet.targetStrategy,
+    });
+
+    const improvedRun = {
+      runId: "run-improved-2",
+      ...makeRunDetail(),
+    };
+    const improvedEval = ev.evaluate(improvedRun, { workflowId: "wf-ratchet" });
+    expect(improvedEval.ratchet.decision).toBe("apply_candidate");
+    ev.recordRatchetDecision("wf-ratchet", {
+      ...improvedEval.ratchet,
+      runId: improvedRun.runId,
+      candidate: improvedEval.ratchet.candidate,
+      targetStrategy: improvedEval.ratchet.targetStrategy,
+    });
+
+    const regressedRun = {
+      runId: "run-regressed-3",
+      ...makeRunDetail({
+        nodeStatuses: { n1: "failed", n2: "completed" },
+        retryAttempts: { n1: 1 },
+        errors: [{ nodeId: "n1", error: "Node timed out after 10000ms", timestamp: Date.now() }],
+      }),
+    };
+    const regressedEval = ev.evaluate(regressedRun, { workflowId: "wf-ratchet" });
+    expect(regressedEval.ratchet.decision).toBe("revert_to_baseline");
+    const persisted = ev.recordRatchetDecision("wf-ratchet", {
+      ...regressedEval.ratchet,
+      runId: regressedRun.runId,
+      candidate: regressedEval.ratchet.candidate,
+      targetStrategy: regressedEval.ratchet.targetStrategy,
+    });
+
+    expect(persisted.stateAfter.activeBaseline.runId).toBe("run-baseline-1");
+    expect(persisted.stateAfter.previousBaseline.runId).toBe("run-improved-2");
+
+    const historyPath = join(dir, ".bosun", "evaluation-history.json");
+    const saved = JSON.parse(readFileSync(historyPath, "utf8"));
+    expect(saved.__ratchet["wf-ratchet"].decisions).toHaveLength(3);
+
+    const reloaded = new RunEvaluator({ configDir: dir });
+    const reloadedState = reloaded.getRatchetState("wf-ratchet");
+    expect(reloadedState.activeBaseline.runId).toBe("run-baseline-1");
+    expect(reloadedState.previousBaseline.runId).toBe("run-improved-2");
   });
 
   it("attachToEngine is safe with invalid engine", () => {

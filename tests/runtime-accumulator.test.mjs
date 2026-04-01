@@ -93,6 +93,13 @@ describe("runtime-accumulator", () => {
       const runtimeStats = getRuntimeStats();
       expect(runtimeStats.sessionCount).toBe(6);
       expect(runtimeStats.runtimeMs).toBe(expectedDurationMs);
+      expect(runtimeStats.lifetimeTotals).toEqual({
+        attemptsCount: 6,
+        tokenCount: expectedTokenCount,
+        inputTokens: expectedInputTokens,
+        outputTokens: expectedOutputTokens,
+        durationMs: expectedDurationMs,
+      });
 
       const logPath = getSessionAccumulatorLogPath();
       const lines = readFileSync(logPath, "utf8")
@@ -151,6 +158,64 @@ describe("runtime-accumulator", () => {
           durationMs: 2_500,
         },
       });
+    } finally {
+      _resetRuntimeAccumulatorForTests();
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves turn count and timeline details on completed session records", () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "bosun-runtime-accumulator-turns-"));
+    const taskId = "task-session-turns";
+
+    try {
+      _resetRuntimeAccumulatorForTests({ cacheDir });
+
+      const record = addCompletedSession({
+        id: `${taskId}-session-1`,
+        sessionId: `${taskId}-session-1`,
+        sessionKey: `${taskId}:session-1`,
+        taskId,
+        taskTitle: "Turn persistence test",
+        startedAt: 1_000,
+        endedAt: 6_000,
+        durationMs: 5_000,
+        tokenCount: 180,
+        inputTokens: 120,
+        outputTokens: 60,
+        turnCount: 2,
+        turns: [
+          { turnIndex: 0, durationMs: 2_000, totalTokens: 75, status: "completed" },
+          { turnIndex: 1, durationMs: 3_000, totalTokens: 105, status: "completed" },
+        ],
+        status: "completed",
+      });
+
+      expect(record).toEqual(expect.objectContaining({
+        turnCount: 2,
+        turns: [
+          expect.objectContaining({ turnIndex: 0, totalTokens: 75 }),
+          expect.objectContaining({ turnIndex: 1, totalTokens: 105 }),
+        ],
+      }));
+
+      _resetRuntimeAccumulatorForTests({ cacheDir });
+      const restoredStats = getRuntimeStats();
+      expect(restoredStats.completedSessions[0]).toEqual(expect.objectContaining({
+        taskId,
+        turnCount: 2,
+        turns: [
+          expect.objectContaining({ turnIndex: 0, totalTokens: 75 }),
+          expect.objectContaining({ turnIndex: 1, totalTokens: 105 }),
+        ],
+      }));
+      expect(restoredStats.lifetimeTotals).toEqual(expect.objectContaining({
+        attemptsCount: 1,
+        tokenCount: 180,
+        inputTokens: 120,
+        outputTokens: 60,
+        durationMs: 5_000,
+      }));
     } finally {
       _resetRuntimeAccumulatorForTests();
       rmSync(cacheDir, { recursive: true, force: true });

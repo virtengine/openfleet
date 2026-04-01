@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const describeVoiceHttpRoutes = (
+  process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
+  || (process.platform === "win32" && /[\\/]\.codex[\\/]\.sandbox[\\/]/i.test(process.cwd()))
+)
+  ? describe.skip
+  : describe;
+
 const sharedEngine = {
   evaluateTriggers: vi.fn(async () => []),
   execute: vi.fn(async () => ({})),
@@ -17,7 +24,7 @@ vi.mock("../voice/voice-relay.mjs", () => ({
 
 const { analyzeVisionFrame } = await import("../voice/voice-relay.mjs");
 
-describe("ui-server voice + vision routes", () => {
+describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_TLS_DISABLE",
     "TELEGRAM_UI_ALLOW_UNSAFE",
@@ -112,6 +119,11 @@ describe("ui-server voice + vision routes", () => {
     const { getSessionById } = await import("../infra/session-tracker.mjs");
     const session = getSessionById(sessionId);
     expect(session).toBeTruthy();
+    expect(session?.type).toBe("voice");
+    expect(session?.metadata).toEqual(expect.objectContaining({
+      hiddenInLists: true,
+      source: "voice-http",
+    }));
     const messages = session?.messages || [];
     const userTurn = messages.find((msg) => msg?.role === "user");
     const assistantTurn = messages.find((msg) => msg?.role === "assistant");
@@ -270,6 +282,11 @@ describe("ui-server voice + vision routes", () => {
     const { getSessionById } = await import("../infra/session-tracker.mjs");
     const session = getSessionById(sessionId);
     expect(session).toBeTruthy();
+    expect(session?.type).toBe("voice");
+    expect(session?.metadata).toEqual(expect.objectContaining({
+      hiddenInLists: true,
+      source: "vision-http",
+    }));
     const visionMessage = (session?.messages || []).find(
       (msg) => String(msg?.content || "").startsWith("[Vision screen"),
     );

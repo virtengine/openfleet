@@ -26,7 +26,7 @@ describe("tui architecture scaffold", () => {
     expect(entrySource).toContain('stdout.on?.("resize"');
     expect(entrySource).toContain("120");
     expect(entrySource).toContain("30");
-    expect(entrySource).toContain('await import("./ui/tui/App.js")');
+    expect(entrySource).toContain('await import("./tui/app.mjs")');
     expect(entrySource).toContain('await import("ink")');
   });
 
