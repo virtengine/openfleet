@@ -4430,6 +4430,36 @@ export class WorkflowEngine extends EventEmitter {
       .filter(Boolean);
   }
 
+  _listPersistedRunSummaries(workflowId = null, limit = MAX_PERSISTED_RUNS) {
+    const normalizedLimit = Number.isFinite(Number(limit)) && Number(limit) > 0
+      ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(Number(limit))))
+      : MAX_PERSISTED_RUNS;
+    try {
+      const page = listWorkflowRunSummariesPageFromStateLedger({
+        anchorPath: this.runsDir,
+        ...(workflowId ? { workflowId } : {}),
+        offset: 0,
+        limit: normalizedLimit,
+      });
+      const runs = Array.isArray(page?.runs)
+        ? page.runs.map((entry) => this._normalizeRunSummary(entry)).filter(Boolean)
+        : [];
+      if (runs.length > 0 || Number(page?.total || 0) > 0) {
+        return {
+          runs,
+          total: Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length,
+        };
+      }
+    } catch {
+      // Best-effort SQL-backed read; fall back to legacy file/index history below.
+    }
+
+    const runs = this._hydrateRunIndexFromDetails(normalizedLimit)
+      .map((entry) => this._normalizeRunSummary(entry))
+      .filter(Boolean);
+    return { runs, total: runs.length };
+  }
+
   /** Get historical run logs */
   getRunHistory(workflowId, limit = null) {
     // TTL cache for run history to reduce repeated hydration cost.
@@ -4446,9 +4476,7 @@ export class WorkflowEngine extends EventEmitter {
     const targetCount = hasLimit
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(resolvedLimit, 200))
       : MAX_PERSISTED_RUNS;
-    const persisted = this._hydrateRunIndexFromDetails(targetCount)
-      .map((entry) => this._normalizeRunSummary(entry))
-      .filter(Boolean);
+    const persisted = this._listPersistedRunSummaries(workflowId || null, targetCount).runs;
 
     const active = this.getActiveRuns();
     const activeRunIds = new Set(active.map((run) => run.runId));
@@ -4480,15 +4508,28 @@ export class WorkflowEngine extends EventEmitter {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
       : 20;
-    const persisted = this._hydrateRunIndexFromDetails(Math.max(offset + limit, 50))
-      .map((entry) => this._normalizeRunSummary(entry))
-      .filter(Boolean);
     const active = this.getActiveRuns();
+    const persistedResult = this._listPersistedRunSummaries(
+      workflowId || null,
+      Math.max(offset + limit + active.length, 50),
+    );
+    const persisted = persistedResult.runs;
     const activeRunIds = new Set(active.map((run) => run.runId));
+    const persistedRunIds = new Set(persisted.map((run) => run.runId));
     let allRuns = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) allRuns = allRuns.filter((run) => run.workflowId === workflowId);
-    allRuns.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
-    const total = allRuns.length;
+    allRuns.sort(
+      (a, b) =>
+        normalizeWorkflowRunTimestampMs(b?.startedAt || b?.updatedAt)
+        - normalizeWorkflowRunTimestampMs(a?.startedAt || a?.updatedAt),
+    );
+    const activeOnlyCount = active.filter((run) => !persistedRunIds.has(run.runId)).length;
+    const total = Math.max(
+      allRuns.length,
+      Number.isFinite(Number(persistedResult.total))
+        ? Number(persistedResult.total) + activeOnlyCount
+        : allRuns.length,
+    );
     const runs = allRuns.slice(offset, offset + limit);
     const nextOffset = offset + runs.length;
     return {

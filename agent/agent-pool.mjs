@@ -5031,7 +5031,15 @@ export async function invalidateThreadAsync(taskKey) {
  * @param {string} taskKey
  */
 export function invalidateThread(taskKey) {
-  return invalidateManagedThread(taskKey);
+  const invalidated = invalidateManagedThread(taskKey);
+  if (!invalidated) {
+    invalidateThreadAsync(taskKey).catch((err) => {
+      console.warn(
+        TAG + " deferred invalidateThreadAsync failed for \"" + taskKey + "\": " + (err?.message || err),
+      );
+    });
+  }
+  return invalidated;
 }
 
 /**
