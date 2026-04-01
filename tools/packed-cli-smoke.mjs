@@ -25,6 +25,30 @@ const NPM_TIMEOUT_MS = Math.max(
   Number(process.env.BOSUN_PACKED_SMOKE_NPM_TIMEOUT_MS || "120000") || 120000,
 );
 const nodeBinDir = dirname(nodeCmd);
+const GIT_ENV_KEYS = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_CONFIG",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_KEY_0",
+  "GIT_CONFIG_KEY_1",
+  "GIT_CONFIG_KEY_2",
+  "GIT_CONFIG_KEY_3",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_VALUE_0",
+  "GIT_CONFIG_VALUE_1",
+  "GIT_CONFIG_VALUE_2",
+  "GIT_CONFIG_VALUE_3",
+  "GIT_DIR",
+  "GIT_EXEC_PATH",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_PREFIX",
+  "GIT_WORK_TREE",
+];
 
 function resolveNpmCliPath() {
   const candidates = [
@@ -48,11 +72,20 @@ function isWindowsChildLaunchBlocked(error) {
   return message.includes("EPERM") && /spawn(?:Sync)?\s/i.test(message);
 }
 
+function sanitizedChildEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of GIT_ENV_KEYS) {
+    delete env[key];
+  }
+  return env;
+}
+
 function runNpm(args, options = {}) {
   const cwd = options.cwd || ROOT;
   return execFileSync(nodeCmd, [npmCliPath, ...args], {
     cwd,
     encoding: "utf8",
+    env: sanitizedChildEnv(options.env),
     stdio: ["pipe", "pipe", "pipe"],
     timeout: NPM_TIMEOUT_MS,
     ...options,
@@ -82,6 +115,7 @@ function installPackedArtifact(tarballPath, installDir) {
 function runNode(args, options = {}) {
   return execFileSync(nodeCmd, args, {
     encoding: "utf8",
+    env: sanitizedChildEnv(options.env),
     stdio: ["pipe", "pipe", "pipe"],
     timeout: SMOKE_TIMEOUT_MS,
     ...options,
