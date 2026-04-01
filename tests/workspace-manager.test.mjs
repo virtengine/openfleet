@@ -70,9 +70,9 @@ function writeBosunConfig(configDir, config) {
 
 function createGitRepo(repoPath, remoteUrl) {
   mkdirSync(repoPath, { recursive: true });
-  execSync("git init", { cwd: repoPath, stdio: ["ignore", "ignore", "ignore"] });
+  execGit("git init", { cwd: repoPath, stdio: ["ignore", "ignore", "ignore"] });
   if (remoteUrl) {
-    execSync("git remote add origin " + remoteUrl, {
+    execGit("git remote add origin " + remoteUrl, {
       cwd: repoPath,
       stdio: ["ignore", "ignore", "ignore"],
     });
@@ -295,4 +295,3 @@ describe("pullWorkspaceRepos", () => {
     expect(existsSync(join(configDir, "workspaces", "alpha", backupDir, "stale.txt"))).toBe(true);
   }, 60000);
 });
-

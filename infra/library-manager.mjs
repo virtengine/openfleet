@@ -54,9 +54,41 @@ const repoContextCache = new Map();
 
 const REPO_CONTEXT_TTL_MS = 120_000;
 const UNRESOLVED_TEMPLATE_TOKEN_RE = /\{\{[^{}]+\}\}/;
+const GIT_ENV_KEYS = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_CONFIG",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_KEY_0",
+  "GIT_CONFIG_KEY_1",
+  "GIT_CONFIG_KEY_2",
+  "GIT_CONFIG_KEY_3",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_VALUE_0",
+  "GIT_CONFIG_VALUE_1",
+  "GIT_CONFIG_VALUE_2",
+  "GIT_CONFIG_VALUE_3",
+  "GIT_DIR",
+  "GIT_EXEC_PATH",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_PREFIX",
+  "GIT_WORK_TREE",
+];
 
 export function hasUnresolvedTemplateTokens(value) {
   return UNRESOLVED_TEMPLATE_TOKEN_RE.test(String(value || ""));
+}
+
+function sanitizedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of GIT_ENV_KEYS) {
+    delete env[key];
+  }
+  return env;
 }
 
 /**
@@ -2290,6 +2322,7 @@ function createRepositoryImportCheckoutDir(prefix, repoUrl, branch) {
 
   const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
     encoding: "utf8",
+    env: sanitizedGitEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 120_000,
   });
@@ -2914,19 +2947,13 @@ export function detectScopes(repoRoot, opts = {}) {
 
   // 1. Scan git commit history for conventional commit scopes
   try {
-    const gitEnv = { ...process.env };
-    delete gitEnv.GIT_DIR;
-    delete gitEnv.GIT_WORK_TREE;
-    delete gitEnv.GIT_INDEX_FILE;
-    delete gitEnv.GIT_COMMON_DIR;
-    delete gitEnv.GIT_PREFIX;
     const safeMaxCommits = Math.max(1, Math.min(5000, Number.parseInt(String(maxCommits), 10) || 200));
     const logResult = spawnSync(
       "git",
       ["log", "--oneline", "-" + safeMaxCommits, "--format=%s"],
       {
         cwd: repoRoot,
-        env: gitEnv,
+        env: sanitizedGitEnv(),
         encoding: "utf8",
         timeout: 10000,
         stdio: ["ignore", "pipe", "pipe"],
