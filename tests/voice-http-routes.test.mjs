@@ -11,13 +11,6 @@ const describeVoiceHttpRoutes = (
   ? describe.skip
   : describe;
 
-const describeVoiceHttpRoutes = (
-  process.env.BOSUN_TEST_CHILD_SPAWN_BLOCKED === "1"
-  || (process.platform === "win32" && /[\\/]\.codex[\\/]\.sandbox[\\/]/i.test(process.cwd()))
-)
-  ? describe.skip
-  : describe;
-
 const sharedEngine = {
   evaluateTriggers: vi.fn(async () => []),
   execute: vi.fn(async () => ({})),
