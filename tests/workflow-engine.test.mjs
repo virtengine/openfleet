@@ -3248,6 +3248,34 @@ describe("action.execute_workflow", () => {
     );
   });
 
+  it("reuses a single run detail lookup when building full run forensics", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "step-a", type: "action.set_variable", label: "Step A", config: { key: "a", value: "1" } },
+        { id: "step-b", type: "action.set_variable", label: "Step B", config: { key: "b", value: "2" } },
+      ],
+      [
+        { source: "trigger", target: "step-a" },
+        { source: "step-a", target: "step-b" },
+      ],
+      { name: "Forensics Reuse Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    const getRunDetailSpy = vi.spyOn(engine, "getRunDetail");
+
+    const forensics = engine.getRunForensics(ctx.id);
+
+    expect(forensics?.runId).toBe(ctx.id);
+    expect(Object.keys(forensics?.nodes || {})).toEqual(
+      expect.arrayContaining(["trigger", "step-a", "step-b"]),
+    );
+    expect(getRunDetailSpy).toHaveBeenCalledTimes(1);
+    expect(getRunDetailSpy).toHaveBeenCalledWith(ctx.id, { decorate: false });
+  });
+
   it("dispatch mode queues child workflow without waiting for completion", async () => {
     const handler = getNodeType("action.execute_workflow");
     expect(handler).toBeDefined();

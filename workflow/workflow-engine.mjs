@@ -5423,8 +5423,8 @@ export class WorkflowEngine extends EventEmitter {
    * @param {string} nodeId
    * @returns {object|null}
    */
-  getNodeForensics(runId, nodeId) {
-    const run = this.getRunDetail(runId);
+  getNodeForensics(runId, nodeId, preloadedRun = null) {
+    const run = preloadedRun || this.getRunDetail(runId, { decorate: false });
     if (!run) return null;
     const detail = run.detail || {};
     const nodeStatuses = detail.nodeStatuses || {};
@@ -5467,13 +5467,13 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {object|null}
    */
   getRunForensics(runId) {
-    const run = this.getRunDetail(runId);
+    const run = this.getRunDetail(runId, { decorate: false });
     if (!run) return null;
     const detail = run.detail || {};
     const nodeStatuses = detail.nodeStatuses || {};
     const nodes = {};
     for (const nodeId of Object.keys(nodeStatuses)) {
-      nodes[nodeId] = this.getNodeForensics(runId, nodeId);
+      nodes[nodeId] = this.getNodeForensics(runId, nodeId, run);
     }
     return {
       runId,
@@ -5494,7 +5494,7 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {{ snapshotId: string, path: string }|null}
    */
   createRunSnapshot(runId) {
-    const run = this.getRunDetail(runId);
+    const run = this.getRunDetail(runId, { decorate: false });
     if (!run) return null;
     const detail = run.detail || {};
     const workflowId = run.workflowId || detail.data?._workflowId;

@@ -23880,7 +23880,9 @@ if (path === "/api/agent-logs/context") {
       let refreshedRun = null;
       if (runId && typeof wfCtx.engine?.getRunDetail === "function") {
         try {
-          refreshedRun = await Promise.resolve(wfCtx.engine.getRunDetail(runId));
+          refreshedRun = await Promise.resolve(
+            wfCtx.engine.getRunDetail(runId, { decorate: false }),
+          );
         } catch {
           refreshedRun = null;
         }
@@ -23916,7 +23918,9 @@ if (path === "/api/agent-logs/context") {
       }
 
       if (action === "copilot-context" && (req.method === "GET" || req.method === "POST")) {
-        const run = typeof engine.getRunDetail === "function" ? await engine.getRunDetail(runId) : null;
+        const run = typeof engine.getRunDetail === "function"
+          ? await engine.getRunDetail(runId, { decorate: false })
+          : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;
@@ -23992,7 +23996,9 @@ if (path === "/api/agent-logs/context") {
           resolveApprovalRequest,
           upsertWorkflowRunApprovalRequest,
         } = await import("../workflow/approval-queue.mjs");
-        const run = typeof engine.getRunDetail === "function" ? await engine.getRunDetail(runId) : null;
+        const run = typeof engine.getRunDetail === "function"
+          ? await engine.getRunDetail(runId, { decorate: false })
+          : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;
@@ -24028,7 +24034,9 @@ if (path === "/api/agent-logs/context") {
           actorId,
           note,
         });
-        const refreshedRun = typeof engine.getRunDetail === "function" ? await engine.getRunDetail(runId) : run;
+        const refreshedRun = typeof engine.getRunDetail === "function"
+          ? await engine.getRunDetail(runId, { decorate: false })
+          : run;
         invalidateApiCache("server-state");
         jsonResponse(res, 200, {
           ok: true,
@@ -24044,7 +24052,9 @@ if (path === "/api/agent-logs/context") {
       // If mode is omitted, returns available retry options so the UI can
       // present a choice to the user.
       if (action === "retry" && req.method === "POST") {
-        const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
+        const run = engine.getRunDetail
+          ? await engine.getRunDetail(runId, { decorate: false })
+          : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;
@@ -24126,7 +24136,9 @@ if (path === "/api/agent-logs/context") {
 
       // ── GET /api/workflows/runs/:id/evaluate — run evaluation ───────
       if (action === "evaluate" && req.method === "GET") {
-        const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
+        const run = engine.getRunDetail
+          ? await engine.getRunDetail(runId, { decorate: false })
+          : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;
@@ -24155,7 +24167,9 @@ if (path === "/api/agent-logs/context") {
 
       // ── GET /api/workflows/runs/:id/snapshots — list snapshots ──────
       if (action === "snapshots" && req.method === "GET") {
-        const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
+        const run = engine.getRunDetail
+          ? await engine.getRunDetail(runId, { decorate: false })
+          : null;
         const workflowId = run?.workflowId || run?.detail?.data?._workflowId || null;
         const snapshots = typeof engine.listSnapshots === "function"
           ? await engine.listSnapshots(workflowId)
@@ -24185,7 +24199,9 @@ if (path === "/api/agent-logs/context") {
 
       // ── POST /api/workflows/runs/:id/remediate — apply fix actions ──
       if (action === "remediate" && req.method === "POST") {
-        const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
+        const run = engine.getRunDetail
+          ? await engine.getRunDetail(runId, { decorate: false })
+          : null;
         if (!run) {
           jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
           return;

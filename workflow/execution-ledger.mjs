@@ -43,6 +43,16 @@ function isPathInside(parentPath, childPath) {
 
 function normalizeLedgerDocument(runId, doc = {}) {
   const governanceState = extractGovernanceState(doc);
+  const events = Array.isArray(doc.events) ? doc.events : [];
+  const latestEvent = events.at(-1) || null;
+  const terminalEvent = [...events].reverse().find((event) => (
+    String(event?.eventType || "").trim() === "run.end"
+    || String(event?.eventType || "").trim() === "run.error"
+    || String(event?.eventType || "").trim() === "run.cancelled"
+  )) || null;
+  const resolvedStatus = terminalEvent?.status || latestEvent?.status || doc.status || null;
+  const resolvedUpdatedAt = latestEvent?.timestamp || doc.updatedAt || doc.startedAt || null;
+  const resolvedEndedAt = terminalEvent?.timestamp || doc.endedAt || null;
   return {
     version: 3,
     runId,
@@ -54,9 +64,9 @@ function normalizeLedgerDocument(runId, doc = {}) {
     retryMode: doc.retryMode || null,
     runKind: doc.runKind || null,
     startedAt: doc.startedAt || null,
-    endedAt: doc.endedAt || null,
-    status: doc.status || null,
-    updatedAt: doc.updatedAt || null,
+    endedAt: resolvedEndedAt,
+    status: resolvedStatus,
+    updatedAt: resolvedUpdatedAt,
     goalAncestry: governanceState.goalAncestry || [],
     primaryGoalId: governanceState.primaryGoalId || null,
     primaryGoalTitle: governanceState.primaryGoalTitle || null,
@@ -67,7 +77,7 @@ function normalizeLedgerDocument(runId, doc = {}) {
     executionPolicy: governanceState.executionPolicy || null,
     budgetOutcome: governanceState.budgetOutcome || null,
     policyOutcome: governanceState.policyOutcome || null,
-    events: Array.isArray(doc.events) ? doc.events : [],
+    events,
   };
 }
 
@@ -814,6 +824,8 @@ export class WorkflowExecutionLedger {
   }
 
   buildRunGraph(runId) {
+    const cachedGraph = this._readCached(this._runGraphCache, runId);
+    if (cachedGraph) return cachedGraph;
     const family = this.getRunFamily(runId);
     if (!family.length) return null;
 
@@ -1021,7 +1033,7 @@ export class WorkflowExecutionLedger {
       return String(left?.executionId || "").localeCompare(String(right?.executionId || ""));
     });
 
-    return {
+    const graph = {
       requestedRunId: requested?.runId || null,
       rootRunId,
       runs,
@@ -1029,6 +1041,9 @@ export class WorkflowExecutionLedger {
       timeline,
       executions,
     };
+    this._writeCached(this._runGraphCache, runId, graph);
+    if (rootRunId) this._writeCached(this._runGraphCache, rootRunId, graph);
+    return graph;
   }
 
   diffRunGraphs(baseRunId, comparisonRunId) {
@@ -1144,6 +1159,7 @@ export class WorkflowExecutionLedger {
         console.warn(`${STATE_LEDGER_TAG} workflow run sync failed: ${String(err?.message || err)}`);
       }
     }
+    this._invalidateRunCaches(runId, merged.rootRunId || runId);
     return merged;
   }
 
@@ -1266,6 +1282,7 @@ export class WorkflowExecutionLedger {
         console.warn(`${STATE_LEDGER_TAG} workflow event sync failed: ${String(err?.message || err)}`);
       }
     }
+    this._invalidateRunCaches(runId, ledger.rootRunId || runId);
     return payload;
   }
 }
