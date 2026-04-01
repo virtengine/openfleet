@@ -334,6 +334,7 @@ import {
   readActiveHarnessState,
   readHarnessArtifact,
   readHarnessRunRecord,
+  readHarnessRunRecordById,
   readHarnessSourceFromPath,
   summarizeHarnessRuns,
   shouldEnforceHarnessValidation,
@@ -5802,6 +5803,9 @@ function buildPersistedHarnessRunSummary(runRecord = {}, runPath = null) {
 function hydrateHarnessRunListItems(entries = []) {
   return (Array.isArray(entries) ? entries : []).map((entry) => {
     if (entry?.active === true) return entry;
+    if (entry?.runRecord && typeof entry.runRecord === "object") {
+      return buildPersistedHarnessRunSummary(entry.runRecord, entry.runPath || null);
+    }
     try {
       const runPath = String(entry?.runPath || "").trim()
         || resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${String(entry?.runId || "").trim()}.json`);
@@ -24209,7 +24213,12 @@ if (path === "/api/agent-logs/context") {
       }
 
       // ── GET /api/workflows/runs/:id ─────────────────────────────────
-      const run = engine.getRunDetail ? await engine.getRunDetail(runId) : null;
+      const decorateRunDetail = ["1", "true", "yes", "on"].includes(
+        String(url.searchParams.get("decorate") || "").trim().toLowerCase(),
+      );
+      const run = engine.getRunDetail
+        ? await engine.getRunDetail(runId, { decorate: decorateRunDetail })
+        : null;
       if (!run) {
         jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
         return;
@@ -25889,7 +25898,7 @@ if (path === "/api/agent-logs/context") {
   if (harnessRunEventsMatch && req.method === "GET") {
     try {
       const runId = decodeURIComponent(harnessRunEventsMatch[1]);
-      const run = getActiveHarnessRunSnapshot(runId) || readHarnessRunRecord(resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`));
+      const run = getActiveHarnessRunSnapshot(runId) || readHarnessRunRecordById(resolveUiConfigDir(), runId);
       const payload = listHarnessRunEvents(run, {
         limit: Number(url.searchParams.get("limit")) || 120,
         direction: url.searchParams.get("direction") || "asc",
@@ -25914,11 +25923,10 @@ if (path === "/api/agent-logs/context") {
       const runId = decodeURIComponent(harnessRunMatch[1]);
       const activeRun = getActiveHarnessRunSnapshot(runId);
       const run = activeRun || (() => {
-        const runPath = resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`);
-        const record = readHarnessRunRecord(runPath);
+        const record = readHarnessRunRecordById(resolveUiConfigDir(), runId);
         return {
           ...record,
-          ...buildPersistedHarnessRunSummary(record, runPath),
+          ...buildPersistedHarnessRunSummary(record, null),
         };
       })();
       const eventSummary = buildHarnessEventSummary(run?.events);
@@ -25941,8 +25949,7 @@ if (path === "/api/agent-logs/context") {
   if (harnessReplayMatch && req.method === "POST") {
     try {
       const sourceRunId = decodeURIComponent(harnessReplayMatch[1]);
-      const sourceRunPath = resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${sourceRunId}.json`);
-      const sourceRun = readHarnessRunRecord(sourceRunPath);
+      const sourceRun = readHarnessRunRecordById(resolveUiConfigDir(), sourceRunId);
       const body = await readJsonBody(req);
       const replayPayload = await executeHarnessRunRequest({
         ...(body && typeof body === "object" ? body : {}),
@@ -26033,7 +26040,7 @@ if (path === "/api/agent-logs/context") {
       let persistedRun = null;
       if (!activeState) {
         try {
-          persistedRun = readHarnessRunRecord(resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`));
+          persistedRun = readHarnessRunRecordById(resolveUiConfigDir(), runId);
         } catch {
           persistedRun = null;
         }
@@ -26180,7 +26187,7 @@ if (path === "/api/agent-logs/context") {
       const activeState = activeHarnessRuns.get(runId);
       if (!activeState) {
         try {
-          readHarnessRunRecord(resolve(resolveUiConfigDir(), ".cache", "harness", "runs", `${runId}.json`));
+          readHarnessRunRecordById(resolveUiConfigDir(), runId);
           jsonResponse(res, 200, { ok: true, runId, stopped: false, active: false, stopRequested: false });
         } catch (error) {
           jsonResponse(res, 404, { ok: false, error: error.message });

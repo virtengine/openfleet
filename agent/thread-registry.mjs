@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
@@ -26,6 +29,9 @@ function uniqueStrings(values) {
 function nowIso() {
   return new Date().toISOString();
 }
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export function createThreadId(prefix = "thread") {
   const normalized = toTrimmedString(prefix).replace(/[^a-z0-9_-]+/gi, "-").toLowerCase() || "thread";
@@ -145,6 +151,72 @@ export const THREAD_MAX_ABSOLUTE_AGE_MS = 24 * 60 * 60 * 1000;
 export const threadRegistry = new Map();
 
 const PERSISTENT_THREAD_SDKS = new Set(["codex", "claude", "copilot", "gemini", "opencode"]);
+let threadRegistryLoaded = false;
+let threadRegistryLoadPromise = null;
+
+function resolveThreadRegistryFile() {
+  const testCacheDir = toTrimmedString(process.env.BOSUN_TEST_CACHE_DIR || "");
+  return testCacheDir
+    ? resolve(testCacheDir, "thread-registry.json")
+    : resolve(__dirname, "..", "logs", "thread-registry.json");
+}
+
+function normalizePersistedThreadRecord(taskKey, record = {}, now = Date.now()) {
+  const sdk = toTrimmedString(record?.sdk || "").toLowerCase();
+  const createdAt = Number(record?.createdAt || now);
+  const lastUsedAt = Number(record?.lastUsedAt || createdAt || now);
+  const threadId = toTrimmedString(record?.threadId || "");
+  const turnCount = Number(record?.turnCount || 0);
+  const alive = record?.alive !== false
+    && !!threadId
+    && sdkSupportsPersistentThreads(sdk);
+  return {
+    ...toPlainObject(record),
+    sdk,
+    taskKey: toTrimmedString(record?.taskKey || taskKey || "") || null,
+    threadId: threadId || null,
+    cwd: toTrimmedString(record?.cwd || "") || null,
+    turnCount: Number.isFinite(turnCount) ? turnCount : 0,
+    createdAt: Number.isFinite(createdAt) ? createdAt : now,
+    lastUsedAt: Number.isFinite(lastUsedAt) ? lastUsedAt : now,
+    lastError: toTrimmedString(record?.lastError || "") || null,
+    alive,
+  };
+}
+
+function shouldPersistThreadRecord(record = {}, now = Date.now()) {
+  const normalized = normalizePersistedThreadRecord(record?.taskKey, record, now);
+  if (!normalized.alive) return false;
+  if (!normalized.threadId) return false;
+  if (!sdkSupportsPersistentThreads(normalized.sdk)) return false;
+  if (normalized.turnCount >= MAX_THREAD_TURNS) return false;
+  if (now - normalized.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS) return false;
+  if (now - normalized.lastUsedAt > THREAD_MAX_AGE_MS) return false;
+  return true;
+}
+
+function loadThreadRegistryFromDisk() {
+  const registryFile = resolveThreadRegistryFile();
+  if (!existsSync(registryFile)) {
+    return { pruned: 0, loaded: 0 };
+  }
+  const raw = readFileSync(registryFile, "utf8");
+  const entries = JSON.parse(raw);
+  const now = Date.now();
+  let pruned = 0;
+  let loaded = 0;
+  threadRegistry.clear();
+  for (const [taskKey, record] of Object.entries(entries || {})) {
+    const normalized = normalizePersistedThreadRecord(taskKey, record, now);
+    if (!shouldPersistThreadRecord(normalized, now)) {
+      pruned += 1;
+      continue;
+    }
+    threadRegistry.set(taskKey, normalized);
+    loaded += 1;
+  }
+  return { pruned, loaded };
+}
 
 export function createThreadRegistry(options = {}) {
   const threads = new Map();
@@ -334,18 +406,48 @@ export function sdkSupportsPersistentThreads(sdk) {
 }
 
 export async function ensureThreadRegistryLoaded() {
+  if (threadRegistryLoaded) return threadRegistry;
+  if (!threadRegistryLoadPromise) {
+    threadRegistryLoadPromise = Promise.resolve()
+      .then(() => {
+        try {
+          const { pruned } = loadThreadRegistryFromDisk();
+          if (pruned > 0) {
+            return persistThreadRegistry();
+          }
+        } catch {
+          threadRegistry.clear();
+        }
+        return null;
+      })
+      .finally(() => {
+        threadRegistryLoaded = true;
+      });
+  }
+  await threadRegistryLoadPromise;
   return threadRegistry;
 }
 
 export async function persistThreadRegistry() {
+  const registryFile = resolveThreadRegistryFile();
+  mkdirSync(dirname(registryFile), { recursive: true });
+  const now = Date.now();
+  const persistedEntries = Object.fromEntries(
+    [...threadRegistry.entries()]
+      .map(([taskKey, record]) => [taskKey, normalizePersistedThreadRecord(taskKey, record, now)])
+      .filter(([, record]) => shouldPersistThreadRecord(record, now)),
+  );
+  writeFileSync(registryFile, JSON.stringify(persistedEntries, null, 2), "utf8");
   return {
     ok: true,
     count: threadRegistry.size,
+    filePath: registryFile,
   };
 }
 
 export function clearThreadRegistry() {
   threadRegistry.clear();
+  persistThreadRegistry().catch(() => {});
   return true;
 }
 
@@ -366,6 +468,7 @@ export function invalidateThread(taskKey) {
     lastError: toTrimmedString(record.lastError || "invalidated") || "invalidated",
     lastUsedAt: Date.now(),
   });
+  persistThreadRegistry().catch(() => {});
   return true;
 }
 
@@ -399,6 +502,9 @@ export function pruneAllExhaustedThreads() {
       invalidateThread(taskKey);
       pruned += 1;
     }
+  }
+  if (pruned > 0) {
+    persistThreadRegistry().catch(() => {});
   }
   return pruned;
 }

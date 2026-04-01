@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 
@@ -108,7 +108,7 @@ function buildSandboxContext(rootDir) {
 }
 
 function ensureDir(path) {
-  mkdirSync(path, { recursive: true });
+  fs.mkdirSync(path, { recursive: true });
 }
 
 function ensureSandboxFiles(context) {
@@ -121,9 +121,9 @@ function ensureSandboxFiles(context) {
   ensureDir(context.workflowDir);
   ensureDir(context.runsDir);
   ensureDir(context.cacheDir);
-  if (!existsSync(context.gitGlobalConfigPath)) {
+  if (!fs.existsSync(context.gitGlobalConfigPath)) {
     ensureDir(dirname(context.gitGlobalConfigPath));
-    writeFileSync(context.gitGlobalConfigPath, "", "utf8");
+    fs.writeFileSync(context.gitGlobalConfigPath, "", "utf8");
   }
 }
 

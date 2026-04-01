@@ -1484,6 +1484,51 @@ describe("WorkflowEngine - run history details", () => {
     }));
   });
 
+  it("backfills sparse paged run summaries from run detail files when summary fields are missing", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Sparse History Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, { taskId: "TASK-HISTORY-1" });
+    const pageBefore = engine.getRunHistoryPage(wf.id, { offset: 0, limit: 1 });
+    const runId = pageBefore.runs[0]?.runId;
+    expect(runId).toBeTruthy();
+
+    const indexPath = join(tmpDir, "runs", "index.json");
+    const index = JSON.parse(readFileSync(indexPath, "utf8"));
+    const nextIndex = index.map((entry) => (
+      entry?.runId === runId
+        ? {
+            ...entry,
+            duration: null,
+            endedAt: null,
+            nodeCount: null,
+            completedCount: null,
+            failedCount: null,
+            skippedCount: null,
+            triggerEvent: null,
+            triggerSource: null,
+          }
+        : entry
+    ));
+    writeFileSync(indexPath, JSON.stringify(nextIndex, null, 2), "utf8");
+
+    const page = engine.getRunHistoryPage(wf.id, { offset: 0, limit: 1 });
+    expect(page.runs[0]).toEqual(expect.objectContaining({
+      runId,
+      duration: expect.any(Number),
+      endedAt: expect.any(Number),
+      nodeCount: expect.any(Number),
+      triggerSource: "manual",
+    }));
+    expect(page.runs[0].duration).toBeGreaterThanOrEqual(0);
+    expect(page.runs[0].nodeCount).toBeGreaterThanOrEqual(1);
+    expect(page.runs[0].completedCount).toBeGreaterThanOrEqual(1);
+  });
+
   it("paginates global run history beyond the initial page size", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],

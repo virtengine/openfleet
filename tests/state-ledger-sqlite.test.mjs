@@ -23,7 +23,10 @@ import {
   getStateLedgerInfo,
   getTaskSnapshotFromStateLedger,
   getTaskTopologyFromStateLedger,
+  getHarnessRunFromStateLedger,
   getWorkflowRunFromStateLedger,
+  listHarnessRunEventsFromStateLedger,
+  listHarnessRunsFromStateLedger,
   listAuditEventsFromStateLedger,
   listArtifactsFromStateLedger,
   listKnowledgeEntriesFromStateLedger,
@@ -43,6 +46,7 @@ import {
   resolveStateLedgerPath,
   upsertSessionRecordToStateLedger,
   upsertStateLedgerKeyValue,
+  writeHarnessRunToStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
 
 vi.mock("../infra/presence.mjs", () => ({
@@ -137,7 +141,7 @@ describe("state ledger sqlite workflow integration", () => {
     expect(existsSync(dbPath)).toBe(true);
 
     const info = getStateLedgerInfo({ anchorPath: runsDir });
-    expect(info.schemaVersion).toBe(6);
+    expect(info.schemaVersion).toBe(7);
     expect(info.tables).toEqual(
       expect.arrayContaining([
         "agent_activity",
@@ -299,6 +303,77 @@ describe("state ledger sqlite workflow integration", () => {
         path: ".bosun/artifacts/evidence.json",
         sourceEventId: expect.any(String),
       }),
+    ]);
+  });
+
+  it("stores harness runs and events in sqlite for SQL-first API reads", async () => {
+    const repoRoot = makeTempDir("state-ledger-harness-");
+    const harnessRunsDir = join(repoRoot, ".bosun", ".cache", "harness", "runs");
+    mkdirSync(harnessRunsDir, { recursive: true });
+
+    writeHarnessRunToStateLedger({
+      runId: "harness-run-1",
+      taskId: "task-h-1",
+      taskKey: "harness:task-h-1",
+      actor: "api",
+      recordedAt: "2026-03-31T05:10:00.000Z",
+      startedAt: "2026-03-31T05:00:00.000Z",
+      finishedAt: "2026-03-31T05:10:00.000Z",
+      mode: "run",
+      dryRun: false,
+      sourceOrigin: "file",
+      sourcePath: "internal-harness.md",
+      artifactId: "artifact-h-1",
+      artifactPath: "artifact-h-1.json",
+      compiledProfile: { agentId: "harness-agent", name: "Harness Agent" },
+      result: { success: true, status: "completed" },
+      events: [
+        {
+          id: "h1-e1",
+          seq: 1,
+          timestamp: "2026-03-31T05:00:00.000Z",
+          type: "harness:stage-start",
+          stageId: "plan",
+          stageType: "plan",
+          status: "running",
+          category: "stage",
+        },
+        {
+          id: "h1-e2",
+          seq: 2,
+          timestamp: "2026-03-31T05:09:00.000Z",
+          type: "harness:approval-requested",
+          stageId: "gate",
+          stageType: "approval",
+          status: "pending",
+          reason: "Needs operator confirmation",
+          category: "control",
+        },
+      ],
+    }, { anchorPath: harnessRunsDir });
+
+    const listed = listHarnessRunsFromStateLedger({ anchorPath: harnessRunsDir, limit: 10 });
+    expect(listed).toEqual([
+      expect.objectContaining({
+        runId: "harness-run-1",
+        taskId: "task-h-1",
+        taskKey: "harness:task-h-1",
+      }),
+    ]);
+
+    const stored = getHarnessRunFromStateLedger("harness-run-1", { anchorPath: harnessRunsDir });
+    expect(stored).toEqual(expect.objectContaining({
+      runId: "harness-run-1",
+      taskId: "task-h-1",
+      compiledProfile: expect.objectContaining({ agentId: "harness-agent" }),
+      result: expect.objectContaining({ success: true, status: "completed" }),
+    }));
+    expect(stored.events).toHaveLength(2);
+
+    const events = listHarnessRunEventsFromStateLedger("harness-run-1", { anchorPath: harnessRunsDir });
+    expect(events.map((event) => event.type)).toEqual([
+      "harness:stage-start",
+      "harness:approval-requested",
     ]);
   });
 });

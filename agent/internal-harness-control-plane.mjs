@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
+import {
+  getHarnessRunFromStateLedger,
+  listHarnessRunsFromStateLedger,
+  writeHarnessRunToStateLedger,
+} from "../lib/state-ledger-sqlite.mjs";
 
 function ensureDir(dirPath) {
   mkdirSync(dirPath, { recursive: true });
@@ -23,6 +28,12 @@ export function resolveHarnessControlPlanePaths(configDir) {
     compiledDir: resolve(root, "compiled"),
     runsDir: resolve(root, "runs"),
     activeStatePath: resolve(root, "active-harness.json"),
+  };
+}
+
+function resolveHarnessLedgerOptions(configDir) {
+  return {
+    anchorPath: resolveHarnessControlPlanePaths(configDir).runsDir,
   };
 }
 
@@ -72,10 +83,29 @@ export function readActiveHarnessState(configDir) {
 
 export function readHarnessRunRecord(runPath) {
   const resolvedPath = resolve(String(runPath || ""));
+  const runId = basename(resolvedPath, ".json");
+  const configDir = resolve(dirname(resolvedPath), "..", "..", "..");
+  try {
+    const sqlRecord = getHarnessRunFromStateLedger(runId, resolveHarnessLedgerOptions(configDir));
+    if (sqlRecord) return sqlRecord;
+  } catch {
+    // fall back to legacy JSON record below
+  }
   if (!existsSync(resolvedPath)) {
     throw new Error(`Harness run record not found: ${runPath}`);
   }
   return JSON.parse(readFileSync(resolvedPath, "utf8"));
+}
+
+export function readHarnessRunRecordById(configDir, runId) {
+  const normalizedRunId = toTrimmedString(runId);
+  if (!normalizedRunId) {
+    throw new Error("Harness runId is required");
+  }
+  const sqlRecord = getHarnessRunFromStateLedger(normalizedRunId, resolveHarnessLedgerOptions(configDir));
+  if (sqlRecord) return sqlRecord;
+  const { runsDir } = resolveHarnessControlPlanePaths(configDir);
+  return readHarnessRunRecord(resolve(runsDir, `${normalizedRunId}.json`));
 }
 
 function buildHarnessRunSummary(runRecord) {
@@ -196,6 +226,11 @@ export function recordHarnessRun(runInput, options = {}) {
   };
   const runPath = resolve(paths.runsDir, `${runId}.json`);
   writeJson(runPath, runRecord);
+  try {
+    writeHarnessRunToStateLedger(runRecord, resolveHarnessLedgerOptions(options.configDir));
+  } catch {
+    // best effort during SQL migration; JSON record remains the fallback source
+  }
 
   const activeState = readActiveHarnessState(options.configDir);
   if (
@@ -217,11 +252,25 @@ export function recordHarnessRun(runInput, options = {}) {
 }
 
 export function listHarnessRuns(configDir, options = {}) {
-  const { runsDir } = resolveHarnessControlPlanePaths(configDir);
-  if (!existsSync(runsDir)) return [];
   const limit = Number.isFinite(Number(options.limit)) && Number(options.limit) > 0
     ? Math.trunc(Number(options.limit))
     : 25;
+  try {
+    const sqlRecords = listHarnessRunsFromStateLedger({
+      ...resolveHarnessLedgerOptions(configDir),
+      limit,
+    });
+    if (Array.isArray(sqlRecords) && sqlRecords.length > 0) {
+      return sqlRecords.map((record) => ({
+        ...buildHarnessRunSummary(record),
+        runRecord: record,
+      }));
+    }
+  } catch {
+    // fall back to legacy JSON records below
+  }
+  const { runsDir } = resolveHarnessControlPlanePaths(configDir);
+  if (!existsSync(runsDir)) return [];
   const records = [];
   for (const fileName of readdirSync(runsDir)) {
     if (!fileName.endsWith(".json")) continue;

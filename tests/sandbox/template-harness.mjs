@@ -23,6 +23,8 @@ import {
   registerNodeType,
   getNodeType,
 } from "../../workflow/workflow-engine.mjs";
+import { _resetSingleton as resetSessionTracker } from "../../infra/session-tracker.mjs";
+import { _resetRuntimeAccumulatorForTests } from "../../infra/runtime-accumulator.mjs";
 import { installTemplate, installTemplateSet, WORKFLOW_TEMPLATES } from "../../workflow/workflow-templates.mjs";
 import { createExecSandbox } from "./exec-sandbox.mjs";
 
@@ -185,6 +187,13 @@ export function createTemplateHarness(templateId, scenario = {}, varOverrides = 
   const tmpDir = mkdtempSync(join(tmpdir(), `wf-sandbox-${templateId.slice(0, 20)}-`));
   const execSandbox = createExecSandbox(scenario);
   const services    = createFixtureServices(scenario);
+  const debugCleanup = process.env.BOSUN_TEST_HARNESS_DEBUG_CLEANUP === "1";
+  const logCleanupStep = (label, startedAt) => {
+    if (!debugCleanup) return Date.now();
+    const now = Date.now();
+    console.error(`[template-harness] ${templateId} cleanup ${label} +${now - startedAt}ms`);
+    return now;
+  };
 
   const engine = new WorkflowEngine({
     workflowDir: join(tmpDir, "workflows"),
@@ -228,18 +237,26 @@ export function createTemplateHarness(templateId, scenario = {}, varOverrides = 
       // can execute these sub-workflow chains without production errors.
       for (const [, wf] of engine._workflows) {
         for (const node of wf.nodes ?? []) {
-          if (
-            node.type === "action.execute_workflow" &&
-            typeof node.config?.input === "string" &&
-            node.config.input.trim().startsWith("(")
-          ) {
-            // Replace the JS expression with a {{variable}} object map.
-            // Extract identifiers referenced as $data?.KEY → {{ KEY }}.
-            const keys = [...node.config.input.matchAll(/\$data\??\.\s*(\w+)/g)]
-              .map((m) => m[1]);
-            node.config.input = Object.fromEntries(
-              keys.map((k) => [k, `{{${k}}}`]),
-            );
+          if (node.type === "action.execute_workflow") {
+            if (node.config?.mode === "dispatch") {
+              // Tests need deterministic teardown. Dispatch mode leaves child
+              // workflows running after the parent test completes.
+              node.config.mode = "sync";
+              node.config.timeoutMs = Math.min(Number(node.config.timeoutMs || 5000), 5000);
+            }
+
+            if (
+              typeof node.config?.input === "string" &&
+              node.config.input.trim().startsWith("(")
+            ) {
+              // Replace the JS expression with a {{variable}} object map.
+              // Extract identifiers referenced as $data?.KEY → {{ KEY }}.
+              const keys = [...node.config.input.matchAll(/\$data\??\.\s*(\w+)/g)]
+                .map((m) => m[1]);
+              node.config.input = Object.fromEntries(
+                keys.map((k) => [k, `{{${k}}}`]),
+              );
+            }
           }
         }
       }
@@ -269,6 +286,7 @@ export function createTemplateHarness(templateId, scenario = {}, varOverrides = 
     get services()    { return services; },
 
     cleanup() {
+      let cleanupTick = Date.now();
       try {
         for (const timer of engine._checkpointTimers?.values?.() || []) {
           clearTimeout(timer);
@@ -281,9 +299,23 @@ export function createTemplateHarness(templateId, scenario = {}, varOverrides = 
       } catch {
         // best-effort engine teardown for test isolation
       }
+      cleanupTick = logCleanupStep("engine", cleanupTick);
+      try {
+        resetSessionTracker({ persistDir: null });
+      } catch {
+        // best-effort singleton reset for workflow-heavy tests
+      }
+      cleanupTick = logCleanupStep("session-tracker", cleanupTick);
+      try {
+        _resetRuntimeAccumulatorForTests({ cacheDir: process.env.BOSUN_TEST_CACHE_DIR || null });
+      } catch {
+        // best-effort accumulator reset for workflow-heavy tests
+      }
+      cleanupTick = logCleanupStep("runtime-accumulator", cleanupTick);
       installed = null;
       allInstalled = false;
       try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+      logCleanupStep("rmSync", cleanupTick);
     },
 
     /** Assertion helpers */

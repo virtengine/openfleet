@@ -4536,7 +4536,9 @@ export class WorkflowEngine extends EventEmitter {
         ? Number(persistedResult.total) + activeOnlyCount
         : allRuns.length,
     );
-    const runs = allRuns.slice(offset, offset + limit);
+    const runs = allRuns
+      .slice(offset, offset + limit)
+      .map((run) => this._hydrateRunHistoryPageSummary(run));
     const nextOffset = offset + runs.length;
     return {
       items: runs,
@@ -4548,6 +4550,38 @@ export class WorkflowEngine extends EventEmitter {
       hasMore: nextOffset < total,
       nextOffset: nextOffset < total ? nextOffset : null,
     };
+  }
+
+  _hydrateRunHistoryPageSummary(run) {
+    const normalized = this._normalizeRunSummary(run);
+    if (!normalized?.runId) return normalized;
+    const hasDuration = Number.isFinite(Number(normalized.duration));
+    const hasNodeCount = Number.isFinite(Number(normalized.nodeCount));
+    const hasTrigger =
+      String(normalized.triggerSource || "").trim().length > 0
+      || String(normalized.triggerEvent || "").trim().length > 0;
+    const hasEndedAt = Number.isFinite(Number(normalized.endedAt));
+    const status = String(normalized.status || "").trim().toLowerCase();
+    const needsHydration =
+      !hasDuration
+      || !hasNodeCount
+      || !hasTrigger
+      || (status && status !== WorkflowStatus.RUNNING && !hasEndedAt);
+    if (!needsHydration) return normalized;
+
+    const hydrated = this.getRunDetail(normalized.runId, { decorate: false });
+    if (!hydrated) return normalized;
+    const {
+      detail: _detail,
+      ledger: _ledger,
+      runGraph: _runGraph,
+      plannerTimeline: _plannerTimeline,
+      proofBundle: _proofBundle,
+      executionTree: _executionTree,
+      auditActivity: _auditActivity,
+      ...summaryOnly
+    } = hydrated;
+    return this._normalizeRunSummary(summaryOnly) || normalized;
   }
 
   _hydrateRunIndexFromDetails(targetCount = MAX_PERSISTED_RUNS) {
