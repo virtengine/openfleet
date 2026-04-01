@@ -259,7 +259,7 @@ const RECOVERY_PROMPTS = {
   [SITUATION.PUSH_FAILURE]: (ctx) =>
     `git push failed. Common causes:\n` +
     `1. Pre-push hooks failed → fix lint/test/build errors and push again\n` +
-    `2. Remote rejected → git pull --rebase origin main && resolve conflicts && push\n` +
+    `2. Remote rejected → git pull --no-rebase origin main && resolve conflicts && push\n` +
     `3. Authentication → check git credentials\n` +
     `Error: ${(ctx.errorOutput || "").slice(0, 1000)}`,
 
@@ -269,8 +269,8 @@ const RECOVERY_PROMPTS = {
     `Fix ALL errors (lint, vet, build, test), then push again. Do NOT use --no-verify.`,
 
   [SITUATION.REBASE_SPIRAL]: () =>
-    `You're stuck in a rebase loop. STOP rebasing and try:\n` +
-    `1. git rebase --abort\n` +
+    `You're stuck in a sync loop. STOP rebasing and try:\n` +
+    `1. git merge --abort\n` +
     `2. git stash (save any local changes)\n` +
     `3. git fetch origin && git merge origin/main --no-edit\n` +
     `4. If merge conflicts, resolve them manually\n` +

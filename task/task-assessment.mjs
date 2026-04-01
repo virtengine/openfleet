@@ -35,6 +35,12 @@ const VALID_ACTIONS = new Set([
   "noop", // No action needed
 ]);
 
+function normalizeUpstreamRef(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "origin/main";
+  return raw.replace(/^refs\/remotes\//i, "").replace(/^remotes\//i, "");
+}
+
 // ── Dedup / rate limiting ───────────────────────────────────────────────────
 
 /** @type {Map<string, number>} taskId → last assessment timestamp */
@@ -276,8 +282,8 @@ Respond with ONLY a JSON object:
 \`\`\`json
 {
   "action": "reprompt_same",
-  "prompt": "The rebase onto origin/staging failed with conflicts in go.sum and pnpm-lock.yaml. Run 'git checkout --theirs go.sum pnpm-lock.yaml && git add go.sum pnpm-lock.yaml && git rebase --continue' to resolve. Then run tests and push.",
-  "reason": "Rebase conflict on auto-resolvable lock files. Agent can fix in current session."
+  "prompt": "The merge with origin/staging failed with conflicts in go.sum and pnpm-lock.yaml. Run 'git checkout --theirs go.sum pnpm-lock.yaml && git add go.sum pnpm-lock.yaml && git merge --continue' to resolve. Then run tests and push.",
+  "reason": "Merge conflict on auto-resolvable lock files. Agent can fix in current session."
 }
 \`\`\`
 
@@ -702,7 +708,7 @@ export function quickAssess(ctx) {
       return {
         success: true,
         action: "reprompt_same",
-        prompt: `Rebase onto ${ctx.upstreamBranch || "upstream"} failed with conflicts in auto-resolvable files. Run:\n${instructions.join("\n")}\nThen run: git rebase --continue\nAfter that, run tests and push.`,
+        prompt: `Merge with ${ctx.upstreamBranch || "upstream"} failed with conflicts in auto-resolvable files. Run:\n${instructions.join("\n")}\nThen run: git merge --continue\nAfter that, run tests and push.`,
         reason: `All ${ctx.conflictFiles.length} conflicted files are auto-resolvable (lock files/generated)`,
         rawOutput: "quick_assess:auto_resolvable_conflicts",
       };
@@ -730,13 +736,14 @@ export function quickAssess(ctx) {
     };
   }
 
-  // ── PR merged downstream — always rebase first ───────────
+  // ── PR merged downstream — always merge-refresh first ───────────
   if (ctx.trigger === "pr_merged_downstream" && !ctx.rebaseError) {
+    const upstreamRef = normalizeUpstreamRef(ctx.upstreamBranch);
     return {
       success: true,
       action: "reprompt_same",
-      prompt: `A PR was just merged into your upstream branch (${ctx.upstreamBranch}). Please rebase your branch onto ${ctx.upstreamBranch} to incorporate the latest changes: git fetch origin && git rebase ${ctx.upstreamBranch}. Resolve any conflicts, then push.`,
-      reason: "Upstream branch updated — agent should rebase",
+      prompt: `A PR was just merged into your upstream branch (${upstreamRef}). Please rebase your branch onto the latest upstream changes: git fetch origin && git rebase ${upstreamRef}. Resolve any conflicts, continue the rebase, then run tests and push.`,
+      reason: "Upstream branch updated — agent should refresh via rebase",
       rawOutput: "quick_assess:downstream_rebase",
     };
   }

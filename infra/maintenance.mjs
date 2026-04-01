@@ -1152,7 +1152,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
       }
 
       // Truly diverged: local has unique commits AND is missing remote commits.
-      // Attempt rebase onto remote then push (checked-out branch only).
+      // Attempt merge-based integration onto remote then push (checked-out branch only).
       if (ahead > 0) {
         const statusCheck = spawnSync("git", ["status", "--porcelain"], {
           cwd: repoRoot,
@@ -1170,17 +1170,17 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           continue;
         }
         if (branch === currentBranch) {
-          const rebase = spawnSync(
+          const merge = spawnSync(
             "git",
-            ["rebase", remoteRef, "--quiet"],
+            ["merge", "--no-edit", remoteRef, "--quiet"],
             { cwd: repoRoot, encoding: "utf8", timeout: 60_000, windowsHide: true },
           );
-          if (rebase.status !== 0) {
-            spawnSync("git", ["rebase", "--abort"], {
+          if (merge.status !== 0) {
+            spawnSync("git", ["merge", "--abort"], {
               cwd: repoRoot, timeout: 10_000, windowsHide: true,
             });
             console.warn(
-              `[maintenance] rebase of '${branch}' onto ${remoteRef} failed (${ahead}↑ ${behind}↓) — skipping`,
+              `[maintenance] merge of '${branch}' with ${remoteRef} failed (${ahead}↑ ${behind}↓) — skipping`,
             );
             continue;
           }
@@ -1191,15 +1191,15 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           );
           if (push.status === 0) {
             logThrottledBranchSync(
-              `sync:${branch}:rebase-push-success`,
-              `[maintenance] rebased and pushed '${branch}' (was ${ahead}↑ ${behind}↓)`,
+              `sync:${branch}:merge-push-success`,
+              `[maintenance] merged and pushed '${branch}' (was ${ahead}↑ ${behind}↓)`,
               "info",
             );
             synced++;
           } else {
             logThrottledBranchSync(
-              `sync:${branch}:rebase-push-failed`,
-              `[maintenance] push after rebase of '${branch}' failed: ${(push.stderr || push.stdout || "").toString().trim()}`,
+              `sync:${branch}:merge-push-failed`,
+              `[maintenance] push after merge of '${branch}' failed: ${(push.stderr || push.stdout || "").toString().trim()}`,
               "warn",
             );
           }

@@ -565,7 +565,7 @@ export class ErrorDetector {
           prompt:
             "git push failed. Check the error output:\n" +
             "1. If pre-push hooks failed → fix lint/test/build errors, then push again\n" +
-            "2. If remote rejected → git pull --rebase origin main && resolve conflicts && push\n" +
+            "2. If remote rejected → git pull --no-rebase origin main && resolve conflicts && push\n" +
             "Do NOT use --no-verify.",
           reason: `Push failure (attempt ${errorCount}/3) — retry with fix prompt`,
           errorCount,

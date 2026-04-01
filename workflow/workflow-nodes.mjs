@@ -16279,7 +16279,7 @@ function refreshManagedWorktreeReuse(
       detectedIssues: [],
     };
   }
-  // Discard dirty tracked files before rebasing so the pull --rebase
+  // Discard dirty tracked files before pulling so the merge-based refresh
   // doesn't fail with "your local changes would be overwritten".
   try {
     const dirty = execGitArgsSync(["status", "--porcelain", "--untracked-files=no"], {
@@ -16299,7 +16299,7 @@ function refreshManagedWorktreeReuse(
   }
   let refreshError = "";
   try {
-    execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
+    execGitArgsSync(["pull", "--no-rebase", "origin", baseBranchShort], {
       cwd: worktreePath,
       encoding: "utf8",
       timeout: fetchTimeout,
@@ -20629,11 +20629,11 @@ registerBuiltinNodeType("action.push_branch", {
     properties: {
       worktreePath: { type: "string", description: "Working directory to push from" },
       branch: { type: "string", description: "Branch name being pushed" },
-      baseBranch: { type: "string", description: "Base branch to rebase onto" },
+      baseBranch: { type: "string", description: "Base branch to integrate from" },
       remote: { type: "string", default: "origin", description: "Remote name" },
       forceWithLease: { type: "boolean", default: true, description: "Use --force-with-lease" },
       skipHooks: { type: "boolean", default: false, description: "Skip git pre-push hooks (--no-verify) for non-managed repos only" },
-      rebaseBeforePush: { type: "boolean", default: true, description: "Rebase onto base before push" },
+      rebaseBeforePush: { type: "boolean", default: false, description: "Rebase onto base before push" },
       mergeBaseBeforePush: { type: "boolean", default: false, description: "Merge the base branch into the worktree before push so PR conflicts surface locally" },
       autoResolveMergeConflicts: { type: "boolean", default: false, description: "When merge-base validation conflicts, run an agent to resolve them before pushing" },
       conflictResolverSdk: { type: "string", enum: ["auto", "copilot", "codex", "claude", "opencode"], default: "auto", description: "SDK used for merge conflict resolution agent runs" },

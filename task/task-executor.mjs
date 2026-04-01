@@ -785,6 +785,7 @@ const INPROGRESS_RECOVERY_UNSTARTED_RESET_MS = 20 * 60 * 1000;
 /** Periodic in-progress recovery cadence while executor is running */
 const INPROGRESS_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 const INPROGRESS_RECOVERY_HISTORY_LIMIT = 12;
+const WORKFLOW_RUN_RECOVERY_GRACE_MS = 15 * 60 * 1000;
 
 function normalizeSelector(value) {
   return String(value || "")
@@ -1972,6 +1973,19 @@ function getTaskAgeMs(task) {
   const parsed = new Date(ts).getTime();
   if (!Number.isFinite(parsed)) return 0;
   return Math.max(0, Date.now() - parsed);
+}
+
+function parseTimestampMs(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = new Date(value).getTime();
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 0;
 }
 
 function parseTaskTimestamp(value) {
@@ -4346,7 +4360,11 @@ class TaskExecutor {
           workflowOwnerlessResetCount++;
           continue;
         }
-        if (hasWorkflowRun || hasThread) {
+        const hasRecentWorkflowRunEvidence = this._hasRecentWorkflowRunEvidence(
+          task,
+          internalTask,
+        );
+        if (hasWorkflowRun || hasRecentWorkflowRunEvidence || hasThread) {
           skippedForActiveClaim++;
           continue;
         }
@@ -4496,6 +4514,52 @@ class TaskExecutor {
       }
     }
     return taskIds;
+  }
+
+  _hasRecentWorkflowRunEvidence(task, internalTask = null) {
+    if (!this.workflowRunsDir) return false;
+    const latestRunId = String(
+      task?.topology?.latestRunId ||
+        internalTask?.topology?.latestRunId ||
+        task?.workflowRunId ||
+        task?.meta?.workflowRunId ||
+        task?.meta?.workflow?.runId ||
+        "",
+    ).trim();
+    if (!latestRunId) return false;
+
+    const detailPath = resolve(this.workflowRunsDir, `${latestRunId}.json`);
+    if (!existsSync(detailPath)) return false;
+
+    try {
+      const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+      const dagState = detail?.data?._dagState || detail?._dagState || null;
+      const status = String(dagState?.status || detail?.status || "")
+        .trim()
+        .toLowerCase();
+      const endedAtMs = Math.max(
+        parseTimestampMs(detail?.endedAt),
+        parseTimestampMs(dagState?.endedAt),
+      );
+      if (
+        endedAtMs > 0 ||
+        ["completed", "failed", "cancelled", "canceled", "blocked"].includes(status)
+      ) {
+        return false;
+      }
+
+      const lastActivityMs = Math.max(
+        parseTimestampMs(dagState?.updatedAt),
+        parseTimestampMs(dagState?.lastStatusAt),
+        parseTimestampMs(dagState?.createdAt),
+        parseTimestampMs(detail?.startedAt),
+      );
+      if (lastActivityMs <= 0) return false;
+
+      return Date.now() - lastActivityMs <= WORKFLOW_RUN_RECOVERY_GRACE_MS;
+    } catch {
+      return false;
+    }
   }
 
   _recordInProgressRecoveryRun(run) {

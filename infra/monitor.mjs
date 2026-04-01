@@ -399,7 +399,7 @@ function formatAgentAlert(alert) {
   if (alert.task_id) lines.push(`Task: ${alert.task_id}`);
   if (alert.executor) lines.push(`Executor: ${alert.executor}`);
   if (alert.recommendation) lines.push(`Recommendation: ${alert.recommendation}`);
-  if (alert.error_count) lines.push(`Errors: ${alert.error_count}`);
+      if (alert.error_count) lines.push(`Errors: ${alert.error_count} (merge conflicts)`);
   if (alert.idle_time_ms) {
     lines.push(`Idle: ${Math.round(alert.idle_time_ms / 1000)}s`);
   }
@@ -7662,7 +7662,7 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
       if (!attempt.branch) continue;
 
       console.log(
-        `[${tag}] rebasing task "${task.title}" (${attempt.id.substring(0, 8)}) onto ${mergedUpstreamBranch}`,
+        `[${tag}] refreshing task "${task.title}" (${attempt.id.substring(0, 8)}) onto ${mergedUpstreamBranch}`,
       );
 
       try {
@@ -7679,7 +7679,7 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
             status: "success",
           });
           console.log(
-            `[${tag}] ✓ rebased "${task.title}" (${attempt.id.substring(0, 8)}) onto ${mergedUpstreamBranch}`,
+            `[${tag}] ✓ refreshed "${task.title}" (${attempt.id.substring(0, 8)}) onto ${mergedUpstreamBranch}`,
           );
         } else {
           failedCount++;
@@ -7692,10 +7692,10 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
             error,
           });
           console.warn(
-            `[${tag}] ✗ rebase failed for "${task.title}" (${attempt.id.substring(0, 8)}): ${error}`,
+            `[${tag}] ✗ refresh failed for "${task.title}" (${attempt.id.substring(0, 8)}): ${error}`,
           );
 
-          // ── Run task assessment on rebase failure ──────────────
+          // ── Run task assessment on refresh failure ──────────────
           if (branchRouting?.assessWithSdk && agentPoolEnabled) {
             void runTaskAssessment({
               taskId: task.id,
@@ -7723,13 +7723,13 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
           error: err.message || String(err),
         });
         console.warn(
-          `[${tag}] error rebasing "${task.title}": ${err.message || err}`,
+          `[${tag}] error refreshing "${task.title}": ${err.message || err}`,
         );
       }
     }
 
     if (rebasedCount > 0 || failedCount > 0) {
-      const summary = `Downstream rebase after merge to ${mergedUpstreamBranch}: ${rebasedCount} rebased, ${failedCount} failed`;
+      const summary = `Downstream refresh after merge to ${mergedUpstreamBranch}: ${rebasedCount} refreshed, ${failedCount} failed`;
       console.log(`[${tag}] ${summary}`);
       void sendTelegramMessage(
         `:refresh: ${summary}\n${rebaseResults.map((r) => `  ${r.status === "success" ? "✓" : "✗"} ${r.taskTitle}`).join("\n")}`,
@@ -8631,8 +8631,8 @@ function resolveAttemptTargetBranch(attempt, task) {
  * Intelligent multi-step PR creation:
  *
  *   1. Check branch-status → decide action
- *   2. Stale detection: 0 commits AND far behind → rebase first, archive on error
- *   3. Rebase onto main (resolve conflicts automatically if possible)
+ *   2. Stale detection: 0 commits AND far behind → merge-refresh first, archive on error
+ *   3. Refresh onto main (resolve conflicts automatically if possible)
  *   4. Create PR via /pr endpoint
  *   5. Distinguish fast-fail (<2s = worktree issue) vs slow-fail (>30s = prepush)
  *   6. On prepush failure → prompt agent to fix lint/test issues and push
@@ -8748,7 +8748,7 @@ async function smartPRFlow(attemptId, shortId, status) {
       commits_ahead === 0 && !has_uncommitted_changes && commits_behind > 10;
     if (isStale) {
       console.warn(
-        `[monitor] ${tag}: stale attempt — 0 commits, ${commits_behind} behind. Trying rebase first.`,
+        `[monitor] ${tag}: stale attempt — 0 commits, ${commits_behind} behind. Trying merge refresh first.`,
       );
     }
 
@@ -8796,14 +8796,14 @@ async function smartPRFlow(attemptId, shortId, status) {
     }
     const targetBranch = resolveAttemptTargetBranch(attempt, taskData);
 
-    // ── Step 3: Rebase onto target branch ────────────────────────
-    console.log(`[monitor] ${tag}: rebasing onto ${targetBranch}...`);
+    // ── Step 3: Refresh onto target branch ───────────────────────
+    console.log(`[monitor] ${tag}: refreshing onto ${targetBranch}...`);
     const rebaseResult = await rebaseAttempt(attemptId, targetBranch);
 
     if (rebaseResult && !rebaseResult.success) {
       if (isStale) {
         console.warn(
-          `[monitor] ${tag}: stale attempt rebase failed — archiving and reattempting next cycle.`,
+          `[monitor] ${tag}: stale attempt refresh failed — archiving and reattempting next cycle.`,
         );
         await archiveAttempt(attemptId);
         const freshStarted = await attemptFreshSessionRetry(
@@ -8825,7 +8825,7 @@ async function smartPRFlow(attemptId, shortId, status) {
       if (errorData?.type === "merge_conflicts") {
         const files = errorData.conflicted_files || [];
         console.warn(
-          `[monitor] ${tag}: rebase conflicts in ${files.join(", ")} — attempting smart auto-resolve`,
+          `[monitor] ${tag}: merge conflicts in ${files.join(", ")} — attempting smart auto-resolve`,
         );
 
         // Classify conflicted files
@@ -8874,7 +8874,7 @@ async function smartPRFlow(attemptId, shortId, status) {
                 return `  - ${f}: Resolve MANUALLY (inspect both sides, merge intelligently)`;
               })
               .join("\n");
-            const prompt = `You are fixing a git rebase conflict in a worktree.
+            const prompt = `You are fixing a git merge conflict in a worktree.
 Worktree: ${worktreeDir || "(unknown)"}
 Attempt: ${shortId}
 Conflicted files: ${files.join(", ") || "(unknown)"}
@@ -8888,9 +8888,9 @@ Instructions:
    - THEIRS: git checkout --theirs -- <file> && git add <file>
    - OURS: git checkout --ours -- <file> && git add <file>
    - MANUAL: Open the file, remove conflict markers (<<<< ==== >>>>), merge both sides intelligently, then git add <file>
-3) After resolving all files, run: git rebase --continue
+3) After resolving all files, run: git merge --continue
 4) If more conflicts appear, repeat steps 2-3.
-5) Once rebase completes, push the branch: git push --force-with-lease
+5) Once the merge completes, push the branch: git push --force-with-lease
 6) Verify the build still passes if possible.
 Return a short summary of what you did and any files that needed manual resolution.`;
             const codexResult = await runCodexExec(
@@ -8913,7 +8913,7 @@ Return a short summary of what you did and any files that needed manual resoluti
               );
               if (telegramToken && telegramChatId) {
                 void sendTelegramMessage(
-                  `:check: Codex resolved rebase conflicts for ${shortId}. Log: ${logPath}`,
+                  `:check: Codex resolved merge conflicts for ${shortId}. Log: ${logPath}`,
                 );
               }
               return;
@@ -8933,7 +8933,7 @@ Return a short summary of what you did and any files that needed manual resoluti
           );
           if (telegramToken && telegramChatId) {
             void sendTelegramMessage(
-              `:alert: Attempt ${shortId} has unresolvable rebase conflicts: ${files.join(", ")}`,
+              `:alert: Attempt ${shortId} has unresolvable merge conflicts: ${files.join(", ")}`,
             );
           }
           if (primaryAgentReady) {
@@ -9094,7 +9094,7 @@ Return a short summary of what you did and any files that needed manual resoluti
             `1. Navigate to the worktree for this branch\n` +
             `2. Fix any lint, test, or build errors\n` +
             `3. Commit the fixes\n` +
-            `4. Rebase onto main: git pull --rebase origin main\n` +
+            `4. Merge main into the branch: git pull --no-rebase origin main\n` +
             `5. Push: git push --set-upstream origin ${attempt?.branch || shortId}\n` +
             `6. Create a PR targeting main`,
           { timeoutMs: 15 * 60 * 1000 },
@@ -14230,20 +14230,19 @@ async function syncDivergedWorktrees() {
       if (ahead === 0 || behind === 0) continue;
 
       console.log(
-        `[monitor:worktree-sync] ${branch} diverged: ${ahead} ahead, ${behind} behind — rebasing and pushing`,
+        `[monitor:worktree-sync] ${branch} diverged: ${ahead} ahead, ${behind} behind — merging and pushing`,
       );
 
-      // Rebase local onto remote tracking ref to incorporate remote commits
-      let rebased = false;
+      // Merge local with remote tracking ref to incorporate remote commits
+      let merged = false;
       try {
-        await execAsync(`git rebase ${remoteRef}`, {
+        await execAsync(`git merge --no-edit ${remoteRef}`, {
           cwd: wtPath, timeout: 60_000,
         });
-        rebased = true;
-      } catch (rebaseErr) {
-        try { await execAsync("git rebase --abort", { cwd: wtPath, timeout: 10_000 }); } catch { /* ok */ }
+        merged = true;
+      } catch (mergeErr) {
         console.warn(
-          `[monitor:worktree-sync] ${branch} rebase conflict — skipping push: ${rebaseErr.message?.slice(0, 200)}`,
+          `[monitor:worktree-sync] ${branch} merge conflict — skipping push: ${mergeErr.message?.slice(0, 200)}`,
         );
         failed++;
         continue;
@@ -14254,7 +14253,7 @@ async function syncDivergedWorktrees() {
         const headSha = (await execAsync("git rev-parse HEAD", { cwd: wtPath, timeout: 5_000 })).trim();
         const mainSha = (await execAsync("git rev-parse origin/main", { cwd: wtPath, timeout: 5_000 })).trim();
         if (headSha === mainSha) {
-          console.warn(`[monitor:worktree-sync] ${branch} HEAD matches origin/main after rebase — aborting push to prevent PR wipe`);
+          console.warn(`[monitor:worktree-sync] ${branch} HEAD matches origin/main after merge — aborting push to prevent PR wipe`);
           failed++;
           continue;
         }

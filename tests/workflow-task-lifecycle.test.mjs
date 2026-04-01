@@ -4204,12 +4204,13 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "run-agent-implement" && e.target === "claim-stolen")).toBeDefined();
   });
 
-  it("push-branch has baseBranch and rebaseBeforePush config", () => {
+  it("push-branch uses merge-based push config", () => {
     const t = getTemplate("template-task-lifecycle");
     const pushNode = t.nodes.find((n) => n.id === "push-branch");
     expect(pushNode).toBeDefined();
     expect(pushNode.config.baseBranch).toBe("{{baseBranch}}");
-    expect(pushNode.config.rebaseBeforePush).toBe(true);
+    expect(pushNode.config.rebaseBeforePush).toBe(false);
+    expect(pushNode.config.mergeBaseBeforePush).toBe(true);
     expect(pushNode.config.emptyDiffGuard).toBe(true);
   });
 

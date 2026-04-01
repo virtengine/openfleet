@@ -348,7 +348,7 @@ function normalizeSingleLine(value) {
 }
 
 function isGenericGitPullFailure(text) {
-  return /^command failed:\s*git pull --rebase$/i.test(
+  return /^command failed:\s*git pull --no-rebase$/i.test(
     normalizeSingleLine(text),
   );
 }
@@ -363,11 +363,11 @@ function buildGitPullFailureDetails(err, repoPath, childProcess) {
   if (err?.signal) parts.push(`signal=${err.signal}`);
   if (err?.code) parts.push(`code=${err.code}`);
 
-  let details = preferred || stderr || stdout || message || "git pull --rebase failed";
+  let details = preferred || stderr || stdout || message || "git pull --no-rebase failed";
   if (!details || isGenericGitPullFailure(details)) {
     const fallback = message && !isGenericGitPullFailure(message)
       ? message
-      : "git pull --rebase failed";
+      : "git pull --no-rebase failed";
     details = fallback;
     // Generic execSync failures can omit stderr; include concise repo state.
     try {
@@ -968,7 +968,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       }
     }
     try {
-      childProcess.execSync("git pull --rebase", {
+      childProcess.execSync("git pull --no-rebase", {
         cwd: repoPath,
         encoding: "utf8",
         timeout: 120000,
@@ -981,7 +981,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       results.push({
         name: repo.name,
         success: false,
-        error: details || "git pull --rebase failed",
+        error: details || "git pull --no-rebase failed",
       });
     }
   }

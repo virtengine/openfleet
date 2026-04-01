@@ -245,13 +245,17 @@ describe("monitor workflow startup guards", () => {
 describe("task-executor in-progress recovery owner_mismatch guards", () => {
   const executorSource = readFileSync(resolve(process.cwd(), "task/task-executor.mjs"), "utf8");
 
-  it("skips resumable dispatch in workflow-owned mode when an active workflow run or agent thread is alive", () => {
+  it("skips resumable dispatch in workflow-owned mode when workflow liveness evidence exists", () => {
     // When workflowOwnsTaskLifecycle is true and either the workflow run
-    // already exists or the agent thread is still alive,
+    // already exists, recent workflow-run detail proves the DAG is still live,
+    // or the agent thread is still alive,
     // recovery must NOT add the task to resumable (which calls executeTask()
     // and fires task.assigned, launching a second competing workflow run).
     expect(executorSource).toContain("if (this.workflowOwnsTaskLifecycle) {");
-    expect(executorSource).toContain("if (hasWorkflowRun || hasThread) {");
+    expect(executorSource).toContain("const hasRecentWorkflowRunEvidence =");
+    expect(executorSource).toContain(
+      "if (hasWorkflowRun || hasRecentWorkflowRunEvidence || hasThread) {",
+    );
     // The skip branch must appear BEFORE the resumable.push call
     const wfGuardPos = executorSource.indexOf("if (this.workflowOwnsTaskLifecycle) {");
     const resumablePushPos = executorSource.indexOf("resumable.push({ ...task, id });");

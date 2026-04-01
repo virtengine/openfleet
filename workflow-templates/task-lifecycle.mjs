@@ -305,12 +305,12 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("notify-validation-blocked", "notify.telegram", "Notify Validation Blocked", {
       message: "⚠️ Task \"{{taskTitle}}\" ({{taskId}}) blocked after repeated pre-PR validation failures.",
     }, { x: 460, y: 2420 }),
-    // ── SUCCESS PATH: Push branch (with rebase + empty-diff guard) ───────
+    // ── SUCCESS PATH: Push branch (with merge-base refresh + empty-diff guard) ───────
     node("push-branch", "action.push_branch", "Push Branch", {
       worktreePath: "{{worktreePath}}",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
-      rebaseBeforePush: true,
+      rebaseBeforePush: false,
       mergeBaseBeforePush: true,
       autoResolveMergeConflicts: true,
       conflictResolverSdk: "auto",

@@ -328,3 +328,49 @@
     1. restart Bosun on pinned roots so the `server/` change is live.
     2. re-check `/api/status` and `/api/telemetry/summary` against the live daemon for non-zero durable-runtime fields.
     3. verify Pulse and Telemetry cards in the authenticated browser context with Playwright CLI.
+
+- Follow-up on 2026-04-02 (systemic throughput fixes in current working tree):
+  - Confirmed currently applied source changes:
+    - `task/task-executor.mjs`
+    - `tests/task-executor.test.mjs`
+    - `workflow/workflow-nodes.mjs`
+    - `tests/workflow-task-lifecycle.test.mjs`
+    - `task/task-assessment.mjs`
+    - `tests/monitor-workflow-startup-guards.test.mjs`
+  - Workflow-owned recovery guard:
+    - restored and revalidated the task-executor fallback that treats recent workflow-run detail (`topology.latestRunId` -> `.bosun/workflow-runs/<runId>.json`) as valid liveness evidence even when `_active-runs.json` is briefly empty.
+    - prevents false `inprogress -> todo` demotions caused by transient active-run index gaps.
+    - focused validation passed:
+      - `node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs tests/task-executor.test.mjs`
+      - result: `81/81` passing
+  - Downstream refresh routing fix:
+    - full-suite failure exposed a real prompt/runtime bug in `task/task-assessment.mjs`.
+    - `quickAssess({ trigger: "pr_merged_downstream" })` used merge-oriented wording and could emit `origin/origin/main` when `upstreamBranch` already included `origin/main`.
+    - fixed by normalizing the upstream ref and issuing rebase-oriented refresh guidance.
+    - focused validation passed:
+      - `node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs tests/branch-routing.test.mjs tests/task-assessment.test.mjs`
+      - result: `83/83` passing
+  - Generated demo-defaults drift fix:
+    - full-suite failure exposed stale generated assets, not logic failure.
+    - regenerated:
+      - `ui/demo-defaults.js`
+      - `site/ui/demo-defaults.js`
+    - command:
+      - `node tools/generate-demo-defaults.mjs`
+    - focused validation passed:
+      - `node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs tests/demo-defaults-sync.test.mjs`
+      - result: `2/2` passing
+  - Startup-guard coverage alignment:
+    - later full-suite failure was a stale source-text assertion in `tests/monitor-workflow-startup-guards.test.mjs`.
+    - test previously expected the old guard string `if (hasWorkflowRun || hasThread) {`.
+    - updated test to require the stronger fallback path:
+      - `hasRecentWorkflowRunEvidence`
+      - `if (hasWorkflowRun || hasRecentWorkflowRunEvidence || hasThread) {`
+    - focused validation passed:
+      - `node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs tests/monitor-workflow-startup-guards.test.mjs`
+      - result: `36/36` passing
+  - Global validation status during this pass:
+    - `npm run syntax:check` passed
+    - `npm run build` passed
+    - full `npm test` reruns progressed cleanly through grouped batches 1 through 7 after the above fixes
+    - next full-suite checkpoint reached grouped batch 8 before this handoff note was written; no new runtime defect had been patched beyond the stale startup-guard test at this checkpoint
