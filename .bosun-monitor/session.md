@@ -490,3 +490,41 @@
       - `records a context compression marker when returned items were summarized`
       - `retries codex locally before any failover`
       - `suppresses failover until repeated infrastructure failures`
+
+## 2026-04-02 - Run History loading and API resilience hardening
+
+- User-facing incident:
+  - clicking `Run History` rows could fail to open the selected run because run-detail fetches were not consistently workspace-scoped.
+  - run history and run-detail views did not clearly distinguish loading vs failure, which made backend restarts look like frozen UI.
+  - repeated `ERR_CONNECTION_REFUSED` / websocket reconnect churn was making the UI feel laggy and noisy during backend interruptions.
+  - library tab async loads were still vulnerable to late `setLoading(false)` after unmount, matching the `preact-hooks ... reading 'setState'` crash signature.
+- Source fixes applied:
+  - `ui/modules/api.js`
+  - `site/ui/modules/api.js`
+  - `ui/tabs/workflows.js`
+  - `site/ui/tabs/workflows.js`
+  - `ui/tabs/library.js`
+  - `site/ui/tabs/library.js`
+  - `tests/workflow-run-history-ui-regression.test.mjs`
+  - `tests/ui-connection-badge.test.mjs`
+  - `tests/library-agent-type-tools-regression.test.mjs`
+- Behavioral change:
+  - workflow run detail, retry, approval, cancel, copilot-context, and live-refresh requests now route through `buildWorkflowRunApiPath(...)` so the active workspace query is preserved across run history flows.
+  - run history now exposes explicit loading/error signals for both the run list and run details, with inline `CircularProgress` states and retry affordances instead of silent failures.
+  - API client now applies a short backend-unavailable cooldown after connection-refused / failed-fetch errors, dedupes repeated API-error toasts, and defers websocket reconnect attempts until the cooldown expires.
+  - library tab load requests now track mount/request liveness before mutating component state, preventing stale async completions from calling `setLoading(false)` after unmount.
+- Validation:
+  - focused tests passed:
+    - `npm test -- tests/workflow-run-history-ui-regression.test.mjs tests/ui-connection-badge.test.mjs tests/library-agent-type-tools-regression.test.mjs`
+  - build passed:
+    - `npm run build`
+  - full suite status:
+    - `npm test` still failed only in the pre-existing `tests/primary-agent.runtime.test.mjs` timeout cluster.
+    - observed failing cases:
+      - `falls back to pooled execution when active adapter is busy on another session`
+      - `records a context compression marker when returned items were summarized`
+      - `retries codex locally before any failover`
+      - `suppresses failover until repeated infrastructure failures`
+  - Playwright CLI:
+    - `npx --yes --package @playwright/cli playwright-cli --session bosun-smoke open https://192.168.0.183:4400 --persistent --profile output/playwright/profile`
+    - browser smoke reached the portal after bypassing the local certificate warning, but the session landed on `Unauthorized`, so authenticated end-to-end clicking of run history could not be completed from a fresh Playwright profile in this turn.

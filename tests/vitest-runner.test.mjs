@@ -148,11 +148,23 @@ describe("vitest-runner", () => {
     expect(prePushHook).toContain('node tools/vitest-runner.mjs "${serialized_runner_args[@]}"');
     expect(prePushHook).toContain('node tools/vitest-runner.mjs "${regular_runner_args[@]}"');
     expect(prePushHook).toContain('BOSUN_PREPUSH_RUN_PACKED_SMOKE');
+    expect(prePushHook).toContain('BOSUN_PREPUSH_INCLUDE_HEAVY');
+    expect(prePushHook).toContain('BOSUN_RUN_HEAVY_TESTS');
+    expect(prePushHook).toContain('tests/workflow-templates-e2e.test.mjs)');
+    expect(prePushHook).toContain('deferring heavyweight local suites to CI/default full runs');
     expect(prePushHook).toContain('tests/*workflow*e2e*.test.mjs)');
     expect(prePushHook).toContain('tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs)');
     expect(prePushHook).toContain('local -a slice=("${regular_tests[@]:$offset:$batch_size}")');
     expect(prePushHook).toContain('local -a slice=("${tests[@]:$offset:$batch_size}")');
     expect(prePushHook).not.toContain("node node_modules/vitest/vitest.mjs");
+  });
+
+  it("keeps the slow template full-pipeline execution opt-in for local runs", () => {
+    const source = readFileSync(resolve(repoRoot, "tests", "workflow-templates-e2e.test.mjs"), "utf8");
+
+    expect(source).toContain('process.env.CI === "true" || process.env.BOSUN_RUN_HEAVY_TESTS === "1"');
+    expect(source).toContain("const fullPipelineIt = runFullTemplatePipelineE2E ? it : it.skip;");
+    expect(source).toContain('fullPipelineIt("installs and executes every template in sequence without cross-contamination"');
   });
 
   it("detects direct execution for Windows-style script paths", () => {

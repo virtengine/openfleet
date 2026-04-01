@@ -355,7 +355,39 @@ while IFS= read -r test_file; do
   SORTED_TARGET_TESTS+=("$test_file")
 done < <(printf '%s\n' "${!TARGET_TESTS[@]}" | sort)
 
+should_include_deferred_local_suites() {
+  [ "${BOSUN_PREPUSH_INCLUDE_HEAVY:-0}" = "1" ] && return 0
+  [ "${BOSUN_RUN_HEAVY_TESTS:-0}" = "1" ] && return 0
+  return 1
+}
+
+is_deferred_local_suite() {
+  local test_file="$1"
+  case "$test_file" in
+    tests/workflow-templates-e2e.test.mjs)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+declare -a DEFERRED_LOCAL_TESTS=()
+if ! should_include_deferred_local_suites; then
+  declare -a FILTERED_TARGET_TESTS=()
+  for test_file in "${SORTED_TARGET_TESTS[@]}"; do
+    if is_deferred_local_suite "$test_file"; then
+      DEFERRED_LOCAL_TESTS+=("$test_file")
+      continue
+    fi
+    FILTERED_TARGET_TESTS+=("$test_file")
+  done
+  SORTED_TARGET_TESTS=("${FILTERED_TARGET_TESTS[@]}")
+fi
+
 if [ "${#SORTED_TARGET_TESTS[@]}" -eq 0 ]; then
+  if [ "${#DEFERRED_LOCAL_TESTS[@]}" -gt 0 ]; then
+    echo "[hooks] only heavyweight local suites matched; deferring to CI/default full runs (set BOSUN_PREPUSH_INCLUDE_HEAVY=1 or BOSUN_RUN_HEAVY_TESTS=1 to include them locally)"
+  fi
   echo "[hooks] no related tests found — pre-push passed ✓"
   exit 0
 fi
@@ -372,6 +404,11 @@ for test_file in "${SORTED_TARGET_TESTS[@]}"; do
       ;;
   esac
 done
+
+if [ "${#DEFERRED_LOCAL_TESTS[@]}" -gt 0 ]; then
+  echo "[hooks] deferring heavyweight local suites to CI/default full runs:"
+  printf '  - %s\n' "${DEFERRED_LOCAL_TESTS[@]}"
+fi
 
 echo "[hooks] running ${#SORTED_TARGET_TESTS[@]}/${TOTAL_TESTS} targeted tests…"
 

@@ -56,6 +56,7 @@ import {
   resetWorktreeManager,
   sanitizeBranchName,
   gitEnv,
+  fixGitConfigCorruption,
   TAG,
   DEFAULT_BASE_DIR,
   DEFAULT_MANAGED_TASK_BASE_DIR,
@@ -221,6 +222,44 @@ describe("worktree-manager", () => {
           else process.env[key] = value;
         }
       }
+    });
+  });
+
+  describe("fixGitConfigCorruption", () => {
+    it("repairs core.bare=true and unsets shared core.worktree", () => {
+      existsSync.mockImplementation((path) => String(path).replace(/\\/g, "/").endsWith("/.git/worktrees"));
+      spawnSync.mockImplementation((_cmd, args) => {
+        if (args?.[0] === "config" && args?.[1] === "--bool" && args?.[2] === "--get" && args?.[3] === "core.bare") {
+          return { status: 0, stdout: "true\n", stderr: "" };
+        }
+        if (args?.[0] === "config" && args?.[1] === "--local" && args?.[2] === "--get" && args?.[3] === "core.worktree") {
+          return { status: 0, stdout: "/wrong/worktree\n", stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+
+      fixGitConfigCorruption(REPO_ROOT);
+
+      expect(spawnSync).toHaveBeenCalledWith("git", ["config", "--local", "core.bare", "false"], expect.any(Object));
+      expect(spawnSync).toHaveBeenCalledWith("git", ["config", "--local", "--unset-all", "core.worktree"], expect.any(Object));
+    });
+
+    it("repairs shared core.worktree even when core.bare is already false", () => {
+      existsSync.mockImplementation((path) => String(path).replace(/\\/g, "/").endsWith("/.git/worktrees"));
+      spawnSync.mockImplementation((_cmd, args) => {
+        if (args?.[0] === "config" && args?.[1] === "--bool" && args?.[2] === "--get" && args?.[3] === "core.bare") {
+          return { status: 0, stdout: "false\n", stderr: "" };
+        }
+        if (args?.[0] === "config" && args?.[1] === "--local" && args?.[2] === "--get" && args?.[3] === "core.worktree") {
+          return { status: 0, stdout: "/wrong/worktree\n", stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+
+      fixGitConfigCorruption(REPO_ROOT);
+
+      expect(spawnSync).not.toHaveBeenCalledWith("git", ["config", "--local", "core.bare", "false"], expect.any(Object));
+      expect(spawnSync).toHaveBeenCalledWith("git", ["config", "--local", "--unset-all", "core.worktree"], expect.any(Object));
     });
   });
 

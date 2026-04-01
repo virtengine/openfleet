@@ -51,16 +51,6 @@ export function withLoadingTracked(fn) {
   return withDepthCounter("force", fn);
 }
 
-async function readApiErrorBody(response) {
-  const text = await response.text().catch(() => "");
-  if (!text) return { text: "", payload: null };
-  try {
-    return { text, payload: JSON.parse(text) };
-  } catch {
-    return { text, payload: null };
-  }
-}
-
 function resolveApiErrorMessage(status, text, payload) {
   if (payload && typeof payload === "object") {
     const message = String(
@@ -109,20 +99,6 @@ async function readApiErrorBody(response) {
   } catch {
     return { text, payload: null };
   }
-}
-
-function resolveApiErrorMessage(status, text, payload) {
-  if (payload && typeof payload === "object") {
-    const message = String(
-      payload.message || payload.detail || payload.reason || payload.error || "",
-    ).trim();
-    if (message) return message;
-  }
-  const normalizedText = String(text || "").trim();
-  if (normalizedText && !normalizedText.startsWith("{")) return normalizedText;
-  if (status === 401) return "Unauthorized.";
-  if (status === 403) return "Forbidden.";
-  return normalizedText || `Request failed (${status})`;
 }
 
 function createApiError(status, body = {}) {

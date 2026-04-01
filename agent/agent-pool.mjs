@@ -862,11 +862,6 @@ function clampTimerDelayMs(delayMs, label = "timer") {
   return clamped;
 }
 
-// Application-level guardrail for harness turn timeouts, independent of the
-// underlying Node.js timer maximum. This prevents user-controlled values from
-// keeping Codex threads alive for unbounded durations.
-const MAX_HARNESS_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
-
 function getFirstEventTimeoutMs(totalTimeoutMs) {
   return resolveCodexStreamSafety(totalTimeoutMs).firstEventTimeoutMs;
 }
@@ -1542,18 +1537,6 @@ function getSdkFallbackOrder() {
     const parsed = envOrder
       .split(",")
       .map((value) => normalizePoolSdkName(value))
-      .filter((value, index, arr) => SDK_ADAPTERS[value] && arr.indexOf(value) === index);
-    if (parsed.length > 0) return parsed;
-  }
-  return SDK_FALLBACK_ORDER;
-}
-
-function getSdkFallbackOrder() {
-  const envOrder = String(process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER || "").trim();
-  if (envOrder) {
-    const parsed = envOrder
-      .split(",")
-      .map((value) => String(value || "").trim().toLowerCase())
       .filter((value, index, arr) => SDK_ADAPTERS[value] && arr.indexOf(value) === index);
     if (parsed.length > 0) return parsed;
   }
