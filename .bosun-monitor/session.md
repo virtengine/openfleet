@@ -460,6 +460,14 @@
       - `records a context compression marker when returned items were summarized`
       - `retries codex locally before any failover`
       - `suppresses failover until repeated infrastructure failures`
+  - Follow-up fix:
+    - root cause for remaining false `ACTIVE` badges was lifecycle/runtime precedence in `ui/modules/session-api.js` and `site/ui/modules/session-api.js`.
+    - terminal lifecycle states must win over stale `runtimeState: running` snapshots from persisted session records.
+    - added regression in `tests/session-api.test.mjs`.
+  - Follow-up validation passed:
+    - `npm run syntax:check`
+    - `npm test -- tests/session-api.test.mjs tests/fleet-tab-render.test.mjs`
+      - passed: `88` tests
 
 ## 2026-04-02 - Fleet Sessions active/live cleanup
 

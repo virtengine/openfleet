@@ -522,6 +522,9 @@ function buildSessionRecencyRuntimeState(session, lifecycle, options = {}, sourc
 
 export function getSessionRuntimeState(session, options = {}) {
   const lifecycle = getSessionLifecycleState(session);
+  if (!lifecycle.isActive) {
+    return buildRuntimeState("stopped", { source: "lifecycle" });
+  }
   const runtimeKey = normalizeSessionRuntimeKey(
     session?.runtimeState
       || session?.runtimeStatus

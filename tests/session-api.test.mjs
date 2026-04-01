@@ -433,6 +433,25 @@ describe("session lifecycle/runtime metadata", () => {
     );
   });
 
+  it("prefers terminal lifecycle over stale running runtime snapshots", () => {
+    expect(
+      getSessionRuntimeState({
+        lifecycleStatus: "completed",
+        status: "completed",
+        runtimeState: "running",
+        runtimeIsLive: false,
+        lastActiveAt: "2026-04-01T10:57:15.110Z",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "stopped",
+        label: "Not live",
+        isLive: false,
+        source: "lifecycle",
+      }),
+    );
+  });
+
   it("uses lastActiveAt before updatedAt and createdAt for session recency", () => {
     expect(
       getSessionRecencyTimestamp({

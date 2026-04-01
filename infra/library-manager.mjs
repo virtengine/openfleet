@@ -20,6 +20,7 @@ import { resolve, basename, relative, extname, sep } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
+import { sanitizeGitEnv } from "../git/git-safety.mjs";
 import { nowISO, toStringArray, uniqueStrings } from "./library-manager-utils.mjs";
 import {
   WELL_KNOWN_AGENT_SOURCES,
@@ -2290,7 +2291,7 @@ function createRepositoryImportCheckoutDir(prefix, repoUrl, branch) {
 
   const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
     encoding: "utf8",
-    env: sanitizedGitEnv(),
+    env: sanitizeGitEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 120_000,
   });
