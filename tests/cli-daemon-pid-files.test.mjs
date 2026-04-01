@@ -84,6 +84,14 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).not.toContain("monitorChild = new Worker(");
   });
 
+  it("forwards Ctrl+C shutdown signals to the monitor child instead of waiting indefinitely", () => {
+    expect(cliSource).toContain("function requestMonitorChildShutdown(signal = \"SIGINT\")");
+    expect(cliSource).toContain("shutdownSignalCount > 1 ? \"SIGTERM\" : signal");
+    expect(cliSource).toContain("monitorChild.kill(requestedSignal)");
+    expect(cliSource).toContain("monitorShutdownForceTimer = setTimeout(() => {");
+    expect(cliSource).toContain("child.kill(\"SIGTERM\")");
+  });
+
 
   it("propagates --config-dir/BOSUN_HOME into daemon-child env config dir", () => {
     expect(cliSource).toContain("const configDirArg = getArgValue(\"--config-dir\");");

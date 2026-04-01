@@ -1597,6 +1597,108 @@ describe("task-executor", () => {
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
+    it("builds a stale workflow cleanup patch when ownerless workflow tasks are reset", () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      const completedEndedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      existsSync.mockImplementation((targetPath) =>
+        [
+          resolve("/workflow-runs", "run-stale-1.json"),
+          resolve("/workflow-runs", "run-completed-1.json"),
+        ].includes(targetPath),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "run-stale-1.json")) {
+          return JSON.stringify({
+            id: "run-stale-1",
+            status: "running",
+            startedAt: Date.now() - 60 * 60 * 1000,
+            data: {
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+              },
+            },
+          });
+        }
+        if (targetPath === resolve("/workflow-runs", "run-completed-1.json")) {
+          return JSON.stringify({
+            id: "run-completed-1",
+            status: "completed",
+            endedAt: completedEndedAt,
+            data: {
+              _dagState: {
+                status: "completed",
+                endedAt: completedEndedAt,
+              },
+            },
+          });
+        }
+        return "";
+      });
+
+      const patch = ex._buildRecoveredWorkflowStatePatch({
+        topology: {
+          workflowId: "template-task-lifecycle",
+          workflowName: "Task Lifecycle",
+          latestNodeId: "run-agent-implement",
+          latestRunId: "run-stale-1",
+          rootRunId: "run-root-1",
+          parentRunId: "run-parent-1",
+          latestSessionId: "session-current-1",
+          sessionId: "session-current-1",
+          rootSessionId: "session-root-1",
+          parentSessionId: "session-parent-1",
+          delegationDepth: 1,
+        },
+        workflowRuns: [
+          {
+            runId: "run-stale-1",
+            status: "running",
+            outcome: "running",
+            summary: "workflow.run.start",
+          },
+          {
+            runId: "run-completed-1",
+            status: "running",
+            outcome: "running",
+            summary: "workflow.run.start",
+          },
+        ],
+      });
+
+      expect(patch).toEqual(expect.objectContaining({
+        topology: expect.objectContaining({
+          workflowId: null,
+          workflowName: null,
+          latestNodeId: null,
+          latestRunId: null,
+          latestSessionId: null,
+          sessionId: null,
+          rootSessionId: null,
+          parentSessionId: null,
+          delegationDepth: 0,
+        }),
+      }));
+      expect(patch.workflowRuns).toEqual([
+        expect.objectContaining({
+          runId: "run-stale-1",
+          status: "stale",
+          outcome: "stale",
+        }),
+        expect.objectContaining({
+          runId: "run-completed-1",
+          status: "completed",
+          outcome: "completed",
+          endedAt: completedEndedAt,
+        }),
+      ]);
+    });
+
     it("resets workflow-owned tasks whose shared-state claim is stale and no thread is alive", async () => {
       const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: true });
       ex._running = true;

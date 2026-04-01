@@ -128,6 +128,24 @@ const REPO_AREA_STARVATION_WAIT_MS = 2 * 60 * 1000;
 const REPO_AREA_STARVATION_BLOCKED_CYCLES = 3;
 const REPO_AREA_CONTENTION_EVENT_LIMIT = 60;
 const WORKFLOW_ACTIVE_RUNS_INDEX = "_active-runs.json";
+const ACTIVE_WORKFLOW_RUN_STATUSES = new Set([
+  "running",
+  "queued",
+  "pending",
+  "inprogress",
+  "in_progress",
+  "active",
+]);
+const TERMINAL_WORKFLOW_RUN_STATUSES = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "canceled",
+  "blocked",
+  "done",
+  "success",
+  "stale",
+]);
 const FATAL_CLAIM_RENEW_ERRORS = new Set([
   "task_claimed_by_different_instance",
   "claim_token_mismatch",
@@ -1986,6 +2004,12 @@ function parseTimestampMs(value) {
     }
   }
   return 0;
+}
+
+function toIsoTimestamp(value) {
+  const parsed = parseTimestampMs(value);
+  if (parsed <= 0) return null;
+  return new Date(parsed).toISOString();
 }
 
 function parseTaskTimestamp(value) {
@@ -4323,6 +4347,7 @@ class TaskExecutor {
         } catch {
           /* best effort */
         }
+        this._clearRecoveredWorkflowState(id, task, internalTask);
         this._removeRuntimeSlot(id);
         resetToTodo++;
         resetUnstarted++;
@@ -4354,6 +4379,7 @@ class TaskExecutor {
           } catch {
             /* best effort */
           }
+          this._clearRecoveredWorkflowState(id, task, internalTask);
           invalidateThread(id);
           this._removeRuntimeSlot(id);
           resetToTodo++;
@@ -4384,6 +4410,7 @@ class TaskExecutor {
         } catch {
           /* best effort */
         }
+        this._clearRecoveredWorkflowState(id, task, internalTask);
         invalidateThread(id);
         this._removeRuntimeSlot(id);
         resetToTodo++;
@@ -4424,6 +4451,7 @@ class TaskExecutor {
       } catch {
         /* best effort */
       }
+      this._clearRecoveredWorkflowState(id, task, internalTask);
       this._removeRuntimeSlot(id);
       resetToTodo++;
     }
@@ -4559,6 +4587,102 @@ class TaskExecutor {
       return Date.now() - lastActivityMs <= WORKFLOW_RUN_RECOVERY_GRACE_MS;
     } catch {
       return false;
+    }
+  }
+
+  _readWorkflowRunDetail(runId) {
+    const normalizedRunId = String(runId || "").trim();
+    if (!this.workflowRunsDir || !normalizedRunId) return null;
+
+    const detailPath = resolve(this.workflowRunsDir, `${normalizedRunId}.json`);
+    if (!existsSync(detailPath)) return null;
+
+    try {
+      return JSON.parse(readFileSync(detailPath, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
+  _normalizeRecoveredWorkflowRunLink(entry) {
+    if (!entry || typeof entry !== "object") return null;
+
+    const status = String(entry?.status || "").trim().toLowerCase();
+    const outcome = String(entry?.outcome || "").trim().toLowerCase();
+    const endedAtMs = parseTimestampMs(entry?.endedAt);
+    const looksActive =
+      endedAtMs <= 0 &&
+      (ACTIVE_WORKFLOW_RUN_STATUSES.has(status) ||
+        ACTIVE_WORKFLOW_RUN_STATUSES.has(outcome));
+    if (!looksActive) return entry;
+
+    const detail = this._readWorkflowRunDetail(entry?.runId);
+    const dagState = detail?.data?._dagState || detail?._dagState || null;
+    const detailStatusRaw = String(dagState?.status || detail?.status || "")
+      .trim();
+    const detailStatus = detailStatusRaw.toLowerCase();
+    const detailEndedAt =
+      toIsoTimestamp(detail?.endedAt) ||
+      toIsoTimestamp(dagState?.endedAt) ||
+      toIsoTimestamp(entry?.endedAt);
+
+    if (detailEndedAt || TERMINAL_WORKFLOW_RUN_STATUSES.has(detailStatus)) {
+      return {
+        ...entry,
+        status: detailStatusRaw || entry.status || "completed",
+        outcome: detailStatusRaw || entry.outcome || "completed",
+        endedAt: detailEndedAt || entry.endedAt || null,
+      };
+    }
+
+    return {
+      ...entry,
+      status: "stale",
+      outcome: "stale",
+      endedAt: entry.endedAt || null,
+      summary: entry.summary || "Recovered stale workflow run link",
+    };
+  }
+
+  _buildRecoveredWorkflowStatePatch(task, internalTask = null) {
+    const taskLike =
+      internalTask && typeof internalTask === "object"
+        ? internalTask
+        : (task && typeof task === "object" ? task : null);
+    if (!taskLike) return null;
+
+    const patch = {
+      topology: {
+        workflowId: null,
+        workflowName: null,
+        latestNodeId: null,
+        latestRunId: null,
+        rootRunId: null,
+        parentRunId: null,
+        latestSessionId: null,
+        sessionId: null,
+        rootSessionId: null,
+        parentSessionId: null,
+        delegationDepth: 0,
+      },
+    };
+
+    if (Array.isArray(taskLike.workflowRuns) && taskLike.workflowRuns.length > 0) {
+      patch.workflowRuns = taskLike.workflowRuns
+        .map((entry) => this._normalizeRecoveredWorkflowRunLink(entry))
+        .filter(Boolean);
+    }
+
+    return patch;
+  }
+
+  _clearRecoveredWorkflowState(taskId, task = null, internalTask = null) {
+    const patch = this._buildRecoveredWorkflowStatePatch(task, internalTask);
+    if (!patch) return;
+    try {
+      updateInternalTask(taskId, patch);
+    } catch {
+      /* best effort */
     }
   }
 

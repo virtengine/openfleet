@@ -3272,6 +3272,7 @@ let selfWatcher = null;
 let selfWatcherLib = null;
 let selfWatcherExtra = []; // watchers for sibling source dirs (task/, workspace/, etc.)
 let selfWatcherDebounce = null;
+let selfWatcherMtimes = new Map();
 let selfRestartTimer = null;
 let selfRestartLastChangeAt = 0;
 let selfRestartLastFile = null;
@@ -12922,7 +12923,52 @@ function stopSelfWatcher() {
     clearTimeout(selfRestartTimer);
     selfRestartTimer = null;
   }
+  selfWatcherMtimes = new Map();
   pendingSelfRestart = null;
+}
+
+function snapshotSelfWatcherDirMtimes(rootDir) {
+  if (!existsSync(rootDir)) return;
+  try {
+    for (const entry of readdirSync(rootDir, { withFileTypes: true })) {
+      const entryPath = resolve(rootDir, entry.name);
+      if (entry.isDirectory()) continue;
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith(".mjs")) continue;
+      try {
+        selfWatcherMtimes.set(entryPath, Number(statSync(entryPath).mtimeMs || 0));
+      } catch {
+        /* best effort */
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+function resolveSelfWatcherChangedPath(filename, watchedRoots = []) {
+  const normalizedName = String(filename || "").trim();
+  if (!normalizedName) return null;
+  const isAbsolute = /^[a-zA-Z]:[\\/]|^\//.test(normalizedName);
+  if (isAbsolute) {
+    return resolve(normalizedName);
+  }
+  for (const rootDir of watchedRoots) {
+    const candidate = resolve(rootDir, normalizedName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return watchedRoots.length > 0 ? resolve(watchedRoots[0], normalizedName) : resolve(normalizedName);
+}
+
+function formatSelfWatcherLabel(filePath) {
+  const repoRoot = resolve(__dirname, "..");
+  const normalized = resolve(String(filePath || ""));
+  if (normalized.startsWith(`${repoRoot}\\`) || normalized.startsWith(`${repoRoot}/`)) {
+    return normalized.slice(repoRoot.length + 1).replace(/\\/g, "/");
+  }
+  return normalized.replace(/\\/g, "/");
 }
 
 function getInternalActiveSlotCount() {
@@ -13251,22 +13297,41 @@ function startSelfWatcher() {
     return;
   }
   try {
+    const watchedRootPaths = [];
     const handleSourceChange = (_event, filename) => {
       // Only react to .mjs source files
       if (!filename || !filename.endsWith(".mjs")) return;
       // Ignore node_modules and log artifacts
       if (filename.includes("node_modules")) return;
+      const fullPath = resolveSelfWatcherChangedPath(filename, watchedRootPaths);
+      if (!fullPath) return;
+      let newMtime = 0;
+      try {
+        newMtime = Number(statSync(fullPath).mtimeMs || 0);
+      } catch {
+        return;
+      }
+      const prevMtime = Number(selfWatcherMtimes.get(fullPath) || 0);
+      if (newMtime <= prevMtime) {
+        return;
+      }
+      selfWatcherMtimes.set(fullPath, newMtime);
+      const restartLabel = formatSelfWatcherLabel(fullPath);
       if (selfWatcherDebounce) {
         clearTimeout(selfWatcherDebounce);
       }
       selfWatcherDebounce = safeSetTimeout("self-watcher-debounce", () => {
-        queueSelfRestart(filename);
+        queueSelfRestart(restartLabel);
       }, 1000);
     };
     selfWatcher = watch(__dirname, { persistent: true }, handleSourceChange);
+    watchedRootPaths.push(__dirname);
+    snapshotSelfWatcherDirMtimes(__dirname);
     const libDir = resolve(__dirname, "lib");
     if (existsSync(libDir)) {
       selfWatcherLib = watch(libDir, { persistent: true }, handleSourceChange);
+      watchedRootPaths.push(libDir);
+      snapshotSelfWatcherDirMtimes(libDir);
     }
     // Watch sibling source directories that contain runtime-critical modules
     const repoRoot = resolve(__dirname, "..");
@@ -13277,6 +13342,8 @@ function startSelfWatcher() {
       if (existsSync(dirPath)) {
         try {
           selfWatcherExtra.push(watch(dirPath, { persistent: true }, handleSourceChange));
+          watchedRootPaths.push(dirPath);
+          snapshotSelfWatcherDirMtimes(dirPath);
           watchedDirs.push(`${dir}/`);
         } catch {}
       }

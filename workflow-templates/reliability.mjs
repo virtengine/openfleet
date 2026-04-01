@@ -409,17 +409,17 @@ export const HEALTH_CHECK_TEMPLATE = {
       env: {
         BOSUN_HEALTH_MAX_BENCHMARK_RUNS: "{{maxBenchmarkRuns}}",
       },
+      parseJson: true,
       continueOnError: true,
     }, { x: 400, y: 640 }),
 
     node("has-recent-runs", "condition.expression", "Recent Runs Available?", {
       expression:
-        "(() => { const output = String($ctx.getNodeOutput('collect-recent-runs')?.output || '').trim(); if (!output) return false; try { const parsed = JSON.parse(output); return Array.isArray(parsed?.runIds) && parsed.runIds.length > 0; } catch { return false; } })()",
+        "Array.isArray($ctx.getNodeOutput('collect-recent-runs')?.output?.runIds) && $ctx.getNodeOutput('collect-recent-runs')?.output?.runIds.length > 0",
     }, { x: 400, y: 760, outputs: ["yes", "no"] }),
 
     node("evaluate-latest-run", "action.evaluate_run", "Evaluate Latest Run", {
-      runId:
-        "{{$ctx.getNodeOutput('collect-recent-runs')?.output ? JSON.parse($ctx.getNodeOutput('collect-recent-runs')?.output).latestRunId || '' : ''}}",
+      runId: "{{collect-recent-runs.output.latestRunId}}",
       repoRoot: "{{repoRoot}}",
       includeTrend: true,
       recordHistory: true,

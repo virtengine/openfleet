@@ -863,8 +863,80 @@ describeUiServer("ui-server mini app", () => {
     expect(json.sources?.TELEGRAM_MINIAPP_ENABLED).toBe("derived");
     expect(json.data?.GITHUB_PROJECT_MODE).toBe("issues");
     expect(json.sources?.GITHUB_PROJECT_MODE).toBe("default");
+    expect(json.providers?.defaultProviderId).toBeTruthy();
+    expect(Array.isArray(json.providers?.items)).toBe(true);
+    expect(json.providers.items.some((entry) => entry.providerId === "openai-responses")).toBe(true);
 
     rmSync(tmpDir, { recursive: true, force: true });
+  }, 15000);
+
+  it("returns provider inventory with auth state, capabilities, and model catalogs", async () => {
+    const savedOpenAiApiKey = process.env.OPENAI_API_KEY;
+    const savedDefaultProvider = process.env.BOSUN_PROVIDER_DEFAULT;
+    const savedOllamaEnabled = process.env.BOSUN_PROVIDER_OLLAMA_ENABLED;
+    const savedOllamaBaseUrl = process.env.BOSUN_PROVIDER_OLLAMA_BASE_URL;
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.BOSUN_PROVIDER_DEFAULT = "openai-responses";
+    process.env.BOSUN_PROVIDER_OLLAMA_ENABLED = "true";
+    process.env.BOSUN_PROVIDER_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+
+    try {
+      const port = server.address().port;
+      const response = await fetch(`http://127.0.0.1:${port}/api/providers`);
+      const json = await response.json();
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.defaultProviderId).toBe("openai-responses");
+      expect(Array.isArray(json.items)).toBe(true);
+
+      const openaiProvider = json.items.find((entry) => entry.providerId === "openai-responses");
+      expect(openaiProvider).toEqual(expect.objectContaining({
+        enabled: true,
+        capabilities: expect.objectContaining({
+          apiKey: true,
+          streaming: true,
+        }),
+        auth: expect.objectContaining({
+          authenticated: true,
+          canRun: true,
+          preferredMode: "apiKey",
+        }),
+        modelCatalog: expect.objectContaining({
+          defaultModel: "gpt-5.4",
+        }),
+      }));
+
+      const ollamaProvider = json.items.find((entry) => entry.providerId === "ollama");
+      expect(ollamaProvider).toEqual(expect.objectContaining({
+        enabled: true,
+        advanced: true,
+        auth: expect.objectContaining({
+          status: "ready",
+          authenticated: true,
+        }),
+        modelCatalog: expect.objectContaining({
+          defaultModel: "qwen2.5-coder:latest",
+        }),
+      }));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      if (savedOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedOpenAiApiKey;
+      if (savedDefaultProvider === undefined) delete process.env.BOSUN_PROVIDER_DEFAULT;
+      else process.env.BOSUN_PROVIDER_DEFAULT = savedDefaultProvider;
+      if (savedOllamaEnabled === undefined) delete process.env.BOSUN_PROVIDER_OLLAMA_ENABLED;
+      else process.env.BOSUN_PROVIDER_OLLAMA_ENABLED = savedOllamaEnabled;
+      if (savedOllamaBaseUrl === undefined) delete process.env.BOSUN_PROVIDER_OLLAMA_BASE_URL;
+      else process.env.BOSUN_PROVIDER_OLLAMA_BASE_URL = savedOllamaBaseUrl;
+    }
   }, 15000);
 
   it("serves the TUI config tree and saves schema-validated config edits atomically", async () => {
@@ -1318,6 +1390,86 @@ describeUiServer("ui-server mini app", () => {
     );
 
     rmSync(tmpDir, { recursive: true, force: true });
+  }, 15000);
+
+  it("writes provider kernel settings into config and rejects invalid default providers", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-provider-config-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
+    process.env.BOSUN_CONFIG_PATH = configPath;
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+    });
+
+    try {
+      const port = server.address().port;
+      const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          changes: {
+            BOSUN_PROVIDER_DEFAULT: "openai-compatible",
+            BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "true",
+            BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL: "qwen2.5-coder:latest",
+            BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:4000/v1",
+            BOSUN_PROVIDER_AZURE_OPENAI_ENABLED: "true",
+            BOSUN_PROVIDER_AZURE_OPENAI_MODE: "oauth",
+            BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT: "gpt-5-prod",
+          },
+        }),
+      });
+      const json = await response.json();
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.updatedConfig).toEqual(expect.arrayContaining([
+        "BOSUN_PROVIDER_DEFAULT",
+        "BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED",
+        "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL",
+        "BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL",
+        "BOSUN_PROVIDER_AZURE_OPENAI_ENABLED",
+        "BOSUN_PROVIDER_AZURE_OPENAI_MODE",
+        "BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT",
+      ]));
+
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.providers).toEqual(expect.objectContaining({
+        defaultProvider: "openai-compatible",
+        openaiCompatible: expect.objectContaining({
+          enabled: true,
+          defaultModel: "qwen2.5-coder:latest",
+          baseUrl: "http://127.0.0.1:4000/v1",
+        }),
+        azureOpenai: expect.objectContaining({
+          enabled: true,
+          mode: "oauth",
+          deployment: "gpt-5-prod",
+        }),
+      }));
+
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      const invalidResponse = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          changes: {
+            BOSUN_PROVIDER_DEFAULT: "not-a-provider",
+          },
+        }),
+      });
+      const invalidJson = await invalidResponse.json();
+      expect(invalidResponse.status).toBe(400);
+      expect(invalidJson.ok).toBe(false);
+      expect(invalidJson.fieldErrors?.BOSUN_PROVIDER_DEFAULT).toBeTruthy();
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      rmSync(tmpDir, { recursive: true, force: true });
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
+    }
   }, 15000);
 
   it("writes GNAP settings into config file and allows runtime backend selection", async () => {
@@ -3108,7 +3260,7 @@ describeUiServer("ui-server mini app", () => {
     expect(payload.items[0].taskId).toBe("retry-task-1");
     expect(payload.stats.totalRetriesToday).toBe(7);
     expect(getRetryQueue).toHaveBeenCalled();
-  });
+  }, 15000);
 
   it("compiles and activates harness profiles from configured source files", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -5658,11 +5810,6 @@ describeUiServer("ui-server mini app", () => {
       registerTaskTraceHook() {}
     }
 
-    mod._testInjectWorkflowEngine({
-      WorkflowEngine: MockWorkflowEngine,
-      listNodeTypes: () => [],
-    }, null);
-
     try {
       const server = await mod.startTelegramUiServer({
         port: await getFreePort(),
@@ -5672,9 +5819,14 @@ describeUiServer("ui-server mini app", () => {
       });
       const port = server.address().port;
 
+      mod._testInjectWorkflowEngine({
+        WorkflowEngine: MockWorkflowEngine,
+        listNodeTypes: () => [],
+      }, null);
+
       const requests = [
         fetch(`http://127.0.0.1:${port}/api/workflows`).then((r) => r.json()),
-        fetch(`http://127.0.0.1:${port}/api/workflows/templates`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/workflows/detect-project`).then((r) => r.json()),
         fetch(`http://127.0.0.1:${port}/api/workflows/node-types`).then((r) => r.json()),
       ];
 
@@ -5685,14 +5837,68 @@ describeUiServer("ui-server mini app", () => {
       expect(engineLoadCount).toBe(1);
 
       releaseLoad();
-      const [workflows, templates, nodeTypes] = await Promise.all(requests);
+      const [workflows, detectProject, nodeTypes] = await Promise.all(requests);
 
       expect(workflows.ok).toBe(true);
-      expect(templates.ok).toBe(true);
+      expect(detectProject.ok).toBe(true);
       expect(nodeTypes.ok).toBe(true);
       expect(nodeTypes.nodeTypes).toEqual([]);
     } finally {
       releaseLoad?.();
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  }, 20000);
+
+  it("reuses cached global run-history pages for identical requests", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const fakeEngine = {
+      getRunHistoryPage: vi.fn(async () => ({
+        runs: [
+          {
+            runId: "run-history-1",
+            workflowId: "wf-1",
+            workflowName: "Workflow One",
+            status: "completed",
+            startedAt: new Date("2026-04-02T12:00:00.000Z").toISOString(),
+            endedAt: new Date("2026-04-02T12:02:00.000Z").toISOString(),
+          },
+        ],
+        total: 1,
+        offset: 0,
+        limit: 50,
+        nextOffset: null,
+        hasMore: false,
+      })),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+      on() {},
+      off() {},
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    try {
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const [first, second] = await Promise.all([
+        fetch(`http://127.0.0.1:${port}/api/workflows/runs?limit=50&offset=0`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/workflows/runs?limit=50&offset=0`).then((r) => r.json()),
+      ]);
+
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(true);
+      expect(fakeEngine.getRunHistoryPage).toHaveBeenCalledTimes(1);
+      expect(first.runs).toHaveLength(1);
+      expect(second.runs).toHaveLength(1);
+    } finally {
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
   });

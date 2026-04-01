@@ -142,6 +142,54 @@ describe("WorkflowContext", () => {
     expect(numericResult).toEqual({ result: false, value: false });
   });
 
+  it("preserves condition.expression templates through engine config resolution", async () => {
+    registerNodeType("test.emit-churn-label", {
+      describe: () => "Emit a string churn label",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { maxChurn: "Truncated" };
+      },
+    });
+
+    const integrationRoot = mkdtempSync(join(tmpdir(), "wf-condition-expression-"));
+    const integrationEngine = new WorkflowEngine({
+      workflowDir: join(integrationRoot, "workflows"),
+      runsDir: join(integrationRoot, "runs"),
+      services: {},
+    });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "hot-files", type: "test.emit-churn-label", label: "Emit Churn", config: {} },
+        {
+          id: "expr",
+          type: "condition.expression",
+          label: "String-safe Churn Check",
+          config: { expression: "{{hot-files.maxChurn}} === {{expectedLabel}}" },
+        },
+        { id: "matched", type: "notify.log", label: "Matched", config: { message: "matched" } },
+      ],
+      [
+        { source: "trigger", target: "hot-files" },
+        { source: "hot-files", target: "expr" },
+        { source: "expr", target: "matched", port: "true" },
+      ],
+      { id: "wf-condition-expression-config", name: "Condition Expression Config Resolution" },
+    );
+
+    try {
+      integrationEngine.save(wf);
+      const ctx = await integrationEngine.execute(wf.id, { expectedLabel: "Truncated" });
+
+      expect(ctx.errors).toEqual([]);
+      expect(ctx.getNodeStatus("expr")).toBe(NodeStatus.COMPLETED);
+      expect(ctx.getNodeOutput("expr")).toEqual(expect.objectContaining({ result: true, value: true }));
+      expect(ctx.getNodeStatus("matched")).toBe(NodeStatus.COMPLETED);
+    } finally {
+      try { rmSync(integrationRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
   it("condition.expression allows benign identifiers that contain eval as a substring", async () => {
     const nt = getNodeType("condition.expression");
     const ctx = new WorkflowContext({ createFollowupTasks: true });

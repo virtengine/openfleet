@@ -1505,7 +1505,6 @@ class WorkflowEngineProxy {
           ),
         );
       });
-          const _wfEngineInitByWorkspace = new Map();
 
       /* Send init after attaching all listeners */
       this._worker.postMessage({ type: "init", workerData: cfg });
@@ -1681,6 +1680,7 @@ let _wfServices = null;
 let _wfRecommendedInstalled = false;
 const _wfRecommendedInstalledByWorkspace = new Set();
 const _wfEngineByWorkspace = new Map();
+const _wfEngineInitByWorkspace = new Map();
 let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
@@ -23949,39 +23949,47 @@ if (path === "/api/agent-logs/context") {
         return;
       }
       const engine = wfCtx.engine;
-      const rawOffset = Number(url.searchParams.get("offset"));
-      const rawLimit = Number(url.searchParams.get("limit"));
-      const offset = Number.isFinite(rawOffset) && rawOffset > 0
-        ? Math.max(0, Math.floor(rawOffset))
-        : 0;
-      const limit = Number.isFinite(rawLimit) && rawLimit > 0
-        ? Math.min(rawLimit, 5000)
-        : 20;
-      const page = typeof engine.getRunHistoryPage === "function"
-        ? await engine.getRunHistoryPage(null, { offset, limit })
-        : {
-            runs: engine.getRunHistory ? await engine.getRunHistory(null, limit) : [],
-            total: engine.getRunHistory ? (await engine.getRunHistory(null)).length : 0,
+      const workspaceCacheKey = String(
+        wfCtx.workspaceContext?.workspaceDir
+        || wfCtx.workspaceContext?.workspaceId
+        || "default",
+      ).trim().toLowerCase();
+      const payload = await getOrComputeCachedApiResponse(`workflows:runs:all:${workspaceCacheKey}:${url.search}`, 2000, async () => {
+        const rawOffset = Number(url.searchParams.get("offset"));
+        const rawLimit = Number(url.searchParams.get("limit"));
+        const offset = Number.isFinite(rawOffset) && rawOffset > 0
+          ? Math.max(0, Math.floor(rawOffset))
+          : 0;
+        const limit = Number.isFinite(rawLimit) && rawLimit > 0
+          ? Math.min(rawLimit, 5000)
+          : 20;
+        const page = typeof engine.getRunHistoryPage === "function"
+          ? await engine.getRunHistoryPage(null, { offset, limit })
+          : {
+              runs: engine.getRunHistory ? await engine.getRunHistory(null, limit) : [],
+              total: engine.getRunHistory ? (await engine.getRunHistory(null)).length : 0,
+              offset,
+              limit,
+            };
+        const runs = Array.isArray(page?.runs) ? page.runs : [];
+        const total = Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length;
+        const nextOffset = Number.isFinite(Number(page?.nextOffset))
+          ? Number(page.nextOffset)
+          : (offset + runs.length < total ? offset + runs.length : null);
+        return {
+          ok: true,
+          runs,
+          pagination: {
+            total,
             offset,
             limit,
-          };
-      const runs = Array.isArray(page?.runs) ? page.runs : [];
-      const total = Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length;
-      const nextOffset = Number.isFinite(Number(page?.nextOffset))
-        ? Number(page.nextOffset)
-        : (offset + runs.length < total ? offset + runs.length : null);
-      jsonResponse(res, 200, {
-        ok: true,
-        runs,
-        pagination: {
-          total,
-          offset,
-          limit,
-          count: runs.length,
-          hasMore: page?.hasMore === true || (nextOffset != null && nextOffset < total),
-          nextOffset,
-        },
+            count: runs.length,
+            hasMore: page?.hasMore === true || (nextOffset != null && nextOffset < total),
+            nextOffset,
+          },
+        };
       });
+      jsonResponse(res, 200, payload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

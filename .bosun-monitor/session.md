@@ -742,3 +742,59 @@
 - Remaining SQL-first work after this slice:
   - `runs/index.json` and `runs/snapshots/*.json` still exist as compatibility mirrors and should stay non-authoritative.
   - workflow cleanup/recovery paths still contain legacy file scans under `workflow/workflow-engine.mjs`; those should be reviewed next once the broader validation gates stay green.
+
+## 2026-04-02 - workflow template failure repair for condition.expression and evaluate_run
+
+- Goal:
+  - fix the two live schedule-run failures seen in monitor logs:
+    - `Git Health Pipeline` -> `churn-check` failed with `Expression error: Truncated is not defined`
+    - `Health Check` -> `evaluate-latest-run` failed with `action.evaluate_run: run "{{...}}" not found`
+- Source changes:
+  - `workflow/workflow-engine.mjs`
+  - `workflow-templates/reliability.mjs`
+  - `tests/workflow-engine.test.mjs`
+  - `tests/workflow-new-templates.test.mjs`
+- Behavioral change:
+  - engine config resolution now preserves the raw `expression` field for `condition.expression` nodes, so placeholder serialization still happens inside the node handler instead of being flattened into unsafe raw JS tokens before execution.
+  - `template-health-check` now parses the `collect-recent-runs` command output as JSON and passes `{{collect-recent-runs.output.latestRunId}}` to `action.evaluate_run`, replacing the invalid moustache-wrapped JS expression that was being treated as a literal run id.
+- Validation:
+  - focused regressions passed:
+    - `npx vitest run tests/workflow-engine.test.mjs tests/workflow-new-templates.test.mjs -t "condition.expression resolves template placeholders as JS literals|preserves condition.expression templates through engine config resolution|collects recent runs, evaluates the latest run, and applies ratchet decisions"`
+  - build passed:
+    - `npm run build`
+
+## 2026-04-02 - CLI Ctrl+C shutdown forwarding repaired
+
+- Goal:
+  - restore foreground CLI shutdown behavior so pressing `Ctrl+C` actually tears down the monitor/server stack instead of leaving the parent waiting indefinitely for a child that may never receive `SIGINT`.
+- Source changes:
+  - `cli.mjs`
+  - `tests/cli-daemon-pid-files.test.mjs`
+- Behavioral change:
+  - the CLI parent now forwards `SIGINT`/`SIGTERM` to the spawned monitor child explicitly.
+  - first `Ctrl+C` requests graceful child shutdown with `SIGINT`; repeated shutdown signals escalate to `SIGTERM`.
+  - a fallback timer now stops the parent from waiting forever if the child hangs during shutdown.
+- Validation:
+  - focused CLI regression check passed:
+    - `npx vitest run tests/cli-daemon-pid-files.test.mjs`
+  - build passed:
+    - `npm run build`
+
+## 2026-04-02 - self-restart watcher false-positive hardening
+
+- Goal:
+  - investigate monitor logs like `source file changed: worktree-manager.mjs` when `git status` did not show a corresponding tracked change, and reduce false/misattributed self-restart events from Windows `fs.watch`.
+- Source changes:
+  - `infra/monitor.mjs`
+  - `tests/monitor-self-watcher-lib.node.test.mjs`
+- Findings:
+  - the self-restart watcher intentionally watches multiple runtime-critical source roots, including `workspace/`, so `workspace/worktree-manager.mjs` was in scope.
+  - before this patch, the watcher trusted raw `fs.watch` filenames and logged only the bare filename, with no `mtime` verification. On Windows that can misattribute or spuriously trigger restart notices.
+- Behavioral change:
+  - the watcher now snapshots `.mjs` mtimes for watched source roots and ignores events unless the target file's `mtime` actually advanced.
+  - restart logs now use repo-relative paths (for example `workspace/worktree-manager.mjs`) instead of ambiguous bare filenames.
+- Validation:
+  - focused watcher regression check passed:
+    - `node --test tests/monitor-self-watcher-lib.node.test.mjs`
+  - build passed:
+    - `npm run build`

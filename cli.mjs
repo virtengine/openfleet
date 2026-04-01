@@ -2415,6 +2415,8 @@ async function sendCrashNotification(exitCode, signal, options = {}) {
 // ── Self-restart exit code (must match monitor.mjs SELF_RESTART_EXIT_CODE) ───
 const SELF_RESTART_EXIT_CODE = 75;
 let monitorChild = null;
+let shutdownSignalCount = 0;
+let monitorShutdownForceTimer = null;
 
 function getMonitorPidFileCandidates(extraCacheDirs = []) {
   return uniqueResolvedPaths([
@@ -2604,6 +2606,10 @@ function runMonitor({ restartReason = "" } = {}) {
 
         monitorChild.on("exit", (code, signal) => {
           const childPid = Number(monitorChild?.pid || 0) || null;
+          if (monitorShutdownForceTimer) {
+            clearTimeout(monitorShutdownForceTimer);
+            monitorShutdownForceTimer = null;
+          }
           monitorChild = null;
           if (code === SELF_RESTART_EXIT_CODE) {
             console.log(
@@ -2734,25 +2740,55 @@ function runMonitor({ restartReason = "" } = {}) {
   });
 }
 
-// Let forked monitor handle signal cleanup — prevent parent from dying first
-let gracefulShutdown = false;
-process.on("SIGINT", () => {
+function requestMonitorChildShutdown(signal = "SIGINT") {
   gracefulShutdown = true;
-  if (!monitorChild) process.exit(0);
-  // Child gets SIGINT too via shared terminal — just wait for it to exit
-});
-process.on("SIGTERM", () => {
-  gracefulShutdown = true;
-  if (!monitorChild) process.exit(0);
+  shutdownSignalCount += 1;
+  if (!monitorChild) {
+    process.exit(0);
+    return;
+  }
+
+  const requestedSignal = shutdownSignalCount > 1 ? "SIGTERM" : signal;
   try {
     if (typeof monitorChild.kill === "function") {
-      monitorChild.kill("SIGTERM");
+      monitorChild.kill(requestedSignal);
     } else if (typeof monitorChild.terminate === "function") {
       monitorChild.terminate().catch(() => {});
     }
   } catch {
     /* best effort */
   }
+
+  if (monitorShutdownForceTimer) return;
+  monitorShutdownForceTimer = setTimeout(() => {
+    const child = monitorChild;
+    monitorShutdownForceTimer = null;
+    if (!child) {
+      process.exit(0);
+      return;
+    }
+    try {
+      if (typeof child.kill === "function") {
+        child.kill("SIGTERM");
+      } else if (typeof child.terminate === "function") {
+        child.terminate().catch(() => {});
+      }
+    } catch {
+      /* best effort */
+    }
+    const hardExitTimer = setTimeout(() => process.exit(0), 2000);
+    hardExitTimer.unref?.();
+  }, 15000);
+  monitorShutdownForceTimer.unref?.();
+}
+
+// Let forked monitor handle signal cleanup — prevent parent from dying first
+let gracefulShutdown = false;
+process.on("SIGINT", () => {
+  requestMonitorChildShutdown("SIGINT");
+});
+process.on("SIGTERM", () => {
+  requestMonitorChildShutdown("SIGTERM");
 });
 
 main().catch(async (err) => {
