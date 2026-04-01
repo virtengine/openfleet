@@ -3749,6 +3749,12 @@ export async function ensureThreadRegistryLoaded() {
   return ensureManagedThreadRegistryLoaded();
 }
 
+// Warm the persisted thread registry at module init without risking an
+// unhandled rejection during detached startup flows.
+ensureThreadRegistryLoaded().catch((err) => {
+  console.warn(TAG + " thread registry warm-up failed: " + (err?.message || err));
+});
+
 function registerActiveSession(taskKey, sdk, threadId, sendFn, metadata = {}) {
   return registerManagedActiveSession(taskKey, sdk, threadId, sendFn, metadata);
 }

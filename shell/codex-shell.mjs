@@ -548,8 +548,11 @@ function sessionFilePath(sessionId) {
 }
 
 async function loadSessionData(sessionId) {
+  const READ_TIMEOUT_MS = 5000;
+  const readPromise = readFile(sessionFilePath(sessionId), "utf8");
+  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Read session file timeout')), READ_TIMEOUT_MS));
   try {
-    const raw = await readFile(sessionFilePath(sessionId), "utf8");
+    const raw = await Promise.race([readPromise, timeoutPromise]);
     return JSON.parse(raw);
   } catch {
     return null;
@@ -557,9 +560,12 @@ async function loadSessionData(sessionId) {
 }
 
 async function saveSessionData(sessionId, data) {
+  const WRITE_TIMEOUT_MS = 5000;
   try {
     await mkdir(SESSIONS_DIR, { recursive: true });
-    await writeFile(sessionFilePath(sessionId), JSON.stringify(data, null, 2), "utf8");
+    const writePromise = writeFile(sessionFilePath(sessionId), JSON.stringify(data, null, 2), "utf8");
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Write session file timeout')), WRITE_TIMEOUT_MS));
+    await Promise.race([writePromise, timeoutPromise]);
   } catch (err) {
     console.warn(`[codex-shell] failed to save session ${sessionId}: ${err.message}`);
   }

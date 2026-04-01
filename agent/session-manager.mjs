@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
 import { createInternalHarnessSession as createHarnessRuntimeSession } from "./internal-harness-runtime.mjs";
+import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { createSessionReplayStore } from "./session-replay.mjs";
 import { createSubagentControl } from "./subagent-control.mjs";
 import { createThreadId, createThreadRegistry } from "./thread-registry.mjs";
@@ -506,6 +507,7 @@ function createInternalSessionManager(defaultOptions = {}) {
     listSessions(filters = {}) {
       return [...sessions.values()]
         .filter((record) => {
+          if (toTrimmedString(filters.scope) && toTrimmedString(record.scope) !== toTrimmedString(filters.scope)) return false;
           if (toTrimmedString(filters.status) && normalizeStatus(record.status) !== normalizeStatus(filters.status)) return false;
           if (toTrimmedString(filters.sessionType) && toTrimmedString(record.sessionType) !== toTrimmedString(filters.sessionType)) return false;
           if (toTrimmedString(filters.taskKey) && toTrimmedString(record.taskKey) !== toTrimmedString(filters.taskKey)) return false;
@@ -516,8 +518,16 @@ function createInternalSessionManager(defaultOptions = {}) {
     },
     switchSession(sessionId, scope = "default") {
       const normalized = toTrimmedString(sessionId);
-      if (!normalized || !sessions.has(normalized)) return null;
-      activeSessions.set(toTrimmedString(scope || "default") || "default", normalized);
+      if (!normalized) return null;
+      const scopeOptions = typeof scope === "object" && scope !== null ? scope : { scope };
+      const normalizedScope = toTrimmedString(scopeOptions.scope || "default") || "default";
+      if (!sessions.has(normalized)) {
+        this.ensureSession({
+          ...scopeOptions,
+          sessionId: normalized,
+        });
+      }
+      activeSessions.set(normalizedScope, normalized);
       return getSessionRecord(normalized);
     },
     setActiveSession(sessionId, scope = "default") {
@@ -559,6 +569,7 @@ function createInternalSessionManager(defaultOptions = {}) {
       const record = {
         sessionId: sessionId || createSessionId(input.sessionType || "session"),
         runId: sessionId || createSessionId("run"),
+        scope: toTrimmedString(input.scope || "default") || "default",
         taskKey: toTrimmedString(input.taskKey || sessionId || ""),
         taskId: null,
         taskTitle: null,
@@ -679,6 +690,46 @@ function createInternalSessionManager(defaultOptions = {}) {
     },
     getSubagentControl() {
       return subagentControl;
+    },
+    getReplaySnapshot(sessionId, options = {}) {
+      const session = sessionId ? this.getSession(sessionId) : null;
+      const tracker = getSessionTracker();
+      const tracked = sessionId && typeof tracker?.getSession === "function"
+        ? tracker.getSession(sessionId)
+        : null;
+      const replayState = replayStore.buildResumeState(sessionId, options);
+      const childSessions = session?.sessionId
+        ? subagentControl.listChildren({ parentSessionId: session.sessionId })
+        : [];
+      const thread = session?.activeThreadId
+        ? threadRegistry.getThread(session.activeThreadId)
+        : null;
+      return {
+        sessionId: toTrimmedString(session?.sessionId || sessionId || "") || null,
+        taskKey: toTrimmedString(session?.taskKey || tracked?.taskId || sessionId || "") || null,
+        status: session?.status || tracked?.status || replayState?.latestSnapshot?.status || "idle",
+        createdAt: session?.createdAt || tracked?.createdAt || null,
+        lastActiveAt: session?.lastActiveAt || tracked?.lastActiveAt || null,
+        replayable: true,
+        thread,
+        lineage: {
+          parentSessionId: session?.parentSessionId || null,
+          childSessionIds: childSessions
+            .map((entry) => toTrimmedString(entry?.childSessionId || ""))
+            .filter(Boolean),
+        },
+        messages: Array.isArray(tracked?.messages)
+          ? tracked.messages.map((message, index) => ({
+              index,
+              role: toTrimmedString(message?.role || message?.type || "message") || "message",
+              type: toTrimmedString(message?.type || message?.role || "message") || "message",
+              content: String(message?.content || message?.summary || message?.text || ""),
+              timestamp: toTrimmedString(message?.timestamp || message?.createdAt || "") || null,
+              meta: toPlainObject(message?.meta),
+            }))
+          : [],
+        replayState,
+      };
     },
     getReplayState(sessionId, options = {}) {
       return replayStore.buildResumeState(sessionId, options);

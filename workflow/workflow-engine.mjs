@@ -51,6 +51,7 @@ import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
 import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
 import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
+import { listWorkflowRunSummariesPageFromStateLedger } from "../lib/state-ledger-sqlite.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -71,6 +72,11 @@ function ensureWorkspaceManagerSync() {
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const TAG = "[workflow-engine]";
+
+// Run history in-process cache (2s TTL)
+const RUN_HISTORY_CACHE_TTL_MS = 2000;
+const RUN_HISTORY_CACHE = new Map();
+
 const WORKFLOW_DIR_NAME = "workflows";
 const WORKFLOW_RUNS_DIR = "workflow-runs";
 const WORKFLOW_TRAJECTORIES_DIR = "trajectories";
@@ -97,6 +103,14 @@ function normalizeWorkflowRunText(value) {
   const normalized = typeof value === "string" ? value : String(value || "");
   if (!normalized) return normalized;
   return repairCommonMojibake(normalized);
+}
+
+function normalizeWorkflowRunTimestampMs(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function repairWorkflowRunDetail(detail = null) {
@@ -4418,6 +4432,14 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Get historical run logs */
   getRunHistory(workflowId, limit = null) {
+    // TTL cache for run history to reduce repeated hydration cost.
+    const cache = RUN_HISTORY_CACHE;
+    const key = `${String(workflowId ?? 'ALL')}|${String(limit ?? '')}`;
+    const now = Date.now();
+    const cached = cache.get(key);
+    if (cached && (now - cached.ts) <= RUN_HISTORY_CACHE_TTL_MS) {
+      return cached.value;
+    }
     const normalizedLimit = Number(limit);
     const hasLimit = Number.isFinite(normalizedLimit) && normalizedLimit > 0;
     const resolvedLimit = hasLimit ? Math.floor(normalizedLimit) : null;
@@ -4427,6 +4449,7 @@ export class WorkflowEngine extends EventEmitter {
     const persisted = this._hydrateRunIndexFromDetails(targetCount)
       .map((entry) => this._normalizeRunSummary(entry))
       .filter(Boolean);
+
     const active = this.getActiveRuns();
     const activeRunIds = new Set(active.map((run) => run.runId));
 
@@ -4438,6 +4461,10 @@ export class WorkflowEngine extends EventEmitter {
       runs = runs.map((run) => this.getRunDetail(run.runId, { decorate: shouldDecorateDetails }) || run);
     }
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
+    cache.set(key, {
+      ts: now,
+      value: hasLimit ? runs.slice(0, resolvedLimit) : runs,
+    });
     if (hasLimit) {
       return runs.slice(0, resolvedLimit);
     }
@@ -4477,6 +4504,10 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _hydrateRunIndexFromDetails(targetCount = MAX_PERSISTED_RUNS) {
+    // Invalidate run history cache to avoid stale runs being cached
+    if (globalThis._RUN_HISTORY_CACHE) {
+      globalThis._RUN_HISTORY_CACHE.clear();
+    }
     const normalizedTarget = Number.isFinite(Number(targetCount)) && Number(targetCount) > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(20, Math.floor(Number(targetCount))))
       : MAX_PERSISTED_RUNS;

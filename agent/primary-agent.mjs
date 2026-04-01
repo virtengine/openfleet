@@ -1422,7 +1422,8 @@ export async function switchPrimarySession(id) {
 export async function createPrimarySession(id) {
   const result = activeAdapter.createSession ? await activeAdapter.createSession(id) : undefined;
   const createdId = String(result?.id || result?.sessionId || id || "").trim() || id;
-  primarySessionManager.createSession(createdId, {
+  primarySessionManager.ensureSession({
+    sessionId: createdId,
     scope: "primary",
     sessionType: "primary",
     providerSelection: activeExecutorSelection || activeAdapter.name,
