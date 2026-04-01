@@ -374,3 +374,62 @@
     - `npm run build` passed
     - full `npm test` reruns progressed cleanly through grouped batches 1 through 7 after the above fixes
     - next full-suite checkpoint reached grouped batch 8 before this handoff note was written; no new runtime defect had been patched beyond the stale startup-guard test at this checkpoint
+
+- Follow-up on 2026-04-02 (harness 404 / stale runs triage):
+  - Root cause of the "no runs newer than 1d" incident was not the harness route definitions.
+  - `server/ui-server.mjs` already contained `/api/harness/runs` and `/api/harness/approvals`, but the Bosun daemon had crashed during startup and the monitor loop was not producing fresh runtime activity.
+  - Crash signature:
+    - `workspace/shared-knowledge.mjs`
+    - `SyntaxError: Identifier 'loadRegistryEntries' has already been declared`
+  - Source fix applied:
+    - `workspace/shared-knowledge.mjs`
+  - Behavioral change:
+    - removed the duplicated `loadRegistryEntries(...)` definition introduced by merge residue.
+    - restored a single ledger-backed registry loader via `listKnowledgeEntriesFromStateLedger(...)`.
+    - removed the broken dynamic-ledger/double-write path in `appendKnowledgeEntry(...)` so shared knowledge writes are authoritative, single-pass, and no longer block startup.
+  - Validation passed:
+    - `node --input-type=module -e "await import('./workspace/shared-knowledge.mjs'); console.log('shared-knowledge import ok');"`
+    - `node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs tests/fleet-coordinator.test.mjs -t "shared-knowledge|Persistent Memory|appendKnowledgeEntry|retrieveKnowledgeEntries"`
+    - `npm run syntax:check`
+    - `npm run build`
+  - Runtime verification after pinned restart:
+    - restarted with:
+      - `node cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-auto-update`
+    - verified:
+      - `node cli.mjs --daemon-status --config-dir .bosun --repo-root .`
+      - result: daemon running (`PID 2100`)
+    - monitor log resumed with fresh startup entries at `2026-04-01T15:35:56Z` and fresh workflow schedule activity.
+    - `.bosun/workflow-runs/index.json` now contains fresh schedule-poll workflow runs again (for example `Task Batch Processor` and `Task Lifecycle` entries with recent timestamps).
+    - authenticated harness probes now return `200 OK`:
+      - `/api/harness/runs?limit=8&token=...`
+      - `/api/harness/approvals?limit=100&status=pending&token=...`
+  - Current state:
+    - the harness API is live again.
+    - the current harness store still only contains older persisted harness executions from `2026-03-31`, so the harness monitor itself still shows older run history until a new harness execution is triggered.
+    - the broader Bosun workflow runtime is producing fresh workflow-run records again after the crash fix.
+
+- Follow-up on 2026-04-02 (workflow run history showing `17h ago` despite fresh monitor activity):
+  - Root cause:
+    - `/api/workflows/runs` was resolving the active workspace into the managed workspace clone under:
+      - `.bosun/workspaces/virtengine-gh/bosun`
+    - instead of the canonical repo-local Bosun runtime at:
+      - `C:\Users\jON\Documents\source\repos\virtengine-gh\bosun`
+    - because workspace repo resolution preferred `repos[].path` (clone-local path) over the explicit configured repo location in `repos[].url`.
+  - Source fix applied:
+    - `server/ui-server.mjs`
+  - Behavioral change:
+    - added `resolveWorkspaceRepoLocation(...)`.
+    - active workspace repo selection now prefers explicit configured repo URLs before clone-local workspace paths.
+    - task repository resolution for workspace-scoped operations now uses the same location precedence.
+  - Validation passed:
+    - `npm run syntax:check`
+    - `npm run build`
+    - pinned daemon restart:
+      - `node cli.mjs --stop-daemon --config-dir .bosun --repo-root .`
+      - `node cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-auto-update`
+    - live API verification after restart:
+      - `/api/workflows/runs?limit=5&token=...` now returns fresh current runs such as:
+        - `e65cc774-f4ad-49cd-9159-0fb44a5c8e59`
+        - `7bde50c9-5268-4151-987a-e2dd3a5bc833`
+        - `af5d1371-3bbd-44d6-9089-f3f254606562`
+      - these correspond to current startup/schedule-poll activity instead of the stale March 31 workspace-clone history.

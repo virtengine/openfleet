@@ -3818,12 +3818,13 @@ function resolveTaskRepositoryDir(task, workspaceContext = {}) {
           const values = [
             normalizeDiffTaskRef(repo?.name),
             normalizeDiffTaskRef(repo?.slug),
-            normalizeCandidatePath(repo?.path),
+            resolveWorkspaceRepoLocation(repo),
           ].filter(Boolean);
           return values.includes(repositoryName) || values.includes(normalizeCandidatePath(repositoryName));
         })
       : null;
-    if (matchedRepo?.path) pushCandidate(matchedRepo.path);
+    const matchedRepoPath = resolveWorkspaceRepoLocation(matchedRepo);
+    if (matchedRepoPath) pushCandidate(matchedRepoPath);
     if (workspaceEntry.path && repositoryName) pushCandidate(resolve(workspaceEntry.path, repositoryName));
     pushCandidate(pickWorkspaceRepoDir(workspaceEntry));
     pushCandidate(workspaceEntry.path);
@@ -6545,6 +6546,17 @@ function normalizeCandidatePath(input) {
   }
 }
 
+function resolveWorkspaceRepoLocation(repo) {
+  if (!repo || typeof repo !== "object") return "";
+  return normalizeCandidatePath(
+    repo.url ||
+    repo.path ||
+    repo.repoRoot ||
+    repo.root ||
+    "",
+  );
+}
+
 function pickWorkspaceRepoDir(workspace) {
   if (!workspace || typeof workspace !== "object") return "";
   const repos = Array.isArray(workspace.repos) ? workspace.repos : [];
@@ -6558,7 +6570,7 @@ function pickWorkspaceRepoDir(workspace) {
     null;
 
   const candidates = [];
-  const selectedRepoPath = normalizeCandidatePath(selectedRepo?.path);
+  const selectedRepoPath = resolveWorkspaceRepoLocation(selectedRepo);
   if (selectedRepoPath) candidates.push(selectedRepoPath);
   const workspacePath = normalizeCandidatePath(workspace.path);
   if (workspacePath && selectedRepo?.name) {
