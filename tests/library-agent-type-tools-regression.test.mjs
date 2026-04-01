@@ -25,5 +25,8 @@ describe("library agent type + bosun tools regressions", () => {
     expect(source).toContain("Show in chat dropdown");
     expect(source).toContain(":zap: Bosun");
     expect(source).toContain("toggleBosunTool");
+    expect(source).toContain("isMountedRef");
+    expect(source).toContain("loadEntriesRequestRef");
+    expect(source).toContain("clearTimeout(searchTimer.current)");
   });
 });

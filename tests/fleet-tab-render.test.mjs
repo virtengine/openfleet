@@ -78,7 +78,22 @@ for (const { relPath, source } of sourceFiles) {
     it("treats detached sessions as active based on status, not history-only placement", () => {
       expect(source).toContain("function isFleetEntryActive(entry)");
       expect(source).not.toContain("if (entry.isHistory) return false;");
-      expect(source).toContain('return status === "active" || status === "running" || status === "busy" || status === "inprogress";');
+      expect(source).toContain("return getFleetEntryStatusMeta(entry).isActive === true;");
+      expect(source).toContain('return { key: "recent", label: "Recent", tone: "warning", isActive: false };');
+      expect(source).toContain('return runtimeState?.key === "running";');
+    });
+
+    it("surfaces response freshness and dedupes session identities in the fleet rail", () => {
+      expect(source).toContain("function getFleetEntryResponseTimestamp(entry)");
+      expect(source).toContain("function getFleetEntryActivityLabel(entry)");
+      expect(source).toContain("function dedupeFleetEntries(entries = [])");
+      expect(source).toContain('const responsePath = resolveFleetEntrySessionId(entry) ? "stream" : "logs";');
+      expect(source).toContain('const prefix = isFleetEntryActive(entry)');
+      expect(source).toContain('if (isFleetEntryActive(entry)) return `Awaiting ${responsePath} response`;');
+      expect(source).toContain("const canonicalKey = getFleetEntryCanonicalKey(entry);");
+      expect(source).toContain("const activityLabel = getFleetEntryActivityLabel(entry);");
+      expect(source).toContain('class="fleet-slot-meta-response"');
+      expect(source).toContain("Responses via");
     });
 
     it("uses useMemo for entries array to prevent infinite render loops", () => {

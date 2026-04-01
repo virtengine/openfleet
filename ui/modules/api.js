@@ -23,6 +23,8 @@ export const wsReconnectCount = signal(0);
 export const wsLastReconnectAt = signal(null);
 /** Reactive signal: count of in-flight apiFetch calls (drives top loading bar) */
 export const loadingCount = signal(0);
+/** Reactive signal: whether the backend is currently reachable */
+export const backendReachability = signal("online");
 
 let _loadingSuppressionDepth = 0;
 let _loadingForceDepth = 0;
@@ -61,7 +63,12 @@ export function withLoadingTracked(fn) {
  */
 const MAX_FETCH_RETRIES = 2;
 const FETCH_RETRY_BASE_MS = 800;
+const NETWORK_ERROR_COOLDOWN_MS = 4000;
+const API_ERROR_DEDUPE_MS = 4000;
 let _sessionRecoveryPromise = null;
+let _backendUnavailableUntil = 0;
+let _lastApiErrorAt = 0;
+let _lastApiErrorMessage = "";
 
 function buildSessionRecoveryPath() {
   try {
@@ -103,6 +110,57 @@ function createApiError(status, body = {}) {
   error.responseText = body.text || "";
   error.isAuthError = status === 401 || status === 403;
   return error;
+}
+
+function isNetworkConnectivityError(error) {
+  const message = String(error?.message || error || "");
+  const name = String(error?.name || "");
+  return (
+    name === "TypeError"
+    || /Failed to fetch/i.test(message)
+    || /NetworkError/i.test(message)
+    || /Load failed/i.test(message)
+    || /ERR_CONNECTION_REFUSED/i.test(message)
+    || /ERR_TIMED_OUT/i.test(message)
+  );
+}
+
+function getBackendCooldownRemainingMs() {
+  return Math.max(0, _backendUnavailableUntil - Date.now());
+}
+
+function markBackendUnavailable(cooldownMs = NETWORK_ERROR_COOLDOWN_MS) {
+  const nextUntil = Date.now() + Math.max(500, Number(cooldownMs) || NETWORK_ERROR_COOLDOWN_MS);
+  _backendUnavailableUntil = Math.max(_backendUnavailableUntil, nextUntil);
+  backendReachability.value = "offline";
+}
+
+function clearBackendUnavailable() {
+  _backendUnavailableUntil = 0;
+  backendReachability.value = "online";
+}
+
+function createBackendUnavailableError(retryInMs = getBackendCooldownRemainingMs()) {
+  const seconds = Math.max(1, Math.ceil(Math.max(0, retryInMs) / 1000));
+  const error = new Error(`Bosun backend is unavailable. Retrying in about ${seconds}s.`);
+  error.status = 0;
+  error.isNetworkError = true;
+  error.isBackendUnavailable = true;
+  return error;
+}
+
+function shouldDispatchApiError(message) {
+  const now = Date.now();
+  if (
+    message
+    && message === _lastApiErrorMessage
+    && (now - _lastApiErrorAt) < API_ERROR_DEDUPE_MS
+  ) {
+    return false;
+  }
+  _lastApiErrorMessage = message;
+  _lastApiErrorAt = now;
+  return true;
 }
 
 async function recoverUiSession() {
@@ -169,14 +227,25 @@ export function apiFetch(path, options = {}) {
     if (trackLoading) loadingCount.value += 1;
     try {
       const performRequest = async (allowSessionRecovery = true) => {
+        const cooldownRemainingMs = getBackendCooldownRemainingMs();
+        if (cooldownRemainingMs > 0 && isGet) {
+          throw createBackendUnavailableError(cooldownRemainingMs);
+        }
         let response;
         let fetchAttempt = 0;
         while (fetchAttempt <= MAX_FETCH_RETRIES) {
           try {
             response = await fetch(path, requestOptions);
+            clearBackendUnavailable();
             break;
           } catch (networkErr) {
             fetchAttempt += 1;
+            if (isNetworkConnectivityError(networkErr)) {
+              markBackendUnavailable();
+              if (isGet || fetchAttempt > MAX_FETCH_RETRIES || silent) {
+                throw createBackendUnavailableError();
+              }
+            }
             if (fetchAttempt > MAX_FETCH_RETRIES || silent) throw networkErr;
             await new Promise((r) => setTimeout(r, FETCH_RETRY_BASE_MS * fetchAttempt));
           }
@@ -196,9 +265,12 @@ export function apiFetch(path, options = {}) {
     } catch (err) {
       if (!silent) {
         try {
-          globalThis.dispatchEvent(
-            new CustomEvent("ve:api-error", { detail: { message: err.message } }),
-          );
+          const message = String(err?.message || "Request failed");
+          if (shouldDispatchApiError(message)) {
+            globalThis.dispatchEvent(
+              new CustomEvent("ve:api-error", { detail: { message } }),
+            );
+          }
         } catch {
           /* noop */
         }
@@ -280,6 +352,16 @@ function startCountdown(ms) {
   }, 1000);
 }
 
+function scheduleReconnect(ms) {
+  const delayMs = Math.max(250, Math.ceil(Number(ms) || retryMs));
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  startCountdown(delayMs);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectWebSocket();
+  }, delayMs);
+}
+
 /** Start the client-side ping interval (every 30s) */
 function startPing() {
   stopPing();
@@ -309,6 +391,14 @@ export function connectWebSocket() {
     return;
   }
 
+  const cooldownRemainingMs = getBackendCooldownRemainingMs();
+  if (cooldownRemainingMs > 0) {
+    wsConnected.value = false;
+    wsStatus.value = "reconnecting";
+    scheduleReconnect(cooldownRemainingMs);
+    return;
+  }
+
   const proto = globalThis.location.protocol === "https:" ? "wss" : "ws";
   const wsUrl = new URL(`${proto}://${globalThis.location.host}/ws`);
 
@@ -335,6 +425,7 @@ export function connectWebSocket() {
     wsStatus.value = "connected";
     wsLatency.value = null;
     retryMs = 1000; // reset backoff on successful connect
+    clearBackendUnavailable();
     clearCountdown();
     startPing();
   });
@@ -388,19 +479,15 @@ export function connectWebSocket() {
     ws = null;
     stopPing();
     wsReconnectCount.value += 1;
-    // Auto-reconnect with exponential backoff (max 15 s)
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    startCountdown(retryMs);
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connectWebSocket();
-    }, retryMs);
+    const delayMs = Math.max(retryMs, getBackendCooldownRemainingMs());
+    scheduleReconnect(delayMs);
     retryMs = Math.min(15000, retryMs * 2);
   });
 
   socket.addEventListener("error", () => {
     wsConnected.value = false;
     wsStatus.value = "reconnecting";
+    markBackendUnavailable(retryMs);
   });
 }
 

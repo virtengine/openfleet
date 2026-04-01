@@ -430,6 +430,63 @@
     - live API verification after restart:
       - `/api/workflows/runs?limit=5&token=...` now returns fresh current runs such as:
         - `e65cc774-f4ad-49cd-9159-0fb44a5c8e59`
-        - `7bde50c9-5268-4151-987a-e2dd3a5bc833`
-        - `af5d1371-3bbd-44d6-9089-f3f254606562`
+      - `7bde50c9-5268-4151-987a-e2dd3a5bc833`
+      - `af5d1371-3bbd-44d6-9089-f3f254606562`
       - these correspond to current startup/schedule-poll activity instead of the stale March 31 workspace-clone history.
+
+- Follow-up on 2026-04-02 (fleet-sessions showing stale/inactive session-only rows as active):
+  - Problem:
+    - Fleet Sessions "Active" was still surfacing non-live task sessions that only had stale/recent metadata.
+    - The list also did not make it obvious whether current agent output should be read from the chat stream or the log tail.
+  - UI/runtime changes applied:
+    - `ui/tabs/agents.js`
+    - `site/ui/tabs/agents.js`
+    - `tests/session-api.test.mjs`
+    - `tests/fleet-tab-render.test.mjs`
+  - Behavioral change:
+    - Fleet-active session-only rows now require runtime state `running`; `recent` is no longer treated as active.
+    - Recent session-only rows are still visible in the full list/history, but they are no longer counted under the Active fleet filter.
+    - Fleet row activity text now includes response path context, e.g. `Responding via stream ...`, `Last logs response ...`, or `Awaiting stream response`.
+    - Selected fleet detail header now also shows the response path so operators can immediately tell where live output is expected.
+  - Validation passed:
+    - `npm run syntax:check`
+    - `npm test -- tests/session-api.test.mjs tests/fleet-tab-render.test.mjs`
+      - passed: `87` tests
+    - `npm run build`
+  - Repo-wide validation note:
+    - `npm test` did not complete cleanly due existing failures in `tests/primary-agent.runtime.test.mjs`.
+    - observed failures were timeouts in:
+      - `falls back to pooled execution when active adapter is busy on another session`
+      - `records a context compression marker when returned items were summarized`
+      - `retries codex locally before any failover`
+      - `suppresses failover until repeated infrastructure failures`
+
+## 2026-04-02 - Fleet Sessions active/live cleanup
+
+- User-facing incident:
+  - Fleet Sessions "Active" view was showing stale/inactive session records and repeated zero-turn entries.
+  - rail ordering did not make it obvious where current agent responses were landing.
+- Source fixes applied:
+  - `ui/modules/session-api.js`
+  - `site/ui/modules/session-api.js`
+  - `ui/tabs/agents.js`
+  - `site/ui/tabs/agents.js`
+  - `ui/styles/components.css`
+  - `site/ui/styles/components.css`
+- Behavioral change:
+  - explicit `runtimeIsLive: false` now downgrades stale `runtimeState: running` snapshots into recency-derived non-live states instead of keeping them active forever.
+  - Fleet Sessions `Active` now keys off `getFleetEntryStatusMeta(...).isActive` and no longer treats `recent` sessions as active.
+  - Fleet session rail now dedupes repeated entries by canonical session/task identity and prefers the strongest live entry.
+  - session cards now expose response freshness text such as responding/last-response/awaiting-response so current activity is easier to locate.
+- Validation:
+  - focused tests passed:
+    - `npm test -- tests/session-api.test.mjs tests/fleet-tab-render.test.mjs`
+  - build passed:
+    - `npm run build`
+  - full suite status:
+    - `npm test` progressed through grouped batches and then failed in unrelated pre-existing runtime timeout coverage under `tests/primary-agent.runtime.test.mjs`
+    - observed failing cases:
+      - `falls back to pooled execution when active adapter is busy on another session`
+      - `records a context compression marker when returned items were summarized`
+      - `retries codex locally before any failover`
+      - `suppresses failover until repeated infrastructure failures`

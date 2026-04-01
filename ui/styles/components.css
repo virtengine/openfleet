@@ -6792,3 +6792,9 @@ select.input {
     border-top: 1px solid var(--border, #30363d);
   }
 }
+
+.fleet-slot-meta-response {
+  min-width: 0;
+  color: var(--text-hint);
+  white-space: nowrap;
+}

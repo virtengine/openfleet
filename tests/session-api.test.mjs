@@ -328,6 +328,94 @@ describe("session lifecycle/runtime metadata", () => {
     );
   });
 
+  it("downgrades runtime-active sessions to recency when they are not live", () => {
+    const now = Date.UTC(2026, 3, 2, 6, 0, 0);
+
+    expect(
+      getSessionRuntimeState(
+        {
+          lifecycleStatus: "active",
+          status: "active",
+          runtimeState: "active",
+          runtimeIsLive: false,
+          lastActiveAt: new Date(now - 30_000).toISOString(),
+        },
+        { now },
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        key: "recent",
+        source: "runtime",
+        isLive: false,
+      }),
+    );
+
+    expect(
+      getSessionRuntimeState(
+        {
+          lifecycleStatus: "active",
+          status: "active",
+          runtimeState: "active",
+          runtimeIsLive: false,
+          lastActiveAt: new Date(now - 12 * 60_000).toISOString(),
+        },
+        { now },
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        key: "stale",
+        source: "runtime",
+        isLive: false,
+        isStale: true,
+      }),
+    );
+  });
+
+  it("downgrades persisted running snapshots when the runtime is no longer live", () => {
+    const now = Date.UTC(2026, 3, 2, 0, 5, 0);
+
+    expect(
+      getSessionRuntimeState(
+        {
+          lifecycleStatus: "active",
+          status: "active",
+          runtimeState: "running",
+          runtimeIsLive: false,
+          lastActiveAt: new Date(now - 45_000).toISOString(),
+        },
+        { now },
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        key: "recent",
+        label: "Recent",
+        isLive: false,
+        source: "runtime",
+      }),
+    );
+
+    expect(
+      getSessionRuntimeState(
+        {
+          lifecycleStatus: "active",
+          status: "active",
+          runtimeState: "running",
+          runtimeIsLive: false,
+          lastActiveAt: new Date(now - 11 * 60_000).toISOString(),
+        },
+        { now },
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        key: "stale",
+        label: "Stale",
+        isLive: false,
+        isStale: true,
+        source: "runtime",
+      }),
+    );
+  });
+
   it("reports non-live runtime for terminal lifecycle states", () => {
     expect(
       getSessionRuntimeState({
@@ -362,5 +450,3 @@ describe("session lifecycle/runtime metadata", () => {
     ).toBe("2026-01-02T00:00:00.000Z");
   });
 });
-
-

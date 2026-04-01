@@ -37,6 +37,18 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("buildWorkflowRunApiPath");
       expect(source).toContain("activeWorkspaceId.value");
       expect(source).toContain("searchParams.set(\"workspace\", workspaceId)");
+      expect(source).toContain("apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}`))");
+    });
+
+    it(`${label} shows explicit loading and retry states for run history and run details`, () => {
+      expect(source).toContain("workflowRunsLoading");
+      expect(source).toContain("workflowRunsError");
+      expect(source).toContain("workflowRunDetailLoading");
+      expect(source).toContain("workflowRunDetailError");
+      expect(source).toContain("Loading workflow runs…");
+      expect(source).toContain("Fetching run details…");
+      expect(source).toContain("Retry");
+      expect(source).toContain("Refreshing…");
     });
 
     it(`${label} keeps older workflow pagination manual-only`, () => {

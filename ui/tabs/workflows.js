@@ -65,9 +65,13 @@ const workflowRunsTotal = signal(0);
 const workflowRunsHasMore = signal(false);
 const workflowRunsNextOffset = signal(0);
 const workflowRunsLoadingMore = signal(false);
+const workflowRunsLoading = signal(false);
+const workflowRunsError = signal("");
 const workflowRunsScopeId = signal(null);
 const selectedRunId = signal(null);
 const selectedRunDetail = signal(null);
+const workflowRunDetailLoading = signal(false);
+const workflowRunDetailError = signal("");
 const canvasZoom = signal(1);
 const canvasOffset = signal({ x: 0, y: 0 });
 const selectedNodeId = signal(null);
@@ -2226,7 +2230,9 @@ async function loadRuns(workflowId, opts = {}) {
       ? `/api/workflows/${scopedWorkflowId}/runs`
       : "/api/workflows/runs";
     if (append) workflowRunsLoadingMore.value = true;
-    const data = await apiFetch(`${baseUrl}?limit=${limit}&offset=${offset}`);
+    else workflowRunsLoading.value = true;
+    workflowRunsError.value = "";
+    const data = await apiFetch(buildWorkflowRunApiPath(`${baseUrl}?limit=${limit}&offset=${offset}`));
     if (data?.runs) {
       const pageRuns = Array.isArray(data.runs) ? data.runs : [];
       const mergedRuns = append
@@ -2243,30 +2249,49 @@ async function loadRuns(workflowId, opts = {}) {
       workflowRunsHasMore.value = hasMore || mergedRuns.length < workflowRunsTotal.value;
     }
   } catch (err) {
+    workflowRunsError.value = String(err?.message || "Failed to load workflow runs");
     console.error("[workflows] Failed to load runs:", err);
   } finally {
+    if (!append) workflowRunsLoading.value = false;
     workflowRunsLoadingMore.value = false;
   }
 }
 
 async function loadRunDetail(runId, opts = {}) {
   if (!runId) return;
+  const safeRunId = String(runId || "").trim();
+  const previousRunId = String(selectedRunId.value || "").trim();
+  const clearCurrentDetail =
+    previousRunId !== safeRunId
+    || String(selectedRunDetail.value?.runId || "").trim() !== safeRunId;
+  selectedRunId.value = safeRunId;
+  if (clearCurrentDetail) {
+    selectedRunDetail.value = null;
+  }
+  workflowRunDetailLoading.value = true;
+  workflowRunDetailError.value = "";
   try {
-    const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`);
+    const data = await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}`));
     if (data?.run) {
       const scopedWorkflowId = String(opts?.workflowId || workflowRunsScopeId.value || data.run.workflowId || "").trim() || null;
       if (scopedWorkflowId) {
         workflowRunsScopeId.value = scopedWorkflowId;
       }
-      selectedRunId.value = runId;
       selectedRunDetail.value = data.run;
       viewMode.value = "runs";
-      const route = { runsView: true, runId };
+      const route = { runsView: true, runId: safeRunId };
       if (scopedWorkflowId) route.runsWorkflowId = scopedWorkflowId;
       setRouteParams(route, { replace: false, skipGuard: true });
+      workflowRunDetailError.value = "";
+      return;
     }
+    selectedRunDetail.value = null;
+    workflowRunDetailError.value = "Workflow run not found.";
   } catch (err) {
-    showToast("Failed to load run details", "error");
+    selectedRunDetail.value = null;
+    workflowRunDetailError.value = String(err?.message || "Failed to load run details");
+  } finally {
+    workflowRunDetailLoading.value = false;
   }
 }
 
@@ -2735,7 +2760,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           setLiveNodeStatuses({});
           return;
         }
-        const detailResponse = await apiFetch(`/api/workflows/runs/${targetRun.runId}`);
+        const detailResponse = await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${targetRun.runId}`));
         if (cancelled) return;
         const detailedRun = detailResponse?.run || targetRun;
         setLiveRun(detailedRun);
@@ -6263,10 +6288,14 @@ function safePrettyJson(value) {
 
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
+  const runsLoading = workflowRunsLoading.value === true;
+  const runsError = String(workflowRunsError.value || "").trim();
   const totalRuns = Number(workflowRunsTotal.value || runs.length);
   const hasMoreRuns = workflowRunsHasMore.value === true;
   const loadingMoreRuns = workflowRunsLoadingMore.value === true;
   const selectedRun = selectedRunDetail.value;
+  const runDetailLoading = workflowRunDetailLoading.value === true;
+  const runDetailError = String(workflowRunDetailError.value || "").trim();
   const scopedWorkflowId = String(workflowRunsScopeId.value || "").trim();
   const scopedWorkflowName = scopedWorkflowId ? getWorkflowNameById(scopedWorkflowId) : "";
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
@@ -6619,7 +6648,7 @@ function RunHistoryView() {
     const safeIntent = String(intent || "ask").trim().toLowerCase();
     if (!safeRunId) return null;
     return startWorkflowCopilotSession({
-      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}`,
+      endpoint: buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}`),
       fallbackPrompt: buildRunCopilotPrompt(run, safeIntent),
       title: `${safeIntent === "fix" ? "Fix failed workflow run" : "Ask about workflow run"} ${safeRunId}`.trim(),
       successToast: safeIntent === "fix" ? "Opened failed-run fix chat" : "Opened workflow run analysis chat",
@@ -6631,7 +6660,7 @@ function RunHistoryView() {
     const safeIntent = String(intent || "node").trim().toLowerCase();
     if (!safeRunId || !safeNodeId) return null;
     return startWorkflowCopilotSession({
-      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}&nodeId=${encodeURIComponent(safeNodeId)}`,
+      endpoint: buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}&nodeId=${encodeURIComponent(safeNodeId)}`),
       fallbackPrompt: buildRunNodeCopilotPrompt(run, safeNodeId, { intent: safeIntent, workflow }),
       title: `${safeIntent === "fix" ? "Fix node" : "Ask Bosun about node"} ${safeNodeId}`.trim(),
       successToast: safeIntent === "fix" ? "Opened node fix chat" : "Opened node copilot chat",
@@ -6641,7 +6670,7 @@ function RunHistoryView() {
     const safeRunId = String(run?.runId || "").trim();
     if (!safeRunId) return;
     try {
-      const retryInfo = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
+      const retryInfo = await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`), {
         method: "POST",
         body: JSON.stringify({}),
       });
@@ -6688,7 +6717,7 @@ function RunHistoryView() {
         return;
       }
 
-      const result = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
+      const result = await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`), {
         method: "POST",
         body: JSON.stringify({ mode: selectedMode }),
       });
@@ -6789,6 +6818,44 @@ function RunHistoryView() {
     }
     refreshRunDiagnostics(selectedRunId.value).catch(() => {});
   }, [refreshRunDiagnostics, selectedRunId.value]);
+
+  if (selectedRunId.value && runDetailLoading && !selectedRun) {
+    return html`
+      <div style="padding: 0 4px;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+          <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunDetailError.value = ""; }}>
+            ← Back to Run History
+          <//>
+          <h2 style="margin:0; font-size:18px; font-weight:700;">Loading Run ${String(selectedRunId.value || "").slice(0, 12) || ""}</h2>
+        </div>
+        <div style="min-height:260px; display:flex; align-items:center; justify-content:center; padding:32px; border:1px solid var(--color-border,#2a3040); border-radius:12px; background:var(--color-bg-secondary,#1a1f2e);">
+          <div style="display:flex; flex-direction:column; align-items:center; gap:12px; color:var(--color-text-secondary,#94a3b8);">
+            <${CircularProgress} size=${28} />
+            <div style="font-size:13px;">Fetching run details…</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (selectedRunId.value && !selectedRun && runDetailError) {
+    return html`
+      <div style="padding: 0 4px;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+          <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunDetailError.value = ""; }}>
+            ← Back to Run History
+          <//>
+          <h2 style="margin:0; font-size:18px; font-weight:700;">Run Details</h2>
+        </div>
+        <${Alert}
+          severity="warning"
+          action=${html`<${Button} color="inherit" size="small" onClick=${() => loadRunDetail(selectedRunId.value)}>Retry<//>`}
+        >
+          ${runDetailError}
+        </${Alert}>
+      </div>
+    `;
+  }
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -7097,7 +7164,7 @@ function RunHistoryView() {
               color="error"
               onClick=${async () => {
                 try {
-                  await apiFetch("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/cancel", { method: "POST" });
+                  await apiFetch(buildWorkflowRunApiPath("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/cancel"), { method: "POST" });
                   showToast("Run cancellation requested", "success");
                   setTimeout(() => loadRunDetail(selectedRun.runId), 1000);
                 } catch (err) {
@@ -7250,7 +7317,7 @@ function RunHistoryView() {
                   onClick=${async () => {
                     try {
                       const note = window.prompt("Optional approval note", "") || "";
-                      await apiFetch(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`, {
+                      await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`), {
                         method: "POST",
                         body: JSON.stringify({ decision: "approved", note }),
                       });
@@ -7270,7 +7337,7 @@ function RunHistoryView() {
                   onClick=${async () => {
                     try {
                       const note = window.prompt("Reason for denying approval", "") || "";
-                      await apiFetch(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`, {
+                      await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`), {
                         method: "POST",
                         body: JSON.stringify({ decision: "denied", note }),
                       });
@@ -8004,8 +8071,9 @@ function RunHistoryView() {
           variant="text"
           size="small"
           onClick=${() => loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) })}
+          disabled=${runsLoading}
         >
-          Refresh
+          ${runsLoading ? html`<${CircularProgress} size=${14} sx=${{ mr: 0.5 }} /> Refreshing…` : "Refresh"}
         <//>
         ${canLoadMoreRuns && html`
           <${Button}
@@ -8018,7 +8086,23 @@ function RunHistoryView() {
           <//>
         `}
         ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
+        ${runsLoading && runs.length > 0 && html`
+          <span class="wf-badge" style="background:#38bdf820; color:#7dd3fc; display:flex; align-items:center; gap:6px;">
+            <${CircularProgress} size=${12} sx=${{ color: "#7dd3fc" }} />
+            Loading
+          </span>
+        `}
       </div>
+
+      ${runsError && html`
+        <${Alert}
+          severity="warning"
+          sx=${{ mb: 1.5 }}
+          action=${html`<${Button} color="inherit" size="small" onClick=${() => loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) })}>Retry<//>`}
+        >
+          ${runsError}
+        </${Alert}>
+      `}
 
       <div class="wf-runs-toolbar">
         <${TextField}
@@ -8260,11 +8344,18 @@ function RunHistoryView() {
           `}
       </div>
 
-      ${runs.length === 0 && html`
+      ${runsLoading && runs.length === 0 && html`
+        <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:40px; color:var(--color-text-secondary,#94a3b8);">
+          <${CircularProgress} size=${28} />
+          <div>Loading workflow runs…</div>
+        </div>
+      `}
+
+      ${!runsLoading && runs.length === 0 && html`
         <div style="text-align: center; padding: 40px; opacity: 0.5;">No workflow runs yet</div>
       `}
 
-      ${runs.length > 0 && filteredRuns.length === 0 && html`
+      ${!runsLoading && runs.length > 0 && filteredRuns.length === 0 && html`
         <div style="text-align: center; padding: 28px; opacity: 0.6;">
           <div>No runs match the current filters yet.</div>
           ${canLoadMoreRuns && html`
@@ -8300,7 +8391,7 @@ function RunHistoryView() {
                   hover
                   selected=${selectedRunId.value === run.runId}
                   sx=${{ cursor: "pointer" }}
-                  onClick=${() => loadRunDetail(run.runId)}
+                  onClick=${() => loadRunDetail(run.runId, { workflowId: run.workflowId })}
                 >
                   <${TableCell}>
                     <${Typography} variant="body2" sx=${{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 }}>

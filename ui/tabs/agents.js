@@ -40,7 +40,11 @@ import {
 import { ICONS } from "../modules/icons.js";
 import { formatCompactCount } from "../modules/session-insights.js";
 import { formatRelative, truncate } from "../modules/utils.js";
-import { getSessionRuntimeState, resolveSessionWorkspaceHint } from "../modules/session-api.js";
+import {
+  getSessionRecencyTimestamp,
+  getSessionRuntimeState,
+  resolveSessionWorkspaceHint,
+} from "../modules/session-api.js";
 import {
   Card,
   Badge,
@@ -466,8 +470,96 @@ function getFleetEntryStatus(entry) {
 
 function isFleetEntryActive(entry) {
   if (!entry || typeof entry !== "object") return false;
-  const status = getFleetEntryStatus(entry);
-  return status === "active" || status === "running" || status === "busy" || status === "inprogress";
+  return getFleetEntryStatusMeta(entry).isActive === true;
+}
+
+function getFleetEntryResponseTimestamp(entry) {
+  const session = entry?.session || null;
+  const recentActions = Array.isArray(session?.insights?.recentActions) ? session.insights.recentActions : [];
+  const turns = Array.isArray(session?.turns) ? session.turns : [];
+  const candidates = [
+    ...recentActions.map((action) => action?.timestamp),
+    ...turns.flatMap((turn) => [turn?.completedAt, turn?.updatedAt, turn?.endedAt, turn?.startedAt]),
+    session?.lastMessageAt,
+    session?.runtimeUpdatedAt,
+    getSessionRecencyTimestamp(session),
+    entry?.slot?.startedAt,
+  ];
+  let winner = "";
+  let winnerMs = Number.NEGATIVE_INFINITY;
+  for (const value of candidates) {
+    const normalized = String(value || "").trim();
+    if (!normalized) continue;
+    const parsedMs = Date.parse(normalized);
+    if (!Number.isFinite(parsedMs)) continue;
+    if (parsedMs >= winnerMs) {
+      winner = normalized;
+      winnerMs = parsedMs;
+    }
+  }
+  return winner;
+}
+
+function getFleetEntryResponseAgeMs(entry) {
+  const timestamp = getFleetEntryResponseTimestamp(entry);
+  const parsedMs = Date.parse(String(timestamp || ""));
+  if (!Number.isFinite(parsedMs)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Date.now() - parsedMs);
+}
+
+function getFleetEntryActivityLabel(entry) {
+  const responsePath = resolveFleetEntrySessionId(entry) ? "stream" : "logs";
+  const timestamp = getFleetEntryResponseTimestamp(entry);
+  if (timestamp) {
+    const prefix = isFleetEntryActive(entry)
+      ? `Responding via ${responsePath}`
+      : `Last ${responsePath} response`;
+    return `${prefix} ${formatRelative(timestamp)}`;
+  }
+  if (isFleetEntryActive(entry)) return `Awaiting ${responsePath} response`;
+  return "";
+}
+
+function getFleetEntryCanonicalKey(entry) {
+  const sessionId = resolveFleetEntrySessionId(entry);
+  if (sessionId) return `session:${sessionId}`;
+  const taskId = String(entry?.slot?.taskId || entry?.session?.taskId || "").trim();
+  if (taskId) return `task:${taskId}`;
+  return String(entry?.key || "");
+}
+
+function compareFleetEntries(a, b) {
+  const aActive = Number(isFleetEntryActive(a));
+  const bActive = Number(isFleetEntryActive(b));
+  if (aActive !== bActive) return bActive - aActive;
+  const aResponseAgeMs = getFleetEntryResponseAgeMs(a);
+  const bResponseAgeMs = getFleetEntryResponseAgeMs(b);
+  const aResponding = Number(aActive && Number.isFinite(aResponseAgeMs) && aResponseAgeMs <= 2 * 60 * 1000);
+  const bResponding = Number(bActive && Number.isFinite(bResponseAgeMs) && bResponseAgeMs <= 2 * 60 * 1000);
+  if (aResponding !== bResponding) return bResponding - aResponding;
+  const aHasTurns = Number(Number(a?.session?.turnCount || 0) > 0);
+  const bHasTurns = Number(Number(b?.session?.turnCount || 0) > 0);
+  if (aHasTurns !== bHasTurns) return bHasTurns - aHasTurns;
+  const aResponseMs = Date.parse(String(getFleetEntryResponseTimestamp(a) || "")) || 0;
+  const bResponseMs = Date.parse(String(getFleetEntryResponseTimestamp(b) || "")) || 0;
+  if (aResponseMs !== bResponseMs) return bResponseMs - aResponseMs;
+  const aRealSlot = Number(Boolean(a?.slot && !a?.slot?.synthetic));
+  const bRealSlot = Number(Boolean(b?.slot && !b?.slot?.synthetic));
+  if (aRealSlot !== bRealSlot) return bRealSlot - aRealSlot;
+  return getFleetEntryTimestamp(b) - getFleetEntryTimestamp(a);
+}
+
+function dedupeFleetEntries(entries = []) {
+  const deduped = new Map();
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const canonicalKey = getFleetEntryCanonicalKey(entry);
+    const existing = deduped.get(canonicalKey);
+    if (!existing || compareFleetEntries(entry, existing) < 0) {
+      deduped.set(canonicalKey, entry);
+    }
+  }
+  return Array.from(deduped.values()).sort(compareFleetEntries);
 }
 
 function getFleetEntryStatusMeta(entry) {
@@ -505,7 +597,7 @@ function getFleetEntryStatusMeta(entry) {
       return { key: "running", label: "Active", tone: "active", isActive: true };
     }
     if (runtimeState?.key === "recent") {
-      return { key: "recent", label: "Recent", tone: "active", isActive: true };
+      return { key: "recent", label: "Recent", tone: "warning", isActive: false };
     }
     if (runtimeState?.key === "idle" || runtimeState?.key === "queued" || runtimeState?.key === "paused") {
       return { key: runtimeState.key, label: runtimeState.label || "Idle", tone: "warning", isActive: false };
@@ -606,7 +698,7 @@ function getFleetEntryRelativeTime(entry) {
 function isActiveSessionRecord(session) {
   if (!session || typeof session !== "object") return false;
   const runtimeState = getSessionRuntimeState(session);
-  return runtimeState?.key === "running" || runtimeState?.key === "recent";
+  return runtimeState?.key === "running";
 }
 
 function getFleetEntryOriginLabel(entry) {
@@ -2999,7 +3091,7 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
         isTaskFallback: true,
       }));
 
-    return [...slotEntries, ...fallbackEntries].sort((a, b) => getFleetEntryTimestamp(b) - getFleetEntryTimestamp(a));
+    return dedupeFleetEntries([...slotEntries, ...fallbackEntries]);
   }, [slots, allSessions, taskFallbackEntries]);
 
   const historyEntries = useMemo(() => {
@@ -3026,11 +3118,11 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
         session,
         isHistory: true,
       }))
-      .sort((a, b) => getFleetEntryTimestamp(b) - getFleetEntryTimestamp(a));
+      .sort(compareFleetEntries);
   }, [allSessions, entries]);
 
   const allEntries = useMemo(
-    () => [...entries, ...historyEntries].sort((a, b) => getFleetEntryTimestamp(b) - getFleetEntryTimestamp(a)),
+    () => dedupeFleetEntries([...entries, ...historyEntries]),
     [entries, historyEntries],
   );
 
@@ -3203,6 +3295,7 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
               : html`${visibleEntries.map((entry) => {
                   const entryStatus = getFleetEntryStatusMeta(entry);
                   const relativeTime = getFleetEntryRelativeTime(entry);
+                  const activityLabel = getFleetEntryActivityLabel(entry);
                   const sessionId = resolveFleetEntrySessionId(entry);
                   return html`
                     <${Button} variant="text" size="small" component="div"
@@ -3228,6 +3321,9 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
                       </div>
                       <div class="fleet-slot-item-meta fleet-slot-item-meta-secondary">
                         <span class="fleet-slot-meta-turns">Turns ${Number(entry.session?.turnCount || 0)}</span>
+                        ${activityLabel
+                          ? html`<span class="fleet-slot-meta-response">${activityLabel}</span>`
+                          : null}
                         <span class=${`fleet-slot-state-badge ${entryStatus.tone || "historic"}`}>
                           ${entryStatus.label || "Unknown"}
                         </span>
@@ -3280,6 +3376,9 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
                         : selectedEntry.session?.branch
                           ? ` · ${selectedEntry.session.branch}`
                           : ""}
+                    </div>
+                    <div class="task-card-meta">
+                      ${getFleetEntryActivityLabel(selectedEntry) || `Responses via ${resolveFleetEntrySessionId(selectedEntry) ? "stream" : "logs"}`}
                     </div>
                   </div>
                   ${selectedEntry.slot && !selectedEntry.isTaskFallback && html`
