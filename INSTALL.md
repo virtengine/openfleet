@@ -339,6 +339,8 @@ docker inspect bosun --format='{{json .State.Health}}'  # Health details
 
 Bosun auto-generates a self-signed certificate on first start. Your browser will show a security warning — this is expected for local development. Accept the certificate or use `curl -k` for API calls.
 
+When TLS is enabled, the UI server now negotiates HTTP/2 automatically and keeps HTTP/1.1 fallback enabled for secure WebSocket upgrades.
+
 ### Reset everything
 
 ```bash

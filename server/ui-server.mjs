@@ -5,6 +5,7 @@ import * as nodeCrypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile, readdirSync, statSync } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
+import { createSecureServer as createHttp2SecureServer } from "node:http2";
 import { get as httpsGet, request as httpsRequest } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
 import { networkInterfaces, homedir, userInfo as getOsUserInfo } from "node:os";
@@ -8345,6 +8346,7 @@ const MIME_TYPES = {
 let uiServer = null;
 let uiServerUrl = null;
 let uiServerTls = false;
+let uiServerHttp2 = false;
 let wsServer = null;
 /** Auto-open browser: only once per process, never during tests */
 let _browserOpened = false;
@@ -8353,6 +8355,7 @@ const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
 const UI_SESSION_TOKEN_FILE = "ui-session-token.json";
 const TUI_SESSION_TOKEN_FILE = "ui-token";
 const UI_LAST_PORT_FILE = "ui-last-port.json";
+const DEFAULT_UI_HTTP2_MAX_STREAMS = 100;
 const DEFAULT_UI_INSTANCE_PROBE_TIMEOUT_MS = 1500;
 const DEFAULT_UI_INSTANCE_STALE_GRACE_MS = 2 * 60 * 1000;
 const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
@@ -13682,6 +13685,39 @@ function getHeaderString(value) {
   return String(value || "");
 }
 
+function getRequestAuthority(req, fallback = "localhost") {
+  const forwardedHost = getHeaderString(req?.headers?.["x-forwarded-host"]).trim();
+  if (forwardedHost) return forwardedHost;
+  const authority = getHeaderString(req?.headers?.host || req?.headers?.[":authority"]).trim();
+  return authority || fallback;
+}
+
+function getRequestProtocol(req, fallback = null) {
+  const forwardedProto = getHeaderString(req?.headers?.["x-forwarded-proto"]).trim().toLowerCase();
+  if (forwardedProto === "https" || forwardedProto === "http") return forwardedProto;
+  const directProto = getHeaderString(req?.headers?.[":scheme"]).trim().toLowerCase();
+  if (directProto === "https" || directProto === "http") return directProto;
+  return fallback || (uiServerTls ? "https" : "http");
+}
+
+function getRequestBaseUrl(req, fallbackAuthority = "localhost") {
+  return `${getRequestProtocol(req, "http")}://${getRequestAuthority(req, fallbackAuthority)}`;
+}
+
+function isUiHttp2Disabled() {
+  return ["1", "true", "yes"].includes(
+    String(process.env.BOSUN_UI_HTTP2_DISABLE || "").toLowerCase(),
+  );
+}
+
+function getUiHttp2MaxStreams() {
+  const parsed = Number.parseInt(String(process.env.BOSUN_UI_HTTP2_MAX_STREAMS || ""), 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.max(16, parsed);
+  }
+  return DEFAULT_UI_HTTP2_MAX_STREAMS;
+}
+
 function normalizeRemoteAddress(raw) {
   const value = String(raw || "").trim().toLowerCase();
   if (!value) return "";
@@ -15722,7 +15758,7 @@ async function handleGitHubOAuthCallback(req, res) {
     return;
   }
 
-  const urlObj = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const urlObj = new URL(req.url || "/", getRequestBaseUrl(req, "localhost"));
   const code = urlObj.searchParams.get("code") || "";
   const installationId = urlObj.searchParams.get("installation_id") || "";
   const setupAction = urlObj.searchParams.get("setup_action") || "";
@@ -24458,7 +24494,7 @@ if (path === "/api/agent-logs/context") {
         if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
         try {
           const { generateExportBundle } = await import("../workflow/workflow-exporter.mjs");
-          const baseUrl = `${req.headers["x-forwarded-proto"] || "http"}://${req.headers.host || "localhost:3077"}`;
+          const baseUrl = getRequestBaseUrl(req, "localhost:3077");
           const bundle = generateExportBundle(wf, { baseUrl });
           jsonResponse(res, 200, bundle);
         } catch (err) {
@@ -25769,7 +25805,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/harness/runs" && req.method === "GET") {
     try {
-      const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+      const url = new URL(req.url, getRequestBaseUrl(req, "127.0.0.1"));
       const limit = Number(url.searchParams.get("limit") || 25);
       const activeRuns = listActiveHarnessRunSnapshots();
       const persistedRuns = hydrateHarnessRunListItems(
@@ -26542,8 +26578,8 @@ if (path === "/api/agent-logs/context") {
     // Build public URLs from tunnel URL if available, else from request host.
     let baseUrl = String(getTunnelUrl() || "").replace(/\/+$/, "");
     if (!baseUrl) {
-      const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
-      const proto = uiServerTls || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      const host = getRequestAuthority(req, "localhost");
+      const proto = getRequestProtocol(req, uiServerTls ? "https" : "http");
       baseUrl = `${proto}://${host}`;
     }
 
@@ -27361,7 +27397,7 @@ if (path === "/api/agent-logs/context") {
         }
         // Support ?limit=N&offset=N for message pagination.
         // Default to a bounded tail window so large sessions don't crash the UI.
-        const reqUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+        const reqUrl = new URL(req.url, getRequestBaseUrl(req, "localhost"));
         const limitParam = reqUrl.searchParams.get("limit");
         const offsetParam = reqUrl.searchParams.get("offset");
         const fullParam = String(reqUrl.searchParams.get("full") || "").toLowerCase();
@@ -29554,7 +29590,7 @@ export async function startTelegramUiServer(options = {}) {
   const requestHandler = async (req, res) => {
     const url = new URL(
       req.url || "/",
-      `http://${req.headers.host || "localhost"}`,
+      getRequestBaseUrl(req, "localhost"),
     );
     res.__bosunRequestContext = {
       diagnosticId: ensureResponseDiagnosticId(res),
@@ -29758,11 +29794,24 @@ export async function startTelegramUiServer(options = {}) {
 
   try {
     if (tlsOpts) {
-      uiServer = createHttpsServer(tlsOpts, requestHandler);
+      if (isUiHttp2Disabled()) {
+        uiServer = createHttpsServer(tlsOpts, requestHandler);
+        uiServerHttp2 = false;
+      } else {
+        uiServer = createHttp2SecureServer({
+          ...tlsOpts,
+          allowHTTP1: true,
+          settings: {
+            maxConcurrentStreams: getUiHttp2MaxStreams(),
+          },
+        }, requestHandler);
+        uiServerHttp2 = true;
+      }
       uiServerTls = true;
     } else {
       uiServer = createServer(requestHandler);
       uiServerTls = false;
+      uiServerHttp2 = false;
     }
 
     wsServer = new WebSocketServer({ noServer: true });
@@ -30152,7 +30201,7 @@ export async function startTelegramUiServer(options = {}) {
     uiServer.on("upgrade", (req, socket, head) => {
       const url = new URL(
         req.url || "/",
-        `http://${req.headers.host || "localhost"}`,
+        getRequestBaseUrl(req, "localhost"),
       );
       if (url.pathname !== "/ws") {
         socket.destroy();
@@ -30279,7 +30328,13 @@ export async function startTelegramUiServer(options = {}) {
   setComponentStatus("server", "running");
   console.log(`[telegram-ui] server listening on ${uiServerUrl}`);
   if (uiServerTls) {
-    console.log(`[telegram-ui] TLS enabled (self-signed) — Telegram WebApp buttons will use HTTPS`);
+    if (uiServerHttp2) {
+      console.log(
+        `[telegram-ui] TLS enabled with HTTP/2 (ALPN) and HTTP/1.1 fallback for WebSocket upgrades; max streams=${getUiHttp2MaxStreams()}`,
+      );
+    } else {
+      console.log(`[telegram-ui] TLS enabled (self-signed) — Telegram WebApp buttons will use HTTPS`);
+    }
   }
 
   // ── SECURITY: Warn loudly when auth is disabled ──────────────────────
@@ -30478,6 +30533,7 @@ export function stopTelegramUiServer() {
   uiServer = null;
   uiServerUrl = null;
   uiServerTls = false;
+  uiServerHttp2 = false;
   resetProjectSyncWebhookMetrics();
   releaseUiInstanceLock();
 }

@@ -714,3 +714,31 @@
     - `npm run build`
 - Current blocker outside this slice:
   - broader `tests/ui-server.test.mjs` slices are currently importing through unrelated dirty provider-registry changes in the worktree and fail with missing provider module paths before reaching the workflow assertions. That blocker is not from this SQL migration patch and should be handled separately or after those in-flight provider edits stabilize.
+
+## 2026-04-02 - SQL-first run history paging and isolated ledger anchors
+
+- Goal:
+  - stop SQL-backed workflow history pagination from depending on legacy index hydration in the normal inactive-runs case, and fix state-ledger path resolution so explicit temp/test anchors cannot leak into the shared Bosun home database.
+- Source changes:
+  - `lib/state-ledger-sqlite.mjs`
+  - `workflow/workflow-engine.mjs`
+  - `tests/state-ledger-sqlite.test.mjs`
+  - `tests/workflow-engine.test.mjs`
+- Behavioral change:
+  - `resolveStateLedgerPath()` now treats explicit `anchorPath` values as authoritative unless they are actually inside the configured repo/Bosun home roots, preventing test/temp `runsDir` callers from reading the shared home ledger via `REPO_ROOT` or `BOSUN_STATE_LEDGER_PATH`.
+  - `WorkflowEngine#_readRunIndex()` can now rebuild `runs/index.json` projections from SQL summaries without leaking unrelated global runs into temp-engine tests.
+  - `WorkflowEngine#getRunHistoryPage()` now uses true SQL paging (`offset` + `limit`) when there are no active runs, instead of first hydrating a larger legacy projection window and then slicing it in memory.
+- Validation:
+  - focused SQL paging/isolation regressions passed:
+    - `npx vitest run tests/workflow-engine.test.mjs tests/state-ledger-sqlite.test.mjs -t "rebuilds the legacy run index from sqlite summaries when index.json is missing|keeps standalone anchor paths isolated from the shared Bosun home ledger|loads persisted run detail from sqlite when the detail file is missing|workflow execution ledgers into sqlite and falls back to sqlite reads"`
+    - `npx vitest run tests/workflow-engine.test.mjs tests/state-ledger-sqlite.test.mjs -t "uses SQL-backed page reads without invoking legacy index hydration|reads paged run history from SQL-backed summaries when the legacy index is missing|pages SQL-backed run history with offsets when the legacy index is missing|rebuilds the legacy run index from sqlite summaries when index.json is missing|keeps standalone anchor paths isolated from the shared Bosun home ledger"`
+  - build passed:
+    - `npm run build`
+  - full-suite status:
+    - `npm test` advanced through grouped batches 1-11 and then failed in grouped batch 12 on an unrelated Windows cleanup error:
+      - `tests/task-cli.test.mjs` -> `persists deleted tasks before the CLI exits`
+      - failure: `EPERM, Permission denied` while `rmSync(tempDir, { recursive: true, force: true })` ran in `afterEach`
+    - that failure is outside the SQL run-history/ledger changes made in this slice.
+- Remaining SQL-first work after this slice:
+  - `runs/index.json` and `runs/snapshots/*.json` still exist as compatibility mirrors and should stay non-authoritative.
+  - workflow cleanup/recovery paths still contain legacy file scans under `workflow/workflow-engine.mjs`; those should be reviewed next once the broader validation gates stay green.

@@ -4472,6 +4472,62 @@ export class WorkflowEngine extends EventEmitter {
     return { runs, total: runs.length };
   }
 
+  _listPersistedRunSummariesPage(workflowId = null, options = {}) {
+    const rawOffset = Number(options?.offset);
+    const rawLimit = Number(options?.limit);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0
+      ? Math.max(0, Math.floor(rawOffset))
+      : 0;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
+      : 20;
+    try {
+      const page = listWorkflowRunSummariesPageFromStateLedger({
+        anchorPath: this.runsDir,
+        ...(workflowId ? { workflowId } : {}),
+        offset,
+        limit,
+      });
+      const runs = Array.isArray(page?.runs)
+        ? page.runs.map((entry) => this._normalizeRunSummary(entry)).filter(Boolean)
+        : [];
+      if (runs.length > 0 || Number(page?.total || 0) > 0) {
+        const total = Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length;
+        const nextOffset = offset + runs.length;
+        return {
+          runs,
+          total,
+          offset,
+          limit,
+          count: runs.length,
+          hasMore: nextOffset < total,
+          nextOffset: nextOffset < total ? nextOffset : null,
+        };
+      }
+    } catch {
+      // Best-effort SQL-backed read; fall back to legacy projection below.
+    }
+
+    const persistedResult = this._listPersistedRunSummaries(
+      workflowId || null,
+      Math.max(offset + limit, 50),
+    );
+    const runs = persistedResult.runs.slice(offset, offset + limit);
+    const total = Number.isFinite(Number(persistedResult.total))
+      ? Number(persistedResult.total)
+      : persistedResult.runs.length;
+    const nextOffset = offset + runs.length;
+    return {
+      runs,
+      total,
+      offset,
+      limit,
+      count: runs.length,
+      hasMore: nextOffset < total,
+      nextOffset: nextOffset < total ? nextOffset : null,
+    };
+  }
+
   /** Get historical run logs */
   getRunHistory(workflowId, limit = null) {
     // TTL cache for run history to reduce repeated hydration cost.
@@ -4521,6 +4577,26 @@ export class WorkflowEngine extends EventEmitter {
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
       : 20;
     const active = this.getActiveRuns();
+    if (active.length === 0) {
+      const persistedPage = this._listPersistedRunSummariesPage(workflowId || null, { offset, limit });
+      const runs = Array.isArray(persistedPage?.runs)
+        ? persistedPage.runs.map((run) => this._hydrateRunHistoryPageSummary(run))
+        : [];
+      const total = Number.isFinite(Number(persistedPage?.total))
+        ? Number(persistedPage.total)
+        : runs.length;
+      const nextOffset = offset + runs.length;
+      return {
+        items: runs,
+        runs,
+        total,
+        offset,
+        limit,
+        count: runs.length,
+        hasMore: persistedPage?.hasMore === true || nextOffset < total,
+        nextOffset: persistedPage?.nextOffset ?? (nextOffset < total ? nextOffset : null),
+      };
+    }
     const persistedResult = this._listPersistedRunSummaries(
       workflowId || null,
       Math.max(offset + limit + active.length, 50),
@@ -6621,6 +6697,8 @@ export class WorkflowEngine extends EventEmitter {
   _readRunIndex() {
     const indexPath = resolve(this.runsDir, "index.json");
     if (!existsSync(indexPath)) {
+      const ledgerRuns = this._readRunIndexFromStateLedger();
+      if (ledgerRuns.length > 0) return ledgerRuns;
       this._runIndexCache = [];
       this._runIndexCacheMtime = 0;
       return [];
@@ -6632,8 +6710,32 @@ export class WorkflowEngine extends EventEmitter {
       }
       const index = JSON.parse(readFileSync(indexPath, "utf8"));
       const runs = Array.isArray(index?.runs) ? index.runs : [];
+      if (runs.length === 0) {
+        const ledgerRuns = this._readRunIndexFromStateLedger();
+        if (ledgerRuns.length > 0) return ledgerRuns;
+      }
       this._runIndexCache = runs;
       this._runIndexCacheMtime = mtimeMs;
+      return runs;
+    } catch {
+      const ledgerRuns = this._readRunIndexFromStateLedger();
+      return ledgerRuns.length > 0 ? ledgerRuns : [];
+    }
+  }
+
+  _readRunIndexFromStateLedger() {
+    try {
+      const page = listWorkflowRunSummariesPageFromStateLedger({
+        anchorPath: this.runsDir,
+        offset: 0,
+        limit: MAX_PERSISTED_RUNS,
+      });
+      const runs = Array.isArray(page?.runs)
+        ? page.runs.map((entry) => this._normalizeRunSummary(entry)).filter(Boolean)
+        : [];
+      if (runs.length === 0) return [];
+      this._runIndexCache = runs;
+      this._runIndexCacheMtime = 0;
       return runs;
     } catch {
       return [];

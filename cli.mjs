@@ -29,6 +29,7 @@ import { execFileSync, execSync, spawn } from "node:child_process";
 import os from "node:os";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
+import { followTextFile } from "./lib/log-tail.mjs";
 import { safeBanner, BOX } from "./lib/safe-box.mjs";
 import {
   applyAllCompatibility,
@@ -2282,20 +2283,17 @@ async function main() {
             console.log(
               `\n  Tailing logs for active bosun (PID ${monitorPid}):\n  ${logFile}\n`,
             );
-            await new Promise((res) => {
-              // Spawn tail in its own process group (detached) so that
-              // Ctrl+C in this terminal only kills the tailing session,
-              // never the running daemon.
-              const tail = spawn("tail", ["-f", "-n", "200", logFile], {
-                stdio: ["ignore", "inherit", "inherit"],
-                detached: true,
+            const controller = new AbortController();
+            const stopFollowing = () => controller.abort();
+            process.once("SIGINT", stopFollowing);
+            try {
+              await followTextFile(logFile, {
+                initialLines: 200,
+                signal: controller.signal,
               });
-              tail.on("exit", res);
-              process.on("SIGINT", () => {
-                try { process.kill(-tail.pid, "SIGTERM"); } catch { tail.kill(); }
-                res();
-              });
-            });
+            } finally {
+              process.removeListener("SIGINT", stopFollowing);
+            }
             process.exit(0);
           } else {
             console.error(

@@ -100,6 +100,16 @@ afterEach(async () => {
 });
 
 describe("state ledger sqlite workflow integration", () => {
+  it("keeps standalone anchor paths isolated from the shared Bosun home ledger", () => {
+    const standaloneRoot = makeTempDir("state-ledger-standalone-");
+    const runsDir = join(standaloneRoot, "runs");
+    mkdirSync(runsDir, { recursive: true });
+
+    const resolvedPath = resolveStateLedgerPath({ anchorPath: runsDir });
+    expect(resolvedPath).toBe(resolve(standaloneRoot, "state-ledger.sqlite"));
+    expect(resolvedPath.includes(`${join("bosun", ".cache", "state-ledger.sqlite")}`)).toBe(false);
+  });
+
   it("mirrors workflow execution ledgers into sqlite and falls back to sqlite reads", async () => {
     const repoRoot = makeTempDir("state-ledger-workflow-");
     const runsDir = join(repoRoot, ".bosun", "workflow-runs");

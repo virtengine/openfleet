@@ -1443,7 +1443,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(detailSpy).not.toHaveBeenCalled();
   });
 
-  it("limits paged run-history hydration to the active page window floor", async () => {
+  it("uses SQL-backed page reads without invoking legacy index hydration", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
       [],
@@ -1458,7 +1458,7 @@ describe("WorkflowEngine - run history details", () => {
     const hydrateSpy = vi.spyOn(engine, "_hydrateRunIndexFromDetails");
     engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
 
-    expect(hydrateSpy).toHaveBeenCalledWith(50);
+    expect(hydrateSpy).not.toHaveBeenCalled();
   });
 
   it("reads paged run history from SQL-backed summaries when the legacy index is missing", async () => {
@@ -1482,6 +1482,36 @@ describe("WorkflowEngine - run history details", () => {
       workflowId: wf.id,
       workflowName: "SQL History Workflow",
     }));
+  });
+
+  it("pages SQL-backed run history with offsets when the legacy index is missing", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "SQL Offset History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const hydrateSpy = vi.spyOn(engine, "_hydrateRunIndexFromDetails");
+    const indexPath = join(tmpDir, "runs", "index.json");
+    unlinkSync(indexPath);
+
+    const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+    expect(page.total).toBeGreaterThanOrEqual(3);
+    expect(page.runs).toHaveLength(1);
+    expect(page.offset).toBe(1);
+    expect(page.limit).toBe(1);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(2);
+    expect(page.runs[0]).toEqual(expect.objectContaining({
+      workflowId: wf.id,
+      workflowName: "SQL Offset History Workflow",
+    }));
+    expect(hydrateSpy).not.toHaveBeenCalled();
   });
 
   it("backfills sparse paged run summaries from run detail files when summary fields are missing", async () => {
@@ -1754,6 +1784,30 @@ describe("WorkflowEngine - run history details", () => {
       workflowId: wf.id,
       status: WorkflowStatus.COMPLETED,
     });
+  });
+
+  it("rebuilds the legacy run index from sqlite summaries when index.json is missing", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-sql-index", name: "SQL Index Workflow" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {});
+    const indexPath = join(engine.runsDir, "index.json");
+    rmSync(indexPath, { force: true });
+
+    const rebuilt = engine._readRunIndex();
+    expect(rebuilt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runId: ctx.id,
+          workflowId: wf.id,
+          status: WorkflowStatus.COMPLETED,
+        }),
+      ]),
+    );
   });
 
   it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
