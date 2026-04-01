@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
   getWorkflowRunFromStateLedger,
+  listWorkflowRunFamilyFromStateLedger,
   listWorkflowRunsFromStateLedger,
   writeWorkflowStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
@@ -14,6 +15,7 @@ const LEDGER_DIR_NAME = "execution-ledger";
 const STATE_LEDGER_FILENAME = "state-ledger.sqlite";
 const STATE_LEDGER_SCHEMA_VERSION = 1;
 const STATE_LEDGER_BUSY_TIMEOUT_MS = 5_000;
+const LEDGER_READ_CACHE_TTL_MS = 5_000;
 const _stateLedgerCache = new Map();
 
 function isLikelyTestRuntime() {
@@ -630,6 +632,41 @@ export class WorkflowExecutionLedger {
   constructor({ runsDir } = {}) {
     this.runsDir = resolve(String(runsDir || process.cwd()));
     this.ledgerDir = resolve(this.runsDir, LEDGER_DIR_NAME);
+    this._runLedgerCache = new Map();
+    this._runFamilyCache = new Map();
+    this._runGraphCache = new Map();
+  }
+
+  _readCached(map, key) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return null;
+    const cached = map.get(normalizedKey);
+    if (!cached) return null;
+    if ((Date.now() - cached.ts) > LEDGER_READ_CACHE_TTL_MS) {
+      map.delete(normalizedKey);
+      return null;
+    }
+    return cached.value;
+  }
+
+  _writeCached(map, key, value) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey || value == null) return value;
+    map.set(normalizedKey, { ts: Date.now(), value });
+    return value;
+  }
+
+  _invalidateRunCaches(runId = "", rootRunId = "") {
+    const normalizedRunId = String(runId || "").trim();
+    const normalizedRootRunId = String(rootRunId || "").trim();
+    if (normalizedRunId) {
+      this._runLedgerCache.delete(normalizedRunId);
+      this._runGraphCache.delete(normalizedRunId);
+    }
+    if (normalizedRootRunId) {
+      this._runFamilyCache.delete(normalizedRootRunId);
+      this._runGraphCache.delete(normalizedRootRunId);
+    }
   }
 
   _stateLedgerPath() {
@@ -657,18 +694,28 @@ export class WorkflowExecutionLedger {
   getRunLedger(runId) {
     const normalizedRunId = String(runId || "").trim();
     if (!normalizedRunId) return null;
+    const cached = this._readCached(this._runLedgerCache, normalizedRunId);
+    if (cached) return cached;
     const filePath = this._ledgerPath(normalizedRunId);
     if (existsSync(filePath)) {
       try {
         const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-        return normalizeLedgerDocument(normalizedRunId, parsed);
+        return this._writeCached(
+          this._runLedgerCache,
+          normalizedRunId,
+          normalizeLedgerDocument(normalizedRunId, parsed),
+        );
       } catch {
         /* sqlite fallback below */
       }
     }
     if (!this._canReadStateLedger()) return null;
     try {
-      return getWorkflowRunFromStateLedger(normalizedRunId, { anchorPath: this.runsDir });
+      return this._writeCached(
+        this._runLedgerCache,
+        normalizedRunId,
+        getWorkflowRunFromStateLedger(normalizedRunId, { anchorPath: this.runsDir }),
+      );
     } catch {
       return null;
     }

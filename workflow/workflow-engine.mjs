@@ -51,7 +51,11 @@ import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
 import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
 import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
-import { listWorkflowRunSummariesPageFromStateLedger } from "../lib/state-ledger-sqlite.mjs";
+import {
+  getWorkflowRunDetailFromStateLedger,
+  listWorkflowRunSummariesPageFromStateLedger,
+  writeWorkflowRunDetailToStateLedger,
+} from "../lib/state-ledger-sqlite.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -5217,6 +5221,44 @@ export class WorkflowEngine extends EventEmitter {
       return decorate ? this._decorateRunDetail(hydrated) : hydrated;
     }
 
+    const sqlDetail = getWorkflowRunDetailFromStateLedger(normalizedRunId, { anchorPath: this.runsDir });
+    if (sqlDetail && typeof sqlDetail === "object") {
+      const detail = repairWorkflowRunDetail(sqlDetail);
+      const summary = this._normalizeRunSummary(
+        this._readRunIndex().find((entry) => entry?.runId === normalizedRunId) || null,
+      );
+      if (summary) {
+        const recomputed = this._buildSummaryFromDetail({
+          runId: normalizedRunId,
+          workflowId: summary.workflowId,
+          workflowName: summary.workflowName,
+          status: summary.status || WorkflowStatus.COMPLETED,
+          detail,
+        });
+        const hydrated = { ...summary, ...recomputed, detail, ledger };
+        return decorate ? this._decorateRunDetail(hydrated) : hydrated;
+      }
+      const terminalRaw = String(detail?.data?._workflowTerminalStatus || "")
+        .trim()
+        .toLowerCase();
+      const status = terminalRaw === WorkflowStatus.FAILED || terminalRaw === "error"
+        ? WorkflowStatus.FAILED
+        : (terminalRaw === WorkflowStatus.CANCELLED
+            ? WorkflowStatus.CANCELLED
+            : (Array.isArray(detail?.errors) && detail.errors.length > 0
+                ? WorkflowStatus.FAILED
+                : WorkflowStatus.COMPLETED));
+      const computed = this._buildSummaryFromDetail({
+        runId: normalizedRunId,
+        workflowId: detail?.data?._workflowId || null,
+        workflowName: detail?.data?._workflowName || null,
+        status,
+        detail,
+      });
+      const hydrated = { ...computed, detail, ledger };
+      return decorate ? this._decorateRunDetail(hydrated) : hydrated;
+    }
+
     const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
     if (!existsSync(detailPath)) return null;
 
@@ -6937,6 +6979,7 @@ export class WorkflowEngine extends EventEmitter {
       // Write initial detail file so we can resume from it
       const detail = this._serializeRunContext(ctx, true);
       this._writeRunDetail(runId, detail);
+      this._writeRunDetailToStateLedger(runId, detail);
 
       // Also ensure the run appears in the main index (with RUNNING status)
       // so that getRunDetail() can find it even before completion.
@@ -6966,6 +7009,7 @@ export class WorkflowEngine extends EventEmitter {
         this._ensureDirs();
         const detail = this._serializeRunContext(ctx, true);
         this._writeRunDetail(runId, detail);
+        this._writeRunDetailToStateLedger(runId, detail);
       } catch (err) {
         console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
       }
@@ -7387,6 +7431,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Save full run detail
       this._writeRunDetail(runId, detail);
+      this._writeRunDetailToStateLedger(runId, detail);
       this.emit("run:complete", {
         runId,
         workflowId,
@@ -7402,6 +7447,14 @@ export class WorkflowEngine extends EventEmitter {
   _writeRunDetail(runId, detail) {
     const detailPath = resolve(this.runsDir, `${runId}.json`);
     writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+  }
+
+  _writeRunDetailToStateLedger(runId, detail) {
+    try {
+      writeWorkflowRunDetailToStateLedger(runId, detail, { anchorPath: this.runsDir });
+    } catch (err) {
+      console.warn(`${TAG} workflow run detail sync failed: ${String(err?.message || err)}`);
+    }
   }
 
   _writeRunIndex(runs) {

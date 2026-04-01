@@ -5946,39 +5946,41 @@ function WorkflowListView() {
                     const isCustomizedTemplate = templateState?.isCustomized === true;
                     const isCore = wf.core === true;
                     return html`
-                  <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
+                  <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s; display: flex; flex-direction: column; gap: 8px;"
                        onClick=${() => {
                          apiFetch("/api/workflows/" + wf.id).then(d => {
                            activeWorkflow.value = d?.workflow || wf;
                            viewMode.value = "canvas";
                          }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
                        }}>
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
-                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
-                      <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
-                        ${wf.enabled ? "Active" : "Paused"}
+                    <div style="display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;">
+                      <span class="icon-inline" style="font-size: 14px; flex: 0 0 auto; margin-top: 1px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
+                      <span style="font-weight: 600; font-size: 14px; flex: 1 1 160px; min-width: 0; line-height: 1.25;">${wf.name}</span>
+                      <span style="display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;">
+                        <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px; white-space: nowrap;">
+                          ${wf.enabled ? "Active" : "Paused"}
+                        </span>
+                        ${isCore && html`
+                          <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600; white-space: nowrap;">
+                            Core
+                          </span>
+                        `}
+                        ${templateState?.templateId && html`
+                          <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px; white-space: nowrap;">
+                            Template
+                          </span>
+                        `}
+                        ${isCustomizedTemplate && html`
+                          <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px; white-space: nowrap;">
+                            Customized
+                          </span>
+                        `}
+                        ${hasTemplateUpdate && html`
+                          <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px; white-space: nowrap;">
+                            Update Available
+                          </span>
+                        `}
                       </span>
-                      ${isCore && html`
-                        <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600;">
-                          Core
-                        </span>
-                      `}
-                      ${templateState?.templateId && html`
-                        <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
-                          Template
-                        </span>
-                      `}
-                      ${isCustomizedTemplate && html`
-                        <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
-                          Customized
-                        </span>
-                      `}
-                      ${hasTemplateUpdate && html`
-                        <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
-                          Update Available
-                        </span>
-                      `}
                     </div>
                     ${wf.description && html`
                       <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
@@ -5993,18 +5995,20 @@ function WorkflowListView() {
                         `}
                       </div>
                     `}
-                    <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                      <span>${wf.nodeCount || 0} nodes</span>
-                      <span>·</span>
-                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5);">
-                        ${group.label}
-                      </span>
-                      <div style="flex: 1;"></div>
-                      ${hasTemplateUpdate && html`
-                        <${Button}
-                          variant="text"
-                          size="small"
-                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 2px;">
+                      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
+                        <span style="white-space: nowrap;">${wf.nodeCount || 0} nodes</span>
+                        <span>·</span>
+                        <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5); white-space: nowrap;">
+                          ${group.label}
+                        </span>
+                      </div>
+                      <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+                        ${hasTemplateUpdate && html`
+                          <${Button}
+                            variant="text"
+                            size="small"
+                            sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none', whiteSpace: 'nowrap' }}
                           onClick=${async (e) => {
                             e.stopPropagation();
                             if (!isCustomizedTemplate) {
@@ -6026,52 +6030,53 @@ function WorkflowListView() {
                               await applyTemplateUpdate(wf.id, "replace", true);
                             }
                           }}
+                          >
+                            <span class="icon-inline">${resolveIcon("refresh")}</span>
+                            Update
+                          <//>
+                        `}
+                        ${!isCore && html`<${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', textTransform: 'none', whiteSpace: 'nowrap' }}
+                          onClick=${(e) => {
+                            e.stopPropagation();
+                            setWorkflowEnabled(wf.id, !wf.enabled);
+                          }}
                         >
-                          <span class="icon-inline">${resolveIcon("refresh")}</span>
-                          Update
+                          <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
+                          ${wf.enabled ? "Pause" : "Resume"}
+                        <//>`}
+                        <${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', textTransform: 'none', whiteSpace: 'nowrap', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
+                          onClick=${(e) => {
+                            e.stopPropagation();
+                            if (!wf.enabled) {
+                              showToast("Workflow is paused. Resume it before running.", "warning");
+                              return;
+                            }
+                            openExecuteDialog(wf.id);
+                          }}
+                        >
+                          <span class="icon-inline">${resolveIcon("play")}</span>
                         <//>
-                      `}
-                      ${!isCore && html`<${Button}
-                        variant="text"
-                        size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none' }}
-                        onClick=${(e) => {
-                          e.stopPropagation();
-                          setWorkflowEnabled(wf.id, !wf.enabled);
-                        }}
-                      >
-                        <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
-                        ${wf.enabled ? "Pause" : "Resume"}
-                      <//>`}
-                      <${Button}
-                        variant="text"
-                        size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
-                        onClick=${(e) => {
-                          e.stopPropagation();
-                          if (!wf.enabled) {
-                            showToast("Workflow is paused. Resume it before running.", "warning");
-                            return;
-                          }
-                          openExecuteDialog(wf.id);
-                        }}
-                      >
-                        <span class="icon-inline">${resolveIcon("play")}</span>
-                      <//>
-                      <${Button}
-                        variant="text"
-                        size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none' }}
-                        onClick=${(e) => {
-                          e.stopPropagation();
-                          exportWorkflow(wf);
-                        }}
-                      >
-                        <span class="icon-inline">${resolveIcon("save")}</span>
-                      <//>
-                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
-                        <span class="icon-inline">${resolveIcon("trash")}</span>
-                      <//>`}
+                        <${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', textTransform: 'none', whiteSpace: 'nowrap' }}
+                          onClick=${(e) => {
+                            e.stopPropagation();
+                            exportWorkflow(wf);
+                          }}
+                        >
+                          <span class="icon-inline">${resolveIcon("save")}</span>
+                        <//>
+                        ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none', whiteSpace: 'nowrap' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                          <span class="icon-inline">${resolveIcon("trash")}</span>
+                        <//>`}
+                      </div>
                     </div>
                   </div>
                 `;

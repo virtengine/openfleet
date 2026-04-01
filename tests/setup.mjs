@@ -11,6 +11,10 @@ afterEach(() => {
   const startedAt = debugCleanup ? Date.now() : 0;
   resetStateLedgerCache();
   if (debugCleanup) {
+    const activeHandles = typeof process._getActiveHandles === "function"
+      ? process._getActiveHandles().map((handle) => handle?.constructor?.name || typeof handle)
+      : [];
     console.error(`[tests/setup] resetStateLedgerCache +${Date.now() - startedAt}ms`);
+    console.error(`[tests/setup] activeHandles=${activeHandles.join(",")}`);
   }
 });

@@ -1723,6 +1723,30 @@ describe("WorkflowEngine - run history details", () => {
     }
   });
 
+  it("loads persisted run detail from sqlite when the detail file is missing", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-sql-detail", name: "SQL Detail Workflow" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {});
+    const detailPath = join(engine.runsDir, `${ctx.id}.json`);
+    expect(existsSync(detailPath)).toBe(true);
+
+    rmSync(detailPath, { force: true });
+
+    const persisted = engine.getRunDetail(ctx.id);
+    expect(persisted).toMatchObject({
+      runId: ctx.id,
+      workflowId: wf.id,
+      status: WorkflowStatus.COMPLETED,
+    });
+    expect(persisted?.detail?.data?._workflowId).toBe(wf.id);
+    expect(Array.isArray(persisted?.detail?.logs)).toBe(true);
+  });
+
   it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],

@@ -24,6 +24,7 @@ import {
   getTaskSnapshotFromStateLedger,
   getTaskTopologyFromStateLedger,
   getHarnessRunFromStateLedger,
+  getWorkflowRunDetailFromStateLedger,
   getWorkflowRunFromStateLedger,
   listHarnessRunEventsFromStateLedger,
   listHarnessRunsFromStateLedger,
@@ -47,6 +48,7 @@ import {
   upsertSessionRecordToStateLedger,
   upsertStateLedgerKeyValue,
   writeHarnessRunToStateLedger,
+  writeWorkflowRunDetailToStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
 
 vi.mock("../infra/presence.mjs", () => ({
@@ -141,7 +143,7 @@ describe("state ledger sqlite workflow integration", () => {
     expect(existsSync(dbPath)).toBe(true);
 
     const info = getStateLedgerInfo({ anchorPath: runsDir });
-    expect(info.schemaVersion).toBe(7);
+    expect(info.schemaVersion).toBe(8);
     expect(info.tables).toEqual(
       expect.arrayContaining([
         "agent_activity",
@@ -209,6 +211,41 @@ describe("state ledger sqlite workflow integration", () => {
       }),
     );
     expect(fallbackRun.events).toHaveLength(2);
+  });
+
+  it("stores workflow run detail snapshots in sqlite for fileless reads", () => {
+    const repoRoot = makeTempDir("state-ledger-workflow-detail-");
+    const runsDir = join(repoRoot, ".bosun", "workflow-runs");
+    mkdirSync(runsDir, { recursive: true });
+
+    writeWorkflowRunDetailToStateLedger("run-detail-1", {
+      id: "run-detail-1",
+      startedAt: 1711846800000,
+      endedAt: 1711846860000,
+      data: {
+        _workflowId: "wf-detail-1",
+        _workflowName: "Workflow Detail Ledger",
+        taskId: "task-detail-1",
+      },
+      nodeStatuses: {
+        trigger: "completed",
+      },
+      logs: [],
+      errors: [],
+    }, { anchorPath: runsDir });
+
+    const detail = getWorkflowRunDetailFromStateLedger("run-detail-1", { anchorPath: runsDir });
+    expect(detail).toMatchObject({
+      id: "run-detail-1",
+      data: {
+        _workflowId: "wf-detail-1",
+        _workflowName: "Workflow Detail Ledger",
+        taskId: "task-detail-1",
+      },
+      nodeStatuses: {
+        trigger: "completed",
+      },
+    });
   });
 
   it("derives tool calls and artifacts from appended workflow events", async () => {

@@ -8316,6 +8316,8 @@ describeUiServer("ui-server mini app", () => {
         expect.stringContaining("Finished run with status failed"),
       ]));
     } finally {
+      await new Promise((resolveClose) => server.close(() => resolveClose()));
+      resetStateLedgerCache();
       if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(isolatedRepoRoot, { recursive: true, force: true });
