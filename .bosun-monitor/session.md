@@ -571,3 +571,41 @@
     - `Bosun PR Watchdog` run `7e0553f9-fd36-4fa0-ba42-5550cf99603f`
     - `Task Batch Processor` run `3b22b475-7b77-4cb7-b20e-26a63024e3ba`
     - `Task Lifecycle` run `2fa9f5fb-2da0-439a-8f19-e4c5ffdfab8f`
+
+## 2026-04-02 - Stability hardening for run history, session polling, and memory pressure
+
+- User-facing incident:
+  - Bosun could become sluggish or unresponsive while loading run history, workflow lists, and sessions.
+  - live data refreshes could time out because the UI kept re-requesting larger and larger run-history payloads.
+  - session polling was reloading and merging an oversized durable session history on every request.
+  - chat/manual sessions were retaining unusually large in-memory message rings, increasing memory pressure over long runs.
+- Root-cause findings:
+  - `ui/tabs/workflows.js` and `site/ui/tabs/workflows.js` were polling every `3000ms` for active runs and re-fetching `Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE)`, so the request cost grew with every extra page the operator loaded.
+  - `workflow/workflow-engine.mjs#getRunHistoryPage` hydrated persisted run detail summaries up to `Math.max(offset + limit, 200)` even for small first-page requests.
+  - `server/ui-server.mjs#listDurableSessionsFromLedger` pulled up to `5000` durable sessions from the state ledger for repeated `/api/sessions` merges.
+  - `infra/session-tracker.mjs` kept `DEFAULT_CHAT_MAX_MESSAGES = 2000` for primary/manual/chat sessions, which is too high for a long-running operator console.
+- Source fixes applied:
+  - `ui/tabs/workflows.js`
+  - `site/ui/tabs/workflows.js`
+  - `server/ui-server.mjs`
+  - `infra/session-tracker.mjs`
+  - `workflow/workflow-engine.mjs`
+  - `tests/workflow-run-history-ui-regression.test.mjs`
+  - `tests/session-tracker.test.mjs`
+  - `tests/workflow-engine.test.mjs`
+- Behavioral change:
+  - run history live refresh now uses incremental first-page refresh (`preserveExisting`) instead of re-fetching the full loaded run list.
+  - active run polling slowed from `3000ms` to `8000ms`; idle polling slowed from `15000ms` to `20000ms`.
+  - manual run-history refresh/retry buttons now follow the lighter incremental refresh path.
+  - persisted run-history hydration floor was reduced from `200` summaries to `50`, lowering disk churn for common first-page requests.
+  - durable session ledger reads are now capped to `750` records and cached briefly before merge/filter work is repeated.
+  - chat/manual/primary session ring buffers now default to `600` messages instead of `2000`.
+- Validation:
+  - focused tests passed:
+    - `npx vitest run tests/workflow-run-history-ui-regression.test.mjs tests/session-tracker.test.mjs tests/workflow-engine.test.mjs`
+  - build passed:
+    - `npm run build`
+  - full suite status:
+    - `npm test` now gets through syntax/import validation and the full-suite runner starts successfully, but it still fails in unrelated pre-existing agent-pool coverage.
+    - observed blocker:
+      - `tests/async-safety-guards.test.mjs` expecting older `agent/agent-pool.mjs` fire-and-forget registry guard text while the repo currently contains a much larger unrelated agent-pool rewrite.
