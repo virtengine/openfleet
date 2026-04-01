@@ -65,13 +65,14 @@ describe("provider registry foundation", () => {
     expect(providers).toHaveLength(2);
     expect(providers[0]).toEqual(expect.objectContaining({
       id: "codex-primary",
+      providerId: "openai-codex-subscription",
       adapterId: "codex-sdk",
       available: true,
       busy: true,
       models: ["gpt-5.4"],
       defaultModel: "gpt-5.4",
       auth: expect.objectContaining({
-        providerId: "codex-sdk",
+        providerId: "openai-codex-subscription",
         authenticated: true,
         canRun: true,
       }),
@@ -84,6 +85,7 @@ describe("provider registry foundation", () => {
     }));
     expect(providers[1]).toEqual(expect.objectContaining({
       id: "claude-review",
+      providerId: "claude-subscription-shim",
       adapterId: "claude-sdk",
       available: false,
       models: ["claude-opus-4.1"],
@@ -96,10 +98,12 @@ describe("provider registry foundation", () => {
       configExecutors: [{ name: "codex-primary", executor: "CODEX", enabled: true }],
     };
     expect(resolveProviderSelection("codex", options)).toEqual({
+      providerId: "openai-codex-subscription",
       adapterName: "codex-sdk",
-      selectionId: "codex-sdk",
+      selectionId: "openai-codex-subscription",
     });
     expect(resolveProviderSelection("codex-primary", options)).toEqual({
+      providerId: "openai-codex-subscription",
       adapterName: "codex-sdk",
       selectionId: "codex-primary",
     });

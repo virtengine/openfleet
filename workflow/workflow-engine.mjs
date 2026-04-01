@@ -52,6 +52,7 @@ import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../
 import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
 import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 import {
+  getWorkflowRunFromStateLedger,
   getWorkflowSnapshotFromStateLedger,
   getWorkflowRunDetailFromStateLedger,
   listWorkflowSnapshotsFromStateLedger,
@@ -4343,7 +4344,7 @@ export class WorkflowEngine extends EventEmitter {
     if (!this._loaded) this.load();
 
     const triggered = [];
-    const runIndex = this._readRunIndex();
+    const runIndex = this._listPersistedRunSummaries(null, MAX_PERSISTED_RUNS).runs;
     const latestRunAtByWorkflow = new Map();
     for (const entry of runIndex) {
       const workflowId = entry?.workflowId;
@@ -4487,9 +4488,7 @@ export class WorkflowEngine extends EventEmitter {
     const targetCount = hasLimit
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(resolvedLimit, 200))
       : MAX_PERSISTED_RUNS;
-    const persisted = this._hydrateRunIndexFromDetails(targetCount)
-      .map((entry) => this._normalizeRunSummary(entry))
-      .filter(Boolean);
+    const persisted = this._listPersistedRunSummaries(workflowId || null, targetCount).runs;
 
     const active = this.getActiveRuns();
     const activeRunIds = new Set(active.map((run) => run.runId));
@@ -4658,6 +4657,35 @@ export class WorkflowEngine extends EventEmitter {
       return runs;
     } catch {
       return runs;
+    }
+  }
+
+  _getPersistedRunSummaryFromLedger(runId) {
+    try {
+      const persisted = getWorkflowRunFromStateLedger(runId, { anchorPath: this.runsDir });
+      if (!persisted) return null;
+      if (persisted.workflowId && persisted.workflowName && persisted.status) {
+        return this._normalizeRunSummary(persisted);
+      }
+      const detail = getWorkflowRunDetailFromStateLedger(runId, { anchorPath: this.runsDir });
+      const terminalRaw = String(detail?.data?._workflowTerminalStatus || "")
+        .trim()
+        .toLowerCase();
+      const status = terminalRaw === WorkflowStatus.FAILED || terminalRaw === "error"
+        ? WorkflowStatus.FAILED
+        : (terminalRaw === WorkflowStatus.CANCELLED
+            ? WorkflowStatus.CANCELLED
+            : (Array.isArray(detail?.errors) && detail.errors.length > 0
+                ? WorkflowStatus.FAILED
+                : (persisted.status || WorkflowStatus.COMPLETED)));
+      return this._normalizeRunSummary({
+        ...persisted,
+        workflowId: persisted.workflowId || detail?.data?._workflowId || null,
+        workflowName: persisted.workflowName || detail?.data?._workflowName || null,
+        status,
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -5228,7 +5256,9 @@ export class WorkflowEngine extends EventEmitter {
     if (sqlDetail && typeof sqlDetail === "object") {
       const detail = repairWorkflowRunDetail(sqlDetail);
       const summary = this._normalizeRunSummary(
-        this._readRunIndex().find((entry) => entry?.runId === normalizedRunId) || null,
+        this._getPersistedRunSummaryFromLedger(normalizedRunId)
+          || this._readRunIndex().find((entry) => entry?.runId === normalizedRunId)
+          || null,
       );
       if (summary) {
         const recomputed = this._buildSummaryFromDetail({
@@ -5268,7 +5298,9 @@ export class WorkflowEngine extends EventEmitter {
     try {
       const detail = repairWorkflowRunDetail(JSON.parse(readFileSync(detailPath, "utf8")));
       const summary = this._normalizeRunSummary(
-        this._readRunIndex().find((entry) => entry?.runId === normalizedRunId) || null,
+        this._getPersistedRunSummaryFromLedger(normalizedRunId)
+          || this._readRunIndex().find((entry) => entry?.runId === normalizedRunId)
+          || null,
       );
       if (summary) {
         const recomputed = this._buildSummaryFromDetail({

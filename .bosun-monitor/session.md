@@ -656,3 +656,61 @@
 - Remaining SQL-first work:
   - workflow snapshots/trajectory exports and parts of `index.json` maintenance are still file-backed.
   - some workflow approval state updates still mirror back into legacy files for compatibility; storage authority is now SQL-first, but the compatibility write path remains intentionally enabled during migration.
+
+## 2026-04-02 - SQL-first workflow snapshots plus test-budget hardening
+
+- Goal:
+  - finish the next workflow SQL slice by making snapshots SQL-first for create/list/restore paths, while keeping the legacy snapshot and trajectory files as compatibility mirrors.
+- Source changes:
+  - `workflow/workflow-engine.mjs`
+  - `tests/workflow-forensics.test.mjs`
+  - `tests/state-ledger-sqlite.test.mjs`
+  - `tests/ui-server.test.mjs`
+  - `tests/bench-swebench.test.mjs`
+- Behavioral change:
+  - `WorkflowEngine#createRunSnapshot()` now writes snapshot payloads into the SQLite state ledger via `workflow_snapshots` before mirroring to `runs/snapshots/*.json`.
+  - `WorkflowEngine#restoreFromSnapshot()` now loads from SQLite first and only falls back to `runs/snapshots/<id>.json` when the SQL copy is absent.
+  - `WorkflowEngine#listSnapshots()` now reads `workflow_snapshots` first and falls back to the legacy snapshot directory only when SQL returns nothing.
+  - snapshot restore/list now keep working after the legacy snapshot JSON file is removed, proving the SQL store is authoritative for those paths.
+  - two slow integration smoke tests were given explicit per-test/hook budgets so the suite stops failing on Windows cold-start/setup timing rather than functional regressions:
+    - `tests/ui-server.test.mjs` circular can-start guard task-detail case
+    - `tests/bench-swebench.test.mjs` CLI usage smoke
+- Validation:
+  - focused snapshot regressions passed:
+    - `npx vitest run tests/state-ledger-sqlite.test.mjs tests/workflow-forensics.test.mjs tests/workflow-engine.test.mjs tests/ui-server.test.mjs -t "sqlite|snapshot|snapshots|restore"`
+  - targeted flake follow-up passed:
+    - `npx vitest run tests/bench-swebench.test.mjs -t "prints usage when invoked without a command"`
+    - `npx vitest run tests/ui-server.test.mjs -t "keeps task detail responses JSON-safe when can-start guards return circular raw data"`
+  - build passed:
+    - `npm run build`
+- Full-suite status:
+  - `npm test` progressed past the prior snapshot/approval/schema failures.
+  - full-suite reruns still exposed time-budget flakes rather than functional SQL regressions; the last observed failures were:
+    - `tests/ui-server.test.mjs` hook/test budget exhaustion during the isolated long-running UI suite
+    - `tests/bench-swebench.test.mjs` CLI usage smoke exceeding the old short timeout on cold start
+  - both were patched with larger explicit budgets and then passed in targeted reruns, but a fresh full-suite rerun has not yet been carried all the way to completion after the final timeout-budget edits.
+- Remaining SQL-first work:
+  - trajectory exports under `runs/trajectories` are still file-backed compatibility artifacts.
+  - workflow run index maintenance (`runs/index.json`) still exists as a legacy mirror/projection.
+  - additional workflow forensic/reporting surfaces should be checked for any remaining direct file reads once the next full-suite pass is green.
+
+## 2026-04-02 - SQL-first run summary fallback beyond index.json
+
+- Goal:
+  - remove another operator-visible dependency on `runs/index.json` by making workflow detail/history/schedule readers prefer SQL run summaries when the ledger already has the run document and detail snapshot.
+- Source changes:
+  - `workflow/workflow-engine.mjs`
+  - `lib/state-ledger-sqlite.mjs`
+  - `tests/workflow-engine.test.mjs`
+- Behavioral change:
+  - `WorkflowEngine#getRunDetail()` now prefers a ledger-backed run summary/document before consulting `index.json` when it reconstructs a persisted run from SQLite detail.
+  - `WorkflowEngine#getRunHistory()` now sources persisted summaries from the SQL summary pager instead of hydrating legacy index/detail files first.
+  - `WorkflowEngine#evaluateScheduleTriggers()` now derives latest run timestamps from SQL-backed persisted summaries rather than the legacy run index.
+  - `writeWorkflowRunDetailToStateLedger()` now backfills sparse `workflow_runs` columns (`workflow_id`, `workflow_name`, retry lineage, task/session ids, started/ended timestamps, and status) from the detail payload itself, so SQL summaries remain usable even when the file index is empty or stale.
+- Validation:
+  - focused engine + ledger regressions passed:
+    - `npx vitest run tests/workflow-engine.test.mjs tests/state-ledger-sqlite.test.mjs -t "loads persisted run detail from sqlite when the detail file is missing|workflow execution ledgers into sqlite and falls back to sqlite reads"`
+  - build passed:
+    - `npm run build`
+- Current blocker outside this slice:
+  - broader `tests/ui-server.test.mjs` slices are currently importing through unrelated dirty provider-registry changes in the worktree and fail with missing provider module paths before reaching the workflow assertions. That blocker is not from this SQL migration patch and should be handled separately or after those in-flight provider edits stabilize.

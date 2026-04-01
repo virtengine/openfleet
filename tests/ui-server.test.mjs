@@ -187,7 +187,7 @@ describeUiServer("ui-server mini app", () => {
 
     const { setKanbanBackend } = await import("../kanban/kanban-adapter.mjs");
     setKanbanBackend("internal");
-  }, 20000);
+  }, 40000);
 
   afterEach(async () => {
     await settleUiRuntimeCleanup();
@@ -200,7 +200,7 @@ describeUiServer("ui-server mini app", () => {
       testSandboxRoot = null;
     }
     vi.resetModules();
-  }, 20000);
+  }, 40000);
 
   async function getFreePort() {
     return 0;
@@ -218,7 +218,7 @@ describeUiServer("ui-server mini app", () => {
     expect(typeof mod.getTelegramUiUrl).toBe("function");
     expect(typeof mod.injectUiDependencies).toBe("function");
     expect(typeof mod.getLocalLanIp).toBe("function");
-  }, 30000);
+  }, process.platform === "win32" ? 180000 : 120000);
 
   it("reclaims stale live-pid instance locks when the recorded UI is unresponsive", async () => {
     const cacheDir = join(process.env.BOSUN_HOME, ".cache");

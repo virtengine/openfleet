@@ -1,4 +1,5 @@
 import { getProviderCapabilities, normalizeProviderCapabilityId } from "./provider-capabilities.mjs";
+import { getBuiltinProviderEnvHints } from "./providers/index.mjs";
 
 const AUTH_METHOD_ORDER = Object.freeze([
   "local",
@@ -6,34 +7,6 @@ const AUTH_METHOD_ORDER = Object.freeze([
   "oauth",
   "apiKey",
 ]);
-
-const PROVIDER_ENV_HINTS = Object.freeze({
-  "codex-sdk": Object.freeze({
-    apiKey: ["OPENAI_API_KEY"],
-    oauth: ["OPENAI_ACCESS_TOKEN", "OPENAI_SESSION_TOKEN"],
-    subscription: ["OPENAI_SUBSCRIPTION_ACTIVE", "OPENAI_SESSION_TOKEN"],
-  }),
-  "copilot-sdk": Object.freeze({
-    apiKey: ["GITHUB_TOKEN", "GITHUB_COPILOT_API_KEY"],
-    oauth: ["GITHUB_TOKEN", "COPILOT_ACCESS_TOKEN"],
-    subscription: ["COPILOT_SUBSCRIPTION_ACTIVE"],
-  }),
-  "claude-sdk": Object.freeze({
-    apiKey: ["ANTHROPIC_API_KEY"],
-    oauth: ["CLAUDE_ACCESS_TOKEN", "ANTHROPIC_ACCESS_TOKEN"],
-    subscription: ["CLAUDE_SUBSCRIPTION_ACTIVE", "CLAUDE_SESSION_TOKEN"],
-  }),
-  "gemini-sdk": Object.freeze({
-    apiKey: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-    oauth: ["GOOGLE_ACCESS_TOKEN"],
-    subscription: [],
-  }),
-  "opencode-sdk": Object.freeze({
-    apiKey: ["OPENCODE_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY"],
-    oauth: [],
-    subscription: [],
-  }),
-});
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
@@ -56,25 +29,19 @@ function unique(values) {
 }
 
 function getProviderEnvHints(providerId) {
-  const normalized = normalizeProviderCapabilityId(providerId);
-  return PROVIDER_ENV_HINTS[normalized] || Object.freeze({
-    apiKey: [],
-    oauth: [],
-    subscription: [],
-  });
+  return getBuiltinProviderEnvHints(providerId);
 }
 
 function readEnvHints(env = process.env, keys = []) {
   for (const key of keys) {
     const value = toTrimmedString(env?.[key]);
-    if (value) {
-      return {
-        configured: true,
-        source: "env",
-        key,
-        value,
-      };
-    }
+    if (!value) continue;
+    return {
+      configured: true,
+      source: "env",
+      key,
+      value,
+    };
   }
   return {
     configured: false,
@@ -98,9 +65,10 @@ export function listProviderAuthModes(providerId, capabilities = null) {
 }
 
 export function resolveProviderAuthEnv(providerId, env = process.env) {
-  const hints = getProviderEnvHints(providerId);
+  const normalizedProviderId = normalizeProviderCapabilityId(providerId);
+  const hints = getProviderEnvHints(normalizedProviderId);
   return {
-    providerId: normalizeProviderCapabilityId(providerId),
+    providerId: normalizedProviderId,
     apiKey: readEnvHints(env, hints.apiKey),
     oauth: readEnvHints(env, hints.oauth),
     subscription: readEnvHints(env, hints.subscription),

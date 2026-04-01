@@ -1733,9 +1733,11 @@ describe("WorkflowEngine - run history details", () => {
 
     const ctx = await engine.execute(wf.id, {});
     const detailPath = join(engine.runsDir, `${ctx.id}.json`);
+    const indexPath = join(engine.runsDir, "index.json");
     expect(existsSync(detailPath)).toBe(true);
 
     rmSync(detailPath, { force: true });
+    writeFileSync(indexPath, JSON.stringify({ runs: [] }, null, 2), "utf8");
 
     const persisted = engine.getRunDetail(ctx.id);
     expect(persisted).toMatchObject({
@@ -1745,6 +1747,13 @@ describe("WorkflowEngine - run history details", () => {
     });
     expect(persisted?.detail?.data?._workflowId).toBe(wf.id);
     expect(Array.isArray(persisted?.detail?.logs)).toBe(true);
+
+    const history = engine.getRunHistory(wf.id, 1);
+    expect(history[0]).toMatchObject({
+      runId: ctx.id,
+      workflowId: wf.id,
+      status: WorkflowStatus.COMPLETED,
+    });
   });
 
   it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {

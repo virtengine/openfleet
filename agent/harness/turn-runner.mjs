@@ -34,6 +34,11 @@ export async function createTurnRunner(options = {}) {
         input.provider || stage.provider || profile.provider || null,
         {
           initialize: false,
+          providerRegistry: options.providerRegistry,
+          adapters: options.adapters,
+          configExecutors: options.configExecutors,
+          getProviderRunner: options.getProviderRunner,
+          runTurn: options.runProviderTurn,
           provider: input.provider || stage.provider || profile.provider || null,
           taskKey: toTrimmedString(stage.taskKey || input.taskKey || profile.taskKey || profile.agentId || "harness"),
           executionMode: input.executionMode,

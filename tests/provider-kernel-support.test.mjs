@@ -1,50 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import {
-  createProviderAuthManager,
-  normalizeProviderAuthState,
-} from "../agent/provider-auth-manager.mjs";
 import {
   buildProviderTurnPayload,
   normalizeProviderResultPayload,
   normalizeProviderStreamEvent,
   normalizeProviderUsage,
 } from "../agent/provider-message-transform.mjs";
-import {
-  getProviderModelCatalog,
-  listProviderModels,
-} from "../agent/provider-model-catalog.mjs";
+
+vi.mock("../agent/provider-registry.mjs", () => ({
+  createProviderRegistry: () => ({
+    resolveSelection: () => null,
+    getProvider: () => null,
+    getDefaultProvider: () => null,
+  }),
+}));
+
+import { createProviderSession } from "../agent/provider-session.mjs";
 
 describe("provider kernel support", () => {
-  it("normalizes provider auth state across env and runtime credentials", () => {
-    const manager = createProviderAuthManager({
-      env: {
-        OPENAI_API_KEY: "test-key",
-      },
-    });
-    const state = manager.resolve("codex-sdk", {
-      connected: false,
-    });
-    const oauthState = normalizeProviderAuthState("copilot-sdk", {
-      accessToken: "oauth-token",
-      connected: true,
-    });
-
-    expect(state).toMatchObject({
-      providerId: "codex-sdk",
-      available: true,
-      authenticated: true,
-      canRun: true,
-      preferredMode: "apiKey",
-      status: "authenticated",
-    });
-    expect(oauthState).toMatchObject({
-      providerId: "copilot-sdk",
-      authenticated: true,
-      preferredMode: "oauth",
-    });
-  });
-
   it("normalizes turn payloads, stream events, and provider results", () => {
     const payload = buildProviderTurnPayload({
       providerId: "codex-sdk",
@@ -53,6 +26,9 @@ describe("provider kernel support", () => {
         { role: "system", content: "You are Bosun." },
         { role: "user", content: [{ type: "text", text: "Plan the refactor." }] },
       ],
+      tools: [{ id: "list_tasks" }],
+      reasoningEffort: "high",
+      sessionId: "session-1",
     });
     const streamEvent = normalizeProviderStreamEvent({
       type: "message_update",
@@ -76,6 +52,10 @@ describe("provider kernel support", () => {
       providerId: "codex-sdk",
       model: "gpt-5.4",
       prompt: "Plan the refactor.",
+      reasoningEffort: "high",
+      sessionId: "session-1",
+      threadId: "session-1",
+      tools: [{ id: "list_tasks" }],
     });
     expect(streamEvent).toMatchObject({
       type: "message_update",
@@ -106,24 +86,130 @@ describe("provider kernel support", () => {
     expect(normalizeProviderUsage(null)).toBeNull();
   });
 
-  it("builds a provider model catalog from configured, adapter, and fallback models", () => {
-    const models = listProviderModels("codex-sdk", {
-      configuredModels: ["gpt-5.4", "gpt-5.4-mini"],
-      adapterModels: [{ id: "gpt-5.4", default: true }, "o4-mini"],
-      defaultModel: "gpt-5.4",
+  it("normalizes tool calls, tool results, reasoning, and finish metadata", () => {
+    const streamEvent = normalizeProviderStreamEvent({
+      type: "item.started",
+      providerId: "claude-sdk",
+      sessionId: "session-2",
+      item: {
+        type: "mcp_tool_call",
+        server: "filesystem",
+        tool: "read_file",
+        status: "started",
+      },
     });
-    const catalog = getProviderModelCatalog("opencode-sdk", {
-      configuredModels: ["qwen2.5-coder:latest"],
-      adapterModels: ["llama3.3"],
-      local: true,
+    const result = normalizeProviderResultPayload({
+      items: [
+        {
+          type: "assistant.message",
+          data: { content: "Investigating provider contract." },
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", text: "Need to inspect provider output shapes." },
+            { type: "tool_use", id: "tool-1", name: "Read", input: { path: "agent/provider-session.mjs" } },
+            { type: "tool_result", tool_use_id: "tool-1", content: "file contents" },
+          ],
+        },
+      ],
+      tool_calls: [
+        { id: "tool-2", name: "Write", input: { path: "agent/provider-message-transform.mjs" } },
+      ],
+      reasoning: [
+        { type: "reasoning", text: "Use additive changes only." },
+      ],
+      finish_reason: "tool_calls",
+      status: "in_progress",
+      sessionId: "session-2",
+      threadId: "thread-2",
+    }, {
+      providerId: "claude-sdk",
+      model: "claude-opus-4.1",
     });
 
-    expect(models.map((entry) => entry.id)).toContain("gpt-5.4");
-    expect(models.find((entry) => entry.id === "gpt-5.4")).toMatchObject({
-      default: true,
-      family: "openai",
+    expect(streamEvent.toolCall).toMatchObject({
+      name: "mcp__filesystem__read_file",
+      server: "filesystem",
+      tool: "read_file",
+      originalType: "mcp_tool_call",
     });
-    expect(catalog.defaultModel).toBeTruthy();
-    expect(catalog.models.some((entry) => entry.local)).toBe(true);
+    expect(result.messages[0]).toMatchObject({
+      role: "assistant",
+      text: "Investigating provider contract.",
+    });
+    expect(result.toolCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "tool-1",
+        name: "Read",
+      }),
+      expect.objectContaining({
+        id: "tool-2",
+        name: "Write",
+      }),
+    ]));
+    expect(result.toolResults).toEqual([
+      expect.objectContaining({
+        toolCallId: "tool-1",
+        output: "file contents",
+      }),
+    ]);
+    expect(result.reasoningText).toContain("Need to inspect provider output shapes.");
+    expect(result.reasoningText).toContain("Use additive changes only.");
+    expect(result.finishReason).toBe("tool_calls");
+    expect(result.status).toBe("in_progress");
+  });
+
+  it("tracks normalized provider session state across turns and stream events", async () => {
+    const session = createProviderSession("codex-sdk", {
+      model: "gpt-5.4",
+      runTurn: async () => ({
+        finalResponse: "Session turn complete.",
+        sessionId: "provider-session-1",
+        threadId: "provider-thread-1",
+        finish_reason: "stop",
+        items: [
+          {
+            role: "assistant",
+            content: [
+              { type: "reasoning", text: "Carry state forward." },
+              { type: "tool_use", id: "tool-3", name: "Bash", input: { command: "npm test" } },
+            ],
+          },
+        ],
+      }),
+    });
+
+    const result = await session.runTurn("Continue the harness.");
+    const state = session.getState();
+    const normalizedEvent = session.normalizeStreamEvent({
+      type: "item.updated",
+      item: { type: "reasoning", text: "Streaming reasoning" },
+    });
+
+    expect(result).toMatchObject({
+      output: "Session turn complete.",
+      sessionId: "provider-session-1",
+      threadId: "provider-thread-1",
+      finishReason: "stop",
+      toolCalls: [
+        expect.objectContaining({
+          id: "tool-3",
+          name: "Bash",
+        }),
+      ],
+    });
+    expect(state).toEqual({
+      provider: state.provider,
+      model: "gpt-5.4",
+      sessionId: "provider-session-1",
+      threadId: "provider-thread-1",
+    });
+    expect(normalizedEvent).toMatchObject({
+      providerId: state.provider,
+      sessionId: "provider-session-1",
+      threadId: "provider-thread-1",
+      reasoningText: "Streaming reasoning",
+    });
   });
 });

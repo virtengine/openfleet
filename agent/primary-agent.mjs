@@ -576,15 +576,14 @@ function normalizePrimaryAgent(value) {
     .trim()
     .toLowerCase();
   if (!raw) return "codex-sdk";
-  if (["codex", "codex-sdk"].includes(raw)) return "codex-sdk";
-  if (["copilot", "copilot-sdk", "github-copilot"].includes(raw))
-    return "copilot-sdk";
-  if (["claude", "claude-sdk", "claude_code", "claude-code"].includes(raw))
-    return "claude-sdk";
-  if (["gemini", "gemini-sdk", "google-gemini"].includes(raw))
-    return "gemini-sdk";
-  if (["opencode", "opencode-sdk", "open-code"].includes(raw))
-    return "opencode-sdk";
+  const normalized = normalizeProviderAdapterName(raw);
+  if (normalized !== "codex-sdk" || raw === "codex" || raw === "codex-sdk") {
+    return normalized;
+  }
+  if (["copilot", "copilot-sdk", "github-copilot"].includes(raw)) return "copilot-sdk";
+  if (["claude", "claude-sdk", "claude_code", "claude-code"].includes(raw)) return "claude-sdk";
+  if (["gemini", "gemini-sdk", "google-gemini"].includes(raw)) return "gemini-sdk";
+  if (["opencode", "opencode-sdk", "open-code"].includes(raw)) return "opencode-sdk";
   return raw;
 }
 
@@ -1534,7 +1533,8 @@ export function getAvailableAgents() {
  * @returns {string[]}
  */
 export function getSdkCommands(adapterName) {
-  const adapter = adapterName ? ADAPTERS[adapterName] : activeAdapter;
+  const normalized = adapterName ? normalizeProviderAdapterName(adapterName) : null;
+  const adapter = normalized ? ADAPTERS[normalized] : activeAdapter;
   return adapter?.sdkCommands || [];
 }
 
@@ -1547,7 +1547,8 @@ export function getSdkCommands(adapterName) {
  * @returns {Promise<string|object>}
  */
 export async function execSdkCommand(command, args = "", adapterName, options = {}) {
-  const adapter = adapterName ? ADAPTERS[adapterName] : activeAdapter;
+  const normalized = adapterName ? normalizeProviderAdapterName(adapterName) : null;
+  const adapter = normalized ? ADAPTERS[normalized] : activeAdapter;
   if (!adapter) {
     throw new Error(`Unknown adapter: ${adapterName || "(none)"}`);
   }

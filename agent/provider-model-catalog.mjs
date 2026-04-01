@@ -1,76 +1,97 @@
 import { getModelsForExecutor } from "../task/task-complexity.mjs";
 import { normalizeProviderCapabilityId } from "./provider-capabilities.mjs";
+import { getBuiltinProviderDefinition } from "./providers/index.mjs";
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
 }
 
-function uniqueStrings(values) {
-  return [...new Set(
-    (Array.isArray(values) ? values : [values])
-      .map((value) => toTrimmedString(value))
-      .filter(Boolean),
-  )];
-}
-
-function normalizeModelFamily(modelId = "") {
+function normalizeModelFamily(modelId = "", providerDefinition = null) {
   const normalized = toTrimmedString(modelId).toLowerCase();
   if (!normalized) return "unknown";
-  if (normalized.startsWith("gpt-")) return "openai";
+  if (providerDefinition?.provider === "ANTHROPIC" || normalized.includes("claude")) return "anthropic";
+  if (providerDefinition?.provider?.includes("OPENAI") || normalized.startsWith("gpt-")) return "openai";
   if (normalized.startsWith("o1") || normalized.startsWith("o3") || normalized.startsWith("o4")) return "openai";
-  if (normalized.includes("claude")) return "anthropic";
-  if (normalized.includes("gemini")) return "google";
-  if (normalized.includes("llama") || normalized.includes("mistral") || normalized.includes("qwen")) return "local";
+  if (providerDefinition?.provider === "GEMINI" || normalized.includes("gemini")) return "google";
+  if (providerDefinition?.provider === "OLLAMA") return "ollama";
+  if (providerDefinition?.capabilities?.local || normalized.includes("llama") || normalized.includes("mistral") || normalized.includes("qwen")) return "local";
   return "general";
 }
 
 export function normalizeModelEntry(model, options = {}) {
   const value = model && typeof model === "object" ? model : { id: model };
+  const providerId = normalizeProviderCapabilityId(value.providerId || options.providerId);
+  const providerDefinition = options.providerDefinition || getBuiltinProviderDefinition(providerId);
   const id = toTrimmedString(value.id || value.name || value.model);
   if (!id) return null;
   return {
     id,
     label: toTrimmedString(value.label || value.name || id) || id,
-    providerId: normalizeProviderCapabilityId(value.providerId || options.providerId),
-    family: normalizeModelFamily(id),
+    providerId,
+    family: normalizeModelFamily(id, providerDefinition),
     reasoningEffort: toTrimmedString(value.reasoningEffort || value.reasoning || value.effort) || null,
     contextWindow: Number.isFinite(Number(value.contextWindow)) ? Number(value.contextWindow) : null,
     default: value.default === true || id === toTrimmedString(options.defaultModel),
-    local: value.local === true || options.local === true,
+    local: value.local === true || options.local === true || providerDefinition?.capabilities?.local === true,
   };
+}
+
+function uniqueEntries(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const key = typeof value === "string"
+      ? toTrimmedString(value)
+      : toTrimmedString(value?.id || value?.name || value?.model);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
 }
 
 export function listProviderModels(providerId, options = {}) {
   const normalizedProviderId = normalizeProviderCapabilityId(providerId);
+  const providerDefinition = getBuiltinProviderDefinition(normalizedProviderId);
   const configured = Array.isArray(options.configuredModels) ? options.configuredModels : [];
   const adapterModels = Array.isArray(options.adapterModels)
     ? options.adapterModels
     : Array.isArray(options.adapter?.models)
       ? options.adapter.models
       : [];
-  const fallbackModels = uniqueStrings(
-    getModelsForExecutor(options.executor || options.adapter?.provider || normalizedProviderId),
+  const definitionModels = Array.isArray(providerDefinition?.models) ? providerDefinition.models : [];
+  const fallbackModels = getModelsForExecutor(
+    options.executor
+      || providerDefinition?.executor
+      || options.adapter?.provider
+      || normalizedProviderId,
   );
   const selectedSource = configured.length > 0
     ? configured
-    : (adapterModels.length > 0 ? adapterModels : fallbackModels);
-  const merged = uniqueStrings(selectedSource);
-  return merged
+    : (adapterModels.length > 0
+      ? adapterModels
+      : (definitionModels.length > 0 ? definitionModels : fallbackModels));
+  return uniqueEntries(selectedSource)
     .map((entry) => normalizeModelEntry(entry, {
       providerId: normalizedProviderId,
-      defaultModel: options.defaultModel,
-      local: options.local === true,
+      providerDefinition,
+      defaultModel: options.defaultModel || providerDefinition?.defaultModel,
+      local: options.local === true || providerDefinition?.capabilities?.local === true,
     }))
     .filter(Boolean);
 }
 
 export function getProviderModelCatalog(providerId, options = {}) {
-  const provider = normalizeProviderCapabilityId(providerId);
-  const models = listProviderModels(provider, options);
-  const defaultModel = models.find((entry) => entry.default) || models[0] || null;
+  const normalizedProviderId = normalizeProviderCapabilityId(providerId);
+  const providerDefinition = getBuiltinProviderDefinition(normalizedProviderId);
+  const models = listProviderModels(normalizedProviderId, options);
+  const defaultModel = models.find((entry) => entry.default)
+    || models.find((entry) => entry.id === providerDefinition?.defaultModel)
+    || models[0]
+    || null;
   return {
-    providerId: provider,
-    defaultModel: defaultModel?.id || null,
+    providerId: normalizedProviderId,
+    defaultModel: defaultModel?.id || providerDefinition?.defaultModel || null,
     models,
   };
 }

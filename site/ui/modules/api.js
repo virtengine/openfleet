@@ -8,6 +8,9 @@ import { getInitData } from "./telegram.js";
 
 /** Map of in-flight GET request promises, keyed by path */
 const _inflight = new Map();
+const MAX_CONCURRENT_GET_REQUESTS = 4;
+const _queuedGetRequests = [];
+let _activeGetRequestCount = 0;
 
 /** Reactive signal: whether the WebSocket is currently connected */
 export const wsConnected = signal(false);
@@ -49,6 +52,73 @@ export function withLoadingSuppressed(fn) {
 
 export function withLoadingTracked(fn) {
   return withDepthCounter("force", fn);
+}
+
+function createAbortError() {
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
+function drainGetRequestQueue() {
+  while (
+    _activeGetRequestCount < MAX_CONCURRENT_GET_REQUESTS
+    && _queuedGetRequests.length > 0
+  ) {
+    const next = _queuedGetRequests.shift();
+    next?.start?.();
+  }
+}
+
+function scheduleGetRequest(task, signal) {
+  if (signal?.aborted) {
+    return Promise.reject(createAbortError());
+  }
+
+  return new Promise((resolve, reject) => {
+    const entry = {
+      started: false,
+      abortListener: null,
+      start: async () => {
+        if (entry.started) return;
+        entry.started = true;
+        if (typeof signal?.removeEventListener === "function" && entry.abortListener) {
+          signal.removeEventListener("abort", entry.abortListener);
+          entry.abortListener = null;
+        }
+        if (signal?.aborted) {
+          reject(createAbortError());
+          drainGetRequestQueue();
+          return;
+        }
+
+        _activeGetRequestCount += 1;
+        try {
+          resolve(await task());
+        } catch (error) {
+          reject(error);
+        } finally {
+          _activeGetRequestCount = Math.max(0, _activeGetRequestCount - 1);
+          drainGetRequestQueue();
+        }
+      },
+    };
+
+    if (typeof signal?.addEventListener === "function") {
+      entry.abortListener = () => {
+        if (entry.started) return;
+        const index = _queuedGetRequests.indexOf(entry);
+        if (index >= 0) {
+          _queuedGetRequests.splice(index, 1);
+        }
+        reject(createAbortError());
+      };
+      signal.addEventListener("abort", entry.abortListener, { once: true });
+    }
+
+    _queuedGetRequests.push(entry);
+    drainGetRequestQueue();
+  });
 }
 
 function resolveApiErrorMessage(status, text, payload) {
@@ -259,6 +329,12 @@ export function apiFetch(path, options = {}) {
         return await response.json();
       };
 
+      if (isGet && !requestOptions.body) {
+        return await scheduleGetRequest(
+          () => performRequest(!sessionRecoveryAttempted),
+          requestOptions.signal,
+        );
+      }
       return await performRequest(!sessionRecoveryAttempted);
     } catch (err) {
       if (!silent) {
