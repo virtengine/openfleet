@@ -189,7 +189,8 @@ if (isDirectExecution()) {
   try {
     const extraArgs = process.argv.slice(2);
     if (extraArgs.length > 0) {
-      process.exit(runVitest(extraArgs));
+      const vitestArgs = extraArgs[0] === "run" ? extraArgs : ["run", ...extraArgs];
+      process.exit(runVitest(vitestArgs));
     }
     process.exit(runFullSuite());
   } catch (error) {

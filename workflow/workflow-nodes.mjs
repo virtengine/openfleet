@@ -11750,11 +11750,20 @@ registerBuiltinNodeType("agent.run_planner", {
     const skillbookPromptContext = buildSkillbookPromptContext(skillbookGuidance);
     const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback, skillbookPromptContext].filter(Boolean).join("\n\n");
     const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
+    const resolvedRepoMap = node.config?.repoMap || ctx.data?.repoMap || null;
+    const hasResolvedRepoMap = Boolean(
+      resolvedRepoMap
+      && typeof resolvedRepoMap === "object"
+      && (
+        String(resolvedRepoMap.root || resolvedRepoMap.repoRoot || "").trim()
+        || (Array.isArray(resolvedRepoMap.files) && resolvedRepoMap.files.some((entry) => String(entry?.path || "").trim()))
+      )
+    );
     const repoMapChangedFiles =
       (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
       (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
       [];
-    if ((node.config?.repoMap || repoMapQuery) && !promptHasRepoMap) {
+    if ((node.config?.repoMap || repoMapQuery) && !promptHasRepoMap && !hasResolvedRepoMap) {
       try {
         await ensureContextIndexFresh({
           rootDir: ctx.data?.repoRoot || process.cwd(),
@@ -11769,7 +11778,7 @@ registerBuiltinNodeType("agent.run_planner", {
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
       ? buildRepoTopologyContext({
-        repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+        repoMap: resolvedRepoMap,
         repoMapFileLimit: node.config?.repoMapFileLimit ?? 8,
         repoMapQuery,
         query: [context, explicitPrompt, plannerPrompt].filter(Boolean).join(" "),

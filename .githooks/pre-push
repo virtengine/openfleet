@@ -82,7 +82,7 @@ ADJACENCY_MAP=(
   "kanban/|kanban-*|task-store*|task-claims*|ve-kanban*|ve-orchestrator*|vk-api*"
   "workspace/|workspace-*|shared-state*|worktree-*|worktree-recovery-regression*|sync-engine*"
   "infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|windows-hidden-child-processes*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"
-  "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*|internal-harness*"
+  "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*|internal-harness*|provider-kernel-support*|tool-governance-support*"
   "bench/|bench-swebench*|benchmark-*|task-*"
   "config/|config-*|workspace-health*|bosun-skills*|codex-config*"
   "telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"

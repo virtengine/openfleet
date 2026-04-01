@@ -1174,6 +1174,15 @@ registerNodeType("agent.run_planner", {
     const plannerPrompt = engine.services?.prompts?.planner;
     const basePrompt = explicitPrompt || plannerPrompt || "";
     const promptHasRepoMap = hasRepoMapContext(basePrompt);
+    const resolvedRepoMap = node.config?.repoMap || ctx.data?.repoMap || null;
+    const hasResolvedRepoMap = Boolean(
+      resolvedRepoMap
+      && typeof resolvedRepoMap === "object"
+      && (
+        String(resolvedRepoMap.root || resolvedRepoMap.repoRoot || "").trim()
+        || (Array.isArray(resolvedRepoMap.files) && resolvedRepoMap.files.some((entry) => String(entry?.path || "").trim()))
+      )
+    );
     const resolvedRepoMapFileLimit = ctx.resolve(node.config?.repoMapFileLimit ?? null);
     const repoMapFileLimit =
       resolvedRepoMapFileLimit == null || resolvedRepoMapFileLimit === ""
@@ -1183,7 +1192,7 @@ registerNodeType("agent.run_planner", {
       (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
       (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
       [];
-    if ((node.config?.repoMap || repoMapQuery) && !promptHasRepoMap) {
+    if ((node.config?.repoMap || repoMapQuery) && !promptHasRepoMap && !hasResolvedRepoMap) {
       try {
         await ensureContextIndexFresh({
           rootDir: ctx.data?.repoRoot || process.cwd(),
@@ -1198,7 +1207,7 @@ registerNodeType("agent.run_planner", {
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
       ? buildRepoTopologyContext({
-        repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+        repoMap: resolvedRepoMap,
         repoMapFileLimit,
         repoMapQuery,
         query: [context, explicitPrompt, plannerPrompt].filter(Boolean).join(" "),

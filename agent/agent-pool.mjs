@@ -67,6 +67,12 @@ import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
 import { createInternalHarnessSession as createHarnessRuntimeSession } from "./internal-harness-runtime.mjs";
+import {
+  createCompiledHarnessSession as createManagedCompiledHarnessSession,
+  createHarnessSession as createManagedHarnessSession,
+  runCompiledHarnessSession as runManagedCompiledHarnessSession,
+  runHarnessSession as runManagedHarnessSession,
+} from "./session-manager.mjs";
 
 // Upper bound for externally supplied harness timeouts to avoid unbounded runs.
 const MAX_HARNESS_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -5078,86 +5084,41 @@ export function compileInternalHarnessSource(source, options = {}) {
 }
 
 export function createCompiledInternalHarnessSession(compiledProfile, options = {}) {
-  if (!compiledProfile || typeof compiledProfile !== "object" || !Array.isArray(compiledProfile.stages)) {
-    throw new Error("Compiled harness profile is required");
-  }
-
   const normalizedTimeoutMs = normalizeHarnessTimeoutMs(options.timeoutMs);
-
-  const controller = createHarnessRuntimeSession(compiledProfile, {
-    onEvent: options.onHarnessEvent,
-    runId: options.runId,
-    dryRun: options.dryRun === true,
-    abortController: options.abortController || null,
-    taskKey: options.taskKey || compiledProfile.taskKey || compiledProfile.agentId,
-    taskId: options.taskId,
-    taskTitle: options.taskTitle,
-    artifactId: options.artifactId,
-    sourceOrigin: options.sourceOrigin,
-    sourcePath: options.sourcePath,
-    approvalRepoRoot: options.approvalRepoRoot,
-    requestedBy: options.requestedBy,
-    emitApprovalResolutionEvent: options.emitApprovalResolutionEvent,
+  return createManagedCompiledHarnessSession(compiledProfile, {
+    ...options,
+    timeoutMs: normalizedTimeoutMs ?? options.timeoutMs,
+    onHarnessEvent: options.onHarnessEvent,
     steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
-    executeTurn: buildHarnessTurnExecutor({
-      ...options,
-      timeoutMs: normalizedTimeoutMs ?? options.timeoutMs,
-    }),
-    extensions: options.extensions,
-    extensionRegistry: options.extensionRegistry,
+    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
   });
-
-  return {
-    agentId: compiledProfile.agentId || "",
-    compiledProfile,
-    compiledProfileJson: JSON.stringify(compiledProfile, null, 2),
-    validationReport: { errors: [], warnings: [], stats: compiledProfile.metadata || {} },
-    isValid: true,
-    controller,
-    canSteer: () => controller.canSteer?.() === true,
-    steer: (prompt, meta = {}) => controller.steer?.(prompt, meta) || {
-      ok: false,
-      delivered: false,
-      reason: "not_steerable",
-      interventionType: String(meta?.kind || meta?.type || "nudge").trim() || "nudge",
-      stageId: null,
-      targetTaskKey: null,
-    },
-    run: () => controller.run(),
-  };
 }
 
 export function createInternalHarnessSession(profileSource, options = {}) {
-  const compiled = compileInternalHarnessSource(profileSource, options);
-  if (!compiled.isValid || !compiled.compiledProfile) {
-    const error = new Error(formatHarnessValidationError(compiled.validationReport));
-    error.validationReport = compiled.validationReport;
-    throw error;
-  }
-
-  const compiledSession = createCompiledInternalHarnessSession(compiled.compiledProfile, options);
-  return {
-    ...compiledSession,
-    ...compiled,
-  };
+  return createManagedHarnessSession(profileSource, {
+    ...options,
+    compileHarnessSource: (source, compileOptions) => compileInternalHarnessSource(source, compileOptions),
+    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
+    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
+  });
 }
 
 export async function runCompiledInternalHarnessProfile(compiledProfile, options = {}) {
-  const session = createCompiledInternalHarnessSession(compiledProfile, options);
-  const result = await session.run();
-  return {
-    ...session,
-    result,
-  };
+  return runManagedCompiledHarnessSession(compiledProfile, {
+    ...options,
+    onHarnessEvent: options.onHarnessEvent,
+    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
+    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
+  });
 }
 
 export async function runInternalHarnessProfile(profileSource, options = {}) {
-  const session = createInternalHarnessSession(profileSource, options);
-  const result = await session.run();
-  return {
-    ...session,
-    result,
-  };
+  return runManagedHarnessSession(profileSource, {
+    ...options,
+    compileHarnessSource: (source, compileOptions) => compileInternalHarnessSource(source, compileOptions),
+    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
+    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -10,11 +10,12 @@ import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs
 import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
-import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { buildContextEnvelope } from "../workspace/context-cache.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
+import { createProviderRegistry, executorToAdapterName, normalizeProviderAdapterName } from "./provider-registry.mjs";
+import { buildToolCapabilityContract } from "./tool-orchestrator.mjs";
 import {
   execCodexPrompt,
   steerCodexPrompt,
@@ -67,7 +68,6 @@ import {
   switchSession as switchGeminiSession,
   createSession as createGeminiSession,
 } from "../shell/gemini-shell.mjs";
-import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
 
 /** Valid agent interaction modes */
 const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
@@ -212,50 +212,7 @@ function summarizeContextCompressionItems(items) {
 }
 
 function buildPrimaryToolCapabilityContract(options = {}) {
-  let rootDir = "";
-  try {
-    rootDir = String(options.cwd || resolveRepoRoot() || process.cwd()).trim();
-  } catch {
-    rootDir = String(options.cwd || process.cwd()).trim();
-  }
-  const agentProfileId = String(options.agentProfileId || "").trim();
-  const toolState = agentProfileId
-    ? getEffectiveTools(rootDir, agentProfileId)
-    : getEffectiveTools(rootDir, "__default__");
-  const rawCfg = agentProfileId ? getAgentToolConfig(rootDir, agentProfileId) : null;
-  const enabledBuiltinTools = (Array.isArray(toolState?.builtinTools) ? toolState.builtinTools : [])
-    .filter((tool) => tool?.enabled)
-    .map((tool) => ({
-      id: String(tool?.id || "").trim(),
-      name: String(tool?.name || "").trim(),
-      description: String(tool?.description || "").trim(),
-    }))
-    .filter((tool) => tool.id);
-  const enabledMcpServers = Array.isArray(rawCfg?.enabledMcpServers)
-    ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
-    : [];
-  const manifest = {
-    agentProfileId: agentProfileId || null,
-    enabledBuiltinTools,
-    enabledMcpServers,
-    toolBridge: {
-      module: "./voice-tools.mjs",
-      function: "executeToolCall(toolName, args, context)",
-      quickUse: [
-        "node -e \"import('../voice/voice-tools.mjs').then(async m=>{const r=await m.executeToolCall('get_workspace_context', {}, {});console.log(r?.result||r);})\"",
-        "node -e \"import('../voice/voice-tools.mjs').then(async m=>{const r=await m.executeToolCall('list_tasks', {limit:10}, {});console.log(r?.result||r);})\"",
-      ],
-    },
-  };
-  return [
-    "## Tool Capability Contract",
-    "Use enabled tools by default. Do not claim tools are unavailable without first trying them.",
-    "Enabled tools JSON:",
-    "```json",
-    JSON.stringify(manifest, null, 2),
-    "```",
-    "When uncertain about tool inputs/outputs, call get_admin_help via executeToolCall first.",
-  ].join("\n");
+  return buildToolCapabilityContract(options);
 }
 
 function toStringArray(value) {
@@ -639,12 +596,7 @@ function selectPrimaryExecutor(config) {
 }
 
 function executorToAdapter(executor) {
-  const key = normalizeExecutorKey(executor);
-  if (key === "copilot") return "copilot-sdk";
-  if (key === "claude") return "claude-sdk";
-  if (key === "gemini") return "gemini-sdk";
-  if (key === "opencode") return "opencode-sdk";
-  return "codex-sdk";
+  return executorToAdapterName(executor);
 }
 
 function readAdapterBusy(adapter) {
@@ -664,21 +616,7 @@ function getAdapterCapabilities(adapter) {
 }
 
 function resolveAgentSelection(name) {
-  const raw = String(name || "").trim();
-  if (!raw) return null;
-  const normalized = normalizePrimaryAgent(raw);
-  if (ADAPTERS[normalized]) {
-    return { adapterName: normalized, selectionId: normalized };
-  }
-
-  const configured = getAvailableAgents();
-  const match = configured.find((agent) => agent.id === raw);
-  if (!match) return null;
-  const adapterName = normalizePrimaryAgent(
-    match.adapterId || executorToAdapter(match.executor || match.provider),
-  );
-  if (!ADAPTERS[adapterName]) return null;
-  return { adapterName, selectionId: match.id };
+  return createPrimaryProviderRegistry().resolveSelection(name);
 }
 
 function resolvePrimaryAgent(nameOrConfig) {
@@ -700,6 +638,24 @@ function resolvePrimaryAgent(nameOrConfig) {
   primaryProfile = selectPrimaryExecutor(cfg);
   const mapped = executorToAdapter(primaryProfile?.executor);
   return mapped || "codex-sdk";
+}
+
+function createPrimaryProviderRegistry() {
+  let configExecutors = [];
+  try {
+    const cfg = loadConfig();
+    configExecutors = Array.isArray(cfg?.executorConfig?.executors)
+      ? cfg.executorConfig.executors
+      : [];
+  } catch {
+    configExecutors = [];
+  }
+  return createProviderRegistry({
+    adapters: ADAPTERS,
+    configExecutors,
+    readBusy: readAdapterBusy,
+    getAdapterCapabilities,
+  });
 }
 
 export function setPrimaryAgent(name) {
@@ -1421,63 +1377,10 @@ export function getCustomModes() {
  * @returns {Array<{id:string, name:string, provider:string, available:boolean, busy:boolean, capabilities:object}>}
  */
 export function getAvailableAgents() {
-  let configExecutors = [];
-  try {
-    const cfg = loadConfig();
-    configExecutors = Array.isArray(cfg?.executorConfig?.executors)
-      ? cfg.executorConfig.executors
-      : [];
-  } catch {
-    configExecutors = [];
-  }
-
-  if (configExecutors.length > 0) {
-    return configExecutors.map((entry, index) => {
-      const adapterId = executorToAdapter(entry?.executor);
-      const adapter = ADAPTERS[adapterId] || ADAPTERS["codex-sdk"];
-      const envDisabledKey = `${adapterId.replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
-      const sdkDisabled = envFlagEnabled(process.env[envDisabledKey]);
-      const profileEnabled = entry?.enabled !== false;
-      const configuredModels = Array.isArray(entry?.models)
-        ? entry.models
-            .map((model) => String(model || "").trim())
-            .filter(Boolean)
-        : [];
-      const models = configuredModels.length > 0
-        ? configuredModels
-        : getModelsForExecutor(entry?.executor || adapter.provider);
-      const name = String(entry?.name || "").trim() || adapter.displayName || adapter.name;
-      return {
-        id: name || `${adapterId}-${index + 1}`,
-        name,
-        provider: adapter.provider,
-        executor: String(entry?.executor || "").toUpperCase() || adapter.provider,
-        variant: String(entry?.variant || "DEFAULT"),
-        adapterId,
-        available: profileEnabled && !sdkDisabled,
-        busy: profileEnabled && !sdkDisabled ? readAdapterBusy(adapter) : false,
-        models,
-        capabilities: getAdapterCapabilities(adapter),
-      };
-    });
-  }
-
-  return Object.entries(ADAPTERS).map(([id, adapter]) => {
-    const envDisabledKey = `${id.replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
-    const disabled = envFlagEnabled(process.env[envDisabledKey]);
-    return {
-      id,
-      name: adapter.displayName || adapter.name,
-      provider: adapter.provider,
-      executor: adapter.provider,
-      variant: "DEFAULT",
-      adapterId: id,
-      available: !disabled,
-      busy: readAdapterBusy(adapter),
-      models: getModelsForExecutor(adapter.provider), // use provider ("CODEX"/"COPILOT"/"CLAUDE") — always in the alias map
-      capabilities: getAdapterCapabilities(adapter),
-    };
-  });
+  return createPrimaryProviderRegistry().listProviders().map((entry) => ({
+    ...entry,
+    adapterId: normalizeProviderAdapterName(entry.adapterId || entry.id),
+  }));
 }
 
 /**
@@ -1512,6 +1415,3 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
-
-
-

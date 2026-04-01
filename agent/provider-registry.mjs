@@ -1,127 +1,189 @@
-import {
-  getAvailableAgents,
-  getPrimaryAgentName,
-  getPrimaryAgentSelection,
-  getSdkCommands,
-  initPrimaryAgent,
-  switchPrimaryAgent,
-} from "./primary-agent.mjs";
-import {
-  deriveProviderCapabilities,
-  buildProviderCapabilitySummary,
-} from "./provider-capabilities.mjs";
+import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
+import { createProviderAuthManager } from "./provider-auth-manager.mjs";
+import { getProviderCapabilities, normalizeProviderCapabilityId } from "./provider-capabilities.mjs";
+import { getProviderModelCatalog } from "./provider-model-catalog.mjs";
 
-function toTrimmedString(value) {
-  return String(value ?? "").trim();
+function envFlagEnabled(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  return ["1", "true", "yes", "on", "y"].includes(raw);
 }
 
-function toPoolSdk(adapterId) {
-  const normalized = toTrimmedString(adapterId).toLowerCase();
-  if (normalized === "copilot-sdk") return "copilot";
-  if (normalized === "claude-sdk") return "claude";
-  if (normalized === "gemini-sdk") return "gemini";
-  if (normalized === "opencode-sdk") return "opencode";
-  return "codex";
+export function normalizeProviderAdapterName(value) {
+  const normalized = normalizeProviderCapabilityId(value);
+  if (normalized === "github-copilot") return "copilot-sdk";
+  if (normalized === "claude_code" || normalized === "claude-code") return "claude-sdk";
+  if (normalized === "google-gemini") return "gemini-sdk";
+  if (normalized === "open-code") return "opencode-sdk";
+  return normalized || "codex-sdk";
 }
 
-function normalizeProviderRecord(agent = {}, activeSelection = "", activeAdapter = "") {
-  const selectionId = toTrimmedString(agent.id || agent.selectionId || agent.name || agent.adapterId);
-  const adapterId = toTrimmedString(agent.adapterId || agent.name || "codex-sdk") || "codex-sdk";
-  const capabilities = deriveProviderCapabilities({
-    ...agent,
-    capabilities: {
-      sessions: agent.capabilities?.sessions === true,
-      steering: agent.capabilities?.steering === true,
-      sdkCommands: getSdkCommands(adapterId),
-    },
+export function executorToAdapterName(executor) {
+  const key = normalizeExecutorKey(executor);
+  if (key === "copilot") return "copilot-sdk";
+  if (key === "claude") return "claude-sdk";
+  if (key === "gemini") return "gemini-sdk";
+  if (key === "opencode") return "opencode-sdk";
+  return "codex-sdk";
+}
+
+function resolveDisabled(adapterId, env = process.env) {
+  const envKey = `${String(adapterId || "").replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
+  return envFlagEnabled(env?.[envKey]);
+}
+
+function buildCapabilities(adapter, adapterId, getAdapterCapabilities) {
+  const providerCapabilities = getProviderCapabilities(adapterId);
+  const adapterCapabilities =
+    typeof getAdapterCapabilities === "function"
+      ? getAdapterCapabilities(adapter)
+      : {};
+  return {
+    ...providerCapabilities,
+    ...adapterCapabilities,
+  };
+}
+
+function resolveProviderAuth(adapterId, fields, options) {
+  const authManager = createProviderAuthManager({ env: options.env || process.env });
+  const readAuthState = typeof options.readAuthState === "function"
+    ? options.readAuthState
+    : () => ({});
+  return authManager.resolve(adapterId, readAuthState(adapterId, fields) || {}, {
+    capabilities: buildCapabilities({}, adapterId, null),
+  });
+}
+
+function buildProviderEntry(adapterId, adapter, fields, options) {
+  const configuredModels = Array.isArray(fields.models)
+    ? fields.models.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  const modelCatalog = getProviderModelCatalog(adapterId, {
+    adapter,
+    executor: fields.executor,
+    configuredModels,
+    defaultModel: fields.defaultModel,
+    local: getProviderCapabilities(adapterId).local === true,
   });
   return {
-    id: selectionId || adapterId,
-    selectionId: selectionId || adapterId,
+    id: fields.id,
+    name: fields.name,
+    provider: fields.provider,
+    executor: fields.executor,
+    variant: fields.variant,
     adapterId,
-    poolSdk: toPoolSdk(adapterId),
-    name: toTrimmedString(agent.name || selectionId || adapterId) || adapterId,
-    provider: toTrimmedString(agent.provider || agent.executor || adapterId).toUpperCase() || adapterId.toUpperCase(),
-    executor: toTrimmedString(agent.executor || agent.provider || adapterId).toUpperCase() || adapterId.toUpperCase(),
-    variant: toTrimmedString(agent.variant || "DEFAULT") || "DEFAULT",
-    available: agent.available !== false,
-    busy: agent.busy === true,
-    models: Array.isArray(agent.models) ? agent.models.map((model) => toTrimmedString(model)).filter(Boolean) : [],
-    capabilities,
-    capabilitySummary: buildProviderCapabilitySummary({
-      id: selectionId || adapterId,
+    available: fields.available,
+    busy: fields.busy,
+    models: configuredModels.length > 0
+      ? configuredModels
+      : modelCatalog.models.map((entry) => entry.id),
+    defaultModel: fields.defaultModel || modelCatalog.defaultModel,
+    modelCatalog,
+    auth: resolveProviderAuth(adapterId, fields, options),
+    capabilities: buildCapabilities(adapter, adapterId, options.getAdapterCapabilities),
+  };
+}
+
+export function listRegisteredProviders(options = {}) {
+  const adapters = options.adapters && typeof options.adapters === "object"
+    ? options.adapters
+    : {};
+  const env = options.env || process.env;
+  const readBusy = typeof options.readBusy === "function"
+    ? options.readBusy
+    : () => false;
+  const executors = Array.isArray(options.configExecutors)
+    ? options.configExecutors
+    : [];
+
+  if (executors.length > 0) {
+    return executors.map((entry, index) => {
+      const adapterId = normalizeProviderAdapterName(
+        entry?.adapterId || executorToAdapterName(entry?.executor),
+      );
+      const adapter = adapters[adapterId] || adapters["codex-sdk"] || {};
+      const available = entry?.enabled !== false && !resolveDisabled(adapterId, env);
+      const configuredModels = Array.isArray(entry?.models)
+        ? entry.models.map((model) => String(model || "").trim()).filter(Boolean)
+        : [];
+      const name = String(entry?.name || "").trim() || adapter.displayName || adapter.name || adapterId;
+      return buildProviderEntry(
+        adapterId,
+        adapter,
+        {
+          id: name || `${adapterId}-${index + 1}`,
+          name,
+          provider: adapter.provider || String(entry?.executor || "").toUpperCase() || adapterId,
+          executor: String(entry?.executor || "").toUpperCase() || adapter.provider || adapterId,
+          variant: String(entry?.variant || "DEFAULT"),
+          available,
+          busy: available ? readBusy(adapter) : false,
+          models: configuredModels,
+        },
+        options,
+      );
+    });
+  }
+
+  return Object.entries(adapters).map(([adapterId, adapter]) => {
+    const available = !resolveDisabled(adapterId, env);
+    return buildProviderEntry(
       adapterId,
-      capabilities,
-      sdkCommands: getSdkCommands(adapterId),
-    }),
-    isActive:
-      selectionId === activeSelection ||
-      adapterId === activeSelection ||
-      adapterId === activeAdapter,
-  };
-}
-
-export async function listRegisteredProviders(options = {}) {
-  if (options.initialize !== false) {
-    await initPrimaryAgent(options.primaryAgent || null);
-  }
-  const activeSelection = getPrimaryAgentSelection();
-  const activeAdapter = getPrimaryAgentName();
-  return getAvailableAgents().map((agent) => normalizeProviderRecord(agent, activeSelection, activeAdapter));
-}
-
-export async function getProviderRecord(providerId, options = {}) {
-  const providers = await listRegisteredProviders(options);
-  const requested = toTrimmedString(providerId);
-  if (!requested) {
-    return providers.find((provider) => provider.isActive) || providers[0] || null;
-  }
-  return providers.find((provider) =>
-    provider.id === requested ||
-    provider.selectionId === requested ||
-    provider.adapterId === requested ||
-    provider.name === requested
-  ) || null;
-}
-
-export async function resolveProviderRecord(providerLike, options = {}) {
-  if (providerLike && typeof providerLike === "object" && toTrimmedString(providerLike.adapterId || providerLike.id)) {
-    return normalizeProviderRecord(
-      providerLike,
-      toTrimmedString(options.activeSelection || getPrimaryAgentSelection()),
-      toTrimmedString(options.activeAdapter || getPrimaryAgentName()),
+      adapter,
+      {
+        id: adapterId,
+        name: adapter.displayName || adapter.name || adapterId,
+        provider: adapter.provider || adapterId,
+        executor: adapter.provider || adapterId,
+        variant: "DEFAULT",
+        available,
+        busy: available ? readBusy(adapter) : false,
+        models: [],
+      },
+      options,
     );
-  }
-  return await getProviderRecord(providerLike, options);
+  });
 }
 
-export async function getActiveProviderRecord(options = {}) {
-  return await getProviderRecord(
-    options.providerId || getPrimaryAgentSelection() || getPrimaryAgentName(),
-    options,
-  );
-}
-
-export async function activateProviderRecord(providerId, options = {}) {
-  const requested = toTrimmedString(providerId);
-  if (!requested) return { ok: false, reason: "missing_provider" };
-  const switched = await switchPrimaryAgent(requested);
-  if (switched?.ok !== true) {
-    return { ok: false, reason: switched?.reason || "switch_failed" };
+export function resolveProviderSelection(name, options = {}) {
+  const raw = String(name || "").trim();
+  if (!raw) return null;
+  const normalized = normalizeProviderAdapterName(raw);
+  const adapters = options.adapters && typeof options.adapters === "object"
+    ? options.adapters
+    : {};
+  if (adapters[normalized]) {
+    return { adapterName: normalized, selectionId: normalized };
   }
+
+  const providers = Array.isArray(options.availableProviders)
+    ? options.availableProviders
+    : listRegisteredProviders(options);
+  const match = providers.find((entry) => entry.id === raw);
+  if (!match) return null;
+  const adapterName = normalizeProviderAdapterName(match.adapterId || match.executor || match.provider);
+  if (!adapters[adapterName]) return null;
   return {
-    ok: true,
-    provider: await getProviderRecord(requested, options),
+    adapterName,
+    selectionId: match.id,
   };
 }
 
-export async function createProviderRegistry(options = {}) {
+export function createProviderRegistry(options = {}) {
   return {
-    listProviders: (overrides = {}) => listRegisteredProviders({ ...options, ...overrides }),
-    getProvider: (providerId, overrides = {}) => getProviderRecord(providerId, { ...options, ...overrides }),
-    getActiveProvider: (overrides = {}) => getActiveProviderRecord({ ...options, ...overrides }),
-    resolveProvider: (providerLike, overrides = {}) => resolveProviderRecord(providerLike, { ...options, ...overrides }),
-    activateProvider: (providerId, overrides = {}) => activateProviderRecord(providerId, { ...options, ...overrides }),
+    listProviders() {
+      return listRegisteredProviders(options);
+    },
+    resolveSelection(name) {
+      return resolveProviderSelection(name, options);
+    },
+    getProvider(adapterId) {
+      const normalized = normalizeProviderAdapterName(adapterId);
+      const providers = listRegisteredProviders(options);
+      return providers.find((entry) => entry.adapterId === normalized || entry.id === adapterId) || null;
+    },
+    getCapabilities(adapterId) {
+      return getProviderCapabilities(adapterId);
+    },
   };
 }
 

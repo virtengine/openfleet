@@ -197,6 +197,19 @@ describe("repo-map", () => {
     expect(frame).not.toContain("## Repo Topology");
   });
 
+  it("does not inject repo topology when no architect or editor role is active", () => {
+    const frame = buildArchitectEditorFrame({
+      repoMap: {
+        root: "C:/repo",
+        files: [
+          { path: "workflow/workflow-engine.mjs", summary: "workflow runtime" },
+        ],
+      },
+    }, "agent");
+
+    expect(frame).toBe("");
+  });
+
   it("handles slash-heavy query input without regex backtracking", () => {
     const indexDir = resolve(testRoot, ".bosun", "context-index");
     mkdirSync(indexDir, { recursive: true });
@@ -220,7 +233,6 @@ describe("repo-map", () => {
     expect(repoMap.files[0].symbols).toContain("tokenizeQuery");
   });
 });
-
 
 
 
