@@ -288,20 +288,23 @@ async function loadLegacyRegistryEntries(repoRoot = knowledgeState.repoRoot || p
 }
 
 async function backfillLedgerEntries(repoRoot, entries = []) {
+  let mod;
+  try { mod = await getStateLedgerModule(); } catch { return; }
   for (const rawEntry of Array.isArray(entries) ? entries : []) {
     const entry = normalizeRegistryEntry(rawEntry);
     if (!entry) continue;
     try {
-      appendKnowledgeEntryToStateLedger(entry, { repoRoot });
+      mod.appendKnowledgeEntryToStateLedger(entry, { repoRoot });
     } catch {
       // best-effort migration only
     }
   }
 }
 
-function loadLedgerRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
+async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
   try {
-    const entries = listKnowledgeEntriesFromStateLedger({ repoRoot, limit: 5000 })
+    const mod = await getStateLedgerModule();
+    const entries = mod.listKnowledgeEntriesFromStateLedger({ repoRoot, limit: 5000 })
       .map((entry) => normalizeRegistryEntry(entry))
       .filter(Boolean);
     if (entries.length > 0) {
@@ -835,6 +838,22 @@ export async function appendKnowledgeEntry(entry, options = {}) {
     } catch (mirrorError) {
       mirrored = false;
       mirrorReason = `markdown mirror failed: ${mirrorError.message}`;
+    }
+
+    const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
+    registry.entries.push(normalizedEntry);
+    await saveRegistryEntries(knowledgeState.repoRoot || process.cwd(), registry);
+    let ledgerPath = null;
+    try {
+      const mod = await getStateLedgerModule();
+      const ledgerResult = mod.appendKnowledgeEntryToStateLedger(normalizedEntry, {
+        repoRoot: knowledgeState.repoRoot || process.cwd(),
+      });
+      ledgerPath = ledgerResult?.path || mod.resolveStateLedgerPath({
+        repoRoot: knowledgeState.repoRoot || process.cwd(),
+      });
+    } catch {
+      // SQLite unavailable on this Node version — skip ledger write
     }
 
     knowledgeState.entryHashes.add(normalizedEntry.hash);
