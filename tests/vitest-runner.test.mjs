@@ -231,4 +231,13 @@ describe("vitest-runner", () => {
     expect(source).toContain('normalizedCommand === "net use"');
     expect(source).toContain("syncBuiltinESMExports()");
   });
+
+  it("runs a one-time Vitest global setup to sync generated demo defaults", () => {
+    const source = readFileSync(resolve(repoRoot, "vitest.config.mjs"), "utf8");
+    const setupSource = readFileSync(resolve(repoRoot, "tests", "vitest-global-setup.mjs"), "utf8");
+
+    expect(source).toContain('globalSetup: ["tests/vitest-global-setup.mjs"]');
+    expect(setupSource).toContain('import { syncDemoDefaults } from "../tools/generate-demo-defaults.mjs";');
+    expect(setupSource).toContain('await syncDemoDefaults({ silent: true });');
+  });
 });

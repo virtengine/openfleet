@@ -67,6 +67,7 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
+    globalSetup: ["tests/vitest-global-setup.mjs"],
     include: ["tests/**/*.test.mjs"],
     exclude: [
       "**/node_modules/**",

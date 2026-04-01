@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -248,14 +248,31 @@ export function renderDefaultsScript(data) {
   ].join("\n");
 }
 
-export async function writeDemoDefaults() {
+export async function syncDemoDefaults({ silent = false } = {}) {
   const data = await buildDemoDefaultsData();
   const content = renderDefaultsScript(data);
+  const updatedPaths = [];
   for (const filePath of OUTPUT_PATHS) {
     mkdirSync(dirname(filePath), { recursive: true });
+    const current = existsSync(filePath) ? readFileSync(filePath, "utf8") : null;
+    if (current === content) continue;
     writeFileSync(filePath, content, "utf8");
+    updatedPaths.push(filePath);
   }
-  return { data, content, outputPaths: OUTPUT_PATHS };
+  if (!silent && updatedPaths.length > 0) {
+    console.log(`[demo-defaults] synced ${updatedPaths.length} file(s)`);
+  }
+  return {
+    data,
+    content,
+    outputPaths: OUTPUT_PATHS,
+    updatedPaths,
+    updated: updatedPaths.length > 0,
+  };
+}
+
+export async function writeDemoDefaults() {
+  return syncDemoDefaults();
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
