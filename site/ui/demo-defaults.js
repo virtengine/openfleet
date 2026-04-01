@@ -13014,7 +13014,9 @@
         "health",
         "config",
         "doctor",
-        "monitoring"
+        "monitoring",
+        "self-improvement",
+        "benchmark"
       ],
       "nodeCount": 15,
       "edgeCount": 17,
@@ -13029,12 +13031,14 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.1",
+        "templateVersion": "1.1.0",
         "tags": [
           "health",
           "config",
           "doctor",
-          "monitoring"
+          "monitoring",
+          "self-improvement",
+          "benchmark"
         ],
         "replaces": {
           "module": "config-doctor.mjs",
@@ -13113,6 +13117,30 @@
           ]
         },
         {
+          "id": "collect-recent-runs",
+          "type": "action.run_command",
+          "label": "Collect Recent Runs",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const maxRuns = Math.max(1, parseInt(process.env.MAX_BENCHMARK_RUNS || \"12\", 10) || 12);\n        const runsDir = path.resolve(process.cwd(), \".bosun\", \"workflow-runs\");\n        const indexPath = path.join(runsDir, \"index.json\");\n        let entries = [];\n        if (fs.existsSync(indexPath)) {\n          try {\n            const raw = JSON.parse(fs.readFileSync(indexPath, \"utf8\"));\n            entries = Array.isArray(raw) ? raw : (Array.isArray(raw?.runs) ? raw.runs : []);\n          } catch {}\n        }\n        const candidates = entries\n          .filter((entry) => entry && entry.runId && [\"completed\", \"failed\"].includes(String(entry.status || \"\").toLowerCase()))\n          .sort((left, right) => Number(right?.startedAt || 0) - Number(left?.startedAt || 0))\n          .slice(0, maxRuns)\n          .map((entry) => ({\n            runId: entry.runId,\n            workflowId: entry.workflowId || null,\n            workflowName: entry.workflowName || null,\n            status: entry.status || null,\n            startedAt: entry.startedAt || null,\n            score: entry.score ?? null,\n            issueAdvisorRecommendation: entry.issueAdvisorRecommendation || null,\n          }));\n        const selected = candidates[0] || null;\n        console.log(JSON.stringify({\n          count: candidates.length,\n          candidates,\n          selectedRunId: selected?.runId || null,\n          selectedWorkflowId: selected?.workflowId || null,\n        }));\n      "
+            ],
+            "env": {
+              "MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
+            },
+            "parseJson": true,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 900,
+            "y": 200
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "has-issues",
           "type": "condition.expression",
           "label": "Any Issues?",
@@ -13122,6 +13150,155 @@
           "position": {
             "x": 400,
             "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-recent-runs",
+          "type": "condition.expression",
+          "label": "Recent Runs Available?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId)"
+          },
+          "position": {
+            "x": 900,
+            "y": 380
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "evaluate-latest-run",
+          "type": "action.evaluate_run",
+          "label": "Evaluate Latest Run",
+          "config": {
+            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId || ''}}",
+            "workflowId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedWorkflowId || ''}}",
+            "includeTrend": true,
+            "outputVariable": "healthCheckRunEvaluation"
+          },
+          "position": {
+            "x": 900,
+            "y": 540
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "apply-ratchet",
+          "type": "action.apply_self_improvement_ratchet",
+          "label": "Apply Ratchet Decision",
+          "config": {
+            "evaluationNodeId": "evaluate-latest-run",
+            "scopeLevel": "workspace",
+            "scope": "workflow-reliability",
+            "category": "strategy",
+            "outputVariable": "healthCheckRatchet"
+          },
+          "position": {
+            "x": 900,
+            "y": 840
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "ratchet-applied",
+          "type": "condition.expression",
+          "label": "Ratchet Applied?",
+          "config": {
+            "expression": "['capture_baseline','apply_candidate'].includes($ctx.getNodeOutput('apply-ratchet')?.decision || '')"
+          },
+          "position": {
+            "x": 720,
+            "y": 980
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "ratchet-reverted",
+          "type": "condition.expression",
+          "label": "Ratchet Reverted?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('apply-ratchet')?.decision === 'revert_to_baseline'"
+          },
+          "position": {
+            "x": 1080,
+            "y": 980
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-ratchet-apply",
+          "type": "notify.log",
+          "label": "Log Ratchet Apply",
+          "config": {
+            "message": "Self-improvement ratchet {{$ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}} for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}; active baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 720,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-ratchet-revert",
+          "type": "notify.log",
+          "label": "Log Ratchet Revert",
+          "config": {
+            "message": "Self-improvement ratchet reverted workflow to baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}} after run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-ratchet-keep",
+          "type": "notify.log",
+          "label": "Log Ratchet Keep",
+          "config": {
+            "message": "Self-improvement ratchet kept baseline for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}: {{$ctx.getNodeOutput('apply-ratchet')?.summary || 'no baseline change'}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 1320,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-runs",
+          "type": "notify.log",
+          "label": "Log No Benchmark Data",
+          "config": {
+            "message": "Health check self-improvement skipped: no recent completed or failed workflow runs available.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 1120,
+            "y": 540
           },
           "outputs": [
             "default"
@@ -13314,6 +13491,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "trigger->collect-recent-runs",
+          "source": "trigger",
+          "target": "collect-recent-runs",
+          "sourcePort": "default"
+        },
+        {
           "id": "check-config->has-issues",
           "source": "check-config",
           "target": "has-issues",
@@ -13330,6 +13513,66 @@
           "source": "check-agents",
           "target": "has-issues",
           "sourcePort": "default"
+        },
+        {
+          "id": "collect-recent-runs->has-recent-runs",
+          "source": "collect-recent-runs",
+          "target": "has-recent-runs",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-recent-runs->evaluate-latest-run",
+          "source": "has-recent-runs",
+          "target": "evaluate-latest-run",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-recent-runs->log-no-runs",
+          "source": "has-recent-runs",
+          "target": "log-no-runs",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "evaluate-latest-run->apply-ratchet",
+          "source": "evaluate-latest-run",
+          "target": "apply-ratchet",
+          "sourcePort": "default"
+        },
+        {
+          "id": "apply-ratchet->ratchet-applied",
+          "source": "apply-ratchet",
+          "target": "ratchet-applied",
+          "sourcePort": "default"
+        },
+        {
+          "id": "ratchet-applied->log-ratchet-apply",
+          "source": "ratchet-applied",
+          "target": "log-ratchet-apply",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "ratchet-applied->ratchet-reverted",
+          "source": "ratchet-applied",
+          "target": "ratchet-reverted",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "ratchet-reverted->log-ratchet-revert",
+          "source": "ratchet-reverted",
+          "target": "log-ratchet-revert",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "ratchet-reverted->log-ratchet-keep",
+          "source": "ratchet-reverted",
+          "target": "log-ratchet-keep",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "has-issues->alert",
@@ -15037,7 +15280,7 @@
           "label": "Handoff Lifecycle If Missing",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
+            "body": "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -15903,7 +16146,7 @@
           "label": "Handoff/Refresh Lifecycle",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
+            "body": "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -15977,6 +16220,29 @@
           "position": {
             "x": 250,
             "y": 1510
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-repair-blocked-success",
+          "type": "action.bosun_function",
+          "label": "Clear Repair Blocked State",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "patch": {
+                "blockedReason": null,
+                "blockedContext": null,
+                "repairState": "completed"
+              }
+            }
+          },
+          "position": {
+            "x": 450,
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -22983,7 +23249,8 @@
         "lifecycle",
         "executor",
         "workflow-first",
-        "core"
+        "core",
+        "multi-remediation"
       ],
       "nodeCount": 73,
       "edgeCount": 84,
@@ -23017,15 +23284,16 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 2,
+        "version": 5,
         "createdAt": "2026-03-01T00:00:00Z",
-        "templateVersion": "2.1.0",
+        "templateVersion": "4.1.0",
         "tags": [
           "task",
           "lifecycle",
           "executor",
           "workflow-first",
-          "core"
+          "core",
+          "multi-remediation"
         ],
         "requiredTemplates": [
           "template-bosun-pr-progressor",
@@ -37710,6 +37978,30 @@
           ]
         },
         {
+          "id": "collect-recent-runs",
+          "type": "action.run_command",
+          "label": "Collect Recent Runs",
+          "config": {
+            "command": "node",
+            "args": [
+              "-e",
+              "\n        const fs = require(\"node:fs\");\n        const path = require(\"node:path\");\n        const maxRuns = Math.max(1, parseInt(process.env.MAX_BENCHMARK_RUNS || \"12\", 10) || 12);\n        const runsDir = path.resolve(process.cwd(), \".bosun\", \"workflow-runs\");\n        const indexPath = path.join(runsDir, \"index.json\");\n        let entries = [];\n        if (fs.existsSync(indexPath)) {\n          try {\n            const raw = JSON.parse(fs.readFileSync(indexPath, \"utf8\"));\n            entries = Array.isArray(raw) ? raw : (Array.isArray(raw?.runs) ? raw.runs : []);\n          } catch {}\n        }\n        const candidates = entries\n          .filter((entry) => entry && entry.runId && [\"completed\", \"failed\"].includes(String(entry.status || \"\").toLowerCase()))\n          .sort((left, right) => Number(right?.startedAt || 0) - Number(left?.startedAt || 0))\n          .slice(0, maxRuns)\n          .map((entry) => ({\n            runId: entry.runId,\n            workflowId: entry.workflowId || null,\n            workflowName: entry.workflowName || null,\n            status: entry.status || null,\n            startedAt: entry.startedAt || null,\n            score: entry.score ?? null,\n            issueAdvisorRecommendation: entry.issueAdvisorRecommendation || null,\n          }));\n        const selected = candidates[0] || null;\n        console.log(JSON.stringify({\n          count: candidates.length,\n          candidates,\n          selectedRunId: selected?.runId || null,\n          selectedWorkflowId: selected?.workflowId || null,\n        }));\n      "
+            ],
+            "env": {
+              "MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
+            },
+            "parseJson": true,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 900,
+            "y": 200
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "has-issues",
           "type": "condition.expression",
           "label": "Any Issues?",
@@ -37719,6 +38011,155 @@
           "position": {
             "x": 400,
             "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-recent-runs",
+          "type": "condition.expression",
+          "label": "Recent Runs Available?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId)"
+          },
+          "position": {
+            "x": 900,
+            "y": 380
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "evaluate-latest-run",
+          "type": "action.evaluate_run",
+          "label": "Evaluate Latest Run",
+          "config": {
+            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedRunId || ''}}",
+            "workflowId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output?.selectedWorkflowId || ''}}",
+            "includeTrend": true,
+            "outputVariable": "healthCheckRunEvaluation"
+          },
+          "position": {
+            "x": 900,
+            "y": 540
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "apply-ratchet",
+          "type": "action.apply_self_improvement_ratchet",
+          "label": "Apply Ratchet Decision",
+          "config": {
+            "evaluationNodeId": "evaluate-latest-run",
+            "scopeLevel": "workspace",
+            "scope": "workflow-reliability",
+            "category": "strategy",
+            "outputVariable": "healthCheckRatchet"
+          },
+          "position": {
+            "x": 900,
+            "y": 840
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "ratchet-applied",
+          "type": "condition.expression",
+          "label": "Ratchet Applied?",
+          "config": {
+            "expression": "['capture_baseline','apply_candidate'].includes($ctx.getNodeOutput('apply-ratchet')?.decision || '')"
+          },
+          "position": {
+            "x": 720,
+            "y": 980
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "ratchet-reverted",
+          "type": "condition.expression",
+          "label": "Ratchet Reverted?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('apply-ratchet')?.decision === 'revert_to_baseline'"
+          },
+          "position": {
+            "x": 1080,
+            "y": 980
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-ratchet-apply",
+          "type": "notify.log",
+          "label": "Log Ratchet Apply",
+          "config": {
+            "message": "Self-improvement ratchet {{$ctx.getNodeOutput('apply-ratchet')?.decision || 'applied'}} for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}; active baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}}",
+            "level": "info"
+          },
+          "position": {
+            "x": 720,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-ratchet-revert",
+          "type": "notify.log",
+          "label": "Log Ratchet Revert",
+          "config": {
+            "message": "Self-improvement ratchet reverted workflow to baseline {{$ctx.getNodeOutput('apply-ratchet')?.activeBaselineRunId || ''}} after run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-ratchet-keep",
+          "type": "notify.log",
+          "label": "Log Ratchet Keep",
+          "config": {
+            "message": "Self-improvement ratchet kept baseline for run {{$ctx.getNodeOutput('apply-ratchet')?.runId || ''}}: {{$ctx.getNodeOutput('apply-ratchet')?.summary || 'no baseline change'}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 1320,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-runs",
+          "type": "notify.log",
+          "label": "Log No Benchmark Data",
+          "config": {
+            "message": "Health check self-improvement skipped: no recent completed or failed workflow runs available.",
+            "level": "debug"
+          },
+          "position": {
+            "x": 1120,
+            "y": 540
           },
           "outputs": [
             "default"
@@ -37911,6 +38352,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "trigger->collect-recent-runs",
+          "source": "trigger",
+          "target": "collect-recent-runs",
+          "sourcePort": "default"
+        },
+        {
           "id": "check-config->has-issues",
           "source": "check-config",
           "target": "has-issues",
@@ -37927,6 +38374,66 @@
           "source": "check-agents",
           "target": "has-issues",
           "sourcePort": "default"
+        },
+        {
+          "id": "collect-recent-runs->has-recent-runs",
+          "source": "collect-recent-runs",
+          "target": "has-recent-runs",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-recent-runs->evaluate-latest-run",
+          "source": "has-recent-runs",
+          "target": "evaluate-latest-run",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-recent-runs->log-no-runs",
+          "source": "has-recent-runs",
+          "target": "log-no-runs",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "evaluate-latest-run->apply-ratchet",
+          "source": "evaluate-latest-run",
+          "target": "apply-ratchet",
+          "sourcePort": "default"
+        },
+        {
+          "id": "apply-ratchet->ratchet-applied",
+          "source": "apply-ratchet",
+          "target": "ratchet-applied",
+          "sourcePort": "default"
+        },
+        {
+          "id": "ratchet-applied->log-ratchet-apply",
+          "source": "ratchet-applied",
+          "target": "log-ratchet-apply",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "ratchet-applied->ratchet-reverted",
+          "source": "ratchet-applied",
+          "target": "ratchet-reverted",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "ratchet-reverted->log-ratchet-revert",
+          "source": "ratchet-reverted",
+          "target": "log-ratchet-revert",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "ratchet-reverted->log-ratchet-keep",
+          "source": "ratchet-reverted",
+          "target": "log-ratchet-keep",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "has-issues->alert",
@@ -38007,8 +38514,8 @@
         "templateState": {
           "templateId": "template-health-check",
           "templateName": "Health Check",
-          "templateVersion": "1.0.1",
-          "installedTemplateVersion": "1.0.1",
+          "templateVersion": "1.1.0",
+          "installedTemplateVersion": "1.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -39504,7 +40011,7 @@
           "label": "Handoff Lifecycle If Missing",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
+            "body": "## Summary\n\n{{taskDescription}}\n\nPR created by task finalization guard to ensure lifecycle handoff.\n\n---\nTask-ID: {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -40323,7 +40830,7 @@
           "label": "Handoff/Refresh Lifecycle",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
+            "body": "## Summary\n\n{{taskDescription}}\n\nAutomated repair run — code fixes applied and validated.\n\n---\nTask-ID: {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "failOnError": true,
@@ -40397,6 +40904,29 @@
           "position": {
             "x": 250,
             "y": 1510
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "clear-repair-blocked-success",
+          "type": "action.bosun_function",
+          "label": "Clear Repair Blocked State",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "patch": {
+                "blockedReason": null,
+                "blockedContext": null,
+                "repairState": "completed"
+              }
+            }
+          },
+          "position": {
+            "x": 450,
+            "y": 1020
           },
           "outputs": [
             "default"
@@ -48990,8 +49520,8 @@
         "templateState": {
           "templateId": "template-task-lifecycle",
           "templateName": "Task Lifecycle",
-          "templateVersion": "2.1.0",
-          "installedTemplateVersion": "2.1.0",
+          "templateVersion": "4.1.0",
+          "installedTemplateVersion": "4.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }

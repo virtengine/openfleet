@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
@@ -66,6 +67,10 @@ import {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 const REPO_ROOT = "/fake/repo";
+
+function normalizePath(value) {
+  return String(value).replace(/\\/g, "/");
+}
 
 /** Build a porcelain `git worktree list` stdout string. */
 function porcelainOutput(entries) {
@@ -443,8 +448,10 @@ describe("worktree-manager", () => {
 
     it("bootstraps arbitrary managed worktree paths with shared node_modules", () => {
       const worktreePath = `${REPO_ROOT}/.bosun/worktrees/task-abc123`;
+      const normalizedRepoRoot = normalizePath(resolve(REPO_ROOT));
+      const normalizedWorktreePath = normalizePath(resolve(worktreePath));
       existsSync.mockImplementation((path) => {
-        const normalized = String(path).replace(/\\/g, "/");
+        const normalized = normalizePath(path);
         return normalized.endsWith("/.bosun/worktrees/task-abc123")
           || normalized.endsWith("/package.json")
           || normalized.endsWith(`${REPO_ROOT}/node_modules`)
@@ -462,8 +469,8 @@ describe("worktree-manager", () => {
       expect(String(inspectWorktreePath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123$/);
       expect(symlinkSync).toHaveBeenCalledTimes(1);
       const [targetPath, linkPath] = symlinkSync.mock.calls[0];
-      expect(String(targetPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/node_modules$/);
-      expect(String(linkPath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123\/node_modules$/);
+  expect(normalizePath(targetPath)).toBe(`${normalizedRepoRoot}/node_modules`);
+  expect(normalizePath(linkPath)).toBe(`${normalizedWorktreePath}/node_modules`);
     });
 
     it("fails closed when runtime setup inspection reports missing hook state", () => {
@@ -1181,7 +1188,8 @@ describe("worktree-manager", () => {
     });
 
     it("removes orphan managed task worktree dirs under .bosun/worktrees", async () => {
-      const orphanPath = `/fake/repo/${DEFAULT_MANAGED_TASK_BASE_DIR}/task-abc123-deadbeef`;
+      const managedTaskRoot = normalizePath(resolve(REPO_ROOT, DEFAULT_MANAGED_TASK_BASE_DIR));
+      const orphanPath = `${managedTaskRoot}/task-abc123-deadbeef`;
 
       spawnSync.mockReturnValue({
         status: 0,

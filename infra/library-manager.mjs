@@ -2290,6 +2290,7 @@ function createRepositoryImportCheckoutDir(prefix, repoUrl, branch) {
 
   const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
     encoding: "utf8",
+    env: sanitizedGitEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 120_000,
   });
@@ -2914,19 +2915,13 @@ export function detectScopes(repoRoot, opts = {}) {
 
   // 1. Scan git commit history for conventional commit scopes
   try {
-    const gitEnv = { ...process.env };
-    delete gitEnv.GIT_DIR;
-    delete gitEnv.GIT_WORK_TREE;
-    delete gitEnv.GIT_INDEX_FILE;
-    delete gitEnv.GIT_COMMON_DIR;
-    delete gitEnv.GIT_PREFIX;
     const safeMaxCommits = Math.max(1, Math.min(5000, Number.parseInt(String(maxCommits), 10) || 200));
     const logResult = spawnSync(
       "git",
       ["log", "--oneline", "-" + safeMaxCommits, "--format=%s"],
       {
         cwd: repoRoot,
-        env: gitEnv,
+        env: sanitizedGitEnv(),
         encoding: "utf8",
         timeout: 10000,
         stdio: ["ignore", "pipe", "pipe"],

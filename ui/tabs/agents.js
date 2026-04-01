@@ -621,6 +621,65 @@ function getFleetEntryStatusMeta(entry) {
   };
 }
 
+function getFleetEntryStatusMeta(entry) {
+  if (!entry || typeof entry !== "object") {
+    return { key: "unknown", label: "Unknown", tone: "historic", isActive: false };
+  }
+
+  const slotStatus = String(entry?.slot?.status || "").trim().toLowerCase();
+  if (slotStatus) {
+    if (["running", "busy", "active", "working", "inprogress"].includes(slotStatus)) {
+      return { key: slotStatus, label: "Active", tone: "active", isActive: true };
+    }
+    if (slotStatus === "inreview") {
+      return { key: slotStatus, label: "Review", tone: "warning", isActive: false };
+    }
+    if (slotStatus === "idle" || slotStatus === "queued" || slotStatus === "pending") {
+      return {
+        key: slotStatus,
+        label: slotStatus === "queued" ? "Queued" : slotStatus === "pending" ? "Pending" : "Idle",
+        tone: "warning",
+        isActive: false,
+      };
+    }
+    if (slotStatus === "error" || slotStatus === "failed" || slotStatus === "stalled") {
+      return { key: slotStatus, label: slotStatus === "error" ? "Error" : formatFleetStateLabel(slotStatus), tone: "error", isActive: false };
+    }
+    if (slotStatus === "done" || slotStatus === "completed") {
+      return { key: slotStatus, label: "Completed", tone: "historic", isActive: false };
+    }
+  }
+
+  if (entry?.session) {
+    const runtimeState = getSessionRuntimeState(entry.session);
+    if (runtimeState?.key === "running") {
+      return { key: "running", label: "Active", tone: "active", isActive: true };
+    }
+    if (runtimeState?.key === "recent") {
+      return { key: "recent", label: "Recent", tone: "active", isActive: true };
+    }
+    if (runtimeState?.key === "idle" || runtimeState?.key === "queued" || runtimeState?.key === "paused") {
+      return { key: runtimeState.key, label: runtimeState.label || "Idle", tone: "warning", isActive: false };
+    }
+    if (runtimeState?.key === "stalled" || runtimeState?.key === "stale") {
+      return { key: runtimeState.key, label: runtimeState.label || "Stale", tone: "error", isActive: false };
+    }
+    if (runtimeState?.key === "stopped") {
+      return { key: "historic", label: entry?.isHistory ? "Historic" : "Not live", tone: "historic", isActive: false };
+    }
+    if (runtimeState?.label) {
+      return { key: runtimeState.key || "unknown", label: runtimeState.label, tone: "historic", isActive: false };
+    }
+  }
+
+  return {
+    key: entry?.isHistory ? "historic" : "unknown",
+    label: entry?.isHistory ? "Historic" : "Unknown",
+    tone: "historic",
+    isActive: false,
+  };
+}
+
 function getFleetEntryTimestamp(entry) {
   return new Date(
     entry?.slot?.startedAt

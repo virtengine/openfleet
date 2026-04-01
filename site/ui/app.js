@@ -815,7 +815,6 @@ const TAB_COMPONENTS = {
   settings: SettingsTab,
   integrations: IntegrationsTab,
 };
-
 function getMaxFreshnessMs(rawFreshness) {
   if (typeof rawFreshness === "number") {
     return Number.isFinite(rawFreshness) ? rawFreshness : null;

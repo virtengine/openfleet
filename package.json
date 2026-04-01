@@ -263,6 +263,7 @@
     "shell/claude-shell.mjs",
     "shell/codex-config-file.mjs",
     "shell/codex-config.mjs",
+    "shell/codex-sdk-import.mjs",
     "shell/codex-model-profiles.mjs",
     "shell/codex-sdk-import.mjs",
     "shell/codex-shell.mjs",

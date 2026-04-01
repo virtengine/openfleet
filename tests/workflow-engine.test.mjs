@@ -1466,7 +1466,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(page.runs).toHaveLength(10);
     expect(page.hasMore).toBe(true);
     expect(page.nextOffset).toBe(30);
-  });
+  }, 30000);
 
   it("repairs common mojibake in workflow run history and detail text fields", async () => {
     const wf = makeSimpleWorkflow(

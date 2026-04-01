@@ -7109,6 +7109,112 @@ describeUiServer("ui-server mini app", () => {
     }
   });
 
+  it("matches task-assigned workflows using task goal and budget governance metadata", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-governance-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const mod = await import("../server/ui-server.mjs");
+    let server = null;
+    const workflow = {
+      id: "wf-task-governance-match",
+      name: "Task Governance Match",
+      enabled: true,
+      nodes: [
+        {
+          id: "trigger",
+          type: "trigger.task_assigned",
+          label: "Task Assigned",
+          config: {
+            filter: [
+              '$data.primaryGoalId === "goal-ops"',
+              '$data.goalAncestry?.[0]?.goalId === "goal-program"',
+              '$data.goalAncestry?.[1]?.goalId === "goal-ops"',
+              '$data.budgetPolicy?.budgetWindow === "2026-Q2"',
+              "$data.budgetPolicy?.budgetCents === 25000",
+              '$data.budgetPolicy?.currency === "USD"',
+              '$data.coordination?.teamId === "team-platform"',
+              '$data.coordination?.role === "implementer"',
+              '$data.coordination?.reportsTo === "planner-lead"',
+              '$data.coordination?.level === "squad"',
+              'task.primaryGoalId === "goal-ops"',
+              '$data.task?.budgetPolicy?.budgetWindow === "2026-Q2"',
+              '$data.task?.coordination?.role === "implementer"',
+            ].join(" && "),
+          },
+        },
+        {
+          id: "log",
+          type: "notify.log",
+          label: "Log",
+          config: { message: "matched governance-backed task" },
+        },
+      ],
+      edges: [{ id: "edge-1", source: "trigger", target: "log" }],
+      variables: {},
+    };
+    const fakeEngine = {
+      list: vi.fn(async () => [{ id: workflow.id }]),
+      get: vi.fn(async (workflowId) => (workflowId === workflow.id ? workflow : null)),
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Governed task",
+          description: "Task metadata should seed workflow governance",
+          goalId: "goal-ops",
+          parentGoalId: "goal-program",
+          budgetWindow: "2026-Q2",
+          budgetCents: 25000,
+          budgetCurrency: "USD",
+          coordinationTeamId: "team-platform",
+          coordinationRole: "implementer",
+          coordinationReportsTo: "planner-lead",
+          coordinationLevel: "squad",
+        }),
+      }).then((r) => r.json());
+
+      expect(created.ok).toBe(true);
+
+      const plan = await fetch(
+        `http://127.0.0.1:${port}/api/tasks/execution-plan?taskId=${encodeURIComponent(created.data.id)}`,
+      ).then((r) => r.json());
+
+      expect(plan.ok).toBe(true);
+      expect(plan.stageCount).toBe(1);
+      expect(plan.stages).toEqual([
+        expect.objectContaining({
+          workflowId: workflow.id,
+          workflowName: workflow.name,
+          matchType: "task_assigned",
+          nodeCount: 2,
+        }),
+      ]);
+      expect(fakeEngine.list).toHaveBeenCalledTimes(1);
+      expect(fakeEngine.get).toHaveBeenCalledWith(workflow.id);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      mod._testInjectWorkflowEngine(null, null);
+    }
+  }, 30000);
+
   it("creates and lists subtasks via /api/tasks/subtasks", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 

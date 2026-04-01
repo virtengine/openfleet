@@ -10422,6 +10422,20 @@ function buildInternalVoiceSessionMetadata(base = {}, source = "voice-http") {
   };
 }
 
+function buildInternalVoiceSessionMetadata(base = {}, source = "voice-http") {
+  const normalizedBase =
+    base && typeof base === "object"
+      ? base
+      : {};
+  return {
+    ...normalizedBase,
+    autoCreated: true,
+    hiddenInLists: true,
+    visibility: "hidden",
+    source,
+  };
+}
+
 function checkRateLimit(req, maxPerMin = 30, scope = "global") {
   const keyParts = [
     scope,

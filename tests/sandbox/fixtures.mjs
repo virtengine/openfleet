@@ -339,4 +339,3 @@ export const TEMPLATE_FIXTURES = {
   "template-task-cicd":                  { scenario: scenarios.cicdDeploy(),      inputVars: { taskId: "TASK-CI-1", worktreePath: "/tmp/wt/cicd", branch: "feat/cicd", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
   "template-task-design":                { scenario: scenarios.greenPR(214),      inputVars: { taskId: "TASK-DS-1", worktreePath: "/tmp/wt/design", branch: "feat/design", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
 };
-

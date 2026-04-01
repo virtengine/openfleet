@@ -51,6 +51,28 @@ export function withLoadingTracked(fn) {
   return withDepthCounter("force", fn);
 }
 
+async function readApiErrorBody(response) {
+  const text = await response.text().catch(() => "");
+  if (!text) return { text: "", payload: null };
+  try {
+    return { text, payload: JSON.parse(text) };
+  } catch {
+    return { text, payload: null };
+  }
+}
+
+function resolveApiErrorMessage(status, text, payload) {
+  if (payload && typeof payload === "object") {
+    const message = String(
+      payload.message || payload.detail || payload.reason || payload.error || "",
+    ).trim();
+    if (message) return message;
+  }
+  const normalizedText = String(text || "").trim();
+  if (normalizedText && !normalizedText.startsWith("{")) return normalizedText;
+  return normalizedText || `Request failed (${status})`;
+}
+
 /* ─── REST API Client ─── */
 
 /**
