@@ -495,4 +495,27 @@ describe("primary-agent runtime safeguards", () => {
       expect.objectContaining({ id: "adapter-only-session" }),
     ]));
   });
+
+  it("isolates non-primary active sessions by explicit harness scope", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    const { getBosunSessionManager } = await import("../agent/session-manager.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("telegram scoped turn", {
+      sessionId: "telegram-session-1",
+      scope: "telegram:chat-1",
+      sessionType: "telegram",
+    });
+    await primaryAgent.execPrimaryPrompt("voice scoped turn", {
+      sessionId: "voice-session-1",
+      scope: "voice-dispatch:call-1",
+      sessionType: "voice-dispatch",
+    });
+
+    const sessionManager = getBosunSessionManager();
+    expect(sessionManager.getActiveSessionId("telegram:chat-1")).toBe("telegram-session-1");
+    expect(sessionManager.getActiveSessionId("voice-dispatch:call-1")).toBe("voice-session-1");
+    expect(sessionManager.getActiveSessionId("primary")).not.toBe("telegram-session-1");
+  });
 });

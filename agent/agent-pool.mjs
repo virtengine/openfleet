@@ -53,6 +53,7 @@ import { createRequire } from "node:module";
 import "../infra/windows-hidden-child-processes.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { resolveAgentSdkModuleEntry, resolveCodexSdkInstall } from "./agent-sdk.mjs";
+import { createProviderKernel } from "./provider-kernel.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime, readCodexConfigRuntimeDefaults } from "../shell/codex-model-profiles.mjs";
 import { buildTaskWritableRoots } from "../shell/codex-config.mjs";
@@ -265,6 +266,12 @@ function summarizeAgentSlotMeta(meta = {}) {
     if (normalized) summary[key] = normalized;
   }
   return summary;
+}
+
+function toPlainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...value }
+    : {};
 }
 
 function emitAgentSlotHook(hook, payload) {
@@ -3260,30 +3267,58 @@ async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   try {
-    const result = await withTemporaryEnv(
-      {
-        ...runtimeSessionEnv,
-        PRIMARY_AGENT: "opencode-sdk",
-        PRIMARY_AGENT_SDK: "opencode-sdk",
-        OPENCODE_SDK_DISABLED: null,
+    const providerKernel = createProviderKernel({
+      adapters: {
+        "opencode-sdk": {
+          name: "opencode-sdk",
+          provider: "OPENCODE",
+          exec: async (message, execOptions = {}) => await withTemporaryEnv(
+            {
+              ...runtimeSessionEnv,
+              PRIMARY_AGENT: "opencode-sdk",
+              PRIMARY_AGENT_SDK: "opencode-sdk",
+              OPENCODE_SDK_DISABLED: null,
+            },
+            async () => execOpencodePrompt(message, {
+              ...execOptions,
+              onEvent: execOptions.onEvent ?? onEvent,
+              timeoutMs: execOptions.timeoutMs ?? timeoutMs,
+              persistent,
+              sessionId: execOptions.sessionId ?? logicalSessionId,
+              abortController: execOptions.abortController ?? abortController,
+            }),
+          ),
+        },
       },
-      async () => execOpencodePrompt(prompt, {
-        onEvent,
-        timeoutMs,
-        persistent,
-        sessionId: logicalSessionId,
-        abortController,
-        provider: normalizedProvider,
-        providerConfig,
-      }),
-    );
-    const finalResponse = String(result?.finalResponse || "").trim();
-    const success = !isOpencodeFailureMessage(finalResponse);
+      getConfig: () => loadConfig() || {},
+      env: runtimeSessionEnv,
+    });
+    const providerSession = providerKernel.createExecutionSession({
+      adapterName: "opencode-sdk",
+      selectionId: normalizedProvider || "",
+      provider: normalizedProvider,
+      providerConfig,
+      sessionId: logicalSessionId,
+      threadId: logicalSessionId,
+      model: trimmedModel || providerConfig?.model || null,
+    });
+    const result = await providerSession.runTurn(prompt, {
+      onEvent,
+      timeoutMs,
+      sessionId: logicalSessionId,
+      threadId: logicalSessionId,
+      abortController,
+      model: trimmedModel || providerConfig?.model || null,
+    });
+    const finalResponse = String(
+      result?.output || result?.text || result?.raw?.finalResponse || "",
+    ).trim();
+    const success = result?.success !== false && !isOpencodeFailureMessage(finalResponse);
     return {
       success,
       output: success ? finalResponse : "",
       items: Array.isArray(result?.items) ? result.items : [],
-      error: success ? null : formatOpencodeError(finalResponse),
+      error: success ? null : formatOpencodeError(finalResponse || result?.error),
       sdk: "opencode",
       threadId: persistent ? logicalSessionId : null,
     };
@@ -4142,6 +4177,10 @@ export async function launchOrResumeThread(
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
   const sessionManager = getBosunSessionManager();
+  const managedSessionMetadata = {
+    source: "agent-pool",
+    ...toPlainObject(restExtra.metadata),
+  };
   const managedSessionId = String(restExtra.sessionId || taskKey || "").trim() || null;
   if (managedSessionId) {
     if (restExtra.parentSessionId) {
@@ -4153,9 +4192,7 @@ export async function launchOrResumeThread(
         adapterName: restExtra.sdk || "",
         taskKey,
         cwd,
-        metadata: {
-          source: "agent-pool",
-        },
+        metadata: managedSessionMetadata,
       });
     } else {
       sessionManager.ensureSession({
@@ -4166,9 +4203,7 @@ export async function launchOrResumeThread(
         adapterName: restExtra.sdk || "",
         taskKey,
         cwd,
-        metadata: {
-          source: "agent-pool",
-        },
+        metadata: managedSessionMetadata,
       });
     }
   }
@@ -4477,9 +4512,7 @@ export async function launchOrResumeThread(
         cwd,
         threadId,
         status: "active",
-        metadata: {
-          source: "agent-pool",
-        },
+        metadata: managedSessionMetadata,
       });
     }
   };
@@ -4530,7 +4563,7 @@ export async function launchOrResumeThread(
       status: result.success ? "active" : "failed",
       error: result.success ? null : result.error,
       metadata: {
-        source: "agent-pool",
+        ...managedSessionMetadata,
         resumed: false,
       },
     });
@@ -4554,6 +4587,58 @@ export async function launchOrResumeThread(
   }
 
   return { ...result, threadId: finalThreadId, resumed: false };
+  });
+}
+
+export async function continueSession(sessionId, prompt, options = {}) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId) {
+    throw new Error(`${TAG} continueSession requires a sessionId`);
+  }
+
+  const sessionManager = getBosunSessionManager();
+  const managedSession = sessionManager.getSession(normalizedSessionId);
+  const managedMetadata = toPlainObject(managedSession?.metadata);
+  const timeoutMs = Number(options.timeoutMs || options.timeout) || DEFAULT_TIMEOUT_MS;
+  const cwd = options.cwd || managedMetadata.cwd || process.cwd();
+  const resolvedTaskKey =
+    String(options.taskKey || managedSession?.taskKey || normalizedSessionId).trim()
+    || normalizedSessionId;
+  const resolvedThreadId =
+    String(
+      options.resumeThreadId ||
+      managedSession?.activeThreadId ||
+      managedSession?.threadId ||
+      normalizedSessionId,
+    ).trim() || normalizedSessionId;
+  const resolvedScope =
+    String(options.sessionScope || managedSession?.scope || managedMetadata.scope || "task").trim()
+    || "task";
+  const resolvedSessionType =
+    String(options.sessionType || managedSession?.sessionType || "task").trim()
+    || "task";
+  const resolvedSdk =
+    options.sdk ||
+    managedMetadata.providerSelection ||
+    managedMetadata.adapterName ||
+    undefined;
+
+  return await launchOrResumeThread(prompt, cwd, timeoutMs, {
+    ...options,
+    taskKey: resolvedTaskKey,
+    sessionId: managedSession?.sessionId || normalizedSessionId,
+    sessionScope: resolvedScope,
+    sessionType: resolvedSessionType,
+    parentSessionId: options.parentSessionId || managedSession?.parentSessionId || undefined,
+    rootSessionId: options.rootSessionId || managedSession?.rootSessionId || undefined,
+    resumeThreadId: resolvedThreadId,
+    sdk: resolvedSdk,
+    metadata: {
+      ...managedMetadata,
+      ...toPlainObject(options.metadata),
+      source: "agent-pool-continue",
+      resumedFromSessionId: normalizedSessionId,
+    },
   });
 }
 
@@ -4697,6 +4782,11 @@ export async function execWithRetry(prompt, options = {}) {
     model,
     mcpServers,
     sessionType = "task",
+    sessionId,
+    sessionScope,
+    parentSessionId,
+    rootSessionId,
+    metadata,
     onEvent,
     onAbortControllerReplaced,
     slotOwnerKey,
@@ -4793,6 +4883,11 @@ export async function execWithRetry(prompt, options = {}) {
       model,
       mcpServers,
       sessionType,
+      sessionId,
+      sessionScope,
+      parentSessionId,
+      rootSessionId,
+      metadata,
       onEvent,
       abortController,
       ignoreSdkCooldown: attempt > 1,

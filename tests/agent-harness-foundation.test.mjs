@@ -17,6 +17,12 @@ import {
   createBosunSessionManager,
   createHarnessSessionManager,
 } from "../agent/session-manager.mjs";
+import {
+  buildProviderKernelSettings,
+  createProviderKernel,
+} from "../agent/provider-kernel.mjs";
+import { createQueryEngine } from "../agent/query-engine.mjs";
+import { createHarnessAgentService } from "../agent/harness-agent-service.mjs";
 
 describe("provider registry foundation", () => {
   const adapters = {
@@ -186,6 +192,7 @@ describe("tool orchestrator foundation", () => {
     });
     expect(events.map((event) => event.type)).toEqual([
       "tool_execution_start",
+      "tool_execution_update",
       "tool_execution_end",
     ]);
   });
@@ -276,9 +283,10 @@ describe("tool orchestrator foundation", () => {
     expect(result).toEqual(longOutput);
     expect(events.map((event) => event.type)).toEqual([
       "tool_execution_start",
+      "tool_execution_update",
       "tool_execution_end",
     ]);
-    expect(events[1]).toEqual(expect.objectContaining({
+    expect(events[2]).toEqual(expect.objectContaining({
       type: "tool_execution_end",
       result: expect.objectContaining({
         truncated: true,
@@ -306,9 +314,10 @@ describe("tool orchestrator foundation", () => {
 
     expect(events.map((event) => event.type)).toEqual([
       "tool_execution_start",
+      "tool_execution_update",
       "tool_execution_error",
     ]);
-    expect(events[1]).toEqual(expect.objectContaining({
+    expect(events[2]).toEqual(expect.objectContaining({
       toolName: "run_failing_tool",
       error: "tool exploded",
     }));
@@ -339,19 +348,56 @@ describe("tool orchestrator foundation", () => {
     expect(executeTool).toHaveBeenCalledTimes(2);
     expect(events.map((event) => event.type)).toEqual([
       "tool_execution_start",
+      "tool_execution_update",
       "tool_execution_retry",
+      "tool_execution_update",
+      "tool_execution_update",
       "tool_execution_end",
     ]);
-    expect(events[1]).toEqual(expect.objectContaining({
+    expect(events[2]).toEqual(expect.objectContaining({
       toolName: "retryable_tool",
       attempt: 1,
       nextAttempt: 2,
       error: "transient failure",
     }));
-    expect(events[2]).toEqual(expect.objectContaining({
+    expect(events[5]).toEqual(expect.objectContaining({
       toolName: "retryable_tool",
       attempt: 2,
       attemptCount: 2,
+    }));
+  });
+
+  it("emits approval_resolved telemetry when a gated tool is already approved", async () => {
+    const events = [];
+    const orchestrator = createToolOrchestrator({
+      onEvent: (event) => events.push(event),
+      toolSources: [ {
+        source: "test",
+        definitions: [{ id: "push_branch", requiresApproval: true, networkAccess: "allow" }],
+      } ],
+      executeTool: vi.fn(async () => ({ ok: true })),
+    });
+
+    const result = await orchestrator.execute("push_branch", { branch: "feature/test" }, {
+      sessionId: "session-approved",
+      approval: {
+        mode: "manual",
+        decision: "approved",
+      },
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(events.map((event) => event.type)).toEqual([
+      "approval_resolved",
+      "tool_execution_start",
+      "tool_execution_update",
+      "tool_execution_end",
+    ]);
+    expect(events[0]).toEqual(expect.objectContaining({
+      type: "approval_resolved",
+      toolName: "push_branch",
+      decision: "approved",
+      status: "approved",
     }));
   });
 });
@@ -535,5 +581,310 @@ describe("session manager foundation", () => {
         }),
       ],
     }));
+  });
+});
+
+describe("provider kernel foundation", () => {
+  it("flattens provider settings and resolves runtime config from the shared kernel", () => {
+    const config = {
+      providers: {
+        defaultProvider: "openai-compatible",
+        openaiCompatible: {
+          enabled: true,
+          defaultModel: "qwen2.5-coder:latest",
+          baseUrl: "http://127.0.0.1:11434/v1",
+        },
+      },
+    };
+    const settings = buildProviderKernelSettings(config);
+    const kernel = createProviderKernel({
+      adapters: {
+        "opencode-sdk": {
+          name: "opencode-sdk",
+          provider: "OPENCODE",
+          exec: async () => ({ finalResponse: "ok" }),
+        },
+      },
+      config,
+      env: { ...process.env },
+    });
+
+    expect(settings).toEqual(expect.objectContaining({
+      BOSUN_PROVIDER_DEFAULT: "openai-compatible",
+      BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED: true,
+      BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL: "qwen2.5-coder:latest",
+      BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:11434/v1",
+    }));
+
+    const runtime = kernel.resolveRuntime("openai-compatible", "opencode-sdk");
+    expect(runtime).toEqual(expect.objectContaining({
+      providerId: "openai-compatible",
+      providerConfig: expect.objectContaining({
+        provider: "openai-compatible",
+        model: "qwen2.5-coder:latest",
+        baseUrl: "http://127.0.0.1:11434/v1",
+      }),
+    }));
+  });
+
+  it("creates adapter-backed provider sessions through the shared kernel", async () => {
+    const exec = vi.fn(async (_message, options) => ({
+      finalResponse: "kernel-output",
+      sessionId: options.sessionId,
+      threadId: options.threadId,
+      provider: options.provider,
+    }));
+    const kernel = createProviderKernel({
+      adapters: {
+        "opencode-sdk": {
+          name: "opencode-sdk",
+          provider: "OPENCODE",
+          exec,
+        },
+      },
+      config: {
+        providers: {
+          defaultProvider: "openai-compatible",
+          openaiCompatible: {
+            enabled: true,
+            defaultModel: "qwen2.5-coder:latest",
+            baseUrl: "http://127.0.0.1:11434/v1",
+          },
+        },
+      },
+      env: { ...process.env },
+    });
+
+    const session = kernel.createExecutionSession({
+      adapterName: "opencode-sdk",
+      selectionId: "openai-compatible",
+      sessionId: "provider-session-1",
+      threadId: "provider-thread-1",
+      model: "qwen2.5-coder:latest",
+    });
+    const result = await session.runTurn("route through kernel", {
+      sessionId: "provider-session-1",
+      threadId: "provider-thread-1",
+    });
+
+    expect(exec).toHaveBeenCalledWith(
+      "route through kernel",
+      expect.objectContaining({
+        provider: "openai-compatible",
+        providerConfig: expect.objectContaining({
+          provider: "openai-compatible",
+          model: "qwen2.5-coder:latest",
+        }),
+      }),
+    );
+    expect(result).toEqual(expect.objectContaining({
+      providerId: "openai-compatible",
+      sessionId: "provider-session-1",
+      threadId: "provider-thread-1",
+      finalResponse: "kernel-output",
+    }));
+  });
+
+  it("lets explicit provider overrides augment kernel-resolved runtime config", async () => {
+    const exec = vi.fn(async (_message, options) => ({
+      finalResponse: "override-output",
+      sessionId: options.sessionId,
+      threadId: options.threadId,
+      provider: options.provider,
+    }));
+    const kernel = createProviderKernel({
+      adapters: {
+        "opencode-sdk": {
+          name: "opencode-sdk",
+          provider: "OPENCODE",
+          exec,
+        },
+      },
+      config: {
+        providers: {
+          defaultProvider: "openai-compatible",
+          openaiCompatible: {
+            enabled: true,
+            defaultModel: "qwen2.5-coder:latest",
+            baseUrl: "http://127.0.0.1:11434/v1",
+          },
+        },
+      },
+      env: { ...process.env },
+    });
+
+    const session = kernel.createExecutionSession({
+      adapterName: "opencode-sdk",
+      selectionId: "openai-compatible",
+      provider: "openrouter",
+      providerConfig: {
+        apiKey: "test-key",
+        baseUrl: "https://openrouter.example/v1",
+      },
+      sessionId: "provider-session-override",
+      threadId: "provider-thread-override",
+      model: "moonshotai/kimi-k2",
+    });
+    await session.runTurn("use overrides", {
+      sessionId: "provider-session-override",
+      threadId: "provider-thread-override",
+      model: "moonshotai/kimi-k2",
+    });
+
+    expect(exec).toHaveBeenCalledWith(
+      "use overrides",
+      expect.objectContaining({
+        provider: "openrouter",
+        providerConfig: expect.objectContaining({
+          baseUrl: "https://openrouter.example/v1",
+          apiKey: "test-key",
+          model: "moonshotai/kimi-k2",
+        }),
+      }),
+    );
+  });
+});
+
+describe("harness agent service foundation", () => {
+  it("prefers retry-aware task execution when autoRecover is enabled", async () => {
+    const execWithRetry = vi.fn(async () => ({ success: true, output: "retry-path" }));
+    const service = createHarnessAgentService({
+      agentPool: {
+        execWithRetry,
+        launchOrResumeThread: vi.fn(),
+        launchEphemeralThread: vi.fn(),
+      },
+    });
+
+    const result = await service.runTask("run the task", {
+      autoRecover: true,
+      taskKey: "task-1",
+      cwd: "C:/repo",
+      timeoutMs: 1234,
+    });
+
+    expect(execWithRetry).toHaveBeenCalledWith("run the task", expect.objectContaining({
+      taskKey: "task-1",
+      cwd: "C:/repo",
+      timeoutMs: 1234,
+    }));
+    expect(result).toEqual({ success: true, output: "retry-path" });
+  });
+
+  it("falls back to resumable launch semantics when retry execution is unavailable", async () => {
+    const launchOrResumeThread = vi.fn(async () => ({ success: true, output: "resume-path" }));
+    const service = createHarnessAgentService({
+      agentPool: {
+        launchOrResumeThread,
+        launchEphemeralThread: vi.fn(),
+      },
+    });
+
+    const result = await service.runTask("resume the task", {
+      autoRecover: false,
+      taskKey: "task-2",
+      cwd: "C:/repo",
+      timeoutMs: 5678,
+      sessionId: "session-2",
+    });
+
+    expect(launchOrResumeThread).toHaveBeenCalledWith(
+      "resume the task",
+      "C:/repo",
+      5678,
+      expect.objectContaining({
+        taskKey: "task-2",
+        sessionId: "session-2",
+      }),
+    );
+    expect(result).toEqual({ success: true, output: "resume-path" });
+  });
+});
+
+describe("query engine foundation", () => {
+  it("suppresses failover until the configured infrastructure failure threshold is met", async () => {
+    const engine = createQueryEngine({
+      failoverConsecutiveInfraErrors: 3,
+      failoverErrorWindowMs: 60_000,
+      recoveryRetryAttempts: 0,
+    });
+    const adapters = {
+      "codex-sdk": { name: "codex-sdk" },
+      "copilot-sdk": { name: "copilot-sdk" },
+    };
+    const executeAdapterTurn = vi.fn(async ({ adapterName }) => {
+      if (adapterName === "codex-sdk") {
+        throw new Error("AGENT_TIMEOUT: codex did not respond");
+      }
+      return { finalResponse: "copilot-ok" };
+    });
+
+    const first = await engine.executeTurn({
+      adapters,
+      initialAdapterName: "codex-sdk",
+      fallbackOrder: ["codex-sdk", "copilot-sdk"],
+      maxFailoverAttempts: 1,
+      executeAdapterTurn,
+    });
+    const second = await engine.executeTurn({
+      adapters,
+      initialAdapterName: "codex-sdk",
+      fallbackOrder: ["codex-sdk", "copilot-sdk"],
+      maxFailoverAttempts: 1,
+      executeAdapterTurn,
+    });
+    const third = await engine.executeTurn({
+      adapters,
+      initialAdapterName: "codex-sdk",
+      fallbackOrder: ["codex-sdk", "copilot-sdk"],
+      maxFailoverAttempts: 1,
+      executeAdapterTurn,
+    });
+
+    expect(first).toEqual(expect.objectContaining({
+      ok: false,
+      suppressed: true,
+    }));
+    expect(second).toEqual(expect.objectContaining({
+      ok: false,
+      suppressed: true,
+    }));
+    expect(third).toEqual(expect.objectContaining({
+      ok: true,
+      adapterName: "copilot-sdk",
+      result: expect.objectContaining({ finalResponse: "copilot-ok" }),
+    }));
+  });
+
+  it("retries the current adapter via the recovery hook before failing over", async () => {
+    const engine = createQueryEngine({
+      failoverConsecutiveInfraErrors: 1,
+      recoveryRetryAttempts: 1,
+    });
+    const executeAdapterTurn = vi.fn()
+      .mockRejectedValueOnce(new Error("Codex Exec exited with code 3221225786"))
+      .mockResolvedValueOnce({ finalResponse: "codex-recovered" });
+    const recoverAdapter = vi.fn(async () => {});
+
+    const outcome = await engine.executeTurn({
+      adapters: {
+        "codex-sdk": { name: "codex-sdk" },
+        "copilot-sdk": { name: "copilot-sdk" },
+      },
+      initialAdapterName: "codex-sdk",
+      fallbackOrder: ["codex-sdk", "copilot-sdk"],
+      maxFailoverAttempts: 1,
+      executeAdapterTurn,
+      recoverAdapter,
+    });
+
+    expect(outcome).toEqual(expect.objectContaining({
+      ok: true,
+      adapterName: "codex-sdk",
+      recovered: true,
+      result: expect.objectContaining({ finalResponse: "codex-recovered" }),
+    }));
+    expect(recoverAdapter).toHaveBeenCalledTimes(1);
+    expect(executeAdapterTurn).toHaveBeenCalledTimes(2);
   });
 });

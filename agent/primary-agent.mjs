@@ -14,10 +14,13 @@ import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { buildContextEnvelope } from "../workspace/context-cache.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
-import { createProviderRegistry, executorToAdapterName, normalizeProviderAdapterName } from "./provider-registry.mjs";
+import { executorToAdapterName, normalizeProviderAdapterName } from "./provider-registry.mjs";
+import { createProviderKernel } from "./provider-kernel.mjs";
+import { createQueryEngine } from "./query-engine.mjs";
 import { getBosunSessionManager } from "./session-manager.mjs";
 import { buildToolCapabilityContract } from "./tool-orchestrator.mjs";
-import { getBuiltInProviderDriver, normalizeProviderDefinitionId } from "./providers/index.mjs";
+import { normalizeProviderDefinitionId } from "./providers/index.mjs";
+import { createShellSessionCompat } from "../shell/shell-session-compat.mjs";
 import {
   execCodexPrompt,
   steerCodexPrompt,
@@ -119,6 +122,23 @@ const MODE_EXEC_POLICIES = Object.freeze({
     maxFailoverAttempts: Number(process.env.PRIMARY_AGENT_INSTANT_FAILOVER_ATTEMPTS) || 0,
   },
 });
+
+function normalizePrimarySessionScope(sessionType = "primary", explicitScope = "") {
+  const normalizedScope = String(explicitScope || "").trim();
+  if (normalizedScope) return normalizedScope;
+  const normalizedType = String(sessionType || "primary").trim() || "primary";
+  return normalizedType === "primary" ? "primary" : normalizedType;
+}
+
+function getPrimarySessionCompat(sessionType = "primary", scope = "") {
+  return createShellSessionCompat({
+    adapterName: activeAdapter.name,
+    providerSelection: activeExecutorSelection || activeAdapter.name,
+    scope: normalizePrimarySessionScope(sessionType, scope),
+    sessionType,
+    sessionManager: primarySessionManager,
+  });
+}
 
 function normalizeAgentMode(rawMode, fallback = "agent") {
   const normalized = String(rawMode || "").trim().toLowerCase();
@@ -492,6 +512,14 @@ let activeExecutorSelection = "codex-sdk";
 let primaryProfile = null;
 let primaryFallbackReason = null;
 let initialized = false;
+const primaryQueryEngine = createQueryEngine();
+const primaryProviderKernel = createProviderKernel({
+  adapters: ADAPTERS,
+  getConfig: () => loadConfig() || {},
+  env: process.env,
+  readBusy: readAdapterBusy,
+  getAdapterCapabilities,
+});
 
 const CONFIG_WARNING_THROTTLE_MS = 5 * 60 * 1000;
 const _configWarningCache = new Map();
@@ -588,48 +616,6 @@ function normalizePrimaryAgent(value) {
   return raw;
 }
 
-function setProviderSetting(target, key, value) {
-  if (value === undefined || value === null || value === "") return;
-  target[key] = value;
-}
-
-function buildProviderKernelSettings(config = {}) {
-  const providers = config?.providers && typeof config.providers === "object"
-    ? config.providers
-    : {};
-  const flattened = {};
-  setProviderSetting(flattened, "BOSUN_PROVIDER_DEFAULT", providers.defaultProvider);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_DEFAULT_MODEL", providers.defaultModel);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_RESPONSES_ENABLED", providers.openaiResponses?.enabled);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_RESPONSES_MODEL", providers.openaiResponses?.defaultModel);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED", providers.chatgptCodex?.enabled);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODE", providers.chatgptCodex?.mode);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODEL", providers.chatgptCodex?.defaultModel);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_WORKSPACE", providers.chatgptCodex?.workspace);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_ENABLED", providers.azureOpenAi?.enabled);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_MODE", providers.azureOpenAi?.mode);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_MODEL", providers.azureOpenAi?.defaultModel);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_ENDPOINT", providers.azureOpenAi?.endpoint);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT", providers.azureOpenAi?.deployment);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_API_VERSION", providers.azureOpenAi?.apiVersion);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_ANTHROPIC_ENABLED", providers.anthropic?.enabled);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_ANTHROPIC_MODEL", providers.anthropic?.defaultModel);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED", providers.claudeSubscription?.enabled);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODE", providers.claudeSubscription?.mode);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODEL", providers.claudeSubscription?.defaultModel);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_WORKSPACE", providers.claudeSubscription?.workspace);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED", providers.openaiCompatible?.enabled);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODE", providers.openaiCompatible?.mode);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL", providers.openaiCompatible?.defaultModel);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL", providers.openaiCompatible?.baseUrl);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OLLAMA_ENABLED", providers.ollama?.enabled);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OLLAMA_MODEL", providers.ollama?.defaultModel);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_OLLAMA_BASE_URL", providers.ollama?.baseUrl);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_COPILOT_OAUTH_ENABLED", providers.copilotOAuth?.enabled);
-  setProviderSetting(flattened, "BOSUN_PROVIDER_COPILOT_OAUTH_MODEL", providers.copilotOAuth?.defaultModel);
-  return flattened;
-}
-
 function resolvePrimarySelectionToken(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -674,7 +660,7 @@ function getAdapterCapabilities(adapter) {
 }
 
 function resolveAgentSelection(name) {
-  return createPrimaryProviderRegistry().resolveSelection(name);
+  return primaryProviderKernel.resolveSelection(name);
 }
 
 function resolvePrimaryAgent(nameOrConfig) {
@@ -710,89 +696,54 @@ function resolvePrimaryAgent(nameOrConfig) {
   return mapped || "codex-sdk";
 }
 
-function createPrimaryProviderRegistry() {
-  let config = {};
-  let configExecutors = [];
-  let settings = {};
-  try {
-    config = loadConfig() || {};
-    configExecutors = Array.isArray(config?.executorConfig?.executors)
-      ? config.executorConfig.executors
-      : [];
-    settings = buildProviderKernelSettings(config);
-  } catch {
-    config = {};
-    configExecutors = [];
-    settings = {};
-  }
-  return createProviderRegistry({
-    adapters: ADAPTERS,
-    configExecutors,
-    defaultProviderId:
-      normalizeProviderDefinitionId(
-        settings.BOSUN_PROVIDER_DEFAULT || process.env.BOSUN_PROVIDER_DEFAULT || "",
-        "",
-      ) || undefined,
-    env: process.env,
-    includeBuiltins: true,
-    settings,
-    readBusy: readAdapterBusy,
-    getAdapterCapabilities,
-  });
-}
-
 function resolveActiveProviderRuntimeConfig() {
-  const registry = createPrimaryProviderRegistry();
-  const selectionId = String(activeExecutorSelection || activeAdapter?.name || "").trim();
-  const resolvedSelection = selectionId ? registry.resolveSelection(selectionId) : null;
-  const selectedProvider = resolvedSelection
-    ? registry.getProvider(resolvedSelection.selectionId) || registry.getProvider(resolvedSelection.providerId)
-    : registry.getDefaultProvider();
-  if (!selectedProvider?.providerId) {
+  const runtime = primaryProviderKernel.resolveRuntime(
+    activeExecutorSelection,
+    activeAdapter?.name,
+  );
+  if (!runtime.providerId || !runtime.providerConfig) {
     return null;
   }
-  const driver = getBuiltInProviderDriver(selectedProvider.providerId);
-  if (!driver) {
-    return null;
-  }
-  const providerSettings = selectedProvider.auth?.settings && typeof selectedProvider.auth.settings === "object"
-    ? selectedProvider.auth.settings
-    : {};
-  const providerConfig = driver.createSessionConfig({
-    env: process.env,
-    model: providerSettings.defaultModel || selectedProvider.defaultModel || null,
-    authMode: providerSettings.authMode || selectedProvider.auth?.preferredMode || null,
-    endpoint: providerSettings.endpoint || null,
-    baseUrl: providerSettings.baseUrl || null,
-    deployment: providerSettings.deployment || null,
-    apiVersion: providerSettings.apiVersion || null,
-    workspace: providerSettings.workspace || null,
-    settings: {
-      defaultModel: providerSettings.defaultModel || selectedProvider.defaultModel || null,
-      authMode: providerSettings.authMode || null,
-    },
-  });
   return {
-    providerId: selectedProvider.providerId,
-    providerConfig: {
-      ...providerConfig,
-      provider: selectedProvider.providerId,
-    },
+    providerId: runtime.providerId,
+    providerConfig: runtime.providerConfig,
   };
 }
 
 function withProviderRuntimeOptions(options = {}) {
-  if (activeAdapter?.name !== "opencode-sdk") {
-    return options;
-  }
-  const runtime = resolveActiveProviderRuntimeConfig();
-  if (!runtime) {
-    return options;
-  }
+  return primaryProviderKernel.withRuntimeOptions(
+    activeAdapter?.name,
+    activeExecutorSelection,
+    options,
+  );
+}
+
+function createPrimaryExecutionSession(adapterName = "", options = {}) {
+  return primaryProviderKernel.createExecutionSession({
+    adapterName: adapterName || activeAdapter.name,
+    selectionId: activeExecutorSelection || adapterName || activeAdapter?.name || "",
+    sessionId: options.sessionId || null,
+    threadId: options.threadId || options.sessionId || null,
+    model: options.model || null,
+    metadata: options.metadata || {},
+  });
+}
+
+function finalizePrimaryTurnResult(result) {
+  if (result == null || typeof result !== "object") return result;
+  const text =
+    String(
+      result.finalResponse
+      || result.output
+      || result.text
+      || result.message
+      || "",
+    ).trim();
   return {
-    ...options,
-    provider: runtime.providerId,
-    providerConfig: runtime.providerConfig,
+    ...result,
+    finalResponse: result.finalResponse || text,
+    text: result.text || text,
+    message: result.message || text,
   };
 }
 
@@ -929,98 +880,6 @@ const FALLBACK_ORDER = [
   "opencode-sdk",
 ];
 
-const FAILOVER_CONSECUTIVE_INFRA_ERRORS = Math.max(
-  1,
-  Number(process.env.PRIMARY_AGENT_FAILOVER_CONSECUTIVE_INFRA_ERRORS) || 3,
-);
-const FAILOVER_ERROR_WINDOW_MS = Math.max(
-  10_000,
-  Number(process.env.PRIMARY_AGENT_FAILOVER_ERROR_WINDOW_MS) ||
-    10 * 60 * 1000,
-);
-const _primaryRecoveryRetryEnv = Number(
-  process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS,
-);
-const PRIMARY_RECOVERY_RETRY_ATTEMPTS = Number.isFinite(
-  _primaryRecoveryRetryEnv,
-)
-  ? Math.max(0, _primaryRecoveryRetryEnv)
-  : 1;
-
-const _adapterFailureState = new Map();
-
-function adapterErrorText(err) {
-  const message = String(err?.message || err || "");
-  const code = String(err?.code || "");
-  return `${code} ${message}`.trim();
-}
-
-function isSessionScopedAdapterError(err) {
-  const text = adapterErrorText(err).toLowerCase();
-  if (!text) return false;
-  return (
-    /\b(session|thread|conversation|context)\b.*\b(not found|expired|invalid|closed|corrupt)\b/.test(
-      text,
-    ) ||
-    /\bfailed to resume session\b/.test(text) ||
-    /\bsession does not exist\b/.test(text)
-  );
-}
-
-function isInfrastructureAdapterError(err) {
-  const text = adapterErrorText(err).toLowerCase();
-  if (!text) return false;
-  return (
-    /\bagent_timeout\b/.test(text) ||
-    /\bcodex exec exited with code\b/.test(text) ||
-    /\btransport channel closed\b/.test(text) ||
-    /\bstream disconnected\b/.test(text) ||
-    /\brate limit|too many requests|429\b/.test(text) ||
-    /\bservice unavailable|temporarily unavailable|overloaded\b/.test(text) ||
-    /\bcannot find module\b/.test(text) ||
-    /\bsdk not available|failed to load sdk\b/.test(text) ||
-    /\beconnreset|econnrefused|etimedout|network error\b/.test(text) ||
-    /\bsegfault|crash|killed\b/.test(text)
-  );
-}
-
-function clearAdapterFailureState(adapterName) {
-  if (!adapterName) return;
-  _adapterFailureState.delete(adapterName);
-}
-
-function noteAdapterFailure(adapterName, err) {
-  const now = Date.now();
-  const infrastructure = isInfrastructureAdapterError(err);
-  const previous = _adapterFailureState.get(adapterName) || {
-    streak: 0,
-    lastAt: 0,
-    lastError: "",
-    infrastructure: false,
-  };
-
-  const next = {
-    streak: 0,
-    lastAt: now,
-    lastError: adapterErrorText(err),
-    infrastructure,
-  };
-
-  if (infrastructure) {
-    const withinWindow =
-      now - Number(previous.lastAt || 0) <= FAILOVER_ERROR_WINDOW_MS;
-    next.streak =
-      withinWindow && previous.infrastructure ? previous.streak + 1 : 1;
-  }
-
-  _adapterFailureState.set(adapterName, next);
-  return {
-    ...next,
-    allowFailover:
-      infrastructure && next.streak >= FAILOVER_CONSECUTIVE_INFRA_ERRORS,
-  };
-}
-
 async function recoverAdapterSession(adapter, adapterName) {
   if (!adapter) return;
   if (typeof adapter.reset === "function") {
@@ -1093,35 +952,35 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const sessionType =
     (options && options.sessionType ? String(options.sessionType) : "") ||
     "primary";
-  const existingPrimarySessionId = primarySessionManager.getActiveSessionId("primary");
+  const sessionScope = normalizePrimarySessionScope(sessionType, options.scope);
+  const existingPrimarySessionId = primarySessionManager.getActiveSessionId(sessionScope);
   const defaultSessionId = existingPrimarySessionId || `primary-${activeAdapter.name}`;
   const sessionId =
     (options && options.sessionId ? String(options.sessionId) : "") ||
     defaultSessionId;
-  const sessionRecord = primarySessionManager.ensureSession({
-    sessionId,
-    scope: "primary",
-    sessionType,
-    providerSelection: activeExecutorSelection || activeAdapter.name,
-    adapterName: activeAdapter.name,
-    taskKey: sessionId,
-    cwd: options.cwd || "",
-    metadata: {
-      mode: options.mode || agentMode,
-    },
-  });
-  primarySessionManager.switchSession(sessionRecord.sessionId, {
-    scope: "primary",
-    sessionType,
-    providerSelection: activeExecutorSelection || activeAdapter.name,
-    adapterName: activeAdapter.name,
-    taskKey: sessionRecord.taskKey,
-    cwd: options.cwd || sessionRecord.cwd || "",
-  });
   const effectiveMode = normalizeAgentMode(
     options.mode || selectedProfile.preferredMode || agentMode,
     agentMode,
   );
+  const primarySessionCompat = getPrimarySessionCompat(sessionType, sessionScope);
+  const sessionRecord = primarySessionCompat.ensureManagedSession(sessionId, {
+    sessionType,
+    taskKey: sessionId,
+    cwd: options.cwd || "",
+    status: "idle",
+    metadata: {
+      mode: effectiveMode,
+    },
+  });
+  primarySessionCompat.switchSession(sessionRecord.sessionId, {
+    sessionType,
+    taskKey: sessionRecord.taskKey,
+    cwd: options.cwd || sessionRecord.cwd || "",
+    status: "active",
+    metadata: {
+      mode: effectiveMode,
+    },
+  });
   const effectiveModel = options.model || selectedProfile.preferredModel || undefined;
   const modePolicy = getModeExecPolicy(effectiveMode);
   const timeoutMs = options.timeoutMs || modePolicy?.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
@@ -1188,11 +1047,8 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         },
       });
     }
-    primarySessionManager.registerExecution(sessionId, {
-      scope: "primary",
+    primarySessionCompat.registerExecution(sessionId, {
       sessionType,
-      providerSelection: activeExecutorSelection || activeAdapter.name,
-      adapterName: activeAdapter.name,
       taskKey: sessionId,
       cwd: options.cwd || "",
       status: "active",
@@ -1205,55 +1061,66 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     return pooled;
   }
 
-  // Build ordered list of adapters to try: current first, then fallbacks
-  const adaptersToTry = [activeAdapter.name];
-  for (const name of FALLBACK_ORDER) {
-    if (name !== activeAdapter.name && ADAPTERS[name]) {
-      const envDisabledKey = `${name.replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
-      if (!envFlagEnabled(process.env[envDisabledKey])) {
-        adaptersToTry.push(name);
-      }
+  const recordAssistantTurn = (result, extraMetadata = {}) => {
+    if (!result) return;
+    const text = typeof result === "string"
+      ? result
+      : result.finalResponse || result.text || result.message || JSON.stringify(result);
+    tracker.recordEvent(sessionId, {
+      role: "assistant",
+      content: text,
+      timestamp: new Date().toISOString(),
+      _sessionType: sessionType,
+    });
+    const compressionSummary = summarizeContextCompressionItems(result?.items);
+    if (compressionSummary) {
+      tracker.recordEvent(sessionId, {
+        role: "system",
+        type: "system",
+        content: compressionSummary.content,
+        timestamp: new Date().toISOString(),
+        meta: {
+          contextCompression: compressionSummary,
+          ...extraMetadata,
+        },
+      });
     }
-  }
+  };
 
-  let lastError = null;
-  const maxAdaptersToTry = Math.min(
-    adaptersToTry.length,
-    maxFailoverAttempts + 1,
-  );
-
-  for (let attempt = 0; attempt < maxAdaptersToTry; attempt++) {
-    const adapterName = adaptersToTry[attempt];
-    const adapter = ADAPTERS[adapterName];
-    if (!adapter) continue;
-
-    // If failing over to a different adapter, switch and init
-    if (attempt > 0) {
+  const outcome = await primaryQueryEngine.executeTurn({
+    adapters: ADAPTERS,
+    initialAdapterName: activeAdapter.name,
+    fallbackOrder: FALLBACK_ORDER,
+    maxFailoverAttempts,
+    includeAdapter(name) {
+      const envDisabledKey = `${name.replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
+      return !envFlagEnabled(process.env[envDisabledKey]);
+    },
+    async prepareAdapter({ adapterName, attempt, previousAdapterName, lastError }) {
+      if (attempt === 0) return;
       console.warn(
-        `[primary-agent] :alert: Failing over from ${adaptersToTry[attempt - 1]} to ${adapterName} (reason: ${lastError?.message || "unknown"})`,
+        `[primary-agent] :alert: Failing over from ${previousAdapterName} to ${adapterName} (reason: ${lastError?.message || "unknown"})`,
       );
       tracker.recordEvent(sessionId, {
         role: "system",
         type: "failover",
-        content: `:alert: Agent "${adaptersToTry[attempt - 1]}" failed — switching to "${adapterName}": ${lastError?.message || "timeout/error"}`,
+        content: `:alert: Agent "${previousAdapterName}" failed — switching to "${adapterName}": ${lastError?.message || "timeout/error"}`,
         timestamp: new Date().toISOString(),
       });
       setPrimaryAgent(adapterName);
-      primaryFallbackReason = `Failover from ${adaptersToTry[attempt - 1]}: ${lastError?.message || "timeout"}`;
-      try {
-        await adapter.init();
-      } catch (initErr) {
-        console.error(`[primary-agent] Failed to init ${adapterName}:`, initErr.message);
-        lastError = initErr;
-        continue;
-      }
-    }
-
-    try {
-      // Create an AbortController so withTimeout can signal the adapter to
-      // cancel its in-flight work (reset activeTurn, unsubscribe events, etc.).
-      // If the caller already provided an AbortController, forward its abort
-      // to our timeout controller so both caller-initiated and timeout aborts work.
+      primaryFallbackReason = `Failover from ${previousAdapterName}: ${lastError?.message || "timeout"}`;
+      await ADAPTERS[adapterName].init();
+    },
+    async executeAdapterTurn({ adapterName, recovered }) {
+      const providerSession = createPrimaryExecutionSession(adapterName, {
+        sessionId,
+        threadId: sessionId,
+        model: effectiveModel,
+        metadata: {
+          mode: effectiveMode,
+          ...(recovered ? { recovered: true } : {}),
+        },
+      });
       const timeoutAbort = new AbortController();
       if (options.abortController?.signal) {
         const callerSignal = options.abortController.signal;
@@ -1265,39 +1132,50 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
           }, { once: true });
         }
       }
-      const result = await withTimeout(
-        adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
+      const rawResult = await withTimeout(
+        providerSession.runTurn(framedMessage, {
+          ...options,
+          sessionId,
+          threadId: sessionId,
+          model: effectiveModel,
+          abortController: timeoutAbort,
+          metadata: {
+            mode: effectiveMode,
+            ...(recovered ? { recovered: true } : {}),
+          },
+        }),
         timeoutMs,
-        `${adapterName}.exec`,
+        recovered ? `${adapterName}.exec.retry` : `${adapterName}.exec`,
         timeoutAbort,
       );
-
-      if (result) {
-        // Extract human-readable text from structured responses
-        const text = typeof result === "string"
-          ? result
-          : result.finalResponse || result.text || result.message || JSON.stringify(result);
-        tracker.recordEvent(sessionId, {
-          role: "assistant",
-          content: text,
-          timestamp: new Date().toISOString(),
-          _sessionType: sessionType,
-        });
-        const compressionSummary = summarizeContextCompressionItems(result?.items);
-        if (compressionSummary) {
-          tracker.recordEvent(sessionId, {
-            role: "system",
-            type: "system",
-            content: compressionSummary.content,
-            timestamp: new Date().toISOString(),
-            meta: {
-              contextCompression: compressionSummary,
-            },
-          });
-        }
-      }
-      primarySessionManager.registerExecution(sessionId, {
-        scope: "primary",
+      return finalizePrimaryTurnResult(rawResult);
+    },
+    async recoverAdapter({ adapterName, adapter, retry, maxRetries }) {
+      console.warn(
+        `[primary-agent] :arrows_counterclockwise: recovering ${adapterName} session (${retry}/${maxRetries})`,
+      );
+      tracker.recordEvent(sessionId, {
+        role: "system",
+        type: "recovery",
+        content: `:arrows_counterclockwise: Recovering ${adapterName} session (${retry}/${maxRetries}) before any failover.`,
+        timestamp: new Date().toISOString(),
+      });
+      await recoverAdapterSession(adapter, adapterName);
+    },
+    onFailure({ adapterName, error }) {
+      const isTimeout = error?.message?.startsWith("AGENT_TIMEOUT");
+      console.error(
+        `[primary-agent] ${isTimeout ? ":clock: Timeout" : ":close: Error"} with ${adapterName}: ${error.message}`,
+      );
+    },
+    onRecoveryFailure({ adapterName, retry, maxRetries, error }) {
+      console.error(
+        `[primary-agent] :close: recovery attempt ${retry}/${maxRetries} failed for ${adapterName}: ${error?.message || error}`,
+      );
+    },
+    onSuccess({ adapterName, result, recovered }) {
+      recordAssistantTurn(result, recovered ? { recovered: true } : {});
+      primarySessionCompat.registerExecution(sessionId, {
         sessionType,
         providerSelection: activeExecutorSelection || adapterName,
         adapterName,
@@ -1305,171 +1183,76 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         cwd: options.cwd || "",
         status: "active",
         threadId: result?.threadId || result?.sessionId || null,
-        providerSessionId: result?.sessionId || null,
         metadata: {
           mode: effectiveMode,
+          ...(recovered ? { recovered: true } : {}),
+          providerSessionId: result?.sessionId || null,
         },
       });
-      clearAdapterFailureState(adapterName);
-      return result;
-    } catch (err) {
-      lastError = err;
-      const isTimeout = err.message?.startsWith("AGENT_TIMEOUT");
-      const isPrimaryAttempt = attempt === 0;
-      console.error(
-        `[primary-agent] ${isTimeout ? ":clock: Timeout" : ":close: Error"} with ${adapterName}: ${err.message}`,
+    },
+    onFailoverSuppressed({ adapterName, error, waitReason }) {
+      console.warn(
+        `[primary-agent] failover suppressed for ${adapterName}: ${waitReason}`,
       );
+      tracker.recordEvent(sessionId, {
+        role: "system",
+        type: "error",
+        content: `:warning: ${adapterName} error: ${error?.message || "unknown error"}. Failover suppressed (${waitReason}).`,
+        timestamp: new Date().toISOString(),
+      });
+    },
+    onExhausted({ error, isTimeout }) {
+      tracker.recordEvent(sessionId, {
+        role: "system",
+        type: "error",
+        content: isTimeout
+          ? `:clock: All agents timed out. The AI service may be experiencing issues. Your message was saved — please try again shortly.`
+          : `:close: Agent error: ${error?.message || error}. Your message was saved — please try again.`,
+        timestamp: new Date().toISOString(),
+      });
+    },
+  });
 
-      if (
-        isPrimaryAttempt &&
-        PRIMARY_RECOVERY_RETRY_ATTEMPTS > 0 &&
-        (isSessionScopedAdapterError(err) || isInfrastructureAdapterError(err))
-      ) {
-        for (let retry = 1; retry <= PRIMARY_RECOVERY_RETRY_ATTEMPTS; retry++) {
-          try {
-            console.warn(
-              `[primary-agent] :arrows_counterclockwise: recovering ${adapterName} session (${retry}/${PRIMARY_RECOVERY_RETRY_ATTEMPTS})`,
-            );
-            tracker.recordEvent(sessionId, {
-              role: "system",
-              type: "recovery",
-              content: `:arrows_counterclockwise: Recovering ${adapterName} session (${retry}/${PRIMARY_RECOVERY_RETRY_ATTEMPTS}) before any failover.`,
-              timestamp: new Date().toISOString(),
-            });
-            await recoverAdapterSession(adapter, adapterName);
-            const timeoutAbort = new AbortController();
-            if (options.abortController?.signal) {
-              const callerSignal = options.abortController.signal;
-              if (callerSignal.aborted) {
-                timeoutAbort.abort(callerSignal.reason);
-              } else {
-                callerSignal.addEventListener("abort", () => {
-                  timeoutAbort.abort(callerSignal.reason || "user_stop");
-                }, { once: true });
-              }
-            }
-            const retryResult = await withTimeout(
-              adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
-              timeoutMs,
-              `${adapterName}.exec.retry`,
-              timeoutAbort,
-            );
-            const retryText = typeof retryResult === "string"
-              ? retryResult
-              : retryResult.finalResponse || retryResult.text || retryResult.message || JSON.stringify(retryResult);
-            tracker.recordEvent(sessionId, {
-              role: "assistant",
-              content: retryText,
-              timestamp: new Date().toISOString(),
-              _sessionType: sessionType,
-            });
-            const compressionSummary = summarizeContextCompressionItems(retryResult?.items);
-            if (compressionSummary) {
-              tracker.recordEvent(sessionId, {
-                role: "system",
-                type: "system",
-                content: compressionSummary.content,
-                timestamp: new Date().toISOString(),
-                meta: {
-                  contextCompression: compressionSummary,
-                },
-              });
-            }
-            primarySessionManager.registerExecution(sessionId, {
-              scope: "primary",
-              sessionType,
-              providerSelection: activeExecutorSelection || adapterName,
-              adapterName,
-              taskKey: sessionId,
-              cwd: options.cwd || "",
-              status: "active",
-              threadId: retryResult?.threadId || retryResult?.sessionId || null,
-              providerSessionId: retryResult?.sessionId || null,
-              metadata: {
-                mode: effectiveMode,
-                recovered: true,
-              },
-            });
-            clearAdapterFailureState(adapterName);
-            return retryResult;
-          } catch (retryErr) {
-            lastError = retryErr;
-            console.error(
-              `[primary-agent] :close: recovery attempt ${retry}/${PRIMARY_RECOVERY_RETRY_ATTEMPTS} failed for ${adapterName}: ${retryErr?.message || retryErr}`,
-            );
-          }
-        }
-      }
-
-      const failureState = noteAdapterFailure(adapterName, lastError);
-      const shouldBlockPrimaryFailover =
-        isPrimaryAttempt && !failureState.allowFailover;
-
-      if (shouldBlockPrimaryFailover) {
-        const waitReason = failureState.infrastructure
-          ? `holding failover until ${FAILOVER_CONSECUTIVE_INFRA_ERRORS} consecutive infrastructure failures (${failureState.streak}/${FAILOVER_CONSECUTIVE_INFRA_ERRORS})`
-          : "error classified as session-scoped/non-infrastructure";
-        console.warn(
-          `[primary-agent] failover suppressed for ${adapterName}: ${waitReason}`,
-        );
-        tracker.recordEvent(sessionId, {
-          role: "system",
-          type: "error",
-          content: `:warning: ${adapterName} error: ${lastError?.message || "unknown error"}. Failover suppressed (${waitReason}).`,
-          timestamp: new Date().toISOString(),
-        });
-        primarySessionManager.registerExecution(sessionId, {
-          scope: "primary",
-          sessionType,
-          providerSelection: activeExecutorSelection || adapterName,
-          adapterName,
-          taskKey: sessionId,
-          cwd: options.cwd || "",
-          status: "failed",
-          error: lastError?.message || "unknown error",
-          metadata: {
-            mode: effectiveMode,
-            failoverSuppressed: true,
-          },
-        });
-        return {
-          finalResponse: `:warning: ${adapterName} error: ${lastError?.message || "unknown error"}. Failover suppressed (${waitReason}).`,
-          items: [],
-          usage: null,
-        };
-      }
-
-      // If this is the last adapter, report to user
-      if (attempt >= maxAdaptersToTry - 1) {
-        tracker.recordEvent(sessionId, {
-          role: "system",
-          type: "error",
-          content: isTimeout
-            ? `:clock: All agents timed out. The AI service may be experiencing issues. Your message was saved — please try again shortly.`
-            : `:close: Agent error: ${err.message}. Your message was saved — please try again.`,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    }
+  if (outcome.ok) {
+    return outcome.result;
   }
 
-  // All adapters failed
-  primarySessionManager.registerExecution(sessionId, {
-    scope: "primary",
+  if (outcome.suppressed) {
+    primarySessionCompat.registerExecution(sessionId, {
+      sessionType,
+      providerSelection: activeExecutorSelection || outcome.adapterName,
+      adapterName: outcome.adapterName,
+      taskKey: sessionId,
+      cwd: options.cwd || "",
+      status: "failed",
+      error: outcome.error?.message || "unknown error",
+      metadata: {
+        mode: effectiveMode,
+        failoverSuppressed: true,
+      },
+    });
+    return {
+      finalResponse: `:warning: ${outcome.adapterName} error: ${outcome.error?.message || "unknown error"}. Failover suppressed (${outcome.waitReason}).`,
+      items: [],
+      usage: null,
+    };
+  }
+
+  primarySessionCompat.registerExecution(sessionId, {
     sessionType,
     providerSelection: activeExecutorSelection || activeAdapter.name,
     adapterName: activeAdapter.name,
     taskKey: sessionId,
     cwd: options.cwd || "",
     status: "failed",
-    error: lastError?.message || "unknown",
+    error: outcome.error?.message || "unknown",
     metadata: {
       mode: effectiveMode,
       allAdaptersFailed: true,
     },
   });
   return {
-    finalResponse: `:close: All agent adapters failed. Last error: ${lastError?.message || "unknown"}`,
+    finalResponse: `:close: All agent adapters failed. Last error: ${outcome.error?.message || "unknown"}`,
     items: [],
     usage: null,
   };
@@ -1512,45 +1295,22 @@ export async function resetPrimaryAgent() {
 }
 
 export function getPrimarySessionId() {
-  return primarySessionManager.getActiveSessionId("primary")
+  return getPrimarySessionCompat().getActiveSessionId()
     || (activeAdapter.getSessionId ? activeAdapter.getSessionId() : null);
 }
 
 export async function listPrimarySessions() {
-  const managed = primarySessionManager.listSessions({ scope: "primary" });
+  const primarySessionCompat = getPrimarySessionCompat();
   const adapterSessions = activeAdapter.listSessions ? await activeAdapter.listSessions() : [];
-  if (!managed.length) {
-    return adapterSessions;
-  }
-  const merged = new Map();
-  for (const entry of managed) {
-    merged.set(entry.sessionId, {
-      id: entry.sessionId,
-      sessionId: entry.sessionId,
-      type: entry.sessionType,
-      status: entry.status,
-      adapter: entry.adapterName || activeAdapter.name,
-      providerSelection: entry.providerSelection || null,
-      createdAt: entry.createdAt,
-      lastActiveAt: entry.lastActiveAt,
-    });
-  }
-  for (const entry of adapterSessions) {
-    const candidateId = String(entry?.id || entry?.sessionId || entry?.threadId || "").trim();
-    if (!candidateId || merged.has(candidateId)) continue;
-    merged.set(candidateId, entry);
-  }
-  return [...merged.values()];
+  return primarySessionCompat.listSessions({ extraSessions: adapterSessions });
 }
 
 export async function switchPrimarySession(id) {
   const result = activeAdapter.switchSession ? await activeAdapter.switchSession(id) : undefined;
-  primarySessionManager.switchSession(id, {
-    scope: "primary",
+  getPrimarySessionCompat().switchSession(id, {
     sessionType: "primary",
-    providerSelection: activeExecutorSelection || activeAdapter.name,
-    adapterName: activeAdapter.name,
     taskKey: id,
+    status: "active",
   });
   return result;
 }
@@ -1558,21 +1318,14 @@ export async function switchPrimarySession(id) {
 export async function createPrimarySession(id) {
   const result = activeAdapter.createSession ? await activeAdapter.createSession(id) : undefined;
   const createdId = String(result?.id || result?.sessionId || id || "").trim() || id;
-  primarySessionManager.ensureSession({
-    sessionId: createdId,
-    scope: "primary",
-    sessionType: "primary",
-    providerSelection: activeExecutorSelection || activeAdapter.name,
-    adapterName: activeAdapter.name,
+  const primarySessionCompat = getPrimarySessionCompat();
+  primarySessionCompat.createSession(createdId, {
     taskKey: createdId,
     status: "idle",
   });
-  primarySessionManager.switchSession(createdId, {
-    scope: "primary",
-    sessionType: "primary",
-    providerSelection: activeExecutorSelection || activeAdapter.name,
-    adapterName: activeAdapter.name,
+  primarySessionCompat.switchSession(createdId, {
     taskKey: createdId,
+    status: "active",
   });
   return result;
 }
@@ -1658,7 +1411,7 @@ export function getCustomModes() {
  * @returns {Array<{id:string, name:string, provider:string, available:boolean, busy:boolean, capabilities:object}>}
  */
 export function getAvailableAgents() {
-  return createPrimaryProviderRegistry().listProviders().map((entry) => ({
+  return primaryProviderKernel.listProviders().map((entry) => ({
     ...entry,
     adapterId: normalizeProviderAdapterName(entry.adapterId || entry.id),
   }));

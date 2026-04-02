@@ -18,6 +18,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { createHarnessAgentService } from "../../agent/harness-agent-service.mjs";
 import {
   buildPlannerSkipReasonHistogram,
   CALIBRATED_MAX_RISK_WITHOUT_HUMAN,
@@ -1647,7 +1648,8 @@ registerNodeType("action.run_agent", {
 
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
-    if (agentPool?.launchEphemeralThread) {
+    if (agentPool) {
+      const harnessAgentService = createHarnessAgentService({ agentPool });
       const parseCandidateCount = (value) => {
         const num = Number(value);
         if (!Number.isFinite(num)) return null;
@@ -1726,6 +1728,32 @@ registerNodeType("action.run_agent", {
           ) || "",
         ).trim();
         const sessionId = resolvedSessionId || null;
+        const normalizedPassSuffix = String(
+          options.sessionSuffix || passLabel || "turn",
+        )
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, "-") || "turn";
+        const workflowParentSessionId = String(
+          ctx.data?._workflowSessionId ??
+            ctx.data?._workflowParentSessionId ??
+            trackedTaskId ??
+            "",
+        ).trim() || null;
+        const workflowRootSessionId = String(
+          ctx.data?._workflowRootSessionId ??
+            workflowParentSessionId ??
+            trackedTaskId ??
+            "",
+        ).trim() || trackedTaskId;
+        const managedSessionId = sessionId || [
+          trackedTaskId || "workflow",
+          "agent",
+          String(ctx.id || "run").trim() || "run",
+          String(node.id || "node").trim() || "node",
+          normalizedPassSuffix,
+        ].join(":");
+        const managedSessionScope = trackedTaskId ? "workflow-task" : "workflow-flow";
         const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
         const fallbackTaskKey =
           sessionId ||
@@ -1800,6 +1828,20 @@ registerNodeType("action.run_agent", {
         if (sessionId) launchExtra.resumeThreadId = sessionId;
         if (sdkOverride) launchExtra.sdk = sdkOverride;
         if (modelOverride) launchExtra.model = modelOverride;
+        launchExtra.sessionId = managedSessionId;
+        launchExtra.sessionScope = managedSessionScope;
+        if (workflowParentSessionId) launchExtra.parentSessionId = workflowParentSessionId;
+        if (workflowRootSessionId) launchExtra.rootSessionId = workflowRootSessionId;
+        launchExtra.metadata = {
+          source: "workflow-run-agent",
+          workflowRunId: String(ctx.id || "").trim() || null,
+          workflowId: String(ctx.data?._workflowId || "").trim() || null,
+          workflowName: String(ctx.data?._workflowName || ctx.data?._workflowId || "").trim() || null,
+          workflowNodeId: node.id,
+          workflowNodeLabel: String(node.label || node.id || "").trim() || null,
+          taskId: trackedTaskId || null,
+          taskTitle: trackedTaskTitle || null,
+        };
         const slotOwnerKey = `${recoveryTaskKey}:${node.id}`;
         const slotMeta = {
           taskKey: recoveryTaskKey,
@@ -1880,11 +1922,10 @@ registerNodeType("action.run_agent", {
             autoRecover &&
             continueOnSession &&
             sessionId &&
-            typeof agentPool.continueSession === "function"
           ) {
             ctx.log(node.id, `${passLabel} Recovery: continuing existing session ${sessionId}`.trim());
             try {
-              result = await agentPool.continueSession(sessionId, continuePrompt, {
+              result = await harnessAgentService.continueSession(sessionId, continuePrompt, {
                 timeout: timeoutMs,
                 cwd,
                 sdk: sdkOverride,
@@ -1914,48 +1955,27 @@ registerNodeType("action.run_agent", {
             }
           }
 
-          if (!result && autoRecover && typeof agentPool.execWithRetry === "function") {
+          if (!result) {
             ctx.log(
               node.id,
-              `${passLabel} Recovery: execWithRetry taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`.trim(),
+              `${passLabel} Recovery: harness-agent-service taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`.trim(),
             );
-            result = await agentPool.execWithRetry(passPrompt, {
+            result = await harnessAgentService.runTask(passPrompt, {
+              autoRecover,
               taskKey: recoveryTaskKey,
               cwd,
               timeoutMs,
               maxRetries: sessionRetries,
               maxContinues,
               sessionType: trackedSessionType,
+              sessionId: managedSessionId,
+              sessionScope: managedSessionScope,
+              parentSessionId: workflowParentSessionId,
+              rootSessionId: workflowRootSessionId,
+              metadata: launchExtra.metadata,
               sdk: sdkOverride,
               model: modelOverride,
               onEvent: launchExtra.onEvent,
-              systemPrompt: effectiveSystemPrompt,
-              slotOwnerKey,
-              slotMeta,
-              onSlotQueued: launchExtra.onSlotQueued,
-              onSlotAcquired: launchExtra.onSlotAcquired,
-            });
-          }
-
-          if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
-            ctx.log(node.id, `${passLabel} Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`.trim());
-            result = await agentPool.launchOrResumeThread(passPrompt, cwd, timeoutMs, {
-              taskKey: recoveryTaskKey,
-              sessionType: trackedSessionType,
-              sdk: sdkOverride,
-              model: modelOverride,
-              onEvent: launchExtra.onEvent,
-              systemPrompt: effectiveSystemPrompt,
-              slotOwnerKey,
-              slotMeta,
-              onSlotQueued: launchExtra.onSlotQueued,
-              onSlotAcquired: launchExtra.onSlotAcquired,
-            });
-          }
-
-          if (!result) {
-            result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, {
-              ...launchExtra,
               systemPrompt: effectiveSystemPrompt,
               slotOwnerKey,
               slotMeta,
@@ -3819,8 +3839,9 @@ registerNodeType("action.continue_session", {
     ctx.log(node.id, `Continuing session ${sessionId} (strategy: ${strategy})`);
 
     const agentPool = engine.services?.agentPool;
-    if (agentPool?.continueSession) {
-      const result = await agentPool.continueSession(sessionId, enrichedPrompt, { timeout, strategy });
+    const harnessAgentService = agentPool ? createHarnessAgentService({ agentPool }) : null;
+    if (harnessAgentService) {
+      const result = await harnessAgentService.continueSession(sessionId, enrichedPrompt, { timeout, strategy });
 
       // Propagate session ID for downstream chaining
       const threadId = result.threadId || sessionId;
@@ -3831,7 +3852,7 @@ registerNodeType("action.continue_session", {
     }
 
     // Fallback: use ephemeral thread with continuation context
-    if (agentPool?.launchEphemeralThread) {
+    if (harnessAgentService) {
       const continuation = strategy === "retry"
         ? `Start over on this task. Previous attempt failed.\n\n${enrichedPrompt}`
         : strategy === "refine"
@@ -3840,7 +3861,11 @@ registerNodeType("action.continue_session", {
         ? `Wrap up the current task. Commit, push, and hand off PR lifecycle to Bosun. Ensure tests pass.\n\n${enrichedPrompt}`
         : `Continue where you left off.\n\n${enrichedPrompt}`;
 
-      const result = await agentPool.launchEphemeralThread(continuation, ctx.data?.worktreePath || process.cwd(), timeout);
+      const result = await harnessAgentService.runTask(continuation, {
+        autoRecover: false,
+        cwd: ctx.data?.worktreePath || process.cwd(),
+        timeoutMs: timeout,
+      });
 
       // Propagate new session ID from fallback
       const threadId = result.threadId || result.sessionId || sessionId;
@@ -3879,11 +3904,12 @@ registerNodeType("action.restart_agent", {
     ctx.log(node.id, `Restarting agent session ${sessionId}: ${reason}`);
 
     const agentPool = engine.services?.agentPool;
+    const harnessAgentService = agentPool ? createHarnessAgentService({ agentPool }) : null;
 
     // Try to kill existing session first
-    if (sessionId && agentPool?.killSession) {
+    if (sessionId && harnessAgentService) {
       try {
-        await agentPool.killSession(sessionId);
+        await harnessAgentService.killSession(sessionId);
         ctx.log(node.id, `Killed previous session ${sessionId}`);
       } catch (err) {
         ctx.log(node.id, `Could not kill session ${sessionId}: ${err.message}`, "warn");
@@ -3891,11 +3917,14 @@ registerNodeType("action.restart_agent", {
     }
 
     // Launch new session
-    if (agentPool?.launchEphemeralThread) {
-      const result = await agentPool.launchEphemeralThread(
+    if (harnessAgentService) {
+      const result = await harnessAgentService.runTask(
         `Previous attempt failed (reason: ${reason}). Starting fresh.\n\n${prompt}`,
-        cwd,
-        node.config?.timeoutMs || 3600000
+        {
+          autoRecover: false,
+          cwd,
+          timeoutMs: node.config?.timeoutMs || 3600000,
+        },
       );
 
       // Propagate new session/thread IDs for downstream chaining
@@ -8689,13 +8718,15 @@ registerNodeType("action.web_search", {
     // ── Agent-based search ──────────────────────────────────────────────
     if (searchEngine === "agent") {
       const agentPool = engine?.services?.agentPool;
-      if (agentPool?.launchEphemeralThread) {
+      if (agentPool) {
+        const harnessAgentService = createHarnessAgentService({ agentPool });
         const searchPrompt =
           `Search the web for: "${query}"\n\n` +
           `Return the top ${maxResults} results as a JSON array of objects with ` +
           `fields: title, url, snippet. Return ONLY the JSON array, no other text.`;
-        const result = await agentPool.launchEphemeralThread(
-          searchPrompt, process.cwd(), 120000,
+        const result = await harnessAgentService.runTask(
+          searchPrompt,
+          { autoRecover: false, cwd: process.cwd(), timeoutMs: 120000 },
         );
         let parsed = [];
         try {
