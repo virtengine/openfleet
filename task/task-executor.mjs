@@ -128,6 +128,7 @@ const REPO_AREA_STARVATION_WAIT_MS = 2 * 60 * 1000;
 const REPO_AREA_STARVATION_BLOCKED_CYCLES = 3;
 const REPO_AREA_CONTENTION_EVENT_LIMIT = 60;
 const WORKFLOW_ACTIVE_RUNS_INDEX = "_active-runs.json";
+const WORKFLOW_RUNS_HISTORY_INDEX = "index.json";
 const ACTIVE_WORKFLOW_RUN_STATUSES = new Set([
   "running",
   "queued",
@@ -4235,6 +4236,12 @@ class TaskExecutor {
     let resetUnstarted = 0;
     let staleSharedClaimCount = 0;
     let workflowOwnerlessResetCount = 0;
+    const recoveryTransitionOptions = (source) => ({
+      source,
+      ...(this.workflowOwnsTaskLifecycle
+        ? { bypassWorkflowOwnership: true }
+        : {}),
+    });
 
     for (const task of inProgressTasks) {
       const id = normalizeTaskIdKey(task?.id || task?.task_id);
@@ -4244,9 +4251,11 @@ class TaskExecutor {
       const internalStatus = internalTask?.status || null;
       if (internalTask && internalStatus && internalStatus !== "inprogress") {
         try {
-          await transitionTaskStatus(id, internalStatus, {
-            source: "task-executor-recovery-drift",
-          });
+          await transitionTaskStatus(
+            id,
+            internalStatus,
+            recoveryTransitionOptions("task-executor-recovery-drift"),
+          );
         } catch {
           /* best effort */
         }
@@ -4293,9 +4302,11 @@ class TaskExecutor {
       const noCommitCount = this._noCommitCounts.get(id) || 0;
       if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) {
         try {
-          await transitionTaskStatus(id, "todo", {
-            source: "task-executor-recovery-no-commit-block",
-          });
+          await transitionTaskStatus(
+            id,
+            "todo",
+            recoveryTransitionOptions("task-executor-recovery-no-commit-block"),
+          );
         } catch {
           /* best effort */
         }
@@ -4332,9 +4343,11 @@ class TaskExecutor {
         ageMs > INPROGRESS_RECOVERY_UNSTARTED_RESET_MS;
       if (isUnstartedStale && !hasStaleSharedClaim) {
         try {
-          await transitionTaskStatus(id, "todo", {
-            source: "task-executor-recovery-unstarted",
-          });
+          await transitionTaskStatus(
+            id,
+            "todo",
+            recoveryTransitionOptions("task-executor-recovery-unstarted"),
+          );
         } catch {
           /* best effort */
         }
@@ -4362,11 +4375,26 @@ class TaskExecutor {
       // then the shared-state owner. If none of those exist, the task is
       // ownerless and must be reset even when still "fresh".
       if (this.workflowOwnsTaskLifecycle) {
+        const hasRecentWorkflowRunEvidence = this._hasRecentWorkflowRunEvidence(
+          task,
+          internalTask,
+        );
+        const hasWorkflowEvidence =
+          hasWorkflowRun || hasRecentWorkflowRunEvidence;
+        const hasWorkflowLiveness = hasWorkflowEvidence || hasThread;
         if (hasStaleSharedClaim) {
+          if (hasWorkflowEvidence) {
+            skippedForActiveClaim++;
+            continue;
+          }
           try {
-            await transitionTaskStatus(id, "todo", {
-              source: "task-executor-recovery-stale-workflow-claim",
-            });
+            await transitionTaskStatus(
+              id,
+              "todo",
+              recoveryTransitionOptions(
+                "task-executor-recovery-stale-workflow-claim",
+              ),
+            );
           } catch {
             /* best effort */
           }
@@ -4379,6 +4407,7 @@ class TaskExecutor {
           } catch {
             /* best effort */
           }
+          await this._releaseRecoveredWorkflowClaim(id);
           this._clearRecoveredWorkflowState(id, task, internalTask);
           invalidateThread(id);
           this._removeRuntimeSlot(id);
@@ -4386,18 +4415,18 @@ class TaskExecutor {
           workflowOwnerlessResetCount++;
           continue;
         }
-        const hasRecentWorkflowRunEvidence = this._hasRecentWorkflowRunEvidence(
-          task,
-          internalTask,
-        );
-        if (hasWorkflowRun || hasRecentWorkflowRunEvidence || hasThread) {
+        if (hasWorkflowLiveness) {
           skippedForActiveClaim++;
           continue;
         }
         try {
-          await transitionTaskStatus(id, "todo", {
-            source: "task-executor-recovery-missing-workflow-run",
-          });
+          await transitionTaskStatus(
+            id,
+            "todo",
+            recoveryTransitionOptions(
+              "task-executor-recovery-missing-workflow-run",
+            ),
+          );
         } catch {
           /* best effort */
         }
@@ -4410,6 +4439,7 @@ class TaskExecutor {
         } catch {
           /* best effort */
         }
+        await this._releaseRecoveredWorkflowClaim(id);
         this._clearRecoveredWorkflowState(id, task, internalTask);
         invalidateThread(id);
         this._removeRuntimeSlot(id);
@@ -4440,9 +4470,11 @@ class TaskExecutor {
       }
 
       try {
-        await transitionTaskStatus(id, "todo", {
-          source: "task-executor-recovery",
-        });
+        await transitionTaskStatus(
+          id,
+          "todo",
+          recoveryTransitionOptions("task-executor-recovery"),
+        );
       } catch {
         /* best effort */
       }
@@ -4546,14 +4578,7 @@ class TaskExecutor {
 
   _hasRecentWorkflowRunEvidence(task, internalTask = null) {
     if (!this.workflowRunsDir) return false;
-    const latestRunId = String(
-      task?.topology?.latestRunId ||
-        internalTask?.topology?.latestRunId ||
-        task?.workflowRunId ||
-        task?.meta?.workflowRunId ||
-        task?.meta?.workflow?.runId ||
-        "",
-    ).trim();
+    const latestRunId = this._resolveRecentWorkflowEvidenceRunId(task, internalTask);
     if (!latestRunId) return false;
 
     const detailPath = resolve(this.workflowRunsDir, `${latestRunId}.json`);
@@ -4588,6 +4613,80 @@ class TaskExecutor {
     } catch {
       return false;
     }
+  }
+
+  _resolveRecentWorkflowEvidenceRunId(task, internalTask = null) {
+    const taskId = normalizeTaskIdKey(task?.id || internalTask?.id);
+    const directRunId = String(
+      task?.topology?.latestRunId ||
+        internalTask?.topology?.latestRunId ||
+        task?.workflowRunId ||
+        task?.meta?.workflowRunId ||
+        task?.meta?.workflow?.runId ||
+        "",
+    ).trim();
+    if (directRunId) return directRunId;
+
+    const timelineEntries = Array.isArray(task?.timeline) ? task.timeline : [];
+    for (let index = timelineEntries.length - 1; index >= 0; index -= 1) {
+      const entry = timelineEntries[index];
+      if (!entry || typeof entry !== "object") continue;
+      const runId = String(
+        entry?.payload?.runId ||
+          entry?.payload?.workflowRunId ||
+          "",
+      ).trim();
+      if (runId) return runId;
+    }
+
+    if (taskId) {
+      const activeIndexRunId = this._findRecentWorkflowEvidenceRunIdByTaskId(taskId);
+      if (activeIndexRunId) return activeIndexRunId;
+    }
+
+    return "";
+  }
+
+  _findRecentWorkflowEvidenceRunIdByTaskId(taskId) {
+    const normalizedTaskId = normalizeTaskIdKey(taskId);
+    if (!this.workflowRunsDir || !normalizedTaskId) return "";
+
+    const indexPath = resolve(this.workflowRunsDir, WORKFLOW_RUNS_HISTORY_INDEX);
+    if (!existsSync(indexPath)) return "";
+
+    try {
+      const parsed = JSON.parse(readFileSync(indexPath, "utf8"));
+      const runs = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.runs)
+          ? parsed.runs
+          : [];
+      for (const entry of runs) {
+        const entryTaskId = normalizeTaskIdKey(
+          entry?.taskId ||
+          entry?.activeTaskId,
+        );
+        if (entryTaskId !== normalizedTaskId) continue;
+
+        const endedAtMs = parseTimestampMs(entry?.endedAt);
+        const status = String(entry?.status || entry?.outcome || "")
+          .trim()
+          .toLowerCase();
+        if (
+          endedAtMs > 0 ||
+          TERMINAL_WORKFLOW_RUN_STATUSES.has(status)
+        ) {
+          continue;
+        }
+
+        const runId = String(entry?.runId || entry?.id || "").trim();
+        if (runId) return runId;
+      }
+    } catch {
+      return "";
+    }
+
+    return "";
   }
 
   _readWorkflowRunDetail(runId) {
@@ -4681,6 +4780,19 @@ class TaskExecutor {
     if (!patch) return;
     try {
       updateInternalTask(taskId, patch);
+    } catch {
+      /* best effort */
+    }
+  }
+
+  async _releaseRecoveredWorkflowClaim(taskId) {
+    const normalizedTaskId = normalizeTaskIdKey(taskId);
+    if (!normalizedTaskId) return;
+    try {
+      await releaseTaskClaim({
+        taskId: normalizedTaskId,
+        force: true,
+      });
     } catch {
       /* best effort */
     }
