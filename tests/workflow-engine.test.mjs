@@ -72,6 +72,24 @@ function execGit(command, options = {}) {
   });
 }
 
+async function removeDirWithRetries(dirPath, options = {}) {
+  if (!dirPath) return;
+  const ignoreFinalEperm = options?.ignoreFinalEperm === true;
+  let lastError = null;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      rmSync(dirPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== "EPERM") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
+  if (ignoreFinalEperm && lastError?.code === "EPERM") return;
+  throw lastError;
+}
+
 // ── WorkflowContext Tests ───────────────────────────────────────────────────
 
 describe("WorkflowContext", () => {
@@ -638,6 +656,184 @@ describe("WorkflowEngine - loop.for_each", () => {
     releaseRuns();
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
+
+  it("promotes task identity from loop item payloads into dispatched child workflows", async () => {
+    const observed = [];
+    registerNodeType("test.capture_task_dispatch_context", {
+      describe: () => "Capture dispatched child workflow task context",
+      schema: { type: "object", properties: {} },
+      async execute(_node, childCtx) {
+        observed.push({
+          taskId: childCtx.data?.taskId || null,
+          taskTitle: childCtx.data?.taskTitle || null,
+          branch: childCtx.data?.branch || null,
+          repository: childCtx.data?.repository || null,
+          workspace: childCtx.data?.workspace || null,
+          currentTaskId: childCtx.data?.currentTask?.taskId || null,
+          taskObjectId: childCtx.data?.task?.id || null,
+          rootTaskId: childCtx.data?._workflowRootTaskId || null,
+        });
+        return { ok: true };
+      },
+    });
+
+    const child = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Child Start", config: {} },
+        { id: "capture", type: "test.capture_task_dispatch_context", label: "Capture", config: {} },
+      ],
+      [{ id: "c1", source: "trigger", target: "capture" }],
+      { id: "child-loop-task-context", name: "Child Loop Task Context" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Dispatch Task Items",
+          config: {
+            items: "$data.items",
+            variable: "currentTask",
+            workflowId: child.id,
+            mode: "dispatch",
+            maxConcurrent: 2,
+          },
+        },
+      ],
+      [{ id: "p1", source: "trigger", target: "loop" }],
+      { id: "parent-loop-task-context", name: "Parent Loop Task Context" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+
+    const ctx = await engine.execute(parent.id, {
+      items: [
+        {
+          taskId: "task-loop-1",
+          taskTitle: "Loop Task 1",
+          branch: "task/loop-1",
+          repository: "virtengine/bosun",
+          workspace: "virtengine-gh",
+        },
+      ],
+    });
+    expect(ctx.errors).toEqual([]);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(observed).toEqual([
+      expect.objectContaining({
+        taskId: "task-loop-1",
+        taskTitle: "Loop Task 1",
+        branch: "task/loop-1",
+        repository: "virtengine/bosun",
+        workspace: "virtengine-gh",
+        currentTaskId: "task-loop-1",
+        taskObjectId: "task-loop-1",
+        rootTaskId: "task-loop-1",
+      }),
+    ]);
+
+    const history = engine.getRunHistory(child.id, 5);
+    expect(history[0]).toMatchObject({
+      taskId: "task-loop-1",
+      taskTitle: "Loop Task 1",
+    });
+    expect(history[0]?.taskIds || []).toContain("task-loop-1");
+  });
+
+  it("overrides inherited parent task context with per-item loop task identity", async () => {
+    const observed = [];
+    registerNodeType("test.capture_inherited_task_override", {
+      describe: () => "Capture child task lineage when parent already has task context",
+      schema: { type: "object", properties: {} },
+      async execute(_node, childCtx) {
+        observed.push({
+          taskId: childCtx.data?.taskId || null,
+          branchName: childCtx.data?.branchName || null,
+          currentTaskId: childCtx.data?.currentTask?.taskId || null,
+          rootTaskId: childCtx.data?._workflowRootTaskId || null,
+          parentTaskId: childCtx.data?._workflowParentTaskId || null,
+          parentSessionId: childCtx.data?._workflowParentSessionId || null,
+          rootSessionId: childCtx.data?._workflowRootSessionId || null,
+        });
+        return { ok: true };
+      },
+    });
+
+    const child = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Child Start", config: {} },
+        { id: "capture", type: "test.capture_inherited_task_override", label: "Capture", config: {} },
+      ],
+      [{ id: "c1", source: "trigger", target: "capture" }],
+      { id: "child-inherited-task-override", name: "Child Inherited Task Override" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Dispatch Task Items",
+          config: {
+            items: "$data.items",
+            variable: "currentTask",
+            workflowId: child.id,
+            mode: "dispatch",
+            maxConcurrent: 2,
+          },
+        },
+      ],
+      [{ id: "p1", source: "trigger", target: "loop" }],
+      { id: "parent-inherited-task-override", name: "Parent Inherited Task Override" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+
+    const ctx = await engine.execute(parent.id, {
+      taskId: "parent-task",
+      branchName: "task/parent-task",
+      _workflowRootTaskId: "parent-task",
+      _workflowParentTaskId: "parent-task",
+      _workflowParentSessionId: "parent-task",
+      _workflowRootSessionId: "parent-task",
+      items: [
+        {
+          taskId: "child-task-1",
+          taskTitle: "Child Task 1",
+          branch: "task/child-task-1",
+        },
+      ],
+    });
+    expect(ctx.errors).toEqual([]);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(observed).toEqual([
+      expect.objectContaining({
+        taskId: "child-task-1",
+        branchName: "task/child-task-1",
+        currentTaskId: "child-task-1",
+        rootTaskId: "child-task-1",
+        parentTaskId: "child-task-1",
+        parentSessionId: "child-task-1",
+        rootSessionId: "child-task-1",
+      }),
+    ]);
+
+    const history = engine.getRunHistory(child.id, 5);
+    expect(history[0]).toMatchObject({
+      taskId: "child-task-1",
+      taskTitle: "Child Task 1",
+    });
+  });
+
 });
 
 describe("WorkflowEngine - source port routing", () => {
@@ -1947,6 +2143,126 @@ describe("WorkflowEngine - run history details", () => {
     expect(recovered.activeNodeCount).toBe(0);
   });
 
+  it("marks interrupted task-lifecycle shell runs with unresolved task placeholders as non-resumable", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-interrupted-lifecycle-shell", name: "Task Lifecycle" },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+    };
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-lifecycle-shell";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.RUNNING,
+          startedAt: 1,
+          endedAt: null,
+        }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "{{taskId}}",
+          taskTitle: "{{taskTitle}}",
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    engine._detectInterruptedRuns();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const recovered = index.runs.find((entry) => entry.runId === runId);
+    expect(recovered).toBeTruthy();
+    expect(recovered.status).toBe(WorkflowStatus.PAUSED);
+    expect(recovered.resumable).toBe(false);
+    expect(recovered.resumeResult).toBe("invalid_task_identity");
+  });
+
+  it("skips retrying paused task-lifecycle shell runs with unresolved task placeholders", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-paused-lifecycle-shell", name: "Task Lifecycle" },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+    };
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-paused-lifecycle-shell";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.PAUSED,
+          startedAt: 1,
+          endedAt: null,
+          resumable: true,
+        }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "{{taskId}}",
+          taskTitle: "{{taskTitle}}",
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).not.toHaveBeenCalled();
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const interrupted = index.runs.find((entry) => entry.runId === runId);
+    expect(interrupted?.resumable).toBe(false);
+    expect(interrupted?.resumeResult).toBe("invalid_task_identity");
+  });
+
   it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -2554,7 +2870,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(persisted?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
 
-  it("hydrates missing history entries from run detail files when index is truncated", () => {
+  it("prefers indexed history without hydrating detail files when index is present", () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
       [],
@@ -2610,14 +2926,11 @@ describe("WorkflowEngine - run history details", () => {
 
     const history = engine.getRunHistory(wf.id, 5);
     const runIds = history.map((run) => run.runId);
-    expect(runIds).toContain(indexedRunId);
-    expect(runIds).toContain("run-hydrate-1");
-    expect(runIds).toContain("run-hydrate-2");
+    expect(runIds).toEqual([indexedRunId]);
 
     const reloadedIndex = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
     const reloadedIds = (reloadedIndex.runs || []).map((run) => run.runId);
-    expect(reloadedIds).toContain("run-hydrate-1");
-    expect(reloadedIds).toContain("run-hydrate-2");
+    expect(reloadedIds).toEqual([indexedRunId]);
   });
   it("supports cooperative cancellation for running runs", async () => {
     let releaseRun;
@@ -4333,6 +4646,49 @@ describe("WorkflowEngine trigger evaluation", () => {
     expect(hits.some((h) => h.workflowId === "task-poll-interval-wf")).toBe(false);
   });
 
+  it("evaluateScheduleTriggers suppresses installed task lifecycle polls when batch dispatcher is enabled", () => {
+    const lifecycle = makeSimpleWorkflow(
+      [
+        {
+          id: "task-trigger",
+          type: "trigger.task_available",
+          label: "Task Poll",
+          config: { pollIntervalMs: 30000 },
+        },
+      ],
+      [],
+      { id: "installed-lifecycle-uuid", name: "Task Lifecycle" },
+    );
+    lifecycle.metadata = {
+      ...(lifecycle.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+    };
+
+    const batch = makeSimpleWorkflow(
+      [
+        {
+          id: "batch-trigger",
+          type: "trigger.task_available",
+          label: "Task Batch Poll",
+          config: { pollIntervalMs: 15000 },
+        },
+      ],
+      [],
+      { id: "installed-batch-uuid", name: "Task Batch Processor" },
+    );
+    batch.metadata = {
+      ...(batch.metadata || {}),
+      installedFrom: "template-task-batch-processor",
+    };
+
+    engine.save(lifecycle);
+    engine.save(batch);
+
+    const hits = engine.evaluateScheduleTriggers();
+    expect(hits.some((h) => h.workflowId === lifecycle.id)).toBe(false);
+    expect(hits.some((h) => h.workflowId === batch.id)).toBe(true);
+  });
+
   it("evaluateScheduleTriggers uses the latest run timestamp per workflow", () => {
     const wf = makeSimpleWorkflow(
       [
@@ -4351,14 +4707,17 @@ describe("WorkflowEngine trigger evaluation", () => {
     const now = Date.now();
     const readRunIndexSpy = vi.spyOn(engine, "_readRunIndex").mockReturnValue([
       {
+        runId: "sched-run-latest-older",
         workflowId: "sched-wf-latest-run",
         startedAt: now - (10 * 60 * 1000),
       },
       {
+        runId: "sched-run-latest-newer",
         workflowId: "sched-wf-latest-run",
         startedAt: now - 15_000,
       },
       {
+        runId: "sched-run-other",
         workflowId: "other-workflow",
         startedAt: now - (20 * 60 * 1000),
       },
@@ -4366,7 +4725,7 @@ describe("WorkflowEngine trigger evaluation", () => {
 
     const hits = engine.evaluateScheduleTriggers();
 
-    expect(readRunIndexSpy).toHaveBeenCalledTimes(2);
+    expect(readRunIndexSpy).toHaveBeenCalled();
     expect(hits.some((h) => h.workflowId === "sched-wf-latest-run")).toBe(false);
 
     readRunIndexSpy.mockRestore();
@@ -7930,8 +8289,14 @@ describe("Concurrency limiter", () => {
     engine.load();
   });
 
-  afterEach(() => {
-    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  afterEach(async () => {
+    const dirToRemove = tmpDir;
+    engine = null;
+    tmpDir = null;
+    resetWorkflowEngine();
+    resetSessionTracker({ persistDir: null });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await removeDirWithRetries(dirToRemove, { ignoreFinalEperm: true });
   });
 
   it("getConcurrencyStats returns defaults", () => {

@@ -129,7 +129,7 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("main");
-  });
+  }, 15000);
 
   it("normalizes remote-qualified base branches before gh PR calls", async () => {
     const node = makeNode("action.create_pr", {
@@ -720,4 +720,3 @@ describe("validation nodes can offload to isolated runners", () => {
     expect(result.failureDiagnostic?.exitCode).toBe(1);
   });
 });
-

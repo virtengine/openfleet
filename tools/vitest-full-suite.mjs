@@ -37,7 +37,17 @@ function resolveHeavySuites(allSuites) {
   const configured = parseCsvEnv(process.env.BOSUN_VITEST_HEAVY_SUITES);
   const heavyCandidates = configured.length > 0 ? configured : DEFAULT_HEAVY_SUITES;
   const available = new Set(allSuites);
-  return heavyCandidates.filter((suite) => available.has(suite));
+  const includeGuaranteed = (() => {
+    const explicit = String(process.env.BOSUN_VITEST_INCLUDE_GUARANTEED || "").trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(explicit)) return true;
+    if (["0", "false", "no", "off"].includes(explicit)) return false;
+    return process.platform !== "win32";
+  })();
+  return heavyCandidates.filter((suite) => {
+    if (!available.has(suite)) return false;
+    if (suite === "tests/workflow-guaranteed.test.mjs" && !includeGuaranteed) return false;
+    return true;
+  });
 }
 
 export function buildVitestFullSuitePlan({ startDir = process.cwd() } = {}) {
@@ -106,6 +116,13 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
     console.log("[vitest-full-suite] no Vitest suites found");
     return 0;
   }
+  if (
+    process.platform === "win32"
+    && !heavySuites.includes("tests/workflow-guaranteed.test.mjs")
+    && allSuites.includes("tests/workflow-guaranteed.test.mjs")
+  ) {
+    console.log("[vitest-full-suite] skipping tests/workflow-guaranteed.test.mjs on Windows local runs (set BOSUN_VITEST_INCLUDE_GUARANTEED=1 to include it)");
+  }
 
   const groupedMaxWorkers = Number.parseInt(
     String(process.env.BOSUN_VITEST_MAX_WORKERS || (process.platform === "win32" ? "4" : "")),
@@ -115,12 +132,16 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
     String(process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "12" : "0")),
     10,
   );
+  const groupedHeapMb = Number.parseInt(
+    String(process.env.BOSUN_VITEST_GROUP_HEAP_MB || (process.platform === "win32" ? "8192" : "0")),
+    10,
+  );
   const isolatedMaxWorkers = Number.parseInt(
     String(process.env.BOSUN_VITEST_ISOLATED_MAX_WORKERS || "1"),
     10,
   );
   const isolatedHeapMb = Number.parseInt(
-    String(process.env.BOSUN_VITEST_ISOLATED_HEAP_MB || (process.platform === "win32" ? "12288" : "4096")),
+    String(process.env.BOSUN_VITEST_ISOLATED_HEAP_MB || (process.platform === "win32" ? "16384" : "4096")),
     10,
   );
 
@@ -139,6 +160,7 @@ function runFullSuite({ startDir = process.cwd() } = {}) {
         startDir,
         maxWorkers: effectiveGroupedMaxWorkers,
         label: batchLabel,
+        heapMb: Number.isFinite(groupedHeapMb) && groupedHeapMb >= 2048 ? groupedHeapMb : undefined,
       });
       if (code !== 0) return code;
     }

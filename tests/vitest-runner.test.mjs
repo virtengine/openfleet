@@ -112,15 +112,30 @@ describe("vitest-runner", () => {
   });
 
   it("isolates heavyweight suites from the grouped full-suite batch", () => {
+    const previous = process.env.BOSUN_VITEST_INCLUDE_GUARANTEED;
+    delete process.env.BOSUN_VITEST_INCLUDE_GUARANTEED;
     const { groupedSuites, heavySuites } = buildVitestFullSuitePlan({ startDir: repoRoot });
 
     expect(heavySuites).toContain("tests/workflow-engine.test.mjs");
-    expect(heavySuites).toContain("tests/workflow-guaranteed.test.mjs");
     expect(heavySuites).toContain("tests/workflow-templates-e2e.test.mjs");
     expect(groupedSuites).not.toContain("tests/workflow-engine.test.mjs");
-    expect(groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");
     expect(groupedSuites).not.toContain("tests/workflow-templates-e2e.test.mjs");
+    if (process.platform === "win32") {
+      expect(heavySuites).not.toContain("tests/workflow-guaranteed.test.mjs");
+      expect(groupedSuites).toContain("tests/workflow-guaranteed.test.mjs");
+    } else {
+      expect(heavySuites).toContain("tests/workflow-guaranteed.test.mjs");
+      expect(groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");
+    }
     expect(groupedSuites.length + heavySuites.length).toBeGreaterThan(0);
+
+    process.env.BOSUN_VITEST_INCLUDE_GUARANTEED = "1";
+    const explicitPlan = buildVitestFullSuitePlan({ startDir: repoRoot });
+    expect(explicitPlan.heavySuites).toContain("tests/workflow-guaranteed.test.mjs");
+    expect(explicitPlan.groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");
+
+    if (previous == null) delete process.env.BOSUN_VITEST_INCLUDE_GUARANTEED;
+    else process.env.BOSUN_VITEST_INCLUDE_GUARANTEED = previous;
   });
 
   it("builds full-suite vitest batches without unsupported minWorkers flags", () => {

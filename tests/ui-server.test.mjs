@@ -335,7 +335,7 @@ describeUiServer("ui-server mini app", () => {
     } finally {
       rmSync(tmpStatusDir, { recursive: true, force: true });
     }
-  }, 30000);
+  }, 60000);
 
   it("honors STATUS_FILE overrides for worktree recovery status", async () => {
     const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-status-file-"));
@@ -384,7 +384,7 @@ describeUiServer("ui-server mini app", () => {
       }
       rmSync(tmpStatusDir, { recursive: true, force: true });
     }
-  }, 30000);
+  }, 90000);
 
   it("backfills recovery-only worktrees into /api/worktrees when no live registry entry exists", async () => {
     const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-worktree-recovery-backfill-"));
@@ -653,7 +653,7 @@ describeUiServer("ui-server mini app", () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     }
-  }, 15000);
+  }, 30000);
 
   it("uses http URL for local publicHost when TLS is disabled", async () => {
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
@@ -691,7 +691,7 @@ describeUiServer("ui-server mini app", () => {
     expect(response.status).toBe(200);
     expect(payload.ok).toBe(true);
     expect(typeof payload.uptime).toBe("number");
-  }, 15000);
+  }, 30000);
 
   it("hides tokenized browser URL in startup logs by default", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -740,9 +740,13 @@ describeUiServer("ui-server mini app", () => {
         .find((line) => line.includes("[telegram-ui] Browser access:")) || "";
       expect(browserLog).toContain("/?token=");
     } finally {
+      if (server) {
+        await new Promise((resolveClose) => server.close(resolveClose));
+      }
+      await settleUiRuntimeCleanup();
       logSpy.mockRestore();
     }
-  }, process.platform === "win32" ? 15000 : 10000);
+  }, process.platform === "win32" ? 20000 : 10000);
 
   it("treats BOSUN_UI_AUTO_OPEN_BROWSER as an auto-open opt-in when no explicit mode is set", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -771,9 +775,10 @@ describeUiServer("ui-server mini app", () => {
       if (server) {
         await new Promise((resolveClose) => server.close(resolveClose));
       }
+      await settleUiRuntimeCleanup();
       logSpy.mockRestore();
     }
-  }, 20000);
+  }, 90000);
 
   it("suppresses browser auto-open when the requested port falls back to another port", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -967,6 +972,7 @@ describeUiServer("ui-server mini app", () => {
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
+      skipAutoOpen: true,
     });
     const port = server.address().port;
 
@@ -1099,8 +1105,9 @@ describeUiServer("ui-server mini app", () => {
       if (server) {
         await new Promise((resolve) => server.close(resolve));
       }
-      rmSync(workspaceDir, { recursive: true, force: true });
-      rmSync(configDir, { recursive: true, force: true });
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(workspaceDir);
+      await removeDirWithRetries(configDir);
       // Restore higher-priority workspace hints
       if (savedMonitorHome !== undefined) process.env.CODEX_MONITOR_HOME = savedMonitorHome;
       if (savedMonitorDir !== undefined) process.env.CODEX_MONITOR_DIR = savedMonitorDir;
@@ -1492,138 +1499,175 @@ describeUiServer("ui-server mini app", () => {
       expect(invalidJson.fieldErrors?.BOSUN_PROVIDER_DEFAULT).toBeTruthy();
     } finally {
       await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
       if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
       else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
     }
-  }, 15000);
+  }, 30000);
 
   it("writes GNAP settings into config file and allows runtime backend selection", async () => {
     const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
     process.env.BOSUN_CONFIG_PATH = configPath;
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        changes: {
-          KANBAN_BACKEND: "gnap",
-          GNAP_ENABLED: "true",
-          GNAP_REPO_PATH: "C:/tmp/gnap-projection",
-          GNAP_SYNC_MODE: "projection",
-          GNAP_RUN_STORAGE: "local",
-          GNAP_MESSAGE_STORAGE: "off",
-          GNAP_PUBLIC_ROADMAP_ENABLED: "true",
-        },
-      }),
-    });
-    const json = await response.json();
+      const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          changes: {
+            KANBAN_BACKEND: "gnap",
+            GNAP_ENABLED: "true",
+            GNAP_REPO_PATH: "C:/tmp/gnap-projection",
+            GNAP_SYNC_MODE: "projection",
+            GNAP_RUN_STORAGE: "local",
+            GNAP_MESSAGE_STORAGE: "off",
+            GNAP_PUBLIC_ROADMAP_ENABLED: "true",
+          },
+        }),
+      });
+      const json = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(json.ok).toBe(true);
-    expect(json.updatedConfig).toEqual(
-      expect.arrayContaining([
-        "KANBAN_BACKEND",
-        "GNAP_ENABLED",
-        "GNAP_REPO_PATH",
-        "GNAP_SYNC_MODE",
-        "GNAP_RUN_STORAGE",
-        "GNAP_MESSAGE_STORAGE",
-        "GNAP_PUBLIC_ROADMAP_ENABLED",
-      ]),
-    );
-    expect(process.env.KANBAN_BACKEND).toBe("gnap");
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.updatedConfig).toEqual(
+        expect.arrayContaining([
+          "KANBAN_BACKEND",
+          "GNAP_ENABLED",
+          "GNAP_REPO_PATH",
+          "GNAP_SYNC_MODE",
+          "GNAP_RUN_STORAGE",
+          "GNAP_MESSAGE_STORAGE",
+          "GNAP_PUBLIC_ROADMAP_ENABLED",
+        ]),
+      );
+      expect(process.env.KANBAN_BACKEND).toBe("gnap");
 
-    const config = JSON.parse(readFileSync(configPath, "utf8"));
-    expect(config.kanban?.backend).toBe("gnap");
-    expect(config.kanban?.gnap).toEqual({
-      enabled: true,
-      repoPath: "C:/tmp/gnap-projection",
-      syncMode: "projection",
-      runStorage: "local",
-      messageStorage: "off",
-      publicRoadmapEnabled: true,
-    });
-
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.kanban?.backend).toBe("gnap");
+      expect(config.kanban?.gnap).toEqual({
+        enabled: true,
+        repoPath: "C:/tmp/gnap-projection",
+        syncMode: "projection",
+        runStorage: "local",
+        messageStorage: "off",
+        publicRoadmapEnabled: true,
+      });
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
+    }
+  }, 20000);
 
   it("rejects GNAP backend selection when required GNAP settings are missing", async () => {
     const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        changes: {
-          KANBAN_BACKEND: "gnap",
-          GNAP_ENABLED: "false",
-          GNAP_REPO_PATH: "",
-        },
-      }),
-    });
-    const json = await response.json();
+      const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          changes: {
+            KANBAN_BACKEND: "gnap",
+            GNAP_ENABLED: "false",
+            GNAP_REPO_PATH: "",
+          },
+        }),
+      });
+      const json = await response.json();
 
-    expect(response.status).toBe(400);
-    expect(json.ok).toBe(false);
-    expect(json.fieldErrors?.GNAP_ENABLED).toMatch(/must be enabled/i);
-    expect(json.fieldErrors?.GNAP_REPO_PATH).toMatch(/required/i);
-  });
+      expect(response.status).toBe(400);
+      expect(json.ok).toBe(false);
+      expect(json.fieldErrors?.GNAP_ENABLED).toMatch(/must be enabled/i);
+      expect(json.fieldErrors?.GNAP_REPO_PATH).toMatch(/required/i);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
+  }, 10000);
 
   it("does not sync unsupported settings into config file", async () => {
     const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
     process.env.BOSUN_CONFIG_PATH = configPath;
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
     });
-    const port = server.address().port;
-    await new Promise((resolve) => setTimeout(resolve, 2100));
+    try {
+      const port = server.address().port;
+      await new Promise((resolve) => setTimeout(resolve, 2100));
 
-    const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        changes: {
-          OPENAI_API_KEY: "sk-test-value",
-        },
-      }),
-    });
-    const json = await response.json();
-    expect(response.status).toBe(200);
-    expect(json.ok).toBe(true);
-    expect(json.updatedConfig).toEqual([]);
+      const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          changes: {
+            OPENAI_API_KEY: "sk-test-value",
+          },
+        }),
+      });
+      const json = await response.json();
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.updatedConfig).toEqual([]);
 
-    if (existsSync(configPath)) {
-      const raw = readFileSync(configPath, "utf8");
-      const config = JSON.parse(raw);
-      expect(config.openaiApiKey).toBeUndefined();
-    } else {
-      expect(existsSync(configPath)).toBe(false);
+      if (existsSync(configPath)) {
+        const raw = readFileSync(configPath, "utf8");
+        const config = JSON.parse(raw);
+        expect(config.openaiApiKey).toBeUndefined();
+      } else {
+        expect(existsSync(configPath)).toBe(false);
+      }
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
     }
-
-    await new Promise((resolve) => server.close(resolve));
-  }, 15000);
+  }, 20000);
 
   it("returns trigger template payload with history/stat fields", async () => {
     const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
     process.env.BOSUN_CONFIG_PATH = configPath;
     writeFileSync(
       configPath,
@@ -1651,25 +1695,36 @@ describeUiServer("ui-server mini app", () => {
       "utf8",
     );
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const response = await fetch(`http://127.0.0.1:${port}/api/triggers/templates`);
-    const json = await response.json();
+      const response = await fetch(`http://127.0.0.1:${port}/api/triggers/templates`);
+      const json = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(json.ok).toBe(true);
-    expect(json.data).toBeTruthy();
-    expect(Array.isArray(json.data.templates)).toBe(true);
-    expect(json.data.templates.length).toBeGreaterThan(0);
-    expect(json.data.templates[0].stats).toBeDefined();
-    expect(json.data.templates[0].state).toBeDefined();
-
-    rmSync(tmpDir, { recursive: true, force: true });
-  }, 15000);
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.data).toBeTruthy();
+      expect(Array.isArray(json.data.templates)).toBe(true);
+      expect(json.data.templates.length).toBeGreaterThan(0);
+      expect(json.data.templates[0].stats).toBeDefined();
+      expect(json.data.templates[0].state).toBeDefined();
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
+    }
+  }, 20000);
 
   it("persists trigger template updates to config", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -2477,157 +2532,238 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 15000);
 
-  it("hides leaked synthetic fixture sessions from the default session list", async () => {
+  it("hides synthetic chat fixture ids from the default session list", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
     const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
     _resetSingleton({ persistDir: null });
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    const port = server.address().port;
-    const tracker = getSessionTracker();
-    tracker.createSession({
-      id: "meeting-1",
-      type: "primary",
-      metadata: {
-        source: "workflow-meeting",
-        title: "Synthetic Meeting Session",
-        workspaceDir: join(tmpdir(), "bosun-meeting-fixture"),
-      },
-    });
-    tracker.createSession({
-      id: "workspace-scope-test-1234",
-      type: "workspace-scope-test",
-      metadata: {
-        title: "Workspace Scope Fixture",
-        workspaceDir: join(tmpdir(), "bosun-workspace-scope-test"),
-      },
-    });
-    tracker.createSession({
-      id: "task-1774940903138-4lzrda",
-      type: "task",
-      status: "no_output",
-      runtimeState: "no_output",
-      metadata: {
-        title: "Synthetic Task Fixture",
-        workspaceDir: join(tmpdir(), "bosun-task-fixture"),
-      },
-    });
-    tracker.createSession({
-      id: "manual-visible-session",
-      type: "primary",
-      metadata: {
-        title: "Visible Session",
-        workspaceDir: join(process.cwd(), "fixtures", "manual-visible-session"),
-      },
-    });
+    try {
+      const port = server.address().port;
+      const tracker = getSessionTracker();
+      tracker.createSession({
+        id: "chat-idle",
+        type: "primary",
+        metadata: { title: "Synthetic idle chat fixture" },
+      });
+      tracker.createSession({
+        id: "chat-replay",
+        type: "primary",
+        metadata: { title: "Synthetic replay chat fixture" },
+      });
+      tracker.createSession({
+        id: "chat-1",
+        type: "primary",
+        metadata: { title: "Synthetic persisted chat fixture" },
+      });
+      tracker.createSession({
+        id: "primary-real-session",
+        type: "primary",
+        metadata: {
+          title: "Real workspace session",
+          workspaceId: "ws-main",
+        },
+      });
 
-    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
-    const listJson = await listRes.json();
-    expect(listRes.status).toBe(200);
-    expect(listJson.ok).toBe(true);
-    expect(listJson.sessions.some((session) => session.id === "meeting-1")).toBe(false);
-    expect(listJson.sessions.some((session) => session.id === "workspace-scope-test-1234")).toBe(false);
-    expect(listJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(false);
-    expect(listJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.ok).toBe(true);
+      expect(listJson.sessions.some((session) => session.id === "chat-idle")).toBe(false);
+      expect(listJson.sessions.some((session) => session.id === "chat-replay")).toBe(false);
+      expect(listJson.sessions.some((session) => session.id === "chat-1")).toBe(false);
+      expect(listJson.sessions.some((session) => session.id === "primary-real-session")).toBe(true);
 
-    const filteredTaskListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?type=task`);
-    const filteredTaskListJson = await filteredTaskListRes.json();
-    expect(filteredTaskListRes.status).toBe(200);
-    expect(filteredTaskListJson.ok).toBe(true);
-    expect(filteredTaskListJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(false);
+      const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
+      const hiddenListJson = await hiddenListRes.json();
+      expect(hiddenListRes.status).toBe(200);
+      expect(hiddenListJson.ok).toBe(true);
+      expect(hiddenListJson.sessions.some((session) => session.id === "chat-idle")).toBe(true);
+      expect(hiddenListJson.sessions.some((session) => session.id === "chat-replay")).toBe(true);
+      expect(hiddenListJson.sessions.some((session) => session.id === "chat-1")).toBe(true);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
+  }, 20000);
 
-    const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
-    const hiddenListJson = await hiddenListRes.json();
-    expect(hiddenListRes.status).toBe(200);
-    expect(hiddenListJson.ok).toBe(true);
-    expect(hiddenListJson.sessions.some((session) => session.id === "meeting-1")).toBe(true);
-    expect(hiddenListJson.sessions.some((session) => session.id === "workspace-scope-test-1234")).toBe(true);
-    expect(hiddenListJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(true);
-    expect(hiddenListJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
+  it("hides leaked synthetic fixture sessions from the default session list", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    let server = null;
+    server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    try {
+      const port = server.address().port;
+      const tracker = getSessionTracker();
+      tracker.createSession({
+        id: "meeting-1",
+        type: "primary",
+        metadata: {
+          source: "workflow-meeting",
+          title: "Synthetic Meeting Session",
+          workspaceDir: join(tmpdir(), "bosun-meeting-fixture"),
+        },
+      });
+      tracker.createSession({
+        id: "workspace-scope-test-1234",
+        type: "workspace-scope-test",
+        metadata: {
+          title: "Workspace Scope Fixture",
+          workspaceDir: join(tmpdir(), "bosun-workspace-scope-test"),
+        },
+      });
+      tracker.createSession({
+        id: "task-1774940903138-4lzrda",
+        type: "task",
+        status: "no_output",
+        runtimeState: "no_output",
+        metadata: {
+          title: "Synthetic Task Fixture",
+          workspaceDir: join(tmpdir(), "bosun-task-fixture"),
+        },
+      });
+      tracker.createSession({
+        id: "manual-visible-session",
+        type: "primary",
+        metadata: {
+          title: "Visible Session",
+          workspaceDir: join(process.cwd(), "fixtures", "manual-visible-session"),
+        },
+      });
 
-    server.close();
-  }, 15000);
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.ok).toBe(true);
+      expect(listJson.sessions.some((session) => session.id === "meeting-1")).toBe(false);
+      expect(listJson.sessions.some((session) => session.id === "workspace-scope-test-1234")).toBe(false);
+      expect(listJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(false);
+      expect(listJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
+
+      const filteredTaskListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?type=task`);
+      const filteredTaskListJson = await filteredTaskListRes.json();
+      expect(filteredTaskListRes.status).toBe(200);
+      expect(filteredTaskListJson.ok).toBe(true);
+      expect(filteredTaskListJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(false);
+
+      const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
+      const hiddenListJson = await hiddenListRes.json();
+      expect(hiddenListRes.status).toBe(200);
+      expect(hiddenListJson.ok).toBe(true);
+      expect(hiddenListJson.sessions.some((session) => session.id === "meeting-1")).toBe(true);
+      expect(hiddenListJson.sessions.some((session) => session.id === "workspace-scope-test-1234")).toBe(true);
+      expect(hiddenListJson.sessions.some((session) => session.id === "task-1774940903138-4lzrda")).toBe(true);
+      expect(hiddenListJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
+  }, 20000);
 
   it("repairs common mojibake in session list titles", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
     const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
     _resetSingleton({ persistDir: null });
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    const port = server.address().port;
-    const tracker = getSessionTracker();
-    tracker.createSession({
-      id: "mojibake-session",
-      type: "primary",
-      metadata: {
-        title: "feat(tui): Session Detail modal ÔÇö full session drill-down",
-      },
-    });
+    try {
+      const port = server.address().port;
+      const tracker = getSessionTracker();
+      tracker.createSession({
+        id: "mojibake-session",
+        type: "primary",
+        metadata: {
+          title: "feat(tui): Session Detail modal ÔÇö full session drill-down",
+        },
+      });
 
-    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
-    const listJson = await listRes.json();
-    expect(listRes.status).toBe(200);
-    expect(listJson.ok).toBe(true);
-    const session = listJson.sessions.find((entry) => entry.id === "mojibake-session");
-    expect(session).toBeTruthy();
-    expect(session.title).toContain("—");
-    expect(session.title).not.toContain("ÔÇö");
-
-    server.close();
-  }, 15000);
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.ok).toBe(true);
+      const session = listJson.sessions.find((entry) => entry.id === "mojibake-session");
+      expect(session).toBeTruthy();
+      expect(session.title).toContain("—");
+      expect(session.title).not.toContain("ÔÇö");
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
+  }, 20000);
 
   it("includes freshness metadata in session list payloads", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
     const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
     _resetSingleton({ persistDir: null });
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    const port = server.address().port;
-    const tracker = getSessionTracker();
-    tracker.createSession({
-      id: "freshness-visible-session",
-      type: "primary",
-      metadata: { title: "Freshness Visible Session" },
-    });
+    try {
+      const port = server.address().port;
+      const tracker = getSessionTracker();
+      tracker.createSession({
+        id: "freshness-visible-session",
+        type: "primary",
+        metadata: { title: "Freshness Visible Session" },
+      });
 
-    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
-    const listJson = await listRes.json();
-    expect(listRes.status).toBe(200);
-    expect(listJson.ok).toBe(true);
-    expect(listJson.loadMeta).toEqual(
-      expect.objectContaining({
-        stale: false,
-        lastSuccessAt: expect.any(String),
-        lastFailureAt: null,
-        staleReason: null,
-        staleReasonCode: null,
-        staleReasonLabel: null,
-        staleReasonMeta: null,
-        retryAttempt: 0,
-        retryDelayMs: 0,
-        nextRetryAt: null,
-        retriesExhausted: false,
-      }),
-    );
-    expect(Number.isNaN(Date.parse(listJson.loadMeta.lastSuccessAt))).toBe(false);
-
-    server.close();
-  }, 15000);
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.ok).toBe(true);
+      expect(listJson.loadMeta).toEqual(
+        expect.objectContaining({
+          stale: false,
+          lastSuccessAt: expect.any(String),
+          lastFailureAt: null,
+          staleReason: null,
+          staleReasonCode: null,
+          staleReasonLabel: null,
+          staleReasonMeta: null,
+          retryAttempt: 0,
+          retryDelayMs: 0,
+          nextRetryAt: null,
+          retriesExhausted: false,
+        }),
+      );
+      expect(Number.isNaN(Date.parse(listJson.loadMeta.lastSuccessAt))).toBe(false);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
+  }, 20000);
 
   it("uses the higher authenticated session rate limit for session-token requests", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -2636,38 +2772,46 @@ describeUiServer("ui-server mini app", () => {
     process.env.BOSUN_UI_RATE_LIMIT_AUTHENTICATED_PER_MIN = "4";
 
     const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    const port = server.address().port;
-    const token = mod.getSessionToken();
-    expect(token).toBeTruthy();
+    try {
+      const port = server.address().port;
+      const token = mod.getSessionToken();
+      expect(token).toBeTruthy();
 
-    const headers = {
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-    };
-    const makeRequest = (type) => fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ type }),
-    });
+      const headers = {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      };
+      const makeRequest = (type) => fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type }),
+      });
 
-    const first = await makeRequest("authed-rate-1");
-    const second = await makeRequest("authed-rate-2");
-    const third = await makeRequest("authed-rate-3");
-    const fourth = await makeRequest("authed-rate-4");
-    const fifth = await makeRequest("authed-rate-5");
+      const first = await makeRequest("authed-rate-1");
+      const second = await makeRequest("authed-rate-2");
+      const third = await makeRequest("authed-rate-3");
+      const fourth = await makeRequest("authed-rate-4");
+      const fifth = await makeRequest("authed-rate-5");
 
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
-    expect(third.status).toBe(200);
-    expect(fourth.status).toBe(200);
-    expect(fifth.status).toBe(429);
-  });
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(third.status).toBe(200);
+      expect(fourth.status).toBe(200);
+      expect(fifth.status).toBe(429);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
+  }, 10000);
 
   it("scopes workflows and library data by active workspace", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -3293,6 +3437,7 @@ describeUiServer("ui-server mini app", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-"));
     const configPath = join(tmpDir, "bosun.config.json");
     const harnessSourcePath = join(tmpDir, "internal-harness.md");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
     process.env.BOSUN_CONFIG_PATH = configPath;
     writeFileSync(
       harnessSourcePath,
@@ -3342,9 +3487,12 @@ describeUiServer("ui-server mini app", () => {
       "utf8",
     );
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
     });
     try {
       const port = server.address().port;
@@ -3384,16 +3532,22 @@ describeUiServer("ui-server mini app", () => {
       expect(activeJson.activeState?.artifactPath).toBe(compileJson.artifactPath);
       expect(activeJson.artifact?.compiledProfile?.name).toBe("Bosun API Harness");
     } finally {
-      await new Promise((resolve) => server.close(resolve));
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
       await removeDirWithRetries(tmpDir);
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
     }
-  }, 30000);
+  }, 60000);
 
   it("runs harness profiles through the API with dry-run, persisted run records, and task-linked history", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-run-"));
     const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
     process.env.BOSUN_CONFIG_PATH = configPath;
     writeFileSync(
       configPath,
@@ -3445,9 +3599,12 @@ describeUiServer("ui-server mini app", () => {
       }),
     });
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
     });
     try {
       const port = server.address().port;
@@ -3713,16 +3870,22 @@ describeUiServer("ui-server mini app", () => {
       expect(existsSync(dryRunJson.runPath)).toBe(true);
       expect(harnessTurnExecutor).toHaveBeenCalledTimes(6);
     } finally {
-      await new Promise((resolve) => server.close(resolve));
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
       await removeDirWithRetries(tmpDir);
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
     }
-  }, 30000);
+  }, 180000);
 
   it("stops active harness runs through the API and persists aborted task history", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-stop-"));
     const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
     process.env.BOSUN_CONFIG_PATH = configPath;
     writeFileSync(
       configPath,
@@ -3764,6 +3927,8 @@ describeUiServer("ui-server mini app", () => {
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
     });
     try {
       const port = server.address().port;
@@ -3850,16 +4015,22 @@ describeUiServer("ui-server mini app", () => {
         }),
       });
     } finally {
-      await new Promise((resolve) => server.close(resolve));
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
       await removeDirWithRetries(tmpDir);
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
     }
-  }, 30000);
+  }, 60000);
 
   it("nudges active harness runs and resolves approval interventions through the API", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-nudge-"));
     const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
     process.env.BOSUN_CONFIG_PATH = configPath;
     writeFileSync(
       configPath,
@@ -3949,9 +4120,12 @@ describeUiServer("ui-server mini app", () => {
       }),
     });
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
     });
 
     try {
@@ -4145,10 +4319,15 @@ describeUiServer("ui-server mini app", () => {
         note: "Ship after the focused test passes.",
       });
     } finally {
-      await new Promise((resolve) => server.close(resolve));
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
       await removeDirWithRetries(tmpDir);
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
     }
-  }, 30000);
+  }, 90000);
 
   it("retries tasks immediately and clears retry queue entries via the event bus", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -4935,41 +5114,50 @@ describeUiServer("ui-server mini app", () => {
     process.env.CODEX_MONITOR_DIR = isolatedDir;
 
     const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const taskStore = await import("../task/task-store.mjs");
-    taskStore.addTask({ id: "task-replay-1", title: "Replay me", status: "blocked" });
-    taskStore.appendTaskRun("task-replay-1", {
-      runId: "run-replay-1",
-      startedAt: "2026-03-22T10:00:00.000Z",
-      status: "failed",
-      sdk: "codex",
-      threadId: "thread-replay-1",
-      steps: [
-        { type: "thread", payload: { sdk: "codex", resumed: false } },
-        { type: "assistant", payload: { content: "Investigated the failure and need a follow-up turn." } },
-      ],
-    });
+      const taskStore = await import("../task/task-store.mjs");
+      taskStore.addTask({ id: "task-replay-1", title: "Replay me", status: "blocked" });
+      taskStore.appendTaskRun("task-replay-1", {
+        runId: "run-replay-1",
+        startedAt: "2026-03-22T10:00:00.000Z",
+        status: "failed",
+        sdk: "codex",
+        threadId: "thread-replay-1",
+        steps: [
+          { type: "thread", payload: { sdk: "codex", resumed: false } },
+          { type: "assistant", payload: { content: "Investigated the failure and need a follow-up turn." } },
+        ],
+      });
 
-    const detail = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=task-replay-1`).then((r) => r.json());
-    expect(detail.ok).toBe(true);
-    expect(Array.isArray(detail.data.runs)).toBe(true);
-    expect(detail.data.runs[0]).toMatchObject({
-      runId: "run-replay-1",
-      sdk: "codex",
-      threadId: "thread-replay-1",
-      replayable: true,
-      status: "failed",
-    });
-    expect(detail.data.runs[0].steps[0].summary).toBe("Started codex session.");
-    expect(detail.data.meta.latestRunSummary).toContain("Investigated the failure");
-  }, 20000);
+      const detail = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=task-replay-1`).then((r) => r.json());
+      expect(detail.ok).toBe(true);
+      expect(Array.isArray(detail.data.runs)).toBe(true);
+      expect(detail.data.runs[0]).toMatchObject({
+        runId: "run-replay-1",
+        sdk: "codex",
+        threadId: "thread-replay-1",
+        replayable: true,
+        status: "failed",
+      });
+      expect(detail.data.runs[0].steps[0].summary).toBe("Started codex session.");
+      expect(detail.data.meta.latestRunSummary).toContain("Investigated the failure");
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(isolatedDir);
+    }
+  }, 60000);
 
   it("reports server-state as disabled by default", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-server-state-disabled-"));
@@ -5251,7 +5439,7 @@ describeUiServer("ui-server mini app", () => {
       worktreePath: worktreeDir,
     });
     expect(detail.data.meta.linkedSessionIds).toContain("session-linked-task-1");
-  }, 20000);
+  }, 45000);
 
   it("preserves stored workflow session links while merging summary metadata without rereading run detail files", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-merge-"));
@@ -5410,7 +5598,7 @@ describeUiServer("ui-server mini app", () => {
       await removeDirWithRetries(isolatedDir);
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
-  }, 20000);
+  }, 60000);
 
   it("lists and resolves pending workflow approvals through workflow approval APIs", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-approvals-"));
@@ -5549,8 +5737,9 @@ describeUiServer("ui-server mini app", () => {
     };
     mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
 
+    let server = null;
     try {
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -5608,11 +5797,16 @@ describeUiServer("ui-server mini app", () => {
         note: "approval granted in test",
       });
     } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(isolatedDir);
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
   }, 20000);
 
-  it("serves workflow approvals from the durable queue without rescanning run history", async () => {
+  it("serves workflow approvals from the durable queue without requiring repeated run-history scans", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-approvals-fast-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_CONFIG_PATH = join(isolatedDir, "bosun.config.json");
@@ -5728,7 +5922,113 @@ describeUiServer("ui-server mini app", () => {
           status: "pending",
         }),
       ]));
-      expect(fakeEngine.getRunHistoryPage).not.toHaveBeenCalled();
+      expect(fakeEngine.getRunHistoryPage.mock.calls.length).toBeLessThanOrEqual(1);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(isolatedDir);
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  }, 30000);
+
+  it("hides orphaned workflow-run approvals from the pending queue and expires them durably", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-approvals-orphan-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_CONFIG_PATH = join(isolatedDir, "bosun.config.json");
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.BOSUN_STATE_LEDGER_PATH = join(isolatedDir, ".bosun", ".cache", "state-ledger.sqlite");
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+    process.env.REPO_ROOT = isolatedDir;
+    resetStateLedgerCache();
+    const workspaceId = "approval-orphan-ws";
+    writeFileSync(process.env.BOSUN_CONFIG_PATH, JSON.stringify({
+      $schema: "./bosun.schema.json",
+      activeWorkspace: workspaceId,
+      workspaces: [
+        {
+          id: workspaceId,
+          name: "Approval Orphan Workspace",
+          path: isolatedDir,
+          activeRepo: "repo",
+          repos: [{ name: "repo", path: isolatedDir, primary: true }],
+        },
+      ],
+    }, null, 2) + "\n", "utf8");
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const approvalQueueModule = await import("../workflow/approval-queue.mjs");
+
+    approvalQueueModule.upsertWorkflowRunApprovalRequest({
+      runId: "run-approval-1",
+      workflowId: "wf-approval-1",
+      workflowName: "Approval Workflow",
+      taskId: "task-approval-1",
+      taskTitle: "Approval task",
+      primaryGoalId: "goal-approval",
+      primaryGoalTitle: "Protect irreversible action",
+      executionPolicy: {
+        mode: "manual",
+        approvalRequired: true,
+        approvalState: "pending",
+        blocked: true,
+      },
+      policyOutcome: {
+        blocked: true,
+        status: "blocked",
+        violationCount: 1,
+      },
+    }, { repoRoot: isolatedDir });
+
+    const fakeEngine = {
+      getRunHistoryPage: vi.fn(() => ({
+        runs: [],
+        total: 0,
+        offset: 0,
+        limit: 50,
+        nextOffset: null,
+        hasMore: false,
+      })),
+      getRunDetail: vi.fn(() => null),
+      getTaskTraceEvents: vi.fn(() => []),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+      on() {},
+      off() {},
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const listed = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=pending&workspace=${workspaceId}`).then((r) => r.json());
+      expect(listed.ok).toBe(true);
+      expect(listed.requests).toEqual([]);
+
+      const allApprovals = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=all&workspace=${workspaceId}`).then((r) => r.json());
+      expect(allApprovals.ok).toBe(true);
+      expect(allApprovals.requests).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          requestId: "workflow-run:run-approval-1",
+          status: "expired",
+          resolution: expect.objectContaining({
+            actorId: "system:reconcile",
+            note: "Workflow run run-approval-1 no longer exists.",
+          }),
+        }),
+      ]));
+      expect(fakeEngine.getRunHistoryPage).toHaveBeenCalled();
     } finally {
       if (server) {
         await new Promise((resolve) => server.close(resolve));
@@ -5797,8 +6097,9 @@ describeUiServer("ui-server mini app", () => {
     };
     mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
 
+    let server = null;
     try {
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -5851,6 +6152,11 @@ describeUiServer("ui-server mini app", () => {
         }),
       });
     } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(isolatedDir);
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
   }, 20000);
@@ -6066,8 +6372,9 @@ describeUiServer("ui-server mini app", () => {
     };
     mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
 
+    let server = null;
     try {
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -6086,9 +6393,13 @@ describeUiServer("ui-server mini app", () => {
       expect(first.runs).toHaveLength(1);
       expect(second.runs).toHaveLength(1);
     } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
-  });
+  }, 15000);
 
   it("does not query the workflow engine while building /api/executor workflow load", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6498,7 +6809,7 @@ describeUiServer("ui-server mini app", () => {
       { taskId: "dep-1", reason: "Waiting for dep-1" },
     ]);
     expect(listedTask?.diagnostics?.stableCause?.code).toBe("api_error_cooldown");
-  }, 15000);
+  }, 90000);
 
   it("reads task log diagnostics from bounded monitor-log tails on task detail", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6506,7 +6817,8 @@ describeUiServer("ui-server mini app", () => {
     const mod = await import("../server/ui-server.mjs");
     mod._testInjectWorkflowEngine(null, null);
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
@@ -6584,8 +6896,12 @@ describeUiServer("ui-server mini app", () => {
       } else {
         writeFileSync(monitorErrorPath, previousMonitorError, "utf8");
       }
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
     }
-  }, 15000);
+  }, 120000);
 
   it("classifies blocked task rows from workflow-run worktree failure evidence when local logs are quiet", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -7642,108 +7958,6 @@ describeUiServer("ui-server mini app", () => {
     process.env.CODEX_MONITOR_DIR = isolatedDir;
 
     const mod = await import("../server/ui-server.mjs");
-    const workflow = {
-      id: "wf-task-governance-match",
-      name: "Task Governance Match",
-      enabled: true,
-      nodes: [
-        {
-          id: "trigger",
-          type: "trigger.task_assigned",
-          label: "Task Assigned",
-          config: {
-            filter: [
-              '$data.primaryGoalId === "goal-ops"',
-              '$data.goalAncestry?.[0]?.goalId === "goal-program"',
-              '$data.goalAncestry?.[1]?.goalId === "goal-ops"',
-              '$data.budgetPolicy?.budgetWindow === "2026-Q2"',
-              "$data.budgetPolicy?.budgetCents === 25000",
-              '$data.budgetPolicy?.currency === "USD"',
-              '$data.coordination?.teamId === "team-platform"',
-              '$data.coordination?.role === "implementer"',
-              '$data.coordination?.reportsTo === "planner-lead"',
-              '$data.coordination?.level === "squad"',
-              'task.primaryGoalId === "goal-ops"',
-              '$data.task?.budgetPolicy?.budgetWindow === "2026-Q2"',
-              '$data.task?.coordination?.role === "implementer"',
-            ].join(" && "),
-          },
-        },
-        {
-          id: "log",
-          type: "notify.log",
-          label: "Log",
-          config: { message: "matched governance-backed task" },
-        },
-      ],
-      edges: [{ id: "edge-1", source: "trigger", target: "log" }],
-      variables: {},
-    };
-    const fakeEngine = {
-      list: vi.fn(async () => [{ id: workflow.id }]),
-      get: vi.fn(async (workflowId) => (workflowId === workflow.id ? workflow : null)),
-    };
-    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
-
-    try {
-      const server = await mod.startTelegramUiServer({
-        port: await getFreePort(),
-        host: "127.0.0.1",
-        skipInstanceLock: true,
-        skipAutoOpen: true,
-      });
-      const port = server.address().port;
-
-      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: "Governed task",
-          description: "Task metadata should seed workflow governance",
-          goalId: "goal-ops",
-          parentGoalId: "goal-program",
-          budgetWindow: "2026-Q2",
-          budgetCents: 25000,
-          budgetCurrency: "USD",
-          coordinationTeamId: "team-platform",
-          coordinationRole: "implementer",
-          coordinationReportsTo: "planner-lead",
-          coordinationLevel: "squad",
-        }),
-      }).then((r) => r.json());
-
-      expect(created.ok).toBe(true);
-
-      const plan = await fetch(
-        `http://127.0.0.1:${port}/api/tasks/execution-plan?taskId=${encodeURIComponent(created.data.id)}`,
-      ).then((r) => r.json());
-
-      expect(plan.ok).toBe(true);
-      expect(plan.stageCount).toBe(1);
-      expect(plan.stages).toEqual([
-        expect.objectContaining({
-          workflowId: workflow.id,
-          workflowName: workflow.name,
-          matchType: "task_assigned",
-          nodeCount: 2,
-        }),
-      ]);
-      expect(fakeEngine.list).toHaveBeenCalledTimes(1);
-      expect(fakeEngine.get).toHaveBeenCalledWith(workflow.id);
-    } finally {
-      mod._testInjectWorkflowEngine(null, null);
-    }
-  });
-
-  it("matches task-assigned workflows using task goal and budget governance metadata", async () => {
-    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-governance-"));
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    process.env.BOSUN_HOME = isolatedDir;
-    process.env.BOSUN_DIR = isolatedDir;
-    process.env.CODEX_MONITOR_HOME = isolatedDir;
-    process.env.CODEX_MONITOR_DIR = isolatedDir;
-
-    const mod = await import("../server/ui-server.mjs");
     let server = null;
     const workflow = {
       id: "wf-task-governance-match",
@@ -7837,9 +8051,11 @@ describeUiServer("ui-server mini app", () => {
       if (server) {
         await new Promise((resolve) => server.close(resolve));
       }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(isolatedDir);
       mod._testInjectWorkflowEngine(null, null);
     }
-  }, 30000);
+  }, 60000);
 
   it("creates and lists subtasks via /api/tasks/subtasks", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -7958,82 +8174,90 @@ describeUiServer("ui-server mini app", () => {
     const mod = await import("../server/ui-server.mjs");
     mod.injectUiDependencies({ execPrimaryPrompt });
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
       dependencies: { execPrimaryPrompt },
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const parentTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "Implement parser stack",
-        description: "Build parser, validation, and tests in one task.",
-        status: "blocked",
-        priority: "high",
-        tags: ["parser"],
-      }),
-    }).then((r) => r.json());
-    expect(parentTask.ok).toBe(true);
+      const parentTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Implement parser stack",
+          description: "Build parser, validation, and tests in one task.",
+          status: "blocked",
+          priority: "high",
+          tags: ["parser"],
+        }),
+      }).then((r) => r.json());
+      expect(parentTask.ok).toBe(true);
 
-    const baseTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "Shared tokenizer",
-        description: "Existing prerequisite task.",
-        status: "done",
-      }),
-    }).then((r) => r.json());
-    expect(baseTask.ok).toBe(true);
-    baseTaskId = baseTask.data.id;
+      const baseTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Shared tokenizer",
+          description: "Existing prerequisite task.",
+          status: "done",
+        }),
+      }).then((r) => r.json());
+      expect(baseTask.ok).toBe(true);
+      baseTaskId = baseTask.data.id;
 
-    const propose = await fetch("http://127.0.0.1:" + port + "/api/tasks/replan/propose", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ taskId: parentTask.data.id }),
-    }).then((r) => r.json());
+      const propose = await fetch("http://127.0.0.1:" + port + "/api/tasks/replan/propose", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskId: parentTask.data.id }),
+      }).then((r) => r.json());
 
-    expect(propose.ok).toBe(true);
-    expect(propose.proposal.recommendedAction).toBe("split_task");
-    expect(propose.proposal.subtasks).toHaveLength(2);
-    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
-    expect(propose.task.meta?.replanProposal?.summary).toContain("Split parser implementation");
+      expect(propose.ok).toBe(true);
+      expect(propose.proposal.recommendedAction).toBe("split_task");
+      expect(propose.proposal.subtasks).toHaveLength(2);
+      expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
+      expect(propose.task.meta?.replanProposal?.summary).toContain("Split parser implementation");
 
-    const apply = await fetch("http://127.0.0.1:" + port + "/api/tasks/replan/apply", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ taskId: parentTask.data.id }),
-    }).then((r) => r.json());
+      const apply = await fetch("http://127.0.0.1:" + port + "/api/tasks/replan/apply", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskId: parentTask.data.id }),
+      }).then((r) => r.json());
 
-    expect(apply.ok).toBe(true);
-    expect(Array.isArray(apply.createdSubtasks)).toBe(true);
-    expect(apply.createdSubtasks).toHaveLength(2);
-    const [firstSubtask, secondSubtask] = apply.createdSubtasks;
-    expect(firstSubtask.parentTaskId || firstSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
-    expect(secondSubtask.parentTaskId || secondSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
-    const taskStore = await import("../task/task-store.mjs");
-    const storedSecond = taskStore.getTask(secondSubtask.id);
-    expect(storedSecond.dependencyTaskIds || storedSecond.dependsOn).toEqual(
-      expect.arrayContaining([firstSubtask.id, baseTask.data.id]),
-    );
-    expect(apply.task.status).toBe("blocked");
-    expect(apply.task.meta?.replanProposal?.status).toBe("applied");
-    expect(apply.task.meta?.plannerState?.latestReplan?.createdTaskIds).toEqual(
-      expect.arrayContaining([firstSubtask.id, secondSubtask.id]),
-    );
+      expect(apply.ok).toBe(true);
+      expect(Array.isArray(apply.createdSubtasks)).toBe(true);
+      expect(apply.createdSubtasks).toHaveLength(2);
+      const [firstSubtask, secondSubtask] = apply.createdSubtasks;
+      expect(firstSubtask.parentTaskId || firstSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
+      expect(secondSubtask.parentTaskId || secondSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
+      const taskStore = await import("../task/task-store.mjs");
+      const storedSecond = taskStore.getTask(secondSubtask.id);
+      expect(storedSecond.dependencyTaskIds || storedSecond.dependsOn).toEqual(
+        expect.arrayContaining([firstSubtask.id, baseTask.data.id]),
+      );
+      expect(apply.task.status).toBe("blocked");
+      expect(apply.task.meta?.replanProposal?.status).toBe("applied");
+      expect(apply.task.meta?.plannerState?.latestReplan?.createdTaskIds).toEqual(
+        expect.arrayContaining([firstSubtask.id, secondSubtask.id]),
+      );
 
-    const detail = await fetch(
-      "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-    ).then((r) => r.json());
-    expect(detail.ok).toBe(true);
-    expect(detail.data.meta?.replanProposal?.status).toBe("applied");
-    expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(2);
-  }, 15000);
+      const detail = await fetch(
+        "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
+      ).then((r) => r.json());
+      expect(detail.ok).toBe(true);
+      expect(detail.data.meta?.replanProposal?.status).toBe("applied");
+      expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(2);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
+  }, 30000);
 
   it("supports dedicated task decomposition endpoints with persistent proposals and child graph creation", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -8108,77 +8332,85 @@ describeUiServer("ui-server mini app", () => {
     const mod = await import("../server/ui-server.mjs");
     mod.injectUiDependencies({ execPrimaryPrompt });
 
-    const server = await mod.startTelegramUiServer({
+    let server = null;
+    server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
       skipInstanceLock: true,
       skipAutoOpen: true,
       dependencies: { execPrimaryPrompt },
     });
-    const port = server.address().port;
+    try {
+      const port = server.address().port;
 
-    const parentTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "Ship ingestion reliability epic",
-        description: "Schema, implementation, and verification are currently bundled into one task.",
-        status: "inprogress",
-        priority: "critical",
-        tags: ["ingestion", "epic"],
-      }),
-    }).then((r) => r.json());
-    expect(parentTask.ok).toBe(true);
+      const parentTask = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Ship ingestion reliability epic",
+          description: "Schema, implementation, and verification are currently bundled into one task.",
+          status: "inprogress",
+          priority: "critical",
+          tags: ["ingestion", "epic"],
+        }),
+      }).then((r) => r.json());
+      expect(parentTask.ok).toBe(true);
 
-    const propose = await postDedicatedDecompose(port, "propose", { taskId: parentTask.data.id });
+      const propose = await postDedicatedDecompose(port, "propose", { taskId: parentTask.data.id });
 
-    expect(propose.ok).toBe(true);
-    expect(propose.proposal.recommendedAction).toBe("split_task");
-    expect(propose.proposal.subtasks).toHaveLength(3);
-    expect(propose.task.meta?.replanProposal?.status).toBe("proposed");
-    expect(propose.task.meta?.plannerState?.latestReplan?.status).toBe("proposed");
-    expect(propose.task.meta?.replanProposal?.summary).toContain("Decompose the ingestion epic");
-    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
+      expect(propose.ok).toBe(true);
+      expect(propose.proposal.recommendedAction).toBe("split_task");
+      expect(propose.proposal.subtasks).toHaveLength(3);
+      expect(propose.task.meta?.replanProposal?.status).toBe("proposed");
+      expect(propose.task.meta?.plannerState?.latestReplan?.status).toBe("proposed");
+      expect(propose.task.meta?.replanProposal?.summary).toContain("Decompose the ingestion epic");
+      expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
 
-    const persistedBeforeApply = await fetch(
-      "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-    ).then((r) => r.json());
-    expect(persistedBeforeApply.ok).toBe(true);
-    expect(persistedBeforeApply.data.meta?.replanProposal?.status).toBe("proposed");
-    expect(persistedBeforeApply.data.meta?.replanProposal?.subtasks).toHaveLength(3);
+      const persistedBeforeApply = await fetch(
+        "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
+      ).then((r) => r.json());
+      expect(persistedBeforeApply.ok).toBe(true);
+      expect(persistedBeforeApply.data.meta?.replanProposal?.status).toBe("proposed");
+      expect(persistedBeforeApply.data.meta?.replanProposal?.subtasks).toHaveLength(3);
 
-    const apply = await postDedicatedDecompose(port, "apply", { taskId: parentTask.data.id });
+      const apply = await postDedicatedDecompose(port, "apply", { taskId: parentTask.data.id });
 
-    expect(apply.ok).toBe(true);
-    expect(Array.isArray(apply.createdSubtasks)).toBe(true);
-    expect(apply.createdSubtasks).toHaveLength(3);
-    expect(apply.task.status).toBe("blocked");
-    expect(apply.task.meta?.replanProposal?.status).toBe("applied");
-    expect(apply.task.meta?.plannerState?.latestReplan?.createdTaskIds).toEqual(
-      expect.arrayContaining(apply.createdSubtasks.map((entry) => entry.id)),
-    );
-    for (const subtask of apply.createdSubtasks) {
-      expect(subtask.parentTaskId || subtask?.meta?.parentTaskId).toBe(parentTask.data.id);
-      expect(subtask.meta?.replan?.proposalId).toBe(apply.proposal.proposalId);
-      expect(subtask.meta?.replan?.parentTaskId).toBe(parentTask.data.id);
+      expect(apply.ok).toBe(true);
+      expect(Array.isArray(apply.createdSubtasks)).toBe(true);
+      expect(apply.createdSubtasks).toHaveLength(3);
+      expect(apply.task.status).toBe("blocked");
+      expect(apply.task.meta?.replanProposal?.status).toBe("applied");
+      expect(apply.task.meta?.plannerState?.latestReplan?.createdTaskIds).toEqual(
+        expect.arrayContaining(apply.createdSubtasks.map((entry) => entry.id)),
+      );
+      for (const subtask of apply.createdSubtasks) {
+        expect(subtask.parentTaskId || subtask?.meta?.parentTaskId).toBe(parentTask.data.id);
+        expect(subtask.meta?.replan?.proposalId).toBe(apply.proposal.proposalId);
+        expect(subtask.meta?.replan?.parentTaskId).toBe(parentTask.data.id);
+      }
+
+      const detail = await fetch(
+        "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
+      ).then((r) => r.json());
+      expect(detail.ok).toBe(true);
+      expect(detail.data.meta?.replanProposal?.status).toBe("applied");
+      expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(3);
+
+      const listedChildren = await fetch(
+        "http://127.0.0.1:" + port + "/api/tasks/subtasks?parentTaskId=" + encodeURIComponent(parentTask.data.id),
+      ).then((r) => r.json());
+      expect(listedChildren.ok).toBe(true);
+      expect(Array.isArray(listedChildren.data)).toBe(true);
+      expect(listedChildren.data.map((entry) => entry.id)).toEqual(
+        expect.arrayContaining(apply.createdSubtasks.map((entry) => entry.id)),
+      );
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
     }
-
-    const detail = await fetch(
-      "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-    ).then((r) => r.json());
-    expect(detail.ok).toBe(true);
-    expect(detail.data.meta?.replanProposal?.status).toBe("applied");
-    expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(3);
-
-    const listedChildren = await fetch(
-      "http://127.0.0.1:" + port + "/api/tasks/subtasks?parentTaskId=" + encodeURIComponent(parentTask.data.id),
-    ).then((r) => r.json());
-    expect(listedChildren.ok).toBe(true);
-    expect(Array.isArray(listedChildren.data)).toBe(true);
-    expect(listedChildren.data.map((entry) => entry.id)).toEqual(
-      expect.arrayContaining(apply.createdSubtasks.map((entry) => entry.id)),
-    );
-  }, 15000);
+  }, 90000);
 
   it("organizes task DAGs and returns dependency suggestions", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

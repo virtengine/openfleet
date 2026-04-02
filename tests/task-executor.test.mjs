@@ -114,6 +114,7 @@ import {
   loadExecutorOptionsFromConfig,
   isInternalExecutorEnabled,
   getExecutorMode,
+  setTaskStatusTransitionHandler,
 } from "../task/task-executor.mjs";
 import {
   listTasks,
@@ -184,11 +185,13 @@ describe("task-executor", () => {
     vi.clearAllMocks();
     for (const key of ENV_KEYS) delete process.env[key];
     getSharedState.mockResolvedValue(null);
+    setTaskStatusTransitionHandler(null);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     for (const key of ENV_KEYS) delete process.env[key];
+    setTaskStatusTransitionHandler(null);
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -1524,6 +1527,62 @@ describe("task-executor", () => {
           source: "task-executor-recovery-missing-workflow-run",
         }),
       );
+      expect(releaseTaskClaim).toHaveBeenCalledWith({
+        taskId: "wf-ownerless-1",
+        force: true,
+      });
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("marks ownerless workflow recovery resets to bypass workflow ownership", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+      const transitionSpy = vi.fn().mockResolvedValue(true);
+      setTaskStatusTransitionHandler(transitionSpy);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-ownerless-bypass-1",
+          title: "Workflow-owned ownerless task",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 0,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      existsSync.mockImplementation(
+        (targetPath) => targetPath === resolve("/workflow-runs", "_active-runs.json"),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([]);
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(transitionSpy).toHaveBeenCalledWith(
+        "wf-ownerless-bypass-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-missing-workflow-run",
+          bypassWorkflowOwnership: true,
+        }),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-ownerless-bypass-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -1592,6 +1651,74 @@ describe("task-executor", () => {
         "todo",
         expect.objectContaining({
           source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("keeps workflow-owned tasks in progress when recent run evidence only exists in timeline events", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-timeline-run-1",
+          title: "Workflow-owned timeline run evidence",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+          timeline: [
+            {
+              type: "workflow.node.start",
+              payload: {
+                runId: "run-timeline-1",
+              },
+            },
+          ],
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      existsSync.mockImplementation((targetPath) =>
+        [
+          resolve("/workflow-runs", "_active-runs.json"),
+          resolve("/workflow-runs", "run-timeline-1.json"),
+        ].includes(targetPath),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([]);
+        }
+        if (targetPath === resolve("/workflow-runs", "run-timeline-1.json")) {
+          return JSON.stringify({
+            id: "run-timeline-1",
+            startedAt: Date.now() - 2 * 60 * 1000,
+            endedAt: null,
+            data: {
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+              },
+            },
+          });
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-timeline-run-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-missing-workflow-run",
         }),
       );
       expect(executeSpy).not.toHaveBeenCalled();
@@ -1767,7 +1894,70 @@ describe("task-executor", () => {
           source: "task-executor-recovery-stale-workflow-claim",
         }),
       );
+      expect(releaseTaskClaim).toHaveBeenCalledWith({
+        taskId: "wf-stale-thread-1",
+        force: true,
+      });
       expect(invalidateThread).toHaveBeenCalledWith("wf-stale-thread-1");
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("keeps workflow-owned tasks in progress when stale shared state still has an active workflow run", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-stale-active-run-1",
+          title: "Workflow-owned stale claim with active run",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-stale-owner",
+        ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+      existsSync.mockImplementation(
+        (targetPath) => targetPath === resolve("/workflow-runs", "_active-runs.json"),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([
+            {
+              runId: "run-active-1",
+              workflowId: "template-task-lifecycle",
+              taskId: "wf-stale-active-run-1",
+            },
+          ]);
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-stale-active-run-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(releaseTaskClaim).not.toHaveBeenCalledWith({
+        taskId: "wf-stale-active-run-1",
+        force: true,
+      });
+      expect(invalidateThread).not.toHaveBeenCalledWith("wf-stale-active-run-1");
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -2224,10 +2414,14 @@ describe("task-executor", () => {
         execSync: vi.fn(() => ""),
         spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
       }));
-      vi.doMock("node:fs", () => ({
-        readFileSync: vi.fn(() => ""),
-        existsSync: vi.fn(() => false),
-      }));
+      vi.doMock("node:fs", async (importOriginal) => {
+        const actual = await importOriginal();
+        return {
+          ...actual,
+          readFileSync: vi.fn(() => ""),
+          existsSync: vi.fn(() => false),
+        };
+      });
 
       const mod = await import("../task/task-executor.mjs");
       const inst = mod.getTaskExecutor({ mode: "internal" });
@@ -2263,10 +2457,14 @@ describe("task-executor", () => {
         execSync: vi.fn(() => ""),
         spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
       }));
-      vi.doMock("node:fs", () => ({
-        readFileSync: vi.fn(() => ""),
-        existsSync: vi.fn(() => false),
-      }));
+      vi.doMock("node:fs", async (importOriginal) => {
+        const actual = await importOriginal();
+        return {
+          ...actual,
+          readFileSync: vi.fn(() => ""),
+          existsSync: vi.fn(() => false),
+        };
+      });
 
       const mod = await import("../task/task-executor.mjs");
       const first = mod.getTaskExecutor({ mode: "internal" });
