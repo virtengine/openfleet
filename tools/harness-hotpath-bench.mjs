@@ -8,6 +8,13 @@ import { createHarnessObservabilitySpine, resetHarnessObservabilitySpinesForTest
 const SESSION_COUNT = Math.max(4, Number.parseInt(process.env.BOSUN_BENCH_SESSIONS || "12", 10) || 12);
 const EVENTS_PER_SESSION = Math.max(10, Number.parseInt(process.env.BOSUN_BENCH_EVENTS_PER_SESSION || "180", 10) || 180);
 const TOOL_CALLS = Math.max(4, Number.parseInt(process.env.BOSUN_BENCH_TOOL_CALLS || "48", 10) || 48);
+const WORKFLOW_RUNS = Math.max(
+  2,
+  Number.parseInt(
+    process.env.BOSUN_BENCH_WORKFLOW_RUNS || String(Math.max(2, Math.floor(SESSION_COUNT / 2))),
+    10,
+  ) || Math.max(2, Math.floor(SESSION_COUNT / 2)),
+);
 
 function buildEvent(sessionIndex, eventIndex) {
   const taskId = `bench-task-${sessionIndex}`;
@@ -67,12 +74,39 @@ async function main() {
   resetHarnessObservabilitySpinesForTests();
   const telemetry = createHarnessObservabilitySpine({
     persist: false,
-    maxInMemoryEvents: SESSION_COUNT * EVENTS_PER_SESSION,
+    maxInMemoryEvents: (SESSION_COUNT * EVENTS_PER_SESSION) + (TOOL_CALLS * 3) + (WORKFLOW_RUNS * 6),
   });
+  let toolEventCount = 0;
   const toolOrchestrator = createToolOrchestrator({
     truncation: {
       maxChars: 512,
       tailChars: 72,
+    },
+    onEvent: (event) => {
+      toolEventCount += 1;
+      telemetry.recordEvent({
+        timestamp: new Date().toISOString(),
+        eventType: `tool.${event.type || "event"}`,
+        source: "tool-orchestrator",
+        category: "tool",
+        taskId: event.context?.taskId || event.context?.sessionId || "bench-tool-task",
+        sessionId: event.context?.sessionId || "bench-tool-session",
+        runId: event.context?.runId || null,
+        toolName: event.toolName || "bench_tool",
+        status: event.status || (event.type === "tool_execution_error"
+          ? "failed"
+          : event.type === "tool_execution_end"
+            ? "completed"
+            : "running"),
+        retryCount: Number.isFinite(Number(event.attemptCount))
+          ? Math.max(0, Number(event.attemptCount) - 1)
+          : undefined,
+        payload: {
+          executionId: event.executionId || null,
+          hotPath: event.hotPath || null,
+          truncation: event.truncation || null,
+        },
+      });
     },
     executeTool: async (_toolName, args) => ({
       ok: true,
@@ -81,41 +115,77 @@ async function main() {
     }),
   });
 
-  const telemetryStart = performance.now();
+  const mixedStart = performance.now();
   await Promise.all(
     Array.from({ length: SESSION_COUNT }, async (_, sessionIndex) => {
       for (let eventIndex = 0; eventIndex < EVENTS_PER_SESSION; eventIndex += 1) {
         telemetry.recordEvent(buildEvent(sessionIndex, eventIndex));
+        if ((eventIndex + 1) % 64 === 0) {
+          await Promise.resolve();
+        }
       }
-    }),
+    }).concat(
+      Array.from({ length: WORKFLOW_RUNS }, async (_, workflowIndex) => {
+        const taskId = `bench-workflow-task-${workflowIndex}`;
+        const sessionId = `bench-workflow-session-${workflowIndex}`;
+        const runId = `bench-workflow-run-${workflowIndex}`;
+        for (let nodeIndex = 0; nodeIndex < 3; nodeIndex += 1) {
+          telemetry.recordEvent({
+            eventType: "run.node.started",
+            source: "workflow-engine",
+            category: "workflow",
+            taskId,
+            sessionId,
+            runId,
+            workflowId: "bench-workflow",
+            workflowName: "Harness Bench",
+            summary: `node-${nodeIndex}-started`,
+            status: "running",
+          });
+          telemetry.recordEvent({
+            eventType: "run.node.completed",
+            source: "workflow-engine",
+            category: "workflow",
+            taskId,
+            sessionId,
+            runId,
+            workflowId: "bench-workflow",
+            workflowName: "Harness Bench",
+            summary: `node-${nodeIndex}-completed`,
+            status: "completed",
+            durationMs: 10 + nodeIndex,
+          });
+        }
+      }),
+      Array.from({ length: TOOL_CALLS }, (_, index) =>
+        toolOrchestrator.execute("bench_tool", {
+          call: index,
+          payload: "y".repeat(2048),
+        }, {
+          sessionId: `bench-tool-${index}`,
+          taskId: `bench-tool-task-${index}`,
+          runId: `bench-tool-run-${index}`,
+        })),
+    ),
   );
   await telemetry.flush();
-  const telemetryDurationMs = performance.now() - telemetryStart;
-
-  const toolStart = performance.now();
-  await Promise.all(
-    Array.from({ length: TOOL_CALLS }, (_, index) =>
-      toolOrchestrator.execute("bench_tool", {
-        call: index,
-        payload: "y".repeat(2048),
-      }, {
-        sessionId: `bench-tool-${index}`,
-      })),
-  );
-  const toolDurationMs = performance.now() - toolStart;
+  const mixedDurationMs = performance.now() - mixedStart;
 
   const summary = telemetry.getSummary();
-  const totalEvents = SESSION_COUNT * EVENTS_PER_SESSION;
+  const workloadEvents = (SESSION_COUNT * EVENTS_PER_SESSION) + (WORKFLOW_RUNS * 6) + toolEventCount;
   const result = {
     sessions: SESSION_COUNT,
+    workflowRuns: WORKFLOW_RUNS,
     toolCalls: TOOL_CALLS,
-    totalEvents,
-    telemetryDurationMs: Number(telemetryDurationMs.toFixed(2)),
-    toolDurationMs: Number(toolDurationMs.toFixed(2)),
-    telemetryEventsPerSecond: Number(((totalEvents / telemetryDurationMs) * 1000).toFixed(2)),
-    toolCallsPerSecond: Number(((TOOL_CALLS / toolDurationMs) * 1000).toFixed(2)),
+    totalEventsRecorded: summary.eventCount,
+    workloadEvents,
+    toolEventsRecorded: toolEventCount,
+    mixedDurationMs: Number(mixedDurationMs.toFixed(2)),
+    eventsPerSecond: Number(((workloadEvents / mixedDurationMs) * 1000).toFixed(2)),
+    toolCallsPerSecond: Number(((TOOL_CALLS / mixedDurationMs) * 1000).toFixed(2)),
     hotPath: summary.hotPath,
     metrics: summary.metrics?.totals || null,
+    liveSessions: Array.isArray(summary.live?.sessions) ? summary.live.sessions.length : 0,
   };
 
   console.log(JSON.stringify(result, null, 2));

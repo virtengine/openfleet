@@ -197,6 +197,10 @@ export class HarnessObservabilitySpine {
       100,
       Math.trunc(Number(options.maxInMemoryEvents) || DEFAULT_MAX_IN_MEMORY_EVENTS),
     );
+    this.maxPersistBatchEvents = Math.max(
+      1,
+      Math.trunc(Number(options.maxPersistBatchEvents) || 512),
+    );
     this.paths = resolveHarnessTelemetryPaths(this.configDir);
     this.projector = new LiveEventProjector(options);
     this.metrics = new RuntimeMetrics();
@@ -204,6 +208,7 @@ export class HarnessObservabilitySpine {
     this.runtime = createHarnessTelemetryRuntime({
       persist: this.persist,
       maxInMemoryEvents: this.maxInMemoryEvents,
+      maxPersistBatchEvents: this.maxPersistBatchEvents,
       paths: this.paths,
       projector: this.projector,
       metrics: this.metrics,

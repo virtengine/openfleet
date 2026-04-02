@@ -124,9 +124,10 @@ describe("session telemetry spine", () => {
       persist: true,
       configDir,
       maxInMemoryEvents: 16,
+      maxPersistBatchEvents: 2,
     });
 
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       spine.recordEvent({
         timestamp: `2026-04-02T09:00:0${index}.000Z`,
         eventType: "workflow.node.complete",
@@ -152,9 +153,46 @@ describe("session telemetry spine", () => {
       available: true,
       service: "telemetry",
       reason: "javascript",
-      processedEvents: 3,
-      persistedEvents: 3,
-      persistBatches: 1,
+      processedEvents: 5,
+      persistedEvents: 5,
+      persistBatches: 3,
+      maxPersistBatchEvents: 2,
+    }));
+  });
+
+  it("keeps a bounded in-memory ring buffer while preserving full processed and persisted counts", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "bosun-telemetry-ring-"));
+    tempDirs.push(configDir);
+    const spine = createHarnessObservabilitySpine({
+      persist: true,
+      configDir,
+      maxInMemoryEvents: 100,
+      maxPersistBatchEvents: 8,
+    });
+
+    for (let index = 0; index < 106; index += 1) {
+      spine.recordEvent({
+        timestamp: `2026-04-02T10:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+        eventType: "workflow.node.complete",
+        source: "workflow-engine",
+        category: "workflow",
+        taskId: "task-ring",
+        sessionId: "session-ring",
+        runId: "run-ring",
+        status: "completed",
+        summary: `workflow node ${index}`,
+      });
+    }
+
+    await flushHarnessTelemetryRuntimeForTests();
+
+    const summary = spine.getSummary();
+    expect(summary.eventCount).toBe(100);
+    expect(summary.hotPath.telemetry).toEqual(expect.objectContaining({
+      droppedEvents: 6,
+      processedEvents: 106,
+      persistedEvents: 106,
+      inMemoryEvents: 100,
     }));
   });
 });

@@ -18,10 +18,18 @@ const DEFAULT_STATUS = Object.freeze({
   persistFailures: 0,
   pendingPersistBytes: 0,
   maxInMemoryEvents: 0,
+  maxPersistBatchEvents: 0,
+  inMemoryEvents: 0,
+  analyticsHighWatermark: 0,
+  persistHighWatermark: 0,
   lastEnqueueAt: null,
   lastDrainAt: null,
   lastPersistAt: null,
 });
+
+const DEFAULT_ANALYTICS_DRAIN_BATCH = 256;
+const DEFAULT_PERSIST_BATCH_EVENTS = 512;
+const QUEUE_COMPACT_THRESHOLD = 1024;
 
 function scheduleBackground(fn) {
   if (typeof setImmediate === "function") {
@@ -31,10 +39,103 @@ function scheduleBackground(fn) {
   setTimeout(fn, 0);
 }
 
-function createStatus(maxInMemoryEvents) {
+function waitForBackgroundTurn() {
+  return new Promise((resolve) => scheduleBackground(resolve));
+}
+
+class IndexedQueue {
+  constructor() {
+    this.items = [];
+    this.offset = 0;
+  }
+
+  get length() {
+    return this.items.length - this.offset;
+  }
+
+  push(value) {
+    this.items.push(value);
+    return this.length;
+  }
+
+  drain(limit = Number.POSITIVE_INFINITY) {
+    const count = Math.min(
+      this.length,
+      Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : this.length,
+    );
+    if (count <= 0) return [];
+    const start = this.offset;
+    const end = start + count;
+    const values = this.items.slice(start, end);
+    this.items.fill(undefined, start, end);
+    this.offset = end;
+    this.#compactIfNeeded();
+    return values;
+  }
+
+  clear() {
+    this.items = [];
+    this.offset = 0;
+  }
+
+  #compactIfNeeded() {
+    if (this.offset === 0) return;
+    if (this.offset >= this.items.length) {
+      this.clear();
+      return;
+    }
+    if (this.offset < QUEUE_COMPACT_THRESHOLD || this.offset * 2 < this.items.length) {
+      return;
+    }
+    this.items = this.items.slice(this.offset);
+    this.offset = 0;
+  }
+}
+
+class RingBuffer {
+  constructor(capacity) {
+    this.capacity = Math.max(1, Math.trunc(Number(capacity) || 1));
+    this.buffer = new Array(this.capacity);
+    this.start = 0;
+    this.length = 0;
+  }
+
+  get size() {
+    return this.length;
+  }
+
+  push(value) {
+    if (this.length < this.capacity) {
+      this.buffer[(this.start + this.length) % this.capacity] = value;
+      this.length += 1;
+      return 0;
+    }
+    this.buffer[this.start] = value;
+    this.start = (this.start + 1) % this.capacity;
+    return 1;
+  }
+
+  toArray() {
+    if (this.length === 0) return [];
+    const values = new Array(this.length);
+    for (let index = 0; index < this.length; index += 1) {
+      values[index] = this.buffer[(this.start + index) % this.capacity];
+    }
+    return values;
+  }
+
+  clear() {
+    this.buffer = new Array(this.capacity);
+    this.start = 0;
+    this.length = 0;
+  }
+}
+
+function createStatus(maxInMemoryEvents, maxPersistBatchEvents) {
   return {
     ...DEFAULT_STATUS,
     maxInMemoryEvents,
+    maxPersistBatchEvents,
   };
 }
 
@@ -45,35 +146,38 @@ export class HarnessTelemetryRuntime {
       100,
       Math.trunc(Number(options.maxInMemoryEvents) || 20_000),
     );
+    this.maxPersistBatchEvents = Math.max(
+      1,
+      Math.trunc(Number(options.maxPersistBatchEvents) || DEFAULT_PERSIST_BATCH_EVENTS),
+    );
     this.paths = options.paths || {};
     this.projector = options.projector;
     this.metrics = options.metrics;
     this.providerUsage = options.providerUsage;
-    this.events = [];
-    this.pendingAnalytics = [];
-    this.pendingPersist = [];
+    this.events = new RingBuffer(this.maxInMemoryEvents);
+    this.pendingAnalytics = new IndexedQueue();
+    this.pendingPersist = new IndexedQueue();
     this.analyticsScheduled = false;
     this.persistScheduled = false;
     this.persistPromise = null;
-    this.status = createStatus(this.maxInMemoryEvents);
+    this.status = createStatus(this.maxInMemoryEvents, this.maxPersistBatchEvents);
   }
 
   _appendEvent(normalized, { persist = false } = {}) {
-    this.events.push(normalized);
-    if (this.events.length > this.maxInMemoryEvents) {
-      const overflow = this.events.length - this.maxInMemoryEvents;
-      this.events.splice(0, overflow);
-      this.status.droppedEvents += overflow;
-    }
-    this.pendingAnalytics.push(normalized);
-    this.status.queuedEvents = this.pendingAnalytics.length;
+    this.status.droppedEvents += this.events.push(normalized);
+    this.status.inMemoryEvents = this.events.size;
+    const queuedEvents = this.pendingAnalytics.push(normalized);
+    this.status.queuedEvents = queuedEvents;
+    this.status.analyticsHighWatermark = Math.max(this.status.analyticsHighWatermark, queuedEvents);
     this.status.lastEnqueueAt = new Date().toISOString();
 
     if (persist && this.persist) {
       const serialized = JSON.stringify(normalized);
-      this.pendingPersist.push(serialized);
-      this.status.queuedPersistEvents = this.pendingPersist.length;
-      this.status.pendingPersistBytes += Buffer.byteLength(`${serialized}\n`, "utf8");
+      const bytes = Buffer.byteLength(`${serialized}\n`, "utf8");
+      const queuedPersistEvents = this.pendingPersist.push({ serialized, bytes });
+      this.status.queuedPersistEvents = queuedPersistEvents;
+      this.status.pendingPersistBytes += bytes;
+      this.status.persistHighWatermark = Math.max(this.status.persistHighWatermark, queuedPersistEvents);
     }
   }
 
@@ -91,10 +195,10 @@ export class HarnessTelemetryRuntime {
     return normalized;
   }
 
-  _drainAnalytics(limit = Number.POSITIVE_INFINITY) {
+  _drainAnalytics(limit = DEFAULT_ANALYTICS_DRAIN_BATCH) {
+    const batch = this.pendingAnalytics.drain(limit);
     let processed = 0;
-    while (this.pendingAnalytics.length > 0 && processed < limit) {
-      const event = this.pendingAnalytics.shift();
+    for (const event of batch) {
       this.projector.record(event);
       this.metrics.record(event);
       this.providerUsage.record(event);
@@ -105,6 +209,14 @@ export class HarnessTelemetryRuntime {
       this.status.lastDrainAt = new Date().toISOString();
     }
     this.status.queuedEvents = this.pendingAnalytics.length;
+    return processed;
+  }
+
+  _drainAnalyticsFully() {
+    let processed = 0;
+    while (this.pendingAnalytics.length > 0) {
+      processed += this._drainAnalytics(Number.POSITIVE_INFINITY);
+    }
     return processed;
   }
 
@@ -122,13 +234,18 @@ export class HarnessTelemetryRuntime {
 
   async _flushPersistBatch() {
     if (!this.persist || this.pendingPersist.length === 0) return;
-    const batch = this.pendingPersist.splice(0, this.pendingPersist.length);
+    const batch = this.pendingPersist.drain(this.maxPersistBatchEvents);
+    const batchBytes = batch.reduce((total, entry) => total + Number(entry?.bytes || 0), 0);
     this.status.queuedPersistEvents = this.pendingPersist.length;
-    this.status.pendingPersistBytes = 0;
+    this.status.pendingPersistBytes = Math.max(0, this.status.pendingPersistBytes - batchBytes);
 
     try {
       await mkdir(dirname(this.paths.eventsPath), { recursive: true });
-      await appendFile(this.paths.eventsPath, `${batch.join("\n")}\n`, "utf8");
+      await appendFile(
+        this.paths.eventsPath,
+        `${batch.map((entry) => entry.serialized).join("\n")}\n`,
+        "utf8",
+      );
       this.status.persistBatches += 1;
       this.status.persistedEvents += batch.length;
       this.status.lastPersistAt = new Date().toISOString();
@@ -137,39 +254,57 @@ export class HarnessTelemetryRuntime {
     }
   }
 
+  async _runPersistLoop() {
+    try {
+      while (this.pendingPersist.length > 0) {
+        await this._flushPersistBatch();
+      }
+    } finally {
+      this.persistPromise = null;
+      if (this.pendingPersist.length > 0) {
+        this._schedulePersistFlush();
+      }
+    }
+  }
+
   _schedulePersistFlush() {
     if (!this.persist || this.persistScheduled) return;
     this.persistScheduled = true;
     scheduleBackground(() => {
       this.persistScheduled = false;
-      this.persistPromise = (this.persistPromise || Promise.resolve())
-        .then(() => this._flushPersistBatch())
-        .finally(() => {
-          this.persistPromise = null;
-          if (this.pendingPersist.length > 0) {
-            this._schedulePersistFlush();
-          }
-        });
+      if (!this.persistPromise) {
+        this.persistPromise = this._runPersistLoop();
+      }
     });
   }
 
   flushForeground() {
-    this._drainAnalytics();
+    this._drainAnalyticsFully();
   }
 
   async flush() {
     this.flushForeground();
-    if (this.persistPromise) {
-      await this.persistPromise;
-    } else if (this.pendingPersist.length > 0) {
-      await this._flushPersistBatch();
+    while (true) {
+      if (this.persistScheduled) {
+        await waitForBackgroundTurn();
+        continue;
+      }
+      if (this.persistPromise) {
+        await this.persistPromise;
+        continue;
+      }
+      if (this.pendingPersist.length > 0) {
+        await this._runPersistLoop();
+        continue;
+      }
+      break;
     }
     this.flushForeground();
   }
 
   getEvents() {
     this.flushForeground();
-    return this.events;
+    return this.events.toArray();
   }
 
   getStatus() {
@@ -178,13 +313,13 @@ export class HarnessTelemetryRuntime {
   }
 
   reset() {
-    this.events = [];
-    this.pendingAnalytics = [];
-    this.pendingPersist = [];
+    this.events.clear();
+    this.pendingAnalytics.clear();
+    this.pendingPersist.clear();
     this.analyticsScheduled = false;
     this.persistScheduled = false;
     this.persistPromise = null;
-    this.status = createStatus(this.maxInMemoryEvents);
+    this.status = createStatus(this.maxInMemoryEvents, this.maxPersistBatchEvents);
   }
 }
 
