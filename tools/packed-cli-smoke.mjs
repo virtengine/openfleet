@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getRequiredHarnessRuntimeAssets } from "./prepublish-check.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -155,6 +156,7 @@ function assertPackedCliStarts(installDir) {
 }
 
 function assertPackedRuntimeModulesLoad(installDir) {
+  const requiredStep9Assets = JSON.stringify(getRequiredHarnessRuntimeAssets());
   const probeOutput = runNode(
     [
       "--input-type=module",
@@ -167,6 +169,13 @@ function assertPackedRuntimeModulesLoad(installDir) {
 
         const installDir = process.cwd();
         const packageDir = resolve(installDir, "node_modules", "bosun");
+        const requiredStep9Assets = ${requiredStep9Assets};
+
+        for (const asset of requiredStep9Assets) {
+          if (!existsSync(resolve(packageDir, asset))) {
+            throw new Error(\`packed package is missing required Step 9 asset: \${asset}\`);
+          }
+        }
 
         const skillsModule = await import(pathToFileURL(resolve(packageDir, "agent", "bosun-skills.mjs")).href);
         const skillsHome = mkdtempSync(resolve(tmpdir(), "bosun-packed-skills-"));

@@ -7,6 +7,7 @@ import {
   expandPublishedFiles,
   findMissingPublishedFiles,
   findLocalImportSpecifiers,
+  getRequiredHarnessRuntimeAssets,
   validatePublishedLocalImports,
 } from "../tools/prepublish-check.mjs";
 
@@ -152,5 +153,17 @@ describe("prepublish-check", () => {
         "workspace/scope-locks.mjs",
       ]),
     );
+  });
+
+  it("publishes the required step 9 shell shim and harness runtime assets", () => {
+    const pkg = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
+    const publishedFiles = expandPublishedFiles(process.cwd(), pkg.files);
+
+    expect(
+      findMissingPublishedFiles(
+        publishedFiles,
+        getRequiredHarnessRuntimeAssets(process.cwd()),
+      ),
+    ).toEqual([]);
   });
 });

@@ -32,6 +32,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { createShellSessionCompat } from "./shell-session-compat.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const BOSUN_ROOT = resolve(__dirname, "..");
@@ -379,6 +380,10 @@ let codexRuntimeCaps = {
   steeringMethod: null,
 };
 let agentSdk = resolveAgentSdkConfig();
+const codexSessionCompat = createShellSessionCompat({
+  adapterName: "codex",
+  providerSelection: "codex",
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -511,11 +516,22 @@ async function loadState() {
     console.log(
       `[codex-shell] loaded state: threadId=${activeThreadId}, turns=${turnCount}, session=${currentSessionId}, cwd=${getWorkingDirectory()}`,
     );
+    codexSessionCompat.hydrate({
+      sessionId: currentSessionId,
+      threadId: activeThreadId,
+      cwd: getWorkingDirectory(),
+      status: activeThreadId ? "active" : "idle",
+      metadata: {
+        providerThreadId: activeThreadId,
+        turnCount,
+      },
+    });
   } catch {
     activeThreadId = null;
     turnCount = 0;
     currentSessionId = null;
     activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
+    codexSessionCompat.reset({ keepManagedRecord: false });
   }
 }
 
@@ -581,6 +597,16 @@ async function saveCurrentSession() {
     createdAt: (await loadSessionData(currentSessionId))?.createdAt || timestamp(),
     lastActiveAt: timestamp(),
   });
+  codexSessionCompat.ensureManagedSession(currentSessionId, {
+    activate: false,
+    threadId: activeThreadId,
+    cwd: getWorkingDirectory(),
+    status: activeThreadId ? "active" : "idle",
+    metadata: {
+      providerThreadId: activeThreadId,
+      turnCount,
+    },
+  });
 }
 
 async function loadSession(sessionId) {
@@ -604,6 +630,16 @@ async function loadSession(sessionId) {
     activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
     console.log(`[codex-shell] created new session ${sessionId}`);
   }
+  codexSessionCompat.switchSession(sessionId, {
+    threadId: activeThreadId,
+    cwd: getWorkingDirectory(),
+    status: activeThreadId ? "active" : "idle",
+    metadata: {
+      providerThreadId: activeThreadId,
+      turnCount,
+      source: data ? "compat-session-file" : "compat-session-created",
+    },
+  });
   await saveState();
 }
 
@@ -1020,6 +1056,23 @@ export async function execCodexPrompt(userMessage, options = {}) {
       );
     }
 
+    const logicalSessionId =
+      currentSessionId
+      || toTrimmedString(sessionId || "")
+      || (persistent ? "primary" : `codex-task-${Date.now()}`);
+    const shouldActivateManagedSession = persistent || Boolean(currentSessionId || sessionId);
+    codexSessionCompat.registerExecution(logicalSessionId, {
+      activate: shouldActivateManagedSession,
+      status: "running",
+      threadId: activeThreadId,
+      cwd: getWorkingDirectory(),
+      metadata: {
+        providerThreadId: activeThreadId,
+        persistent,
+        mode: mode || null,
+      },
+    });
+
     // ── Mode detection ───────────────────────────────────────────────────
     // "ask" mode should be lightweight — no heavy executor framing that
     // instructs the agent to run commands and read files.  The mode is
@@ -1115,6 +1168,16 @@ export async function execCodexPrompt(userMessage, options = {}) {
           if (event.type === "thread.started" && event.thread_id) {
             activeThreadId = event.thread_id;
             await saveState();
+            codexSessionCompat.registerExecution(logicalSessionId, {
+              activate: shouldActivateManagedSession,
+              status: "running",
+              threadId: activeThreadId,
+              cwd: getWorkingDirectory(),
+              metadata: {
+                providerThreadId: activeThreadId,
+                persistent,
+              },
+            });
           }
 
           // turn.failed is emitted by the SDK when the server signals response.failed.
@@ -1161,6 +1224,17 @@ export async function execCodexPrompt(userMessage, options = {}) {
             if (persistent && currentSessionId) {
               await saveCurrentSession();
             }
+            codexSessionCompat.registerExecution(logicalSessionId, {
+              activate: shouldActivateManagedSession,
+              status: "completed",
+              threadId: activeThreadId,
+              cwd: getWorkingDirectory(),
+              metadata: {
+                providerThreadId: activeThreadId,
+                turnCount,
+                persistent,
+              },
+            });
           }
         }
 
@@ -1208,6 +1282,17 @@ export async function execCodexPrompt(userMessage, options = {}) {
               reason === "user_stop"
                 ? ":close: Agent stopped by user."
                 : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
+            codexSessionCompat.registerExecution(logicalSessionId, {
+              activate: shouldActivateManagedSession,
+              status: reason === "user_stop" ? "aborted" : "timeout",
+              threadId: activeThreadId,
+              cwd: getWorkingDirectory(),
+              error: msg,
+              metadata: {
+                providerThreadId: activeThreadId,
+                persistent,
+              },
+            });
             return { finalResponse: msg, items: [], usage: null };
           }
         }
@@ -1237,12 +1322,35 @@ export async function execCodexPrompt(userMessage, options = {}) {
           console.error(
             `[codex-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts — giving up`,
           );
+          codexSessionCompat.registerExecution(logicalSessionId, {
+            activate: shouldActivateManagedSession,
+            status: "failed",
+            threadId: activeThreadId,
+            cwd: getWorkingDirectory(),
+            error: err?.message || String(err),
+            metadata: {
+              providerThreadId: activeThreadId,
+              persistent,
+            },
+          });
           return {
             finalResponse: `:close: Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
             items: [],
             usage: null,
           };
         }
+
+        codexSessionCompat.registerExecution(logicalSessionId, {
+          activate: shouldActivateManagedSession,
+          status: "failed",
+          threadId: activeThreadId,
+          cwd: getWorkingDirectory(),
+          error: err?.message || String(err),
+          metadata: {
+            providerThreadId: activeThreadId,
+            persistent,
+          },
+        });
 
         throw err;
       }
@@ -1302,13 +1410,14 @@ export function isCodexBusy() {
  * Get thread info for display.
  */
 export function getThreadInfo() {
-  return {
+  return codexSessionCompat.getSessionInfo({
     threadId: activeThreadId,
     turnCount,
     isActive: !!activeThread,
     isBusy: !!activeTurn,
     sessionId: currentSessionId,
-  };
+    cwd: getWorkingDirectory(),
+  });
 }
 
 /**
@@ -1322,6 +1431,15 @@ export async function resetThread() {
   currentSessionId = null;
   activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
   threadNeedsPriming = false;
+  codexSessionCompat.reset({
+    status: "idle",
+    threadId: null,
+    cwd: DEFAULT_WORKING_DIRECTORY,
+    metadata: {
+      providerThreadId: null,
+      turnCount: 0,
+    },
+  });
   await saveState();
   console.log("[codex-shell] thread reset");
 }
@@ -1332,7 +1450,7 @@ export async function resetThread() {
  * Get the currently active session ID.
  */
 export function getActiveSessionId() {
-  return currentSessionId;
+  return codexSessionCompat.getActiveSessionId();
 }
 
 /**
@@ -1346,20 +1464,35 @@ export function getSessionStoreDir() {
  * List all saved sessions from logs/codex-shell-sessions/.
  */
 export async function listSessions() {
+  const extraSessions = [];
   try {
     await mkdir(SESSIONS_DIR, { recursive: true });
     const files = await readdir(SESSIONS_DIR);
-    const sessions = [];
     for (const f of files) {
       if (!f.endsWith(".json")) continue;
       const id = f.replace(/\.json$/, "");
       const data = await loadSessionData(id);
-      if (data) sessions.push({ id, ...data });
+      if (data) {
+        extraSessions.push({
+          id,
+          sessionId: id,
+          threadId: data.threadId || null,
+          cwd: data.workingDirectory || null,
+          createdAt: data.createdAt || null,
+          lastActiveAt: data.lastActiveAt || null,
+          adapter: "codex",
+          status: data.threadId ? "active" : "idle",
+          metadata: {
+            providerThreadId: data.threadId || null,
+            turnCount: data.turnCount || 0,
+          },
+        });
+      }
     }
-    return sessions;
   } catch {
-    return [];
+    return codexSessionCompat.listSessions();
   }
+  return codexSessionCompat.listSessions({ extraSessions });
 }
 
 /**
@@ -1367,6 +1500,7 @@ export async function listSessions() {
  */
 export async function switchSession(id) {
   await loadSession(id);
+  return codexSessionCompat.getSessionRecord(id);
 }
 
 /**
@@ -1380,7 +1514,23 @@ export async function createSession(id) {
     lastActiveAt: timestamp(),
   };
   await saveSessionData(id, data);
-  return data;
+  codexSessionCompat.createSession(id, {
+    activate: false,
+    status: "idle",
+    threadId: null,
+    cwd: DEFAULT_WORKING_DIRECTORY,
+    metadata: {
+      providerThreadId: null,
+      turnCount: 0,
+      createdAt: data.createdAt,
+      lastActiveAt: data.lastActiveAt,
+    },
+  });
+  return {
+    id,
+    sessionId: id,
+    ...data,
+  };
 }
 
 // ── Initialisation ──────────────────────────────────────────────────────────

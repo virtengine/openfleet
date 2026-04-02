@@ -18,6 +18,19 @@ const SOURCE_EXTENSIONS = new Set([".mjs", ".cjs", ".js"]);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
+const REQUIRED_STEP9_TOP_LEVEL_ASSET_FILES = Object.freeze([
+  "agent/internal-harness-control-plane.mjs",
+  "agent/internal-harness-profile.mjs",
+  "agent/internal-harness-runtime.mjs",
+  "shell/claude-shell.mjs",
+  "shell/codex-sdk-import.mjs",
+  "shell/codex-shell.mjs",
+  "shell/copilot-shell.mjs",
+  "shell/gemini-shell.mjs",
+  "shell/opencode-providers.mjs",
+  "shell/opencode-shell.mjs",
+  "shell/shell-session-compat.mjs",
+]);
 
 function isSourceFile(filePath) {
   return SOURCE_EXTENSIONS.has(extname(filePath));
@@ -62,6 +75,26 @@ export function findMissingPublishedFiles(publishedFiles, requiredFiles = []) {
     .filter((file) => typeof file === "string" && file.length > 0)
     .filter((file) => !publishedFiles.has(file))
     .sort((a, b) => a.localeCompare(b));
+}
+
+export function getRequiredHarnessRuntimeAssets(rootDir = ROOT) {
+  const harnessDir = resolve(rootDir, "agent", "harness");
+  const harnessFiles = existsSync(harnessDir)
+    ? walkFiles(harnessDir)
+        .filter(isSourceFile)
+        .map((absFile) => relative(rootDir, absFile).replaceAll("\\", "/"))
+    : [];
+
+  return [...REQUIRED_STEP9_TOP_LEVEL_ASSET_FILES, ...harnessFiles].sort((a, b) =>
+    a.localeCompare(b),
+  );
+}
+
+export function getRequiredPublishedAssetFiles(rootDir = ROOT) {
+  return [
+    ...BUILTIN_SKILLS.map((skill) => `agent/skills/${skill.filename}`),
+    ...getRequiredHarnessRuntimeAssets(rootDir),
+  ];
 }
 
 function isIdentifierChar(char) {
@@ -375,7 +408,7 @@ export async function runPrepublishCheck(rootDir = ROOT) {
   const pkg = JSON.parse(readFileSync(resolve(rootDir, "package.json"), "utf8"));
   const result = await validatePublishedLocalImports({ rootDir, pkg });
   const publishedFiles = expandPublishedFiles(rootDir, Array.isArray(pkg.files) ? pkg.files : []);
-  const requiredAssetFiles = BUILTIN_SKILLS.map((skill) => `agent/skills/${skill.filename}`);
+  const requiredAssetFiles = getRequiredPublishedAssetFiles(rootDir);
   const missingAssetFiles = findMissingPublishedFiles(publishedFiles, requiredAssetFiles);
 
   if (result.error) {
