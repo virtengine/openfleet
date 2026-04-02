@@ -539,6 +539,13 @@ export const agentStatusText = computed(() => {
 let _idleTimer = null;
 const IDLE_TIMEOUT = 120000;
 
+function _clearIdleTimer() {
+  if (_idleTimer) {
+    clearTimeout(_idleTimer);
+    _idleTimer = null;
+  }
+}
+
 /**
  * Internal: transition agent state and reset idle timer.
  * Only updates the signal when the logical state actually changes
@@ -572,7 +579,7 @@ function _setAgentState(state, adapter, sessionId) {
 
   // Always reset idle timer — even if we didn't update the signal,
   // we want to push back the "return to idle" deadline.
-  if (_idleTimer) clearTimeout(_idleTimer);
+  _clearIdleTimer();
   if (state !== "idle") {
     _idleTimer = setTimeout(() => {
       if (agentStatus.value.state !== "idle") {
@@ -586,6 +593,23 @@ function _setAgentState(state, adapter, sessionId) {
       }
     }, IDLE_TIMEOUT);
   }
+}
+
+export function clearAgentStatus(sessionId = "") {
+  const current = agentStatus.value || {};
+  const targetSessionId = String(sessionId || "").trim();
+  const currentSessionId = String(current.sessionId || "").trim();
+  if (targetSessionId && currentSessionId && currentSessionId !== targetSessionId) {
+    return;
+  }
+  _clearIdleTimer();
+  agentStatus.value = {
+    state: "idle",
+    adapter: "",
+    sessionId: "",
+    startedAt: 0,
+    lastEventAt: Date.now(),
+  };
 }
 
 /**
@@ -610,10 +634,12 @@ export function startAgentStatusTracking() {
       const sessionId = String(payload.sessionId || payload.taskId || "");
       const isCompletionSignal =
         reason === "agent-response" ||
-        reason === "agent-error";
+        reason === "agent-error" ||
+        reason === "agent-stopped" ||
+        reason === "session-turn-finished";
       if (isCompletionSignal) {
         if (!sessionId || agentStatus.value.sessionId === sessionId) {
-          _setAgentState("idle", "", "");
+          clearAgentStatus(sessionId);
         }
       }
       return;
@@ -634,7 +660,7 @@ export function startAgentStatusTracking() {
 
     if (sessionStatus !== "active") {
       if (!sessionId || agentStatus.value.sessionId === sessionId) {
-        _setAgentState("idle", "", "");
+        clearAgentStatus(sessionId);
       }
       return;
     }
@@ -651,7 +677,7 @@ export function startAgentStatusTracking() {
       content.includes("session.idle");
 
     if (isCompletionEvent) {
-      _setAgentState("idle", "", "");
+      clearAgentStatus(sessionId);
       return;
     }
 
@@ -672,7 +698,7 @@ export function startAgentStatusTracking() {
         _setAgentState("thinking", adapter, sessionId);
       }
     } else if (type === "error" || type === "stream_error") {
-      _setAgentState("idle", "", "");
+      clearAgentStatus(sessionId);
     }
   });
 }

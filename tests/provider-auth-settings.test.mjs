@@ -26,6 +26,30 @@ describe("provider auth and model settings", () => {
     }));
   });
 
+  it("surfaces subscription workspace settings through auth normalization", () => {
+    const chatgptAuth = normalizeProviderAuthState("openai-codex-subscription", {}, {
+      settings: {
+        BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED: "true",
+        BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_WORKSPACE: "chatgpt-team-alpha",
+      },
+    });
+    const claudeAuth = normalizeProviderAuthState("claude-subscription-shim", {}, {
+      settings: {
+        BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED: "true",
+        BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_WORKSPACE: "claude-lab-beta",
+      },
+    });
+
+    expect(chatgptAuth.enabled).toBe(true);
+    expect(chatgptAuth.settings).toEqual(expect.objectContaining({
+      workspace: "chatgpt-team-alpha",
+    }));
+    expect(claudeAuth.enabled).toBe(true);
+    expect(claudeAuth.settings).toEqual(expect.objectContaining({
+      workspace: "claude-lab-beta",
+    }));
+  });
+
   it("prefers provider-scoped model settings over built-in defaults", () => {
     const catalog = getProviderModelCatalog("azure-openai-responses", {
       settings: {

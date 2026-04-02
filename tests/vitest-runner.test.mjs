@@ -36,7 +36,7 @@ describe("vitest-runner", () => {
     expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*|internal-harness*|provider-kernel-support*|tool-governance-support*"');
     expect(prePushHook).toContain('"telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"');
     expect(prePushHook).toContain('"task/|task-*|workflow-task-lifecycle*|kanban-*|state-ledger-sqlite*|ve-orchestrator*|vk-api*|ve-kanban*"');
-    expect(prePushHook).toContain('"lib/|logger*|utils*|library-*|error-detector*|context-*|codebase-audit*|repo-map*|state-ledger-sqlite*"');
+    expect(prePushHook).toContain('"lib/|logger*|log-tail*|utils*|library-*|error-detector*|context-*|codebase-audit*|repo-map*|state-ledger-sqlite*"');
   });
   it("finds vitest from an ancestor node_modules directory", () => {
     const root = createFixture();

@@ -8188,6 +8188,7 @@ const CONFIG_PATH_OVERRIDES = {
   BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED: ["providers", "chatgptCodex", "enabled"],
   BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODE: ["providers", "chatgptCodex", "mode"],
   BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODEL: ["providers", "chatgptCodex", "defaultModel"],
+  BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_WORKSPACE: ["providers", "chatgptCodex", "workspace"],
   BOSUN_PROVIDER_AZURE_OPENAI_ENABLED: ["providers", "azureOpenai", "enabled"],
   BOSUN_PROVIDER_AZURE_OPENAI_MODE: ["providers", "azureOpenai", "mode"],
   BOSUN_PROVIDER_AZURE_OPENAI_MODEL: ["providers", "azureOpenai", "defaultModel"],
@@ -8199,6 +8200,7 @@ const CONFIG_PATH_OVERRIDES = {
   BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED: ["providers", "claudeSubscription", "enabled"],
   BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODE: ["providers", "claudeSubscription", "mode"],
   BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODEL: ["providers", "claudeSubscription", "defaultModel"],
+  BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_WORKSPACE: ["providers", "claudeSubscription", "workspace"],
   BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED: ["providers", "openaiCompatible", "enabled"],
   BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODE: ["providers", "openaiCompatible", "mode"],
   BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL: ["providers", "openaiCompatible", "defaultModel"],
@@ -10611,6 +10613,34 @@ function shouldHideSessionFromDefaultList(session) {
   const looksTemporaryWorkspace =
     tempWorkspacePattern.test(normalizedWorkspaceDir)
     || tempWorkspacePattern.test(normalizedWorkspaceRoot);
+  const normalizedLifecycleStatus = String(
+    session.lifecycleStatus || session.status || "",
+  ).trim().toLowerCase();
+  const normalizedRuntimeState = String(
+    session.runtimeState || session.runtimeStatus || "",
+  ).trim().toLowerCase();
+  const normalizedPreview = String(
+    session.preview || session.lastMessage || metadata.preview || "",
+  ).trim();
+  const totalEvents = Number(session.totalEvents || session.eventCount || 0);
+  const turnCount = Number(session.turnCount || 0);
+  const createdAtMs = Date.parse(
+    String(session.lastActiveAt || session.runtimeUpdatedAt || session.createdAt || ""),
+  );
+  const staleEmptyPrimaryAgeMs = 30 * 60 * 1000;
+  const staleEmptyPrimarySession =
+    ["primary", "manual", "chat"].includes(normalizedType) &&
+    normalizedLifecycleStatus === "active" &&
+    (normalizedRuntimeState === ""
+      || normalizedRuntimeState === "idle"
+      || normalizedRuntimeState === "stalled"
+      || normalizedRuntimeState === "recent") &&
+    turnCount <= 0 &&
+    totalEvents <= 0 &&
+    !normalizedPreview &&
+    Number.isFinite(createdAtMs) &&
+    (Date.now() - createdAtMs) >= staleEmptyPrimaryAgeMs;
+  if (staleEmptyPrimarySession) return true;
   if (!looksTemporaryWorkspace) return false;
   // Sessions with an explicit workspace assignment are intentional, not leaked fixtures.
   if (normalizedWorkspaceId) return false;

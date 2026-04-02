@@ -508,16 +508,38 @@ export async function createSession(options = {}) {
   // Duplicate prevention: if a fresh empty session of same type exists, reuse it
   const existing = sessionsData.value || [];
   if (allowReuseFresh) {
-    const fresh = existing.find(
-      (s) =>
+    const freshCandidates = existing
+      .filter(
+        (s) =>
         s.type === type &&
         getSessionLifecycleState(s).isActive &&
         (s.turnCount || 0) === 0 &&
         (!s.preview || s.preview.trim() === ""),
-    );
-    if (fresh) {
-      selectedSessionId.value = fresh.id;
-      return { ok: true, session: fresh };
+      )
+      .sort((left, right) => {
+        const leftTs = Date.parse(String(left?.lastActiveAt || left?.createdAt || "")) || 0;
+        const rightTs = Date.parse(String(right?.lastActiveAt || right?.createdAt || "")) || 0;
+        return rightTs - leftTs;
+      });
+    for (const fresh of freshCandidates) {
+      try {
+        const reusePath = buildSessionApiPath(fresh.id, "", {
+          workspace: resolveSessionWorkspaceHint(
+            fresh,
+            String(_lastLoadFilter?.workspace || "").trim() || "active",
+          ),
+          query: { limit: "1" },
+        });
+        const reuseCheck = reusePath
+          ? await apiFetch(reusePath, { _silent: true })
+          : null;
+        if (reuseCheck?.session?.id === fresh.id) {
+          selectedSessionId.value = fresh.id;
+          return { ok: true, session: fresh, reused: true };
+        }
+      } catch {
+        // Stale/orphan session shells should not block creating a real session.
+      }
     }
   }
 
@@ -1449,4 +1471,3 @@ export function SessionList({
     </${Paper}>
   `;
 }
-

@@ -66,7 +66,22 @@ function resolveProviderAuth(providerId, fields, options) {
     : () => ({});
   return authManager.resolve(providerId, readAuthState(providerId, fields) || {}, {
     capabilities: buildCapabilities({}, providerId, null),
+    enabled: fields.enabled,
+    settings: options.settings || options.env || process.env,
+    env: options.env || process.env,
   });
+}
+
+function resolveProviderEnabled(providerId, explicitEnabled, options = {}) {
+  const authManager = createProviderAuthManager({ env: options.env || process.env });
+  const resolved = authManager.resolve(providerId, {}, {
+    settings: options.settings || options.env || process.env,
+    env: options.env || process.env,
+  });
+  if (resolved?.settings?.enabledSource === "default" && explicitEnabled !== undefined) {
+    return explicitEnabled === true;
+  }
+  return resolved?.enabled !== false;
 }
 
 function buildProviderEntry(providerId, definition, adapter, fields, options) {
@@ -91,6 +106,7 @@ function buildProviderEntry(providerId, definition, adapter, fields, options) {
     adapterId: definition?.adapterId || normalizeProviderAdapterName(providerId),
     transport: definition?.transport || null,
     available: fields.available,
+    enabled: fields.enabled !== false,
     busy: fields.busy,
     models: configuredModels.length > 0
       ? configuredModels
@@ -128,7 +144,8 @@ function buildConfiguredProviders(options = {}) {
     const { providerId, definition } = resolveDefinitionFromEntry(entry);
     const adapterId = definition?.adapterId || normalizeProviderAdapterName(entry?.adapterId || entry?.executor);
     const adapter = adapters[adapterId] || adapters["codex-sdk"] || {};
-    const available = entry?.enabled !== false && !resolveDisabled(definition || { id: providerId, adapterId }, env);
+    const enabled = resolveProviderEnabled(providerId, entry?.enabled !== false, options);
+    const available = enabled && !resolveDisabled(definition || { id: providerId, adapterId }, env);
     const configuredModels = Array.isArray(entry?.models)
       ? entry.models.map((model) => String(model || "").trim()).filter(Boolean)
       : [];
@@ -148,6 +165,7 @@ function buildConfiguredProviders(options = {}) {
         executor: definition?.executor || String(entry?.executor || "").toUpperCase() || adapter.provider || providerId,
         variant: String(entry?.variant || definition?.variant || "DEFAULT"),
         available,
+        enabled,
         busy: available ? readBusy(adapter) : false,
         models: configuredModels,
         defaultModel: entry?.defaultModel || definition?.defaultModel || null,
@@ -167,7 +185,8 @@ function buildBuiltinProviders(options = {}) {
     : () => false;
   return listBuiltinProviderDefinitions().map((definition) => {
     const adapter = adapters[definition.adapterId] || adapters["codex-sdk"] || {};
-    const available = !resolveDisabled(definition, env);
+    const enabled = resolveProviderEnabled(definition.id, undefined, options);
+    const available = enabled && !resolveDisabled(definition, env);
     return buildProviderEntry(
       definition.id,
       definition,
@@ -179,6 +198,7 @@ function buildBuiltinProviders(options = {}) {
         executor: definition.executor,
         variant: definition.variant || "DEFAULT",
         available,
+        enabled,
         busy: available ? readBusy(adapter) : false,
         models: [],
         defaultModel: definition.defaultModel || null,
@@ -190,8 +210,23 @@ function buildBuiltinProviders(options = {}) {
 
 export function listRegisteredProviders(options = {}) {
   const configuredProviders = buildConfiguredProviders(options);
-  if (configuredProviders.length > 0) return configuredProviders;
-  return buildBuiltinProviders(options);
+  if (configuredProviders.length === 0) return buildBuiltinProviders(options);
+  if (options.includeBuiltins !== true) return configuredProviders;
+  const builtins = buildBuiltinProviders(options);
+  const seenProviderIds = new Set(configuredProviders.map((entry) => entry.providerId));
+  return configuredProviders.concat(
+    builtins.filter((entry) => !seenProviderIds.has(entry.providerId)),
+  );
+}
+
+function resolveRequestedDefaultProviderId(options = {}) {
+  const configuredDefault =
+    options.defaultProviderId
+    || options.settings?.BOSUN_PROVIDER_DEFAULT
+    || options.env?.BOSUN_PROVIDER_DEFAULT
+    || process.env.BOSUN_PROVIDER_DEFAULT
+    || "";
+  return normalizeProviderDefinitionId(configuredDefault, "");
 }
 
 export function resolveProviderSelection(name, options = {}) {
@@ -242,7 +277,8 @@ export function createProviderRegistry(options = {}) {
     },
     getDefaultProvider() {
       const providers = listRegisteredProviders(options);
-      return providers[0] || null;
+      const requestedDefaultProviderId = resolveRequestedDefaultProviderId(options);
+      return providers.find((entry) => entry.providerId === requestedDefaultProviderId) || providers[0] || null;
     },
   };
 }

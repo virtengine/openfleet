@@ -38,8 +38,8 @@ function resolveAdapterSettings(providerId, options = {}) {
   if (!adapter) {
     return {
       providerId: normalizeProviderCapabilityId(providerId),
-      enabled: true,
-      enabledSource: "default",
+      enabled: options.enabled !== undefined ? options.enabled === true : true,
+      enabledSource: options.enabled !== undefined ? "input" : "default",
       authMode: null,
       authModeSource: null,
       defaultModel: null,
@@ -56,10 +56,18 @@ function resolveAdapterSettings(providerId, options = {}) {
       workspaceSource: null,
     };
   }
-  return adapter.resolveSettings({
+  const resolved = adapter.resolveSettings({
     settings: options.settings || process.env,
     env: options.env || process.env,
   });
+  if (options.enabled !== undefined) {
+    return {
+      ...resolved,
+      enabled: options.enabled === true,
+      enabledSource: "input",
+    };
+  }
+  return resolved;
 }
 
 function readEnvHints(env = process.env, keys = []) {

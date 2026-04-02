@@ -73,6 +73,7 @@ import {
 } from "../components/agent-selector.js";
 import {
   addPendingMessage,
+  clearAgentStatus,
   confirmMessage,
   rejectMessage,
   markUserMessageSent,
@@ -707,6 +708,7 @@ export function ChatTab() {
           confirmMessage(tempId);
         } catch (err) {
           rejectMessage(tempId, err.message || "Send failed");
+          clearAgentStatus(sessionId);
           throw err;
         }
 
@@ -746,6 +748,7 @@ export function ChatTab() {
             confirmMessage(tempId);
           } catch (err) {
             rejectMessage(tempId, err.message || "Send failed");
+            clearAgentStatus(newId);
           }
 
           loadSessionMessages(newId, { limit: 50 });

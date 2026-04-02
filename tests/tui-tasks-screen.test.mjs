@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 import {
   formatColumnSummary,
@@ -41,6 +42,7 @@ function readStore(storePath) {
 
 afterEach(() => {
   delete process.env.BOSUN_STORE_PATH;
+  resetStateLedgerCache();
   while (tempDirs.length) {
     rmSync(tempDirs.pop(), { recursive: true, force: true });
   }

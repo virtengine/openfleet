@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 const mockExistsSync = vi.hoisted(() => vi.fn());
 const mockReadFileSync = vi.hoisted(() => vi.fn());
@@ -36,6 +37,7 @@ afterEach(() => {
   delete process.env.BOSUN_HOME;
   delete process.env.REPO_ROOT;
   delete process.env.BOSUN_TASK_EXECUTOR_RUNTIME_FILE;
+  resetStateLedgerCache();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }

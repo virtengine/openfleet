@@ -13203,6 +13203,7 @@
             "env": {
               "BOSUN_HEALTH_MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
             },
+            "parseJson": true,
             "continueOnError": true
           },
           "position": {
@@ -13218,7 +13219,7 @@
           "type": "condition.expression",
           "label": "Recent Runs Available?",
           "config": {
-            "expression": "(() => { const output = String($ctx.getNodeOutput('collect-recent-runs')?.output || '').trim(); if (!output) return false; try { const parsed = JSON.parse(output); return Array.isArray(parsed?.runIds) && parsed.runIds.length > 0; } catch { return false; } })()"
+            "expression": "Array.isArray($ctx.getNodeOutput('collect-recent-runs')?.output?.runIds) && $ctx.getNodeOutput('collect-recent-runs')?.output?.runIds.length > 0"
           },
           "position": {
             "x": 400,
@@ -13234,7 +13235,7 @@
           "type": "action.evaluate_run",
           "label": "Evaluate Latest Run",
           "config": {
-            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output ? JSON.parse($ctx.getNodeOutput('collect-recent-runs')?.output).latestRunId || '' : ''}}",
+            "runId": "{{collect-recent-runs.output.latestRunId}}",
             "repoRoot": "{{repoRoot}}",
             "includeTrend": true,
             "recordHistory": true,
@@ -38011,6 +38012,7 @@
             "env": {
               "BOSUN_HEALTH_MAX_BENCHMARK_RUNS": "{{maxBenchmarkRuns}}"
             },
+            "parseJson": true,
             "continueOnError": true
           },
           "position": {
@@ -38026,7 +38028,7 @@
           "type": "condition.expression",
           "label": "Recent Runs Available?",
           "config": {
-            "expression": "(() => { const output = String($ctx.getNodeOutput('collect-recent-runs')?.output || '').trim(); if (!output) return false; try { const parsed = JSON.parse(output); return Array.isArray(parsed?.runIds) && parsed.runIds.length > 0; } catch { return false; } })()"
+            "expression": "Array.isArray($ctx.getNodeOutput('collect-recent-runs')?.output?.runIds) && $ctx.getNodeOutput('collect-recent-runs')?.output?.runIds.length > 0"
           },
           "position": {
             "x": 400,
@@ -38042,7 +38044,7 @@
           "type": "action.evaluate_run",
           "label": "Evaluate Latest Run",
           "config": {
-            "runId": "{{$ctx.getNodeOutput('collect-recent-runs')?.output ? JSON.parse($ctx.getNodeOutput('collect-recent-runs')?.output).latestRunId || '' : ''}}",
+            "runId": "{{collect-recent-runs.output.latestRunId}}",
             "repoRoot": "{{repoRoot}}",
             "includeTrend": true,
             "recordHistory": true,

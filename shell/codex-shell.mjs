@@ -454,7 +454,8 @@ function repairCodexSdkPackageJson() {
 async function importCodexSdkModule(resolvedSdk) {
   if (shouldUseBareCodexSdkImport(resolvedSdk)) {
     try {
-      return await import("./codex-sdk-import.mjs");
+      const shim = await import("./codex-sdk-import.mjs");
+      return await shim.loadBareCodexSdkModule();
     } catch (err) {
       if (!resolvedSdk?.entryPath) throw err;
     }

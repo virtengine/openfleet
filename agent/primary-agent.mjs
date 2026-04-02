@@ -17,6 +17,7 @@ import { execPooledPrompt } from "./agent-pool.mjs";
 import { createProviderRegistry, executorToAdapterName, normalizeProviderAdapterName } from "./provider-registry.mjs";
 import { getBosunSessionManager } from "./session-manager.mjs";
 import { buildToolCapabilityContract } from "./tool-orchestrator.mjs";
+import { getBuiltInProviderDriver, normalizeProviderDefinitionId } from "./providers/index.mjs";
 import {
   execCodexPrompt,
   steerCodexPrompt,
@@ -444,11 +445,11 @@ const ADAPTERS = {
     name: "opencode-sdk",
     provider: "OPENCODE",
     displayName: "OpenCode",
-    exec: (msg, opts) => execOpencodePrompt(msg, {
+    exec: (msg, opts) => execOpencodePrompt(msg, withProviderRuntimeOptions({
       persistent: true,
       expectedPrimary: "opencode",
       ...opts,
-    }),
+    })),
     steer: (message) => steerOpencodePrompt(message, { expectedPrimary: "opencode" }),
     isBusy: isOpencodeBusy,
     getInfo: () => getOpencodeSessionInfo(),
@@ -469,12 +470,12 @@ const ADAPTERS = {
         return "Session cleared.";
       }
       const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execOpencodePrompt(fullCmd, {
+      return execOpencodePrompt(fullCmd, withProviderRuntimeOptions({
         persistent: true,
         expectedPrimary: "opencode",
         cwd: options.cwd,
         sessionId: options.sessionId || null,
-      });
+      }));
     },
   },
 };
@@ -587,6 +588,62 @@ function normalizePrimaryAgent(value) {
   return raw;
 }
 
+function setProviderSetting(target, key, value) {
+  if (value === undefined || value === null || value === "") return;
+  target[key] = value;
+}
+
+function buildProviderKernelSettings(config = {}) {
+  const providers = config?.providers && typeof config.providers === "object"
+    ? config.providers
+    : {};
+  const flattened = {};
+  setProviderSetting(flattened, "BOSUN_PROVIDER_DEFAULT", providers.defaultProvider);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_DEFAULT_MODEL", providers.defaultModel);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_RESPONSES_ENABLED", providers.openaiResponses?.enabled);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_RESPONSES_MODEL", providers.openaiResponses?.defaultModel);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED", providers.chatgptCodex?.enabled);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODE", providers.chatgptCodex?.mode);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODEL", providers.chatgptCodex?.defaultModel);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_WORKSPACE", providers.chatgptCodex?.workspace);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_ENABLED", providers.azureOpenAi?.enabled);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_MODE", providers.azureOpenAi?.mode);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_MODEL", providers.azureOpenAi?.defaultModel);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_ENDPOINT", providers.azureOpenAi?.endpoint);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT", providers.azureOpenAi?.deployment);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_AZURE_OPENAI_API_VERSION", providers.azureOpenAi?.apiVersion);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_ANTHROPIC_ENABLED", providers.anthropic?.enabled);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_ANTHROPIC_MODEL", providers.anthropic?.defaultModel);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED", providers.claudeSubscription?.enabled);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODE", providers.claudeSubscription?.mode);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODEL", providers.claudeSubscription?.defaultModel);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_WORKSPACE", providers.claudeSubscription?.workspace);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED", providers.openaiCompatible?.enabled);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODE", providers.openaiCompatible?.mode);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL", providers.openaiCompatible?.defaultModel);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL", providers.openaiCompatible?.baseUrl);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OLLAMA_ENABLED", providers.ollama?.enabled);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OLLAMA_MODEL", providers.ollama?.defaultModel);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_OLLAMA_BASE_URL", providers.ollama?.baseUrl);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_COPILOT_OAUTH_ENABLED", providers.copilotOAuth?.enabled);
+  setProviderSetting(flattened, "BOSUN_PROVIDER_COPILOT_OAUTH_MODEL", providers.copilotOAuth?.defaultModel);
+  return flattened;
+}
+
+function resolvePrimarySelectionToken(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalizedProviderId = normalizeProviderDefinitionId(raw, "");
+  if (normalizedProviderId && normalizedProviderId === raw.toLowerCase()) {
+    return normalizedProviderId;
+  }
+  const resolvedSelection = resolveAgentSelection(raw);
+  if (resolvedSelection?.selectionId === raw) {
+    return raw;
+  }
+  return normalizePrimaryAgent(raw);
+}
+
 function selectPrimaryExecutor(config) {
   const executors = config?.executorConfig?.executors || [];
   if (!executors.length) return null;
@@ -622,41 +679,121 @@ function resolveAgentSelection(name) {
 
 function resolvePrimaryAgent(nameOrConfig) {
   if (typeof nameOrConfig === "string" && nameOrConfig.trim()) {
-    return normalizePrimaryAgent(nameOrConfig);
+    return resolvePrimarySelectionToken(nameOrConfig);
   }
   if (nameOrConfig && typeof nameOrConfig === "object") {
-    const direct = normalizePrimaryAgent(nameOrConfig.primaryAgent);
+    const configuredDefault = normalizeProviderDefinitionId(
+      nameOrConfig?.providers?.defaultProvider || "",
+      "",
+    );
+    if (configuredDefault) return configuredDefault;
+    const direct = resolvePrimarySelectionToken(nameOrConfig.primaryAgent);
     if (direct) return direct;
   }
   if (process.env.PRIMARY_AGENT || process.env.PRIMARY_AGENT_SDK) {
-    return normalizePrimaryAgent(
+    return resolvePrimarySelectionToken(
       process.env.PRIMARY_AGENT || process.env.PRIMARY_AGENT_SDK,
     );
   }
   const cfg = loadConfig();
-  const direct = normalizePrimaryAgent(cfg?.primaryAgent || "");
+  const configuredDefault = normalizeProviderDefinitionId(
+    cfg?.providers?.defaultProvider || process.env.BOSUN_PROVIDER_DEFAULT || "",
+    "",
+  );
+  if (configuredDefault) return configuredDefault;
+  const direct = resolvePrimarySelectionToken(cfg?.primaryAgent || "");
   if (direct) return direct;
   primaryProfile = selectPrimaryExecutor(cfg);
+  const profileName = String(primaryProfile?.name || "").trim();
+  if (profileName) return profileName;
   const mapped = executorToAdapter(primaryProfile?.executor);
   return mapped || "codex-sdk";
 }
 
 function createPrimaryProviderRegistry() {
+  let config = {};
   let configExecutors = [];
+  let settings = {};
   try {
-    const cfg = loadConfig();
-    configExecutors = Array.isArray(cfg?.executorConfig?.executors)
-      ? cfg.executorConfig.executors
+    config = loadConfig() || {};
+    configExecutors = Array.isArray(config?.executorConfig?.executors)
+      ? config.executorConfig.executors
       : [];
+    settings = buildProviderKernelSettings(config);
   } catch {
+    config = {};
     configExecutors = [];
+    settings = {};
   }
   return createProviderRegistry({
     adapters: ADAPTERS,
     configExecutors,
+    defaultProviderId:
+      normalizeProviderDefinitionId(
+        settings.BOSUN_PROVIDER_DEFAULT || process.env.BOSUN_PROVIDER_DEFAULT || "",
+        "",
+      ) || undefined,
+    env: process.env,
+    includeBuiltins: true,
+    settings,
     readBusy: readAdapterBusy,
     getAdapterCapabilities,
   });
+}
+
+function resolveActiveProviderRuntimeConfig() {
+  const registry = createPrimaryProviderRegistry();
+  const selectionId = String(activeExecutorSelection || activeAdapter?.name || "").trim();
+  const resolvedSelection = selectionId ? registry.resolveSelection(selectionId) : null;
+  const selectedProvider = resolvedSelection
+    ? registry.getProvider(resolvedSelection.selectionId) || registry.getProvider(resolvedSelection.providerId)
+    : registry.getDefaultProvider();
+  if (!selectedProvider?.providerId) {
+    return null;
+  }
+  const driver = getBuiltInProviderDriver(selectedProvider.providerId);
+  if (!driver) {
+    return null;
+  }
+  const providerSettings = selectedProvider.auth?.settings && typeof selectedProvider.auth.settings === "object"
+    ? selectedProvider.auth.settings
+    : {};
+  const providerConfig = driver.createSessionConfig({
+    env: process.env,
+    model: providerSettings.defaultModel || selectedProvider.defaultModel || null,
+    authMode: providerSettings.authMode || selectedProvider.auth?.preferredMode || null,
+    endpoint: providerSettings.endpoint || null,
+    baseUrl: providerSettings.baseUrl || null,
+    deployment: providerSettings.deployment || null,
+    apiVersion: providerSettings.apiVersion || null,
+    workspace: providerSettings.workspace || null,
+    settings: {
+      defaultModel: providerSettings.defaultModel || selectedProvider.defaultModel || null,
+      authMode: providerSettings.authMode || null,
+    },
+  });
+  return {
+    providerId: selectedProvider.providerId,
+    providerConfig: {
+      ...providerConfig,
+      provider: selectedProvider.providerId,
+    },
+  };
+}
+
+function withProviderRuntimeOptions(options = {}) {
+  if (activeAdapter?.name !== "opencode-sdk") {
+    return options;
+  }
+  const runtime = resolveActiveProviderRuntimeConfig();
+  if (!runtime) {
+    return options;
+  }
+  return {
+    ...options,
+    provider: runtime.providerId,
+    providerConfig: runtime.providerConfig,
+  };
 }
 
 export function setPrimaryAgent(name) {

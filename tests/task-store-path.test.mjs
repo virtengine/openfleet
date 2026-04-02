@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname, basename } from "node:path";
+import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 const tempDirs = [];
 const TEST_ENV_KEYS = [
@@ -46,6 +47,7 @@ function restoreEnv(snapshot) {
 }
 
 afterEach(() => {
+  resetStateLedgerCache();
   while (tempDirs.length) {
     const dir = tempDirs.pop();
     rmSync(dir, { recursive: true, force: true });
@@ -100,13 +102,13 @@ describe("task-store path configuration", () => {
 
   it("isolates real persistent store paths during test runtime", async () => {
     const env = snapshotEnv();
-    const homeDir = makeTempDir("ve-task-store-home-");
+    const repoRoot = makeTempDir("ve-task-store-home-");
     try {
       process.env.VITEST = "1";
-      delete process.env.REPO_ROOT;
-      process.env.BOSUN_HOME = homeDir;
+      process.env.REPO_ROOT = repoRoot;
+      delete process.env.BOSUN_HOME;
 
-      const persistentPath = resolve(homeDir, ".cache", "kanban-state.json");
+      const persistentPath = resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
       const taskStore = await loadTaskStoreModule();
 
       expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
@@ -115,14 +117,14 @@ describe("task-store path configuration", () => {
       );
       expect(taskStore.getStorePath()).not.toBe(persistentPath);
       expect(taskStore.getStorePath()).not.toContain(
-        resolve(homeDir, ".cache"),
+        resolve(repoRoot, ".bosun", ".cache"),
       );
 
       taskStore.configureTaskStore({ storePath: persistentPath });
       expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
       expect(taskStore.getStorePath()).not.toBe(persistentPath);
       expect(taskStore.getStorePath()).not.toContain(
-        resolve(homeDir, ".cache"),
+        resolve(repoRoot, ".bosun", ".cache"),
       );
     } finally {
       restoreEnv(env);

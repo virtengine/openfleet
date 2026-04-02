@@ -5940,14 +5940,64 @@
 
         // ── Settings & Config ──
         if (route === '/api/settings') {
+          const providers = {
+            defaultProviderId: 'openai-responses',
+            items: [
+              {
+                providerId: 'openai-responses',
+                label: 'OpenAI Responses API',
+                enabled: true,
+                advanced: false,
+                auth: { status: 'authenticated', authenticated: true, canRun: true, preferredMode: 'apiKey' },
+                modelCatalog: { defaultModel: 'gpt-5.4', models: [{ id: 'gpt-5.4', label: 'gpt-5.4', default: true }] },
+                capabilities: { streaming: true, tools: true, reasoning: true, apiKey: true },
+              },
+              {
+                providerId: 'ollama',
+                label: 'Ollama',
+                enabled: true,
+                advanced: true,
+                auth: { status: 'ready', authenticated: true, canRun: true, preferredMode: 'local' },
+                modelCatalog: { defaultModel: 'qwen2.5-coder:latest', models: [{ id: 'qwen2.5-coder:latest', label: 'qwen2.5-coder:latest', default: true }] },
+                capabilities: { streaming: true, tools: true, reasoning: true, local: true, openaiCompatible: true },
+              },
+            ],
+          };
           return {
             ok: true,
             data: { ...STATE.settings },
+            providers,
             meta: {
               envPath: '.env',
               configPath: 'bosun.config.json',
               configDir: '/demo',
             },
+          };
+        }
+        if (route === '/api/providers') {
+          return {
+            ok: true,
+            defaultProviderId: 'openai-responses',
+            items: [
+              {
+                providerId: 'openai-responses',
+                label: 'OpenAI Responses API',
+                enabled: true,
+                advanced: false,
+                auth: { status: 'authenticated', authenticated: true, canRun: true, preferredMode: 'apiKey' },
+                modelCatalog: { defaultModel: 'gpt-5.4', models: [{ id: 'gpt-5.4', label: 'gpt-5.4', default: true }] },
+                capabilities: { streaming: true, tools: true, reasoning: true, apiKey: true },
+              },
+              {
+                providerId: 'ollama',
+                label: 'Ollama',
+                enabled: true,
+                advanced: true,
+                auth: { status: 'ready', authenticated: true, canRun: true, preferredMode: 'local' },
+                modelCatalog: { defaultModel: 'qwen2.5-coder:latest', models: [{ id: 'qwen2.5-coder:latest', label: 'qwen2.5-coder:latest', default: true }] },
+                capabilities: { streaming: true, tools: true, reasoning: true, local: true, openaiCompatible: true },
+              },
+            ],
           };
         }
         if (route === '/api/settings/update') {

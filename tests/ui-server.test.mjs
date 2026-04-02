@@ -1416,9 +1416,13 @@ describeUiServer("ui-server mini app", () => {
             BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "true",
             BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL: "qwen2.5-coder:latest",
             BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:4000/v1",
+            BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED: "true",
+            BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_WORKSPACE: "chatgpt-team-alpha",
             BOSUN_PROVIDER_AZURE_OPENAI_ENABLED: "true",
             BOSUN_PROVIDER_AZURE_OPENAI_MODE: "oauth",
             BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT: "gpt-5-prod",
+            BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED: "true",
+            BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_WORKSPACE: "claude-lab-beta",
           },
         }),
       });
@@ -1430,14 +1434,22 @@ describeUiServer("ui-server mini app", () => {
         "BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED",
         "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL",
         "BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL",
+        "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED",
+        "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_WORKSPACE",
         "BOSUN_PROVIDER_AZURE_OPENAI_ENABLED",
         "BOSUN_PROVIDER_AZURE_OPENAI_MODE",
         "BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT",
+        "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED",
+        "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_WORKSPACE",
       ]));
 
       const config = JSON.parse(readFileSync(configPath, "utf8"));
       expect(config.providers).toEqual(expect.objectContaining({
         defaultProvider: "openai-compatible",
+        chatgptCodex: expect.objectContaining({
+          enabled: true,
+          workspace: "chatgpt-team-alpha",
+        }),
         openaiCompatible: expect.objectContaining({
           enabled: true,
           defaultModel: "qwen2.5-coder:latest",
@@ -1447,6 +1459,10 @@ describeUiServer("ui-server mini app", () => {
           enabled: true,
           mode: "oauth",
           deployment: "gpt-5-prod",
+        }),
+        claudeSubscription: expect.objectContaining({
+          enabled: true,
+          workspace: "claude-lab-beta",
         }),
       }));
 
@@ -1466,7 +1482,6 @@ describeUiServer("ui-server mini app", () => {
       expect(invalidJson.fieldErrors?.BOSUN_PROVIDER_DEFAULT).toBeTruthy();
     } finally {
       await new Promise((resolve) => server.close(resolve));
-      rmSync(tmpDir, { recursive: true, force: true });
       if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
       else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
     }
@@ -1592,7 +1607,7 @@ describeUiServer("ui-server mini app", () => {
       expect(existsSync(configPath)).toBe(false);
     }
 
-    rmSync(tmpDir, { recursive: true, force: true });
+    await new Promise((resolve) => server.close(resolve));
   }, 15000);
 
   it("returns trigger template payload with history/stat fields", async () => {
@@ -2384,6 +2399,55 @@ describeUiServer("ui-server mini app", () => {
     expect(hiddenListRes.status).toBe(200);
     expect(hiddenListJson.ok).toBe(true);
     expect(hiddenListJson.sessions.some((session) => session.id === "primary-voice-http-test-hidden")).toBe(true);
+  }, 15000);
+
+  it("hides stale empty primary sessions from the default session list", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const tracker = getSessionTracker();
+    const staleEmpty = tracker.createSession({
+      id: "primary-stale-empty-hidden",
+      type: "primary",
+      metadata: { title: "Stale Empty Session" },
+    });
+    const staleAt = Date.now() - (31 * 60 * 1000);
+    staleEmpty.startedAt = staleAt;
+    staleEmpty.createdAt = new Date(staleAt).toISOString();
+    staleEmpty.lastActivityAt = staleAt;
+    staleEmpty.lastActiveAt = new Date(staleAt).toISOString();
+    tracker.createSession({
+      id: "manual-visible-session",
+      type: "primary",
+      metadata: { title: "Visible Session" },
+    });
+    tracker.recordEvent("manual-visible-session", {
+      role: "assistant",
+      type: "agent_message",
+      content: "hello",
+      timestamp: new Date().toISOString(),
+    });
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
+    const listJson = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(listJson.sessions.some((session) => session.id === "primary-stale-empty-hidden")).toBe(false);
+    expect(listJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
+
+    const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
+    const hiddenListJson = await hiddenListRes.json();
+    expect(hiddenListRes.status).toBe(200);
+    expect(hiddenListJson.ok).toBe(true);
+    expect(hiddenListJson.sessions.some((session) => session.id === "primary-stale-empty-hidden")).toBe(true);
   }, 15000);
 
   it("hides synthetic historic session ids from the default session list", async () => {
@@ -6819,7 +6883,7 @@ describeUiServer("ui-server mini app", () => {
     expect(commentJson.ok).toBe(true);
     expect(commentJson.stored).toBe(true);
     expect(addTaskComment).toHaveBeenCalled();
-  });
+  }, 15000);
 
   it("returns normalized task comments from GET /api/tasks/comment", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

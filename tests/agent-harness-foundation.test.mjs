@@ -118,6 +118,34 @@ describe("provider registry foundation", () => {
       openaiCompatible: true,
     }));
   });
+
+  it("honors provider-kernel enablement and default provider selection", () => {
+    const registry = createProviderRegistry({
+      adapters,
+      includeBuiltins: true,
+      settings: {
+        BOSUN_PROVIDER_DEFAULT: "openai-compatible",
+        BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "true",
+      },
+    });
+
+    const defaultProvider = registry.getDefaultProvider();
+    const openaiCompatible = registry.getProvider("openai-compatible");
+    const ollama = registry.getProvider("ollama");
+
+    expect(defaultProvider).toEqual(expect.objectContaining({
+      providerId: "openai-compatible",
+      adapterId: "opencode-sdk",
+    }));
+    expect(openaiCompatible).toEqual(expect.objectContaining({
+      enabled: true,
+      available: true,
+    }));
+    expect(ollama).toEqual(expect.objectContaining({
+      enabled: false,
+      available: false,
+    }));
+  });
 });
 
 describe("tool orchestrator foundation", () => {

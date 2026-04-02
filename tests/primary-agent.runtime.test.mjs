@@ -38,6 +38,16 @@ const mockGetGeminiSessionInfo = vi.hoisted(() => vi.fn(() => ({ isBusy: false }
 const mockResetGeminiSession = vi.hoisted(() => vi.fn(async () => {}));
 const mockInitGeminiShell = vi.hoisted(() => vi.fn(async () => true));
 const mockExecPooledPrompt = vi.hoisted(() => vi.fn(async () => ({ finalResponse: "pooled-ok", items: [] })));
+const mockExecOpencodePrompt = vi.hoisted(() => vi.fn(async () => ({ finalResponse: "opencode stub", items: [], usage: null })));
+const mockSteerOpencodePrompt = vi.hoisted(() => vi.fn(async () => ({ ok: true, mode: "abort" })));
+const mockIsOpencodeBusy = vi.hoisted(() => vi.fn(() => false));
+const mockGetOpencodeSessionInfo = vi.hoisted(() => vi.fn(() => ({ turnCount: 0, isActive: false, isBusy: false, sessionCount: 0, namedSessionId: null })));
+const mockResetOpencodeSession = vi.hoisted(() => vi.fn(async () => {}));
+const mockInitOpencodeShell = vi.hoisted(() => vi.fn(async () => {}));
+const mockGetOpencodeSessionId = vi.hoisted(() => vi.fn(() => null));
+const mockListOpencodeSessions = vi.hoisted(() => vi.fn(async () => []));
+const mockSwitchOpencodeSession = vi.hoisted(() => vi.fn(async () => {}));
+const mockCreateOpencodeSession = vi.hoisted(() => vi.fn(async (id) => ({ id, serverSessionId: null })));
 
 vi.mock("../config/config.mjs", () => ({
   loadConfig: () => mockConfigState.current,
@@ -108,16 +118,16 @@ vi.mock("../shell/gemini-shell.mjs", () => ({
 }));
 
 vi.mock("../shell/opencode-shell.mjs", () => ({
-  execOpencodePrompt: vi.fn(async () => ({ finalResponse: "opencode stub", items: [], usage: null })),
-  steerOpencodePrompt: vi.fn(async () => ({ ok: true, mode: "abort" })),
-  isOpencodeBusy: vi.fn(() => false),
-  getSessionInfo: vi.fn(() => ({ turnCount: 0, isActive: false, isBusy: false, sessionCount: 0, namedSessionId: null })),
-  resetSession: vi.fn(async () => {}),
-  initOpencodeShell: vi.fn(async () => {}),
-  getActiveSessionId: vi.fn(() => null),
-  listSessions: vi.fn(async () => []),
-  switchSession: vi.fn(async () => {}),
-  createSession: vi.fn(async (id) => ({ id, serverSessionId: null })),
+  execOpencodePrompt: mockExecOpencodePrompt,
+  steerOpencodePrompt: mockSteerOpencodePrompt,
+  isOpencodeBusy: mockIsOpencodeBusy,
+  getSessionInfo: mockGetOpencodeSessionInfo,
+  resetSession: mockResetOpencodeSession,
+  initOpencodeShell: mockInitOpencodeShell,
+  getActiveSessionId: mockGetOpencodeSessionId,
+  listSessions: mockListOpencodeSessions,
+  switchSession: mockSwitchOpencodeSession,
+  createSession: mockCreateOpencodeSession,
 }));
 
 vi.mock("../agent/agent-pool.mjs", () => ({
@@ -143,6 +153,7 @@ describe("primary-agent runtime safeguards", () => {
       threadId: "thread-1",
       isBusy: false,
     });
+    mockExecOpencodePrompt.mockResolvedValue({ finalResponse: "opencode stub", items: [], usage: null });
   });
 
   it("uses dryRun codex config checks at runtime by default", async () => {
@@ -311,6 +322,61 @@ describe("primary-agent runtime safeguards", () => {
     expect(switched.ok).toBe(true);
     expect(primaryAgent.getPrimaryAgentName()).toBe("gemini-sdk");
     expect(primaryAgent.getPrimaryAgentSelection()).toBe("gemini-default");
+  });
+
+  it("prefers provider-kernel default provider for primary initialization", async () => {
+    mockConfigState.current = {
+      providers: {
+        defaultProvider: "openai-compatible",
+        openaiCompatible: {
+          enabled: true,
+          defaultModel: "qwen2.5-coder:latest",
+          baseUrl: "http://127.0.0.1:11434/v1",
+        },
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+
+    await primaryAgent.initPrimaryAgent();
+
+    expect(primaryAgent.getPrimaryAgentName()).toBe("opencode-sdk");
+    expect(primaryAgent.getPrimaryAgentSelection()).toBe("openai-compatible");
+    expect(mockInitOpencodeShell).toHaveBeenCalled();
+  });
+
+  it("passes selected provider runtime config into opencode-backed execution", async () => {
+    mockConfigState.current = {
+      providers: {
+        defaultProvider: "openai-compatible",
+        openaiCompatible: {
+          enabled: true,
+          defaultModel: "qwen2.5-coder:latest",
+          baseUrl: "http://127.0.0.1:11434/v1",
+        },
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent();
+
+    await primaryAgent.execPrimaryPrompt("route through provider kernel", {
+      sessionId: "opencode-provider-kernel",
+    });
+
+    expect(mockExecOpencodePrompt).toHaveBeenCalledTimes(1);
+    const [, options] = mockExecOpencodePrompt.mock.calls[0];
+    expect(options).toEqual(expect.objectContaining({
+      provider: "openai-compatible",
+      providerConfig: expect.objectContaining({
+        providerId: "openai-compatible",
+        provider: "openai-compatible",
+        model: "qwen2.5-coder:latest",
+        baseUrl: "http://127.0.0.1:11434/v1",
+      }),
+    }));
   });
 
   it("retries codex locally before any failover", async () => {

@@ -998,7 +998,7 @@ function getGitHubAuthScopes(cwd) {
     const scopesText = line.split(":").slice(1).join(":");
     return scopesText
       .split(",")
-      .map((scope) => scope.trim())
+      .map((scope) => String(scope || "").trim().replace(/^['"\s]+|['"\s]+$/g, ""))
       .filter(Boolean);
   } catch {
     return [];
@@ -6765,4 +6765,3 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup)) {
     process.exit(1);
   });
 }
-
