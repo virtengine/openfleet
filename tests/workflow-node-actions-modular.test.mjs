@@ -8,7 +8,12 @@ import "../workflow/workflow-nodes/actions.mjs";
 import "../workflow/workflow-nodes/flow.mjs";
 import { getNodeType } from "../workflow/workflow-engine.mjs";
 import { _resetSingleton, getSessionTracker } from "../infra/session-tracker.mjs";
-import { getApprovalRequest, resolveApprovalRequest } from "../workflow/approval-queue.mjs";
+import {
+  getApprovalRequest,
+  getApprovalRequestById,
+  resolveApprovalRequest,
+} from "../workflow/approval-queue.mjs";
+import { createHarnessSessionManager } from "../agent/session-manager.mjs";
 
 describe("workflow modular actions", () => {
   beforeEach(() => {
@@ -157,5 +162,220 @@ describe("workflow modular actions", () => {
       implementationState: "implementation_done_commit_blocked",
     });
     expect(session?.status).toBe("implementation_done_commit_blocked");
+  });
+
+  it("passes managed harness session lineage into agent-pool workflow runs", async () => {
+    const nodeType = getNodeType("action.run_agent");
+    const sessionManager = createHarnessSessionManager();
+    const launchOrResumeThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "workflow agent completed",
+      items: [],
+      sdk: "codex",
+      threadId: "workflow-thread-1",
+      resumed: false,
+    });
+    const node = {
+      id: "run-agent",
+      type: "action.run_agent",
+      config: {
+        prompt: "Implement the requested change end-to-end.",
+        failOnError: false,
+        autoRecover: false,
+      },
+    };
+    const ctx = {
+      id: "run-parent-1",
+      data: {
+        _workflowId: "wf-managed-session",
+        _workflowName: "Managed Session Workflow",
+        _workflowSessionId: "session-parent-1",
+        _workflowRootSessionId: "session-root-1",
+        taskId: "TASK-200",
+        taskTitle: "Managed session linkage",
+        task: {
+          id: "TASK-200",
+          title: "Managed session linkage",
+        },
+      },
+      resolve(value) {
+        return value;
+      },
+      log: vi.fn(),
+      setNodeStatus: vi.fn(),
+    };
+    const engine = {
+      services: {
+        sessionManager,
+        agentPool: {
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: true,
+            output: "fallback should not be used",
+            items: [],
+            sdk: "codex",
+            threadId: "workflow-thread-fallback",
+          }),
+          launchOrResumeThread,
+        },
+      },
+      list: () => [],
+      execute: vi.fn(),
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(result.success).toBe(true);
+    expect(launchOrResumeThread).toHaveBeenCalledOnce();
+    expect(launchOrResumeThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({
+        sessionId: "TASK-200:agent:run-parent-1:run-agent:turn",
+        sessionScope: "workflow-task",
+        parentSessionId: "session-parent-1",
+        rootSessionId: "session-root-1",
+        metadata: expect.objectContaining({
+          source: "workflow-run-agent",
+          workflowRunId: "run-parent-1",
+          workflowId: "wf-managed-session",
+          workflowName: "Managed Session Workflow",
+          workflowNodeId: "run-agent",
+          taskId: "TASK-200",
+          taskTitle: "Managed session linkage",
+        }),
+      }),
+    );
+    expect(sessionManager.getSession("TASK-200:agent:run-parent-1:run-agent:turn")).toMatchObject({
+      sessionId: "TASK-200:agent:run-parent-1:run-agent:turn",
+      parentSessionId: "session-parent-1",
+      rootSessionId: "session-root-1",
+      status: "completed",
+      sessionType: "workflow-agent",
+    });
+  });
+
+  it("routes child workflow execution through the shared session manager lineage graph", async () => {
+    const nodeType = getNodeType("action.execute_workflow");
+    const sessionManager = createHarnessSessionManager();
+    const node = {
+      id: "dispatch-child",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-wf",
+        mode: "sync",
+        outputVariable: "childSummary",
+      },
+    };
+    const ctx = {
+      id: "run-parent-2",
+      data: {
+        _workflowId: "parent-wf",
+        _workflowName: "Parent Workflow",
+        _workflowSessionId: "session-parent-2",
+        _workflowRootSessionId: "session-root-2",
+        taskId: "TASK-201",
+        taskTitle: "Spawn child workflow",
+      },
+      resolve(value) {
+        return value;
+      },
+      log: vi.fn(),
+    };
+    const childCtx = {
+      id: "child-run-1",
+      errors: [],
+      data: {
+        _workflowTerminalOutput: { summary: "child complete" },
+      },
+    };
+    const engine = {
+      services: { sessionManager },
+      execute: vi.fn().mockResolvedValue(childCtx),
+      get: vi.fn().mockReturnValue({ id: "child-wf" }),
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+    const childSessionId = "TASK-201:subagent:run-parent-2:dispatch-child:child-wf";
+
+    expect(result).toMatchObject({
+      success: true,
+      queued: false,
+      mode: "sync",
+      workflowId: "child-wf",
+      childSessionId,
+      parentSessionId: "session-parent-2",
+      rootSessionId: "session-root-2",
+      runId: "child-run-1",
+    });
+    expect(ctx.data.childSummary).toEqual(result);
+    expect(sessionManager.getSession(childSessionId)).toMatchObject({
+      sessionId: childSessionId,
+      parentSessionId: "session-parent-2",
+      rootSessionId: "session-root-2",
+      status: "completed",
+      sessionType: "workflow-subagent",
+    });
+    expect(sessionManager.getLineageView(childSessionId)).toMatchObject({
+      session: expect.objectContaining({
+        sessionId: childSessionId,
+        parentSessionId: "session-parent-2",
+        rootSessionId: "session-root-2",
+      }),
+      rootSession: expect.objectContaining({
+        sessionId: "session-root-2",
+      }),
+    });
+  });
+
+  it("routes workflow bosun_tool through the centralized tool orchestrator approval path", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-bosun-tool-approval-"));
+    const nodeType = getNodeType("action.bosun_tool");
+    const toolsMod = await import("../agent/agent-custom-tools.mjs");
+    vi.spyOn(toolsMod, "getCustomTool").mockReturnValue({
+      id: "demo-tool",
+      entry: {
+        title: "Demo Tool",
+        category: "test",
+        requiresApproval: true,
+      },
+    });
+    vi.spyOn(toolsMod, "listCustomTools").mockReturnValue([{ id: "demo-tool" }]);
+    vi.spyOn(toolsMod, "invokeCustomTool").mockResolvedValue({
+      exitCode: 0,
+      stdout: "{\"ok\":true}",
+      stderr: "",
+    });
+
+    const ctx = {
+      id: "run-tool-1",
+      data: {
+        repoRoot,
+        _workflowId: "wf-tool",
+        _workflowName: "Tool Workflow",
+      },
+      resolve(value) {
+        return value;
+      },
+      log: vi.fn(),
+    };
+    const node = {
+      id: "tool-node",
+      type: "action.bosun_tool",
+      config: {
+        toolId: "demo-tool",
+        requireApproval: true,
+        approvalTimeoutMs: 1000,
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, {});
+    const approvalRequest = getApprovalRequestById(result.approvalRequestId, { repoRoot });
+
+    expect(result.success).toBe(false);
+    expect(result.approvalRequestId).toBeTruthy();
+    expect(result.approvalState).toBe("pending");
+    expect(approvalRequest).toMatchObject({
+      status: "pending",
+      scopeType: "workflow-action",
+    });
+    expect(toolsMod.invokeCustomTool).not.toHaveBeenCalled();
   });
 });

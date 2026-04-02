@@ -3384,9 +3384,14 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     : "replan";
   const planningLabel = planningMode === "decompose" ? "Decomposition" : "Replan";
   const planningVerb = planningMode === "decompose" ? "decompose" : "replan";
+  const plannerQueuePlan = replanProposal?.queuePlan && typeof replanProposal.queuePlan === "object"
+    ? replanProposal.queuePlan
+    : (plannerState?.queuePlan && typeof plannerState.queuePlan === "object" ? plannerState.queuePlan : null);
   const plannerOwnedTaskIds = Array.isArray(replanProposal?.createdTaskIds)
     ? replanProposal.createdTaskIds.map((entry) => String(entry || "").trim()).filter(Boolean)
-    : [];
+    : Array.isArray(plannerQueuePlan?.steps)
+      ? plannerQueuePlan.steps.map((entry) => String(entry?.taskId || "").trim()).filter(Boolean)
+      : [];
   const plannerOwnedSubtasks = plannerOwnedTaskIds.length > 0
     ? subtasks.filter((entry) => plannerOwnedTaskIds.includes(String(entry?.id || "").trim()))
     : [];
@@ -4944,8 +4949,30 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                     <div class="task-comment-body">
                       ${plannerOwnedSubtasks.length > 0
                         ? `${plannerOwnedSubtasks.length} planner-owned child tasks are now attached to this parent task.`
-                        : "This proposal will create a planner-owned child graph under the current task when applied."}
+                      : "This proposal will create a planner-owned child graph under the current task when applied."}
                     </div>
+                  </div>
+                `}
+                ${plannerQueuePlan && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">
+                      Queue Plan
+                      ${plannerQueuePlan.queueStrategy ? ` · ${plannerQueuePlan.queueStrategy}` : ""}
+                      ${plannerQueuePlan.counts?.stepCount ? ` · ${plannerQueuePlan.counts.stepCount} steps` : ""}
+                      ${plannerQueuePlan.counts?.createdTaskCount ? ` · ${plannerQueuePlan.counts.createdTaskCount} mapped` : ""}
+                    </div>
+                    <div class="task-comment-body">
+                      ${plannerQueuePlan.summary || "Planner queue graph available."}
+                    </div>
+                    ${Array.isArray(plannerQueuePlan.steps) && plannerQueuePlan.steps.map((entry) => html`
+                      <div class="task-comment-meta" key=${`queue-step-${entry.id || entry.order || entry.title}`}>
+                        ${entry.order}. ${entry.title}
+                        ${entry.status ? ` · ${entry.status}` : ""}
+                        ${entry.dependsOnStepIds?.length > 0 ? ` · depends on ${entry.dependsOnStepIds.join(", ")}` : ""}
+                        ${entry.dependsOnTaskIds?.length > 0 ? ` · external deps ${entry.dependsOnTaskIds.join(", ")}` : ""}
+                        ${entry.taskId ? ` · task ${entry.taskId}` : ""}
+                      </div>
+                    `)}
                   </div>
                 `}
                 ${Array.isArray(replanProposal.subtasks) && replanProposal.subtasks.map((entry, index) => html`

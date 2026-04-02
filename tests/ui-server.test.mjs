@@ -8219,6 +8219,8 @@ describeUiServer("ui-server mini app", () => {
       expect(propose.ok).toBe(true);
       expect(propose.proposal.recommendedAction).toBe("split_task");
       expect(propose.proposal.subtasks).toHaveLength(2);
+      expect(propose.proposal.queuePlan?.counts?.stepCount).toBe(2);
+      expect(propose.proposal.queuePlan?.steps?.[1]?.dependsOnStepIds).toEqual(["step-1"]);
       expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
       expect(propose.task.meta?.replanProposal?.summary).toContain("Split parser implementation");
 
@@ -8231,6 +8233,8 @@ describeUiServer("ui-server mini app", () => {
       expect(apply.ok).toBe(true);
       expect(Array.isArray(apply.createdSubtasks)).toBe(true);
       expect(apply.createdSubtasks).toHaveLength(2);
+      expect(apply.queuePlan?.counts?.createdTaskCount).toBe(2);
+      expect(apply.taskGraph?.taskCount).toBe(2);
       const [firstSubtask, secondSubtask] = apply.createdSubtasks;
       expect(firstSubtask.parentTaskId || firstSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
       expect(secondSubtask.parentTaskId || secondSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
@@ -8251,6 +8255,7 @@ describeUiServer("ui-server mini app", () => {
       expect(detail.ok).toBe(true);
       expect(detail.data.meta?.replanProposal?.status).toBe("applied");
       expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(2);
+      expect(detail.data.meta?.replanProposal?.queuePlan?.counts?.createdTaskCount).toBe(2);
     } finally {
       if (server) {
         await new Promise((resolve) => server.close(resolve));
@@ -8361,6 +8366,9 @@ describeUiServer("ui-server mini app", () => {
       expect(propose.ok).toBe(true);
       expect(propose.proposal.recommendedAction).toBe("split_task");
       expect(propose.proposal.subtasks).toHaveLength(3);
+      expect(propose.proposal.queuePlan?.counts?.stepCount).toBe(3);
+      expect(propose.proposal.queuePlan?.steps?.[1]?.dependsOnStepIds).toEqual(["step-1"]);
+      expect(propose.proposal.queuePlan?.steps?.[2]?.dependsOnStepIds).toEqual(["step-2"]);
       expect(propose.task.meta?.replanProposal?.status).toBe("proposed");
       expect(propose.task.meta?.plannerState?.latestReplan?.status).toBe("proposed");
       expect(propose.task.meta?.replanProposal?.summary).toContain("Decompose the ingestion epic");
@@ -8378,6 +8386,8 @@ describeUiServer("ui-server mini app", () => {
       expect(apply.ok).toBe(true);
       expect(Array.isArray(apply.createdSubtasks)).toBe(true);
       expect(apply.createdSubtasks).toHaveLength(3);
+      expect(apply.queuePlan?.counts?.createdTaskCount).toBe(3);
+      expect(apply.taskGraph?.taskCount).toBe(3);
       expect(apply.task.status).toBe("blocked");
       expect(apply.task.meta?.replanProposal?.status).toBe("applied");
       expect(apply.task.meta?.plannerState?.latestReplan?.createdTaskIds).toEqual(
@@ -8395,6 +8405,7 @@ describeUiServer("ui-server mini app", () => {
       expect(detail.ok).toBe(true);
       expect(detail.data.meta?.replanProposal?.status).toBe("applied");
       expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(3);
+      expect(detail.data.meta?.replanProposal?.queuePlan?.counts?.createdTaskCount).toBe(3);
 
       const listedChildren = await fetch(
         "http://127.0.0.1:" + port + "/api/tasks/subtasks?parentTaskId=" + encodeURIComponent(parentTask.data.id),
@@ -8812,6 +8823,9 @@ describeUiServer("ui-server mini app", () => {
         agentType: "codex-sdk",
         attemptId: "attempt-live-search",
         stage: "live_tool_compaction",
+        sessionType: "voice-delegate",
+        normalizedSessionType: "voice",
+        decision: "compressed",
         compactionFamily: "search",
         commandFamily: "rg",
       },
@@ -8824,6 +8838,9 @@ describeUiServer("ui-server mini app", () => {
         agentType: "copilot-sdk",
         attemptId: "attempt-live-git",
         stage: "live_tool_compaction",
+        sessionType: "delegate",
+        normalizedSessionType: "delegate",
+        decision: "compressed",
         compactionFamily: "git",
         commandFamily: "git",
       },
@@ -8836,6 +8853,22 @@ describeUiServer("ui-server mini app", () => {
         agentType: "claude-sdk",
         attemptId: "attempt-session-total",
         stage: "session_total",
+        sessionType: "task",
+        normalizedSessionType: "task",
+        decision: "compressed",
+      },
+      {
+        timestamp: new Date(now.getTime() - 15_000).toISOString(),
+        originalChars: 7000,
+        compressedChars: 7000,
+        savedChars: 0,
+        savedPct: 0,
+        agentType: "codex-sdk",
+        attemptId: "attempt-below-threshold",
+        stage: "session_skipped",
+        sessionType: "voice-ask",
+        normalizedSessionType: "voice",
+        decision: "below_threshold",
       },
     ];
     writeFileSync(
@@ -8909,8 +8942,14 @@ describeUiServer("ui-server mini app", () => {
       expect(Number(payload.data?.dailySavedTokensEstimated?.[now.toISOString().slice(0, 10)] || 0)).toBeGreaterThan(0);
       expect(payload.data.topCompactionFamilies.some((entry) => entry.name === "search" && entry.count >= 1)).toBe(true);
       expect(payload.data.topCommandFamilies.some((entry) => entry.name === "git" && entry.count >= 1)).toBe(true);
+      expect(Number(payload.data?.sessionTypeCounts?.["voice-delegate"] || 0)).toBeGreaterThanOrEqual(1);
+      expect(Number(payload.data?.normalizedSessionTypeCounts?.voice || 0)).toBeGreaterThanOrEqual(2);
+      expect(Number(payload.data?.decisionCounts?.compressed || 0)).toBeGreaterThanOrEqual(3);
+      expect(payload.data.topSessionTypes.some((entry) => entry.name === "voice-delegate" && entry.normalizedSessionType === "voice")).toBe(true);
       expect(payload.data.recentEvents[0]).toHaveProperty("stage");
       expect(payload.data.recentEvents[0]).toHaveProperty("estimatedSavedTokens");
+      expect(payload.data.recentEvents[0]).toHaveProperty("sessionType");
+      expect(payload.data.recentEvents[0]).toHaveProperty("decision");
     } finally {
       await new Promise((resolveClose) => server.close(() => resolveClose()));
       resetStateLedgerCache();

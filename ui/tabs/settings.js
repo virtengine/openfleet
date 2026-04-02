@@ -159,6 +159,55 @@ const SETTINGS_STYLES = `
 }
 /* Search wrapper */
 .settings-search { margin-bottom: 8px; }
+.settings-arch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.settings-arch-card {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  background: color-mix(in srgb, var(--bg-card, rgba(17, 24, 39, 0.82)) 88%, transparent);
+}
+.settings-arch-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary, #fff);
+  margin-bottom: 6px;
+}
+.settings-arch-current {
+  font-size: 12px;
+  color: var(--accent, #5a7cff);
+  margin-bottom: 8px;
+}
+.settings-arch-note {
+  font-size: 12px;
+  color: var(--text-secondary, #94a3b8);
+  line-height: 1.5;
+}
+.settings-arch-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.settings-arch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  background: rgba(255,255,255,0.03);
+  color: var(--text-secondary, #cbd5e1);
+  font-size: 11px;
+}
+.settings-arch-chip.active {
+  border-color: color-mix(in srgb, var(--accent, #5a7cff) 55%, transparent);
+  background: color-mix(in srgb, var(--accent, #5a7cff) 18%, transparent);
+  color: var(--text-primary, #fff);
+}
 /* Floating save bar */
 .settings-save-bar {
   position: fixed;
@@ -783,8 +832,9 @@ function maskValue(val) {
 }
 
 const EXECUTOR_SECTION_ORDER = [
-  "Runtime & Pool",
-  "Routing & Planning",
+  "Interactive Shell & Task Runner",
+  "Weighted Routing & Planning",
+  "Internal Harness",
   "SDK Availability",
   "Provider Credentials",
   "Codex Models",
@@ -794,8 +844,9 @@ const EXECUTOR_SECTION_ORDER = [
 ];
 
 const EXECUTOR_SECTION_DESCRIPTIONS = {
-  "Runtime & Pool": "Core runtime behavior for the internal executor pool, including parallelism, SDK selection, and timeouts.",
-  "Routing & Planning": "How Bosun distributes tasks, chooses fallback executors, and shapes planning behavior.",
+  "Interactive Shell & Task Runner": "Primary interactive shell runtime plus the default SDK family and slot limits for Bosun's built-in task runner.",
+  "Weighted Routing & Planning": "How Bosun distributes queued tasks, chooses fallback executors, and shapes planning behavior.",
+  "Internal Harness": "Deterministic harness control plane settings and provider-backed activation workflow.",
   "SDK Availability": "Enable or disable SDK families from the runtime picker and task execution pool.",
   "Provider Credentials": "API credentials used by executor backends.",
   "Codex Models": "Codex-specific model, profile, and subagent settings.",
@@ -815,7 +866,7 @@ function getExecutorSection(def) {
     "INTERNAL_EXECUTOR_MAX_RETRIES",
     "INTERNAL_EXECUTOR_POLL_MS",
     "PRIMARY_AGENT",
-  ].includes(key)) return "Runtime & Pool";
+  ].includes(key)) return "Interactive Shell & Task Runner";
   if ([
     "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
     "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
@@ -824,7 +875,8 @@ function getExecutorSection(def) {
     "FAILOVER_STRATEGY",
     "COMPLEXITY_ROUTING_ENABLED",
     "PROJECT_REQUIREMENTS_PROFILE",
-  ].includes(key)) return "Routing & Planning";
+  ].includes(key)) return "Weighted Routing & Planning";
+  if (key.startsWith("BOSUN_HARNESS_")) return "Internal Harness";
   if (key.endsWith("_SDK_DISABLED")) return "SDK Availability";
   if (key.endsWith("API_KEY")) return "Provider Credentials";
   if (key.startsWith("CODEX_")) return "Codex Models";
@@ -854,6 +906,47 @@ function formatCountdownSeconds(ms) {
   return Math.ceil(remaining / 1000);
 }
 
+function AgentArchitectureGuide({ architecture }) {
+  if (!architecture) return null;
+  const sections = [
+    architecture.shellRuntime,
+    architecture.taskRunner,
+    architecture.routingPool,
+    architecture.providerLayer,
+  ].filter(Boolean);
+  if (sections.length === 0) return null;
+  return html`
+    <${Card}>
+      <div class="card-subtitle mb-sm" style="font-size:13px;font-weight:700">How Bosun Agent Wiring Works</div>
+      <div class="meta-text mb-sm">
+        These settings configure different layers. Pick the layer you mean first, then adjust the matching fields below.
+      </div>
+      <div class="settings-arch-grid">
+        ${sections.map((section) => html`
+          <div class="settings-arch-card" key=${section.title}>
+            <div class="settings-arch-title">${section.title}</div>
+            ${section.current && html`
+              <div class="settings-arch-current">Current: <code>${section.current}</code></div>
+            `}
+            <div class="settings-arch-note">${section.summary}</div>
+            ${section.note && html`<div class="settings-arch-note" style="margin-top:8px">${section.note}</div>`}
+            ${Array.isArray(section.items) && section.items.length > 0 && html`
+              <div class="settings-arch-list">
+                ${section.items.slice(0, 8).map((item) => html`
+                  <span class=${`settings-arch-chip ${item.selected ? "active" : ""}`.trim()}>
+                    ${item.label || item.providerId || item.id}
+                    ${item.authenticated ? "connected" : item.selected ? "selected" : ""}
+                  </span>
+                `)}
+              </div>
+            `}
+          </div>
+        `)}
+      </div>
+    <//>
+  `;
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  ServerConfigMode — .env management UI
  * ═══════════════════════════════════════════════════════════════ */
@@ -862,6 +955,7 @@ function ServerConfigMode() {
   const [serverData, setServerData] = useState(null);     // { KEY: "value" } from API
   const [serverSources, setServerSources] = useState(null); // { KEY: "env" | "config" | "default" | "derived" | ... }
   const [serverMeta, setServerMeta] = useState(null);     // { envPath, configPath, configDir }
+  const [agentArchitecture, setAgentArchitecture] = useState(null);
   const [configSync, setConfigSync] = useState(null);     // { total, updated, skipped, configPath }
   const [loadError, setLoadError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -916,12 +1010,14 @@ function ServerConfigMode() {
             : null,
         );
         setServerMeta(res.meta || null);
+        setAgentArchitecture(res.agentArchitecture || null);
         if (!preserveConfigSync) setConfigSync(null);
       } else if (isLegacyObject) {
         // Demo/legacy compatibility: /api/settings may return a plain object.
         setServerData(res);
         setServerSources(null);
         setServerMeta(null);
+        setAgentArchitecture(null);
         if (!preserveConfigSync) setConfigSync(null);
       } else {
         throw new Error(res?.error || "Unexpected response format");
@@ -931,6 +1027,7 @@ function ServerConfigMode() {
       setServerData(null);
       setServerSources(null);
       setServerMeta(null);
+      setAgentArchitecture(null);
       setConfigSync(null);
     } finally {
       if (!silent) setLoading(false);
@@ -1675,6 +1772,8 @@ function ServerConfigMode() {
         <!-- Category description -->
         ${activeCat?.description &&
         html`<div class="settings-cat-desc">${activeCat.description}</div>`}
+
+        ${activeCategory === "executor" && html`<${AgentArchitectureGuide} architecture=${agentArchitecture} />`}
 
         <!-- GitHub Device Flow login card -->
         ${activeCategory === "github" && html`<${GitHubDeviceFlowCard} config=${serverData} />`}

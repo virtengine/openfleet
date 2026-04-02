@@ -30,25 +30,6 @@ import {
   claimTelegramPollOwner,
   releaseTelegramPollOwner,
 } from "./telegram-poll-owner.mjs";
-import {
-  execPrimaryPrompt,
-  isPrimaryBusy,
-  getPrimaryAgentInfo,
-  resetPrimaryAgent,
-  initPrimaryAgent,
-  steerPrimaryPrompt,
-  getPrimaryAgentName,
-  switchPrimaryAgent,
-} from "../agent/primary-agent.mjs";
-import {
-  getPoolSdkName,
-  setPoolSdk,
-  resetPoolSdkCache,
-  getAvailableSdks,
-  getActiveThreads,
-  clearThreadRegistry,
-  invalidateThread,
-} from "../agent/agent-pool.mjs";
 import { fetchWithFallback } from "../infra/fetch-runtime.mjs";
 import { setComponentStatus } from "../infra/health-status.mjs";
 import {
@@ -68,6 +49,7 @@ import { generateWeeklyAgentWorkReport } from "../agent/agent-work-report.mjs";
 import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
 import { createExecutorHealthRegionCache } from "./executor-health-region-cache.mjs";
 import { createStickyMenuStateManager } from "./sticky-menu-state.mjs";
+import { createTelegramHarnessApiClient } from "./harness-api-client.mjs";
 import {
   getTelegramUiUrl,
   startTelegramUiServer,
@@ -2957,7 +2939,7 @@ async function transcribeAndProcessVoice(voiceFile, chatId) {
   // Route through the same free-text handler
   if (transcribedText.startsWith("/")) {
     enqueueCommand(() => handleCommand(transcribedText, chatId));
-  } else if (isPrimaryBusy() && getActiveAgentSession(chatId)) {
+  } else if (getActiveAgentSession(chatId)?.running === true) {
     safeDetach("voice-text", () => handleFreeText(transcribedText, chatId));
   } else {
     enqueueAgentTask(() => handleFreeText(transcribedText, chatId), chatId);
@@ -3063,7 +3045,7 @@ async function handleUpdate(update) {
   // Free-text agent task runs in a separate per-chat queue so one chat does not
   // block another. If this same chat already has an active run, handle
   // immediately so follow-ups can be queued into that run.
-  if (isPrimaryBusy() && getActiveAgentSession(chatId)) {
+  if (getActiveAgentSession(chatId)?.running === true) {
     safeDetach("free-text", () => handleFreeText(text, chatId));
     return;
   }
@@ -4641,7 +4623,10 @@ async function showStartTaskSdkPicker(chatId, taskId, executor) {
     return;
   }
   const safeExecutor = normalizeStartTaskExecutor(executor) || "internal";
-  const available = getAvailableSdks();
+  const availablePayload = await harnessApi.getProviderSelection().catch(() => ({ selection: {} }));
+  const available = Array.isArray(availablePayload?.selection?.availableSdks)
+    ? availablePayload.selection.availableSdks
+    : [];
   const sdkList = available.length > 0 ? available : ["codex", "copilot", "claude"];
   const tokenAuto = issueUiToken({
     type: "starttask_confirm",
@@ -4856,7 +4841,8 @@ async function listWorktreeNames() {
 
 async function listThreadEntries() {
   try {
-    const threads = getActiveThreads();
+    const payload = await harnessApi.listThreads();
+    const threads = Array.isArray(payload?.items) ? payload.items : [];
     return threads
       .map((t) => ({
         taskKey: t.taskKey,
@@ -5603,7 +5589,7 @@ Object.assign(UI_SCREENS, {
     parent: "routing",
     body: () => "Switch the agent pool SDK.",
     keyboard: () => {
-      const available = getAvailableSdks();
+      const available = ["codex", "copilot", "claude"];
       const rows = [];
       const buttons = ["codex", "copilot", "claude"].map((sdk) =>
         uiButton(sdk, uiCmdAction(`/sdk ${sdk}`)),
@@ -7808,7 +7794,8 @@ async function cmdAgents(chatId) {
       lines.push("Task Executor: unavailable");
     }
 
-    const threads = getActiveThreads();
+    const threadPayload = await harnessApi.listThreads().catch(() => ({ items: [] }));
+    const threads = Array.isArray(threadPayload?.items) ? threadPayload.items : [];
     lines.push(`Thread Registry: ${threads.length} active thread(s)`);
     for (const entry of threads.slice(0, 5)) {
       lines.push(
@@ -8314,18 +8301,24 @@ async function cmdCleanupMerged(chatId, args) {
 }
 
 async function cmdHistory(chatId) {
-  const info = getPrimaryAgentInfo();
-  const sessionLabel = info.sessionId || info.threadId || "(none)";
-  const agentLabel = info.adapter || info.provider || getPrimaryAgentName();
+  const session = getActiveAgentSession(chatId);
+  const sessionId = String(session?.sessionId || "").trim();
+  let detail = null;
+  if (sessionId) {
+    detail = await harnessApi.getSession(sessionId).catch(() => null);
+  }
+  const sessionLabel = sessionId || "(none)";
+  const sessionRecord = detail?.session || {};
+  const turnCount = Array.isArray(sessionRecord?.messages) ? sessionRecord.messages.length : 0;
+  const agentLabel = String(sessionRecord?.metadata?.agent || sessionRecord?.metadata?.mode || "harness-session").trim();
   const lines = [
-    `:cpu: Primary Agent (${agentLabel})`,
+    `:cpu: Harness Session (${agentLabel})`,
     "",
     `Session: ${sessionLabel}`,
-    `Turns: ${info.turnCount}`,
-    `Active: ${info.isActive ? "yes" : "no"}`,
-    `Busy: ${info.isBusy ? "yes" : "no"}`,
-    info.workspacePath ? `Workspace: ${info.workspacePath}` : "",
-    info.fallbackReason ? `Fallback: ${info.fallbackReason}` : "",
+    `Turns: ${turnCount}`,
+    `Active: ${session?.running === true ? "yes" : "no"}`,
+    `Busy: ${session?.running === true ? "yes" : "no"}`,
+    sessionRecord?.metadata?.workspaceDir ? `Workspace: ${sessionRecord.metadata.workspaceDir}` : "",
     "",
     "The session persists across messages.",
     "Use /clear to start a fresh session.",
@@ -8335,17 +8328,14 @@ async function cmdHistory(chatId) {
 
 async function cmdClear(chatId, args) {
   const confirmFlag = /--confirm\b/i.test(String(args || ""));
+  const session = getActiveAgentSession(chatId);
+  const sessionId = String(session?.sessionId || "").trim();
   if (!confirmFlag) {
-    const info = getPrimaryAgentInfo();
-    const sessionLabel = info.sessionId || info.threadId || "(none)";
-    const agentLabel = info.adapter || info.provider || getPrimaryAgentName();
     const lines = [
-      ":alert: This will clear the primary agent session and reset context.",
+      ":alert: This will clear the active harness session and reset context.",
       "",
-      `Agent: ${agentLabel}`,
-      `Session: ${sessionLabel}`,
-      `Turns: ${info.turnCount}`,
-      `Busy: ${info.isBusy ? "yes" : "no"}`,
+      `Session: ${sessionId || "(none)"}`,
+      `Busy: ${session?.running === true ? "yes" : "no"}`,
       "",
       "Proceed?",
     ];
@@ -8354,10 +8344,13 @@ async function cmdClear(chatId, args) {
     });
     return;
   }
-  await resetPrimaryAgent();
+  if (sessionId) {
+    await harnessApi.deleteSession(sessionId).catch(() => null);
+  }
+  clearActiveAgentSession(chatId);
   await sendReply(
     chatId,
-    ":trash: Agent session reset. Next message starts a fresh conversation.",
+    ":trash: Harness session reset. Next message starts a fresh conversation.",
   );
 }
 
@@ -9129,7 +9122,7 @@ async function cmdThreads(chatId, subArg) {
         );
         return;
       }
-      clearThreadRegistry();
+      await harnessApi.clearThreads();
       await sendReply(chatId, ":check: Thread registry cleared.");
       return;
     }
@@ -9161,12 +9154,13 @@ async function cmdThreads(chatId, subArg) {
       });
       return;
     }
-    invalidateThread(taskKey);
+    await harnessApi.invalidateThread(taskKey);
     await sendReply(chatId, `:check: Thread for "${taskKey}" invalidated.`);
     return;
   }
 
-  const threads = getActiveThreads();
+  const threadsPayload = await harnessApi.listThreads().catch(() => ({ items: [] }));
+  const threads = Array.isArray(threadsPayload?.items) ? threadsPayload.items : [];
   if (threads.length === 0) {
     await sendReply(
       chatId,
@@ -9437,10 +9431,11 @@ async function cmdExecutor(chatId, args) {
 
 async function cmdSdk(chatId, sdkArg) {
   if (!sdkArg || sdkArg.trim() === "") {
-    // Show current SDK info
-    const poolSdk = getPoolSdkName();
-    const primaryAgent = getPrimaryAgentName();
-    const available = getAvailableSdks();
+    const selectionPayload = await harnessApi.getProviderSelection().catch(() => ({ selection: {} }));
+    const selection = selectionPayload?.selection || {};
+    const poolSdk = selection.poolSdk || "(unknown)";
+    const primaryAgent = selection.primaryAgent || "(unknown)";
+    const available = Array.isArray(selection.availableSdks) ? selection.availableSdks : [];
     const lines = [
       ":plug: Agent SDK Status",
       "",
@@ -9461,11 +9456,12 @@ async function cmdSdk(chatId, sdkArg) {
   const target = sdkArg.trim().toLowerCase().replace(/-sdk$/, "");
 
   if (target === "auto" || target === "reset") {
-    resetPoolSdkCache();
+    await harnessApi.setProviderSelection("auto");
+    const selectionPayload = await harnessApi.getProviderSelection().catch(() => ({ selection: {} }));
     await sendReply(
       chatId,
       ":check: Agent pool SDK reset to config default.\nCurrent: " +
-        getPoolSdkName(),
+        (selectionPayload?.selection?.poolSdk || "(unknown)"),
     );
     return;
   }
@@ -9480,18 +9476,16 @@ async function cmdSdk(chatId, sdkArg) {
   }
 
   try {
-    // Switch pool SDK
-    setPoolSdk(target);
-
-    // Also switch primary agent to match
-    const switchResult = await switchPrimaryAgent(`${target}-sdk`);
-    const primaryStatus = switchResult.ok
-      ? `Primary agent: ${switchResult.name}`
-      : `Primary agent switch failed: ${switchResult.reason}`;
+    const result = await harnessApi.setProviderSelection(target);
+    const selection = result?.selection || {};
+    const switchResult = result?.switchResult || null;
+    const primaryStatus = switchResult?.ok === false
+      ? `Primary agent switch failed: ${switchResult.reason}`
+      : `Primary agent: ${selection.primaryAgent || switchResult?.name || "(unknown)"}`;
 
     await sendReply(
       chatId,
-      `:check: SDK switched to: ${target}\nPool SDK: ${getPoolSdkName()}\n${primaryStatus}`,
+      `:check: SDK switched to: ${target}\nPool SDK: ${selection.poolSdk || target}\n${primaryStatus}`,
     );
   } catch (err) {
     await sendReply(chatId, `:close: Error switching SDK: ${err.message}`);
@@ -9720,6 +9714,8 @@ function resolveLocalUiApiBaseUrl() {
   }
   return raw;
 }
+
+const harnessApi = createTelegramHarnessApiClient((path, options = {}) => localUiRequest(path, options));
 
 async function localUiRequest(path, options = {}) {
   const {
@@ -10224,17 +10220,13 @@ async function cmdStop(chatId, args) {
     return;
   }
   session.aborted = true;
-  if (session.abortController) {
-    try {
-      session.abortController.abort("user_stop");
-    } catch {
-      /* best effort */
-    }
+  if (session.sessionId) {
+    await harnessApi.stopSession(session.sessionId).catch(() => null);
   }
   if (session.actionLog) {
     session.actionLog.push({
       icon: ":close:",
-      text: "Stop requested by user (will halt after current step)",
+      text: "Stop requested by user (session stop sent to harness API)",
     });
     if (session.scheduleEdit) {
       session.scheduleEdit();
@@ -10258,19 +10250,9 @@ async function cmdSteer(chatId, steerArgs) {
     await handleFreeText(message, chatId);
     return;
   }
-
-  const result = await steerPrimaryPrompt(message);
-  if (result.ok) {
-    if (session.actionLog) {
-      session.actionLog.push({
-        icon: ":compass:",
-        text: `Steering update delivered (${result.mode})`,
-      });
-      if (session.scheduleEdit) {
-        session.scheduleEdit();
-      }
-    }
-    await sendReply(chatId, `:compass: Steering sent (${result.mode}).`);
+  if (session.running !== true) {
+    await sendReply(chatId, "No active turn is running. Sending the update through the existing harness session.");
+    await handleFreeText(message, chatId, { reuseSessionId: session.sessionId });
     return;
   }
 
@@ -10280,12 +10262,11 @@ async function cmdSteer(chatId, steerArgs) {
   session.followUpQueue.push(message);
   const qLen = session.followUpQueue.length;
   if (session.actionLog) {
-    const steerStatus = result.reason || "failed";
     session.actionLog.push({
       icon: ":compass:",
-      text: `Steering queued (#${qLen}; steer failed: ${steerStatus})`,
+      text: `Follow-up queued for canonical session (#${qLen})`,
       kind: "followup_queued",
-      steerStatus,
+      steerStatus: "queued",
     });
     if (session.scheduleEdit) {
       session.scheduleEdit();
@@ -10433,37 +10414,25 @@ async function sendFullAgentResponseIfTruncated(chatId, finalResponse, summaryTe
 async function handleFreeText(text, chatId, options = {}) {
   const backgroundMode = !!options.background;
   const isolatedMode = !!options.isolated;
+  const reusedSessionId = String(options.reuseSessionId || "").trim();
   const chatSession = getActiveAgentSession(chatId);
-  // ── Follow-up steering: if agent is busy, queue message as follow-up ──
-  if (!isolatedMode && chatSession) {
+  if (!isolatedMode && chatSession?.running === true) {
     if (!chatSession.followUpQueue) {
       chatSession.followUpQueue = [];
     }
     chatSession.followUpQueue.push(text);
     const qLen = chatSession.followUpQueue.length;
-
-    // Try immediate steering so the in-flight run can adapt ASAP.
-    const steerResult = await steerPrimaryPrompt(text);
-    const steerStatus = steerResult.ok ? "ok" : steerResult.reason || "failed";
-    const steerNote = steerResult.ok
-      ? `Steer ${steerResult.mode}.`
-      : `Steer failed (${steerStatus}).`;
-
-    // Acknowledge the follow-up in both the user's chat and update the agent message
     await sendDirect(
       chatId,
-      `:pin: Follow-up queued (#${qLen}). Agent will process it after current action. ${steerNote}`,
+      `:pin: Follow-up queued (#${qLen}). It will be delivered through the canonical session API after the current turn completes.`,
     );
-
-    // Add follow-up indicator to the streaming message
     if (chatSession.actionLog) {
       chatSession.actionLog.push({
         icon: ":pin:",
-        text: `Follow-up: "${text.length > 60 ? text.slice(0, 60) + "…" : text}" (${steerNote})`,
+        text: `Follow-up: "${text.length > 60 ? text.slice(0, 60) + "…" : text}"`,
         kind: "followup_queued",
-        steerStatus,
+        steerStatus: "queued",
       });
-      // Trigger an edit to show the follow-up in the streaming message
       if (chatSession.scheduleEdit) {
         chatSession.scheduleEdit();
       }
@@ -10472,8 +10441,6 @@ async function handleFreeText(text, chatId, options = {}) {
   }
 
   const taskPreview = text.length > 60 ? text.slice(0, 60) + "…" : text;
-
-  // Send the initial message and capture its ID for editing (unless background)
   let messageId = null;
   if (!backgroundMode) {
     messageId = await sendDirect(
@@ -10489,34 +10456,28 @@ async function handleFreeText(text, chatId, options = {}) {
     );
   }
 
-  // Load current status for context
-  let statusData = null;
-  try {
-    if (_readStatusData) {
-      statusData = await _readStatusData();
-    } else {
-      const raw = await readFile(statusPath, "utf8").catch(() => null);
-      statusData = raw ? JSON.parse(raw) : null;
-    }
-  } catch {
-    /* best effort */
-  }
-
-  // ── Single-message streaming state ──────────────────────────────────
-  const actionLog = []; // { icon, text } entries
-  let currentThought = null;
+  const actionLog = [];
   let totalActions = 0;
   let phase = "working…";
   let lastEditAt = 0;
-  const EDIT_THROTTLE_MS = 2000; // edit at most every 2s (Telegram rate limit)
+  const EDIT_THROTTLE_MS = 2000;
   let editPending = false;
   let editTimer = null;
 
-  // ── Tracking for final summary ──────────────────────────────────────
-  const filesRead = new Set(); // file paths read
-  const filesWritten = new Map(); // path → { kind, adds, dels }
-  let searchCount = 0;
-  let hadError = false;
+  const sessionState = {
+    chatId,
+    messageId,
+    taskPreview,
+    actionLog,
+    totalActions: 0,
+    phase,
+    followUpQueue: [],
+    aborted: false,
+    background: backgroundMode,
+    suppressEdits: backgroundMode,
+    running: true,
+    sessionId: reusedSessionId || toTrimmedString(chatSession?.sessionId || "") || null,
+  };
 
   const doEdit = async () => {
     if (backgroundMode || sessionState.background) return;
@@ -10524,13 +10485,10 @@ async function handleFreeText(text, chatId, options = {}) {
     const msg = buildStreamMessage({
       taskPreview,
       actionLog,
-      currentThought,
+      currentThought: null,
       totalActions,
       phase,
       finalResponse: null,
-      filesRead,
-      filesWritten,
-      searchesDone: searchCount,
     });
     if (messageId) {
       messageId = await editDirect(chatId, messageId, msg);
@@ -10554,229 +10512,116 @@ async function handleFreeText(text, chatId, options = {}) {
     }
   };
 
-  // ── Set up agent session (enables follow-up steering & bottom-pinning) ──
-  const abortController = new AbortController();
-  const sessionState = {
-    chatId,
-    messageId,
-    taskPreview,
-    actionLog,
-    currentThought: null,
-    totalActions: 0,
-    phase: "working…",
-    followUpQueue: [],
-    scheduleEdit,
-    aborted: false,
-    abortController,
-    background: backgroundMode,
-    suppressEdits: backgroundMode,
-  };
+  sessionState.scheduleEdit = scheduleEdit;
   setActiveAgentSession(chatId, sessionState);
   agentMessageId = messageId;
   agentChatId = chatId;
 
-  const onEvent = async (_formatted, rawEvent) => {
-    const action = rawEvent ? summarizeAction(rawEvent) : null;
-    if (!action) return;
-
-    // ── Track files read & written for final summary ──────────────
-    if (rawEvent.type === "item.completed") {
-      const item = rawEvent.item;
-      if (item.type === "command_execution" && item.command) {
-        const target = extractTarget(item.command);
-        if (target) {
-          // Determine if this is a read or search command
-          if (
-            /^(cat|head|tail|type|Get-Content)/i.test(item.command.trim()) ||
-            /pwsh.*Get-Content/i.test(item.command)
-          ) {
-            filesRead.add(target);
-          }
-          if (
-            /^(grep|findstr|rg|Select-String)/i.test(item.command.trim()) ||
-            /pwsh.*Select-String/i.test(item.command)
-          ) {
-            searchCount++;
-          }
-        }
-      }
-      if (item.type === "file_change" && item.changes?.length) {
-        for (const c of item.changes) {
-          filesWritten.set(c.path, {
-            kind: c.kind || "modify",
-            adds: c.additions ?? c.lines_added ?? 0,
-            dels: c.deletions ?? c.lines_deleted ?? 0,
-          });
-        }
-      }
+  const messageToAction = (message = {}) => {
+    const role = String(message?.role || message?.type || "event").toLowerCase();
+    const textContent = String(message?.content || "").replace(/\s+/g, " ").trim();
+    const clipped = textContent.length > 120 ? `${textContent.slice(0, 120)}…` : textContent;
+    if (role === "assistant") return { icon: ":speech_balloon:", text: clipped || "Assistant response" };
+    if (role === "user") return { icon: ":bust_in_silhouette:", text: clipped || "User input" };
+    if (role === "error" || (role === "system" && /error|failed/i.test(textContent))) {
+      return { icon: ":close:", text: clipped || "Runtime error" };
     }
+    return { icon: ":gear:", text: clipped || `${message?.type || "event"}` };
+  };
 
-    if (
-      rawEvent.type === "tool.execution_start" ||
-      rawEvent.type === "tool.execution_complete"
-    ) {
-      const { toolName, input } = getCopilotToolInfo(rawEvent);
-      const command = extractCopilotCommand(input);
-      const target = extractCopilotPath(input);
+  const getPhaseFromStatus = (status) => {
+    const normalized = String(status || "").trim().toLowerCase();
+    if (normalized === "completed") return "Completed successfully";
+    if (normalized === "failed") return "Failed — needs manual review";
+    if (normalized === "paused") return "Paused";
+    if (normalized === "archived") return "Archived";
+    return "working…";
+  };
 
-      if (command) {
-        const cmdTarget = extractTarget(command);
-        if (
-          cmdTarget &&
-          (/^(cat|head|tail|type|Get-Content)/i.test(command.trim()) ||
-            /pwsh.*Get-Content/i.test(command))
-        ) {
-          filesRead.add(cmdTarget);
-        }
-        if (
-          /^(grep|findstr|rg|Select-String)/i.test(command.trim()) ||
-          /pwsh.*Select-String/i.test(command)
-        ) {
-          searchCount++;
-        }
-      }
+  const getFinalResponseFromMessages = (messages = []) => {
+    const assistantMessages = messages.filter((entry) => String(entry?.role || "").toLowerCase() === "assistant");
+    return assistantMessages
+      .slice(-3)
+      .map((entry) => String(entry?.content || "").trim())
+      .filter(Boolean)
+      .join("\n\n");
+  };
 
-      if (isCopilotReadTool(toolName) && target) {
-        filesRead.add(target);
-      }
-      if (isCopilotSearchTool(toolName)) {
-        searchCount++;
-      }
-      if (isCopilotWriteTool(toolName) && target) {
-        filesWritten.set(target, {
-          kind: "modify",
-          adds: 0,
-          dels: 0,
-        });
-      }
-    }
-
-    // ── Track file changes from action detail ─────────────────────
-    if (action.detail === "file_change" && action.files) {
-      for (const f of action.files) {
-        filesWritten.set(f.path, {
-          kind: f.kind || "modify",
-          adds: f.adds || 0,
-          dels: f.dels || 0,
-        });
-      }
-    }
-
-    if (action.phase === "thinking") {
-      currentThought = action.text;
-      sessionState.currentThought = action.text;
-    } else {
-      if (action.phase === "done" || action.phase === "running") {
-        totalActions++;
-        sessionState.totalActions = totalActions;
-      }
-      actionLog.push(action);
-      // Keep thought visible while actions proceed (only clear on new non-thinking action)
-      if (action.phase !== "thinking") {
-        currentThought = null;
-        sessionState.currentThought = null;
-      }
-    }
-
-    if (action.phase === "error") {
-      phase = "error";
-      hadError = true;
-    } else if (action.phase === "planning") {
-      phase = "planning…";
-    } else {
-      phase = "working…";
-    }
+  const syncFromSessionDetail = async () => {
+    if (!sessionState.sessionId) return null;
+    const detail = await harnessApi.getSession(sessionState.sessionId).catch(() => null);
+    if (!detail?.session) return null;
+    const messages = Array.isArray(detail.session.messages) ? detail.session.messages : [];
+    actionLog.splice(0, actionLog.length, ...messages.slice(-20).map(messageToAction));
+    totalActions = messages.length;
+    sessionState.totalActions = totalActions;
+    sessionState.running = String(detail.session.status || "").trim().toLowerCase() === "active";
+    phase = getPhaseFromStatus(detail.session.status);
     sessionState.phase = phase;
-
     scheduleEdit();
+    return detail;
+  };
+
+  const waitForSessionTurn = async () => {
+    while (!sessionState.aborted && sessionState.sessionId) {
+      const detail = await syncFromSessionDetail();
+      const status = String(detail?.session?.status || "").trim().toLowerCase();
+      if (!status || status !== "active") {
+        return detail;
+      }
+      await delayMs(1500);
+    }
+    return syncFromSessionDetail();
   };
 
   try {
-    const result = await execPrimaryPrompt(text, {
-      statusData,
-      timeoutMs: AGENT_TIMEOUT_MS,
-      onEvent,
-      sendRawEvents: true, // request raw events alongside formatted ones
-      abortController,
-      allowConcurrent: true,
-      forceIsolated: isolatedMode,
-      sessionId: `telegram-${chatId}`,
-      sessionType: "telegram",
-    });
+    if (!sessionState.sessionId) {
+      const created = await harnessApi.createSession({
+        type: "primary",
+        prompt: text,
+        agent: "telegram",
+        mode: isolatedMode ? "ask" : undefined,
+      });
+      sessionState.sessionId = String(created?.session?.id || "").trim() || null;
+    }
+    if (!sessionState.sessionId) {
+      throw new Error("Failed to create a canonical session.");
+    }
+
+    const pendingInputs = [text];
+    let finalDetail = null;
+    while (!sessionState.aborted && (pendingInputs.length > 0 || sessionState.followUpQueue.length > 0)) {
+      const nextInput = pendingInputs.length > 0
+        ? pendingInputs.shift()
+        : sessionState.followUpQueue.shift();
+      if (!nextInput) continue;
+      phase = pendingInputs.length > 0 ? "processing follow-up…" : "working…";
+      scheduleEdit();
+      await harnessApi.sendSessionMessage(sessionState.sessionId, {
+        content: nextInput,
+        mode: isolatedMode ? "ask" : undefined,
+      });
+      finalDetail = await waitForSessionTurn();
+    }
 
     if (editTimer) clearTimeout(editTimer);
-
-    // ── Process follow-up queue ───────────────────────────────────
-    // If user sent follow-up messages while agent was working, process them now
-    const followUps = sessionState.followUpQueue || [];
-    if (followUps.length > 0 && !sessionState.aborted) {
-      for (const followUp of followUps) {
-        actionLog.push({
-          icon: ":pin:",
-          text: `Processing follow-up: "${followUp.slice(0, 60)}"`,
-        });
-        phase = "processing follow-up…";
-        scheduleEdit();
-
-        try {
-          const followUpResult = await execPrimaryPrompt(followUp, {
-            statusData,
-            timeoutMs: AGENT_TIMEOUT_MS,
-            onEvent,
-            sendRawEvents: true,
-          });
-
-          // Merge follow-up results
-          if (followUpResult.finalResponse) {
-            result.finalResponse =
-              (result.finalResponse || "") +
-              `\n\n:pin: Follow-up result:\n${followUpResult.finalResponse}`;
-            suppressSteerFailedLines(actionLog);
-          }
-        } catch (err) {
-          actionLog.push({
-            icon: ":close:",
-            text: `Follow-up error: ${err.message}`,
-          });
-        }
-      }
-    }
-
-    // Final edit with the complete summary
-    const itemSummary = result.items.filter(
-      (i) =>
-        i.type === "command_execution" ||
-        i.type === "file_change" ||
-        i.type === "mcp_tool_call",
-    ).length;
-
-    totalActions = Math.max(totalActions, itemSummary);
-
-    // Determine final status icon
-    const hasChanges = filesWritten.size > 0;
-    let statusIcon;
-    if (hadError) {
-      statusIcon = ":close:";
-      phase = "Failed — needs manual review";
-    } else if (hasChanges) {
-      statusIcon = ":check:";
-      phase = "Completed successfully";
-    } else {
-      // No files changed — might be informational or might need user input
-      statusIcon = ":help:";
-      phase = "Completed — no files changed";
-    }
-
+    finalDetail = finalDetail || await syncFromSessionDetail();
+    const finalMessages = Array.isArray(finalDetail?.session?.messages) ? finalDetail.session.messages : [];
+    const finalResponse = getFinalResponseFromMessages(finalMessages);
+    const finalStatus = String(finalDetail?.session?.status || "").trim().toLowerCase();
+    const statusIcon = finalStatus === "failed"
+      ? ":close:"
+      : finalStatus === "completed"
+        ? ":check:"
+        : ":help:";
+    phase = getPhaseFromStatus(finalStatus || "completed");
     const finalMsg = buildStreamMessage({
       taskPreview,
       actionLog,
       currentThought: null,
       totalActions,
       phase,
-      finalResponse: result.finalResponse || null,
-      filesRead,
-      filesWritten,
-      searchesDone: searchCount,
+      finalResponse: finalResponse || null,
       statusIcon,
     });
     if (backgroundMode || sessionState.background) {
@@ -10787,11 +10632,7 @@ async function handleFreeText(text, chatId, options = {}) {
         scheduleStickyMenuBump(chatId, finalMessageId);
       }
     }
-    await sendFullAgentResponseIfTruncated(
-      chatId,
-      result.finalResponse || "",
-      finalMsg,
-    );
+    await sendFullAgentResponseIfTruncated(chatId, finalResponse || "", finalMsg);
   } catch (err) {
     if (editTimer) clearTimeout(editTimer);
     const finalMsg = buildStreamMessage({
@@ -10801,9 +10642,6 @@ async function handleFreeText(text, chatId, options = {}) {
       totalActions,
       phase: "Failed — error during execution",
       finalResponse: `Error: ${err.message}`,
-      filesRead,
-      filesWritten,
-      searchesDone: searchCount,
       statusIcon: ":close:",
     });
     if (backgroundMode || sessionState.background) {
@@ -10815,8 +10653,12 @@ async function handleFreeText(text, chatId, options = {}) {
       }
     }
   } finally {
-    // ── Clean up agent session ────────────────────────────────────
-    clearActiveAgentSession(chatId, sessionState);
+    sessionState.running = false;
+    if (sessionState.sessionId) {
+      setActiveAgentSession(chatId, sessionState);
+    } else {
+      clearActiveAgentSession(chatId, sessionState);
+    }
   }
 }
 
@@ -11527,17 +11369,17 @@ export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
   setComponentStatus("monitor", "running");
 
-  // Start Telegram UI server (Mini App / Portal) when configured.
-  // Portal startup is independent of Telegram polling state — it must always
-  // run when TELEGRAM_UI_PORT or TELEGRAM_MINIAPP_ENABLED is set, even when
-  // no Telegram bot token is configured (local-only portal mode).
+  // Start the local harness API shell for Telegram and the Mini App.
+  // Telegram now routes session/provider/thread actions through the same
+  // canonical server surface APIs, so the UI server must be available for
+  // bot-driven sessions even when the Mini App is disabled.
   const miniAppEnabled = ["1", "true", "yes"].includes(
     String(process.env.TELEGRAM_MINIAPP_ENABLED || "").toLowerCase(),
   );
   const miniAppPort = Number(process.env.TELEGRAM_UI_PORT || "0");
   const hasTelegram = !!(telegramToken && telegramChatId);
 
-  if (miniAppEnabled || miniAppPort > 0) {
+  if (hasTelegram || miniAppEnabled || miniAppPort > 0) {
     const restartReason = String(
       options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
     )
@@ -11555,7 +11397,6 @@ export async function startTelegramBot(options = {}) {
         skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
         restartReason,
         dependencies: {
-          execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
           getTuiMonitorStats: _getTuiMonitorStats,
           getExecutorMode: _getExecutorMode,
@@ -11583,9 +11424,6 @@ export async function startTelegramBot(options = {}) {
     );
     return;
   }
-
-  // Initialize the primary agent context
-  await initPrimaryAgent();
 
   // Probe Telegram API connectivity before startup registration
   const reachable = await probeTelegramConnectivity();
@@ -11779,9 +11617,10 @@ export async function startTelegramBot(options = {}) {
       "[telegram-bot] restarted (suppressed online notification — rapid restart)",
     );
   } else {
+    const selectionPayload = await harnessApi.getProviderSelection().catch(() => ({ selection: {} }));
     await sendDirect(
       telegramChatId,
-      `:bot: Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
+      `:bot: Bosun harness session channel online (${selectionPayload?.selection?.primaryAgent || "harness-session"}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
     );
     await refreshStickyMenu(telegramChatId, "home", {});
 

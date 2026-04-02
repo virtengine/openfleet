@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
 
+import { createAgentLoop } from "./harness/agent-loop.mjs";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
-import { createInternalHarnessSession as createHarnessRuntimeSession } from "./internal-harness-runtime.mjs";
+import { createInternalHarnessRuntime } from "./internal-harness-runtime.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { createLineageGraph } from "./lineage-graph.mjs";
+import {
+  canTransitionSessionStatus,
+  createSessionContract,
+  isTerminalSessionStatus,
+  normalizeSessionStatus,
+} from "./session-contract.mjs";
 import { createSessionReplayStore } from "./session-replay.mjs";
 import { createSubagentControl } from "./subagent-control.mjs";
+import { createSubagentPool } from "./subagent-pool.mjs";
 import { createThreadId, createThreadRegistry } from "./thread-registry.mjs";
 
 function toTrimmedString(value) {
@@ -35,9 +44,12 @@ function nowIso() {
 }
 
 function normalizeStatus(value, fallback = "idle") {
-  const normalized = toTrimmedString(value).toLowerCase();
-  if (!normalized) return fallback;
-  return normalized.replace(/[^a-z0-9_-]+/g, "_");
+  return normalizeSessionStatus(value, fallback);
+}
+
+function toPositiveInteger(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : fallback;
 }
 
 function createSessionId(prefix = "session") {
@@ -91,6 +103,7 @@ function buildSessionRecord(compiledProfile, options = {}, parentRecord = null) 
   return {
     sessionId,
     runId: toTrimmedString(options.runId || sessionId) || sessionId,
+    scope: toTrimmedString(options.scope || (parentRecord?.scope || "default")) || (parentRecord?.scope || "default"),
     taskKey: toTrimmedString(options.taskKey || compiledProfile?.taskKey || compiledProfile?.agentId || sessionId),
     taskId: toTrimmedString(options.taskId || compiledProfile?.taskId || ""),
     taskTitle: toTrimmedString(options.taskTitle || compiledProfile?.taskTitle || compiledProfile?.name || ""),
@@ -200,9 +213,14 @@ function createLifecyclePatch(event = {}, sessionRecord = {}) {
 function createInternalSessionManager(defaultOptions = {}) {
   const sessions = new Map();
   const activeSessions = new Map();
+  const sessionControllers = new Map();
+  let managerApi = null;
   const threadRegistry = defaultOptions.threadRegistry || createThreadRegistry();
   const replayStore = defaultOptions.replayStore || createSessionReplayStore();
   const subagentControl = defaultOptions.subagentControl || createSubagentControl({ threadRegistry });
+  const subagentPool = defaultOptions.subagentPool || createSubagentPool({
+    onEvent: defaultOptions.onEvent,
+  });
   const emitManagerEvent = createEventEmitter([
     defaultOptions.onEvent,
     defaultOptions.onHarnessEvent,
@@ -218,6 +236,128 @@ function createInternalSessionManager(defaultOptions = {}) {
     const next = mergeSessionRecord(record, patch);
     sessions.set(next.sessionId, next);
     return next;
+  }
+
+  function setSessionController(sessionId, controller = null) {
+    const normalizedSessionId = toTrimmedString(sessionId);
+    if (!normalizedSessionId) return null;
+    if (!controller) {
+      sessionControllers.delete(normalizedSessionId);
+      return null;
+    }
+    sessionControllers.set(normalizedSessionId, controller);
+    return controller;
+  }
+
+  function getSessionController(sessionId) {
+    const normalizedSessionId = toTrimmedString(sessionId);
+    return normalizedSessionId ? (sessionControllers.get(normalizedSessionId) || null) : null;
+  }
+
+  function updateThreadLifecycle(sessionRecord, status, patch = {}) {
+    if (!sessionRecord?.activeThreadId) return;
+    const normalizedStatus = normalizeStatus(status || sessionRecord.status);
+    if (normalizedStatus === "completed") {
+      threadRegistry.markThreadCompleted(sessionRecord.activeThreadId, patch);
+      return;
+    }
+    if (normalizedStatus === "aborted") {
+      threadRegistry.closeThread(sessionRecord.activeThreadId, {
+        status: "aborted",
+        error: patch.error || sessionRecord.lastError || "aborted",
+        ...patch,
+      });
+      return;
+    }
+    if (normalizedStatus === "failed" || normalizedStatus.startsWith("approval_")) {
+      threadRegistry.markThreadFailed(
+        sessionRecord.activeThreadId,
+        patch.error || sessionRecord.lastError || "session_failed",
+        patch,
+      );
+      return;
+    }
+    threadRegistry.markThreadRunning(sessionRecord.activeThreadId, patch);
+  }
+
+  function updateSubagentLifecycle(sessionRecord, status, patch = {}) {
+    if (!sessionRecord?.parentSessionId) return;
+    const normalizedStatus = normalizeStatus(status || sessionRecord.status);
+    if (normalizedStatus === "completed") {
+      subagentControl.completeSubagent(sessionRecord.sessionId, {
+        childThreadId: sessionRecord.activeThreadId,
+        ...patch,
+      });
+      return;
+    }
+    if (normalizedStatus === "failed") {
+      subagentControl.failSubagent(sessionRecord.sessionId, patch.lastError || sessionRecord.lastError || "session_failed", {
+        childThreadId: sessionRecord.activeThreadId,
+        ...patch,
+      });
+      return;
+    }
+    if (normalizedStatus === "aborted") {
+      subagentControl.abortSubagent(sessionRecord.sessionId, patch.lastError || sessionRecord.lastError || "aborted", {
+        childThreadId: sessionRecord.activeThreadId,
+        ...patch,
+      });
+      return;
+    }
+    subagentControl.updateSubagent(sessionRecord.sessionId, {
+      status: normalizedStatus,
+      childThreadId: sessionRecord.activeThreadId,
+      lastError: patch.lastError || sessionRecord.lastError,
+      ...patch,
+    });
+  }
+
+  function captureLifecycleReplay(sessionRecord, action, payload = {}) {
+    return captureReplay(sessionRecord, action, payload);
+  }
+
+  function applyLifecycleState(sessionId, nextStatus, patch = {}, replay = null) {
+    const current = sessions.get(toTrimmedString(sessionId));
+    if (!current) return null;
+    const normalizedStatus = normalizeStatus(nextStatus || current.status);
+    const previousStatus = normalizeStatus(current.status);
+    if (!canTransitionSessionStatus(previousStatus, normalizedStatus)) {
+      patch = {
+        ...patch,
+        metadata: {
+          ...(toPlainObject(current.metadata)),
+          ...(toPlainObject(patch.metadata)),
+          lifecycleTransitionOverride: `${previousStatus}->${normalizedStatus}`,
+        },
+      };
+    }
+    let next = storeSession(current, {
+      ...patch,
+      status: normalizedStatus,
+    });
+    updateThreadLifecycle(next, normalizedStatus, {
+      error: patch.lastError || next.lastError,
+      result: replay?.result,
+      lastStageId: patch.currentStageId,
+    });
+    updateSubagentLifecycle(next, normalizedStatus, {
+      lastError: patch.lastError || next.lastError,
+      lastEventType: replay?.eventType || replay?.action || null,
+    });
+    if (replay?.action) {
+      next = captureLifecycleReplay(next, replay.action, {
+        status: normalizedStatus,
+        summary: replay.summary || patch.lastError || next.lastError || null,
+        result: replay.result,
+        threadId: patch.activeThreadId || next.activeThreadId,
+        eventType: replay.eventType || null,
+        meta: replay.meta,
+      });
+    }
+    if (isTerminalSessionStatus(normalizedStatus)) {
+      setSessionController(next.sessionId, null);
+    }
+    return cloneValue(next);
   }
 
   function captureReplay(sessionRecord, action, payload = {}) {
@@ -285,7 +425,7 @@ function createInternalSessionManager(defaultOptions = {}) {
       meta: { entryStageId: compiledProfile.entryStageId || null },
     });
 
-    const runtimeController = createHarnessRuntimeSession(compiledProfile, {
+    const harnessRuntime = createInternalHarnessRuntime(compiledProfile, {
       onEvent: (event) => {
         eventHook(event);
         const current = sessions.get(sessionRecord.sessionId) || sessionRecord;
@@ -310,25 +450,12 @@ function createInternalSessionManager(defaultOptions = {}) {
           activeThreadId: resultThreadId || current.activeThreadId,
           threadIds: resultThreadId ? [resultThreadId] : current.threadIds,
         });
-        if (sessionRecord.activeThreadId) {
-          if (sessionRecord.status === "completed") {
-            threadRegistry.markThreadCompleted(sessionRecord.activeThreadId, { result: event.result });
-          } else if (sessionRecord.status === "aborted") {
-            threadRegistry.closeThread(sessionRecord.activeThreadId, { status: "aborted", error: sessionRecord.lastError });
-          } else if (sessionRecord.status.includes("failed") || sessionRecord.status.startsWith("approval_")) {
-            threadRegistry.markThreadFailed(sessionRecord.activeThreadId, sessionRecord.lastError || event?.result?.error || "session_failed");
-          } else {
-            threadRegistry.markThreadRunning(sessionRecord.activeThreadId, { lastStageId: event.stageId || undefined });
-          }
-        }
-        if (sessionRecord.parentSessionId) {
-          subagentControl.updateSubagent(sessionRecord.sessionId, {
-            status: sessionRecord.status,
-            childThreadId: sessionRecord.activeThreadId,
-            lastError: sessionRecord.lastError,
-            lastEventType: event.type,
-          });
-        }
+        updateThreadLifecycle(sessionRecord, sessionRecord.status, { result: event.result, lastStageId: event.stageId || undefined });
+        updateSubagentLifecycle(sessionRecord, sessionRecord.status, {
+          childThreadId: sessionRecord.activeThreadId,
+          lastError: sessionRecord.lastError,
+          lastEventType: event.type,
+        });
         sessionRecord = captureReplay(sessionRecord, event.type, {
           eventType: event.type,
           status: sessionRecord.status,
@@ -353,12 +480,49 @@ function createInternalSessionManager(defaultOptions = {}) {
       executeTurn: resolveTurnExecutor(mergedOptions),
       extensions: mergedOptions.extensions,
       extensionRegistry: mergedOptions.extensionRegistry,
+      sessionManager: mergedOptions.sessionManager || managerApi || null,
     });
+    const runtimeController = harnessRuntime.session;
 
     let running = null;
+    let subagentLease = null;
+    const subagentPoolId = toTrimmedString(
+      mergedOptions.subagentPoolId
+      || sessionRecord.rootSessionId
+      || parentRecord?.sessionId
+      || sessionRecord.sessionId,
+    ) || sessionRecord.sessionId;
+    const subagentMaxParallel = toPositiveInteger(
+      mergedOptions.subagentMaxParallel
+      ?? mergedOptions.maxParallel
+      ?? parentRecord?.metadata?.subagentMaxParallel
+      ?? defaultOptions.subagentMaxParallel,
+      0,
+    ) || 0;
+    const shouldUseSubagentPool =
+      mergedOptions.useSubagentPool !== false
+      && (
+        sessionRecord.sessionType === "subagent"
+        || sessionRecord.sessionType === "workflow-subagent"
+        || sessionRecord.lineageDepth > 0
+      );
+    const agentLoop = {
+      canSteer: () => runtimeController.canSteer?.() === true,
+      steer: (prompt, meta = {}) => runtimeController.steer?.(prompt, meta) || {
+        ok: false,
+        delivered: false,
+        reason: "not_steerable",
+        interventionType: toTrimmedString(meta?.kind || meta?.type || "nudge") || "nudge",
+        stageId: null,
+        targetTaskKey: null,
+      },
+      abort: (reason = "aborted") => runtimeController.abort?.(reason),
+      run: async () => await runtimeController.run(),
+    };
+    const agentLoopController = createAgentLoop({ runtimeSession: agentLoop });
     const controller = {
       abort(reason = "aborted") {
-        runtimeController.abort(reason);
+        agentLoopController.abort(reason);
         sessionRecord = storeSession(sessions.get(sessionRecord.sessionId) || sessionRecord, {
           status: "aborted",
           completedAt: nowIso(),
@@ -373,17 +537,10 @@ function createInternalSessionManager(defaultOptions = {}) {
         sessionRecord = captureReplay(sessionRecord, "session_aborted", { status: "aborted", summary: sessionRecord.lastError });
       },
       canSteer() {
-        return runtimeController.canSteer?.() === true;
+        return agentLoopController.canSteer();
       },
       steer(prompt, meta = {}) {
-        const response = runtimeController.steer?.(prompt, meta) || {
-          ok: false,
-          delivered: false,
-          reason: "not_steerable",
-          interventionType: toTrimmedString(meta?.kind || meta?.type || "nudge") || "nudge",
-          stageId: null,
-          targetTaskKey: null,
-        };
+        const response = agentLoopController.steer(prompt, meta);
         sessionRecord = storeSession(sessions.get(sessionRecord.sessionId) || sessionRecord, { lastActiveAt: nowIso() });
         sessionRecord = captureReplay(sessionRecord, response.delivered ? "steer_delivered" : "steer_rejected", {
           status: sessionRecord.status,
@@ -392,8 +549,50 @@ function createInternalSessionManager(defaultOptions = {}) {
         });
         return response;
       },
-      async run() {
+      async run(runRequest = {}) {
         if (running) return running;
+        if (shouldUseSubagentPool && subagentMaxParallel > 0 && !subagentLease) {
+          const queuedAt = nowIso();
+          subagentLease = await subagentPool.acquire({
+            poolId: subagentPoolId,
+            maxConcurrent: subagentMaxParallel,
+            sessionId: sessionRecord.sessionId,
+            threadId: sessionRecord.activeThreadId,
+            parentSessionId: sessionRecord.parentSessionId,
+            rootSessionId: sessionRecord.rootSessionId,
+            taskKey: sessionRecord.taskKey,
+            metadata: {
+              sessionType: sessionRecord.sessionType,
+            },
+            onQueued: (lease) => {
+              sessionRecord = storeSession(sessions.get(sessionRecord.sessionId) || sessionRecord, {
+                status: "waiting",
+                startedAt: sessionRecord.startedAt || queuedAt,
+              });
+              if (sessionRecord.parentSessionId) {
+                subagentControl.updateSubagent(sessionRecord.sessionId, { status: "waiting" });
+              }
+              sessionRecord = captureReplay(sessionRecord, "subagent_slot_queued", {
+                status: "waiting",
+                meta: {
+                  leaseId: lease.leaseId,
+                  poolId: lease.poolId,
+                  maxConcurrent: lease.maxConcurrent,
+                },
+              });
+            },
+          });
+          sessionRecord = captureReplay(sessionRecord, "subagent_slot_acquired", {
+            status: sessionRecord.status,
+            meta: {
+              leaseId: subagentLease.leaseId,
+              poolId: subagentLease.poolId,
+              maxConcurrent: subagentLease.maxConcurrent,
+              queuedAt: subagentLease.queuedAt,
+              acquiredAt: subagentLease.acquiredAt,
+            },
+          });
+        }
         sessionRecord = storeSession(sessions.get(sessionRecord.sessionId) || sessionRecord, {
           status: mergedOptions.dryRun === true ? "dry_run" : "running",
           startedAt: sessionRecord.startedAt || nowIso(),
@@ -401,8 +600,11 @@ function createInternalSessionManager(defaultOptions = {}) {
         if (sessionRecord.activeThreadId) {
           threadRegistry.markThreadRunning(sessionRecord.activeThreadId);
         }
+        if (sessionRecord.parentSessionId) {
+          subagentControl.updateSubagent(sessionRecord.sessionId, { status: sessionRecord.status });
+        }
         sessionRecord = captureReplay(sessionRecord, "session_run_requested", { status: sessionRecord.status });
-        running = runtimeController.run()
+        running = agentLoopController.run(runRequest)
           .then((result) => {
             const nextStatus = normalizeStatus(result?.status || (result?.success === false ? "failed" : "completed"));
             sessionRecord = storeSession(sessions.get(sessionRecord.sessionId) || sessionRecord, {
@@ -442,13 +644,28 @@ function createInternalSessionManager(defaultOptions = {}) {
             throw error;
           })
           .finally(() => {
+            if (subagentLease) {
+              subagentPool.release(subagentLease, {
+                status: sessionRecord.status,
+                error: sessionRecord.lastError,
+              });
+              sessionRecord = captureReplay(sessionRecord, "subagent_slot_released", {
+                status: sessionRecord.status,
+                summary: sessionRecord.lastError,
+                meta: {
+                  leaseId: subagentLease.leaseId,
+                  poolId: subagentLease.poolId,
+                },
+              });
+              subagentLease = null;
+            }
             running = null;
           });
         return running;
       },
     };
 
-    return {
+    const managedSession = {
       agentId: compiledProfile.agentId || "",
       sessionId: sessionRecord.sessionId,
       threadId: sessionRecord.activeThreadId,
@@ -464,15 +681,20 @@ function createInternalSessionManager(defaultOptions = {}) {
       get replay() {
         return replayStore.buildResumeState(sessionRecord.sessionId);
       },
+      get sessionContract() {
+        return createSessionContract(sessions.get(sessionRecord.sessionId) || sessionRecord);
+      },
       canSteer: () => controller.canSteer(),
       steer: (prompt, meta = {}) => controller.steer(prompt, meta),
       abort: (reason = "aborted") => controller.abort(reason),
-      run: () => controller.run(),
+      run: (runRequest = {}) => controller.run(runRequest),
       getSessionRecord: () => getSessionRecord(sessionRecord.sessionId),
       listReplaySnapshots: (replayOptions = {}) => replayStore.listSnapshots(sessionRecord.sessionId, replayOptions),
       getReplayState: (replayOptions = {}) => replayStore.buildResumeState(sessionRecord.sessionId, replayOptions),
       listChildSessions: () => subagentControl.listChildren({ parentSessionId: sessionRecord.sessionId }),
     };
+    setSessionController(sessionRecord.sessionId, managedSession);
+    return managedSession;
   }
 
   function createManagedSession(profileSource, options = {}) {
@@ -488,7 +710,7 @@ function createInternalSessionManager(defaultOptions = {}) {
     };
   }
 
-  return {
+  managerApi = {
     createCompiledSession: createManagedCompiledSession,
     createSession: createManagedSession,
     async runCompiledSession(compiledProfile, options = {}) {
@@ -559,6 +781,9 @@ function createInternalSessionManager(defaultOptions = {}) {
           scope: input.scope || existing.scope || "default",
           sessionType: input.sessionType || existing.sessionType || "primary",
           taskKey: input.taskKey || existing.taskKey,
+          status: input.status || existing.status || "idle",
+          activeThreadId: toTrimmedString(input.threadId || existing.activeThreadId || "") || null,
+          threadIds: input.threadId ? [input.threadId] : existing.threadIds,
           metadata: {
             ...(toPlainObject(existing.metadata)),
             ...(toPlainObject(input.metadata)),
@@ -567,6 +792,19 @@ function createInternalSessionManager(defaultOptions = {}) {
             adapterName: input.adapterName || existing.metadata?.adapterName || "",
           },
         });
+        if (patched.activeThreadId) {
+          threadRegistry.registerThread({
+            threadId: patched.activeThreadId,
+            sessionId: patched.sessionId,
+            parentThreadId: patched.parentThreadId || undefined,
+            parentSessionId: patched.parentSessionId || undefined,
+            rootSessionId: patched.rootSessionId,
+            status: patched.status,
+            kind: patched.sessionType,
+            taskKey: patched.taskKey || undefined,
+            metadata: patched.metadata,
+          });
+        }
         return cloneValue(patched);
       }
       const createdAt = nowIso();
@@ -641,7 +879,42 @@ function createInternalSessionManager(defaultOptions = {}) {
         status: patchedChild.status,
         metadata: input.metadata,
       });
+      captureLifecycleReplay(sessions.get(patchedChild.sessionId) || patchedChild, "child_session_created", {
+        status: patchedChild.status,
+        threadId: patchedChild.activeThreadId,
+        meta: {
+          parentSessionId: parent.sessionId,
+          parentThreadId: parent.activeThreadId,
+        },
+      });
       return cloneValue(patchedChild);
+    },
+    beginExternalSession(input = {}) {
+      const normalizedSessionId = toTrimmedString(input.sessionId || input.id || input.taskKey || "");
+      if (!normalizedSessionId) {
+        throw new Error("beginExternalSession requires a sessionId or taskKey");
+      }
+      const record = input.parentSessionId
+        ? this.createChildSession(input.parentSessionId, {
+            ...input,
+            sessionId: normalizedSessionId,
+            sessionType: input.sessionType || "task",
+          })
+        : this.ensureSession({
+            ...input,
+            sessionId: normalizedSessionId,
+            sessionType: input.sessionType || "task",
+          });
+      const current = sessions.get(record.sessionId) || record;
+      const next = captureLifecycleReplay(current, "external_session_bound", {
+        status: current.status,
+        threadId: current.activeThreadId,
+        meta: {
+          source: input.source || "external",
+          scope: input.scope || "task",
+        },
+      });
+      return cloneValue(next);
     },
     registerExecution(sessionId, execution = {}) {
       const existing = this.ensureSession({
@@ -681,7 +954,90 @@ function createInternalSessionManager(defaultOptions = {}) {
           },
         });
       }
-      return cloneValue(next);
+      const recorded = captureLifecycleReplay(next, "execution_registered", {
+        status: next.status,
+        threadId: next.activeThreadId,
+        meta: {
+          providerSelection: execution.providerSelection || "",
+          adapterName: execution.adapterName || "",
+        },
+      });
+      return cloneValue(recorded);
+    },
+    continueSession(sessionId, input = {}) {
+      const normalizedSessionId = toTrimmedString(sessionId);
+      const managed = sessions.get(normalizedSessionId);
+      if (!managed) {
+        throw new Error(`Unknown session "${sessionId}"`);
+      }
+      const lifecycleState = input.lifecycleState || "running";
+      const next = applyLifecycleState(normalizedSessionId, lifecycleState, {
+        lastActiveAt: nowIso(),
+      }, {
+        action: "session_continue_requested",
+        meta: { action: input.action || "continue" },
+      });
+      const controller = getSessionController(normalizedSessionId);
+      if (controller?.run) {
+        return controller.run(input.runRequest || {});
+      }
+      return next || cloneValue(managed);
+    },
+    retrySession(sessionId, input = {}) {
+      return this.continueSession(sessionId, {
+        ...input,
+        lifecycleState: "retrying",
+        action: "retry",
+      });
+    },
+    resumeSession(sessionId, input = {}) {
+      return this.continueSession(sessionId, {
+        ...input,
+        lifecycleState: "resuming",
+        action: "resume",
+      });
+    },
+    cancelSession(sessionId, reason = "aborted") {
+      const normalizedSessionId = toTrimmedString(sessionId);
+      const controller = getSessionController(normalizedSessionId);
+      if (controller?.abort) {
+        controller.abort(reason);
+      }
+      return applyLifecycleState(normalizedSessionId, "aborted", {
+        completedAt: nowIso(),
+        lastError: toTrimmedString(reason) || "aborted",
+      }, {
+        action: "session_aborted",
+        summary: reason,
+      });
+    },
+    finalizeExternalExecution(sessionId, execution = {}) {
+      const normalizedSessionId = toTrimmedString(sessionId);
+      const managed = sessions.get(normalizedSessionId);
+      if (!managed) {
+        throw new Error(`Unknown session "${sessionId}"`);
+      }
+      const nextStatus = normalizeStatus(
+        execution.status || (execution.success === false ? "failed" : "completed"),
+        execution.success === false ? "failed" : "completed",
+      );
+      return applyLifecycleState(normalizedSessionId, nextStatus, {
+        activeThreadId: toTrimmedString(execution.threadId || managed.activeThreadId || "") || managed.activeThreadId,
+        threadIds: execution.threadId ? [execution.threadId] : managed.threadIds,
+        completedAt: isTerminalSessionStatus(nextStatus) ? nowIso() : managed.completedAt,
+        lastError: execution.success === false ? toTrimmedString(execution.error || managed.lastError || "execution_failed") || "execution_failed" : null,
+        lastActiveAt: nowIso(),
+      }, {
+        action: execution.success === false ? "external_execution_failed" : "external_execution_completed",
+        summary: execution.error || execution.status || null,
+        result: execution.result || null,
+      });
+    },
+    waitForSubagent(childSessionIdOrSpawnId, options = {}) {
+      return subagentControl.waitForSubagent(childSessionIdOrSpawnId, options);
+    },
+    getSessionController(sessionId) {
+      return getSessionController(sessionId);
     },
     spawnSubagent(profileSourceOrCompiled, options = {}) {
       return this.createSubagentSession(profileSourceOrCompiled, options);
@@ -694,6 +1050,19 @@ function createInternalSessionManager(defaultOptions = {}) {
     },
     getSubagentControl() {
       return subagentControl;
+    },
+    getSubagentPool() {
+      return subagentPool;
+    },
+    getLineageGraph() {
+      return createLineageGraph({
+        sessions: this.listSessions(),
+        threads: threadRegistry.listThreads ? threadRegistry.listThreads() : [],
+        subagents: subagentControl.listSpawnRecords ? subagentControl.listSpawnRecords() : subagentControl.listChildren(),
+      });
+    },
+    getLineageView(sessionId) {
+      return this.getLineageGraph().describe(sessionId);
     },
     getReplaySnapshot(sessionId, options = {}) {
       const session = sessionId ? this.getSession(sessionId) : null;
@@ -733,6 +1102,7 @@ function createInternalSessionManager(defaultOptions = {}) {
             }))
           : [],
         replayState,
+        sessionContract: session?.sessionId ? createSessionContract(session) : null,
       };
     },
     getReplayState(sessionId, options = {}) {
@@ -745,9 +1115,11 @@ function createInternalSessionManager(defaultOptions = {}) {
         threadRegistry: threadRegistry.snapshot(),
         replayStore: replayStore.snapshot(),
         subagentControl: subagentControl.snapshot(),
+        subagentPool: subagentPool.snapshot(),
       };
     },
   };
+  return managerApi;
 }
 
 const defaultHarnessSessionManager = createInternalSessionManager();

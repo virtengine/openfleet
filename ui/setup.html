@@ -1215,6 +1215,40 @@
   `;
     }
 
+    function ArchitectureGuideCard({ architecture }) {
+      const sections = [
+        architecture?.shellRuntime,
+        architecture?.taskRunner,
+        architecture?.routingPool,
+        architecture?.providerLayer,
+      ].filter(Boolean);
+      if (sections.length === 0) return null;
+      return html`
+        <div style="background:rgba(15,23,42,.58);border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:16px 18px;margin-bottom:18px">
+          <div style="font-size:0.92rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">How Bosun Agent Wiring Works</div>
+          <div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.6;margin-bottom:12px">
+            Bosun has separate layers for interactive shell sessions, queued task execution, weighted routing, and internal harness providers.
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px">
+            ${sections.map((section) => html`
+              <div style="padding:12px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,163,184,.12)">
+                <div style="font-size:0.84rem;font-weight:700;color:var(--text-primary);margin-bottom:6px">${section.title}</div>
+                ${section.current && html`
+                  <div style="font-size:0.76rem;color:var(--accent-light);margin-bottom:8px">
+                    Current: <code style="font-family:var(--font-mono)">${section.current}</code>
+                  </div>
+                `}
+                <div style="font-size:0.76rem;color:var(--text-secondary);line-height:1.55">${section.summary}</div>
+                ${section.note && html`
+                  <div style="font-size:0.74rem;color:var(--text-dim);line-height:1.55;margin-top:8px">${section.note}</div>
+                `}
+              </div>
+            `)}
+          </div>
+        </div>
+      `;
+    }
+
     // ── Main App ─────────────────────────────────────────────────────────────────
 
     function App() {
@@ -1233,6 +1267,7 @@
       const [status, setStatus] = useState(null);
       const [workflowTemplates, setWorkflowTemplates] = useState([]);
       const [workflowProfiles, setWorkflowProfiles] = useState([]);
+      const [agentArchitecture, setAgentArchitecture] = useState(null);
 
       // Config state
       const [profile, setProfile] = useState("standard");
@@ -1843,6 +1878,7 @@
         ]).then(([prereqData, defaultsData, modelsData, execData, workflowData, statusData]) => {
           setPrereqs(prereqData.prerequisites);
           setDefaults(defaultsData.defaults);
+          setAgentArchitecture(defaultsData.agentArchitecture || null);
           setModels(modelsData.models || {});
           setExecutorTypes(execData.executors || []);
           setKanbanBackends(execData.kanbanBackends || []);
@@ -3551,7 +3587,9 @@
 
       const StepExecutors = () => html`
     <h2>AI Executors</h2>
-    <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
+    <p class="step-desc">Configure the interactive shell runtime, the internal task runner, and the optional weighted routing pool without mixing them up.</p>
+
+    <${ArchitectureGuideCard} architecture=${agentArchitecture} />
 
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.8rem;line-height:1.6">
       <strong>${iconText(":lock: No API key required in most cases.")}</strong>

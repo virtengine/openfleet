@@ -1393,7 +1393,12 @@ function shouldApplyLiveCompaction(item, opts, contextUsagePct, force = false) {
 async function compactStandaloneToolItem(
   item,
   opts = {},
-  { agentType = null, force = false } = {},
+  {
+    agentType = null,
+    force = false,
+    sessionType = null,
+    normalizedSessionType = null,
+  } = {},
 ) {
   if (!item || typeof item !== "object") return item;
   const existingText = getItemText(item);
@@ -1438,6 +1443,9 @@ async function compactStandaloneToolItem(
       stage: "live_tool_compaction",
       compactionFamily: "git",
       commandFamily: extractCommandFamily(item),
+      sessionType,
+      normalizedSessionType,
+      decision: "compressed",
     });
     return compactedItem;
   }
@@ -1488,6 +1496,9 @@ async function compactStandaloneToolItem(
       stage: "live_tool_compaction",
       compactionFamily: analysis.family,
       commandFamily: analysis.commandFamily,
+      sessionType,
+      normalizedSessionType,
+      decision: "compressed",
     });
     return compactedItem;
   }
@@ -1549,11 +1560,20 @@ async function compactStandaloneToolItem(
     stage: "live_tool_compaction",
     compactionFamily: fallbackFamily,
     commandFamily: extractCommandFamily(item),
+    sessionType,
+    normalizedSessionType,
+    decision: "compressed",
   });
   return compactedItem;
 }
 
-async function maybeCompactLiveToolOutputs(items, opts = {}, { contextUsagePct = null, force = false, agentType = null } = {}) {
+async function maybeCompactLiveToolOutputs(items, opts = {}, {
+  contextUsagePct = null,
+  force = false,
+  agentType = null,
+  sessionType = null,
+  normalizedSessionType = null,
+} = {}) {
   if (!Array.isArray(items) || items.length === 0) return items;
   let changed = false;
   const nextItems = [];
@@ -1566,7 +1586,12 @@ async function maybeCompactLiveToolOutputs(items, opts = {}, { contextUsagePct =
       nextItems.push(item);
       continue;
     }
-    const compactedItem = await compactStandaloneToolItem(item, opts, { agentType, force });
+    const compactedItem = await compactStandaloneToolItem(item, opts, {
+      agentType,
+      force,
+      sessionType,
+      normalizedSessionType,
+    });
     nextItems.push(compactedItem);
     changed = changed || compactedItem !== item;
   }
@@ -3082,6 +3107,112 @@ export function estimateContextUsagePct(items, contextWindowTokens = 128_000) {
   return Math.min(estimatedTokens / contextWindowTokens, 1.0);
 }
 
+function cloneJson(value) {
+  if (value == null) return value ?? null;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return JSON.stringify({ type: typeof value, preview: String(value) }, null, 2);
+  }
+}
+
+export function truncateCompactedPreviewText(text, options = {}) {
+  const value = String(text ?? "");
+  const maxChars = Number.isFinite(Number(options.maxChars))
+    ? Math.max(32, Math.trunc(Number(options.maxChars)))
+    : 4000;
+  const marker = String(options.marker ?? "…truncated");
+  if (value.length <= maxChars) {
+    return {
+      text: value,
+      truncated: false,
+      originalChars: value.length,
+      retainedChars: value.length,
+    };
+  }
+  const tailChars = Number.isFinite(Number(options.tailChars))
+    ? Math.max(0, Math.trunc(Number(options.tailChars)))
+    : Math.min(400, Math.floor(maxChars * 0.2));
+  const headChars = Math.max(0, maxChars - tailChars - marker.length - 2);
+  const nextValue = `${value.slice(0, headChars)}\n${marker}\n${tailChars > 0 ? value.slice(-tailChars) : ""}`;
+  return {
+    text: nextValue,
+    truncated: true,
+    originalChars: value.length,
+    retainedChars: nextValue.length,
+  };
+}
+
+export function truncateCompactedToolOutput(output, options = {}) {
+  const format = typeof output === "string" ? "text" : "json";
+  const serialized = format === "text" ? String(output ?? "") : safeJsonStringify(output);
+  const truncatedText = truncateCompactedPreviewText(serialized, options);
+  const originalBytes = Buffer.byteLength(serialized, "utf8");
+  const retainedBytes = Buffer.byteLength(truncatedText.text, "utf8");
+  if (!truncatedText.truncated) {
+    return {
+      format,
+      data: format === "text" ? serialized : cloneJson(output),
+      preview: serialized,
+      truncated: false,
+      originalChars: truncatedText.originalChars,
+      retainedChars: truncatedText.retainedChars,
+      originalBytes,
+      retainedBytes,
+    };
+  }
+  return {
+    format,
+    data: format === "text"
+      ? truncatedText.text
+      : {
+          truncated: true,
+          preview: truncatedText.text,
+        },
+    preview: truncatedText.text,
+    truncated: true,
+    originalChars: truncatedText.originalChars,
+    retainedChars: truncatedText.retainedChars,
+    originalBytes,
+    retainedBytes,
+  };
+}
+
+export function normalizeContextShreddingSessionType(value, fallback = "primary") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "workflow" || raw === "pipeline-stage" || raw.startsWith("flow")) {
+    return "flow";
+  }
+  if (raw === "subagent" || raw === "delegate") {
+    return "delegate";
+  }
+  if (raw === "voice-dispatch" || raw === "voice" || raw.startsWith("voice-")) {
+    return "voice";
+  }
+  return raw;
+}
+
+function countSessionChars(items) {
+  return Array.isArray(items)
+    ? items.reduce((sum, item) => sum + (getItemText(item)?.length || 0), 0)
+    : 0;
+}
+
+function buildCoverageEventStats(items) {
+  const originalChars = countSessionChars(items);
+  return {
+    originalChars,
+    compressedChars: originalChars,
+    savedChars: 0,
+    savedPct: 0,
+  };
+}
+
 /**
  * Returns the absolute path to the tool log cache directory.
  */
@@ -3198,7 +3329,8 @@ export function recordShreddingEvent(stats) {
   if (!stats || typeof stats !== "object") return;
   const { originalChars = 0, compressedChars = 0, savedChars = 0, savedPct = 0,
           agentType = null, attemptId = null, taskId = null, stage = null,
-          compactionFamily = null, commandFamily = null } = stats;
+          compactionFamily = null, commandFamily = null, sessionType = null,
+          normalizedSessionType = null, decision = null, reason = null } = stats;
 
   // Skip no-op events (nothing to report)
   if (originalChars === 0 && compressedChars === 0) return;
@@ -3215,6 +3347,10 @@ export function recordShreddingEvent(stats) {
     ...(stage      ? { stage }      : {}),
     ...(compactionFamily ? { compactionFamily } : {}),
     ...(commandFamily ? { commandFamily } : {}),
+    ...(sessionType ? { sessionType } : {}),
+    ...(normalizedSessionType ? { normalizedSessionType } : {}),
+    ...(decision ? { decision } : {}),
+    ...(reason ? { reason } : {}),
   };
 
   // Ring buffer — evict oldest when full
@@ -3285,7 +3421,20 @@ export async function maybeCompressSessionItems(
   { sessionType = "primary", agentType = "", force = false, skip = false } = {},
 ) {
   if (!Array.isArray(items) || items.length === 0) return items;
-  if (skip) return items;
+  const rawSessionType = String(sessionType || "").trim().toLowerCase() || "primary";
+  const normalizedSessionType = normalizeContextShreddingSessionType(rawSessionType, "primary");
+  if (skip) {
+    recordShreddingEvent({
+      ...buildCoverageEventStats(items),
+      agentType: agentType || "unknown",
+      stage: "session_skipped",
+      sessionType: rawSessionType,
+      normalizedSessionType,
+      decision: "skip_flag",
+      reason: "Caller explicitly skipped context shredding for this turn.",
+    });
+    return items;
+  }
 
   // Lazy-import config to avoid circular dependency
   const { resolveContextShreddingOptions } = await import(
@@ -3293,7 +3442,7 @@ export async function maybeCompressSessionItems(
   );
 
   const shreddingOpts = {
-    ...resolveContextShreddingOptions(sessionType, agentType),
+    ...resolveContextShreddingOptions(normalizedSessionType, agentType),
     ...Object.fromEntries(Object.entries({
       liveToolCompactionEnabled: arguments[1]?.liveToolCompactionEnabled,
       liveToolCompactionMode: arguments[1]?.liveToolCompactionMode,
@@ -3305,7 +3454,18 @@ export async function maybeCompressSessionItems(
       liveToolCompactionAllowCommands: arguments[1]?.liveToolCompactionAllowCommands,
     }).filter(([, value]) => value !== undefined)),
   };
-  if (shreddingOpts?._skip === true && !force) return items;
+  if (shreddingOpts?._skip === true && !force) {
+    recordShreddingEvent({
+      ...buildCoverageEventStats(items),
+      agentType: agentType || "unknown",
+      stage: "session_skipped",
+      sessionType: rawSessionType,
+      normalizedSessionType,
+      decision: "config_disabled",
+      reason: "Context shredding is disabled for this session type or agent profile.",
+    });
+    return items;
+  }
 
   const usagePct = estimateContextUsagePct(items);
   const threshold = Number.isFinite(shreddingOpts?.contextUsageThreshold)
@@ -3316,29 +3476,46 @@ export async function maybeCompressSessionItems(
     contextUsagePct: usagePct,
     force,
     agentType,
+    sessionType: rawSessionType,
+    normalizedSessionType,
   });
   const workingUsagePct = workingItems === items
     ? usagePct
     : estimateContextUsagePct(workingItems);
 
-  if (!force && workingUsagePct < threshold) return workingItems;
+  if (!force && workingUsagePct < threshold) {
+    recordShreddingEvent({
+      ...estimateSavings(items, workingItems),
+      agentType: agentType || "unknown",
+      stage: "session_skipped",
+      sessionType: rawSessionType,
+      normalizedSessionType,
+      decision: "below_threshold",
+      reason: `Estimated context usage ${Math.round(workingUsagePct * 100)}% stayed below the ${Math.round(threshold * 100)}% shredding threshold.`,
+    });
+    return workingItems;
+  }
 
   shreddingOpts.contextUsagePct = workingUsagePct;
   const compressedItems = await compressAllItems(workingItems, shreddingOpts);
 
   try {
     const savings = estimateSavings(items, compressedItems);
-    if (savings.savedChars > 0) {
-      recordShreddingEvent({ ...savings, agentType: agentType || "unknown", stage: "session_total" });
-    }
+    recordShreddingEvent({
+      ...savings,
+      agentType: agentType || "unknown",
+      stage: "session_total",
+      sessionType: rawSessionType,
+      normalizedSessionType,
+      decision: savings.savedChars > 0 ? "compressed" : "pass_through",
+      reason: savings.savedChars > 0
+        ? "Context shredding reduced the retained session payload."
+        : "This session reached the compaction pipeline but the retained payload stayed effectively unchanged.",
+    });
   } catch {
     /* non-fatal */
   }
 
   return compressedItems;
 }
-
-
-
-
 

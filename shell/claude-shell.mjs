@@ -587,9 +587,15 @@ export async function execClaudePrompt(userMessage, options = {}) {
   const logicalSessionId =
     toTrimmedString(options.sessionId || activeSessionId || "")
     || "primary-claude";
-  claudeSessionCompat.registerExecution(logicalSessionId, {
+  const providerRuntime = claudeSessionCompat.resolveProvider({
+    providerSelection: options.providerSelection || "claude",
+    model: process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null,
+  });
+  claudeSessionCompat.beginTurn(logicalSessionId, {
     activate: Boolean(options.sessionId || activeSessionId),
     status: "running",
+    providerSelection: providerRuntime.providerId || "claude",
+    model: providerRuntime.providerConfig?.model || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null,
     metadata: {
       turnCount,
       mode: mode || null,
@@ -609,13 +615,20 @@ export async function execClaudePrompt(userMessage, options = {}) {
     });
 
     for await (const message of activeQuery) {
+      claudeSessionCompat.recordStreamEvent(activeSessionId || logicalSessionId, message, {
+        activate: Boolean(options.sessionId || activeSessionId),
+        providerSelection: providerRuntime.providerId || "claude",
+        model: providerRuntime.providerConfig?.model || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null,
+      });
       const sessionId = message?.session_id || message?.sessionId;
       if (sessionId && sessionId !== activeSessionId) {
         activeSessionId = sessionId;
         await saveState();
-        claudeSessionCompat.registerExecution(sessionId, {
+        claudeSessionCompat.beginTurn(sessionId, {
           activate: true,
           status: "running",
+          providerSelection: providerRuntime.providerId || "claude",
+          model: providerRuntime.providerConfig?.model || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null,
           metadata: {
             turnCount,
             mode: mode || null,
@@ -696,9 +709,11 @@ export async function execClaudePrompt(userMessage, options = {}) {
     clearTimeout(timer);
     turnCount += 1;
     await saveState();
-    claudeSessionCompat.registerExecution(activeSessionId || logicalSessionId, {
+    claudeSessionCompat.completeTurn(activeSessionId || logicalSessionId, {
       activate: Boolean(activeSessionId || options.sessionId),
       status: "completed",
+      providerSelection: providerRuntime.providerId || "claude",
+      model: providerRuntime.providerConfig?.model || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null,
       metadata: {
         turnCount,
         mode: mode || null,
@@ -725,10 +740,12 @@ export async function execClaudePrompt(userMessage, options = {}) {
         reason === "user_stop"
           ? ":close: Agent stopped by user."
           : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
-      claudeSessionCompat.registerExecution(activeSessionId || logicalSessionId, {
+      claudeSessionCompat.abortTurn(activeSessionId || logicalSessionId, {
         activate: Boolean(activeSessionId || options.sessionId),
         status: reason === "user_stop" ? "aborted" : "timeout",
         error: msg,
+        providerSelection: providerRuntime.providerId || "claude",
+        model: providerRuntime.providerConfig?.model || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null,
         metadata: {
           turnCount,
           mode: mode || null,
@@ -764,10 +781,12 @@ export async function execClaudePrompt(userMessage, options = {}) {
       );
     }
     const message = err?.message || String(err || "unknown error");
-    claudeSessionCompat.registerExecution(activeSessionId || logicalSessionId, {
+    claudeSessionCompat.failTurn(activeSessionId || logicalSessionId, {
       activate: Boolean(activeSessionId || options.sessionId),
       status: "failed",
       error: message,
+      providerSelection: providerRuntime.providerId || "claude",
+      model: providerRuntime.providerConfig?.model || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null,
       metadata: {
         turnCount,
         mode: mode || null,

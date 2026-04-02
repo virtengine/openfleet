@@ -50,26 +50,28 @@ vi.mock("../infra/session-tracker.mjs", () => ({
 // ── Global fetch mock ────────────────────────────────────────────────────────
 
 const _origFetch = globalThis.fetch;
-let loadConfig;
-let getVoiceConfig;
-let createEphemeralToken;
 
-beforeEach(async () => {
+beforeEach(() => {
   globalThis.fetch = vi.fn(async () => ({
     ok: true,
     json: async () => ({
       client_secret: { value: "test-token", expires_at: Date.now() / 1000 + 60 },
     }),
   }));
-  vi.resetModules();
-  ({ loadConfig } = await import("../config/config.mjs"));
-  ({ getVoiceConfig, createEphemeralToken } = await import("../voice/voice-relay.mjs"));
 });
 
 afterEach(() => {
   globalThis.fetch = _origFetch;
   vi.restoreAllMocks();
 });
+
+// ── Lazy imports (after mocks are wired) ─────────────────────────────────────
+
+const { loadConfig } = await import("../config/config.mjs");
+const {
+  getVoiceConfig,
+  createEphemeralToken,
+} = await import("../voice/voice-relay.mjs");
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  1. Voice identity / instructions injection

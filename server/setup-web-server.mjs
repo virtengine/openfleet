@@ -30,6 +30,7 @@ import {
   normalizeTemplateOverridesById,
 } from "../workflow/workflow-templates.mjs";
 import { discoverTelegramChats } from "../telegram/get-telegram-chat-id.mjs";
+import { buildAgentConfigurationGuide } from "../lib/agent-configuration-guide.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1949,6 +1950,14 @@ function handleDefaults() {
       repoRoot,
       bosunHome,
       workspacesDir,
+    }),
+    agentArchitecture: buildAgentConfigurationGuide({
+      PRIMARY_AGENT: "codex-sdk",
+      INTERNAL_EXECUTOR_SDK: "auto",
+      EXECUTOR_MODE: "internal",
+      EXECUTOR_DISTRIBUTION: "primary-only",
+      EXECUTORS: "CODEX:DEFAULT:100",
+      BOSUN_PROVIDER_DEFAULT: "openai-responses",
     }),
   };
 }

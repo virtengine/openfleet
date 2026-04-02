@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { listProviderAuthAdapters } from "../agent/auth/index.mjs";
 import {
   getBuiltInProviderDriver,
   hasBuiltInProviderDriver,
@@ -21,6 +22,12 @@ describe("provider driver modules", () => {
       "copilot-oauth",
     ]);
     expect(listBuiltInProviderDrivers()).toHaveLength(8);
+  });
+
+  it("keeps auth adapter coverage aligned with the authoritative provider registry set", () => {
+    expect(listProviderAuthAdapters().map((entry) => entry.providerId)).toEqual(
+      listBuiltInProviderIds(),
+    );
   });
 
   it("normalizes provider aliases and exposes driver metadata", () => {

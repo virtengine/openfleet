@@ -20,7 +20,6 @@ import { resolve, basename, relative, extname, sep } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
-import { sanitizeGitEnv } from "../git/git-safety.mjs";
 import { nowISO, toStringArray, uniqueStrings } from "./library-manager-utils.mjs";
 import {
   WELL_KNOWN_AGENT_SOURCES,
@@ -29,12 +28,6 @@ import {
   clearWellKnownAgentSourceProbeCache,
   probeWellKnownAgentSources,
 } from "./library-manager-well-known-sources.mjs";
-import {
-  evaluateMarkdownSafety,
-  recordMarkdownSafetyAuditEvent,
-  resolveMarkdownSafetyPolicy,
-} from "../lib/skill-markdown-safety.mjs";
-import { readConfigDocument } from "../config/config.mjs";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -49,12 +42,13 @@ export const LIBRARY_INDEX_DIR = ".bosun/library-index";
 export const AGENT_PROFILE_INDEX = "agent-profiles.json";
 export const SKILL_ENTRY_INDEX = "skills.json";
 
+const UNRESOLVED_TEMPLATE_TOKEN_RE = /\{\{[^{}]+\}\}/;
+
 const agentProfileIndexCache = new Map();
 const skillEntryIndexCache = new Map();
 const repoContextCache = new Map();
 
 const REPO_CONTEXT_TTL_MS = 120_000;
-const UNRESOLVED_TEMPLATE_TOKEN_RE = /\{\{[^{}]+\}\}/;
 
 export function hasUnresolvedTemplateTokens(value) {
   return UNRESOLVED_TEMPLATE_TOKEN_RE.test(String(value || ""));
@@ -215,49 +209,6 @@ const FRAMEWORK_DOMAIN_MAP = Object.freeze({
 export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool", "hook"]);
 export const AGENT_LIBRARY_CATEGORIES = Object.freeze(["task", "interactive", "voice"]);
 export const INTERACTIVE_AGENT_MODES = Object.freeze(["ask", "agent", "plan", "web", "instant", "custom", "voice"]);
-
-const SAFETY_SCREENED_IMPORT_KINDS = new Set(["agent", "prompt", "skill"]);
-
-function resolveRepositoryMarkdownSafetyPolicy(rootDir, options = {}) {
-  if (options?.markdownSafetyPolicy) {
-    return resolveMarkdownSafetyPolicy(options.markdownSafetyPolicy);
-  }
-  if (options?.configData) {
-    return resolveMarkdownSafetyPolicy(options.configData);
-  }
-  if (rootDir) {
-    try {
-      const { configData } = readConfigDocument(rootDir);
-      return resolveMarkdownSafetyPolicy(configData);
-    } catch {
-      // Fall through to defaults.
-    }
-  }
-  return resolveMarkdownSafetyPolicy({});
-}
-
-function auditBlockedImportCandidates(blockedCandidates, options = {}) {
-  if (!Array.isArray(blockedCandidates) || blockedCandidates.length === 0) return;
-  const policy = resolveRepositoryMarkdownSafetyPolicy(options?.rootDir, options);
-  recordMarkdownSafetyAuditEvent(
-    {
-      channel: options?.channel || "library-import",
-      sourceKind: "repository-import",
-      sourceRepo: options?.repoUrl || options?.sourceId || "",
-      sourcePath: options?.repoUrl || options?.sourceId || "repository-import",
-      branch: options?.branch || "",
-      blockedCount: blockedCandidates.length,
-      candidates: blockedCandidates.map((candidate) => ({
-        kind: candidate.kind,
-        path: candidate.relPath,
-        reasons: candidate.safety?.reasons || [],
-        score: candidate.safety?.score || 0,
-      })),
-      reasons: blockedCandidates.flatMap((candidate) => candidate.safety?.reasons || []),
-    },
-    { policy, rootDir: options?.rootDir || process.cwd() },
-  );
-}
 
 export function normalizeAgentProfileType(rawType, options = {}) {
   const value = String(rawType || "").trim().toLowerCase();
@@ -1294,22 +1245,6 @@ function extForType(type) {
   return ".md";
 }
 
-function normalizeEntryFilename(value) {
-  const filename = typeof value === "string" ? value.trim() : "";
-  return filename || null;
-}
-
-function resolveEntryFileLocation(rootDir, type, filename) {
-  if (!RESOURCE_TYPES.includes(type)) return null;
-  const normalizedFilename = normalizeEntryFilename(filename);
-  if (!normalizedFilename) return null;
-  const dir = dirForType(rootDir, type);
-  const filePath = resolve(dir, normalizedFilename);
-  // Prevent path traversal — resolved path must stay within the type directory.
-  if (!filePath.startsWith(dir + sep) && filePath !== dir) return null;
-  return { dir, filePath, filename: normalizedFilename };
-}
-
 /**
  * List all entries from the manifest, optionally filtered.
  */
@@ -1348,9 +1283,10 @@ export function getEntry(rootDir, id) {
  */
 export function getEntryContent(rootDir, entry) {
   if (!entry) return null;
-  const location = resolveEntryFileLocation(rootDir, entry.type, entry.filename);
-  if (!location) return null;
-  const { filePath } = location;
+  const dir = dirForType(rootDir, entry.type);
+  const filePath = resolve(dir, entry.filename);
+  // Prevent path traversal — resolved path must stay within the type directory
+  if (!filePath.startsWith(dir + sep) && filePath !== dir) return null;
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf8");
@@ -1386,10 +1322,7 @@ export function upsertEntry(rootDir, data, content, options = {}) {
     type: data.type,
     name: data.name,
     description: data.description || existing?.description || "",
-    filename:
-      normalizeEntryFilename(data.filename)
-      || normalizeEntryFilename(existing?.filename)
-      || `${id}${extForType(data.type)}`,
+    filename: data.filename || existing?.filename || `${id}${extForType(data.type)}`,
     tags: data.tags || existing?.tags || [],
     scope: data.scope || existing?.scope || "global",
     workspace: data.workspace ?? existing?.workspace ?? null,
@@ -1400,12 +1333,9 @@ export function upsertEntry(rootDir, data, content, options = {}) {
 
   // Write content file
   if (content !== undefined) {
-    const location = resolveEntryFileLocation(rootDir, entry.type, entry.filename);
-    if (!location) {
-      throw new Error(`Invalid entry filename for ${entry.type}:${entry.id}`);
-    }
-    const { dir, filePath } = location;
-    ensureDir(dir);
+    const dir = ensureDir(dirForType(rootDir, entry.type));
+    const filePath = resolve(dir, entry.filename);
+    // Prevent path traversal — resolved path must stay within the type directory
     if (!filePath.startsWith(dir + sep) && filePath !== dir) {
       throw new Error(`Path traversal blocked: ${entry.filename}`);
     }
@@ -1428,84 +1358,6 @@ export function upsertEntry(rootDir, data, content, options = {}) {
   return entry;
 }
 
-function cleanupDeletedSkillDependents(rootDir, entry, manifest) {
-  const removedEntries = [];
-  const deletedSourceId = String(entry?.meta?.sourceId || "").trim().toLowerCase();
-  const promptIdsToDelete = new Set();
-  const nextEntries = [];
-
-  for (const candidate of manifest.entries) {
-    if (!candidate) continue;
-
-    if (candidate.type === "agent") {
-      const profile = getEntryContent(rootDir, candidate);
-      if (!profile || typeof profile !== "object") {
-        nextEntries.push(candidate);
-        continue;
-      }
-
-      const candidateSourceId = getAgentImportSourceId(candidate, profile);
-      if (deletedSourceId && candidateSourceId && candidateSourceId === deletedSourceId) {
-        if (profile?.promptOverride) {
-          promptIdsToDelete.add(String(profile.promptOverride).trim());
-        }
-        removedEntries.push(candidate);
-        continue;
-      }
-
-      const updatedCandidate = removeDeletedSkillFromProfile(rootDir, candidate, profile, entry.id);
-      if (updatedCandidate) {
-        nextEntries.push(updatedCandidate);
-        continue;
-      }
-
-      nextEntries.push(candidate);
-      continue;
-    }
-
-    if (candidate.type === "prompt") {
-      if (shouldRemoveImportedAgentPrompt(candidate, deletedSourceId, promptIdsToDelete)) {
-        removedEntries.push(candidate);
-        continue;
-      }
-    }
-
-    nextEntries.push(candidate);
-  }
-
-  manifest.entries = nextEntries;
-  return removedEntries;
-}
-
-function getAgentImportSourceId(candidate, profile) {
-  return String(
-    profile?.importMeta?.sourceId || candidate?.meta?.sourceId || "",
-  ).trim().toLowerCase();
-}
-
-function removeDeletedSkillFromProfile(rootDir, candidate, profile, skillId) {
-  if (!Array.isArray(profile.skills) || !profile.skills.includes(skillId)) {
-    return null;
-  }
-  const updatedProfile = {
-    ...profile,
-    skills: profile.skills.filter((candidateSkillId) => candidateSkillId !== skillId),
-  };
-  writeFileSync(
-    resolve(dirForType(rootDir, candidate.type), candidate.filename),
-    JSON.stringify(updatedProfile, null, 2) + "\n",
-    "utf8",
-  );
-  return { ...candidate, updatedAt: nowISO() };
-}
-
-function shouldRemoveImportedAgentPrompt(candidate, deletedSourceId, promptIdsToDelete) {
-  const promptId = String(candidate.id || "").trim();
-  const candidateSourceId = String(candidate?.meta?.sourceId || "").trim().toLowerCase();
-  const isImportedAgentPrompt = Array.isArray(candidate.tags) && candidate.tags.includes("agent-prompt");
-  return promptIdsToDelete.has(promptId) || (deletedSourceId && candidateSourceId === deletedSourceId && isImportedAgentPrompt);
-}
-
 /**
  * Delete a library entry by id. Removes from manifest (optionally deletes file).
  */
@@ -1515,30 +1367,18 @@ export function deleteEntry(rootDir, id, { deleteFile = false, syncIndexes = tru
   if (idx < 0) return false;
 
   const entry = manifest.entries[idx];
-  const removedEntries = [entry];
   manifest.entries.splice(idx, 1);
-
-  if (entry.type === "skill") {
-    removedEntries.push(...cleanupDeletedSkillDependents(rootDir, entry, manifest));
-  }
-
   saveManifest(rootDir, manifest);
   if (syncIndexes !== false) {
-    if (entry.type === "agent" || removedEntries.some((candidate) => candidate?.type === "agent")) {
-      rebuildAgentProfileIndex(rootDir, manifest);
-    }
+    if (entry.type === "agent") rebuildAgentProfileIndex(rootDir, manifest);
     if (entry.type === "skill") rebuildSkillEntryIndex(rootDir, manifest);
   }
 
   if (deleteFile) {
-    for (const removedEntry of removedEntries) {
-      const location = resolveEntryFileLocation(rootDir, removedEntry.type, removedEntry.filename);
-      if (!location) continue;
-      const { filePath } = location;
-      try {
-        unlinkSync(filePath);
-      } catch { /* file may not exist */ }
-    }
+    const filePath = resolve(dirForType(rootDir, entry.type), entry.filename);
+    try {
+      unlinkSync(filePath);
+    } catch { /* file may not exist */ }
   }
   return true;
 }
@@ -2314,7 +2154,6 @@ function createRepositoryImportCheckoutDir(prefix, repoUrl, branch) {
 
   const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
     encoding: "utf8",
-    env: sanitizeGitEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 120_000,
   });
@@ -2373,10 +2212,8 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
     1,
     Math.min(2000, Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500),
   );
-  const markdownSafetyPolicy = resolveRepositoryMarkdownSafetyPolicy(options?.rootDir, options);
 
   const files = walkFilesRecursive(checkoutDir);
-  const blockedCandidates = [];
   const candidates = sortImportedMarkdownCandidates(
     files
       .filter((fullPath) => /\.md$/i.test(fullPath))
@@ -2392,7 +2229,7 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
           return null;
         }
         const kind = inferImportedEntryKind(relPath, fileName, parsed.attrs);
-        const candidate = buildImportedMarkdownCandidate({
+        return buildImportedMarkdownCandidate({
           fullPath,
           relPath,
           fileName,
@@ -2402,37 +2239,11 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
           kind,
           selected: true,
         });
-        if (!candidate) return null;
-        if (SAFETY_SCREENED_IMPORT_KINDS.has(candidate.kind)) {
-          const decision = evaluateMarkdownSafety(
-            raw,
-            {
-              channel: options?.channel || "library-import",
-              sourceKind: candidate.kind,
-              sourcePath: relPath,
-              sourceRepo: options?.repoUrl || options?.sourceId || "",
-              sourceRepoUrl: options?.repoUrl || "",
-              sourceRoot: options?.rootDir || checkoutDir,
-              documentationContext: false,
-            },
-            markdownSafetyPolicy,
-          );
-          if (decision.blocked) {
-            blockedCandidates.push({
-              ...candidate,
-              selected: false,
-              blocked: true,
-              safety: decision.safety,
-            });
-            return null;
-          }
-        }
-        return candidate;
       })
       .filter(Boolean),
   ).slice(0, maxEntries);
 
-  return { files, candidates, blockedCandidates };
+  return { files, candidates };
 }
 
 function listRepositoryMcpConfigFiles(checkoutDir, { includeLegacy = false } = {}) {
@@ -2563,23 +2374,11 @@ export function scanRepositoryForImport(options = {}) {
   const checkoutDir = createRepositoryImportCheckoutDir("scan", repoUrl, branch);
 
   try {
-    const { files, candidates, blockedCandidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, {
-      ...options,
-      channel: "library-import-preview",
-      maxEntries,
-      repoUrl,
-      branch,
-      sourceId,
-    });
+    const { files, candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries });
 
     const byType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
     for (const candidate of candidates) {
       byType[candidate.kind] = (byType[candidate.kind] || 0) + 1;
-    }
-
-    const blockedByType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
-    for (const candidate of blockedCandidates) {
-      blockedByType[candidate.kind] = (blockedByType[candidate.kind] || 0) + 1;
     }
 
     appendRepositoryMcpImportCandidates(candidates, files, checkoutDir, byType);
@@ -2604,14 +2403,6 @@ export function scanRepositoryForImport(options = {}) {
       intraDuplicateMap[relPath] = peers;
     }
 
-    auditBlockedImportCandidates(blockedCandidates, {
-      ...options,
-      channel: "library-import-preview",
-      repoUrl,
-      branch,
-      sourceId,
-    });
-
     return {
       ok: true,
       source: known ? { id: known.id, name: known.name } : { id: sourceId || "custom", name: repoUrl },
@@ -2620,8 +2411,6 @@ export function scanRepositoryForImport(options = {}) {
       totalCandidates: candidates.length,
       candidatesByType: byType,
       candidates,
-      blockedCandidates,
-      blockedCandidatesByType: blockedByType,
       duplicates: duplicateMap,
       intraDuplicates: intraDuplicateMap,
     };
@@ -2811,29 +2600,12 @@ function importRepositoryMcpEntries(rootDir, checkoutDir, context) {
   }
 }
 
-function resolveRepositoryImportSelection(candidates, options = {}) {
-  const counts = { agent: 0, prompt: 0, skill: 0 };
-  for (const candidate of Array.isArray(candidates) ? candidates : []) {
-    const kind = String(candidate?.kind || "").trim().toLowerCase();
-    if (Object.hasOwn(counts, kind)) counts[kind] += 1;
-  }
-
-  const hasExplicitImportAgents = Object.hasOwn(options || {}, "importAgents");
-  const hasExplicitImportSkills = Object.hasOwn(options || {}, "importSkills");
-  const hasExplicitImportPrompts = Object.hasOwn(options || {}, "importPrompts");
-  const hasExplicitImportTools = Object.hasOwn(options || {}, "importTools");
-  const skillOnlyCatalog = counts.skill > 0 && counts.agent === 0 && counts.prompt === 0;
-
-  return {
-    importAgents: hasExplicitImportAgents ? options?.importAgents !== false : !skillOnlyCatalog,
-    importSkills: hasExplicitImportSkills ? options?.importSkills !== false : counts.skill > 0,
-    importPrompts: hasExplicitImportPrompts ? options?.importPrompts !== false : !skillOnlyCatalog,
-    importTools: hasExplicitImportTools ? options?.importTools !== false : true,
-  };
-}
-
 export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const { sourceId, known, repoUrl, branch } = resolveRepositoryImportSource(options);
+  const importAgents = options?.importAgents !== false;
+  const importSkills = options?.importSkills !== false;
+  const importPrompts = options?.importPrompts !== false;
+  const importTools = options?.importTools !== false;
   const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
   const maxProfiles = Math.max(
     1,
@@ -2845,16 +2617,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   );
 
   const checkoutDir = createRepositoryImportCheckoutDir("import", repoUrl, branch);
-  const { candidates, blockedCandidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, {
-    ...options,
-    channel: "library-import-apply",
-    maxEntries: maxProfiles,
-    repoUrl,
-    branch,
-    rootDir,
-    sourceId,
-  });
-  const { importAgents, importSkills, importPrompts, importTools } = resolveRepositoryImportSelection(candidates, options);
+  const { candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries: maxProfiles });
 
   const takenIds = new Set(
     listEntries(rootDir).map((entry) => String(entry?.id || "").trim()).filter(Boolean),
@@ -2901,15 +2664,6 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   if (needsAgentIndexRefresh) rebuildAgentProfileIndex(rootDir);
   if (needsSkillIndexRefresh) rebuildSkillEntryIndex(rootDir);
 
-  auditBlockedImportCandidates(blockedCandidates, {
-    ...options,
-    channel: "library-import-apply",
-    repoUrl,
-    branch,
-    rootDir,
-    sourceId,
-  });
-
   return {
     ok: true,
     source: known ? { ...known } : { id: sourceId || "custom", repoUrl, defaultBranch: branch },
@@ -2918,7 +2672,6 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     importedCount: imported.length,
     importedByType,
     imported,
-    blockedCandidates,
   };
 }
 
@@ -2939,13 +2692,19 @@ export function detectScopes(repoRoot, opts = {}) {
 
   // 1. Scan git commit history for conventional commit scopes
   try {
+    const gitEnv = { ...process.env };
+    delete gitEnv.GIT_DIR;
+    delete gitEnv.GIT_WORK_TREE;
+    delete gitEnv.GIT_INDEX_FILE;
+    delete gitEnv.GIT_COMMON_DIR;
+    delete gitEnv.GIT_PREFIX;
     const safeMaxCommits = Math.max(1, Math.min(5000, Number.parseInt(String(maxCommits), 10) || 200));
     const logResult = spawnSync(
       "git",
       ["log", "--oneline", "-" + safeMaxCommits, "--format=%s"],
       {
         cwd: repoRoot,
-        env: sanitizedGitEnv(),
+        env: gitEnv,
         encoding: "utf8",
         timeout: 10000,
         stdio: ["ignore", "pipe", "pipe"],
@@ -3061,7 +2820,6 @@ export function resolveLibraryRefs(template, rootDir, extraVars = {}) {
 
   return resolved;
 }
-
 // ── Manifest Rebuild / Sync ──────────────────────────────────────────────────
 
 /**

@@ -600,7 +600,7 @@ async function buildVoiceToolRuntimeContext(toolName, context = {}) {
     || context?.approvalMode
     || (context?.executionPolicy?.approvalRequired === true || context?.requireApproval === true
       ? "manual"
-      : "never")
+      : "auto")
   );
   return {
     ...context,
@@ -613,9 +613,7 @@ async function buildVoiceToolRuntimeContext(toolName, context = {}) {
     requestedBy: String(context?.requestedBy || context?.userId || "voice").trim() || "voice",
     approval: {
       ...(context?.approval && typeof context.approval === "object" ? context.approval : {}),
-      mode: privileged
-        ? "never"
-        : String(defaultApprovalMode).trim() || "never",
+      mode: String(defaultApprovalMode).trim() || "auto",
       ...(privileged
         ? {
             decision: String(context?.approval?.decision || "approved").trim() || "approved",
@@ -929,6 +927,8 @@ const TOOL_HANDLERS = {
       const fallback = await execPrimaryPrompt(message, {
         mode: "instant",
         model,
+        sessionId,
+        scope: `voice-ask:${sessionId}`,
         sessionType: "voice-ask",
         cwd,
       });

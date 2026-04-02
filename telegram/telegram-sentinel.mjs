@@ -601,6 +601,9 @@ async function runRepairAgent(triggerReason, details = "") {
 
     const result = await execPrimaryPrompt(prompt, {
       timeoutMs: sentinelConfig.repairTimeoutMs,
+      sessionId: "sentinel-repair-agent",
+      scope: "telegram-sentinel:repair",
+      sessionType: "telegram-sentinel",
     });
     const summary = normalizeAgentResult(result);
     await sendTelegram(
@@ -652,6 +655,9 @@ async function runPrimaryAgentFallback(chatId, text, command) {
 
     const result = await execPrimaryPrompt(prompt, {
       timeoutMs: sentinelConfig.primaryAgentFallbackTimeoutMs,
+      sessionId: `sentinel-fallback-${chatId}`,
+      scope: `telegram-sentinel:${chatId}`,
+      sessionType: "telegram-sentinel",
     });
     const message = normalizeAgentResult(result).slice(0, 3600);
     await sendTelegram(chatId, message || "(fallback completed with no text output)");

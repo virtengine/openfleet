@@ -1,4 +1,3 @@
-import { getModelsForExecutor } from "../task/task-complexity.mjs";
 import { getProviderAuthAdapter } from "./auth/index.mjs";
 import { normalizeProviderCapabilityId } from "./provider-capabilities.mjs";
 import { getBuiltinProviderDefinition } from "./providers/index.mjs";
@@ -66,17 +65,11 @@ export function listProviderModels(providerId, options = {}) {
       ? options.adapter.models
       : [];
   const definitionModels = Array.isArray(providerDefinition?.models) ? providerDefinition.models : [];
-  const fallbackModels = getModelsForExecutor(
-    options.executor
-      || providerDefinition?.executor
-      || options.adapter?.provider
-      || normalizedProviderId,
-  );
   const selectedSource = configured.length > 0
     ? configured
     : (adapterModels.length > 0
       ? adapterModels
-      : (definitionModels.length > 0 ? definitionModels : fallbackModels));
+      : definitionModels);
   return uniqueEntries(selectedSource)
     .map((entry) => normalizeModelEntry(entry, {
       providerId: normalizedProviderId,

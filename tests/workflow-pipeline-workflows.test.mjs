@@ -98,4 +98,56 @@ describe("pipeline workflow definitions", () => {
     expect(result.outputs[1].input.summary).toContain("implement");
     expect(result.tokensUsed).toBe(3);
   });
+
+  it("passes managed harness session metadata into the default stage runner", async () => {
+    vi.resetModules();
+    const launchOrResumeThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "stage ok",
+      items: [],
+      sdk: "codex",
+      threadId: "pipeline-stage-thread",
+    });
+    vi.doMock("../agent/agent-pool.mjs", () => ({
+      launchOrResumeThread,
+    }));
+
+    const mod = await import("../workflow/pipeline-workflows.mjs");
+    const workflows = mod.normalizePipelineWorkflows({
+      demo: {
+        type: "sequential",
+        stages: [{ id: "implement", name: "implement", sdk: "codex" }],
+      },
+    });
+
+    const result = await mod.runPipelineWorkflow(
+      "demo",
+      { taskId: "TASK-STAGE-1", title: "Pipeline stage lineage", summary: "Keep stage runs attached" },
+      {
+        workflows,
+        createHub: false,
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(launchOrResumeThread).toHaveBeenCalledOnce();
+    expect(launchOrResumeThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({
+        sessionType: "pipeline-stage",
+        sessionId: expect.stringContaining("TASK-STAGE-1:pipeline-stage:implement"),
+        sessionScope: "pipeline-workflow-task",
+        parentSessionId: "TASK-STAGE-1",
+        rootSessionId: "TASK-STAGE-1",
+        metadata: expect.objectContaining({
+          source: "pipeline-workflow-stage",
+          workflowName: "demo",
+          workflowType: "sequential",
+          stageId: "implement",
+          stageName: "implement",
+          taskId: "TASK-STAGE-1",
+          taskTitle: "Pipeline stage lineage",
+        }),
+      }),
+    );
+  });
 });

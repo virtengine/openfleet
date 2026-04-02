@@ -1060,16 +1060,22 @@ export async function execCodexPrompt(userMessage, options = {}) {
       );
     }
 
-    const logicalSessionId =
+  const logicalSessionId =
       currentSessionId
       || toTrimmedString(sessionId || "")
       || (persistent ? "primary" : `codex-task-${Date.now()}`);
-    const shouldActivateManagedSession = persistent || Boolean(currentSessionId || sessionId);
-    codexSessionCompat.registerExecution(logicalSessionId, {
+  const shouldActivateManagedSession = persistent || Boolean(currentSessionId || sessionId);
+  const providerRuntime = codexSessionCompat.resolveProvider({
+    providerSelection: options.providerSelection || "codex",
+    model: process.env.CODEX_MODEL || null,
+  });
+    codexSessionCompat.beginTurn(logicalSessionId, {
       activate: shouldActivateManagedSession,
       status: "running",
       threadId: activeThreadId,
       cwd: getWorkingDirectory(),
+      providerSelection: providerRuntime.providerId || "codex",
+      model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
       metadata: {
         providerThreadId: activeThreadId,
         persistent,
@@ -1164,6 +1170,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
         for await (const event of streamedTurn.events) {
           eventCount += 1;
+          codexSessionCompat.recordStreamEvent(logicalSessionId, event, {
+            activate: shouldActivateManagedSession,
+            threadId: activeThreadId || event?.thread_id || null,
+            cwd: getWorkingDirectory(),
+            providerSelection: providerRuntime.providerId || "codex",
+            model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
+          });
           if (firstEventTimer) {
             clearTimeout(firstEventTimer);
             firstEventTimer = null;
@@ -1172,11 +1185,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
           if (event.type === "thread.started" && event.thread_id) {
             activeThreadId = event.thread_id;
             await saveState();
-            codexSessionCompat.registerExecution(logicalSessionId, {
+            codexSessionCompat.beginTurn(logicalSessionId, {
               activate: shouldActivateManagedSession,
               status: "running",
               threadId: activeThreadId,
               cwd: getWorkingDirectory(),
+              providerSelection: providerRuntime.providerId || "codex",
+              model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
               metadata: {
                 providerThreadId: activeThreadId,
                 persistent,
@@ -1228,11 +1243,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
             if (persistent && currentSessionId) {
               await saveCurrentSession();
             }
-            codexSessionCompat.registerExecution(logicalSessionId, {
+            codexSessionCompat.completeTurn(logicalSessionId, {
               activate: shouldActivateManagedSession,
               status: "completed",
               threadId: activeThreadId,
               cwd: getWorkingDirectory(),
+              providerSelection: providerRuntime.providerId || "codex",
+              model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
               metadata: {
                 providerThreadId: activeThreadId,
                 turnCount,
@@ -1286,12 +1303,14 @@ export async function execCodexPrompt(userMessage, options = {}) {
               reason === "user_stop"
                 ? ":close: Agent stopped by user."
                 : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
-            codexSessionCompat.registerExecution(logicalSessionId, {
+            codexSessionCompat.abortTurn(logicalSessionId, {
               activate: shouldActivateManagedSession,
               status: reason === "user_stop" ? "aborted" : "timeout",
               threadId: activeThreadId,
               cwd: getWorkingDirectory(),
               error: msg,
+              providerSelection: providerRuntime.providerId || "codex",
+              model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
               metadata: {
                 providerThreadId: activeThreadId,
                 persistent,
@@ -1326,12 +1345,14 @@ export async function execCodexPrompt(userMessage, options = {}) {
           console.error(
             `[codex-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts — giving up`,
           );
-          codexSessionCompat.registerExecution(logicalSessionId, {
+          codexSessionCompat.failTurn(logicalSessionId, {
             activate: shouldActivateManagedSession,
             status: "failed",
             threadId: activeThreadId,
             cwd: getWorkingDirectory(),
             error: err?.message || String(err),
+            providerSelection: providerRuntime.providerId || "codex",
+            model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
             metadata: {
               providerThreadId: activeThreadId,
               persistent,
@@ -1344,12 +1365,14 @@ export async function execCodexPrompt(userMessage, options = {}) {
           };
         }
 
-        codexSessionCompat.registerExecution(logicalSessionId, {
+        codexSessionCompat.failTurn(logicalSessionId, {
           activate: shouldActivateManagedSession,
           status: "failed",
           threadId: activeThreadId,
           cwd: getWorkingDirectory(),
           error: err?.message || String(err),
+          providerSelection: providerRuntime.providerId || "codex",
+          model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
           metadata: {
             providerThreadId: activeThreadId,
             persistent,

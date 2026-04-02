@@ -1,3 +1,9 @@
+import { randomUUID } from "node:crypto";
+import {
+  normalizeToolSandboxMode,
+  normalizeToolTruncationPolicy,
+} from "./tool-contract.mjs";
+
 function normalizeText(value) {
   return String(value ?? "").trim();
 }
@@ -92,12 +98,29 @@ function normalizeNetworkContext(context = {}, defaults = {}) {
   };
 }
 
+function normalizeRetryContext(context = {}, defaults = {}) {
+  const merged = {
+    ...(defaults?.retry && typeof defaults.retry === "object" ? cloneJson(defaults.retry) : {}),
+    ...(context?.retry && typeof context.retry === "object" ? cloneJson(context.retry) : {}),
+  };
+  return {
+    maxAttempts: Number.isFinite(Number(merged.maxAttempts ?? merged.attempts))
+      ? Math.max(1, Math.trunc(Number(merged.maxAttempts ?? merged.attempts)))
+      : null,
+    backoffMs: Number.isFinite(Number(merged.backoffMs))
+      ? Math.max(0, Math.trunc(Number(merged.backoffMs)))
+      : null,
+    strategy: normalizeOptionalText(merged.strategy) || null,
+  };
+}
+
 export function normalizeToolRuntimeContext(context = {}, defaults = {}) {
   const mergedMetadata = {
     ...(defaults?.metadata && typeof defaults.metadata === "object" ? cloneJson(defaults.metadata) : {}),
     ...(context?.metadata && typeof context.metadata === "object" ? cloneJson(context.metadata) : {}),
   };
   const sessionId = normalizeOptionalText(context.sessionId ?? defaults.sessionId ?? context.threadId ?? defaults.threadId);
+  const approval = normalizeApprovalContext(context, defaults);
   return {
     cwd: normalizeOptionalText(context.cwd ?? defaults.cwd),
     repoRoot: normalizeOptionalText(context.repoRoot ?? defaults.repoRoot),
@@ -105,6 +128,8 @@ export function normalizeToolRuntimeContext(context = {}, defaults = {}) {
     rootSessionId: normalizeOptionalText(context.rootSessionId ?? defaults.rootSessionId ?? sessionId),
     parentSessionId: normalizeOptionalText(context.parentSessionId ?? defaults.parentSessionId),
     threadId: normalizeOptionalText(context.threadId ?? defaults.threadId ?? sessionId),
+    turnId: normalizeOptionalText(context.turnId ?? defaults.turnId),
+    parentTurnId: normalizeOptionalText(context.parentTurnId ?? defaults.parentTurnId),
     runId: normalizeOptionalText(context.runId ?? defaults.runId),
     workflowId: normalizeOptionalText(context.workflowId ?? defaults.workflowId),
     taskId: normalizeOptionalText(context.taskId ?? defaults.taskId),
@@ -113,15 +138,27 @@ export function normalizeToolRuntimeContext(context = {}, defaults = {}) {
     mode: normalizeOptionalText(context.mode ?? defaults.mode),
     surface: normalizeOptionalText(context.surface ?? defaults.surface),
     providerId: normalizeOptionalText(context.providerId ?? defaults.providerId),
+    providerTurnId: normalizeOptionalText(context.providerTurnId ?? defaults.providerTurnId),
     executor: normalizeOptionalText(context.executor ?? defaults.executor),
     model: normalizeOptionalText(context.model ?? defaults.model),
     agentProfileId: normalizeOptionalText(context.agentProfileId ?? defaults.agentProfileId),
     requestId: normalizeOptionalText(context.requestId ?? defaults.requestId),
     correlationId: normalizeOptionalText(context.correlationId ?? defaults.correlationId),
-    sandbox: normalizeOptionalText(context.sandbox ?? defaults.sandbox),
+    executionId: normalizeOptionalText(context.executionId ?? defaults.executionId),
+    sandbox: normalizeToolSandboxMode(context.sandbox ?? defaults.sandbox),
     requestedBy: normalizeOptionalText(context.requestedBy ?? defaults.requestedBy),
-    approval: normalizeApprovalContext(context, defaults),
+    approval,
+    approvalRequestId: normalizeOptionalText(
+      context.approvalRequestId
+      ?? defaults.approvalRequestId
+      ?? approval.requestId,
+    ),
     network: normalizeNetworkContext(context, defaults),
+    retry: normalizeRetryContext(context, defaults),
+    truncation: normalizeToolTruncationPolicy(
+      context.truncation,
+      defaults.truncation,
+    ),
     metadata: mergedMetadata,
   };
 }
@@ -131,10 +168,41 @@ export function mergeToolRuntimeContext(base = {}, override = {}) {
 }
 
 export function buildToolExecutionEnvelope(toolName, args = {}, context = {}, defaults = {}) {
+  const normalizedContext = normalizeToolRuntimeContext(context, defaults);
+  const executionId = normalizeOptionalText(
+    context.executionId
+    ?? defaults.executionId
+    ?? normalizedContext.executionId,
+  ) || `tool-${randomUUID()}`;
+  const nextContext = {
+    ...normalizedContext,
+    executionId,
+    approvalRequestId: normalizedContext.approvalRequestId || normalizedContext.approval?.requestId || null,
+  };
   return {
+    executionId,
     toolName: normalizeText(toolName),
     args: cloneJson(args) ?? {},
-    context: normalizeToolRuntimeContext(context, defaults),
+    context: nextContext,
+    lineage: {
+      sessionId: nextContext.sessionId,
+      rootSessionId: nextContext.rootSessionId,
+      parentSessionId: nextContext.parentSessionId,
+      threadId: nextContext.threadId,
+      turnId: nextContext.turnId,
+      runId: nextContext.runId,
+      workflowId: nextContext.workflowId,
+      taskId: nextContext.taskId,
+      providerId: nextContext.providerId,
+      providerTurnId: nextContext.providerTurnId,
+    },
+    policy: {
+      approval: cloneJson(nextContext.approval),
+      network: cloneJson(nextContext.network),
+      sandbox: nextContext.sandbox,
+      retry: cloneJson(nextContext.retry),
+      truncation: cloneJson(nextContext.truncation),
+    },
   };
 }
 

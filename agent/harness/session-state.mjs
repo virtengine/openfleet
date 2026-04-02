@@ -16,6 +16,15 @@ export function createHarnessSessionState(metadata = {}) {
     followups: [],
     steering: [],
     provider: metadata.provider || null,
+    runtimeConfig: metadata.runtimeConfig && typeof metadata.runtimeConfig === "object"
+      ? JSON.parse(JSON.stringify(metadata.runtimeConfig))
+      : null,
+    contracts: metadata.contracts && typeof metadata.contracts === "object"
+      ? JSON.parse(JSON.stringify(metadata.contracts))
+      : null,
+    profile: metadata.profile && typeof metadata.profile === "object"
+      ? JSON.parse(JSON.stringify(metadata.profile))
+      : null,
   };
 }
 
@@ -30,6 +39,28 @@ export function updateHarnessSessionState(state, patch = {}) {
 export function appendHarnessSessionEvent(state, event) {
   return updateHarnessSessionState(state, {
     events: [...(Array.isArray(state?.events) ? state.events : []), event],
+  });
+}
+
+export function replaceHarnessFollowups(state, followups = []) {
+  return updateHarnessSessionState(state, {
+    followups: Array.isArray(followups)
+      ? followups.map((entry) => ({
+          ...entry,
+          meta: entry?.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+        }))
+      : [],
+  });
+}
+
+export function replaceHarnessSteering(state, steering = []) {
+  return updateHarnessSessionState(state, {
+    steering: Array.isArray(steering)
+      ? steering.map((entry) => ({
+          ...entry,
+          meta: entry?.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+        }))
+      : [],
   });
 }
 

@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createThreadContract,
+  normalizeThreadStatus,
+} from "./thread-contract.mjs";
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
@@ -36,12 +40,6 @@ const __dirname = dirname(__filename);
 export function createThreadId(prefix = "thread") {
   const normalized = toTrimmedString(prefix).replace(/[^a-z0-9_-]+/gi, "-").toLowerCase() || "thread";
   return `${normalized}-${randomUUID()}`;
-}
-
-function normalizeThreadStatus(value, fallback = "idle") {
-  const normalized = toTrimmedString(value).toLowerCase();
-  if (!normalized) return fallback;
-  return normalized.replace(/[^a-z0-9_-]+/g, "_");
 }
 
 export function createThreadRecord(input = {}, parentRecord = null) {
@@ -456,6 +454,48 @@ export function getThreadRecord(taskKey) {
   return normalized && threadRegistry.has(normalized)
     ? cloneValue(threadRegistry.get(normalized))
     : null;
+}
+
+export function listTaskThreadRecords() {
+  return [...threadRegistry.entries()].map(([taskKey, record]) => ({
+    taskKey,
+    ...cloneValue(record),
+  }));
+}
+
+export function setThreadRecord(taskKey, record = {}) {
+  const normalizedTaskKey = toTrimmedString(taskKey);
+  if (!normalizedTaskKey) {
+    throw new Error("setThreadRecord requires a taskKey");
+  }
+  const existing = getThreadRecord(normalizedTaskKey) || {};
+  const next = normalizePersistedThreadRecord(normalizedTaskKey, {
+    ...existing,
+    ...toPlainObject(record),
+    taskKey: normalizedTaskKey,
+  });
+  threadRegistry.set(normalizedTaskKey, next);
+  persistThreadRegistry().catch(() => {});
+  return cloneValue(next);
+}
+
+export function deleteThreadRecord(taskKey) {
+  const normalizedTaskKey = toTrimmedString(taskKey);
+  if (!normalizedTaskKey) return false;
+  const deleted = threadRegistry.delete(normalizedTaskKey);
+  if (deleted) {
+    persistThreadRegistry().catch(() => {});
+  }
+  return deleted;
+}
+
+export function createThreadRecordContract(input = {}) {
+  const normalizedTaskKey = toTrimmedString(input.taskKey || "");
+  const record = normalizedTaskKey ? getThreadRecord(normalizedTaskKey) : null;
+  return createThreadContract({
+    ...(record || {}),
+    ...toPlainObject(input),
+  });
 }
 
 export function invalidateThread(taskKey) {

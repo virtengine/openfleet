@@ -1,8 +1,14 @@
-import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
+import { normalizeExecutorKey } from "../task/task-complexity.mjs";
 import { createProviderAuthManager } from "./provider-auth-manager.mjs";
 import { getProviderCapabilities, normalizeProviderCapabilityId } from "./provider-capabilities.mjs";
 import { getProviderModelCatalog } from "./provider-model-catalog.mjs";
 import {
+  buildProviderRegistryContract,
+  normalizeProviderInventoryEntry,
+  normalizeProviderSelection,
+} from "./providers/provider-contract.mjs";
+import {
+  getBuiltInProviderDriver,
   getBuiltinProviderDefinition,
   listBuiltinProviderDefinitions,
   normalizeProviderDefinitionId,
@@ -94,9 +100,11 @@ function buildProviderEntry(providerId, definition, adapter, fields, options) {
     configuredModels,
     defaultModel: fields.defaultModel || definition?.defaultModel,
     local: getProviderCapabilities(providerId).local === true,
+    settings: options.settings || options.env || process.env,
+    env: options.env || process.env,
   });
   const capabilities = buildCapabilities(adapter, providerId, options.getAdapterCapabilities);
-  return {
+  return normalizeProviderInventoryEntry({
     id: fields.id,
     name: fields.name,
     providerId,
@@ -116,7 +124,7 @@ function buildProviderEntry(providerId, definition, adapter, fields, options) {
     auth: resolveProviderAuth(providerId, fields, options),
     capabilities,
     definition: definition ? { ...definition } : null,
-  };
+  });
 }
 
 function resolveDefinitionFromEntry(entry = {}) {
@@ -239,34 +247,87 @@ export function resolveProviderSelection(name, options = {}) {
   if (directProviderId) {
     const providerMatch = providers.find((entry) => entry.providerId === directProviderId);
     if (providerMatch) {
-      return {
+      return normalizeProviderSelection({
         providerId: providerMatch.providerId,
         adapterName: normalizeProviderAdapterName(providerMatch.adapterId || providerMatch.providerId),
         selectionId: providerMatch.providerId,
-      };
+        model: providerMatch.defaultModel,
+      });
     }
   }
   const match = providers.find((entry) =>
     entry.id === raw || entry.adapterId === normalizeProviderAdapterName(raw));
   if (!match) return null;
-  return {
+  return normalizeProviderSelection({
     providerId: match.providerId || normalizeProviderCapabilityId(match.id),
     adapterName: normalizeProviderAdapterName(match.adapterId || match.providerId || match.executor || match.provider),
     selectionId: match.id,
+    model: match.defaultModel,
+  });
+}
+
+function getProviderList(options = {}) {
+  return listRegisteredProviders(options).map((entry) => normalizeProviderInventoryEntry(entry));
+}
+
+function getEnabledProviders(options = {}) {
+  return getProviderList(options).filter((entry) => entry.enabled !== false && entry.available !== false);
+}
+
+function resolveDefaultProvider(providers = [], options = {}) {
+  const requestedDefaultProviderId = resolveRequestedDefaultProviderId(options);
+  const enabledProviders = providers.filter((entry) => entry.enabled !== false && entry.available !== false);
+  return enabledProviders.find((entry) => entry.providerId === requestedDefaultProviderId)
+    || providers.find((entry) => entry.providerId === requestedDefaultProviderId && entry.enabled !== false)
+    || enabledProviders[0]
+    || providers.find((entry) => entry.enabled !== false)
+    || providers[0]
+    || null;
+}
+
+async function discoverRegistryRuntimeCatalog(providerId, options = {}) {
+  const { discoverProviders } = await import("./provider-runtime-discovery.mjs");
+  const snapshot = await discoverProviders(options);
+  const normalizedProviderId = normalizeProviderDefinitionId(providerId, "");
+  if (!normalizedProviderId) return snapshot;
+  const matchedProviders = Array.isArray(snapshot?.providers)
+    ? snapshot.providers.filter((entry) => entry.id === normalizedProviderId)
+    : [];
+  const matchedModels = Array.isArray(snapshot?.allModels)
+    ? snapshot.allModels.filter((entry) => entry.providerID === normalizedProviderId)
+    : [];
+  return {
+    ...snapshot,
+    providers: matchedProviders,
+    connected: matchedProviders.filter((entry) => entry.connected),
+    connectedIds: matchedProviders.filter((entry) => entry.connected).map((entry) => entry.id),
+    allModels: matchedModels,
   };
 }
 
 export function createProviderRegistry(options = {}) {
-  return {
+  const registry = {
     listProviders() {
-      return listRegisteredProviders(options);
+      return getProviderList(options);
+    },
+    listEnabledProviders() {
+      return getEnabledProviders(options);
+    },
+    getInventory() {
+      const providers = getProviderList(options);
+      return {
+        providers,
+        enabledProviders: providers.filter((entry) => entry.enabled !== false),
+        availableProviders: providers.filter((entry) => entry.available !== false),
+        defaultProvider: resolveDefaultProvider(providers, options),
+      };
     },
     resolveSelection(name) {
       return resolveProviderSelection(name, options);
     },
     getProvider(providerId) {
       const normalized = normalizeProviderCapabilityId(providerId);
-      const providers = listRegisteredProviders(options);
+      const providers = getProviderList(options);
       return providers.find((entry) => entry.providerId === normalized || entry.id === providerId) || null;
     },
     getCapabilities(providerId) {
@@ -275,12 +336,93 @@ export function createProviderRegistry(options = {}) {
     getDefinition(providerId) {
       return getBuiltinProviderDefinition(providerId);
     },
+    getModelCatalog(providerId) {
+      const provider = this.getProvider(providerId);
+      return provider?.modelCatalog || getProviderModelCatalog(providerId, {
+        settings: options.settings || options.env || process.env,
+        env: options.env || process.env,
+      });
+    },
+    getAuthHealth(providerId, authState = {}) {
+      return this.getAuthState(providerId, authState);
+    },
+    getAuthState(providerId, authState = {}) {
+      const provider = this.getProvider(providerId);
+      return provider?.auth || resolveProviderAuth(providerId, authState, options);
+    },
+    buildSessionConfig(providerId, overrides = {}) {
+      const provider = this.getProvider(providerId) || this.getDefaultProvider();
+      if (!provider?.providerId) return null;
+      const driver = getBuiltInProviderDriver(provider.providerId);
+      if (!driver) return null;
+      const settings = provider.auth?.settings && typeof provider.auth.settings === "object"
+        ? provider.auth.settings
+        : {};
+      const modelCatalog = this.getModelCatalog(provider.providerId);
+      const sessionConfig = driver.createSessionConfig({
+        env: options.env || process.env,
+        settings,
+        model:
+          overrides.model
+          || settings.defaultModel
+          || modelCatalog?.defaultModel
+          || provider.defaultModel
+          || null,
+        authMode: overrides.authMode || settings.authMode || provider.auth?.preferredMode || null,
+        endpoint: overrides.endpoint || settings.endpoint || null,
+        baseUrl: overrides.baseUrl || settings.baseUrl || null,
+        deployment: overrides.deployment || settings.deployment || null,
+        apiVersion: overrides.apiVersion || settings.apiVersion || null,
+        workspace: overrides.workspace || settings.workspace || null,
+        organization: overrides.organization || settings.organization || null,
+        project: overrides.project || settings.project || null,
+      });
+      return sessionConfig
+        ? {
+            ...sessionConfig,
+            provider: provider.providerId,
+            selectionId: provider.id,
+          }
+        : null;
+    },
+    async discoverRuntimeCatalog(providerId, discoveryOptions = {}) {
+      return await discoverRegistryRuntimeCatalog(providerId, discoveryOptions);
+    },
+    resolveProviderRuntime(name) {
+      const selection = this.resolveSelection(name);
+      const provider = this.getProvider(selection?.selectionId || selection?.providerId || name) || this.getDefaultProvider();
+      return {
+        selection,
+        provider,
+        capabilities: provider ? this.getCapabilities(provider.providerId) : getProviderCapabilities(name),
+        auth: provider ? this.getAuthState(provider.providerId) : null,
+        modelCatalog: provider ? this.getModelCatalog(provider.providerId) : null,
+      };
+    },
     getDefaultProvider() {
-      const providers = listRegisteredProviders(options);
-      const requestedDefaultProviderId = resolveRequestedDefaultProviderId(options);
-      return providers.find((entry) => entry.providerId === requestedDefaultProviderId) || providers[0] || null;
+      return resolveDefaultProvider(getProviderList(options), options);
+    },
+    getRegistrySnapshot() {
+      const inventory = this.getInventory();
+      return {
+        contractVersion: "bosun.provider-registry.v1",
+        defaultProviderId: inventory.defaultProvider?.providerId || null,
+        providers: inventory.providers,
+        authHealth: Object.fromEntries(
+          inventory.providers.map((entry) => [entry.providerId, this.getAuthHealth(entry.providerId)]),
+        ),
+        modelCatalogs: Object.fromEntries(
+          inventory.providers.map((entry) => [entry.providerId, this.getModelCatalog(entry.providerId)]),
+        ),
+        capabilities: Object.fromEntries(
+          inventory.providers.map((entry) => [entry.providerId, this.getCapabilities(entry.providerId)]),
+        ),
+        timestamp: Date.now(),
+      };
     },
   };
+  registry.contract = buildProviderRegistryContract(registry);
+  return registry;
 }
 
 export default createProviderRegistry;

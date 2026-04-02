@@ -20,7 +20,7 @@ import { signal, computed } from "@preact/signals";
 import { wsConnected, onWsMessage, wsSend } from "./api.js";
 import { apiFetch } from "./api.js";
 import {
-  buildSessionApiPath,
+  buildCanonicalSessionApiPath,
   getSessionRuntimeState,
   normalizeSessionEventPayload,
   normalizeSessionsUpdatePayload,
@@ -498,10 +498,10 @@ export async function loadHistoryChunked(sessionId, opts = {}) {
 
   try {
     while (hasMore) {
-      const path = buildSessionApiPath(sessionId, "", {
+      const path = buildCanonicalSessionApiPath(sessionId, "", {
         workspace,
         query: { offset, limit: chunkSize },
-      }) || `/api/sessions/${encodeURIComponent(sessionId)}?offset=${offset}&limit=${chunkSize}`;
+      });
       const res = await apiFetch(
         path,
         { _silent: true },

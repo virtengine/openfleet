@@ -19,6 +19,7 @@ import { promisify } from "node:util";
 import * as wsModule from "ws";
 import Ajv2020 from "ajv/dist/2020.js";
 import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
+import { buildAgentConfigurationGuide } from "../lib/agent-configuration-guide.mjs";
 
 const gzipAsync = promisify(zlibGzip);
 
@@ -153,13 +154,20 @@ import {
 
 import {
   addActiveSessionListener,
+  clearThreadRegistry,
+  continueSession,
   createCompiledInternalHarnessSession,
+  getAvailableSdks,
   getActiveThreads,
+  getPoolSdkName,
   launchEphemeralThread,
   launchOrResumeThread,
   execWithRetry,
   invalidateThread,
+  resetPoolSdkCache,
+  setPoolSdk,
 } from "../agent/agent-pool.mjs";
+import { getBosunSessionManager } from "../agent/session-manager.mjs";
 import { normalizeProviderAuthState } from "../agent/provider-auth-manager.mjs";
 import { getProviderCapabilities } from "../agent/provider-capabilities.mjs";
 import { getProviderModelCatalog } from "../agent/provider-model-catalog.mjs";
@@ -376,6 +384,11 @@ import {
   switchPrimaryAgent,
   getPrimaryAgentInfo,
 } from "../agent/primary-agent.mjs";
+import { tryHandleHarnessApprovalRoutes } from "./routes/harness-approvals.mjs";
+import { tryHandleHarnessEventRoutes } from "./routes/harness-events.mjs";
+import { tryHandleHarnessProviderRoutes } from "./routes/harness-providers.mjs";
+import { tryHandleHarnessSessionRoutes } from "./routes/harness-sessions.mjs";
+import { tryHandleHarnessSubagentRoutes } from "./routes/harness-subagents.mjs";
 import {
   buildBenchmarkModePreset,
   getBenchmarkProvider,
@@ -1977,15 +1990,8 @@ async function getWorkflowEngineModule() {
         const agentPoolService = {
           launchEphemeralThread,
           launchOrResumeThread,
+          continueSession,
           execWithRetry,
-          async continueSession(sessionId, prompt, opts = {}) {
-            const timeout = Number(opts.timeout) || 60 * 60 * 1000;
-            const cwd = opts.cwd || process.cwd();
-            return launchEphemeralThread(prompt, cwd, timeout, {
-              resumeThreadId: sessionId,
-              sdk: opts.sdk,
-            });
-          },
           async killSession(sessionId) {
             if (!sessionId) return false;
             try {
@@ -3167,6 +3173,9 @@ function selectTaskReplanRelatedTasks(task, allTasks = []) {
 async function updateTaskReplanState(adapter, task, proposal, options = {}) {
   if (!adapter || typeof adapter.updateTask !== "function" || !task?.id) return task;
   const planningMode = normalizeTaskPlanningMode(options.mode || proposal?.mode || "replan");
+  const queuePlan = proposal?.queuePlan && typeof proposal.queuePlan === "object"
+    ? proposal.queuePlan
+    : null;
   const plannerState = {
     mode: planningMode,
     proposalId: proposal?.proposalId || null,
@@ -3177,9 +3186,12 @@ async function updateTaskReplanState(adapter, task, proposal, options = {}) {
     summary: proposal?.summary || "",
     subtaskCount: Array.isArray(proposal?.subtasks) ? proposal.subtasks.length : 0,
     dependencyPatchCount: Array.isArray(proposal?.dependencyPatches) ? proposal.dependencyPatches.length : 0,
+    queueStepCount: Number(queuePlan?.counts?.stepCount || 0),
+    queueCreatedTaskCount: Number(queuePlan?.counts?.createdTaskCount || 0),
     status: options.status || proposal?.status || "proposed",
     ...(options.appliedAt ? { appliedAt: options.appliedAt } : {}),
     ...(options.createdTaskIds ? { createdTaskIds: uniqueTaskIds(options.createdTaskIds) } : {}),
+    ...(queuePlan ? { queuePlan } : {}),
   };
   const nextProposal = {
     ...(proposal && typeof proposal === "object" ? proposal : {}),
@@ -3187,6 +3199,7 @@ async function updateTaskReplanState(adapter, task, proposal, options = {}) {
     status: options.status || proposal?.status || "proposed",
     ...(options.appliedAt ? { appliedAt: options.appliedAt } : {}),
     ...(options.createdTaskIds ? { createdTaskIds: uniqueTaskIds(options.createdTaskIds) } : {}),
+    ...(queuePlan ? { queuePlan } : {}),
   };
   const nextMeta = buildTaskMetaPatch(task?.meta, {
     replanProposal: nextProposal,
@@ -3236,6 +3249,73 @@ function getTaskPlanningModeMetadata(modeInput = "replan") {
     appliedBroadcastReason: `task-${mode}-applied`,
     proposalStorageKey: isDecompose ? "decomposeProposal" : "replanProposal",
     subtaskTag: isDecompose ? "decompose" : "replan",
+  };
+}
+
+function buildTaskPlanningQueuePlan(proposal = {}, task = {}, modeInput = "replan", options = {}) {
+  const planning = getTaskPlanningModeMetadata(modeInput);
+  const parentTaskId = String(task?.id || proposal?.taskId || "").trim() || null;
+  const proposalId = String(proposal?.proposalId || "").trim() || null;
+  const subtasks = Array.isArray(proposal?.subtasks) ? proposal.subtasks : [];
+  const createdSubtasks = Array.isArray(options.createdSubtasks) ? options.createdSubtasks : [];
+  const createdByIndex = new Map(createdSubtasks.map((entry, index) => [index, entry]));
+  const stepIds = subtasks.map((_entry, index) => `step-${index + 1}`);
+  const steps = subtasks.map((entry, index) => {
+    const created = createdByIndex.get(index) || null;
+    const dependsOnStepIds = uniqueStrings(
+      (Array.isArray(entry?.dependsOnIndexes) ? entry.dependsOnIndexes : [])
+        .map((depIndex) => stepIds[depIndex])
+        .filter(Boolean),
+    );
+    const externalDependencyTaskIds = uniqueTaskIds(entry?.dependsOnTaskIds || []);
+    const status = created
+      ? "queued"
+      : (dependsOnStepIds.length > 0 || externalDependencyTaskIds.length > 0 ? "blocked" : "ready");
+    return {
+      id: stepIds[index],
+      order: index + 1,
+      title: String(entry?.title || `Subtask ${index + 1}`).trim(),
+      description: String(entry?.description || "").trim(),
+      status,
+      priority: String(entry?.priority || "").trim() || null,
+      sprintId: String(entry?.sprintId || "").trim() || null,
+      tags: Array.isArray(entry?.tags) ? entry.tags.map((tag) => String(tag || "").trim()).filter(Boolean) : [],
+      acceptanceCriteria: Array.isArray(entry?.acceptanceCriteria) ? entry.acceptanceCriteria : [],
+      dependsOnStepIds,
+      dependsOnTaskIds: externalDependencyTaskIds,
+      taskId: String(created?.id || created?.taskId || "").trim() || null,
+      taskTitle: String(created?.title || "").trim() || null,
+    };
+  });
+  const relatedTaskIds = uniqueTaskIds([
+    parentTaskId,
+    ...steps.map((step) => step.taskId),
+    ...steps.flatMap((step) => step.dependsOnTaskIds || []),
+  ]);
+  const statusCounts = {
+    ready: steps.filter((step) => step.status === "ready").length,
+    blocked: steps.filter((step) => step.status === "blocked").length,
+    queued: steps.filter((step) => step.status === "queued").length,
+  };
+  return {
+    version: 1,
+    mode: planning.mode,
+    proposalId,
+    parentTaskId,
+    queueStrategy: "explicit-only",
+    summary: String(proposal?.summary || "").trim() || null,
+    currentPlanStep: String(proposal?.currentPlanStep || "").trim() || null,
+    generatedAt: String(proposal?.generatedAt || new Date().toISOString()).trim(),
+    appliedAt: options.appliedAt ? String(options.appliedAt).trim() : null,
+    steps,
+    relatedTaskIds,
+    counts: {
+      stepCount: steps.length,
+      createdTaskCount: steps.filter((step) => Boolean(step.taskId)).length,
+      readyStepCount: statusCounts.ready,
+      blockedStepCount: statusCounts.blocked,
+      queuedStepCount: statusCounts.queued,
+    },
   };
 }
 
@@ -3316,6 +3396,7 @@ async function generateTaskPlanningProposal({ taskId, url, mode }) {
     generatedAt,
     ...normalizeTaskReplanProposal(extracted, { parentTask: task, mode: planning.mode }),
   };
+  proposal.queuePlan = buildTaskPlanningQueuePlan(proposal, task, planning.mode);
   const updatedTask = await updateTaskReplanState(adapter, task, proposal, {
     mode: planning.mode,
     status: "proposed",
@@ -3399,6 +3480,7 @@ async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
     generatedAt: String(proposalSource.generatedAt || new Date().toISOString()).trim(),
     ...normalizeTaskReplanProposal(proposalSource, { parentTask: task, mode: planning.mode }),
   };
+  proposal.queuePlan = buildTaskPlanningQueuePlan(proposal, task, planning.mode);
   const needsDependencyWrites = proposal.subtasks.some((entry) => entry.dependsOnIndexes.length > 0 || entry.dependsOnTaskIds.length > 0)
     || proposal.dependencyPatches.length > 0;
   if (needsDependencyWrites) {
@@ -3408,11 +3490,16 @@ async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
     }
   }
 
-  const createdSubtasks = [];
-  const projectId = task?.projectId || task?.project_id || "";
-  for (let index = 0; index < proposal.subtasks.length; index += 1) {
-    const entry = proposal.subtasks[index];
-    const payload = {
+  const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false }) || resolveActiveWorkspaceExecutionContext();
+  const taskGraphManager = createManualFlowTaskManager(workspaceContext, {
+    repository: task?.repository || task?.meta?.repository || resolveDefaultRepositoryForWorkspaceContext(workspaceContext),
+    workspaceId: task?.workspace || task?.meta?.workspace || workspaceContext?.workspaceId || "",
+    projectId: task?.projectId || task?.project_id || "",
+    templateId: `task-${planning.mode}`,
+  });
+  const graphResult = await taskGraphManager.createTaskGraph({
+    tasks: proposal.subtasks.map((entry, index) => ({
+      clientId: `step-${index + 1}`,
       title: entry.title,
       description: entry.description,
       status: "todo",
@@ -3423,9 +3510,12 @@ async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
       repository: task?.repository || task?.meta?.repository || undefined,
       repositories: Array.isArray(task?.repositories) ? task.repositories : task?.meta?.repositories,
       epicId: task?.epicId || task?.meta?.epicId || undefined,
-      tags: mergeTaskTagLists(task?.tags || task?.meta?.tags || [], entry.tags || [], [planning.subtaskTag]),
+      labels: mergeTaskTagLists(task?.tags || task?.meta?.tags || [], entry.tags || [], [planning.subtaskTag]),
       storyPoints: Number.isFinite(Number(entry.storyPoints)) ? Number(entry.storyPoints) : undefined,
-      ...(entry.sprintId ? { sprintId: entry.sprintId } : {}),
+      sprintId: entry.sprintId || undefined,
+      dependsOnTaskClientIds: (Array.isArray(entry.dependsOnIndexes) ? entry.dependsOnIndexes : [])
+        .map((depIndex) => `step-${depIndex + 1}`),
+      dependsOnTaskIds: entry.dependsOnTaskIds || [],
       meta: {
         parentTaskId: taskId,
         acceptanceCriteria: Array.isArray(entry.acceptanceCriteria) ? entry.acceptanceCriteria : [],
@@ -3447,51 +3537,24 @@ async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
             }
           : {}),
       },
-    };
-    const createdRaw = await adapter.createTask(projectId, payload);
-    createdSubtasks.push(withTaskMetadataTopLevel(createdRaw));
-  }
-
-  const createdTaskIds = createdSubtasks.map((entry) => String(entry?.id || "").trim()).filter(Boolean);
-  const addDependency = async (dependentTaskId, dependencyTaskId) => {
-    if (!dependentTaskId || !dependencyTaskId || dependentTaskId === dependencyTaskId) return;
-    await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.add, [dependentTaskId, dependencyTaskId]);
-    if (typeof adapter?.addTaskDependency === "function") {
-      await Promise.resolve(adapter.addTaskDependency(dependentTaskId, dependencyTaskId)).catch(() => null);
-    } else if (typeof adapter?.updateTask === "function") {
-      const current = await getTaskByIdForApi(dependentTaskId, adapter).catch(() => null);
-      const dependencyTaskIds = uniqueTaskIds([
-        ...(Array.isArray(current?.dependencyTaskIds) ? current.dependencyTaskIds : []),
-        ...(Array.isArray(current?.dependsOn) ? current.dependsOn : []),
-        dependencyTaskId,
-      ]);
-      await Promise.resolve(adapter.updateTask(dependentTaskId, {
-        dependencyTaskIds,
-        dependsOn: dependencyTaskIds,
-        dependencies: dependencyTaskIds,
-      })).catch(() => null);
-    }
-  };
-  for (let index = 0; index < proposal.subtasks.length; index += 1) {
-    const subtask = proposal.subtasks[index];
-    const dependentTaskId = createdTaskIds[index];
-    for (const depIndex of subtask.dependsOnIndexes) {
-      if (createdTaskIds[depIndex]) await addDependency(dependentTaskId, createdTaskIds[depIndex]);
-    }
-    for (const depTaskId of subtask.dependsOnTaskIds) {
-      await addDependency(dependentTaskId, depTaskId);
-    }
-  }
+    })),
+  });
   for (const patch of proposal.dependencyPatches) {
     for (const dependencyTaskId of patch.dependsOnTaskIds) {
-      await addDependency(patch.taskId, dependencyTaskId);
+      await addTaskDependencyForApi(adapter, patch.taskId, dependencyTaskId);
     }
   }
   const persistedSubtasks = await Promise.all(
-    createdTaskIds.map((createdTaskId) => getTaskByIdForApi(createdTaskId, adapter).catch(() => null)),
+    (Array.isArray(graphResult?.tasks) ? graphResult.tasks : [])
+      .map((created) => getTaskByIdForApi(created.taskId || created.id, adapter).catch(() => null)),
   );
+  const createdTaskIds = persistedSubtasks.map((entry) => String(entry?.id || "").trim()).filter(Boolean);
 
   const appliedAt = new Date().toISOString();
+  proposal.queuePlan = buildTaskPlanningQueuePlan(proposal, task, planning.mode, {
+    createdSubtasks: persistedSubtasks.filter(Boolean),
+    appliedAt,
+  });
   const updatedTask = await updateTaskReplanState(adapter, task, proposal, {
     mode: planning.mode,
     status: "applied",
@@ -3510,7 +3573,6 @@ async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
       recommendedAction: proposal.recommendedAction,
     },
   );
-  const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
   try {
     appendOperatorActionToStateLedger({
       actionId: `${planning.appliedLedgerActionIdPrefix}:${taskId}:${proposal.proposalId}`,
@@ -3557,10 +3619,14 @@ async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
       planningMode: planning.mode,
       data: {
         proposal: appliedProposal,
+        queuePlan: proposal.queuePlan,
+        taskGraph: graphResult,
         createdSubtasks: persistedSubtasks.filter(Boolean),
         task: updatedTask,
       },
       proposal: appliedProposal,
+      queuePlan: proposal.queuePlan,
+      taskGraph: graphResult,
       createdSubtasks: persistedSubtasks.filter(Boolean),
       task: updatedTask,
     },
@@ -6997,50 +7063,146 @@ async function resolveDefaultKanbanProjectId(adapter, requestedProjectId = "") {
   }
 }
 
+async function addTaskDependencyForApi(adapter, dependentTaskId, dependencyTaskId) {
+  if (!dependentTaskId || !dependencyTaskId || dependentTaskId === dependencyTaskId) return;
+  await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.add, [dependentTaskId, dependencyTaskId]);
+  if (typeof adapter?.addTaskDependency === "function") {
+    await Promise.resolve(adapter.addTaskDependency(dependentTaskId, dependencyTaskId)).catch(() => null);
+    return;
+  }
+  if (typeof adapter?.updateTask === "function") {
+    const current = await getTaskByIdForApi(dependentTaskId, adapter).catch(() => null);
+    const dependencyTaskIds = uniqueTaskIds([
+      ...(Array.isArray(current?.dependencyTaskIds) ? current.dependencyTaskIds : []),
+      ...(Array.isArray(current?.dependsOn) ? current.dependsOn : []),
+      dependencyTaskId,
+    ]);
+    await Promise.resolve(adapter.updateTask(dependentTaskId, {
+      dependencyTaskIds,
+      dependsOn: dependencyTaskIds,
+      dependencies: dependencyTaskIds,
+    })).catch(() => null);
+  }
+}
+
 function createManualFlowTaskManager(workspaceContext = {}, opts = {}) {
+  const createTaskSpec = async (adapter, projectId, spec = {}, extraMeta = {}) => {
+    const title = String(spec?.title || "").trim();
+    if (!title) throw new Error("title is required");
+    const labels = normalizeTagsInput(spec?.labels || spec?.tags);
+    const workspace = String(
+      spec?.workspace || opts?.workspaceId || workspaceContext?.workspaceId || "",
+    ).trim();
+    const repository = String(
+      spec?.repository ||
+        spec?.meta?.repository ||
+        opts?.repository ||
+        resolveDefaultRepositoryForWorkspaceContext(workspaceContext),
+    ).trim();
+    const repositories = Array.isArray(spec?.repositories)
+      ? spec.repositories.filter((value) => typeof value === "string" && value.trim())
+      : [];
+    const taskPayload = {
+      title,
+      description: String(spec?.description || ""),
+      status: String(spec?.status || "todo").trim() || "todo",
+      priority: spec?.priority || undefined,
+      parentTaskId: String(spec?.parentTaskId || "").trim() || undefined,
+      ...(workspace ? { workspace } : {}),
+      ...(repository ? { repository } : {}),
+      ...(repositories.length ? { repositories } : {}),
+      ...(labels.length ? { labels, tags: labels } : {}),
+      meta: {
+        ...(workspace ? { workspace } : {}),
+        ...(repository ? { repository } : {}),
+        ...(repositories.length ? { repositories } : {}),
+        ...(labels.length ? { tags: labels } : {}),
+        manualFlowTemplateId: String(opts?.templateId || "").trim() || undefined,
+        ...(spec?.meta && typeof spec.meta === "object" ? spec.meta : {}),
+        ...(extraMeta && typeof extraMeta === "object" ? extraMeta : {}),
+      },
+    };
+    const createdRaw = await adapter.createTask(projectId, taskPayload);
+    return withTaskMetadataTopLevel(createdRaw);
+  };
+
   return {
     async createTask(spec = {}) {
-      const title = String(spec?.title || "").trim();
-      if (!title) throw new Error("title is required");
-
       const adapter = getKanbanAdapter();
       const projectId = await resolveDefaultKanbanProjectId(
         adapter,
         opts?.projectId || spec?.projectId || spec?.project || "",
       );
-      const labels = normalizeTagsInput(spec?.labels || spec?.tags);
-      const workspace = String(
-        spec?.workspace || opts?.workspaceId || workspaceContext?.workspaceId || "",
-      ).trim();
-      const repository = String(
-        spec?.repository ||
-          spec?.meta?.repository ||
-          opts?.repository ||
-          resolveDefaultRepositoryForWorkspaceContext(workspaceContext),
-      ).trim();
-      const repositories = Array.isArray(spec?.repositories)
-        ? spec.repositories.filter((value) => typeof value === "string" && value.trim())
-        : [];
-      const taskPayload = {
-        title,
-        description: String(spec?.description || ""),
-        status: String(spec?.status || "todo").trim() || "todo",
-        priority: spec?.priority || undefined,
-        ...(workspace ? { workspace } : {}),
-        ...(repository ? { repository } : {}),
-        ...(repositories.length ? { repositories } : {}),
-        ...(labels.length ? { labels, tags: labels } : {}),
-        meta: {
-          ...(workspace ? { workspace } : {}),
-          ...(repository ? { repository } : {}),
-          ...(repositories.length ? { repositories } : {}),
-          ...(labels.length ? { tags: labels } : {}),
-          manualFlowTemplateId: String(opts?.templateId || "").trim() || undefined,
-          ...(spec?.meta && typeof spec.meta === "object" ? spec.meta : {}),
-        },
+      return createTaskSpec(adapter, projectId, spec);
+    },
+
+    async createTaskGraph(spec = {}) {
+      const adapter = getKanbanAdapter();
+      const projectId = await resolveDefaultKanbanProjectId(
+        adapter,
+        opts?.projectId || spec?.projectId || spec?.project || "",
+      );
+      const tasks = Array.isArray(spec?.tasks) ? spec.tasks : [];
+      const createdTasks = [];
+      let parentTask = null;
+      if (spec?.parentTask && typeof spec.parentTask === "object") {
+        parentTask = await createTaskSpec(adapter, projectId, spec.parentTask, {
+          manualPlanParent: true,
+        });
+      }
+
+      for (const entry of tasks) {
+        const created = await createTaskSpec(adapter, projectId, {
+          ...entry,
+          parentTaskId: entry?.parentTaskId || parentTask?.id || parentTask?._id || undefined,
+        }, {
+          clientId: String(entry?.clientId || "").trim() || undefined,
+        });
+        createdTasks.push({
+          clientId: String(entry?.clientId || "").trim() || null,
+          taskId: created?.id || created?._id || null,
+          title: created?.title || entry?.title || null,
+          task: created,
+        });
+      }
+
+      const taskIdByClientId = new Map(
+        createdTasks
+          .filter((entry) => entry.clientId && entry.taskId)
+          .map((entry) => [entry.clientId, entry.taskId]),
+      );
+
+      let dependencyCount = 0;
+      for (const entry of tasks) {
+        const dependentTaskId = taskIdByClientId.get(String(entry?.clientId || "").trim());
+        if (!dependentTaskId) continue;
+        const dependencyIds = uniqueTaskIds([
+          ...(Array.isArray(entry?.dependsOnTaskIds) ? entry.dependsOnTaskIds : []),
+          ...(Array.isArray(entry?.dependsOnTaskClientIds)
+            ? entry.dependsOnTaskClientIds.map((clientId) => taskIdByClientId.get(String(clientId || "").trim()))
+            : []),
+        ]);
+        for (const dependencyTaskId of dependencyIds) {
+          await addTaskDependencyForApi(adapter, dependentTaskId, dependencyTaskId);
+          dependencyCount += 1;
+        }
+        const sprintId = String(entry?.sprintId || spec?.sprintId || "").trim();
+        if (sprintId) {
+          await assignTaskToSprintForApi({
+            taskId: dependentTaskId,
+            sprintId,
+            adapter,
+          }).catch(() => null);
+        }
+      }
+
+      return {
+        ok: true,
+        parentTaskId: parentTask?.id || parentTask?._id || null,
+        taskCount: createdTasks.length,
+        dependencyCount,
+        tasks: createdTasks,
       };
-      const createdRaw = await adapter.createTask(projectId, taskPayload);
-      return withTaskMetadataTopLevel(createdRaw);
     },
   };
 }
@@ -17431,6 +17593,16 @@ function isEffectiveShreddingEvent(event) {
   return savedChars > 0 && originalChars > compressedChars;
 }
 
+function normalizeShreddingSessionTypeLabel(rawType) {
+  const normalized = String(rawType || "").trim().toLowerCase();
+  return normalized || "unspecified";
+}
+
+function normalizeShreddingDecisionLabel(rawDecision) {
+  const normalized = String(rawDecision || "").trim().toLowerCase();
+  return normalized || "unknown";
+}
+
 // ── Usage Analytics ─────────────────────────────────────────────────────────
 
 /**
@@ -21046,6 +21218,26 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path.startsWith("/api/tasks/") && req.method === "DELETE") {
+    try {
+      const taskId = decodeURIComponent(path.slice("/api/tasks/".length));
+      if (!taskId || taskId.includes("/")) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const adapter = getKanbanAdapter();
+      const deleted = await adapter.deleteTask(taskId);
+      jsonResponse(res, 200, { ok: true, taskId, deleted: Boolean(deleted) });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-deleted",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/tasks/subtasks" && req.method === "GET") {
     try {
       const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || url.searchParams.get("parentTaskId") || "").trim();
@@ -22952,15 +23144,20 @@ async function handleApi(req, res, url) {
       let excludedSynthetic = 0;
       let excludedNoop = 0;
       const events = [];
+      const coverageEvents = [];
       for (const entry of inWindow) {
         const normalizedEntry = {
           ...entry,
           agentType: normalizeShreddingAgentType(entry?.agentType),
+          sessionType: normalizeShreddingSessionTypeLabel(entry?.sessionType),
+          normalizedSessionType: normalizeShreddingSessionTypeLabel(entry?.normalizedSessionType || entry?.sessionType),
+          decision: normalizeShreddingDecisionLabel(entry?.decision),
         };
         if (!includeSynthetic && isLikelySyntheticShreddingEvent(normalizedEntry)) {
           excludedSynthetic++;
           continue;
         }
+        coverageEvents.push(normalizedEntry);
         if (!includeNoop && !isEffectiveShreddingEvent(normalizedEntry)) {
           excludedNoop++;
           continue;
@@ -22983,6 +23180,10 @@ async function handleApi(req, res, url) {
       const dailyCounts = {};
       const agentCounts = {};
       const stageCounts = {};
+      const sessionTypeCounts = {};
+      const normalizedSessionTypeCounts = {};
+      const decisionCounts = {};
+      const coverageBySessionType = {};
       const compactionFamilyCounts = {};
       const commandFamilyCounts = {};
       let unknownAttribution = 0;
@@ -22995,6 +23196,35 @@ async function handleApi(req, res, url) {
         completedSessions.filter((entry) => withinDays(entry, days)),
       );
       const blendedCostPerToken = sessionCostModel.blendedCostPerToken;
+
+      for (const e of coverageEvents) {
+        const sessionType = normalizeShreddingSessionTypeLabel(e.sessionType);
+        const normalizedSessionType = normalizeShreddingSessionTypeLabel(e.normalizedSessionType || e.sessionType);
+        const decision = normalizeShreddingDecisionLabel(e.decision);
+        sessionTypeCounts[sessionType] = (sessionTypeCounts[sessionType] || 0) + 1;
+        normalizedSessionTypeCounts[normalizedSessionType] = (normalizedSessionTypeCounts[normalizedSessionType] || 0) + 1;
+        decisionCounts[decision] = (decisionCounts[decision] || 0) + 1;
+        if (!coverageBySessionType[sessionType]) {
+          coverageBySessionType[sessionType] = {
+            name: sessionType,
+            normalizedSessionType,
+            total: 0,
+            effective: 0,
+            bypassed: 0,
+            liveCompaction: 0,
+            sessionTotal: 0,
+            decisions: {},
+          };
+        }
+        const bucket = coverageBySessionType[sessionType];
+        bucket.total += 1;
+        if (isEffectiveShreddingEvent(e)) bucket.effective += 1;
+        else bucket.bypassed += 1;
+        const stage = String(e.stage || "").trim().toLowerCase();
+        if (stage === "live_tool_compaction") bucket.liveCompaction += 1;
+        if (stage === "session_total") bucket.sessionTotal += 1;
+        bucket.decisions[decision] = (bucket.decisions[decision] || 0) + 1;
+      }
 
       for (const e of events) {
         const originalChars = numberOrZero(e.originalChars);
@@ -23062,6 +23292,19 @@ async function handleApi(req, res, url) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 8)
         .map(([name, count]) => ({ name, count }));
+      const topSessionTypes = Object.values(coverageBySessionType)
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 8)
+        .map((entry) => ({
+          name: entry.name,
+          normalizedSessionType: entry.normalizedSessionType,
+          total: entry.total,
+          effective: entry.effective,
+          bypassed: entry.bypassed,
+          liveCompaction: entry.liveCompaction,
+          sessionTotal: entry.sessionTotal,
+          decisions: entry.decisions,
+        }));
 
       const recentEvents = events.slice(-20).reverse().map((e) => ({
         timestamp: e.timestamp,
@@ -23076,6 +23319,9 @@ async function handleApi(req, res, url) {
         agentType: normalizeShreddingAgentType(e.agentType),
         attemptId: e.attemptId || null,
         stage: String(e.stage || "session_total").trim().toLowerCase() || "session_total",
+        sessionType: normalizeShreddingSessionTypeLabel(e.sessionType),
+        normalizedSessionType: normalizeShreddingSessionTypeLabel(e.normalizedSessionType || e.sessionType),
+        decision: normalizeShreddingDecisionLabel(e.decision),
         compactionFamily: String(e.compactionFamily || "").trim().toLowerCase() || null,
         commandFamily: String(e.commandFamily || "").trim().toLowerCase() || null,
       }));
@@ -23109,6 +23355,10 @@ async function handleApi(req, res, url) {
           dailyCounts,
           topAgents,
           stageCounts,
+          sessionTypeCounts,
+          normalizedSessionTypeCounts,
+          decisionCounts,
+          topSessionTypes,
           topCompactionFamilies,
           topCommandFamilies,
           totals: {
@@ -23149,70 +23399,104 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (path === "/api/telemetry/harness/summary") {
-    try {
-      jsonResponse(res, 200, { ok: true, data: getHarnessTelemetrySummary({ configDir: process.cwd() }) });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/telemetry/harness/live") {
-    try {
-      jsonResponse(res, 200, { ok: true, data: getHarnessLiveTelemetrySnapshot({ configDir: process.cwd() }) });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/telemetry/harness/events") {
-    try {
-      const filter = {
-        taskId: url.searchParams.get("taskId") || undefined,
-        sessionId: url.searchParams.get("sessionId") || undefined,
-        runId: url.searchParams.get("runId") || undefined,
-        type: url.searchParams.get("type") || undefined,
-        category: url.searchParams.get("category") || undefined,
-        source: url.searchParams.get("source") || undefined,
-        since: url.searchParams.get("since") || undefined,
-        limit: url.searchParams.get("limit") || undefined,
-      };
-      jsonResponse(res, 200, { ok: true, events: listHarnessTelemetryEvents(filter, { configDir: process.cwd() }) });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/telemetry/harness/providers") {
-    try {
-      jsonResponse(res, 200, { ok: true, data: getHarnessProviderUsageSummary({ configDir: process.cwd() }) });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/telemetry/harness/trace") {
-    try {
-      const filter = {
-        taskId: url.searchParams.get("taskId") || undefined,
-        sessionId: url.searchParams.get("sessionId") || undefined,
-        runId: url.searchParams.get("runId") || undefined,
-        type: url.searchParams.get("type") || undefined,
-        category: url.searchParams.get("category") || undefined,
-        source: url.searchParams.get("source") || undefined,
-        since: url.searchParams.get("since") || undefined,
-        limit: url.searchParams.get("limit") || undefined,
-      };
-      jsonResponse(res, 200, { ok: true, data: exportHarnessTelemetryTrace(filter, { configDir: process.cwd() }) });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
+  const harnessRouteContext = {
+    req,
+    res,
+    path,
+    url,
+    deps: {
+      uiDeps,
+      repoRoot,
+      resolve,
+      extname,
+      basename,
+      relative,
+      existsSync,
+      randomBytes,
+      writeFileSync,
+      mkdirSync,
+      jsonResponse,
+      readJsonBody,
+      readMultipartForm,
+      parseBooleanLike,
+      getBosunSessionManager,
+      getSessionTracker,
+      buildResolvedSettingsState,
+      buildProviderInventory,
+      getPrimaryAgentName,
+      getAgentMode,
+      switchPrimaryAgent,
+      getPoolSdkName,
+      getAvailableSdks,
+      setPoolSdk,
+      resetPoolSdkCache,
+      resolveWorkspaceContextFromRequest,
+      resolveActiveWorkspaceExecutionContext,
+      normalizeCandidatePath,
+      mergeTrackerAndLedgerSessions,
+      shouldHideSessionFromDefaultList,
+      sessionMatchesWorkspaceContext,
+      broadcastUiEvent,
+      broadcastSessionsSnapshot,
+      sessionRunAbortControllers,
+      resolveSessionWorkspaceDir,
+      resolveExecPrimaryPrompt,
+      sanitizePathSegment,
+      ATTACHMENTS_ROOT,
+      MIME_TYPES,
+      resolveAttachmentUrl,
+      getSessionActivityFromStateLedger,
+      normalizeLedgerSessionDocument,
+      resolveUiStateLedgerOptions,
+      mergeSessionRecords,
+      upsertSessionRecordToStateLedger,
+      invalidateDurableSessionListCache,
+      deleteSessionRecordFromStateLedger,
+      resolveSessionWorktreePath,
+      collectDiffStats,
+      getCompactDiffSummary,
+      getRecentCommits,
+      getHarnessTelemetrySummary,
+      getHarnessLiveTelemetrySnapshot,
+      listHarnessTelemetryEvents,
+      getHarnessProviderUsageSummary,
+      exportHarnessTelemetryTrace,
+      getHarnessRuntimeConfig,
+      readActiveHarnessState,
+      readHarnessArtifact,
+      resolveUiConfigDir,
+      buildHarnessSurfacePayload,
+      listActiveHarnessRunSnapshots,
+      hydrateHarnessRunListItems,
+      mergeHarnessRunSummaries,
+      listHarnessRuns,
+      getActiveHarnessRunSnapshot,
+      readHarnessRunRecordById,
+      listHarnessRunEvents,
+      buildPersistedHarnessRunSummary,
+      buildHarnessEventSummary,
+      executeHarnessRunRequest,
+      activeHarnessRuns,
+      invalidateHarnessApiCaches,
+      resolveHarnessCompileSource,
+      compileHarnessSourceToArtifact,
+      buildHarnessCompilePayload,
+      shouldEnforceHarnessValidation,
+      activateHarnessArtifact,
+      resolveHarnessApprovalRepoRoot,
+      recordActiveHarnessRunControlEvent,
+      buildHarnessApprovalWakePrompt,
+      buildHarnessActiveRunSnapshot,
+      getActiveThreads,
+      clearThreadRegistry,
+      invalidateThread,
+    },
+  };
+  if (await tryHandleHarnessProviderRoutes(harnessRouteContext)) return;
+  if (await tryHandleHarnessSessionRoutes(harnessRouteContext)) return;
+  if (await tryHandleHarnessApprovalRoutes(harnessRouteContext)) return;
+  if (await tryHandleHarnessSubagentRoutes(harnessRouteContext)) return;
+  if (await tryHandleHarnessEventRoutes(harnessRouteContext)) return;
 
   if (path === "/api/analytics/usage") {
     try {
@@ -26317,6 +26601,7 @@ if (path === "/api/agent-logs/context") {
   if (path === "/api/settings") {
     try {
       const { data, sources, rawValues } = buildResolvedSettingsState();
+      const providerInventory = buildProviderInventory(rawValues);
       const envPath = resolve(resolveUiConfigDir(), ".env");
       const configPath = resolveConfigPath();
       const configExists = existsSync(configPath);
@@ -26325,7 +26610,8 @@ if (path === "/api/agent-logs/context") {
         ok: true,
         data,
         sources,
-        providers: buildProviderInventory(rawValues),
+        providers: providerInventory,
+        agentArchitecture: buildAgentConfigurationGuide(rawValues, providerInventory),
         meta: {
           envPath,
           configPath,
@@ -26336,19 +26622,6 @@ if (path === "/api/agent-logs/context") {
           tunnel: getTunnelStatus(),
           fallbackAuth: getFallbackAuthStatus(),
         },
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/providers" && req.method === "GET") {
-    try {
-      const { rawValues } = buildResolvedSettingsState();
-      jsonResponse(res, 200, {
-        ok: true,
-        ...buildProviderInventory(rawValues),
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -26442,2169 +26715,8 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
-  if (path === "/api/harness/active" && req.method === "GET") {
-    try {
-      const harnessConfig = getHarnessRuntimeConfig();
-      const activeState = readActiveHarnessState(resolveUiConfigDir());
-      let artifact = null;
-      if (activeState?.artifactPath) {
-        try {
-          artifact = readHarnessArtifact(activeState.artifactPath);
-        } catch {
-          artifact = null;
-        }
-      }
-      jsonResponse(res, 200, {
-        ok: true,
-        harnessConfig,
-        activeState,
-        artifact: artifact
-          ? {
-              artifactId: artifact.artifactId,
-              artifactPath: artifact.artifactPath,
-              isValid: artifact.isValid,
-              sourceOrigin: artifact.sourceOrigin,
-              sourcePath: artifact.sourcePath,
-              compiledProfile: artifact.compiledProfile,
-              validationReport: artifact.validationReport,
-            }
-          : null,
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/harness/surface" && req.method === "GET") {
-    try {
-      const view = String(url.searchParams.get("view") || "all").trim().toLowerCase() || "all";
-      const limit = Number(url.searchParams.get("limit") || 25);
-      const logLines = Number(url.searchParams.get("lines") || 30);
-      const payload = await buildHarnessSurfacePayload({
-        view,
-        limit,
-        logLines,
-      });
-      jsonResponse(res, 200, { ok: true, ...payload });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/harness/runs" && req.method === "GET") {
-    try {
-      const url = new URL(req.url, getRequestBaseUrl(req, "127.0.0.1"));
-      const limit = Number(url.searchParams.get("limit") || 25);
-      const activeRuns = listActiveHarnessRunSnapshots();
-      const persistedRuns = hydrateHarnessRunListItems(
-        listHarnessRuns(resolveUiConfigDir(), { limit: Math.max(limit, 25) }),
-      );
-      let items = mergeHarnessRunSummaries(persistedRuns, activeRuns, Math.max(limit, 25));
-      const stateFilter = String(url.searchParams.get("state") || "").trim().toLowerCase();
-      const waitingForOperatorFilter = url.searchParams.get("waitingForOperator");
-      const staleFilter = url.searchParams.get("stale");
-      if (stateFilter) {
-        items = items.filter((item) => String(item?.health?.state || "").trim().toLowerCase() === stateFilter);
-      }
-      if (waitingForOperatorFilter != null && waitingForOperatorFilter !== "") {
-        const expected = parseBooleanLike(waitingForOperatorFilter, false);
-        items = items.filter((item) => Boolean(item?.health?.waitingForOperator) === expected);
-      }
-      if (staleFilter != null && staleFilter !== "") {
-        const expected = parseBooleanLike(staleFilter, false);
-        items = items.filter((item) => Boolean(item?.health?.isStale) === expected);
-      }
-      jsonResponse(res, 200, {
-        ok: true,
-        activeRunCount: activeRuns.length,
-        items: items.slice(0, Math.max(1, limit)),
-      });
-    } catch (err) {
-      jsonResponse(res, 400, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/harness/approvals" && req.method === "GET") {
-    try {
-      const {
-        listApprovalRequests,
-      } = await import("../workflow/approval-queue.mjs");
-      const approvalsRepoRoot = resolveHarnessApprovalRepoRoot();
-      const listed = listApprovalRequests({
-        repoRoot: approvalsRepoRoot,
-        scopeType: "harness-run",
-        status: url.searchParams.get("status") || "",
-        includeResolved: parseBooleanLike(url.searchParams.get("includeResolved"), false),
-        limit: Number(url.searchParams.get("limit") || 100),
-      });
-      jsonResponse(res, 200, {
-        ok: true,
-        path: listed.path,
-        requests: listed.requests,
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err?.message || String(err) });
-    }
-    return;
-  }
-
-  if (path.startsWith("/api/harness/approvals/")) {
-    try {
-      const subPath = path.replace("/api/harness/approvals/", "");
-      const segments = subPath.split("/").map(decodeURIComponent);
-      const requestId = String(segments[0] || "").trim();
-      const action = String(segments[1] || "").trim();
-      if (!requestId) {
-        jsonResponse(res, 400, { ok: false, error: "requestId is required" });
-        return;
-      }
-      if (action !== "resolve" || req.method !== "POST") {
-        jsonResponse(res, 404, { ok: false, error: "Approval action not found" });
-        return;
-      }
-      const {
-        getApprovalRequestById,
-        resolveApprovalRequest,
-      } = await import("../workflow/approval-queue.mjs");
-      const approvalsRepoRoot = resolveHarnessApprovalRepoRoot();
-      const request = getApprovalRequestById(requestId, { repoRoot: approvalsRepoRoot });
-      if (!request || String(request?.scopeType || "").trim() !== "harness-run") {
-        jsonResponse(res, 404, { ok: false, error: "Harness approval request not found" });
-        return;
-      }
-      const body = await readJsonBody(req).catch(() => ({}));
-      const decision = String(body?.decision || "").trim().toLowerCase();
-      if (!["approved", "denied"].includes(decision)) {
-        jsonResponse(res, 400, { ok: false, error: "decision must be approved or denied" });
-        return;
-      }
-      const actorId = String(body?.actorId || body?.actor || "ui-operator").trim() || "ui-operator";
-      const note = String(body?.note || "").trim();
-      const resolved = resolveApprovalRequest(request.requestId, {
-        repoRoot: approvalsRepoRoot,
-        decision,
-        actorId,
-        note,
-      });
-      const runId = String(request?.runId || request?.scopeId || "").trim();
-      const activeState = runId ? activeHarnessRuns.get(runId) : null;
-      let wake = null;
-      if (activeState?.sessionHandle?.steer) {
-        recordActiveHarnessRunControlEvent(runId, {
-          type: "harness:approval-resolved",
-          runId,
-          taskKey: activeState.taskKey,
-          requestId: request.requestId,
-          stageId: String(request?.stageId || "").trim() || null,
-          stageType: String(request?.stageType || "").trim() || null,
-          decision,
-          actor: actorId,
-          note,
-          status: decision,
-          timestamp: new Date().toISOString(),
-        });
-        wake = activeState.sessionHandle.steer(buildHarnessApprovalWakePrompt(request, {
-          decision,
-          actorId,
-          note,
-        }), {
-          kind: "approval",
-          actor: actorId,
-          reason: decision,
-          decision,
-          note,
-          requestId: request.requestId,
-          requestedStageId: String(request?.stageId || "").trim() || null,
-        });
-        activeState.updatedAt = new Date().toISOString();
-        activeHarnessRuns.set(runId, activeState);
-        invalidateHarnessApiCaches();
-      }
-      jsonResponse(res, 200, {
-        ok: true,
-        request: resolved.request,
-        active: Boolean(activeState),
-        wake,
-        updateResult: resolved.updateResult || null,
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err?.message || String(err) });
-    }
-    return;
-  }
-
-  const harnessRunEventsMatch = path.match(/^\/api\/harness\/runs\/([^/]+)\/events$/);
-  if (harnessRunEventsMatch && req.method === "GET") {
-    try {
-      const runId = decodeURIComponent(harnessRunEventsMatch[1]);
-      const run = getActiveHarnessRunSnapshot(runId) || readHarnessRunRecordById(resolveUiConfigDir(), runId);
-      const payload = listHarnessRunEvents(run, {
-        limit: Number(url.searchParams.get("limit")) || 120,
-        direction: url.searchParams.get("direction") || "asc",
-        type: url.searchParams.get("type") || "",
-        category: url.searchParams.get("category") || "",
-      });
-      jsonResponse(res, 200, {
-        ok: true,
-        runId,
-        summary: payload.summary,
-        events: payload.events,
-      });
-    } catch (err) {
-      jsonResponse(res, 404, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  const harnessRunMatch = path.match(/^\/api\/harness\/runs\/([^/]+)$/);
-  if (harnessRunMatch && req.method === "GET") {
-    try {
-      const runId = decodeURIComponent(harnessRunMatch[1]);
-      const activeRun = getActiveHarnessRunSnapshot(runId);
-      const run = activeRun || (() => {
-        const record = readHarnessRunRecordById(resolveUiConfigDir(), runId);
-        return {
-          ...record,
-          ...buildPersistedHarnessRunSummary(record, null),
-        };
-      })();
-      const eventSummary = buildHarnessEventSummary(run?.events);
-      jsonResponse(res, 200, {
-        ok: true,
-        run,
-        eventSummary: {
-          ...eventSummary,
-          normalizedEvents: undefined,
-        },
-        normalizedEvents: eventSummary.normalizedEvents,
-      });
-    } catch (err) {
-      jsonResponse(res, 404, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  const harnessReplayMatch = path.match(/^\/api\/harness\/runs\/([^/]+)\/replay$/);
-  if (harnessReplayMatch && req.method === "POST") {
-    try {
-      const sourceRunId = decodeURIComponent(harnessReplayMatch[1]);
-      const sourceRun = readHarnessRunRecordById(resolveUiConfigDir(), sourceRunId);
-      const body = await readJsonBody(req);
-      const replayPayload = await executeHarnessRunRequest({
-        ...(body && typeof body === "object" ? body : {}),
-        ...(String(body?.artifactPath || "").trim() ? {} : (sourceRun?.artifactPath ? { artifactPath: sourceRun.artifactPath } : {})),
-        ...(String(body?.sourcePath || "").trim() || String(body?.source || "").trim()
-          ? {}
-          : (sourceRun?.sourcePath ? { sourcePath: sourceRun.sourcePath } : {})),
-        ...(String(body?.taskId || "").trim() ? {} : (sourceRun?.taskId ? { taskId: sourceRun.taskId } : {})),
-        ...(String(body?.taskKey || "").trim() ? {} : (sourceRun?.taskKey ? { taskKey: sourceRun.taskKey } : {})),
-      }, {
-        harnessConfig: getHarnessRuntimeConfig(),
-        replayedFromRunId: sourceRunId,
-      });
-      jsonResponse(res, 200, replayPayload);
-    } catch (err) {
-      const statusCode = Number(err?.statusCode) || (String(err?.message || "").includes("not found") ? 404 : 400);
-      jsonResponse(res, statusCode, {
-        ok: false,
-        error: err.message,
-        ...(err?.payload && typeof err.payload === "object" ? err.payload : {}),
-      });
-    }
-    return;
-  }
-
-  const harnessNudgeMatch = path.match(/^\/api\/harness\/runs\/([^/]+)\/nudge$/);
-  if (harnessNudgeMatch && req.method === "POST") {
-    try {
-      const runId = decodeURIComponent(harnessNudgeMatch[1]);
-      const activeState = activeHarnessRuns.get(runId);
-      if (!activeState) {
-        jsonResponse(res, 404, { ok: false, error: `Active harness run not found: ${runId}` });
-        return;
-      }
-      const body = await readJsonBody(req);
-      const prompt = String(body?.prompt || body?.instruction || "").trim();
-      const mode = String(body?.mode || "steer").trim().toLowerCase() || "steer";
-      const actor = String(body?.actor || "operator").trim() || "operator";
-      const reason = String(body?.reason || "manual_intervention").trim() || "manual_intervention";
-      if (!prompt) {
-        jsonResponse(res, 400, { ok: false, error: "prompt is required" });
-        return;
-      }
-      const steerResult = activeState.sessionHandle?.steer?.(prompt, {
-        kind: mode,
-        actor,
-        reason,
-        requestedStageId: String(body?.stageId || "").trim() || null,
-      }) || {
-        ok: false,
-        delivered: false,
-        reason: "not_steerable",
-        interventionType: mode,
-        stageId: null,
-        targetTaskKey: null,
-      };
-      activeState.updatedAt = new Date().toISOString();
-      activeHarnessRuns.set(runId, activeState);
-      invalidateHarnessApiCaches();
-      jsonResponse(res, steerResult.ok ? 200 : 409, {
-        ok: steerResult.ok === true,
-        runId,
-        active: true,
-        mode,
-        actor,
-        delivered: steerResult.delivered === true,
-        reason: steerResult.reason || null,
-        stageId: steerResult.stageId || null,
-        targetTaskKey: steerResult.targetTaskKey || null,
-      });
-    } catch (err) {
-      jsonResponse(res, 400, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  const harnessApprovalMatch = path.match(/^\/api\/harness\/runs\/([^/]+)\/approval$/);
-  if (harnessApprovalMatch && (req.method === "GET" || req.method === "POST")) {
-    try {
-      const runId = decodeURIComponent(harnessApprovalMatch[1]);
-      const approvalsRepoRoot = resolveHarnessApprovalRepoRoot();
-      const {
-        getHarnessRunApprovalRequest,
-        resolveApprovalRequest,
-        upsertHarnessRunApprovalRequest,
-      } = await import("../workflow/approval-queue.mjs");
-      const activeState = activeHarnessRuns.get(runId);
-      let persistedRun = null;
-      if (!activeState) {
-        try {
-          persistedRun = readHarnessRunRecordById(resolveUiConfigDir(), runId);
-        } catch {
-          persistedRun = null;
-        }
-      }
-      let request = getHarnessRunApprovalRequest(runId, { repoRoot: approvalsRepoRoot });
-      if (req.method === "GET") {
-        jsonResponse(res, 200, {
-          ok: true,
-          request,
-          approvalPending: String(request?.status || "").trim() === "pending",
-          active: Boolean(activeState),
-          runId,
-        });
-        return;
-      }
-      const body = await readJsonBody(req);
-      const decision = String(body?.decision || "").trim().toLowerCase();
-      if (["approved", "denied"].includes(decision)) {
-        if (!request) {
-          jsonResponse(res, 409, { ok: false, error: "No pending harness approval request exists for this run." });
-          return;
-        }
-        const actor = String(body?.actorId || body?.actor || "operator").trim() || "operator";
-        const note = String(body?.note || "").trim();
-        const resolved = resolveApprovalRequest(request.requestId, {
-          repoRoot: approvalsRepoRoot,
-          decision,
-          actorId: actor,
-          note,
-        });
-        let wake = null;
-        if (activeState?.sessionHandle?.steer) {
-          recordActiveHarnessRunControlEvent(runId, {
-            type: "harness:approval-resolved",
-            runId,
-            taskKey: activeState.taskKey,
-            requestId: request.requestId,
-            stageId: resolved.request?.stageId || String(body?.stageId || "").trim() || null,
-            stageType: resolved.request?.stageType || null,
-            decision,
-            actor,
-            note,
-            status: decision,
-            timestamp: new Date().toISOString(),
-          });
-          wake = activeState.sessionHandle.steer(buildHarnessApprovalWakePrompt(resolved.request, {
-            decision,
-            actorId: actor,
-            note,
-          }), {
-            kind: "approval",
-            actor,
-            reason: decision,
-            decision,
-            note,
-            requestId: request.requestId,
-            requestedStageId: resolved.request?.stageId || String(body?.stageId || "").trim() || null,
-          });
-          activeState.updatedAt = new Date().toISOString();
-          activeHarnessRuns.set(runId, activeState);
-          invalidateHarnessApiCaches();
-        }
-        jsonResponse(res, 200, {
-          ok: true,
-          runId,
-          request: resolved.request,
-          active: Boolean(activeState),
-          wake,
-          updateResult: resolved.updateResult || null,
-        });
-        return;
-      }
-
-      const activeSnapshot = activeState ? buildHarnessActiveRunSnapshot(activeState) : null;
-      const stageId =
-        String(body?.stageId || "").trim()
-        || String(activeSnapshot?.latestStageId || persistedRun?.result?.currentStageId || "").trim()
-        || null;
-      const stageType =
-        String(body?.stageType || "").trim()
-        || String(activeSnapshot?.latestEvent?.stageType || "").trim()
-        || (Array.isArray(activeState?.compiledProfile?.stages)
-          ? String(activeState.compiledProfile.stages.find((entry) => String(entry?.id || "").trim() === stageId)?.type || "").trim()
-          : "")
-        || null;
-      const actor = String(body?.actor || body?.requestedBy || "operator").trim() || "operator";
-      const reason = String(body?.reason || "Harness run requires operator approval before continuation.").trim()
-        || "Harness run requires operator approval before continuation.";
-      const preview = String(body?.preview || activeSnapshot?.latestEvent?.summary || persistedRun?.result?.error || "").trim() || null;
-      const created = upsertHarnessRunApprovalRequest({
-        runId,
-        taskId: activeState?.taskId || persistedRun?.taskId || null,
-        taskTitle: String(body?.taskTitle || "").trim() || null,
-        taskKey: activeState?.taskKey || persistedRun?.taskKey || null,
-        stageId,
-        stageType,
-        agentId: activeState?.compiledProfile?.agentId || persistedRun?.compiledProfile?.agentId || null,
-        artifactId: activeState?.artifactId || persistedRun?.artifactId || null,
-        sourceOrigin: activeState?.sourceOrigin || persistedRun?.sourceOrigin || null,
-        sourcePath: activeState?.sourcePath || persistedRun?.sourcePath || null,
-        requestedBy: actor,
-        reason,
-        preview,
-        timeoutMs: body?.timeoutMs,
-        mode: String(body?.mode || "manual").trim() || "manual",
-      }, { repoRoot: approvalsRepoRoot });
-      request = created.request;
-      if (activeState && request) {
-        recordActiveHarnessRunControlEvent(runId, {
-          type: "harness:approval-requested",
-          runId,
-          taskKey: activeState.taskKey,
-          requestId: request.requestId,
-          stageId,
-          stageType,
-          actor,
-          reason,
-          status: "pending",
-          timestamp: new Date().toISOString(),
-        });
-        activeState.updatedAt = new Date().toISOString();
-        activeHarnessRuns.set(runId, activeState);
-        invalidateHarnessApiCaches();
-      }
-      jsonResponse(res, request ? 200 : 400, {
-        ok: Boolean(request),
-        runId,
-        request,
-        approvalPending: Boolean(request && String(request.status || "").trim() === "pending"),
-        active: Boolean(activeState),
-        created: created?.created === true,
-        reopened: created?.reopened === true,
-      });
-    } catch (err) {
-      jsonResponse(res, 400, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  const harnessStopMatch = path.match(/^\/api\/harness\/runs\/([^/]+)\/stop$/);
-  if (harnessStopMatch && req.method === "POST") {
-    try {
-      const runId = decodeURIComponent(harnessStopMatch[1]);
-      const activeState = activeHarnessRuns.get(runId);
-      if (!activeState) {
-        try {
-          readHarnessRunRecordById(resolveUiConfigDir(), runId);
-          jsonResponse(res, 200, { ok: true, runId, stopped: false, active: false, stopRequested: false });
-        } catch (error) {
-          jsonResponse(res, 404, { ok: false, error: error.message });
-        }
-        return;
-      }
-      if (activeState.stopRequested === true) {
-        jsonResponse(res, 200, {
-          ok: true,
-          runId,
-          stopped: false,
-          active: true,
-          stopRequested: true,
-          stopRequestedAt: activeState.stopRequestedAt || null,
-          reason: activeState.stopRequestedReason || null,
-        });
-        return;
-      }
-      const body = await readJsonBody(req);
-      const reason = String(body?.reason || "operator_stop").trim() || "operator_stop";
-      activeState.stopRequested = true;
-      activeState.stopRequestedAt = new Date().toISOString();
-      activeState.stopRequestedReason = reason;
-      activeHarnessRuns.set(runId, activeState);
-      invalidateHarnessApiCaches();
-      try {
-        activeState.abortController?.abort?.(reason);
-      } catch {
-        // best effort
-      }
-      try {
-        activeState.sessionHandle?.controller?.abort?.(reason);
-      } catch {
-        // best effort
-      }
-      jsonResponse(res, 200, {
-        ok: true,
-        runId,
-        stopped: true,
-        active: true,
-        stopRequested: true,
-        stopRequestedAt: activeState.stopRequestedAt,
-        reason,
-      });
-    } catch (err) {
-      jsonResponse(res, 400, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/harness/compile" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      const harnessConfig = getHarnessRuntimeConfig();
-      const sourceInfo = resolveHarnessCompileSource(body || {}, harnessConfig);
-      const validationMode = String(body?.validationMode || harnessConfig.validationMode || "report")
-        .trim()
-        .toLowerCase() || "report";
-      const compiled = compileHarnessSourceToArtifact(sourceInfo.source, {
-        configDir: resolveUiConfigDir(),
-        repoRoot,
-        sourceOrigin: sourceInfo.sourceOrigin,
-        sourcePath: sourceInfo.sourcePath,
-        validationMode,
-      });
-      const payload = buildHarnessCompilePayload(compiled, harnessConfig);
-      jsonResponse(res, payload.ok ? 200 : 400, payload);
-    } catch (err) {
-      jsonResponse(res, 400, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/harness/activate" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      const harnessConfig = getHarnessRuntimeConfig();
-      const validationMode = String(body?.validationMode || harnessConfig.validationMode || "report")
-        .trim()
-        .toLowerCase() || "report";
-      let artifact = null;
-      let compiled = null;
-      if (typeof body?.artifactPath === "string" && body.artifactPath.trim()) {
-        artifact = readHarnessArtifact(body.artifactPath);
-      } else {
-        const sourceInfo = resolveHarnessCompileSource(body || {}, harnessConfig);
-        compiled = compileHarnessSourceToArtifact(sourceInfo.source, {
-          configDir: resolveUiConfigDir(),
-          repoRoot,
-          sourceOrigin: sourceInfo.sourceOrigin,
-          sourcePath: sourceInfo.sourcePath,
-          validationMode,
-        });
-        artifact = compiled.artifact;
-      }
-
-      if (artifact?.isValid !== true && shouldEnforceHarnessValidation(validationMode)) {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "Harness validation failed in enforce mode",
-          validationReport: artifact?.validationReport || null,
-          artifactPath: artifact?.artifactPath || null,
-        });
-        return;
-      }
-
-      const activeState = activateHarnessArtifact(artifact.artifactPath, {
-        configDir: resolveUiConfigDir(),
-        actor: "api",
-      });
-      jsonResponse(res, 200, {
-        ok: true,
-        harnessConfig,
-        artifactPath: artifact.artifactPath,
-        artifactId: artifact.artifactId,
-        activeState,
-        compiledProfile: artifact.compiledProfile,
-        validationReport: artifact.validationReport,
-        compiledProfileJson: compiled?.compiledProfileJson || artifact.compiledProfileJson || null,
-      });
-    } catch (err) {
-      jsonResponse(res, 400, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/harness/run" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      const payload = await executeHarnessRunRequest(body, {
-        harnessConfig: getHarnessRuntimeConfig(),
-      });
-      jsonResponse(res, 200, payload);
-    } catch (err) {
-      const statusCode = Number(err?.statusCode) || 400;
-      jsonResponse(res, statusCode, {
-        ok: false,
-        error: err.message,
-        ...(err?.payload && typeof err.payload === "object" ? err.payload : {}),
-      });
-    }
-    return;
-  }
-
-  if (path === "/api/settings/update") {
-    try {
-      const body = await readJsonBody(req);
-      const changes = body?.changes;
-      if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
-        jsonResponse(res, 400, { ok: false, error: "changes object is required" });
-        return;
-      }
-      // Rate limit: 2 seconds between settings updates
-      const now = Date.now();
-      if (now - _settingsLastUpdateTime < 2000) {
-        jsonResponse(res, 429, { ok: false, error: "Settings update rate limited. Wait 2 seconds." });
-        return;
-      }
-      const unknownKeys = Object.keys(changes).filter(k => !SETTINGS_KNOWN_SET.has(k));
-      if (unknownKeys.length > 0) {
-        jsonResponse(res, 400, { ok: false, error: `Unknown keys: ${unknownKeys.join(", ")}` });
-        return;
-      }
-      const fieldErrors = {};
-      for (const [key, value] of Object.entries(changes)) {
-        const def = SETTINGS_SCHEMA.find((s) => s.key === key);
-        if (!def) continue;
-        const result = validateSetting(def, String(value ?? ""));
-        if (!result.valid) {
-          fieldErrors[key] = result.error || "Invalid value";
-        }
-      }
-      const schemaFieldErrors = validateConfigSchemaChanges(changes);
-      for (const [key, error] of Object.entries(schemaFieldErrors)) {
-        if (!fieldErrors[key]) fieldErrors[key] = error;
-      }
-      if (Object.keys(fieldErrors).length > 0) {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "Validation failed",
-          fieldErrors,
-        });
-        return;
-      }
-      for (const [key, value] of Object.entries(changes)) {
-        const strVal = String(value);
-        if (strVal.length > 2000) {
-          jsonResponse(res, 400, { ok: false, error: `Value for ${key} exceeds 2000 chars` });
-          return;
-        }
-        if (strVal.includes('\0') || strVal.includes('\n') || strVal.includes('\r')) {
-          jsonResponse(res, 400, { ok: false, error: `Value for ${key} contains illegal characters (null bytes or newlines)` });
-          return;
-        }
-      }
-      // Apply to process.env
-      const strChanges = {};
-      for (const [key, value] of Object.entries(changes)) {
-        const strVal = String(value);
-        process.env[key] = strVal;
-        strChanges[key] = strVal;
-      }
-      if (Object.prototype.hasOwnProperty.call(strChanges, "KANBAN_BACKEND")) {
-        try {
-          setKanbanBackend(
-            String(strChanges.KANBAN_BACKEND).trim().toLowerCase(),
-          );
-        } catch (err) {
-          console.warn(`[settings] failed to switch kanban backend: ${err.message}`);
-        }
-      }
-      // Write to .env file
-      const updated = updateEnvFile(strChanges);
-      const configUpdate = updateConfigFile(changes);
-      const configDir = configUpdate.path ? dirname(configUpdate.path) : null;
-      try {
-        const actorId =
-          String(
-            req.headers["x-bosun-operator"]
-            || req.headers["x-forwarded-user"]
-            || req.headers["x-remote-user"]
-            || req.socket?.remoteAddress
-            || "operator",
-          ).trim() || "operator";
-        const ledgerScopeId =
-          String(configDir || repoRoot || process.cwd()).trim() || "settings";
-        for (const [key, value] of Object.entries(strChanges)) {
-          upsertStateLedgerKeyValue({
-            scope: "settings",
-            scopeId: ledgerScopeId,
-            key,
-            value,
-            source: "ui.settings.update",
-            metadata: {
-              configPath: configUpdate.path || null,
-              updatedConfig: configUpdate.updated || [],
-            },
-          }, { repoRoot });
-        }
-        appendOperatorActionToStateLedger({
-          actionType: "settings.update",
-          actorId,
-          actorType: "operator",
-          scope: "settings",
-          scopeId: ledgerScopeId,
-          targetId: Object.keys(strChanges).join(","),
-          status: "completed",
-          request: { changes: strChanges },
-          result: {
-            updated,
-            updatedConfig: configUpdate.updated || [],
-            configPath: configUpdate.path || null,
-          },
-          metadata: {
-            configDir,
-          },
-        }, { repoRoot });
-      } catch (ledgerErr) {
-        console.warn(`[settings] state ledger mirror failed: ${ledgerErr.message}`);
-      }
-      _settingsLastUpdateTime = now;
-      invalidateApiCache("server-state");
-      invalidateApiCache("status");
-      invalidateApiCache("infra");
-      broadcastUiEvent(["settings", "overview"], "invalidate", { reason: "settings-updated", keys: updated });
-      jsonResponse(res, 200, {
-        ok: true,
-        updated,
-        updatedConfig: configUpdate.updated || [],
-        configPath: configUpdate.path || null,
-        configDir,
-        tunnel: getTunnelStatus(),
-        fallbackAuth: getFallbackAuthStatus(),
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/project-summary") {
-    try {
-      const adapter = resolveInjectedTaskStoreApi() || getKanbanAdapter();
-      const projects = await adapter.listProjects();
-      const project = projects?.[0] || null;
-      if (project) {
-        const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
-        const tasks = await adapter.listTasks(project.id || project.name).catch(() => []);
-        const scopedTasks = (Array.isArray(tasks) ? tasks : []).filter((task) =>
-          taskMatchesWorkspaceContext(task, workspaceContext),
-        );
-        jsonResponse(res, 200, {
-          ok: true,
-          data: {
-            id: project.id || project.name,
-            name: project.name || project.title || project.id,
-            description: project.description || project.body || null,
-            taskCount: scopedTasks.length,
-            completedCount: scopedTasks.filter(
-              (t) => mapTaskStatusToBoardColumn(t?.status) === "done",
-            ).length,
-          },
-        });
-      } else {
-        jsonResponse(res, 200, { ok: true, data: null });
-      }
-    } catch (err) {
-      jsonResponse(res, 200, { ok: true, data: null });
-    }
-    return;
-  }
-
-  if (path === "/api/project-sync/metrics") {
-    try {
-      const syncEngine = uiDeps.getSyncEngine?.() || null;
-      jsonResponse(res, 200, {
-        ok: true,
-        data: {
-          webhook: getProjectSyncWebhookMetrics(),
-          syncEngine: syncEngine?.getStatus?.()?.metrics || null,
-        },
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/github/app/config") {
-    const appId = (process.env.BOSUN_GITHUB_APP_ID || "").trim();
-    const privateKeyPath = (process.env.BOSUN_GITHUB_PRIVATE_KEY_PATH || "").trim();
-    const clientId = (process.env.BOSUN_GITHUB_CLIENT_ID || "").trim();
-    const webhookSecretSet = Boolean(process.env.BOSUN_GITHUB_WEBHOOK_SECRET);
-    const appWebhookPath = getAppWebhookPath();
-
-    // Build public URLs from tunnel URL if available, else from request host.
-    let baseUrl = String(getTunnelUrl() || "").replace(/\/+$/, "");
-    if (!baseUrl) {
-      const host = getRequestAuthority(req, "localhost");
-      const proto = getRequestProtocol(req, uiServerTls ? "https" : "http");
-      baseUrl = `${proto}://${host}`;
-    }
-
-    jsonResponse(res, 200, {
-      ok: true,
-      data: {
-        appId: appId || null,
-        appSlug: "bosun-ve",
-        botUsername: "bosun-ve[bot]",
-        appUrl: "https://github.com/apps/bosun-ve",
-        configured: {
-          appId: Boolean(appId),
-          privateKey: Boolean(privateKeyPath),
-          oauthClient: Boolean(clientId),
-          webhookSecret: webhookSecretSet,
-        },
-        urls: {
-          webhookUrl: `${baseUrl}${appWebhookPath}`,
-          oauthCallbackUrl: `${baseUrl}/api/github/callback`,
-        },
-        paths: {
-          webhookPath: appWebhookPath,
-          oauthCallbackPath: "/api/github/callback",
-        },
-      },
-    });
-    return;
-  }
-
-  if (path === "/api/command") {
-    try {
-      const body = await readJsonBody(req);
-      const command = (body?.command || "").trim();
-      if (!command) {
-        jsonResponse(res, 400, { ok: false, error: "command is required" });
-        return;
-      }
-      const ALLOWED_CMD_PREFIXES = [
-        "/status",
-        "/health",
-        "/plan",
-        "/logs",
-        "/agentlogs",
-        "/menu",
-        "/tasks",
-        "/start",
-        "/stop",
-        "/pause",
-        "/resume",
-        "/sdk",
-        "/kanban",
-        "/region",
-        "/deploy",
-        "/agents",
-        "/executor",
-        "/help",
-        "/commands",
-        "/starttask",
-        "/stoptask",
-        "/retrytask",
-        "/parallelism",
-        "/sentinel",
-        "/hooks",
-        "/version",
-        "/ask",
-        "/compact",
-        "/context",
-        "/mcp",
-        "/helpfull",
-        "/background",
-        "/bg",
-        "/shell",
-        "/git",
-        "/diff",
-        "/branches",
-        "/threads",
-        "/worktrees",
-        "/model",
-        "/retry",
-        "/history",
-        "/clear",
-        "/anomalies",
-        "/workspace",
-        "/ws",
-      ];
-      const cmdBase = command.split(/\s/)[0].toLowerCase();
-      const privilegedCommandAccess = isPrivilegedAuthSource(authResult?.source);
-      if (!privilegedCommandAccess && !ALLOWED_CMD_PREFIXES.some(p => cmdBase === p || cmdBase.startsWith(p + " "))) {
-        jsonResponse(res, 400, { ok: false, error: `Command not allowed: ${cmdBase}` });
-        return;
-      }
-      const handler = uiDeps.handleUiCommand;
-      if (typeof handler === "function") {
-        if (ASYNC_UI_COMMAND_BASES.has(cmdBase)) {
-          setImmediate(() => {
-            let pending;
-            try {
-              pending = Promise.resolve(handler(command));
-            } catch (err) {
-              console.warn(`[ui] async command failed (${command}): ${err?.message || err}`);
-              broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
-                reason: "command-failed",
-                command,
-              });
-              return;
-            }
-            pending
-              .then(() => {
-                broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
-                  reason: "command-executed",
-                  command,
-                });
-              })
-              .catch((err) => {
-                console.warn(`[ui] async command failed (${command}): ${err?.message || err}`);
-                broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
-                  reason: "command-failed",
-                  command,
-                });
-              });
-          });
-          jsonResponse(res, 202, {
-            ok: true,
-            queued: true,
-            command,
-            message: "Command accepted and running in background.",
-          });
-        } else {
-          const result = await handler(command);
-          jsonResponse(res, 200, { ok: true, data: result || null, command });
-        }
-      } else {
-        // No command handler wired — acknowledge and broadcast refresh
-        jsonResponse(res, 200, {
-          ok: true,
-          data: null,
-          command,
-          message: "Command queued. Check status for results.",
-        });
-      }
-      broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
-        reason: ASYNC_UI_COMMAND_BASES.has(cmdBase) ? "command-queued" : "command-executed",
-        command,
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/tasks/retry") {
-    try {
-      const body = await readJsonBody(req);
-      const taskId = body?.taskId || body?.id;
-      if (!taskId) {
-        jsonResponse(res, 400, { ok: false, error: "taskId is required" });
-        return;
-      }
-      const executor = uiDeps.getInternalExecutor?.();
-      if (!executor) {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "Internal executor not enabled.",
-        });
-        return;
-      }
-      const adapter = getKanbanAdapter();
-      const task = await adapter.getTask(taskId);
-      if (!task) {
-        jsonResponse(res, 404, { ok: false, error: "Task not found." });
-        return;
-      }
-      let nextTask = unblockInternalTask(taskId, {
-        status: "todo",
-        source: "manual-retry",
-      });
-      resetExecutorTaskThrottleState(taskId);
-      if (!nextTask) {
-        if (typeof adapter.updateTask === "function") {
-          await adapter.updateTask(taskId, {
-            status: "todo",
-            cooldownUntil: null,
-            blockedReason: null,
-            meta: task?.meta && typeof task.meta === "object"
-              ? Object.fromEntries(Object.entries(task.meta).filter(([key]) => key !== "autoRecovery"))
-              : task?.meta,
-          });
-        } else if (typeof adapter.updateTaskStatus === "function") {
-          await adapter.updateTaskStatus(taskId, "todo");
-        }
-        nextTask = await adapter.getTask(taskId);
-      }
-      traceHttpServerAction(req, {
-        route: path,
-        taskId,
-      }, () => executor.executeTask(nextTask || { ...task, status: "todo" })).catch((error) => {
-        console.warn(
-          `[telegram-ui] failed to retry task ${taskId}: ${error.message}`,
-        );
-      });
-      const bus = _resolveEventBus();
-      if (bus && typeof bus.clearRetryQueueTask === "function") {
-        try {
-          bus.clearRetryQueueTask(taskId, "manual-retry-now");
-        } catch {
-          /* best effort */
-        }
-      }
-      jsonResponse(res, 200, { ok: true, taskId });
-      broadcastUiEvent(
-        ["tasks", "overview", "executor", "agents"],
-        "invalidate",
-        { reason: "task-retried", taskId },
-      );
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/tasks/unblock") {
-    if (req.method !== "POST") {
-      res.setHeader("Allow", "POST");
-      jsonResponse(res, 405, { ok: false, error: "Method Not Allowed" });
-      return;
-    }
-    try {
-      const body = await readJsonBody(req);
-      const taskId = body?.taskId || body?.id;
-      const targetStatus = String(body?.status || "todo").trim().toLowerCase() || "todo";
-      if (!taskId) {
-        jsonResponse(res, 400, { ok: false, error: "taskId is required" });
-        return;
-      }
-      const adapter = getKanbanAdapter();
-      const task = await adapter.getTask(taskId);
-      if (!task) {
-        jsonResponse(res, 404, { ok: false, error: "Task not found." });
-        return;
-      }
-      let updatedTask = unblockInternalTask(taskId, {
-        status: targetStatus,
-        source: "api.tasks.unblock",
-      });
-      resetExecutorTaskThrottleState(taskId);
-      if (!updatedTask) {
-        const nextMeta = task?.meta && typeof task.meta === "object"
-          ? Object.fromEntries(Object.entries(task.meta).filter(([key]) => key !== "autoRecovery"))
-          : task?.meta;
-        if (typeof adapter.updateTask === "function") {
-          await adapter.updateTask(taskId, {
-            status: targetStatus,
-            cooldownUntil: null,
-            blockedReason: null,
-            meta: nextMeta,
-          });
-        } else if (typeof adapter.updateTaskStatus === "function") {
-          await adapter.updateTaskStatus(taskId, targetStatus);
-        }
-        updatedTask = await adapter.getTask(taskId);
-      }
-      jsonResponse(res, 200, { ok: true, taskId, data: updatedTask || null });
-      broadcastUiEvent(
-        ["tasks", "overview", "executor", "agents"],
-        "invalidate",
-        { reason: "task-unblocked", taskId },
-      );
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  // ── GET /api/retry-queue ───────────────────────────────────────────
-  if (path === "/api/retry-queue" && req.method === "GET") {
-    try {
-      const bus = _resolveEventBus();
-      let retryQueue = null;
-      if (bus && typeof bus.getRetryQueue === "function") {
-        try {
-          const snapshot = bus.getRetryQueue();
-          if (snapshot && typeof snapshot === "object") {
-            retryQueue = snapshot;
-          }
-        } catch {
-          /* best effort */
-        }
-      }
-      if (!retryQueue) {
-        retryQueue = globalThis.__bosun_setRetryQueueData
-          ? _retryQueue
-          : {
-              count: 0,
-              items: [],
-              stats: { totalRetriesToday: 0, peakRetryDepth: 0, exhaustedTaskIds: [] },
-            };
-      }
-      jsonResponse(res, 200, {
-        ok: true,
-        count: retryQueue.count || 0,
-        items: retryQueue.items || [],
-        stats: retryQueue.stats || {
-          totalRetriesToday: 0,
-          peakRetryDepth: 0,
-          exhaustedTaskIds: [],
-        },
-      });
-    } catch (err) {
-      jsonResponse(res, 500, {
-        ok: false,
-        error: err.message,
-        count: 0,
-        items: [],
-        stats: { totalRetriesToday: 0, peakRetryDepth: 0, exhaustedTaskIds: [] },
-      });
-    }
-    return;
-  }
-
-  if (path === "/api/executor/dispatch") {
-    try {
-      const executor = uiDeps.getInternalExecutor?.();
-      if (!executor) {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "Internal executor not enabled.",
-        });
-        return;
-      }
-      const body = await readJsonBody(req);
-      const taskId = (body?.taskId || "").trim();
-      const prompt = (body?.prompt || "").trim();
-      if (!taskId && !prompt) {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "taskId or prompt is required",
-        });
-        return;
-      }
-      const status = executor.getStatus?.() || {};
-      if (taskId) {
-        const adapter = getKanbanAdapter();
-        const task = await adapter.getTask(taskId);
-        if (!task) {
-          jsonResponse(res, 404, { ok: false, error: "Task not found." });
-          return;
-        }
-        traceHttpServerAction(req, {
-          route: path,
-          taskId,
-        }, () => executor.executeTask(task, { force: true })).catch((error) => {
-          console.warn(
-            `[telegram-ui] dispatch failed for ${taskId}: ${error.message}`,
-          );
-        });
-        jsonResponse(res, 200, {
-          ok: true,
-          slotIndex: status.activeSlots || 0,
-          taskId,
-        });
-      } else {
-        // Ad-hoc prompt dispatch via command handler
-        const handler = uiDeps.handleUiCommand;
-        if (typeof handler === "function") {
-          const result = await handler(`/prompt ${prompt}`);
-          jsonResponse(res, 200, {
-            ok: true,
-            slotIndex: status.activeSlots || 0,
-            data: result || null,
-          });
-        } else {
-          jsonResponse(res, 400, {
-            ok: false,
-            error: "Prompt dispatch not available — no command handler.",
-          });
-          return;
-        }
-      }
-      broadcastUiEvent(
-        ["executor", "overview", "agents", "tasks"],
-        "invalidate",
-        { reason: "task-dispatched", taskId: taskId || "(ad-hoc)" },
-      );
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/executor/stop-slot") {
-    try {
-      const executor = uiDeps.getInternalExecutor?.();
-      if (!executor) {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "Internal executor not enabled.",
-        });
-        return;
-      }
-      const body = await readJsonBody(req);
-      const slot = Number(body?.slot ?? -1);
-      if (typeof executor.stopSlot === "function") {
-        await executor.stopSlot(slot);
-      } else if (typeof executor.cancelSlot === "function") {
-        await executor.cancelSlot(slot);
-      } else {
-        jsonResponse(res, 400, {
-          ok: false,
-          error: "Executor does not support stop-slot.",
-        });
-        return;
-      }
-      jsonResponse(res, 200, { ok: true, slot });
-      broadcastUiEvent(["executor", "overview", "agents"], "invalidate", {
-        reason: "slot-stopped",
-        slot,
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  // ── Agent API endpoints ────────────────────────────────────────────────
-
-  if (path === "/api/agents/available" && req.method === "GET") {
-    try {
-      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
-        || { workspaceDir: repoRoot, workspaceRoot: repoRoot };
-      const agents = getAvailableAgents();
-      const active = getPrimaryAgentSelection();
-      const mode = getAgentMode();
-      const manualAgents = listManualAgentProfiles(workspaceContext);
-      jsonResponse(res, 200, { ok: true, agents, active, mode, manualAgents });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/agents/switch" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      const agent = (body?.agent || "").trim();
-      if (!agent) {
-        jsonResponse(res, 400, { ok: false, error: "agent is required" });
-        return;
-      }
-      const previousAgent = getPrimaryAgentSelection();
-      const result = await switchPrimaryAgent(agent);
-      if (!result.ok) {
-        jsonResponse(res, 400, { ok: false, error: result.reason || "Switch failed" });
-        return;
-      }
-      const newAgent = getPrimaryAgentSelection();
-      jsonResponse(res, 200, { ok: true, agent: newAgent, previousAgent });
-      broadcastUiEvent(["agents", "sessions", "overview"], "invalidate", {
-        reason: "agent-switched",
-        agent: newAgent,
-        previousAgent,
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/agents/mode" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      const mode = (body?.mode || "").trim();
-      if (!mode) {
-        jsonResponse(res, 400, { ok: false, error: "mode is required" });
-        return;
-      }
-      const result = setAgentMode(mode);
-      if (!result.ok) {
-        jsonResponse(res, 400, { ok: false, error: result.error });
-        return;
-      }
-      jsonResponse(res, 200, { ok: true, mode: result.mode });
-      broadcastUiEvent(["agents", "sessions"], "invalidate", {
-        reason: "agent-mode-changed",
-        mode: result.mode,
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/agents/mode" && req.method === "GET") {
-    jsonResponse(res, 200, { ok: true, mode: getAgentMode() });
-    return;
-  }
-
-  if (path === "/api/agent/modes" && req.method === "GET") {
-    const { listAvailableModes } = await import("../agent/primary-agent.mjs");
-    jsonResponse(res, 200, { modes: listAvailableModes() });
-    return;
-  }
-
-  if (path === "/api/agents/sdk-command" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      const command = (body?.command || "").trim();
-      if (!command) {
-        jsonResponse(res, 400, { ok: false, error: "command is required" });
-        return;
-      }
-      const args = (body?.args || "").trim();
-      const adapter = (body?.adapter || "").trim() || undefined;
-      const requestedSessionId = String(body?.sessionId || "").trim();
-      const tracker = getSessionTracker();
-      const commandSession = requestedSessionId
-        ? tracker.getSessionById(requestedSessionId)
-        : null;
-      const commandCwd = resolveSessionWorkspaceDir(commandSession);
-      const runSdkCommand =
-        typeof uiDeps.execSdkCommand === "function"
-          ? uiDeps.execSdkCommand
-          : execSdkCommand;
-      const result = await runSdkCommand(command, args, adapter, {
-        cwd: commandCwd,
-        sessionId: requestedSessionId || undefined,
-      });
-      const parsed = typeof result === "string" ? result : JSON.stringify(result);
-      jsonResponse(res, 200, {
-        ok: true,
-        result: parsed,
-        command,
-        adapter: adapter || getPrimaryAgentName(),
-        sessionId: requestedSessionId || null,
-      });
-      broadcastUiEvent(["agents", "sessions"], "invalidate", {
-        reason: "sdk-command-executed",
-        command,
-      });
-    } catch (err) {
-      const status = err.message?.includes("not supported") ? 400 : 500;
-      jsonResponse(res, status, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/agents/info" && req.method === "GET") {
-    try {
-      const info = getPrimaryAgentInfo();
-      const mode = getAgentMode();
-      const commands = getSdkCommands();
-      jsonResponse(res, 200, { ok: true, ...info, mode, sdkCommands: commands });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  // ── Agent Event Bus API ───────────────────────────────────────────────
-
-  if (path === "/api/agents/events" && req.method === "GET") {
-    try {
-      const bus = _resolveEventBus();
-      if (!bus) {
-        jsonResponse(res, 503, { ok: false, error: "Event bus not available" });
-        return;
-      }
-      const taskId = url.searchParams.get("taskId") || undefined;
-      const type = url.searchParams.get("type") || undefined;
-      const since = url.searchParams.get("since")
-        ? Number(url.searchParams.get("since"))
-        : undefined;
-      const limit = url.searchParams.get("limit")
-        ? Number(url.searchParams.get("limit"))
-        : 100;
-      const events = bus.getEventLog({ taskId, type, since, limit });
-      jsonResponse(res, 200, { ok: true, events });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/agents/events/errors" && req.method === "GET") {
-    try {
-      const bus = _resolveEventBus();
-      if (!bus) {
-        jsonResponse(res, 503, { ok: false, error: "Event bus not available" });
-        return;
-      }
-      const taskId = url.searchParams.get("taskId");
-      if (taskId) {
-        const history = bus.getErrorHistory(taskId);
-        jsonResponse(res, 200, { ok: true, taskId, errors: history });
-      } else {
-        const summary = bus.getErrorPatternSummary();
-        jsonResponse(res, 200, { ok: true, patterns: summary });
-      }
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/agents/events/liveness" && req.method === "GET") {
-    try {
-      const bus = _resolveEventBus();
-      if (!bus) {
-        jsonResponse(res, 503, { ok: false, error: "Event bus not available" });
-        return;
-      }
-      const liveness = bus.getAgentLiveness();
-      jsonResponse(res, 200, { ok: true, agents: liveness });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/agents/events/status" && req.method === "GET") {
-    try {
-      const bus = _resolveEventBus();
-      if (!bus) {
-        jsonResponse(res, 503, { ok: false, error: "Event bus not available" });
-        return;
-      }
-      const status = bus.getStatus();
-      jsonResponse(res, 200, { ok: true, ...status });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  // ── Supervisor API endpoint ──
-  if (path === "/api/supervisor/status" && req.method === "GET") {
-    try {
-      const supervisor = typeof uiDeps.getAgentSupervisor === "function"
-        ? uiDeps.getAgentSupervisor()
-        : null;
-      if (!supervisor) {
-        jsonResponse(res, 503, { ok: false, error: "Supervisor not available" });
-        return;
-      }
-      const systemHealth = supervisor.getSystemHealth();
-      const diagnostics = supervisor.getAllDiagnostics();
-      jsonResponse(res, 200, { ok: true, ...systemHealth, tasks: diagnostics });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path.startsWith("/api/supervisor/task/") && req.method === "GET") {
-    try {
-      const supervisor = typeof uiDeps.getAgentSupervisor === "function"
-        ? uiDeps.getAgentSupervisor()
-        : null;
-      if (!supervisor) {
-        jsonResponse(res, 503, { ok: false, error: "Supervisor not available" });
-        return;
-      }
-      const taskId = path.split("/api/supervisor/task/")[1];
-      if (!taskId) {
-        jsonResponse(res, 400, { ok: false, error: "Missing taskId" });
-        return;
-      }
-      const diag = supervisor.getTaskDiagnostics(taskId);
-      if (!diag) {
-        jsonResponse(res, 404, { ok: false, error: "Task not tracked" });
-        return;
-      }
-      jsonResponse(res, 200, { ok: true, ...diag });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  // ── Session API endpoints ──────────────────────────────────────────────
-
-  if (path === "/api/sessions" && req.method === "GET") {
-    try {
-      const tracker = getSessionTracker();
-      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: true });
-      if (!workspaceContext) {
-        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
-        return;
-      }
-      const includeHidden = /^(1|true|yes)$/i.test(String(url.searchParams.get("includeHidden") || "").trim());
-      const typeFilter = url.searchParams.get("type");
-      const statusFilter = url.searchParams.get("status");
-      const requestedWorkspace = String(url.searchParams.get("workspace") || "").trim().toLowerCase();
-      const allowLegacyWithoutWorkspace =
-        !typeFilter
-        && !statusFilter
-        && (!requestedWorkspace || requestedWorkspace === "active");
-      let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions(), workspaceContext, {
-        allowLegacyWithoutWorkspace,
-      });
-      const applyDefaultListHiding = !includeHidden;
-      if (applyDefaultListHiding) {
-        sessions = sessions.filter((session) => !shouldHideSessionFromDefaultList(session));
-      }
-      if (typeFilter) sessions = sessions.filter((s) => s.type === typeFilter);
-      if (statusFilter) sessions = sessions.filter((s) => s.status === statusFilter);
-      sessions = sessions.filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, {
-        allowLegacyWithoutWorkspace,
-      }));
-      jsonResponse(res, 200, {
-        ok: true,
-        sessions,
-        loadMeta: {
-          stale: false,
-          lastSuccessAt: new Date().toISOString(),
-          lastFailureAt: null,
-          staleReason: null,
-          staleReasonCode: null,
-          staleReasonLabel: null,
-          staleReasonMeta: null,
-          retryAttempt: 0,
-          retryDelayMs: 0,
-          nextRetryAt: null,
-          retriesExhausted: false,
-        },
-      });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/sessions/create" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      const type = body?.type || "manual";
-      const id = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const workspaceContext = resolveActiveWorkspaceExecutionContext();
-      const requestedWorkspaceId = String(body?.workspaceId || "").trim();
-      const requestedWorkspaceDir = normalizeCandidatePath(body?.workspaceDir);
-      const requestedWorkspaceRoot = normalizeCandidatePath(body?.workspaceRoot);
-      const resolvedWorkspaceId =
-        requestedWorkspaceId || workspaceContext.workspaceId;
-      const resolvedWorkspaceDir =
-        requestedWorkspaceDir || workspaceContext.workspaceDir || repoRoot;
-      const resolvedWorkspaceRoot =
-        requestedWorkspaceRoot
-        || workspaceContext.workspaceRoot
-        || resolvedWorkspaceDir;
-      const requestedAgentProfileId = String(body?.agentProfileId || "").trim();
-      const tracker = getSessionTracker();
-      const session = tracker.createSession({
-        id,
-        type,
-        metadata: {
-          prompt: body?.prompt,
-          agent: body?.agent || getPrimaryAgentName(),
-          mode: body?.mode || getAgentMode(),
-          model: body?.model || undefined,
-          ...(requestedAgentProfileId ? { agentProfileId: requestedAgentProfileId } : {}),
-          ...(resolvedWorkspaceId ? { workspaceId: resolvedWorkspaceId } : {}),
-          ...(resolvedWorkspaceDir ? { workspaceDir: resolvedWorkspaceDir } : {}),
-          ...(resolvedWorkspaceRoot ? { workspaceRoot: resolvedWorkspaceRoot } : {}),
-        },
-      });
-      jsonResponse(res, 200, { ok: true, session: { id: session.id, type: session.type, status: session.status, metadata: session.metadata } });
-      broadcastUiEvent(["sessions"], "invalidate", { reason: "session-created", sessionId: id });
-      broadcastSessionsSnapshot();
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  // Parameterized session routes: /api/sessions/:id[/action]
-  const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)(?:\/(.+))?$/);
-  if (sessionMatch) {
-    const sessionId = decodeURIComponent(sessionMatch[1]);
-    const action = sessionMatch[2] || null;
-    // Session-specific routes should support workspace=all so the UI can open
-    // historical sessions while browsing cross-workspace lists.
-    const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: true });
-    if (!workspaceContext) {
-      jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
-      return;
-    }
-    const tracker = getSessionTracker();
-      const getScopedSession = () => {
-        const trackerSession = tracker.getSessionById(sessionId);
-        const ledgerSession = normalizeLedgerSessionDocument(
-          getSessionActivityFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext)),
-        );
-        const session = mergeSessionRecords(trackerSession, ledgerSession);
-        if (!session) return null;
-        return sessionMatchesWorkspaceContext(session, workspaceContext) ? session : null;
-      };
-      const getScopedSessionRecord = ({ includeMessages = false } = {}) => {
-        const trackerSession = includeMessages
-          ? tracker.getSessionMessages(sessionId)
-          : (tracker.getSessionById(sessionId) || tracker.getSessionMessages(sessionId));
-        const ledgerSession = normalizeLedgerSessionDocument(
-          getSessionActivityFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext)),
-          { includeMessages },
-        );
-        const durableSession = mergeSessionRecords(trackerSession, ledgerSession);
-        if (!durableSession) return null;
-        return sessionMatchesWorkspaceContext(durableSession, workspaceContext) ? durableSession : null;
-      };
-      const mutateDurableSessionRecord = (session, nextStatus) => {
-        if (!session || typeof session !== "object") return null;
-        const now = new Date().toISOString();
-        const document = {
-          ...session,
-          status: nextStatus,
-          lifecycleStatus: nextStatus,
-          runtimeState: nextStatus,
-          runtimeIsLive: false,
-          lastActiveAt: now,
-          updatedAt: now,
-          metadata:
-            session.metadata && typeof session.metadata === "object"
-              ? { ...session.metadata }
-              : {},
-        };
-        return upsertSessionRecordToStateLedger({
-          ...session,
-          status: nextStatus,
-          lifecycleStatus: nextStatus,
-          runtimeState: nextStatus,
-          runtimeIsLive: false,
-          updatedAt: now,
-          lastActiveAt: now,
-          eventCount: Math.max(0, Number(session.eventCount ?? session.totalEvents ?? 0) || 0),
-          document,
-        }, resolveUiStateLedgerOptions(workspaceContext));
-      };
-
-    if (!action && req.method === "GET") {
-      try {
-        const session = getScopedSessionRecord({ includeMessages: true });
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        // Support ?limit=N&offset=N for message pagination.
-        // Default to a bounded tail window so large sessions don't crash the UI.
-        const reqUrl = new URL(req.url, getRequestBaseUrl(req, "localhost"));
-        const limitParam = reqUrl.searchParams.get("limit");
-        const offsetParam = reqUrl.searchParams.get("offset");
-        const fullParam = String(reqUrl.searchParams.get("full") || "").toLowerCase();
-        const wantsFull =
-          fullParam === "1" || fullParam === "true" || fullParam === "yes";
-        if (wantsFull) {
-          jsonResponse(res, 200, { ok: true, session });
-        } else {
-          const parsedLimit = Number(limitParam);
-          const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
-            ? Math.max(1, Math.min(Math.floor(parsedLimit), 200))
-            : 20;
-          const allMessages = session.messages || [];
-          const total = allMessages.length;
-          const offset = offsetParam != null
-            ? Math.max(0, Math.min(Number(offsetParam) || 0, total))
-            : Math.max(0, total - limit);
-          const sliced = allMessages.slice(offset, offset + limit);
-          jsonResponse(res, 200, {
-            ok: true,
-            session: { ...session, messages: sliced },
-            pagination: { total, offset, limit, hasMore: offset > 0 },
-          });
-        }
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "attachments" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        const { files } = await readMultipartForm(req);
-        if (!files.length) {
-          jsonResponse(res, 400, { ok: false, error: "file required" });
-          return;
-        }
-        const safeSession = sanitizePathSegment(sessionId);
-        const targetDir = resolve(ATTACHMENTS_ROOT, "sessions", safeSession);
-        mkdirSync(targetDir, { recursive: true });
-        const added = [];
-        for (const file of files) {
-          const originalName = file.filename || "attachment";
-          const ext = extname(originalName).toLowerCase();
-          const base = sanitizePathSegment(basename(originalName, ext)) || "attachment";
-          const unique = `${Date.now()}-${randomBytes(4).toString("hex")}`;
-          const storedName = `${base}-${unique}${ext}`;
-          const filePath = resolve(targetDir, storedName);
-          writeFileSync(filePath, file.data);
-          const relPath = relative(ATTACHMENTS_ROOT, filePath);
-          const contentType =
-            file.contentType || MIME_TYPES[ext] || "application/octet-stream";
-          const kind =
-            contentType.startsWith("image/") ||
-            [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext)
-              ? "image"
-              : "file";
-          added.push({
-            name: originalName,
-            filePath,
-            relativePath: relPath,
-            url: resolveAttachmentUrl(relPath),
-            size: file.data.length,
-            contentType,
-            kind,
-            source: "upload",
-            sourceType: "session",
-            createdAt: new Date().toISOString(),
-          });
-        }
-        jsonResponse(res, 200, { ok: true, attachments: added });
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "stop" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-
-        const abortController = sessionRunAbortControllers.get(sessionId);
-        const wasRunning = Boolean(abortController && !abortController.signal?.aborted);
-        if (wasRunning) {
-          try {
-            abortController.abort("user_stop");
-          } catch {
-            /* best effort */
-          }
-          tracker.recordEvent(sessionId, {
-            role: "system",
-            type: "system",
-            content: "Stop requested. Cancelling current agent turn...",
-            timestamp: new Date().toISOString(),
-          });
-        }
-
-        jsonResponse(res, 200, { ok: true, stopped: wasRunning });
-        broadcastUiEvent(["sessions", "agents"], "invalidate", {
-          reason: wasRunning ? "session-stop-requested" : "session-stop-noop",
-          sessionId,
-        });
-        broadcastSessionsSnapshot();
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "message" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        if (session.status === "paused" || session.status === "archived") {
-          jsonResponse(res, 400, { ok: false, error: `Session is ${session.status}` });
-          return;
-        }
-        // Re-activate completed/failed sessions when user sends a new message
-        if (session.status === "completed" || session.status === "failed") {
-          tracker.updateSessionStatus(sessionId, "active");
-        }
-        const body = await readJsonBody(req);
-        const content = body?.content;
-        const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
-        const attachmentsAppended = body?.attachmentsAppended === true;
-        if (!content && attachments.length === 0) {
-          jsonResponse(res, 400, { ok: false, error: "content is required" });
-          return;
-        }
-        const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const messageContent = typeof content === "string" ? content : "";
-
-        // Per-message mode override (e.g. { "content": "...", "mode": "ask" })
-        const messageMode = body?.mode || undefined;
-        // Per-message model override (e.g. { "model": "o4-mini" })
-        const messageModel = body?.model || undefined;
-        const messageAgentProfileId = String(
-          body?.agentProfileId || session?.metadata?.agentProfileId || "",
-        ).trim() || undefined;
-        let userMessageRecorded = false;
-        const recordUserMessageOnce = () => {
-          if (userMessageRecorded) return;
-          tracker.recordEvent(sessionId, {
-            role: "user",
-            content: messageContent,
-            attachments,
-            timestamp: new Date().toISOString(),
-            _sessionType: session.type === "primary" ? "primary" : undefined,
-            _mode: messageMode || undefined,
-          });
-          userMessageRecorded = true;
-        };
-
-        // Forward to primary agent if applicable (exec records user + assistant events)
-        let exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
-        // Fallback: resolve execPrimaryPrompt from primary-agent.mjs if not injected
-        if (!exec && session.type === "primary") {
-          exec = await resolveExecPrimaryPrompt();
-        }
-        if (exec) {
-          const sessionWorkspaceDir = resolveSessionWorkspaceDir(session);
-          // Persist the user turn immediately so session history is visible
-          // even while the primary agent is still initializing.
-          recordUserMessageOnce();
-          // Respond immediately so the UI doesn't block on agent execution
-          jsonResponse(res, 200, { ok: true, messageId });
-          broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
-          broadcastSessionsSnapshot();
-
-          // Build an onEvent callback so intermediate SDK events (thinking,
-          // tool calls, code edits, etc.) are streamed to the UI in real-time
-          // via the existing session-tracker → WebSocket listener pipeline.
-          // Without this, chat/telegram dispatches only show the final
-          // user+assistant pair instead of the full thought stream that Flows
-          // clients see.
-          const streamOnEvent = (err, event) => {
-            // The adapters call onEvent(err, event) or onEvent(event).
-            // Normalise both calling conventions.
-            const ev = event || err;
-            if (!ev) return;
-            try {
-              if (typeof ev === "string") {
-                tracker.recordEvent(sessionId, {
-                  role: "system",
-                  type: "system",
-                  content: ev,
-                  timestamp: new Date().toISOString(),
-                });
-              } else {
-                tracker.recordEvent(sessionId, ev);
-              }
-            } catch {
-              /* best-effort — never crash the agent loop */
-            }
-          };
-
-          // Fire-and-forget: run agent asynchronously so the request handler
-          // doesn't block and the agent doesn't appear "busy" to subsequent
-          // messages from chat, telegram, portal, or any other source.
-          const abortController = new AbortController();
-          sessionRunAbortControllers.set(sessionId, abortController);
-          exec(messageContent, {
-            sessionId,
-            sessionType: "primary",
-            mode: messageMode,
-            model: messageModel,
-            agentProfileId: messageAgentProfileId,
-            cwd: sessionWorkspaceDir,
-            persistent: true,
-            skipUserMessageRecord: userMessageRecorded,
-            sendRawEvents: true,
-            attachments,
-            attachmentsAppended,
-            onEvent: streamOnEvent,
-            abortController,
-          }).then(() => {
-            // Mark session as completed once the agent finishes — prevents
-            // sessions from staying "active" forever and causing session bloat.
-            tracker.updateSessionStatus(sessionId, "completed");
-            broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
-            broadcastSessionsSnapshot();
-          }).catch((execErr) => {
-            const wasAborted =
-              abortController.signal.aborted ||
-              execErr?.name === "AbortError" ||
-              /abort|cancel|stop/i.test(String(execErr?.message || ""));
-            if (wasAborted) {
-              tracker.recordEvent(sessionId, {
-                role: "system",
-                type: "system",
-                content: "Agent turn stopped.",
-                timestamp: new Date().toISOString(),
-              });
-              tracker.updateSessionStatus(sessionId, "completed");
-              broadcastUiEvent(["sessions"], "invalidate", {
-                reason: "agent-stopped",
-                sessionId,
-              });
-              broadcastSessionsSnapshot();
-              return;
-            }
-            // Record error as system message so user sees feedback
-            tracker.recordEvent(sessionId, {
-              role: "system",
-              type: "error",
-              content: `Agent error: ${execErr.message || "Unknown error"}`,
-              timestamp: new Date().toISOString(),
-            });
-            tracker.updateSessionStatus(sessionId, "failed");
-            broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
-            broadcastSessionsSnapshot();
-          }).finally(() => {
-            // Clear only if this turn still owns the session abort controller.
-            if (sessionRunAbortControllers.get(sessionId) === abortController) {
-              sessionRunAbortControllers.delete(sessionId);
-            }
-            broadcastUiEvent(["agents"], "invalidate", {
-              reason: "session-turn-finished",
-              sessionId,
-            });
-          });
-        } else {
-          // No agent available — record user event and notify user
-          recordUserMessageOnce();
-          tracker.recordEvent(sessionId, {
-            role: "system",
-            type: "error",
-            content: ":alert: No agent is available to process this message. The primary agent may not be initialized — try restarting bosun or check the Logs tab for details.",
-            timestamp: new Date().toISOString(),
-          });
-          jsonResponse(res, 200, { ok: true, messageId, warning: "no_agent_available" });
-          broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
-          broadcastSessionsSnapshot();
-        }
-      } catch (err) {
-        console.error("[ui-server] session message failed for %s: %s", String(sessionId), String(err?.message || err || "unknown"));
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "message/edit" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        const body = await readJsonBody(req);
-        const content = String(body?.content || "").trim();
-        if (!content) {
-          jsonResponse(res, 400, { ok: false, error: "content is required" });
-          return;
-        }
-
-        const edited = tracker.editUserMessage(sessionId, {
-          messageId: body?.messageId,
-          timestamp: body?.timestamp,
-          previousContent: body?.previousContent,
-          content,
-        });
-        if (!edited?.ok) {
-          const status = edited?.error === "Message not found" ? 404 : 400;
-          jsonResponse(res, status, { ok: false, error: edited?.error || "edit failed" });
-          return;
-        }
-
-        jsonResponse(res, 200, { ok: true, message: edited.message });
-        broadcastUiEvent(["sessions"], "invalidate", {
-          reason: "session-message-edited",
-          sessionId,
-        });
-        broadcastSessionsSnapshot();
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "archive" && req.method === "POST") {
-      try {
-        const session = getScopedSessionRecord({ includeMessages: true });
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        tracker.updateSessionStatus(sessionId, "archived");
-        mutateDurableSessionRecord(session, "archived");
-        invalidateDurableSessionListCache();
-        jsonResponse(res, 200, { ok: true });
-        broadcastUiEvent(["sessions"], "invalidate", {
-          reason: "session-archived",
-          sessionId,
-        });
-        broadcastSessionsSnapshot();
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "pause" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        tracker.updateSessionStatus(sessionId, "paused");
-        jsonResponse(res, 200, { ok: true });
-        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-paused", sessionId });
-        broadcastSessionsSnapshot();
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "resume" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        tracker.updateSessionStatus(sessionId, "active");
-        jsonResponse(res, 200, { ok: true });
-        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-resumed", sessionId });
-        broadcastSessionsSnapshot();
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "delete" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        tracker.removeSession(sessionId);
-        deleteSessionRecordFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext));
-        invalidateDurableSessionListCache();
-        jsonResponse(res, 200, { ok: true });
-        broadcastUiEvent(["sessions"], "invalidate", {
-          reason: "session-deleted",
-          sessionId,
-        });
-        broadcastSessionsSnapshot();
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "rename" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        const body = await readJsonBody(req);
-        const title = (body?.title || "").trim();
-        if (!title) {
-          jsonResponse(res, 400, { ok: false, error: "title is required" });
-          return;
-        }
-        tracker.renameSession(sessionId, title);
-        jsonResponse(res, 200, { ok: true });
-        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-renamed", sessionId });
-        broadcastSessionsSnapshot();
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "diff" && req.method === "GET") {
-      try {
-        const session = getScopedSessionRecord({ includeMessages: true });
-        if (!session) {
-          jsonResponse(res, 200, {
-            ok: true,
-            diff: {
-              files: [],
-              totalFiles: 0,
-              totalAdditions: 0,
-              totalDeletions: 0,
-              formatted: "(session not found)",
-            },
-            summary: "(session not found)",
-            commits: [],
-          });
-          return;
-        }
-        const worktreePath = await resolveSessionWorktreePath(session);
-        if (!worktreePath || !existsSync(worktreePath)) {
-          jsonResponse(res, 200, { ok: true, diff: { files: [], totalFiles: 0, totalAdditions: 0, totalDeletions: 0, formatted: "(no worktree)" }, summary: "(no worktree)", commits: [] });
-          return;
-        }
-        let stats = collectDiffStats(worktreePath, {
-          range: "HEAD",
-          includePatch: true,
-        });
-        if (
-          Number(stats?.totalFiles || 0) === 0
-          && existsSync(resolve(worktreePath, ".git"))
-        ) {
-          await new Promise((resolveRetry) => setTimeout(resolveRetry, 25));
-          stats = collectDiffStats(worktreePath, {
-            range: "HEAD",
-            includePatch: true,
-          });
-        }
-        const summary = stats.formatted || getCompactDiffSummary(worktreePath);
-        const commits = getRecentCommits(worktreePath);
-        jsonResponse(res, 200, {
-          ok: true,
-          diff: stats,
-          summary,
-          commits,
-          source: {
-            kind: "session",
-            label: stats.sourceRange || "origin/main...HEAD",
-            detail: worktreePath,
-          },
-        });
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-  }
-
+  // Harness surface APIs are delegated to server/routes/harness-*.mjs so this
+  // file stays a composition shell instead of a second API control plane.
   // ── Voice API Routes ──────────────────────────────────────────────────────
 
   // GET /api/voice/providers — read voice.providers from bosun.config.json

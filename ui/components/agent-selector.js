@@ -15,6 +15,7 @@ import {
 import { signal, computed, effect } from "@preact/signals";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
+import { worktreeData, loadWorktrees } from "../modules/state.js";
 import { haptic } from "../modules/telegram.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import {
@@ -74,6 +75,14 @@ try { if (typeof localStorage !== "undefined") yoloMode.value = localStorage.get
 export const selectedModel = signal("");
 try { if (typeof localStorage !== "undefined") selectedModel.value = localStorage.getItem("ve-selected-model") || ""; } catch {}
 try { if (typeof localStorage !== "undefined") activeManualAgentId.value = localStorage.getItem("ve-active-manual-agent") || ""; } catch {}
+
+/** Agent run context — "workspace" = parent workspace dir, "worktree" = specific repo/worktree */
+export const agentRunMode = signal("workspace"); // "workspace" | "worktree"
+try { if (typeof localStorage !== "undefined") agentRunMode.value = localStorage.getItem("ve-agent-run-mode") || "workspace"; } catch {}
+
+/** Selected repo/worktree path for agent execution (empty = use workspace default) */
+export const selectedRepo = signal("");
+try { if (typeof localStorage !== "undefined") selectedRepo.value = localStorage.getItem("ve-selected-repo") || ""; } catch {}
 
 /** Computed: resolved active agent object */
 export const activeAgentInfo = computed(() => {
@@ -1120,6 +1129,221 @@ function YoloToggle() {
 }
 
 /* ═══════════════════════════════════════════════
+ *  WorkspaceModePicker
+ *  Chip → Menu: choose between "Workspace" (parent workspace dir)
+ *  and "Worktree" (specific repo/worktree). Persisted to localStorage.
+ * ═══════════════════════════════════════════════ */
+
+export function WorkspaceModePicker() {
+  const mode = agentRunMode.value;
+  const [anchorEl, setAnchorEl] = useState(null);
+  const open = Boolean(anchorEl);
+
+  const handleOpen = useCallback((e) => { setAnchorEl(e.currentTarget); }, []);
+  const handleClose = useCallback(() => { setAnchorEl(null); }, []);
+
+  const handleSelect = useCallback((value) => {
+    agentRunMode.value = value;
+    try { localStorage.setItem("ve-agent-run-mode", value); } catch {}
+    // Clear repo selection when switching back to workspace mode
+    if (value === "workspace") {
+      selectedRepo.value = "";
+      try { localStorage.setItem("ve-selected-repo", ""); } catch {}
+    }
+    haptic("light");
+    setAnchorEl(null);
+  }, []);
+
+  const isWorktree = mode === "worktree";
+
+  return html`
+    <${Tooltip} title="Run context: Workspace = parent workspace dir, Worktree = specific repo" arrow>
+      <${Chip}
+        label=${isWorktree ? "Worktree" : "Workspace"}
+        size="small"
+        variant=${isWorktree ? "filled" : "outlined"}
+        onClick=${handleOpen}
+        icon=${html`<span style="font-size:13px;line-height:1">${resolveIcon(isWorktree ? "git-branch" : "folder")}</span>`}
+        sx=${{
+          flexShrink: 0,
+          cursor: "pointer",
+          fontSize: 12,
+          fontWeight: 500,
+          color: "var(--tg-theme-text-color, #fff)",
+          borderColor: open ? "var(--tg-theme-button-color, #3b82f6)" : "rgba(255,255,255,0.08)",
+          bgcolor: isWorktree ? "rgba(59,130,246,0.12)" : "transparent",
+          "&:hover": { bgcolor: "rgba(255,255,255,0.06)" },
+        }}
+      />
+    </${Tooltip}>
+    <${Menu}
+      anchorEl=${anchorEl}
+      open=${open}
+      onClose=${handleClose}
+      anchorOrigin=${{ vertical: "top", horizontal: "left" }}
+      transformOrigin=${{ vertical: "bottom", horizontal: "left" }}
+      slotProps=${{ paper: { sx: { ...muiDarkPaper, minWidth: 200 } } }}
+    >
+      ${[
+        { value: "workspace", label: "Workspace", desc: "Launch in parent workspace directory", icon: "folder" },
+        { value: "worktree", label: "Worktree", desc: "Launch inside a specific repo/worktree", icon: "git-branch" },
+      ].map(({ value, label, desc, icon }) => html`
+        <${MenuItem}
+          key=${value}
+          selected=${mode === value}
+          onClick=${() => handleSelect(value)}
+        >
+          <${ListItemIcon} sx=${{ minWidth: "36px !important" }}>
+            <${Box} sx=${{
+              width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+              borderRadius: "6px", bgcolor: "rgba(255,255,255,0.04)", fontSize: 16,
+            }}>
+              ${resolveIcon(icon)}
+            </${Box}>
+          </${ListItemIcon}>
+          <${ListItemText}
+            primary=${label}
+            secondary=${desc}
+            primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
+            secondaryTypographyProps=${{ fontSize: 11 }}
+          />
+          ${mode === value && html`<${Typography} sx=${{ color: "var(--tg-theme-button-color, #3b82f6)", fontWeight: 700, fontSize: 14, ml: 1 }}>✓</${Typography}>`}
+        </${MenuItem}>
+      `)}
+    </${Menu}>
+  `;
+}
+
+/* ═══════════════════════════════════════════════
+ *  RepoPicker
+ *  Chip → Menu: select which worktree/repo the agent runs in.
+ *  Default is "Workspace" (empty = parent workspace dir).
+ *  Loads worktrees lazily on first open. Required when mode = "worktree".
+ * ═══════════════════════════════════════════════ */
+
+export function RepoPicker() {
+  const mode = agentRunMode.value;
+  const current = selectedRepo.value;
+  const worktrees = worktreeData.value;
+  const [anchorEl, setAnchorEl] = useState(null);
+  const open = Boolean(anchorEl);
+
+  const needsRepo = mode === "worktree" && !current;
+
+  const handleOpen = useCallback((e) => {
+    // Lazy-load worktrees on first open
+    if (worktrees.length === 0) loadWorktrees();
+    setAnchorEl(e.currentTarget);
+  }, [worktrees.length]);
+
+  const handleClose = useCallback(() => { setAnchorEl(null); }, []);
+
+  const handleSelect = useCallback((value) => {
+    selectedRepo.value = value;
+    try { localStorage.setItem("ve-selected-repo", value); } catch {}
+    haptic("light");
+    setAnchorEl(null);
+  }, []);
+
+  // Derive repo display name from last segment of path
+  const repoName = (path) => {
+    if (!path) return "";
+    const seg = path.replace(/\\/g, "/").split("/").filter(Boolean);
+    return seg[seg.length - 1] || path;
+  };
+
+  const currentLabel = current ? repoName(current) : "Workspace";
+
+  return html`
+    <${Tooltip}
+      title=${needsRepo
+        ? "⚠ Worktree mode requires a repo selection"
+        : "Select repo: Workspace = use parent workspace dir"}
+      arrow
+    >
+      <${Chip}
+        label=${currentLabel}
+        size="small"
+        variant=${current ? "filled" : "outlined"}
+        onClick=${handleOpen}
+        icon=${html`<span style="font-size:13px;line-height:1">${resolveIcon("box")}</span>`}
+        sx=${{
+          flexShrink: 0,
+          cursor: "pointer",
+          fontSize: 12,
+          fontWeight: 500,
+          color: needsRepo ? "#f97316" : "var(--tg-theme-text-color, #fff)",
+          borderColor: needsRepo
+            ? "#f97316"
+            : open ? "var(--tg-theme-button-color, #3b82f6)" : "rgba(255,255,255,0.08)",
+          bgcolor: current ? "rgba(59,130,246,0.12)" : "transparent",
+          "&:hover": { bgcolor: "rgba(255,255,255,0.06)" },
+        }}
+      />
+    </${Tooltip}>
+    <${Menu}
+      anchorEl=${anchorEl}
+      open=${open}
+      onClose=${handleClose}
+      anchorOrigin=${{ vertical: "top", horizontal: "left" }}
+      transformOrigin=${{ vertical: "bottom", horizontal: "left" }}
+      slotProps=${{ paper: { sx: { ...muiDarkPaper, minWidth: 240 } } }}
+    >
+      <${MenuItem}
+        selected=${!current}
+        onClick=${() => handleSelect("")}
+      >
+        <${ListItemIcon} sx=${{ minWidth: "28px !important" }}>
+          ${!current ? html`<${Typography} sx=${{ color: "var(--tg-theme-button-color, #3b82f6)", fontWeight: 700, fontSize: 14 }}>✓</${Typography}>` : null}
+        </${ListItemIcon}>
+        <${ListItemText}
+          primary="Workspace (default)"
+          secondary="Use parent workspace directory"
+          primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
+          secondaryTypographyProps=${{ fontSize: 11 }}
+        />
+      </${MenuItem}>
+      ${worktrees.length > 0 ? html`<${Divider} />` : null}
+      ${worktrees.length > 0
+        ? worktrees.map((wt) => {
+            const name = repoName(wt.path);
+            const isActive = current === wt.path;
+            const statusColor = wt.status === "active" ? "#22c55e" : wt.status === "stale" ? "#eab308" : "#6b7280";
+            return html`
+              <${MenuItem}
+                key=${wt.path}
+                selected=${isActive}
+                onClick=${() => handleSelect(wt.path)}
+              >
+                <${ListItemIcon} sx=${{ minWidth: "28px !important" }}>
+                  ${isActive ? html`<${Typography} sx=${{ color: "var(--tg-theme-button-color, #3b82f6)", fontWeight: 700, fontSize: 14 }}>✓</${Typography}>` : null}
+                </${ListItemIcon}>
+                <${ListItemText}
+                  primary=${name}
+                  secondary=${wt.branch || wt.path}
+                  primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
+                  secondaryTypographyProps=${{ fontSize: 11 }}
+                />
+                <${Box} sx=${{ width: 7, height: 7, borderRadius: "50%", bgcolor: statusColor, flexShrink: 0, ml: 1 }} />
+              </${MenuItem}>
+            `;
+          })
+        : html`
+          <${MenuItem} disabled>
+            <${ListItemText}
+              primary="No worktrees found"
+              secondary="Create a worktree from the Infra tab."
+              primaryTypographyProps=${{ fontSize: 13 }}
+              secondaryTypographyProps=${{ fontSize: 11 }}
+            />
+          </${MenuItem}>
+        `
+      }
+    </${Menu}>
+  `;
+}
+
+/* ═══════════════════════════════════════════════
  *  ChatInputToolbar
  *  Combines all selectors into a single row
  * ═══════════════════════════════════════════════ */
@@ -1144,6 +1368,8 @@ export function ChatInputToolbar() {
       <${AgentModeSelector} />
       <${ManualAgentPicker} />
       <${ModelPicker} />
+      <${WorkspaceModePicker} />
+      <${RepoPicker} />
       <${YoloToggle} />
       <${Box} sx=${{ flex: 1, minWidth: 8 }} />
       <${AgentStatusBadge} />

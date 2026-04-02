@@ -92,9 +92,16 @@ describe("tool governance support", () => {
       metadata: { keep: true, step: "apply" },
     });
     expect(envelope).toMatchObject({
+      executionId: expect.stringMatching(/^tool-/),
       toolName: "list_tasks",
       args: { limit: 2 },
-      context: { sessionId: "session-1" },
+      context: {
+        sessionId: "session-1",
+        executionId: expect.stringMatching(/^tool-/),
+      },
+      lineage: {
+        sessionId: "session-1",
+      },
     });
   });
 
@@ -300,6 +307,12 @@ describe("tool governance support", () => {
     expect(result).toBeTruthy();
     expect(events.at(-1)).toEqual(expect.objectContaining({
       type: "tool_execution_end",
+      executionId: expect.stringMatching(/^tool-/),
+      policy: expect.objectContaining({
+        retry: expect.objectContaining({
+          maxAttempts: 1,
+        }),
+      }),
       hotPath: expect.objectContaining({
         exec: expect.objectContaining({
           available: true,

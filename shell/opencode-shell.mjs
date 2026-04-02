@@ -613,10 +613,16 @@ export async function execOpencodePrompt(userMessage, options = {}) {
       activeNamedSessionId = namedId;
     }
     const shouldActivateManagedSession = persistent || Boolean(sessionId);
-    opencodeSessionCompat.registerExecution(namedId, {
+    const providerRuntime = opencodeSessionCompat.resolveProvider({
+      providerSelection: provider || executorOverrides?.provider || "opencode",
+      model: executorOverrides?.model || null,
+    });
+    opencodeSessionCompat.beginTurn(namedId, {
       activate: shouldActivateManagedSession,
       status: "running",
       threadId: _activeServerSessionId,
+      providerSelection: providerRuntime.providerId || "opencode",
+      model: providerRuntime.providerConfig?.model || executorOverrides?.model || null,
       metadata: {
         providerThreadId: _activeServerSessionId,
         turnCount,
@@ -630,11 +636,13 @@ export async function execOpencodePrompt(userMessage, options = {}) {
     try {
       serverSessionId = await getOrCreateServerSession(namedId);
     } catch (err) {
-      opencodeSessionCompat.registerExecution(namedId, {
+      opencodeSessionCompat.failTurn(namedId, {
         activate: shouldActivateManagedSession,
         status: "failed",
         threadId: _activeServerSessionId,
         error: err.message,
+        providerSelection: providerRuntime.providerId || "opencode",
+        model: providerRuntime.providerConfig?.model || executorOverrides?.model || null,
         metadata: {
           providerThreadId: _activeServerSessionId,
           persistent,
@@ -701,6 +709,12 @@ export async function execOpencodePrompt(userMessage, options = {}) {
               event.properties?.session_id ||
               event.sessionId;
             if (eventSessionId && eventSessionId !== serverSessionId) continue;
+            opencodeSessionCompat.recordStreamEvent(namedId, event, {
+              activate: shouldActivateManagedSession,
+              threadId: serverSessionId,
+              providerSelection: providerRuntime.providerId || "opencode",
+              model: providerRuntime.providerConfig?.model || executorOverrides?.model || null,
+            });
             const formatted = formatOpencodeEvent(event);
             if (formatted) {
               try {
@@ -782,10 +796,12 @@ export async function execOpencodePrompt(userMessage, options = {}) {
         if (persistent || turnCount % 10 === 0) {
           await saveState().catch(() => {});
         }
-        opencodeSessionCompat.registerExecution(namedId, {
+        opencodeSessionCompat.completeTurn(namedId, {
           activate: shouldActivateManagedSession,
           status: "completed",
           threadId: serverSessionId,
+          providerSelection: providerRuntime.providerId || "opencode",
+          model: providerRuntime.providerConfig?.model || executorOverrides?.model || null,
           metadata: {
             providerThreadId: serverSessionId,
             turnCount,
@@ -833,11 +849,13 @@ export async function execOpencodePrompt(userMessage, options = {}) {
             /* best-effort */
           }
 
-          opencodeSessionCompat.registerExecution(namedId, {
+          opencodeSessionCompat.abortTurn(namedId, {
             activate: shouldActivateManagedSession,
             status: reason === "user_stop" ? "aborted" : "timeout",
             threadId: serverSessionId,
             error: msg,
+            providerSelection: providerRuntime.providerId || "opencode",
+            model: providerRuntime.providerConfig?.model || executorOverrides?.model || null,
             metadata: {
               providerThreadId: serverSessionId,
               persistent,
@@ -864,11 +882,13 @@ export async function execOpencodePrompt(userMessage, options = {}) {
           };
         }
 
-        opencodeSessionCompat.registerExecution(namedId, {
+        opencodeSessionCompat.failTurn(namedId, {
           activate: shouldActivateManagedSession,
           status: "failed",
           threadId: serverSessionId,
           error: err?.message || String(err),
+          providerSelection: providerRuntime.providerId || "opencode",
+          model: providerRuntime.providerConfig?.model || executorOverrides?.model || null,
           metadata: {
             providerThreadId: serverSessionId,
             persistent,
@@ -879,11 +899,13 @@ export async function execOpencodePrompt(userMessage, options = {}) {
       }
     }
 
-    opencodeSessionCompat.registerExecution(activeNamedSessionId || sessionId || "primary", {
+    opencodeSessionCompat.failTurn(activeNamedSessionId || sessionId || "primary", {
       activate: Boolean(activeNamedSessionId || sessionId),
       status: "failed",
       threadId: _activeServerSessionId,
       error: "OpenCode agent failed after all retry attempts.",
+      providerSelection: providerRuntime.providerId || "opencode",
+      model: providerRuntime.providerConfig?.model || executorOverrides?.model || null,
       metadata: {
         providerThreadId: _activeServerSessionId,
         persistent,

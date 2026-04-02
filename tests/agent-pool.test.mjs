@@ -433,7 +433,11 @@ let getPoolSdkName,
   invalidateThreadAsync,
   getThreadRecord,
   clearThreadRegistry,
-  ensureThreadRegistryLoaded;
+  ensureThreadRegistryLoaded,
+  createCompiledInternalHarnessSession,
+  createInternalHarnessSession,
+  runCompiledInternalHarnessProfile,
+  runInternalHarnessProfile;
 
 beforeEach(async () => {
   saveEnv();
@@ -465,6 +469,10 @@ beforeEach(async () => {
   getThreadRecord = mod.getThreadRecord;
   clearThreadRegistry = mod.clearThreadRegistry;
   ensureThreadRegistryLoaded = mod.ensureThreadRegistryLoaded;
+  createCompiledInternalHarnessSession = mod.createCompiledInternalHarnessSession;
+  createInternalHarnessSession = mod.createInternalHarnessSession;
+  runCompiledInternalHarnessProfile = mod.runCompiledInternalHarnessProfile;
+  runInternalHarnessProfile = mod.runInternalHarnessProfile;
 
   // Always reset the cache so each test starts clean
   resetPoolSdkCache();
@@ -2416,6 +2424,53 @@ describe("launchOrResumeThread", () => {
       }),
     );
   });
+
+  it("finalizes pooled workflow lifecycle through the canonical session manager", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("workflow-managed-thread", "managed-session-output"),
+    );
+
+    const sessionManagerMod = await import("../agent/session-manager.mjs");
+    const sessionManager = sessionManagerMod.getBosunSessionManager();
+
+    const result = await launchOrResumeThread(
+      "workflow managed prompt",
+      process.cwd(),
+      5000,
+      {
+        taskKey: "workflow-managed-task",
+        sdk: "codex",
+        sessionId: "workflow-managed-session",
+        sessionScope: "workflow-task",
+        sessionType: "task",
+        metadata: {
+          source: "workflow-run-agent",
+          workflowRunId: "run-201",
+        },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(sessionManager.getSession("workflow-managed-session")).toEqual(
+      expect.objectContaining({
+        sessionId: "workflow-managed-session",
+        status: "completed",
+        activeThreadId: "workflow-managed-thread",
+      }),
+    );
+    expect(sessionManager.getReplayState("workflow-managed-session")).toEqual(
+      expect.objectContaining({
+        sessionId: "workflow-managed-session",
+        resumeFrom: expect.objectContaining({
+          threadId: "workflow-managed-thread",
+          action: "external_execution_completed",
+        }),
+      }),
+    );
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2623,6 +2678,83 @@ describe("execPooledPrompt", () => {
 
     const result = await execPooledPrompt("test task");
     expect(result.finalResponse).toMatch(/\[agent-pool error\]|no output/i);
+  });
+});
+
+describe("internal harness facade exports", () => {
+  it("creates managed harness sessions through the shared session manager", async () => {
+    const { getBosunSessionManager } = await import("../agent/session-manager.mjs");
+    const session = createInternalHarnessSession({
+      agentId: "bosun-harness",
+      entryStageId: "plan",
+      stages: [{ id: "plan", type: "prompt", prompt: "Plan." }],
+    }, {
+      runId: "pool-run-1",
+      sessionId: "pool-session-1",
+      taskKey: "pool-task-1",
+      dryRun: true,
+    });
+
+    const managed = getBosunSessionManager().getSession("pool-session-1");
+
+    expect(session.sessionId).toBe("pool-session-1");
+    expect(managed).toEqual(expect.objectContaining({
+      sessionId: "pool-session-1",
+      taskKey: "pool-task-1",
+    }));
+    expect(session.runtimeController.getState()).toEqual(expect.objectContaining({
+      runtimeConfig: expect.any(Object),
+      contracts: expect.objectContaining({
+        run: expect.objectContaining({ kind: "bosun-internal-harness-run-contract" }),
+        event: expect.objectContaining({ kind: "bosun-internal-harness-event-contract" }),
+      }),
+    }));
+  });
+
+  it("runs compiled and source harness profiles through the canonical harness/session path", async () => {
+    const compiledProfile = {
+      agentId: "bosun-harness",
+      name: "Bosun Harness",
+      entryStageId: "plan",
+      taskKey: "pool-task-2",
+      stages: [{ id: "plan", type: "prompt", prompt: "Plan." }],
+      metadata: {},
+    };
+
+    const compiledRun = await runCompiledInternalHarnessProfile(compiledProfile, {
+      runId: "pool-run-2",
+      sessionId: "pool-session-2",
+      taskKey: "pool-task-2",
+      dryRun: true,
+    });
+    const sourceRun = await runInternalHarnessProfile({
+      name: "Bosun Harness Source",
+      entryStageId: "plan",
+      taskKey: "pool-task-3",
+      stages: [{ id: "plan", type: "prompt", prompt: "Plan." }],
+    }, {
+      runId: "pool-run-3",
+      sessionId: "pool-session-3",
+      taskKey: "pool-task-3",
+      dryRun: true,
+    });
+
+    expect(compiledRun.result).toEqual(expect.objectContaining({
+      success: true,
+      status: "completed",
+    }));
+    expect(compiledRun.getSessionRecord()).toEqual(expect.objectContaining({
+      sessionId: "pool-session-2",
+      taskKey: "pool-task-2",
+    }));
+    expect(sourceRun.result).toEqual(expect.objectContaining({
+      success: true,
+      status: "completed",
+    }));
+    expect(sourceRun.getSessionRecord()).toEqual(expect.objectContaining({
+      sessionId: "pool-session-3",
+      taskKey: "pool-task-3",
+    }));
   });
 });
 

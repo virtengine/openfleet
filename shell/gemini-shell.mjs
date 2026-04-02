@@ -547,9 +547,15 @@ export async function execGeminiPrompt(userMessage, options = {}) {
   activeTurn = true;
   let retryAttempt = 0;
   const logicalSessionId = activeSessionId || preferredSession || "primary-gemini";
-  geminiSessionCompat.registerExecution(logicalSessionId, {
+  const providerRuntime = geminiSessionCompat.resolveProvider({
+    providerSelection: options.providerSelection || "gemini",
+    model: resolveGeminiModel(options),
+  });
+  geminiSessionCompat.beginTurn(logicalSessionId, {
     activate: Boolean(activeSessionId || preferredSession),
     status: "running",
+    providerSelection: providerRuntime.providerId || "gemini",
+    model: providerRuntime.providerConfig?.model || resolveGeminiModel(options),
     metadata: {
       transport,
       turnCount,
@@ -562,9 +568,11 @@ export async function execGeminiPrompt(userMessage, options = {}) {
         const cliResult = await execGeminiCliPrompt(preparedPrompt, options);
         turnCount += 1;
         await saveState();
-        geminiSessionCompat.registerExecution(logicalSessionId, {
+        geminiSessionCompat.completeTurn(logicalSessionId, {
           activate: Boolean(activeSessionId || preferredSession),
           status: "completed",
+          providerSelection: providerRuntime.providerId || "gemini",
+          model: providerRuntime.providerConfig?.model || resolveGeminiModel(options),
           metadata: {
             transport,
             turnCount,
@@ -590,9 +598,11 @@ export async function execGeminiPrompt(userMessage, options = {}) {
         const cliResult = await execGeminiCliPrompt(preparedPrompt, options);
         turnCount += 1;
         await saveState();
-        geminiSessionCompat.registerExecution(logicalSessionId, {
+        geminiSessionCompat.completeTurn(logicalSessionId, {
           activate: Boolean(activeSessionId || preferredSession),
           status: "completed",
+          providerSelection: providerRuntime.providerId || "gemini",
+          model: providerRuntime.providerConfig?.model || resolveGeminiModel(options),
           metadata: {
             transport,
             turnCount,
@@ -613,9 +623,10 @@ export async function execGeminiPrompt(userMessage, options = {}) {
       const finalResponse = extractTextFromGeminiResponse(response);
       turnCount += 1;
       await saveState();
-      geminiSessionCompat.registerExecution(logicalSessionId, {
+      geminiSessionCompat.completeTurn(logicalSessionId, {
         activate: Boolean(activeSessionId || preferredSession),
         status: "completed",
+        providerSelection: providerRuntime.providerId || "gemini",
         metadata: {
           transport,
           turnCount,
@@ -640,10 +651,12 @@ export async function execGeminiPrompt(userMessage, options = {}) {
         await new Promise((resolvePromise) => setTimeout(resolvePromise, delay));
         continue;
       }
-      geminiSessionCompat.registerExecution(logicalSessionId, {
+      geminiSessionCompat.failTurn(logicalSessionId, {
         activate: Boolean(activeSessionId || preferredSession),
         status: "failed",
         error: err?.message || String(err),
+        providerSelection: providerRuntime.providerId || "gemini",
+        model: providerRuntime.providerConfig?.model || resolveGeminiModel(options),
         metadata: {
           transport,
           turnCount,
@@ -660,10 +673,12 @@ export async function execGeminiPrompt(userMessage, options = {}) {
   }
 
   activeTurn = false;
-  geminiSessionCompat.registerExecution(logicalSessionId, {
+  geminiSessionCompat.failTurn(logicalSessionId, {
     activate: Boolean(activeSessionId || preferredSession),
     status: "failed",
     error: "Gemini agent failed after all retry attempts.",
+    providerSelection: providerRuntime.providerId || "gemini",
+    model: providerRuntime.providerConfig?.model || resolveGeminiModel(options),
     metadata: {
       transport,
       turnCount,
@@ -747,7 +762,8 @@ export async function createSession(id) {
   activeSessionId = next;
   turnCount = 0;
   await saveState();
-  geminiSessionCompat.createSession(next, {
+  geminiSessionCompat.switchSession(next, {
+    status: "idle",
     metadata: {
       transport: activeTransport,
       turnCount,

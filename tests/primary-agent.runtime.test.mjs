@@ -518,4 +518,32 @@ describe("primary-agent runtime safeguards", () => {
     expect(sessionManager.getActiveSessionId("voice-dispatch:call-1")).toBe("voice-session-1");
     expect(sessionManager.getActiveSessionId("primary")).not.toBe("telegram-session-1");
   });
+
+  it("keeps primary execution lifecycle in the session-manager facade", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    const { getBosunSessionManager } = await import("../agent/session-manager.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.createPrimarySession("primary-facade-session");
+    await primaryAgent.switchPrimarySession("primary-facade-session");
+
+    const sessionManager = getBosunSessionManager();
+    expect(sessionManager.getSession("primary-facade-session")).toEqual(
+      expect.objectContaining({
+        sessionId: "primary-facade-session",
+        scope: "primary",
+        sessionType: "primary",
+      }),
+    );
+    expect(sessionManager.getLineageView("primary-facade-session")).toEqual(
+      expect.objectContaining({
+        session: expect.objectContaining({
+          sessionId: "primary-facade-session",
+        }),
+        parent: null,
+        descendants: [],
+      }),
+    );
+  });
 });

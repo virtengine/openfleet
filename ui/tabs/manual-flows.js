@@ -245,6 +245,7 @@ const CATEGORY_META = {
   audit: { label: "Audit & Analysis", icon: "search", color: "#3b82f6", bg: "#3b82f615" },
   generate: { label: "Generate & Prepare", icon: "book", color: "#10b981", bg: "#10b98115" },
   transform: { label: "Transform & Refactor", icon: "refresh", color: "#f59e0b", bg: "#f59e0b15" },
+  planning: { label: "Planning & Queueing", icon: "workflow", color: "#0f766e", bg: "#0f766e15" },
   reliability: { label: "Reliability", icon: "shield", color: "#ef4444", bg: "#ef444415" },
   security: { label: "Security", icon: "lock", color: "#dc2626", bg: "#dc262615" },
   research: { label: "Research", icon: "search", color: "#06b6d4", bg: "#06b6d415" },
@@ -650,6 +651,12 @@ function RunResultCard({ run }) {
   const mode = String(run?.result?.mode || run?.result?.action || "").trim();
   const taskId = String(run?.result?.taskId || "").trim();
   const instructions = String(run?.result?.instructions || "").trim();
+  const observability = run?.observability || {};
+  const summary = observability?.summary || {};
+  const steps = Array.isArray(observability?.steps) ? observability.steps : [];
+  const timeline = Array.isArray(observability?.timeline) ? observability.timeline : [];
+  const relatedTaskIds = Array.isArray(observability?.related?.taskIds) ? observability.related.taskIds : [];
+  const relatedWorkflowRunIds = Array.isArray(observability?.related?.workflowRunIds) ? observability.related.workflowRunIds : [];
 
   return html`
     <${Paper} variant="outlined" sx=${{ p: 2.5, borderColor: statusStyles.color + "40" }}>
@@ -692,6 +699,30 @@ function RunResultCard({ run }) {
               <strong>Target:</strong> ${repository || "default repo"}${workspaceId ? ` · workspace ${workspaceId}` : ""}
             </${Typography}>
           `}
+          ${run.workflowId && html`
+            <${Typography} variant="body2" sx=${{ mb: 0.5 }}>
+              <strong>Workflow ID:</strong> <code>${run.workflowId}</code>
+            </${Typography}>
+          `}
+          ${(summary.stepCount || summary.eventCount || summary.taskCount || summary.workflowRunCount) > 0 && html`
+            <${Typography} variant="body2" sx=${{ mb: 0.5 }}>
+              <strong>Observability:</strong>
+              ${summary.stepCount || 0} step(s)
+              ${summary.eventCount != null ? ` · ${summary.eventCount} event(s)` : ""}
+              ${summary.taskCount ? ` · ${summary.taskCount} task(s)` : ""}
+              ${summary.workflowRunCount ? ` · ${summary.workflowRunCount} workflow run(s)` : ""}
+            </${Typography}>
+          `}
+          ${summary.stepCount > 0 && html`
+            <${Typography} variant="body2" sx=${{ mb: 0.5 }}>
+              <strong>Step States:</strong>
+              ${summary.readyStepCount || 0} ready
+              ${summary.blockedStepCount ? ` · ${summary.blockedStepCount} blocked` : ""}
+              ${summary.queuedStepCount ? ` · ${summary.queuedStepCount} queued` : ""}
+              ${summary.completedStepCount ? ` · ${summary.completedStepCount} completed` : ""}
+              ${summary.failedStepCount ? ` · ${summary.failedStepCount} failed` : ""}
+            </${Typography}>
+          `}
           ${run.result.filesScanned != null && html`
             <${Typography} variant="body2" sx=${{ mb: 0.5 }}>
               <strong>Files scanned:</strong> ${run.result.filesScanned}
@@ -716,6 +747,55 @@ function RunResultCard({ run }) {
             <${Alert} severity="info" sx=${{ mt: 1 }}>
               ${instructions}
             </${Alert}>
+          `}
+          ${steps.length > 0 && html`
+            <${Paper} variant="outlined" sx=${{ mt: 1.25, p: 1.25, background: "rgba(15,23,42,0.28)" }}>
+              <${Typography} variant="subtitle2" sx=${{ mb: 0.8 }}>Queued Steps</${Typography}>
+              <${Stack} spacing=${0.75}>
+                ${steps.map((step) => {
+                  const stepStyles = getRunStatusBadgeStyles(step.status || "pending");
+                  return html`
+                    <${Box} key=${step.id} sx=${{ border: "1px solid", borderColor: "divider", borderRadius: 1, p: 1 }}>
+                      <${Stack} direction="row" spacing=${1} alignItems="center" sx=${{ mb: 0.5 }}>
+                        <code style="font-size:11px;">${step.id}</code>
+                        <${Chip} label=${step.status || "pending"} size="small" sx=${{ background: stepStyles.bg, color: stepStyles.color, height: 20, fontSize: "10px" }} />
+                        ${step.lane && html`<${Chip} label=${`Agent ${step.lane}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: "10px" }} />`}
+                      </${Stack}>
+                      <${Typography} variant="body2" sx=${{ mb: 0.3 }}><strong>${step.order}.</strong> ${step.title}</${Typography}>
+                      ${step.dependsOnStepIds?.length > 0 && html`
+                        <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                          Depends on: ${step.dependsOnStepIds.join(", ")}
+                        </${Typography}>
+                      `}
+                      ${step.taskId && html`
+                        <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                          Task: ${step.taskId}
+                        </${Typography}>
+                      `}
+                      ${step.prompt && html`
+                        <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--text-primary,#c9d1d9);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:180px;overflow:auto;margin-top:8px;">${step.prompt}</pre>
+                      `}
+                    </${Box}>
+                  `;
+                })}
+              </${Stack}>
+            </${Paper}>
+          `}
+          ${timeline.length > 0 && html`
+            <${Paper} variant="outlined" sx=${{ mt: 1.25, p: 1.25, background: "rgba(15,23,42,0.28)" }}>
+              <${Typography} variant="subtitle2" sx=${{ mb: 0.8 }}>Timeline</${Typography}>
+              <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--text-primary,#c9d1d9);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:220px;overflow:auto;">${safePrettyJson(timeline)}</pre>
+            </${Paper}>
+          `}
+          ${relatedTaskIds.length > 0 && html`
+            <${Typography} variant="caption" color="text.secondary" sx=${{ mt: 1, display: "block" }}>
+              Related tasks: ${relatedTaskIds.join(", ")}
+            </${Typography}>
+          `}
+          ${relatedWorkflowRunIds.length > 0 && html`
+            <${Typography} variant="caption" color="text.secondary" sx=${{ mt: 0.5, display: "block" }}>
+              Related workflow runs: ${relatedWorkflowRunIds.join(", ")}
+            </${Typography}>
           `}
           ${run.result.inventoryPath && html`
             <${Typography} variant="caption" color="text.secondary" sx=${{ mt: 1, display: "block" }}>

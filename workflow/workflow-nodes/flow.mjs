@@ -26,6 +26,7 @@ import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
+import { executeHarnessApprovalNode } from "../harness-approval-node.mjs";
 
 import {
   registerNodeType,
@@ -95,55 +96,7 @@ registerNodeType("flow.gate", {
     },
   },
   async execute(node, ctx, engine) {
-    const mode = node.config?.mode || "condition";
-    const timeoutMs = node.config?.timeoutMs || 300000;
-    const onTimeout = node.config?.onTimeout || "proceed";
-    const reason = ctx.resolve(node.config?.reason || "Waiting at gate");
-    const pollInterval = node.config?.pollIntervalMs || 5000;
-
-    ctx.log(node.id, `Gate (${mode}): ${reason}`);
-    ctx.setNodeStatus?.(node.id, "waiting");
-    engine?.emit?.("node:waiting", { nodeId: node.id, mode, reason });
-
-    if (mode === "timeout") {
-      // Simple wait
-      await new Promise((r) => setTimeout(r, timeoutMs));
-      return { gateOpened: true, mode, waited: timeoutMs, reason };
-    }
-
-    if (mode === "condition" && node.config?.condition) {
-      // Poll-based condition check
-      const start = Date.now();
-      while (Date.now() - start < timeoutMs) {
-        try {
-          const fn = new Function("$data", "$ctx", `return (${node.config.condition});`);
-          if (fn(ctx.data, ctx)) {
-            const waited = Date.now() - start;
-            return { gateOpened: true, mode, waited, reason };
-          }
-        } catch { /* condition eval failed, keep waiting */ }
-        await new Promise((r) => setTimeout(r, pollInterval));
-      }
-      // Timeout reached
-      if (onTimeout === "fail") {
-        throw new Error(`Gate timed out after ${timeoutMs}ms: ${reason}`);
-      }
-      return { gateOpened: true, mode, timedOut: true, waited: timeoutMs, reason };
-    }
-
-    // Manual mode or fallback: wait for external approval via context variable
-    const approvalKey = `_gate_${node.id}_approved`;
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (ctx.data[approvalKey] || ctx.variables[approvalKey]) {
-        return { gateOpened: true, mode: "manual", waited: Date.now() - start, reason };
-      }
-      await new Promise((r) => setTimeout(r, pollInterval));
-    }
-    if (onTimeout === "fail") {
-      throw new Error(`Manual gate timed out after ${timeoutMs}ms: ${reason}`);
-    }
-    return { gateOpened: true, mode: "manual", timedOut: true, waited: timeoutMs, reason };
+    return executeHarnessApprovalNode(node, ctx, engine);
   },
 });
 

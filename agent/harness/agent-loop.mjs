@@ -1,4 +1,4 @@
-export async function createAgentLoop(options = {}) {
+export function createAgentLoop(options = {}) {
   const runtimeSession = options.runtimeSession;
   if (!runtimeSession || typeof runtimeSession.run !== "function") {
     throw new Error("A runtime session with a run() method is required");
@@ -17,8 +17,8 @@ export async function createAgentLoop(options = {}) {
     abort(reason = "aborted") {
       return runtimeSession.abort?.(reason);
     },
-    async run() {
-      return await runtimeSession.run();
+    async run(...args) {
+      return await runtimeSession.run(...args);
     },
   };
 }

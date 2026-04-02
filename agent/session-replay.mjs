@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createSessionSnapshotStore } from "./session-snapshot-store.mjs";
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
@@ -84,8 +85,10 @@ function mergeReplaySnapshot(snapshot, patch = {}) {
 }
 
 export function createSessionReplayStore(options = {}) {
-  const snapshots = new Map();
   const events = new Map();
+  const snapshotStore = options.snapshotStore || createSessionSnapshotStore({
+    maxSnapshotsPerSession: options.maxSnapshotsPerSession,
+  });
   const maxSnapshotsPerSession = Number.isFinite(Number(options.maxSnapshotsPerSession))
     ? Math.max(10, Number(options.maxSnapshotsPerSession))
     : 64;
@@ -105,14 +108,7 @@ export function createSessionReplayStore(options = {}) {
 
   function captureSnapshot(input = {}) {
     const snapshot = mergeReplaySnapshot(createReplaySnapshot(input), input);
-    const bucket = getBucket(snapshots, snapshot.sessionId);
-    if (!bucket) {
-      throw new Error("Replay snapshot requires a sessionId");
-    }
-    bucket.push(snapshot);
-    while (bucket.length > maxSnapshotsPerSession) {
-      bucket.shift();
-    }
+    snapshotStore.capture(snapshot);
     emitEvent({
       type: "replay:snapshot-captured",
       sessionId: snapshot.sessionId,
@@ -130,6 +126,12 @@ export function createSessionReplayStore(options = {}) {
       throw new Error("Replay event requires a sessionId");
     }
     const bucket = getBucket(events, normalizedSessionId);
+    if (bucket.length === 0) {
+      const persisted = snapshotStore.readSession(normalizedSessionId);
+      for (const entry of Array.isArray(persisted?.events) ? persisted.events : []) {
+        bucket.push(cloneValue(entry));
+      }
+    }
     const entry = {
       eventId: `event-${randomUUID()}`,
       sessionId: normalizedSessionId,
@@ -142,6 +144,10 @@ export function createSessionReplayStore(options = {}) {
     while (bucket.length > maxEventsPerSession) {
       bucket.shift();
     }
+    snapshotStore.writeSession(normalizedSessionId, {
+      snapshots: snapshotStore.list(normalizedSessionId),
+      events: bucket,
+    });
     emitEvent({
       type: "replay:event-recorded",
       sessionId: normalizedSessionId,
@@ -152,22 +158,20 @@ export function createSessionReplayStore(options = {}) {
   }
 
   function listSnapshots(sessionId, options_ = {}) {
-    const normalizedSessionId = toTrimmedString(sessionId);
-    const bucket = normalizedSessionId ? (snapshots.get(normalizedSessionId) || []) : [];
-    const limit = Number.isFinite(Number(options_.limit)) ? Math.max(1, Number(options_.limit)) : bucket.length;
-    return bucket.slice(Math.max(0, bucket.length - limit)).map((entry) => cloneValue(entry));
+    return snapshotStore.list(sessionId, options_);
   }
 
   function listEvents(sessionId, options_ = {}) {
     const normalizedSessionId = toTrimmedString(sessionId);
-    const bucket = normalizedSessionId ? (events.get(normalizedSessionId) || []) : [];
+    const bucket = normalizedSessionId
+      ? (events.get(normalizedSessionId) || snapshotStore.listEvents(normalizedSessionId))
+      : [];
     const limit = Number.isFinite(Number(options_.limit)) ? Math.max(1, Number(options_.limit)) : bucket.length;
     return bucket.slice(Math.max(0, bucket.length - limit)).map((entry) => cloneValue(entry));
   }
 
   function getLatestSnapshot(sessionId) {
-    const list = listSnapshots(sessionId, { limit: 1 });
-    return list[0] || null;
+    return snapshotStore.getLatest(sessionId);
   }
 
   function buildResumeState(sessionId, options_ = {}) {
@@ -192,9 +196,7 @@ export function createSessionReplayStore(options = {}) {
 
   function snapshot() {
     return {
-      snapshots: Object.fromEntries(
-        [...snapshots.entries()].map(([sessionId, entries]) => [sessionId, entries.map((entry) => cloneValue(entry))]),
-      ),
+      snapshots: snapshotStore.snapshot(),
       events: Object.fromEntries(
         [...events.entries()].map(([sessionId, entries]) => [sessionId, entries.map((entry) => cloneValue(entry))]),
       ),
@@ -202,14 +204,8 @@ export function createSessionReplayStore(options = {}) {
   }
 
   function hydrate(snapshotValue = {}) {
-    snapshots.clear();
     events.clear();
-    for (const [sessionId, entries] of Object.entries(snapshotValue?.snapshots || {})) {
-      snapshots.set(
-        sessionId,
-        (Array.isArray(entries) ? entries : []).map((entry) => mergeReplaySnapshot(createReplaySnapshot(entry), entry)),
-      );
-    }
+    snapshotStore.hydrate(snapshotValue?.snapshots || {});
     for (const [sessionId, entries] of Object.entries(snapshotValue?.events || {})) {
       events.set(
         sessionId,
@@ -233,6 +229,9 @@ export function createSessionReplayStore(options = {}) {
     listEvents,
     getLatestSnapshot,
     buildResumeState,
+    getSnapshotStore() {
+      return snapshotStore;
+    },
     snapshot,
     hydrate,
   };

@@ -932,10 +932,16 @@ export async function execCopilotPrompt(userMessage, options = {}) {
   const logicalSessionId =
     String(options.sessionId || activeSessionId || "").trim()
     || "primary-copilot";
-  copilotSessionCompat.registerExecution(logicalSessionId, {
+  const providerRuntime = copilotSessionCompat.resolveProvider({
+    providerSelection: options.providerSelection || "copilot",
+    model: process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+  });
+  copilotSessionCompat.beginTurn(logicalSessionId, {
     activate: Boolean(options.sessionId || activeSessionId),
     status: "running",
     cwd: workspacePath || REPO_ROOT,
+    providerSelection: providerRuntime.providerId || "copilot",
+    model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
     metadata: {
       workspacePath,
       turnCount,
@@ -947,6 +953,12 @@ export async function execCopilotPrompt(userMessage, options = {}) {
   const handleEvent = async (event) => {
     if (!event) return;
     logSessionEvent(logPath, event);
+    copilotSessionCompat.recordStreamEvent(activeSessionId || logicalSessionId, event, {
+      activate: Boolean(options.sessionId || activeSessionId),
+      cwd: workspacePath || REPO_ROOT,
+      providerSelection: providerRuntime.providerId || "copilot",
+      model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+    });
     items.push(event);
     if (event.type === "assistant.message" && event.data?.content) {
       finalResponse = event.data.content;
@@ -962,10 +974,12 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     if (event.type === "session.idle") {
       turnCount += 1;
       await saveState();
-      copilotSessionCompat.registerExecution(activeSessionId || logicalSessionId, {
+      copilotSessionCompat.completeTurn(activeSessionId || logicalSessionId, {
         activate: Boolean(activeSessionId || options.sessionId),
         status: "completed",
         cwd: workspacePath || REPO_ROOT,
+        providerSelection: providerRuntime.providerId || "copilot",
+        model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
         metadata: {
           workspacePath,
           turnCount,
@@ -1091,11 +1105,13 @@ export async function execCopilotPrompt(userMessage, options = {}) {
         reason === "user_stop"
           ? ":close: Agent stopped by user."
           : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
-      copilotSessionCompat.registerExecution(activeSessionId || logicalSessionId, {
+      copilotSessionCompat.abortTurn(activeSessionId || logicalSessionId, {
         activate: Boolean(activeSessionId || options.sessionId),
         status: reason === "user_stop" ? "aborted" : "timeout",
         cwd: workspacePath || REPO_ROOT,
         error: msg,
+        providerSelection: providerRuntime.providerId || "copilot",
+        model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
         metadata: {
           workspacePath,
           turnCount,
@@ -1128,11 +1144,13 @@ export async function execCopilotPrompt(userMessage, options = {}) {
       console.error(
         `[copilot-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
       );
-      copilotSessionCompat.registerExecution(activeSessionId || logicalSessionId, {
+      copilotSessionCompat.failTurn(activeSessionId || logicalSessionId, {
         activate: Boolean(activeSessionId || options.sessionId),
         status: "failed",
         cwd: workspacePath || REPO_ROOT,
         error: err.message,
+        providerSelection: providerRuntime.providerId || "copilot",
+        model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
         metadata: {
           workspacePath,
           turnCount,
@@ -1146,11 +1164,13 @@ export async function execCopilotPrompt(userMessage, options = {}) {
         usage: null,
       };
     }
-    copilotSessionCompat.registerExecution(activeSessionId || logicalSessionId, {
+    copilotSessionCompat.failTurn(activeSessionId || logicalSessionId, {
       activate: Boolean(activeSessionId || options.sessionId),
       status: "failed",
       cwd: workspacePath || REPO_ROOT,
       error: err?.message || String(err),
+      providerSelection: providerRuntime.providerId || "copilot",
+      model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
       metadata: {
         workspacePath,
         turnCount,

@@ -20,6 +20,13 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { createHarnessAgentService } from "../../agent/harness-agent-service.mjs";
 import {
+  beginWorkflowLinkedSessionExecution,
+  finalizeWorkflowLinkedSessionExecution,
+  resolveWorkflowSessionManager,
+} from "../harness-session-node.mjs";
+import { executeHarnessSubagentNode } from "../harness-subagent-node.mjs";
+import { executeHarnessToolNode } from "../harness-tool-node.mjs";
+import {
   buildPlannerSkipReasonHistogram,
   CALIBRATED_MAX_RISK_WITHOUT_HUMAN,
   CALIBRATED_MIN_IMPACT_SCORE,
@@ -1857,6 +1864,21 @@ registerNodeType("action.run_agent", {
           model: modelOverride || null,
           sessionType: trackedSessionType,
         };
+        const workflowSessionLink = beginWorkflowLinkedSessionExecution(ctx, node, engine, {
+          sessionId: managedSessionId,
+          threadId: managedSessionId,
+          parentSessionId: workflowParentSessionId,
+          rootSessionId: workflowRootSessionId,
+          taskId: trackedTaskId || null,
+          taskTitle: trackedTaskTitle || null,
+          taskKey: recoveryTaskKey,
+          cwd,
+          status: "running",
+          sessionType: "workflow-agent",
+          scope: managedSessionScope,
+          source: "workflow-run-agent",
+          metadata: launchExtra.metadata,
+        });
         let slotWaitAnnounced = false;
         launchExtra.slotOwnerKey = slotOwnerKey;
         launchExtra.slotMeta = slotMeta;
@@ -1921,7 +1943,7 @@ registerNodeType("action.run_agent", {
           if (
             autoRecover &&
             continueOnSession &&
-            sessionId &&
+            sessionId
           ) {
             ctx.log(node.id, `${passLabel} Recovery: continuing existing session ${sessionId}`.trim());
             try {
@@ -2016,9 +2038,28 @@ registerNodeType("action.run_agent", {
           ctx.data.threadId = threadId;
         }
         const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
+        const finalizedSession = finalizeWorkflowLinkedSessionExecution(workflowSessionLink, {
+          ...result,
+          success,
+          status: success ? "completed" : "failed",
+          threadId,
+          sessionId: threadId || managedSessionId,
+          output: result?.output,
+          error: success ? null : (result?.error || `Agent execution failed in node "${node.label || node.id}"`),
+          result: {
+            output: result?.output,
+            sdk: result?.sdk,
+            items: result?.items,
+            summary: digest.summary,
+            narrative: digest.narrative,
+            thoughts: digest.thoughts,
+            stream: digest.stream,
+          },
+        });
 
         if (!success) {
           return {
+            ...finalizedSession,
             success: false,
             error:
               result?.error ||
@@ -2040,6 +2081,7 @@ registerNodeType("action.run_agent", {
           };
         }
         return {
+          ...finalizedSession,
           success: true,
           output: result?.output,
           summary: digest.summary,
@@ -2577,70 +2619,16 @@ registerNodeType("action.execute_workflow", {
     } else if (sourceData._targetRepo && !childInput._targetRepo) {
       childInput._targetRepo = sourceData._targetRepo;
     }
-
-    if (mode === "dispatch") {
-      ctx.log(node.id, `Dispatching workflow "${workflowId}"`);
-      let dispatched;
-      try {
-        dispatched = Promise.resolve(engine.execute(workflowId, childInput));
-      } catch (err) {
-        dispatched = Promise.reject(err);
-      }
-      dispatched
-        .then((childCtx) => {
-          const status = childCtx?.errors?.length ? "failed" : "completed";
-          ctx.log(node.id, `Dispatched workflow "${workflowId}" finished with status=${status}`);
-        })
-        .catch((err) => {
-          ctx.log(node.id, `Dispatched workflow "${workflowId}" failed: ${err.message}`, "error");
-        });
-
-      const output = {
-        success: true,
-        queued: true,
-        mode: "dispatch",
-        workflowId,
-        parentRunId: ctx.id,
-        stackDepth: childInput._workflowStack.length,
-      };
-      if (outputVariable) {
-        ctx.data[outputVariable] = output;
-      }
-      return output;
-    }
-
-    ctx.log(node.id, `Executing workflow "${workflowId}" (sync)`);
-    const childCtx = await engine.execute(workflowId, childInput);
-    const childErrors = Array.isArray(childCtx?.errors)
-      ? childCtx.errors.map((entry) => ({
-          nodeId: entry?.nodeId || null,
-          error: String(entry?.error || "unknown child workflow error"),
-        }))
-      : [];
-    const status = childErrors.length > 0 ? "failed" : "completed";
-    const output = {
-      success: status === "completed",
-      queued: false,
-      mode: "sync",
+    ctx.log(node.id, mode === "dispatch"
+      ? `Dispatching workflow "${workflowId}"`
+      : `Executing workflow "${workflowId}" (sync)`);
+    return executeHarnessSubagentNode(node, ctx, engine, {
       workflowId,
-      runId: childCtx?.id || null,
-      status,
-      errorCount: childErrors.length,
-      errors: childErrors,
-    };
-
-    if (outputVariable) {
-      ctx.data[outputVariable] = output;
-    }
-
-    if (status === "failed" && failOnChildError) {
-      const reason = childErrors[0]?.error || "child workflow failed";
-      const err = new Error(`action.execute_workflow: child workflow "${workflowId}" failed: ${reason}`);
-      err.childWorkflow = output;
-      throw err;
-    }
-
-    return output;
+      mode,
+      outputVariable,
+      failOnChildError,
+      childInput,
+    });
   },
 });
 
@@ -3838,8 +3826,44 @@ registerNodeType("action.continue_session", {
 
     ctx.log(node.id, `Continuing session ${sessionId} (strategy: ${strategy})`);
 
+    const sessionManager = resolveWorkflowSessionManager(engine);
     const agentPool = engine.services?.agentPool;
     const harnessAgentService = agentPool ? createHarnessAgentService({ agentPool }) : null;
+    const workflowSessionLink = beginWorkflowLinkedSessionExecution(ctx, node, engine, {
+      sessionId,
+      threadId: sessionId,
+      parentSessionId: ctx?.data?._workflowParentSessionId || null,
+      rootSessionId: ctx?.data?._workflowRootSessionId || sessionId || null,
+      taskId: String(ctx.data?.taskId || taskPayload?.id || "").trim() || null,
+      taskTitle: taskTitle || null,
+      taskKey: sessionId || String(ctx.id || "").trim() || null,
+      cwd: ctx.data?.worktreePath || process.cwd(),
+      status: "running",
+      sessionType: "workflow-agent",
+      scope: "workflow-task",
+      source: "workflow-continue-session",
+      metadata: {
+        strategy,
+        workflowRunId: String(ctx.id || "").trim() || null,
+        workflowId: String(ctx.data?._workflowId || "").trim() || null,
+        workflowName: String(ctx.data?._workflowName || "").trim() || null,
+      },
+    });
+    if (sessionId && typeof sessionManager?.registerExecution === "function") {
+      sessionManager.registerExecution(sessionId, {
+        sessionType: "workflow-agent",
+        taskKey: sessionId,
+        threadId: sessionId,
+        cwd: ctx.data?.worktreePath || process.cwd(),
+        status: "running",
+        metadata: {
+          source: "workflow-continue-session",
+          strategy,
+        },
+        scope: "workflow-task",
+      });
+    }
+
     if (harnessAgentService) {
       const result = await harnessAgentService.continueSession(sessionId, enrichedPrompt, { timeout, strategy });
 
@@ -3848,7 +3872,21 @@ registerNodeType("action.continue_session", {
       ctx.data.sessionId = threadId;
       ctx.data.threadId = threadId;
 
-      return { success: result.success, output: result.output, sessionId: threadId, strategy };
+      return {
+        ...finalizeWorkflowLinkedSessionExecution(workflowSessionLink, {
+          ...result,
+          success: result.success,
+          status: result.success ? "completed" : "failed",
+          sessionId: threadId,
+          threadId,
+          output: result.output,
+          error: result.success ? null : result.error,
+        }),
+        success: result.success,
+        output: result.output,
+        sessionId: threadId,
+        strategy,
+      };
     }
 
     // Fallback: use ephemeral thread with continuation context
@@ -3874,7 +3912,22 @@ registerNodeType("action.continue_session", {
         ctx.data.threadId = threadId;
       }
 
-      return { success: result.success, output: result.output, sessionId: threadId, strategy, fallback: true };
+      return {
+        ...finalizeWorkflowLinkedSessionExecution(workflowSessionLink, {
+          ...result,
+          success: result.success,
+          status: result.success ? "completed" : "failed",
+          sessionId: threadId,
+          threadId,
+          output: result.output,
+          error: result.success ? null : result.error,
+        }),
+        success: result.success,
+        output: result.output,
+        sessionId: threadId,
+        strategy,
+        fallback: true,
+      };
     }
 
     return { success: false, error: "Agent pool not available" };
@@ -3905,6 +3958,26 @@ registerNodeType("action.restart_agent", {
 
     const agentPool = engine.services?.agentPool;
     const harnessAgentService = agentPool ? createHarnessAgentService({ agentPool }) : null;
+    const workflowSessionLink = beginWorkflowLinkedSessionExecution(ctx, node, engine, {
+      sessionId: sessionId || `${String(ctx.id || "run").trim() || "run"}:${node.id}:restart`,
+      threadId: sessionId || `${String(ctx.id || "run").trim() || "run"}:${node.id}:restart`,
+      parentSessionId: ctx?.data?._workflowParentSessionId || null,
+      rootSessionId: ctx?.data?._workflowRootSessionId || sessionId || null,
+      taskId: String(ctx.data?.taskId || ctx.data?.task?.id || "").trim() || null,
+      taskTitle: String(ctx.data?.taskTitle || ctx.data?.task?.title || "").trim() || null,
+      taskKey: sessionId || String(ctx.id || "").trim() || null,
+      cwd,
+      status: "running",
+      sessionType: "workflow-agent",
+      scope: "workflow-task",
+      source: "workflow-restart-agent",
+      metadata: {
+        reason,
+        workflowRunId: String(ctx.id || "").trim() || null,
+        workflowId: String(ctx.data?._workflowId || "").trim() || null,
+        workflowName: String(ctx.data?._workflowName || "").trim() || null,
+      },
+    });
 
     // Try to kill existing session first
     if (sessionId && harnessAgentService) {
@@ -3934,7 +4007,22 @@ registerNodeType("action.restart_agent", {
         ctx.data.threadId = newThreadId;
       }
 
-      return { success: result.success, output: result.output, newSessionId: newThreadId, previousSessionId: sessionId, threadId: newThreadId };
+      return {
+        ...finalizeWorkflowLinkedSessionExecution(workflowSessionLink, {
+          ...result,
+          success: result.success,
+          status: result.success ? "completed" : "failed",
+          sessionId: newThreadId || workflowSessionLink?.binding?.sessionId || null,
+          threadId: newThreadId || workflowSessionLink?.binding?.threadId || null,
+          output: result.output,
+          error: result.success ? null : result.error,
+        }),
+        success: result.success,
+        output: result.output,
+        newSessionId: newThreadId,
+        previousSessionId: sessionId,
+        threadId: newThreadId,
+      };
     }
 
     return { success: false, error: "Agent pool not available" };
@@ -4163,85 +4251,30 @@ registerNodeType("action.bosun_tool", {
       if (node.config?.outputVariable) ctx.data[node.config.outputVariable] = errResult;
       return errResult;
     }
-
-    // Execute tool
-    let toolResult;
-    try {
-      toolResult = await toolsMod.invokeCustomTool(rootDir, toolId, resolvedArgs, {
-        timeout: timeoutMs,
-        cwd,
-        env: envOverrides,
-      });
-    } catch (err) {
-      ctx.log(node.id, `Tool execution failed: ${err.message}`, "error");
-      const errResult = {
-        success: false,
-        error: err.message,
-        toolId,
-        matchedPort: "error",
-        port: "error",
-      };
-      if (node.config?.outputVariable) ctx.data[node.config.outputVariable] = errResult;
-      return errResult;
-    }
-
-    // Parse output
-    const exitSuccess = toolResult.exitCode === 0;
-    let data = toolResult.stdout?.trim() || "";
-    if (node.config?.parseJson !== false && data) {
-      try { data = JSON.parse(data); } catch { /* keep as string */ }
-    }
-
-    let output = {
-      success: exitSuccess,
+    const adapter = await getMcpAdapter();
+    const output = await executeHarnessToolNode({
+      node,
+      ctx,
+      engine,
+      rootDir,
+      cwd,
+      timeoutMs,
       toolId,
-      exitCode: toolResult.exitCode,
-      data,
-      stdout: toolResult.stdout,
-      stderr: toolResult.stderr,
-      toolTitle: toolInfo.entry?.title || toolId,
-      toolCategory: toolInfo.entry?.category || "unknown",
-    };
+      resolvedArgs,
+      envOverrides,
+      toolInfo,
+      toolsMod,
+      outputAdapter: adapter,
+    });
 
-    // ── Structured data extraction (same pattern as MCP tool call) ──
-    if (node.config?.extract && exitSuccess) {
-      const adapter = await getMcpAdapter();
-      const sourceData = typeof data === "object" && data !== null ? data : { text: data };
-      const extracted = adapter.extractMcpOutput(sourceData, node.config.extract);
-      output = { ...output, extracted, ...extracted };
-      ctx.log(node.id, `Extracted ${Object.keys(extracted).length} field(s)`);
-    }
-
-    // ── Output mapping ──
-    if (node.config?.outputMap && exitSuccess) {
-      const adapter = await getMcpAdapter();
-      const mapped = adapter.mapOutputFields(output, node.config.outputMap, ctx);
-      output = { ...output, mapped, ...mapped };
-      ctx.log(node.id, `Mapped ${Object.keys(mapped).length} field(s)`);
-    }
-
-    // ── Port-based routing ──
-    if (node.config?.portConfig) {
-      const adapter = await getMcpAdapter();
-      const port = adapter.resolveOutputPort(output, node.config.portConfig);
-      output.matchedPort = port;
-      output.port = port;
-    } else {
-      output.matchedPort = exitSuccess ? "default" : "error";
-      output.port = exitSuccess ? "default" : "error";
-    }
-
-    // Store in ctx.data if requested
     if (node.config?.outputVariable) {
       ctx.data[node.config.outputVariable] = output;
     }
-
-    if (exitSuccess) {
-      ctx.log(node.id, `Tool "${toolId}" completed (exit ${toolResult.exitCode})`);
+    if (output.success) {
+      ctx.log(node.id, `Tool "${toolId}" completed${output.exitCode != null ? ` (exit ${output.exitCode})` : ""}`);
     } else {
-      ctx.log(node.id, `Tool "${toolId}" failed (exit ${toolResult.exitCode}): ${toolResult.stderr?.slice(0, 200)}`, "warn");
+      ctx.log(node.id, `Tool "${toolId}" failed${output.exitCode != null ? ` (exit ${output.exitCode})` : ""}: ${String(output.error || output.stderr || "").slice(0, 200)}`, "warn");
     }
-
     return output;
   },
 });

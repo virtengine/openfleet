@@ -124,7 +124,14 @@ describe("agent-event-bus", () => {
     it("forwards artifact and subagent payload fields into canonical telemetry filters", () => {
       bus.emit(AGENT_EVENT.TASK_COMPLETED, "task-1", {
         sessionId: "session-1",
+        rootSessionId: "session-root-1",
         runId: "run-1",
+        rootRunId: "run-root-1",
+        providerId: "openai-api",
+        modelId: "gpt-5.4",
+        toolId: "apply_patch",
+        toolName: "apply_patch",
+        approvalId: "approval-bus-1",
         filePath: "server/ui-server.mjs",
         patchHash: "patch-bus-1",
         childSessionId: "session-child-bus-1",
@@ -137,6 +144,12 @@ describe("agent-event-bus", () => {
 
       expect(fileEvents).toHaveLength(1);
       expect(fileEvents[0]).toEqual(expect.objectContaining({
+        rootSessionId: "session-root-1",
+        rootRunId: "run-root-1",
+        providerId: "openai-api",
+        modelId: "gpt-5.4",
+        toolName: "apply_patch",
+        approvalId: "approval-bus-1",
         filePath: "server/ui-server.mjs",
         patchHash: "patch-bus-1",
       }));

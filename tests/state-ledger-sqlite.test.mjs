@@ -55,6 +55,7 @@ import {
   listHarnessTelemetryEvents,
   resetHarnessObservabilitySpinesForTests,
 } from "../infra/session-telemetry.mjs";
+import { createReplayReader } from "../infra/replay-reader.mjs";
 
 vi.mock("../infra/presence.mjs", () => ({
   getPresenceState: vi.fn(() => ({
@@ -659,6 +660,147 @@ describe("state ledger sqlite workflow integration", () => {
         childTaskId: "task-telemetry-child-1",
         subagentId: "subagent-telemetry-1",
         runId: "harness-run-telemetry-1",
+      }),
+    ]);
+  });
+
+  it("rebuilds converged live projections from sqlite workflow and harness events", async () => {
+    const repoRoot = makeTempDir("state-ledger-replay-convergence-");
+    const runsDir = join(repoRoot, ".bosun", "workflow-runs");
+    const harnessRunsDir = join(repoRoot, ".bosun", ".cache", "harness", "runs");
+    mkdirSync(runsDir, { recursive: true });
+    mkdirSync(harnessRunsDir, { recursive: true });
+
+    const { WorkflowExecutionLedger } = await import("../workflow/execution-ledger.mjs");
+    const ledger = new WorkflowExecutionLedger({ runsDir });
+
+    ledger.ensureRun({
+      runId: "run-replay-converge-1",
+      workflowId: "wf-replay-converge",
+      workflowName: "Replay Converge Workflow",
+      startedAt: "2026-04-03T11:00:00.000Z",
+      status: "running",
+    });
+    ledger.appendEvent({
+      id: "wf-replay-e1",
+      runId: "run-replay-converge-1",
+      workflowId: "wf-replay-converge",
+      workflowName: "Replay Converge Workflow",
+      eventType: "tool.completed",
+      timestamp: "2026-04-03T11:00:01.000Z",
+      sessionId: "session-replay-converge-1",
+      rootSessionId: "session-root-converge-1",
+      taskId: "task-replay-converge-1",
+      rootTaskId: "task-root-converge-1",
+      providerId: "openai-api",
+      modelId: "gpt-5.4",
+      toolId: "apply_patch",
+      toolName: "apply_patch",
+      status: "completed",
+      tokenUsage: {
+        inputTokens: 20,
+        outputTokens: 10,
+        totalTokens: 30,
+      },
+      meta: {
+        taskId: "task-replay-converge-1",
+        sessionId: "session-replay-converge-1",
+        rootSessionId: "session-root-converge-1",
+      },
+    });
+
+    writeHarnessRunToStateLedger({
+      runId: "harness-replay-converge-1",
+      taskId: "task-replay-converge-1",
+      actor: "ui",
+      recordedAt: "2026-04-03T11:01:00.000Z",
+      startedAt: "2026-04-03T11:01:00.000Z",
+      finishedAt: "2026-04-03T11:02:00.000Z",
+      mode: "run",
+      dryRun: false,
+      sourceOrigin: "ui",
+      compiledProfile: { agentId: "replay-agent", name: "Replay Agent" },
+      result: { success: true, status: "completed" },
+      events: [
+        {
+          id: "h-replay-e1",
+          seq: 1,
+          timestamp: "2026-04-03T11:01:10.000Z",
+          type: "approval.resolved",
+          category: "approval",
+          sessionId: "session-replay-converge-1",
+          rootSessionId: "session-root-converge-1",
+          runId: "harness-replay-converge-1",
+          rootRunId: "run-root-converge-1",
+          taskId: "task-replay-converge-1",
+          approvalId: "approval-converge-1",
+          toolId: "push_branch",
+          toolName: "push_branch",
+          actor: "operator",
+          status: "approved",
+        },
+        {
+          id: "h-replay-e2",
+          seq: 2,
+          timestamp: "2026-04-03T11:01:20.000Z",
+          type: "subagent.completed",
+          category: "subagent",
+          sessionId: "session-replay-converge-1",
+          rootSessionId: "session-root-converge-1",
+          runId: "harness-replay-converge-1",
+          rootRunId: "run-root-converge-1",
+          taskId: "task-replay-converge-1",
+          subagentId: "subagent-converge-1",
+          childSessionId: "session-child-converge-1",
+          childTaskId: "task-child-converge-1",
+          childRunId: "run-child-converge-1",
+          status: "completed",
+        },
+      ],
+    }, { anchorPath: harnessRunsDir });
+
+    const replay = createReplayReader({ anchorPath: runsDir }).readStateLedgerProjection({
+      anchorPath: runsDir,
+      workflowRunIds: ["run-replay-converge-1"],
+      harnessRunIds: ["harness-replay-converge-1"],
+      sessionId: "session-replay-converge-1",
+    });
+
+    expect(replay.events).toHaveLength(3);
+    expect(replay.live.sessions[0]).toEqual(expect.objectContaining({
+      sessionId: "session-replay-converge-1",
+      rootSessionId: "session-root-converge-1",
+      providerIds: ["openai-api"],
+      toolNames: expect.arrayContaining(["apply_patch", "push_branch"]),
+      approvalIds: ["approval-converge-1"],
+      subagentIds: ["subagent-converge-1"],
+      childSessionIds: ["session-child-converge-1"],
+      childTaskIds: ["task-child-converge-1"],
+      childRunIds: ["run-child-converge-1"],
+    }));
+    expect(replay.live.approvals).toEqual([
+      expect.objectContaining({
+        approvalId: "approval-converge-1",
+        sessionId: "session-replay-converge-1",
+        rootSessionId: "session-root-converge-1",
+        toolName: "push_branch",
+        status: "approved",
+      }),
+    ]);
+    expect(replay.live.subagents).toEqual([
+      expect.objectContaining({
+        subagentId: "subagent-converge-1",
+        childSessionId: "session-child-converge-1",
+        childTaskId: "task-child-converge-1",
+        childRunId: "run-child-converge-1",
+        rootSessionId: "session-root-converge-1",
+      }),
+    ]);
+    expect(replay.providers).toEqual([
+      expect.objectContaining({
+        providerId: "openai-api",
+        modelId: "gpt-5.4",
+        totalTokens: 30,
       }),
     ]);
   });

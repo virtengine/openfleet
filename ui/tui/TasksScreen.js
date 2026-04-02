@@ -12,6 +12,7 @@ import {
   buildBoardColumns,
   buildFormStateFromTask,
   buildListRows,
+  createTaskApiFromRequestJson,
   createTaskFromForm,
   deleteTaskById,
   EMPTY_TASK_FORM,
@@ -133,7 +134,13 @@ function TaskForm({ mode, formState, activeFieldIndex, validationErrors, busy })
   `;
 }
 
-export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureChange, onFooterHintsChange }) {
+export default function TasksScreen({
+  tasks = [],
+  requestJson,
+  onTasksChange,
+  onInputCaptureChange,
+  onFooterHintsChange,
+}) {
   const { stdout } = useStdout();
   const terminalWidth = stdout?.columns || process.stdout.columns || 120;
   const [preferredView, setPreferredView] = useState("kanban");
@@ -148,6 +155,7 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
   const [statusLine, setStatusLine] = useState("");
   const [busy, setBusy] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState(null);
+  const taskApi = useMemo(() => createTaskApiFromRequestJson(requestJson), [requestJson]);
 
   const viewMode = resolveTaskView(terminalWidth, preferredView);
   const columnWidth = Math.max(24, Math.floor((terminalWidth - 10) / 4));
@@ -206,7 +214,7 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
   }, [columns, listRows, selection, viewMode]);
 
   async function refreshTasks(message = "") {
-    const nextTasks = await listTasksFromApi();
+    const nextTasks = await listTasksFromApi({}, taskApi);
     if (typeof onTasksChange === "function") {
       onTasksChange(nextTasks);
     }
@@ -249,10 +257,10 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
     setBusy(true);
     try {
       if (formMode === "create") {
-        const created = await createTaskFromForm(formState);
+        const created = await createTaskFromForm(formState, taskApi);
         await refreshTasks(`Created ${created.id || "task"}`);
       } else if (editingTaskId) {
-        const updated = await updateTaskFromForm(editingTaskId, formState);
+        const updated = await updateTaskFromForm(editingTaskId, formState, taskApi);
         await refreshTasks(`Updated ${updated.id || editingTaskId}`);
       }
       closeForm();
@@ -267,7 +275,7 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
     if (!selectedTask) return;
     setBusy(true);
     try {
-      await deleteTaskById(selectedTask.id);
+      await deleteTaskById(selectedTask.id, taskApi);
       setDeletePrompt(false);
       await refreshTasks(`Deleted ${selectedTask.idShort}`);
     } catch (error) {
@@ -289,7 +297,7 @@ export default function TasksScreen({ tasks = [], onTasksChange, onInputCaptureC
       await updateTaskFromForm(selectedTask.id, {
         ...buildFormStateFromTask(selectedTask),
         status: nextStatus,
-      });
+      }, taskApi);
       await refreshTasks(`Moved ${selectedTask.idShort} to ${nextStatus.replace("_", " ")}`);
     } catch (error) {
       setStatusLine(String(error?.message || error || "Status change failed"));

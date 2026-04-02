@@ -1,4 +1,8 @@
 import { getBosunSessionManager } from "../agent/session-manager.mjs";
+import { createProviderKernel } from "../agent/provider-kernel.mjs";
+import { createToolOrchestrator } from "../agent/tool-orchestrator.mjs";
+import { normalizeProviderDefinitionId } from "../agent/providers/index.mjs";
+import { recordHarnessTelemetryEvent } from "../infra/session-telemetry.mjs";
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
@@ -14,6 +18,11 @@ function normalizeScope(adapterName, explicitScope = "") {
   const scope = toTrimmedString(explicitScope);
   if (scope) return scope;
   return `shell:${toTrimmedString(adapterName) || "adapter"}`;
+}
+
+function normalizeProviderSelection(adapterName, explicitSelection = "") {
+  const normalized = normalizeProviderDefinitionId(explicitSelection || adapterName, "");
+  return normalized || toTrimmedString(explicitSelection || adapterName) || null;
 }
 
 function buildMetadata(adapterName, input = {}) {
@@ -85,10 +94,99 @@ function formatSessionRecord(record, adapterName, activeSessionId = "") {
 
 export function createShellSessionCompat(options = {}) {
   const adapterName = toTrimmedString(options.adapterName || options.name || "adapter") || "adapter";
-  const providerSelection = toTrimmedString(options.providerSelection || adapterName) || adapterName;
+  const providerSelection =
+    normalizeProviderSelection(adapterName, options.providerSelection || adapterName)
+    || adapterName;
   const sessionType = toTrimmedString(options.sessionType || "primary") || "primary";
   const scope = normalizeScope(adapterName, options.scope);
   const sessionManager = options.sessionManager || getBosunSessionManager();
+  const providerKernel = options.providerKernel || createProviderKernel({
+    adapters: options.adapters || {},
+    env: options.env || process.env,
+    config: options.config,
+  });
+
+  function resolveProvider(input = {}) {
+    const selection = normalizeProviderSelection(
+      adapterName,
+      input.providerSelection || input.provider || providerSelection,
+    );
+    const runtime = selection && providerKernel?.resolveRuntime
+      ? providerKernel.resolveRuntime(selection, adapterName)
+      : null;
+    return {
+      selection,
+      providerId: runtime?.providerId || selection || null,
+      providerConfig: runtime?.providerConfig || null,
+      providerEntry: runtime?.providerEntry || null,
+      runtime,
+    };
+  }
+
+  function recordCompatibilityEvent(eventType, sessionId, input = {}) {
+    const provider = resolveProvider(input);
+    recordHarnessTelemetryEvent({
+      source: "shell-session-compat",
+      eventType,
+      category: input.category || "shell",
+      sessionId: toTrimmedString(sessionId || input.sessionId || input.id || "") || null,
+      rootSessionId: toTrimmedString(input.rootSessionId || input.sessionId || sessionId || "") || null,
+      parentSessionId: toTrimmedString(input.parentSessionId || "") || null,
+      threadId: toTrimmedString(input.threadId || input.providerThreadId || "") || null,
+      runId: toTrimmedString(input.runId || "") || null,
+      workflowId: toTrimmedString(input.workflowId || "") || null,
+      providerId: provider.providerId || null,
+      providerTurnId: toTrimmedString(input.providerTurnId || "") || null,
+      modelId: toTrimmedString(
+        input.model
+        || input.modelId
+        || provider.providerConfig?.model
+        || provider.providerEntry?.defaultModel
+        || "",
+      ) || null,
+      toolId: toTrimmedString(input.toolId || "") || null,
+      toolName: toTrimmedString(input.toolName || "") || null,
+      commandName: toTrimmedString(input.commandName || "") || null,
+      surface: "shell",
+      channel: adapterName,
+      action: toTrimmedString(input.action || input.rawEventType || "") || null,
+      actor: adapterName,
+      status: toTrimmedString(input.status || "") || null,
+      metadata: {
+        shellCompat: true,
+        adapterName,
+        providerSelection: provider.selection,
+        ...(toPlainObject(input.metadata)),
+      },
+      summary: toTrimmedString(input.summary || "") || null,
+      error: toTrimmedString(input.error || "") || null,
+    }, { configDir: options.configDir || process.cwd() });
+  }
+
+  function registerLifecycle(sessionId, input = {}) {
+    const common = buildCommonInput(adapterName, scope, providerSelection, sessionType, {
+      ...input,
+      sessionId,
+      providerSelection: resolveProvider(input).providerId || providerSelection,
+    });
+    if (!common) return null;
+    if (input.activate === true) {
+      sessionManager.switchSession(common.sessionId, common);
+    } else {
+      sessionManager.ensureSession(common);
+    }
+    const record = sessionManager.registerExecution(common.sessionId, common);
+    recordCompatibilityEvent(`shell.session.${common.status || "updated"}`, common.sessionId, {
+      ...input,
+      sessionId: common.sessionId,
+      threadId: common.threadId,
+      cwd: common.cwd,
+      status: common.status,
+      metadata: common.metadata,
+      category: "session",
+    });
+    return record;
+  }
 
   function ensureSession(input = {}) {
     const common = buildCommonInput(adapterName, scope, providerSelection, sessionType, input);
@@ -112,17 +210,7 @@ export function createShellSessionCompat(options = {}) {
   }
 
   function registerExecution(sessionId, input = {}) {
-    const common = buildCommonInput(adapterName, scope, providerSelection, sessionType, {
-      ...input,
-      sessionId,
-    });
-    if (!common) return null;
-    if (input.activate === true) {
-      sessionManager.switchSession(common.sessionId, common);
-    } else {
-      sessionManager.ensureSession(common);
-    }
-    return sessionManager.registerExecution(common.sessionId, common);
+    return registerLifecycle(sessionId, input);
   }
 
   function hydrate(input = {}) {
@@ -164,8 +252,8 @@ export function createShellSessionCompat(options = {}) {
     const activeSessionId = getActiveSessionId();
     const active = sessionManager.getSession(localSessionId || activeSessionId || "");
     return mergeRecords(
-      fallback,
       formatSessionRecord(active, adapterName, activeSessionId) || {},
+      fallback,
     );
   }
 
@@ -205,12 +293,99 @@ export function createShellSessionCompat(options = {}) {
     });
   }
 
+  function beginTurn(sessionId, input = {}) {
+    return registerLifecycle(sessionId, {
+      ...input,
+      sessionId,
+      status: input.status || "running",
+    });
+  }
+
+  function completeTurn(sessionId, input = {}) {
+    return registerLifecycle(sessionId, {
+      ...input,
+      sessionId,
+      status: input.status || "completed",
+    });
+  }
+
+  function failTurn(sessionId, input = {}) {
+    return registerLifecycle(sessionId, {
+      ...input,
+      sessionId,
+      status: input.status || "failed",
+    });
+  }
+
+  function abortTurn(sessionId, input = {}) {
+    return registerLifecycle(sessionId, {
+      ...input,
+      sessionId,
+      status: input.status || "aborted",
+    });
+  }
+
+  function recordStreamEvent(sessionId, rawEvent, input = {}) {
+    return recordCompatibilityEvent("shell.stream.event", sessionId, {
+      ...input,
+      rawEventType: rawEvent?.type,
+      summary: toTrimmedString(input.summary || "") || toTrimmedString(rawEvent?.type || "") || null,
+      metadata: {
+        rawEventType: rawEvent?.type || null,
+        ...(toPlainObject(input.metadata)),
+      },
+      category: "stream",
+      status: input.status || "running",
+    });
+  }
+
+  function recordToolEvent(sessionId, rawEvent, input = {}) {
+    return recordCompatibilityEvent("shell.tool.event", sessionId, {
+      ...input,
+      rawEventType: rawEvent?.type,
+      category: "tool",
+      status: input.status || "running",
+    });
+  }
+
+  function createToolGateway(input = {}) {
+    return createToolOrchestrator({
+      cwd: input.cwd,
+      repoRoot: input.repoRoot || input.cwd || process.cwd(),
+      registry: input.registry,
+      toolSources: input.toolSources,
+      executeTool: input.executeTool,
+      approvalOptions: input.approvalOptions,
+      networkPolicy: input.networkPolicy,
+      retryPolicy: input.retryPolicy,
+      truncation: input.truncation,
+      onEvent: (event) => {
+        recordToolEvent(input.sessionId || input.threadId || null, event, {
+          ...input,
+          toolId: event?.toolId || input.toolId || null,
+          toolName: event?.toolName || input.toolName || null,
+          action: event?.type || null,
+          metadata: {
+            eventType: event?.type || null,
+            ...(toPlainObject(input.metadata)),
+          },
+          status: event?.status || input.status || "running",
+        });
+        if (typeof input.onEvent === "function") {
+          input.onEvent(event);
+        }
+      },
+    });
+  }
+
   return {
     adapterName,
     scope,
     sessionType,
     providerSelection,
+    providerKernel,
     sessionManager,
+    resolveProvider,
     ensureSession,
     ensureManagedSession(sessionId, input = {}) {
       return ensureSession({
@@ -230,6 +405,13 @@ export function createShellSessionCompat(options = {}) {
       });
     },
     registerExecution,
+    beginTurn,
+    completeTurn,
+    failTurn,
+    abortTurn,
+    recordStreamEvent,
+    recordToolEvent,
+    createToolGateway,
     hydrate,
     getActiveSession,
     getActiveSessionId,

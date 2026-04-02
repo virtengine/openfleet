@@ -1,6 +1,11 @@
 /**
  * primary-agent.mjs — Adapter that selects the primary agent implementation.
  *
+ * Transitional architecture note:
+ * Canonical harness lifecycle, session ownership, and per-turn orchestration
+ * live in `session-manager.mjs`, `internal-harness-runtime.mjs`, and
+ * `agent/harness/*`. Do not add new long-term lifecycle ownership here.
+ *
  * Supports Codex SDK, Copilot SDK, and Claude SDK.
  * Includes timeout detection and automatic failover between adapters.
  */

@@ -97,6 +97,10 @@ export function normalizeToolDefinition(definition = {}, options = {}) {
     sandbox: normalizeText(definition.sandbox ?? definition.sandboxMode) || "inherit",
     allowedHosts: uniqueStrings(asArray(definition.allowedHosts), { lowercase: true }),
     blockedHosts: uniqueStrings(asArray(definition.blockedHosts), { lowercase: true }),
+    approvalReason: normalizeText(definition.approvalReason) || null,
+    retry: definition.retry && typeof definition.retry === "object"
+      ? cloneJson(definition.retry)
+      : null,
     metadata: definition.metadata && typeof definition.metadata === "object"
       ? cloneJson(definition.metadata)
       : {},
@@ -136,10 +140,12 @@ export function resolveToolDefinition(toolName, registryEntries = []) {
   if (!requested) return null;
   const lowered = requested.toLowerCase();
   const entries = Array.isArray(registryEntries) ? registryEntries : [];
+  const exactMatch = entries.find((entry) => (
+    entry.id === requested || entry.id.toLowerCase() === lowered
+  ));
+  if (exactMatch) return exactMatch;
   return entries.find((entry) => (
-    entry.id === requested
-    || entry.id.toLowerCase() === lowered
-    || (Array.isArray(entry.aliases) && entry.aliases.some((alias) => alias.toLowerCase() === lowered))
+    Array.isArray(entry.aliases) && entry.aliases.some((alias) => alias.toLowerCase() === lowered)
   )) || null;
 }
 

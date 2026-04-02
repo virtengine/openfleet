@@ -376,6 +376,7 @@ registerAction("agent.delegate", async (params, context) => {
       model,
       cwd,
       sessionId,
+      scope: `voice-dispatch:${sessionId}`,
       sessionType: "voice-dispatch",
       timeoutMs: 5 * 60 * 1000,
     });

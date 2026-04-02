@@ -14,6 +14,26 @@ export {
   normalizeUsageSnapshot,
   resolveEnvConfig,
 } from "./_shared.mjs";
+export {
+  buildProviderRegistryContract,
+  normalizeProviderInventoryEntry,
+  normalizeProviderSelection,
+  normalizeProviderSessionInput,
+  normalizeProviderSessionState,
+  normalizeProviderToolCallEnvelope,
+} from "./provider-contract.mjs";
+export {
+  ProviderConfigurationError,
+  ProviderExecutionError,
+  ProviderKernelError,
+  normalizeProviderErrorDetails,
+} from "./provider-errors.mjs";
+export {
+  normalizeProviderUsageMetadata,
+} from "./provider-usage-normalizer.mjs";
+export {
+  normalizeProviderStreamEnvelope,
+} from "./provider-stream-normalizer.mjs";
 
 export {
   ANTHROPIC_MESSAGES_PROVIDER,

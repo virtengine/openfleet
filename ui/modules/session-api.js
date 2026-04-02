@@ -586,6 +586,8 @@ export function buildSessionApiPath(sessionId, action = "", opts = {}) {
   return qs ? `${path}?${qs}` : path;
 }
 
+export const buildCanonicalSessionApiPath = buildSessionApiPath;
+
 export function buildSessionsApiPath(opts = {}) {
   const params = new URLSearchParams();
 
@@ -611,6 +613,8 @@ export function buildSessionsApiPath(opts = {}) {
   const qs = params.toString();
   return qs ? `/api/sessions?${qs}` : "/api/sessions";
 }
+
+export const buildCanonicalSessionsApiPath = buildSessionsApiPath;
 
 export function normalizeSessionsUpdatePayload(payload) {
   const sessions = Array.isArray(payload)

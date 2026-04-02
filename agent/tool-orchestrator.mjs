@@ -1,39 +1,25 @@
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { getAgentToolConfig, getEffectiveTools, listAvailableTools } from "./agent-tool-config.mjs";
+import { createBuiltinToolDefinitions } from "./tool-builtin-catalog.mjs";
 import { createToolApprovalManager } from "./tool-approval-manager.mjs";
-import { evaluateToolNetworkPolicy } from "./tool-network-policy.mjs";
+import { buildToolPolicyContract } from "./tool-contract.mjs";
+import { createToolExecutionLedger } from "./tool-execution-ledger.mjs";
+import { createToolNetworkPolicy } from "./tool-network-policy.mjs";
 import { buildToolExecutionEnvelope } from "./tool-runtime-context.mjs";
 import { createToolRegistry } from "./tool-registry.mjs";
+import {
+  getToolRetryDelayMs,
+  resolveToolRetryPolicy,
+  shouldRetryToolExecution,
+} from "./tool-retry-policy.mjs";
 import { truncateToolOutput } from "./tool-output-truncation.mjs";
 import {
   getBosunHotPathStatus,
   truncateWithBosunHotPathExec,
 } from "../lib/hot-path-runtime.mjs";
-import { randomUUID } from "node:crypto";
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
-}
-
-function normalizePositiveInteger(value, fallback) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : fallback;
-}
-
-function emitToolEvents(context = {}, ...hooks) {
-  const listeners = [
-    ...hooks,
-    context?.onEvent,
-  ].filter((hook) => typeof hook === "function");
-  return (event) => {
-    for (const listener of listeners) {
-      try {
-        listener(event);
-      } catch {
-        // Tool telemetry must never break execution.
-      }
-    }
-  };
 }
 
 function buildToolError(message, detail = {}) {
@@ -42,21 +28,6 @@ function buildToolError(message, detail = {}) {
     error[key] = value;
   }
   return error;
-}
-
-function resolveRetryConfig(toolDefinition = {}, context = {}, options = {}) {
-  const merged = {
-    ...((options && typeof options === "object") ? options : {}),
-    ...((toolDefinition?.retry && typeof toolDefinition.retry === "object") ? toolDefinition.retry : {}),
-    ...((context?.retry && typeof context.retry === "object") ? context.retry : {}),
-  };
-  return {
-    maxAttempts: normalizePositiveInteger(
-      merged.maxAttempts ?? merged.attempts,
-      1,
-    ),
-    backoffMs: Math.max(0, normalizePositiveInteger(merged.backoffMs, 0)),
-  };
 }
 
 async function sleep(ms) {
@@ -102,6 +73,12 @@ export function createToolCapabilityManifest(options = {}) {
         "node -e \"import('../voice/voice-tools.mjs').then(async m=>{const r=await m.executeToolCall('list_tasks', {limit:10}, {});console.log(r?.result||r);})\"",
       ],
     },
+    coreBuiltinTools: createBuiltinToolDefinitions(options)
+      .map((tool) => ({
+        id: toTrimmedString(tool.id),
+        aliases: Array.isArray(tool.aliases) ? tool.aliases.slice() : [],
+      }))
+      .filter((tool) => tool.id),
   };
 }
 
@@ -120,7 +97,15 @@ export function buildToolCapabilityContract(options = {}) {
 
 export function createToolOrchestrator(options = {}) {
   const approvalManager = createToolApprovalManager(options.approvalOptions || {});
-  const registry = options.registry || createToolRegistry(options.toolSources || []);
+  const networkPolicy = createToolNetworkPolicy(options.networkPolicy || {});
+  const toolSources = [
+    ...(options.includeBuiltinBosunTools === false ? [] : [{
+      source: "bosun-builtin",
+      definitions: createBuiltinToolDefinitions(options),
+    }]),
+    ...(Array.isArray(options.toolSources) ? options.toolSources : (options.toolSources ? [options.toolSources] : [])),
+  ];
+  const registry = options.registry || createToolRegistry(toolSources);
   const orchestrator = {
     listTools(context = {}) {
       const rootDir = resolveToolRootDir(context.cwd || options.cwd);
@@ -144,35 +129,46 @@ export function createToolOrchestrator(options = {}) {
         repoRoot: toTrimmedString(options.repoRoot),
         agentProfileId: toTrimmedString(options.agentProfileId) || null,
       });
-      const executionId = toTrimmedString(envelope.context.requestId) || `tool-${randomUUID()}`;
-      envelope.context.requestId = executionId;
-      const emitEvent = emitToolEvents(envelope.context, options.onEvent);
+      const executionId = toTrimmedString(envelope.executionId);
+      const ledger = createToolExecutionLedger({
+        onEvent: options.onEvent,
+        listeners: [context?.onEvent],
+      });
+      envelope.policy = buildToolPolicyContract(toolDefinition, envelope, {
+        retryPolicy: options.retryPolicy || {},
+        truncation: options.truncation || {},
+        sandbox: options.sandbox,
+      });
       const approvalOutcome = approvalManager.request(toolDefinition, envelope.context, {
         ...options.approvalOptions,
         repoRoot: envelope.context.repoRoot || envelope.context.cwd || options.repoRoot || options.cwd,
         preview: JSON.stringify(args ?? {}),
       });
       const approval = approvalOutcome?.approval || approvalManager.evaluate(toolDefinition, envelope.context);
+      if (approval?.requestId) {
+        envelope.context.approval = {
+          ...(envelope.context.approval && typeof envelope.context.approval === "object" ? envelope.context.approval : {}),
+          requestId: approval.requestId,
+          state: approval.approvalState || envelope.context.approval?.state || null,
+        };
+        envelope.context.approvalRequestId = approval.requestId;
+        envelope.policy.approval = {
+          ...(envelope.policy?.approval && typeof envelope.policy.approval === "object" ? envelope.policy.approval : {}),
+          requestId: approval.requestId,
+          state: approval.approvalState || null,
+          blocked: approval.blocked === true,
+        };
+      }
       if (approval.blocked) {
         if (approval.approvalState === "denied" || approval.approvalState === "expired") {
-          emitEvent({
-            type: "approval_resolved",
-            toolName: envelope.toolName,
-            args: envelope.args,
-            context: envelope.context,
-            executionId,
+          ledger.record("approval_resolved", envelope, {
             approval,
             request: approvalOutcome?.request || null,
             status: approval.approvalState,
             decision: approval.approvalState,
           });
         }
-        emitEvent({
-          type: "approval_requested",
-          toolName: envelope.toolName,
-          args: envelope.args,
-          context: envelope.context,
-          executionId,
+        ledger.record("approval_requested", envelope, {
           approval,
           request: approvalOutcome?.request || null,
         });
@@ -188,26 +184,20 @@ export function createToolOrchestrator(options = {}) {
         );
       }
       if (approval.approvalRequired === true && approval.blocked !== true) {
-        emitEvent({
-          type: "approval_resolved",
-          toolName: envelope.toolName,
-          args: envelope.args,
-          context: envelope.context,
-          executionId,
+        ledger.record("approval_resolved", envelope, {
           approval,
           request: approvalOutcome?.request || null,
           status: approval.approvalState || "approved",
           decision: approval.approvalState || "approved",
         });
       }
-      const network = evaluateToolNetworkPolicy(toolDefinition, envelope.context, options.networkPolicy || {});
+      const network = networkPolicy.evaluate(toolDefinition, envelope.context, options.networkPolicy || {});
+      envelope.policy.network = {
+        ...(envelope.policy?.network && typeof envelope.policy.network === "object" ? envelope.policy.network : {}),
+        ...network,
+      };
       if (network.blocked) {
-        emitEvent({
-          type: "tool_execution_error",
-          toolName: envelope.toolName,
-          args: envelope.args,
-          context: envelope.context,
-          executionId,
+        ledger.record("tool_execution_error", envelope, {
           error: network.reason,
           network,
         });
@@ -221,16 +211,16 @@ export function createToolOrchestrator(options = {}) {
           },
         );
       }
-      const retry = resolveRetryConfig(toolDefinition, envelope.context, options.retryPolicy || {});
-      const eventBase = {
-        toolName: envelope.toolName,
-        args: envelope.args,
-        context: envelope.context,
+      const retry = resolveToolRetryPolicy(toolDefinition, envelope.context, options.retryPolicy || {});
+      envelope.policy.retry = retry;
+      const sandbox = envelope.policy?.sandbox || { mode: envelope.context.sandbox || "inherit" };
+      ledger.record("tool_execution_start", envelope, {
         approval,
-        executionId,
+        network,
         retry,
-      };
-      emitEvent({ type: "tool_execution_start", ...eventBase });
+        sandbox,
+        status: "running",
+      });
       let attempt = 0;
       let lastError = null;
       while (attempt < retry.maxAttempts) {
@@ -244,60 +234,71 @@ export function createToolOrchestrator(options = {}) {
             options.truncation || {},
           );
           const truncated = hotPathTruncated || truncateToolOutput(result, options.truncation || {});
-          emitEvent({
-            type: "tool_execution_update",
-            ...eventBase,
+          const truncation = {
+            truncated: truncated.truncated,
+            originalBytes: truncated.originalBytes,
+            retainedBytes: truncated.retainedBytes,
+          };
+          ledger.record("tool_execution_update", envelope, {
             attempt,
             attemptCount: attempt,
             status: "completed",
+            approval,
+            network,
+            retry,
+            sandbox,
             hotPath: getBosunHotPathStatus(),
-            truncation: {
-              truncated: truncated.truncated,
-              originalBytes: truncated.originalBytes,
-              retainedBytes: truncated.retainedBytes,
-            },
+            truncation,
           });
-          emitEvent({
-            type: "tool_execution_end",
-            ...eventBase,
+          ledger.record("tool_execution_end", envelope, {
             attempt,
             attemptCount: attempt,
+            approval,
+            network,
+            retry,
+            sandbox,
             result: truncated,
             hotPath: getBosunHotPathStatus(),
-            truncation: {
-              truncated: truncated.truncated,
-              originalBytes: truncated.originalBytes,
-              retainedBytes: truncated.retainedBytes,
-            },
+            truncation,
           });
           return result;
         } catch (error) {
           lastError = error;
           const errorMessage = String(error?.message || error);
-          emitEvent({
-            type: "tool_execution_update",
-            ...eventBase,
+          const canRetry = shouldRetryToolExecution(error, attempt, retry);
+          ledger.record("tool_execution_update", envelope, {
             attempt,
             attemptCount: attempt,
-            status: attempt < retry.maxAttempts ? "retrying" : "failed",
+            status: canRetry ? "retrying" : "failed",
+            approval,
+            network,
+            retry,
+            sandbox,
             error: errorMessage,
           });
-          if (attempt < retry.maxAttempts) {
-            emitEvent({
-              type: "tool_execution_retry",
-              ...eventBase,
+          if (canRetry) {
+            const backoffMs = getToolRetryDelayMs(retry, attempt);
+            ledger.record("tool_execution_retry", envelope, {
               attempt,
               nextAttempt: attempt + 1,
+              approval,
+              network,
+              retry,
+              sandbox,
+              status: "retrying",
+              backoffMs,
               error: errorMessage,
             });
-            await sleep(retry.backoffMs);
+            await sleep(backoffMs);
             continue;
           }
-          emitEvent({
-            type: "tool_execution_error",
-            ...eventBase,
+          ledger.record("tool_execution_error", envelope, {
             attempt,
             attemptCount: attempt,
+            approval,
+            network,
+            retry,
+            sandbox,
             error: errorMessage,
           });
           throw error;

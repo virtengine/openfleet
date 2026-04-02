@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 import {
+  createTaskApiFromRequestJson,
   formatColumnSummary,
   LINE_LIST_FIELD_KEYS,
   TASK_VIEW_WIDTH_THRESHOLD,
@@ -12,6 +13,7 @@ import {
   buildListRows,
   createTaskFromForm,
   deleteTaskById,
+  listTasksFromApi,
   normalizeTaskStatus,
   parseTaskDescription,
   resolveTaskView,
@@ -253,5 +255,37 @@ describe("tui tasks screen helpers", () => {
     const removed = await deleteTaskById(created.id);
     expect(removed).toBe(true);
     expect(Object.keys(readStore(storePath).tasks || {})).toHaveLength(0);
+  });
+
+  it("maps remote task CRUD onto the ui-server API contract", async () => {
+    const requestJson = async (path, options = {}) => {
+      if (path === "/api/tasks") {
+        return { ok: true, data: [{ id: "task-1", title: "Remote", status: "todo" }] };
+      }
+      if (path === "/api/tasks/create") {
+        return { ok: true, data: { id: "task-2", ...options.body } };
+      }
+      if (path === "/api/tasks/update") {
+        return { ok: true, data: { id: options.body.taskId, ...options.body } };
+      }
+      if (path === "/api/tasks/task-3") {
+        return { ok: true, deleted: true };
+      }
+      throw new Error(`Unexpected path ${path}`);
+    };
+    const taskApi = createTaskApiFromRequestJson(requestJson);
+
+    await expect(listTasksFromApi({}, taskApi)).resolves.toEqual([
+      { id: "task-1", title: "Remote", status: "todo" },
+    ]);
+    await expect(createTaskFromForm({ title: "Create remote task" }, taskApi)).resolves.toMatchObject({
+      id: "task-2",
+      title: "Create remote task",
+    });
+    await expect(updateTaskFromForm("task-2", { title: "Updated remote task" }, taskApi)).resolves.toMatchObject({
+      id: "task-2",
+      title: "Updated remote task",
+    });
+    await expect(deleteTaskById("task-3", taskApi)).resolves.toBe(true);
   });
 });

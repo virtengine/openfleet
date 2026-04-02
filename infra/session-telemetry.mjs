@@ -1,8 +1,12 @@
-import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import {
+  createCanonicalEventSchema,
+  normalizeCanonicalEvent,
+} from "./event-schema.mjs";
 import { LiveEventProjector } from "./live-event-projector.mjs";
+import { createProjectionContract } from "./projection-contract.mjs";
 import { ProviderUsageLedger } from "./provider-usage-ledger.mjs";
 import { RuntimeMetrics } from "./runtime-metrics.mjs";
 import { exportHarnessTrace } from "./trace-export.mjs";
@@ -13,7 +17,20 @@ import {
 import { createHarnessTelemetryRuntime } from "./session-telemetry-runtime.mjs";
 
 const DEFAULT_MAX_IN_MEMORY_EVENTS = 20_000;
-const OBSERVABILITY_SPINES = new Map();
+const OBSERVABILITY_SPINES_KEY = Symbol.for("bosun.harnessObservability.spines");
+const ALL_OBSERVABILITY_SPINES_KEY = Symbol.for("bosun.harnessObservability.allSpines");
+const OBSERVABILITY_SPINES = globalThis[OBSERVABILITY_SPINES_KEY] instanceof Map
+  ? globalThis[OBSERVABILITY_SPINES_KEY]
+  : new Map();
+if (!(globalThis[OBSERVABILITY_SPINES_KEY] instanceof Map)) {
+  globalThis[OBSERVABILITY_SPINES_KEY] = OBSERVABILITY_SPINES;
+}
+const ALL_OBSERVABILITY_SPINES = globalThis[ALL_OBSERVABILITY_SPINES_KEY] instanceof Set
+  ? globalThis[ALL_OBSERVABILITY_SPINES_KEY]
+  : new Set();
+if (!(globalThis[ALL_OBSERVABILITY_SPINES_KEY] instanceof Set)) {
+  globalThis[ALL_OBSERVABILITY_SPINES_KEY] = ALL_OBSERVABILITY_SPINES;
+}
 
 function asText(value) {
   if (value == null) return null;
@@ -27,6 +44,8 @@ function asNumber(value) {
 }
 
 const cloneValue = cloneHotPathValue;
+const CANONICAL_EVENT_SCHEMA = Object.freeze(createCanonicalEventSchema());
+const HARNESS_PROJECTION_CONTRACT = Object.freeze(createProjectionContract());
 
 function isLikelyTestRuntime() {
   if (process.env.BOSUN_TEST_SANDBOX === "1") return true;
@@ -36,95 +55,6 @@ function isLikelyTestRuntime() {
   if (process.env.NODE_ENV === "test") return true;
   const argv = Array.isArray(process.argv) ? process.argv.join(" ").toLowerCase() : "";
   return argv.includes("vitest") || argv.includes("--test");
-}
-
-function normalizeTimestamp(value) {
-  const text = asText(value);
-  if (text) return text;
-  return new Date().toISOString();
-}
-
-function normalizeTokenUsage(value = {}) {
-  const source = value && typeof value === "object" ? value : {};
-  const inputTokens = asNumber(
-    source.inputTokens
-    ?? source.promptTokens
-    ?? source.prompt_tokens
-    ?? source.input_tokens,
-  ) || 0;
-  const outputTokens = asNumber(
-    source.outputTokens
-    ?? source.completionTokens
-    ?? source.completion_tokens
-    ?? source.output_tokens,
-  ) || 0;
-  const totalTokens = asNumber(
-    source.totalTokens
-    ?? source.total_tokens
-    ?? source.total,
-  ) || (inputTokens + outputTokens);
-  if (inputTokens === 0 && outputTokens === 0 && totalTokens === 0) {
-    return null;
-  }
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens,
-  };
-}
-
-function normalizeJsonObject(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return cloneValue(value);
-}
-
-function pickText(...values) {
-  for (const value of values) {
-    const text = asText(value);
-    if (text) return text;
-  }
-  return null;
-}
-
-function pickNumber(...values) {
-  for (const value of values) {
-    const numeric = asNumber(value);
-    if (numeric != null) return numeric;
-  }
-  return null;
-}
-
-function inferCategory(eventType, source) {
-  const normalizedType = String(eventType || "").trim().toLowerCase();
-  const normalizedSource = String(source || "").trim().toLowerCase();
-  if (normalizedSource.includes("workflow") || normalizedType.startsWith("node.") || normalizedType.startsWith("run.")) {
-    return "workflow";
-  }
-  if (
-    normalizedType.includes("artifact")
-    || normalizedType.includes("patch")
-    || normalizedType.includes("file.")
-    || normalizedType.includes("mutation")
-  ) return "artifact";
-  if (
-    normalizedType.includes("subagent")
-    || normalizedType.includes("delegate")
-    || normalizedSource.includes("subagent")
-  ) return "subagent";
-  if (normalizedType.includes("approval")) return "approval";
-  if (normalizedType.includes("tool")) return "tool";
-  if (normalizedType.includes("provider") || normalizedType.includes("model") || normalizedType.includes("token")) return "provider";
-  if (normalizedSource.includes("session")) return "session";
-  if (normalizedSource.includes("agent")) return "agent";
-  if (normalizedSource.includes("telegram")) return "telegram";
-  if (normalizedSource.includes("tui")) return "tui";
-  return "runtime";
-}
-
-function trimUndefinedEntries(value = {}) {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, entry]) => entry !== undefined),
-  );
 }
 
 function readJsonLines(filePath) {
@@ -159,97 +89,36 @@ export function resolveHarnessTelemetryPaths(configDir) {
 }
 
 export function normalizeCanonicalHarnessEvent(input = {}) {
-  const timestamp = normalizeTimestamp(input.timestamp || input.ts);
-  const payload = normalizeJsonObject(input.payload);
-  const meta = normalizeJsonObject(input.meta);
-  const tokenUsage = normalizeTokenUsage(
-    input.tokenUsage
-    || input.usage
-    || payload?.usage
-    || meta?.usage,
-  );
-  const eventType = asText(input.eventType || input.type || payload?.type) || "event";
-  const source = asText(input.source || meta?.source) || "unknown";
-  const category = asText(input.category) || inferCategory(eventType, source);
-  const taskId = pickText(input.taskId, payload?.taskId, meta?.taskId, input.session?.taskId);
-  const sessionId = pickText(input.sessionId, payload?.sessionId, meta?.sessionId, input.session?.id) || taskId;
-  return trimUndefinedEntries({
-    id: asText(input.id || input.eventId) || randomUUID(),
-    timestamp,
-    ts: asNumber(input.ts) || Date.parse(timestamp),
-    eventType,
-    type: asText(input.type) || eventType,
-    category,
-    source,
-    taskId,
-    sessionId,
-    rootTaskId: pickText(input.rootTaskId, payload?.rootTaskId, meta?.rootTaskId),
-    parentTaskId: pickText(input.parentTaskId, payload?.parentTaskId, meta?.parentTaskId),
-    childTaskId: pickText(input.childTaskId, payload?.childTaskId, meta?.childTaskId),
-    delegationDepth: pickNumber(input.delegationDepth, payload?.delegationDepth, meta?.delegationDepth),
-    threadId: pickText(input.threadId, payload?.threadId, meta?.threadId),
-    turnId: pickText(input.turnId, payload?.turnId, meta?.turnId),
-    runId: pickText(input.runId, payload?.runId, meta?.runId),
-    rootRunId: pickText(input.rootRunId, payload?.rootRunId, meta?.rootRunId),
-    parentRunId: pickText(input.parentRunId, payload?.parentRunId, meta?.parentRunId),
-    childRunId: pickText(input.childRunId, payload?.childRunId, meta?.childRunId),
-    workflowId: pickText(input.workflowId, payload?.workflowId, meta?.workflowId),
-    workflowName: pickText(input.workflowName, payload?.workflowName, meta?.workflowName),
-    nodeId: pickText(input.nodeId, payload?.nodeId, meta?.nodeId),
-    nodeType: pickText(input.nodeType, payload?.nodeType, meta?.nodeType),
-    nodeLabel: pickText(input.nodeLabel, payload?.nodeLabel, meta?.nodeLabel),
-    stageId: pickText(input.stageId, payload?.stageId, meta?.stageId),
-    stageType: pickText(input.stageType, payload?.stageType, meta?.stageType),
-    providerId: pickText(input.providerId, input.provider, payload?.providerId, payload?.provider, meta?.providerId),
-    providerKind: pickText(input.providerKind, payload?.providerKind, meta?.providerKind),
-    providerTurnId: pickText(input.providerTurnId, payload?.providerTurnId, meta?.providerTurnId),
-    modelId: pickText(input.modelId, payload?.modelId, meta?.modelId),
-    requestId: pickText(input.requestId, payload?.requestId, meta?.requestId),
-    traceId: pickText(input.traceId, payload?.traceId, meta?.traceId),
-    spanId: pickText(input.spanId, payload?.spanId, meta?.spanId),
-    parentSpanId: pickText(input.parentSpanId, payload?.parentSpanId, meta?.parentSpanId),
-    executionId: pickText(input.executionId, payload?.executionId, meta?.executionId),
-    executionKey: pickText(input.executionKey, payload?.executionKey, meta?.executionKey),
-    executionKind: pickText(input.executionKind, payload?.executionKind, meta?.executionKind),
-    executionLabel: pickText(input.executionLabel, payload?.executionLabel, meta?.executionLabel),
-    parentExecutionId: pickText(input.parentExecutionId, payload?.parentExecutionId, meta?.parentExecutionId),
-    causedByExecutionId: pickText(input.causedByExecutionId, payload?.causedByExecutionId, meta?.causedByExecutionId),
-    rootSessionId: pickText(input.rootSessionId, payload?.rootSessionId, meta?.rootSessionId),
-    parentSessionId: pickText(input.parentSessionId, payload?.parentSessionId, meta?.parentSessionId),
-    childSessionId: pickText(input.childSessionId, payload?.childSessionId, meta?.childSessionId),
-    subagentId: pickText(input.subagentId, payload?.subagentId, meta?.subagentId),
-    toolId: pickText(input.toolId, payload?.toolId, meta?.toolId),
-    toolName: pickText(input.toolName, input.name, payload?.toolName, payload?.name, meta?.toolName),
-    approvalId: pickText(input.approvalId, payload?.approvalId, meta?.approvalId),
-    artifactId: pickText(input.artifactId, payload?.artifactId, meta?.artifactId),
-    artifactPath: pickText(input.artifactPath, input.filePath, payload?.artifactPath, payload?.filePath, meta?.artifactPath, meta?.filePath),
-    filePath: pickText(input.filePath, payload?.filePath, meta?.filePath, input.artifactPath, payload?.artifactPath, meta?.artifactPath),
-    fileHash: pickText(input.fileHash, payload?.fileHash, meta?.fileHash),
-    patchHash: pickText(input.patchHash, payload?.patchHash, meta?.patchHash),
-    commandId: pickText(input.commandId, payload?.commandId, meta?.commandId),
-    commandName: pickText(input.commandName, payload?.commandName, meta?.commandName),
-    surface: pickText(input.surface, payload?.surface, meta?.surface),
-    channel: pickText(input.channel, payload?.channel, meta?.channel),
-    action: pickText(input.action, payload?.action, meta?.action),
-    workspaceId: pickText(input.workspaceId, payload?.workspaceId, meta?.workspaceId),
-    repoRoot: pickText(input.repoRoot, payload?.repoRoot, meta?.repoRoot),
-    branch: pickText(input.branch, payload?.branch, meta?.branch),
-    prNumber: pickNumber(input.prNumber, payload?.prNumber, meta?.prNumber),
-    prUrl: pickText(input.prUrl, payload?.prUrl, meta?.prUrl),
-    actor: pickText(input.actor, payload?.actor, meta?.actor),
-    status: pickText(input.status, payload?.status, meta?.status),
-    attempt: pickNumber(input.attempt, payload?.attempt, meta?.attempt),
-    retryCount: pickNumber(input.retryCount, payload?.retryCount, meta?.retryCount),
-    durationMs: pickNumber(input.durationMs, payload?.durationMs, meta?.durationMs),
-    latencyMs: pickNumber(input.latencyMs, input.durationMs, payload?.latencyMs, payload?.durationMs, meta?.latencyMs, meta?.durationMs),
-    costUsd: pickNumber(input.costUsd, input.cost, payload?.costUsd, payload?.cost, meta?.costUsd, meta?.cost),
-    tokenUsage,
-    summary: asText(input.summary || payload?.summary || meta?.summary),
-    reason: asText(input.reason || payload?.reason || meta?.reason),
-    message: asText(input.message || input.content || payload?.message || payload?.content),
-    payload,
-    meta,
-  });
+  return normalizeCanonicalEvent(input);
+}
+
+export function createHarnessEventSchema() {
+  return cloneValue(CANONICAL_EVENT_SCHEMA);
+}
+
+export function createHarnessProjectionContract() {
+  return cloneValue(HARNESS_PROJECTION_CONTRACT);
+}
+
+export function buildHarnessProjectionFromEvents(events = [], options = {}) {
+  const projector = new LiveEventProjector(options);
+  const metrics = new RuntimeMetrics();
+  const providerUsage = new ProviderUsageLedger();
+  const normalizedEvents = (Array.isArray(events) ? events : [])
+    .map((event) => normalizeCanonicalHarnessEvent(event));
+  for (const event of normalizedEvents) {
+    projector.record(event);
+    metrics.record(event);
+    providerUsage.record(event);
+  }
+  return {
+    schema: createHarnessEventSchema(),
+    projectionContract: createHarnessProjectionContract(),
+    events: normalizedEvents.map(cloneValue),
+    live: projector.getSnapshot(),
+    metrics: metrics.getSummary(),
+    providers: providerUsage.getUsageSummary(),
+  };
 }
 
 export class HarnessObservabilitySpine {
@@ -277,7 +146,10 @@ export class HarnessObservabilitySpine {
       metrics: this.metrics,
       providerUsage: this.providerUsage,
     });
+    this.schema = CANONICAL_EVENT_SCHEMA;
+    this.projectionContract = HARNESS_PROJECTION_CONTRACT;
     this._loaded = false;
+    ALL_OBSERVABILITY_SPINES.add(this);
   }
 
   _loadOnce() {
@@ -351,7 +223,11 @@ export class HarnessObservabilitySpine {
   getLiveSnapshot() {
     this._loadOnce();
     this.runtime.flushForeground();
-    return this.projector.getSnapshot();
+    return {
+      schema: createHarnessEventSchema(),
+      projectionContract: createHarnessProjectionContract(),
+      ...this.projector.getSnapshot(),
+    };
   }
 
   getMetricsSummary() {
@@ -373,6 +249,8 @@ export class HarnessObservabilitySpine {
     return {
       eventCount: events.length,
       lastEventAt: lastEvent?.timestamp || null,
+      schema: createHarnessEventSchema(),
+      projectionContract: createHarnessProjectionContract(),
       live: this.getLiveSnapshot(),
       metrics: this.getMetricsSummary(),
       providers: this.getProviderUsageSummary(),
@@ -445,13 +323,14 @@ export function getHarnessHotPathStatus(options = {}) {
 
 export async function flushHarnessTelemetryRuntimeForTests() {
   await Promise.all(
-    [...OBSERVABILITY_SPINES.values()].map((spine) => spine.flush()),
+    [...ALL_OBSERVABILITY_SPINES].map((spine) => spine.flush()),
   );
 }
 
 export function resetHarnessObservabilitySpinesForTests() {
-  for (const spine of OBSERVABILITY_SPINES.values()) {
+  for (const spine of ALL_OBSERVABILITY_SPINES) {
     spine.reset();
   }
   OBSERVABILITY_SPINES.clear();
+  ALL_OBSERVABILITY_SPINES.clear();
 }

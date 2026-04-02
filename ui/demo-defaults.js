@@ -85,6 +85,22 @@
               "repo": {
                 "type": "string",
                 "required": false
+              },
+              "reviewIssues": {
+                "type": "array",
+                "required": false
+              },
+              "reviewIssueCount": {
+                "type": "number",
+                "required": false
+              },
+              "reviewFixDispatchMode": {
+                "type": "string",
+                "required": false
+              },
+              "reviewFixRequestedAt": {
+                "type": "string",
+                "required": false
               }
             }
           },
@@ -102,7 +118,7 @@
           "label": "Normalize PR Context",
           "config": {
             "key": "prProgressContext",
-            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,    reviewIssues: Array.isArray($data?.reviewIssues) ? $data.reviewIssues : [],    reviewIssueCount: Number($data?.reviewIssueCount || 0) || 0,    reviewFixDispatchMode: String($data?.reviewFixDispatchMode || '').trim() || null,    reviewFixRequestedAt: String($data?.reviewFixRequestedAt || '').trim() || null,  };})()",
             "isExpression": true
           },
           "position": {
@@ -301,7 +317,7 @@
           "label": "Build Structured Fix Prompt",
           "config": {
             "key": "agentPrompt",
-            "value": "(()=>{\n  const inspectRaw = $ctx?.getNodeOutput?.('inspect-pr')?.output || '{}';\n  const fixRaw = $ctx?.getNodeOutput?.('programmatic-fix')?.output || '{}';\n  const conflictRaw = $ctx?.getNodeOutput?.('detect-pr-conflicts')?.output || '{}';\n  const inspect = (()=>{ try { return typeof inspectRaw === 'object' ? inspectRaw : JSON.parse(inspectRaw); } catch { return {}; } })();\n  const fix = (()=>{ try { return typeof fixRaw === 'object' ? fixRaw : JSON.parse(fixRaw); } catch { return {}; } })();\n  const conflictDetection = (()=>{ try { return typeof conflictRaw === 'object' ? conflictRaw : JSON.parse(conflictRaw); } catch { return {}; } })();\n  const prDigest = inspect.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(inspect.repo || core.repo || $data?.prProgressContext?.repo || '');\n  const branch = String(inspect.branch || core.branch || $data?.prProgressContext?.branch || '');\n  const base = String(inspect.baseBranch || core.baseBranch || $data?.prProgressContext?.baseBranch || 'main');\n  const number = String(inspect.prNumber || core.number || $data?.prProgressContext?.prNumber || '');\n  const title = String(inspect.title || core.title || $data?.prProgressContext?.taskTitle || '');\n  const url = String(inspect.url || core.url || $data?.prProgressContext?.prUrl || '');\n  const classification = String(inspect.classification || '');\n  const reason = String(fix.reason || classification || '');\n  const mergeable = String(inspect.mergeable || core.mergeable || '');\n  const failedChecks = Array.isArray(inspect.failedCheckNames) ? inspect.failedCheckNames : [];\n  const failedJobs = Array.isArray(fix.failedJobs) ? fix.failedJobs : [];\n  const annotations = Array.isArray(fix.failedAnnotations) ? fix.failedAnnotations : [];\n  const logExcerpt = String(fix.failedLogExcerpt || '').trim();\n  const recentRuns = Array.isArray(fix.recentRuns) ? fix.recentRuns : [];\n  const ciSummary = prDigest.ciSummary || inspect.ciSummary || {};\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n';\n  p += '- **Fix Reason**: `' + reason + '`\\n';\n  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n  if (fix.error) p += '- **Error**: ' + fix.error + '\\n';\n  p += '\\n';\n  /* --- Fix Summary --- */\n  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n  const fixItems = [];\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base `' + base + '`'));\n  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n  if (fixItems.length > 0) {\n    p += '## Fix Summary\\n\\nThis PR needs the following fixes:\\n';\n    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n    p += '\\n';\n  }\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) {\n    p += '## Merge Conflict\\n\\n';\n    p += 'This branch has conflicts that must be resolved.\\n';\n    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n    if (detectedConflictFiles.length > 0) {\n      p += '**Conflicting files:**\\n';\n      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n      p += '\\n';\n    }\n  }\n  if (failedChecks.length > 0) {\n    p += '## Failed CI Checks\\n\\n';\n    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n    p += '## CI Check Summary\\n\\n';\n    p += 'Total: ' + (ciSummary.total||0) + ' | Failing: ' + (ciSummary.failing||0) + ' | Pending: ' + (ciSummary.pending||0) + ' | Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n  }\n  if (fix.failedRun) {\n    const run = fix.failedRun;\n    p += '## Failed Workflow Run\\n\\n';\n    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n    p += '- **Run ID**: ' + run.databaseId + '\\n';\n    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n    if (run.url) p += '- **URL**: ' + run.url + '\\n';\n    p += '\\n';\n  }\n  if (failedJobs.length > 0) {\n    p += '## Failed Jobs\\n\\n';\n    failedJobs.slice(0,8).forEach(job => {\n      p += '### ' + (job.name||'unknown') + '\\n';\n      p += '- Conclusion: ' + job.conclusion + '\\n';\n      if (job.url) p += '- URL: ' + job.url + '\\n';\n      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n      }\n      p += '\\n';\n    });\n  }\n  if (annotations.length > 0) {\n    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n    annotations.slice(0,6).forEach(annot => {\n      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n        p += '**Job: ' + (annot.name||'') + '**\\n';\n        annot.annotations.slice(0,15).forEach(a => {\n          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n        });\n        p += '\\n';\n      }\n    });\n  }\n  if (logExcerpt) {\n    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n    p += '## Reviews & Inline Comments\\n\\n';\n    reviewsWithBody.slice(0,5).forEach(r => {\n      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n    });\n    if (reviewComments.length > 0) {\n      p += 'Inline comments:\\n';\n      reviewComments.slice(0,12).forEach(c => {\n        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n      });\n      p += '\\n';\n    }\n  }\n  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n  if (issueCommentsWithBody.length > 0) {\n    p += '## Issue Comments\\n\\n';\n    issueCommentsWithBody.slice(0,5).forEach(c => {\n      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n    });\n  }\n  return p;\n})()",
+            "value": "(()=>{\n  const inspectRaw = $ctx?.getNodeOutput?.('inspect-pr')?.output || '{}';\n  const fixRaw = $ctx?.getNodeOutput?.('programmatic-fix')?.output || '{}';\n  const conflictRaw = $ctx?.getNodeOutput?.('detect-pr-conflicts')?.output || '{}';\n  const inspect = (()=>{ try { return typeof inspectRaw === 'object' ? inspectRaw : JSON.parse(inspectRaw); } catch { return {}; } })();\n  const fix = (()=>{ try { return typeof fixRaw === 'object' ? fixRaw : JSON.parse(fixRaw); } catch { return {}; } })();\n  const conflictDetection = (()=>{ try { return typeof conflictRaw === 'object' ? conflictRaw : JSON.parse(conflictRaw); } catch { return {}; } })();\n  const prDigest = inspect.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(inspect.repo || core.repo || $data?.prProgressContext?.repo || '');\n  const branch = String(inspect.branch || core.branch || $data?.prProgressContext?.branch || '');\n  const base = String(inspect.baseBranch || core.baseBranch || $data?.prProgressContext?.baseBranch || 'main');\n  const number = String(inspect.prNumber || core.number || $data?.prProgressContext?.prNumber || '');\n  const title = String(inspect.title || core.title || $data?.prProgressContext?.taskTitle || '');\n  const url = String(inspect.url || core.url || $data?.prProgressContext?.prUrl || '');\n  const classification = String(inspect.classification || '');\n  const reason = String(fix.reason || classification || '');\n  const mergeable = String(inspect.mergeable || core.mergeable || '');\n  const failedChecks = Array.isArray(inspect.failedCheckNames) ? inspect.failedCheckNames : [];\n  const failedJobs = Array.isArray(fix.failedJobs) ? fix.failedJobs : [];\n  const annotations = Array.isArray(fix.failedAnnotations) ? fix.failedAnnotations : [];\n  const logExcerpt = String(fix.failedLogExcerpt || '').trim();\n  const recentRuns = Array.isArray(fix.recentRuns) ? fix.recentRuns : [];\n  const ciSummary = prDigest.ciSummary || inspect.ciSummary || {};\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n  const persistedReviewIssues = Array.isArray($data?.prProgressContext?.reviewIssues) ? $data.prProgressContext.reviewIssues : [];\n  const persistedReviewIssueCount = Number($data?.prProgressContext?.reviewIssueCount || persistedReviewIssues.length || 0) || 0;\n  const reviewFixDispatchMode = String($data?.prProgressContext?.reviewFixDispatchMode || '').trim();\n  const reviewFixRequestedAt = String($data?.prProgressContext?.reviewFixRequestedAt || '').trim();\n  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n';\n  p += '- **Fix Reason**: `' + reason + '`\\n';\n  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n  if (fix.error) p += '- **Error**: ' + fix.error + '\\n';\n  if (reviewFixDispatchMode) p += '- **Review Fix Dispatch Mode**: `' + reviewFixDispatchMode + '`\\n';\n  if (reviewFixRequestedAt) p += '- **Review Fix Requested At**: ' + reviewFixRequestedAt + '\\n';\n  p += '\\n';\n  /* --- Fix Summary --- */\n  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n  const fixItems = [];\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base `' + base + '`'));\n  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n  if (persistedReviewIssueCount > 0) fixItems.push('**Persisted review issues** — ' + persistedReviewIssueCount + ' issue(s) preserved from supervisor redispatch');\n  if (fixItems.length > 0) {\n    p += '## Fix Summary\\n\\nThis PR needs the following fixes:\\n';\n    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n    p += '\\n';\n  }\n  if (persistedReviewIssues.length > 0) {\n    p += '## Persisted Review Issues\\n\\n';\n    persistedReviewIssues.slice(0, 12).forEach((issue, index) => {\n      const severity = String(issue?.severity || 'major');\n      const category = String(issue?.category || 'review');\n      const file = String(issue?.file || '(unknown)');\n      const line = Number(issue?.line || 0) > 0 ? ':' + String(issue.line) : '';\n      const description = String(issue?.description || issue?.message || '').trim();\n      p += (index + 1) + '. [' + severity + '/' + category + '] `' + file + line + '`';\n      if (description) p += ' - ' + description;\n      p += '\\n';\n    });\n    p += '\\n';\n  }\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) {\n    p += '## Merge Conflict\\n\\n';\n    p += 'This branch has conflicts that must be resolved.\\n';\n    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n    if (detectedConflictFiles.length > 0) {\n      p += '**Conflicting files:**\\n';\n      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n      p += '\\n';\n    }\n  }\n  if (failedChecks.length > 0) {\n    p += '## Failed CI Checks\\n\\n';\n    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n    p += '## CI Check Summary\\n\\n';\n    p += 'Total: ' + (ciSummary.total||0) + ' | Failing: ' + (ciSummary.failing||0) + ' | Pending: ' + (ciSummary.pending||0) + ' | Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n  }\n  if (fix.failedRun) {\n    const run = fix.failedRun;\n    p += '## Failed Workflow Run\\n\\n';\n    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n    p += '- **Run ID**: ' + run.databaseId + '\\n';\n    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n    if (run.url) p += '- **URL**: ' + run.url + '\\n';\n    p += '\\n';\n  }\n  if (failedJobs.length > 0) {\n    p += '## Failed Jobs\\n\\n';\n    failedJobs.slice(0,8).forEach(job => {\n      p += '### ' + (job.name||'unknown') + '\\n';\n      p += '- Conclusion: ' + job.conclusion + '\\n';\n      if (job.url) p += '- URL: ' + job.url + '\\n';\n      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n      }\n      p += '\\n';\n    });\n  }\n  if (annotations.length > 0) {\n    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n    annotations.slice(0,6).forEach(annot => {\n      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n        p += '**Job: ' + (annot.name||'') + '**\\n';\n        annot.annotations.slice(0,15).forEach(a => {\n          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n        });\n        p += '\\n';\n      }\n    });\n  }\n  if (logExcerpt) {\n    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n    p += '## Reviews & Inline Comments\\n\\n';\n    reviewsWithBody.slice(0,5).forEach(r => {\n      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n    });\n    if (reviewComments.length > 0) {\n      p += 'Inline comments:\\n';\n      reviewComments.slice(0,12).forEach(c => {\n        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n      });\n      p += '\\n';\n    }\n  }\n  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n  if (issueCommentsWithBody.length > 0) {\n    p += '## Issue Comments\\n\\n';\n    issueCommentsWithBody.slice(0,5).forEach(c => {\n      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n    });\n  }\n  return p;\n})()",
             "isExpression": true
           },
           "position": {
@@ -17974,8 +17990,8 @@
         "npm",
         "vulnerability"
       ],
-      "nodeCount": 12,
-      "edgeCount": 14,
+      "nodeCount": 14,
+      "edgeCount": 17,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -18134,7 +18150,6 @@
           "config": {
             "title": "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
             "body": "## Summary\n\nAutomated dependency audit fix. Resolves vulnerabilities flagged by `npm audit` at severity level **{{auditLevel}}** or higher.\n\n## What Changed\n\n- Updated vulnerable dependencies to patched versions\n- Verified no breaking changes via build and test validation",
-            "branch": "fix/dep-audit-{{_runId}}",
             "baseBranch": "main"
           },
           "position": {
@@ -18143,6 +18158,22 @@
           },
           "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "fix-pr-created",
+          "type": "condition.expression",
+          "label": "Fix PR Created?",
+          "config": {
+            "expression": "(() => { const out = $ctx.getNodeOutput('create-fix-pr') || {}; return out?.success === true && Boolean(out?.prNumber || out?.prUrl || out?.handedOff); })()"
+          },
+          "position": {
+            "x": 50,
+            "y": 980
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -18203,6 +18234,22 @@
           "position": {
             "x": 300,
             "y": 1050
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-pr-blocked",
+          "type": "notify.log",
+          "label": "PR Creation Blocked",
+          "config": {
+            "message": "Dependency audit PR creation blocked: {{$ctx.getNodeOutput('create-fix-pr')?.error || 'unknown reason'}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 980
           },
           "outputs": [
             "default"
@@ -18287,14 +18334,34 @@
           "sourcePort": "default"
         },
         {
-          "id": "create-fix-pr->alert-high",
+          "id": "create-fix-pr->fix-pr-created",
           "source": "create-fix-pr",
-          "target": "alert-high",
+          "target": "fix-pr-created",
           "sourcePort": "default"
+        },
+        {
+          "id": "fix-pr-created->alert-high",
+          "source": "fix-pr-created",
+          "target": "alert-high",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "fix-pr-created->log-pr-blocked",
+          "source": "fix-pr-created",
+          "target": "log-pr-blocked",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "alert-high->log-done",
           "source": "alert-high",
+          "target": "log-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-pr-blocked->log-done",
+          "source": "log-pr-blocked",
           "target": "log-done",
           "sourcePort": "default"
         }
@@ -18876,7 +18943,6 @@
           "label": "Plan Backend",
           "config": {
             "prompt": "## Phase: Backend Planning\n\nAnalyse the task and produce a plan:\n1. Data model / schema changes\n2. API endpoint design (routes, request/response shapes)\n3. Service layer logic\n4. Database queries or migrations\n5. Test plan (unit + integration)\n\nDo NOT write code yet.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -18905,7 +18971,6 @@
           "label": "Implement (TDD)",
           "config": {
             "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n5. Run full test suite: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -18934,7 +18999,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Verification\n\n1. Run the complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Ensure no regressions\n4. Push changes and create/update PR\n5. Include test results summary in PR description",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -19269,7 +19333,6 @@
           "label": "Plan Pipeline Change",
           "config": {
             "prompt": "## Phase: CI/CD Planning\n\nAnalyse the pipeline/infrastructure task:\n1. Current CI/CD configuration\n2. What needs to change and why\n3. Impact on existing workflows/pipelines\n4. Rollback strategy\n5. Test plan for verifying the change\n\nDo NOT make changes yet.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -19298,7 +19361,6 @@
           "label": "Implement Pipeline",
           "config": {
             "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Run build: {{buildCommand}}\n5. Run lint: {{lintCommand}}\n6. Validate configuration syntax\n\nCommit changes with clear descriptions.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -19327,7 +19389,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Pipeline Verification\n\n1. Run full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify pipeline configuration is valid\n4. Push and create/update PR\n5. Include deployment / rollback instructions in PR description",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -19783,7 +19844,6 @@
           "label": "Reproduce & Analyse",
           "config": {
             "prompt": "## Phase: Bug Reproduction & Root Cause Analysis\n\n1. Read the bug report carefully\n2. Find the relevant code area\n3. Reproduce the issue (write a failing test if possible)\n4. Trace the root cause through the codebase\n5. Document: what fails, where, why, and the minimal fix needed\n\nDo NOT fix the bug yet — only diagnose.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -19812,7 +19872,6 @@
           "label": "Fix & Regression Test",
           "config": {
             "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n4. Run the full test suite: {{testCommand}}\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n7. Ensure no other tests broke\n\nCommit fix and test together with a clear commit message.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -19841,7 +19900,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Final Verification\n\n1. Run complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Confirm the original bug is fixed\n4. Confirm no regressions\n5. Push and create/update PR with root cause analysis in description",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -19971,7 +20029,6 @@
           "label": "Analyse Design Req",
           "config": {
             "prompt": "## Phase: Design Requirements Analysis\n\n1. Review the design task requirements\n2. Identify affected design tokens, components, or patterns\n3. Check existing design system for reusable pieces\n4. Plan the implementation approach\n5. List affected files and components\n\nDo NOT make changes yet.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20000,7 +20057,6 @@
           "label": "Implement Design",
           "config": {
             "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n\nCommit changes with descriptive messages.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20029,7 +20085,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Design Verification\n\n1. Run tests: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify visual consistency\n4. Check design token values are correct\n5. Push and create/update PR",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20343,7 +20398,6 @@
           "label": "Analyse Design",
           "config": {
             "prompt": "## Phase: Design Analysis\n\nAnalyse the UI task requirements:\n1. Component hierarchy and structure\n2. Layout and responsive breakpoints\n3. State management needs\n4. Accessibility requirements (ARIA, keyboard nav)\n5. Styling approach (CSS modules, Tailwind, styled-components)\n6. Component test plan\n\nDo NOT write code yet.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20372,7 +20426,6 @@
           "label": "Implement UI",
           "config": {
             "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n5. Run tests: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20401,7 +20454,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Visual Verification\n\n1. Run the full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify components render correctly\n4. Check responsive breakpoints\n5. Verify accessibility (screen reader, keyboard)\n6. Push changes and create/update PR",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20525,7 +20577,6 @@
           "label": "Plan Architecture",
           "config": {
             "prompt": "## Phase: Architecture Planning\n\nAnalyse the task and produce a concrete plan covering:\n1. Backend changes: API routes, models, services, migrations\n2. Frontend changes: components, pages, state management\n3. Shared types / contracts between layers\n4. Test strategy for each layer\n5. Integration points and data flow\n\nDo NOT write code yet — produce only the plan.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20554,7 +20605,6 @@
           "label": "Implement Backend",
           "config": {
             "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n- Run tests: {{testCommand}}\n\nCommit backend changes separately.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20583,7 +20633,6 @@
           "label": "Implement Frontend",
           "config": {
             "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n- Run build: {{buildCommand}}\n\nCommit frontend changes separately.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -20612,7 +20661,6 @@
           "label": "Integration Test",
           "config": {
             "prompt": "## Phase: Integration Testing\n\nVerify the full stack works end-to-end:\n1. Run the full test suite: {{testCommand}}\n2. Run the build: {{buildCommand}}\n3. Run lint: {{lintCommand}}\n4. Fix any integration issues between frontend and backend\n5. Ensure all tests pass before completing\n\nPush all changes and create/update the PR.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -23110,7 +23158,6 @@
             "maxParallel": "{{maxParallel}}",
             "pollIntervalMs": "{{pollIntervalMs}}",
             "statuses": [
-              "inreview",
               "todo"
             ],
             "filterCodexScoped": true,
@@ -23345,7 +23392,6 @@
           "label": "Agent Plan",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -23372,7 +23418,6 @@
           "label": "Agent Tests",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -23399,7 +23444,6 @@
           "label": "Agent Implement",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -23642,7 +23686,6 @@
           "label": "Auto Fix Validation",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 1. The previous pre-PR validation failed. Fix only the validation issue, then stop.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -23717,7 +23760,6 @@
           "label": "Auto Fix Validation 2",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 2. Retry only the remaining validation failures, then stop.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -24453,7 +24495,7 @@
           "type": "condition.expression",
           "label": "Retryable WT Failure?",
           "config": {
-            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false"
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable === true"
           },
           "position": {
             "x": 850,
@@ -25540,6 +25582,22 @@
               "repo": {
                 "type": "string",
                 "required": false
+              },
+              "reviewIssues": {
+                "type": "array",
+                "required": false
+              },
+              "reviewIssueCount": {
+                "type": "number",
+                "required": false
+              },
+              "reviewFixDispatchMode": {
+                "type": "string",
+                "required": false
+              },
+              "reviewFixRequestedAt": {
+                "type": "string",
+                "required": false
               }
             }
           },
@@ -25557,7 +25615,7 @@
           "label": "Normalize PR Context",
           "config": {
             "key": "prProgressContext",
-            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,  };})()",
+            "value": "/* <!-- bosun-created --> */ (() => {  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);  return {    taskId: String($data?.taskId || '').trim() || null,    taskTitle: String($data?.taskTitle || '').trim() || null,    repo: repo || null,    branch: String($data?.branch || prOut?.branch || '').trim() || null,    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main',    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null,    prUrl: prUrl || null,    reviewIssues: Array.isArray($data?.reviewIssues) ? $data.reviewIssues : [],    reviewIssueCount: Number($data?.reviewIssueCount || 0) || 0,    reviewFixDispatchMode: String($data?.reviewFixDispatchMode || '').trim() || null,    reviewFixRequestedAt: String($data?.reviewFixRequestedAt || '').trim() || null,  };})()",
             "isExpression": true
           },
           "position": {
@@ -25756,7 +25814,7 @@
           "label": "Build Structured Fix Prompt",
           "config": {
             "key": "agentPrompt",
-            "value": "(()=>{\n  const inspectRaw = $ctx?.getNodeOutput?.('inspect-pr')?.output || '{}';\n  const fixRaw = $ctx?.getNodeOutput?.('programmatic-fix')?.output || '{}';\n  const conflictRaw = $ctx?.getNodeOutput?.('detect-pr-conflicts')?.output || '{}';\n  const inspect = (()=>{ try { return typeof inspectRaw === 'object' ? inspectRaw : JSON.parse(inspectRaw); } catch { return {}; } })();\n  const fix = (()=>{ try { return typeof fixRaw === 'object' ? fixRaw : JSON.parse(fixRaw); } catch { return {}; } })();\n  const conflictDetection = (()=>{ try { return typeof conflictRaw === 'object' ? conflictRaw : JSON.parse(conflictRaw); } catch { return {}; } })();\n  const prDigest = inspect.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(inspect.repo || core.repo || $data?.prProgressContext?.repo || '');\n  const branch = String(inspect.branch || core.branch || $data?.prProgressContext?.branch || '');\n  const base = String(inspect.baseBranch || core.baseBranch || $data?.prProgressContext?.baseBranch || 'main');\n  const number = String(inspect.prNumber || core.number || $data?.prProgressContext?.prNumber || '');\n  const title = String(inspect.title || core.title || $data?.prProgressContext?.taskTitle || '');\n  const url = String(inspect.url || core.url || $data?.prProgressContext?.prUrl || '');\n  const classification = String(inspect.classification || '');\n  const reason = String(fix.reason || classification || '');\n  const mergeable = String(inspect.mergeable || core.mergeable || '');\n  const failedChecks = Array.isArray(inspect.failedCheckNames) ? inspect.failedCheckNames : [];\n  const failedJobs = Array.isArray(fix.failedJobs) ? fix.failedJobs : [];\n  const annotations = Array.isArray(fix.failedAnnotations) ? fix.failedAnnotations : [];\n  const logExcerpt = String(fix.failedLogExcerpt || '').trim();\n  const recentRuns = Array.isArray(fix.recentRuns) ? fix.recentRuns : [];\n  const ciSummary = prDigest.ciSummary || inspect.ciSummary || {};\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n';\n  p += '- **Fix Reason**: `' + reason + '`\\n';\n  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n  if (fix.error) p += '- **Error**: ' + fix.error + '\\n';\n  p += '\\n';\n  /* --- Fix Summary --- */\n  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n  const fixItems = [];\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base `' + base + '`'));\n  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n  if (fixItems.length > 0) {\n    p += '## Fix Summary\\n\\nThis PR needs the following fixes:\\n';\n    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n    p += '\\n';\n  }\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) {\n    p += '## Merge Conflict\\n\\n';\n    p += 'This branch has conflicts that must be resolved.\\n';\n    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n    if (detectedConflictFiles.length > 0) {\n      p += '**Conflicting files:**\\n';\n      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n      p += '\\n';\n    }\n  }\n  if (failedChecks.length > 0) {\n    p += '## Failed CI Checks\\n\\n';\n    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n    p += '## CI Check Summary\\n\\n';\n    p += 'Total: ' + (ciSummary.total||0) + ' | Failing: ' + (ciSummary.failing||0) + ' | Pending: ' + (ciSummary.pending||0) + ' | Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n  }\n  if (fix.failedRun) {\n    const run = fix.failedRun;\n    p += '## Failed Workflow Run\\n\\n';\n    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n    p += '- **Run ID**: ' + run.databaseId + '\\n';\n    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n    if (run.url) p += '- **URL**: ' + run.url + '\\n';\n    p += '\\n';\n  }\n  if (failedJobs.length > 0) {\n    p += '## Failed Jobs\\n\\n';\n    failedJobs.slice(0,8).forEach(job => {\n      p += '### ' + (job.name||'unknown') + '\\n';\n      p += '- Conclusion: ' + job.conclusion + '\\n';\n      if (job.url) p += '- URL: ' + job.url + '\\n';\n      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n      }\n      p += '\\n';\n    });\n  }\n  if (annotations.length > 0) {\n    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n    annotations.slice(0,6).forEach(annot => {\n      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n        p += '**Job: ' + (annot.name||'') + '**\\n';\n        annot.annotations.slice(0,15).forEach(a => {\n          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n        });\n        p += '\\n';\n      }\n    });\n  }\n  if (logExcerpt) {\n    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n    p += '## Reviews & Inline Comments\\n\\n';\n    reviewsWithBody.slice(0,5).forEach(r => {\n      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n    });\n    if (reviewComments.length > 0) {\n      p += 'Inline comments:\\n';\n      reviewComments.slice(0,12).forEach(c => {\n        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n      });\n      p += '\\n';\n    }\n  }\n  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n  if (issueCommentsWithBody.length > 0) {\n    p += '## Issue Comments\\n\\n';\n    issueCommentsWithBody.slice(0,5).forEach(c => {\n      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n    });\n  }\n  return p;\n})()",
+            "value": "(()=>{\n  const inspectRaw = $ctx?.getNodeOutput?.('inspect-pr')?.output || '{}';\n  const fixRaw = $ctx?.getNodeOutput?.('programmatic-fix')?.output || '{}';\n  const conflictRaw = $ctx?.getNodeOutput?.('detect-pr-conflicts')?.output || '{}';\n  const inspect = (()=>{ try { return typeof inspectRaw === 'object' ? inspectRaw : JSON.parse(inspectRaw); } catch { return {}; } })();\n  const fix = (()=>{ try { return typeof fixRaw === 'object' ? fixRaw : JSON.parse(fixRaw); } catch { return {}; } })();\n  const conflictDetection = (()=>{ try { return typeof conflictRaw === 'object' ? conflictRaw : JSON.parse(conflictRaw); } catch { return {}; } })();\n  const prDigest = inspect.prDigest || {};\n  const core = prDigest.core || {};\n  const repo = String(inspect.repo || core.repo || $data?.prProgressContext?.repo || '');\n  const branch = String(inspect.branch || core.branch || $data?.prProgressContext?.branch || '');\n  const base = String(inspect.baseBranch || core.baseBranch || $data?.prProgressContext?.baseBranch || 'main');\n  const number = String(inspect.prNumber || core.number || $data?.prProgressContext?.prNumber || '');\n  const title = String(inspect.title || core.title || $data?.prProgressContext?.taskTitle || '');\n  const url = String(inspect.url || core.url || $data?.prProgressContext?.prUrl || '');\n  const classification = String(inspect.classification || '');\n  const reason = String(fix.reason || classification || '');\n  const mergeable = String(inspect.mergeable || core.mergeable || '');\n  const failedChecks = Array.isArray(inspect.failedCheckNames) ? inspect.failedCheckNames : [];\n  const failedJobs = Array.isArray(fix.failedJobs) ? fix.failedJobs : [];\n  const annotations = Array.isArray(fix.failedAnnotations) ? fix.failedAnnotations : [];\n  const logExcerpt = String(fix.failedLogExcerpt || '').trim();\n  const recentRuns = Array.isArray(fix.recentRuns) ? fix.recentRuns : [];\n  const ciSummary = prDigest.ciSummary || inspect.ciSummary || {};\n  const prBody = String(core.body || '').trim();\n  const files = Array.isArray(prDigest.files) ? prDigest.files : [];\n  const reviews = Array.isArray(prDigest.reviews) ? prDigest.reviews : [];\n  const reviewComments = Array.isArray(prDigest.reviewComments) ? prDigest.reviewComments : [];\n  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n  const persistedReviewIssues = Array.isArray($data?.prProgressContext?.reviewIssues) ? $data.prProgressContext.reviewIssues : [];\n  const persistedReviewIssueCount = Number($data?.prProgressContext?.reviewIssueCount || persistedReviewIssues.length || 0) || 0;\n  const reviewFixDispatchMode = String($data?.prProgressContext?.reviewFixDispatchMode || '').trim();\n  const reviewFixRequestedAt = String($data?.prProgressContext?.reviewFixRequestedAt || '').trim();\n  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n  p += '## PR Identity\\n\\n';\n  p += '- **Repo**: ' + repo + '\\n';\n  p += '- **PR Number**: #' + number + '\\n';\n  p += '- **Title**: ' + title + '\\n';\n  p += '- **URL**: ' + url + '\\n';\n  p += '- **Head Branch**: `' + branch + '`\\n';\n  p += '- **Base Branch**: `' + base + '`\\n';\n  p += '- **Fix Reason**: `' + reason + '`\\n';\n  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n  if (fix.error) p += '- **Error**: ' + fix.error + '\\n';\n  if (reviewFixDispatchMode) p += '- **Review Fix Dispatch Mode**: `' + reviewFixDispatchMode + '`\\n';\n  if (reviewFixRequestedAt) p += '- **Review Fix Requested At**: ' + reviewFixRequestedAt + '\\n';\n  p += '\\n';\n  /* --- Fix Summary --- */\n  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n  const actionableInlineComments = reviewComments.filter(c => c.body && c.body.trim());\n  const actionableIssueComments = issueComments.filter(c => c.body && /(fix|please|should|must|needs?|issue|bug|error|warning|lint|suggest|change|request|fail|todo|nit|@copilot)/i.test(c.body));\n  const fixItems = [];\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base `' + base + '`'));\n  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n  if (persistedReviewIssueCount > 0) fixItems.push('**Persisted review issues** — ' + persistedReviewIssueCount + ' issue(s) preserved from supervisor redispatch');\n  if (fixItems.length > 0) {\n    p += '## Fix Summary\\n\\nThis PR needs the following fixes:\\n';\n    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n    p += '\\n';\n  }\n  if (persistedReviewIssues.length > 0) {\n    p += '## Persisted Review Issues\\n\\n';\n    persistedReviewIssues.slice(0, 12).forEach((issue, index) => {\n      const severity = String(issue?.severity || 'major');\n      const category = String(issue?.category || 'review');\n      const file = String(issue?.file || '(unknown)');\n      const line = Number(issue?.line || 0) > 0 ? ':' + String(issue.line) : '';\n      const description = String(issue?.description || issue?.message || '').trim();\n      p += (index + 1) + '. [' + severity + '/' + category + '] `' + file + line + '`';\n      if (description) p += ' - ' + description;\n      p += '\\n';\n    });\n    p += '\\n';\n  }\n  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) {\n    p += '## Merge Conflict\\n\\n';\n    p += 'This branch has conflicts that must be resolved.\\n';\n    p += 'Merge `origin/' + base + '` into `' + branch + '` and resolve all conflicts.\\n\\n';\n    if (detectedConflictFiles.length > 0) {\n      p += '**Conflicting files:**\\n';\n      detectedConflictFiles.forEach(f => { p += '- `' + f + '`\\n'; });\n      p += '\\n';\n    }\n  }\n  if (failedChecks.length > 0) {\n    p += '## Failed CI Checks\\n\\n';\n    failedChecks.forEach(n => { p += '- `' + n + '`\\n'; });\n    p += '\\n';\n  }\n  if (ciSummary.total > 0 || ciSummary.failing > 0) {\n    p += '## CI Check Summary\\n\\n';\n    p += 'Total: ' + (ciSummary.total||0) + ' | Failing: ' + (ciSummary.failing||0) + ' | Pending: ' + (ciSummary.pending||0) + ' | Passing: ' + (ciSummary.passing||0) + '\\n\\n';\n  }\n  if (fix.failedRun) {\n    const run = fix.failedRun;\n    p += '## Failed Workflow Run\\n\\n';\n    p += '- **Workflow**: ' + (run.workflowName || run.displayTitle || '') + '\\n';\n    p += '- **Run ID**: ' + run.databaseId + '\\n';\n    p += '- **Conclusion**: ' + run.conclusion + '\\n';\n    if (run.url) p += '- **URL**: ' + run.url + '\\n';\n    p += '\\n';\n  }\n  if (failedJobs.length > 0) {\n    p += '## Failed Jobs\\n\\n';\n    failedJobs.slice(0,8).forEach(job => {\n      p += '### ' + (job.name||'unknown') + '\\n';\n      p += '- Conclusion: ' + job.conclusion + '\\n';\n      if (job.url) p += '- URL: ' + job.url + '\\n';\n      if (Array.isArray(job.failedSteps) && job.failedSteps.length > 0) {\n        p += '- Failed steps: ' + job.failedSteps.map(s => '`' + s.name + '`').join(', ') + '\\n';\n      }\n      p += '\\n';\n    });\n  }\n  if (annotations.length > 0) {\n    p += '## Code Annotations (Errors / Warnings)\\n\\n';\n    annotations.slice(0,6).forEach(annot => {\n      if (Array.isArray(annot.annotations) && annot.annotations.length > 0) {\n        p += '**Job: ' + (annot.name||'') + '**\\n';\n        annot.annotations.slice(0,15).forEach(a => {\n          p += '- `' + (a.path||'') + ':' + (a.startLine||'') + '` **' + (a.title||a.level||'error') + '**: ' + (a.message||'') + '\\n';\n        });\n        p += '\\n';\n      }\n    });\n  }\n  if (logExcerpt) {\n    p += '## CI Log Excerpt (Failed Steps)\\n\\n```\\n' + logExcerpt.slice(0,10000) + '\\n```\\n\\n';\n  }\n  if (prBody) {\n    p += '## PR Description\\n\\n' + prBody.slice(0,2000) + '\\n\\n';\n  }\n  if (files.length > 0) {\n    p += '## Changed Files (' + files.length + ')\\n\\n';\n    files.slice(0,40).forEach(f => { p += '- `' + f.path + '` (+' + (f.additions||0) + '/-' + (f.deletions||0) + ')\\n'; });\n    p += '\\n';\n  }\n  const reviewsWithBody = reviews.filter(r => r.body && r.body.trim());\n  if (reviewsWithBody.length > 0 || reviewComments.length > 0) {\n    p += '## Reviews & Inline Comments\\n\\n';\n    reviewsWithBody.slice(0,5).forEach(r => {\n      p += '**' + (r.author?.login||'reviewer') + '** (' + r.state + '): ' + r.body.slice(0,400) + '\\n\\n';\n    });\n    if (reviewComments.length > 0) {\n      p += 'Inline comments:\\n';\n      reviewComments.slice(0,12).forEach(c => {\n        p += '- `' + (c.path||'') + ':' + (c.line||'') + '` (' + (c.author?.login||'') + '): ' + (c.body||'').slice(0,250) + '\\n';\n      });\n      p += '\\n';\n    }\n  }\n  const issueCommentsWithBody = issueComments.filter(c => c.body && c.body.trim());\n  if (issueCommentsWithBody.length > 0) {\n    p += '## Issue Comments\\n\\n';\n    issueCommentsWithBody.slice(0,5).forEach(c => {\n      p += '**' + (c.author?.login||'user') + '**: ' + c.body.slice(0,300) + '\\n\\n';\n    });\n  }\n  return p;\n})()",
             "isExpression": true
           },
           "position": {
@@ -42540,7 +42598,7 @@
       "description": "Scheduled scan for vulnerable dependencies using npm audit. Classifies findings by severity, prepares fix branches, and hands off fixable packages, and alerts on critical vulnerabilities that require manual intervention.",
       "category": "security",
       "enabled": true,
-      "nodeCount": 12,
+      "nodeCount": 14,
       "trigger": "trigger.schedule",
       "variables": {
         "auditLevel": "moderate",
@@ -42674,7 +42732,6 @@
           "config": {
             "title": "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
             "body": "## Summary\n\nAutomated dependency audit fix. Resolves vulnerabilities flagged by `npm audit` at severity level **{{auditLevel}}** or higher.\n\n## What Changed\n\n- Updated vulnerable dependencies to patched versions\n- Verified no breaking changes via build and test validation",
-            "branch": "fix/dep-audit-{{_runId}}",
             "baseBranch": "main"
           },
           "position": {
@@ -42683,6 +42740,22 @@
           },
           "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "fix-pr-created",
+          "type": "condition.expression",
+          "label": "Fix PR Created?",
+          "config": {
+            "expression": "(() => { const out = $ctx.getNodeOutput('create-fix-pr') || {}; return out?.success === true && Boolean(out?.prNumber || out?.prUrl || out?.handedOff); })()"
+          },
+          "position": {
+            "x": 50,
+            "y": 980
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -42743,6 +42816,22 @@
           "position": {
             "x": 300,
             "y": 1050
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-pr-blocked",
+          "type": "notify.log",
+          "label": "PR Creation Blocked",
+          "config": {
+            "message": "Dependency audit PR creation blocked: {{$ctx.getNodeOutput('create-fix-pr')?.error || 'unknown reason'}}",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 980
           },
           "outputs": [
             "default"
@@ -42827,14 +42916,34 @@
           "sourcePort": "default"
         },
         {
-          "id": "create-fix-pr->alert-high",
+          "id": "create-fix-pr->fix-pr-created",
           "source": "create-fix-pr",
-          "target": "alert-high",
+          "target": "fix-pr-created",
           "sourcePort": "default"
+        },
+        {
+          "id": "fix-pr-created->alert-high",
+          "source": "fix-pr-created",
+          "target": "alert-high",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "fix-pr-created->log-pr-blocked",
+          "source": "fix-pr-created",
+          "target": "log-pr-blocked",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "alert-high->log-done",
           "source": "alert-high",
+          "target": "log-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-pr-blocked->log-done",
+          "source": "log-pr-blocked",
           "target": "log-done",
           "sourcePort": "default"
         }
@@ -43375,7 +43484,6 @@
           "label": "Plan Backend",
           "config": {
             "prompt": "## Phase: Backend Planning\n\nAnalyse the task and produce a plan:\n1. Data model / schema changes\n2. API endpoint design (routes, request/response shapes)\n3. Service layer logic\n4. Database queries or migrations\n5. Test plan (unit + integration)\n\nDo NOT write code yet.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -43404,7 +43512,6 @@
           "label": "Implement (TDD)",
           "config": {
             "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n5. Run full test suite: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -43433,7 +43540,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Verification\n\n1. Run the complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Ensure no regressions\n4. Push changes and create/update PR\n5. Include test results summary in PR description",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -43746,7 +43852,6 @@
           "label": "Plan Pipeline Change",
           "config": {
             "prompt": "## Phase: CI/CD Planning\n\nAnalyse the pipeline/infrastructure task:\n1. Current CI/CD configuration\n2. What needs to change and why\n3. Impact on existing workflows/pipelines\n4. Rollback strategy\n5. Test plan for verifying the change\n\nDo NOT make changes yet.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -43775,7 +43880,6 @@
           "label": "Implement Pipeline",
           "config": {
             "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Run build: {{buildCommand}}\n5. Run lint: {{lintCommand}}\n6. Validate configuration syntax\n\nCommit changes with clear descriptions.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -43804,7 +43908,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Pipeline Verification\n\n1. Run full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify pipeline configuration is valid\n4. Push and create/update PR\n5. Include deployment / rollback instructions in PR description",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44234,7 +44337,6 @@
           "label": "Reproduce & Analyse",
           "config": {
             "prompt": "## Phase: Bug Reproduction & Root Cause Analysis\n\n1. Read the bug report carefully\n2. Find the relevant code area\n3. Reproduce the issue (write a failing test if possible)\n4. Trace the root cause through the codebase\n5. Document: what fails, where, why, and the minimal fix needed\n\nDo NOT fix the bug yet — only diagnose.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44263,7 +44365,6 @@
           "label": "Fix & Regression Test",
           "config": {
             "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n4. Run the full test suite: {{testCommand}}\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n7. Ensure no other tests broke\n\nCommit fix and test together with a clear commit message.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44292,7 +44393,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Final Verification\n\n1. Run complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Confirm the original bug is fixed\n4. Confirm no regressions\n5. Push and create/update PR with root cause analysis in description",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44409,7 +44509,6 @@
           "label": "Analyse Design Req",
           "config": {
             "prompt": "## Phase: Design Requirements Analysis\n\n1. Review the design task requirements\n2. Identify affected design tokens, components, or patterns\n3. Check existing design system for reusable pieces\n4. Plan the implementation approach\n5. List affected files and components\n\nDo NOT make changes yet.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44438,7 +44537,6 @@
           "label": "Implement Design",
           "config": {
             "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n\nCommit changes with descriptive messages.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44467,7 +44565,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Design Verification\n\n1. Run tests: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify visual consistency\n4. Check design token values are correct\n5. Push and create/update PR",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44760,7 +44857,6 @@
           "label": "Analyse Design",
           "config": {
             "prompt": "## Phase: Design Analysis\n\nAnalyse the UI task requirements:\n1. Component hierarchy and structure\n2. Layout and responsive breakpoints\n3. State management needs\n4. Accessibility requirements (ARIA, keyboard nav)\n5. Styling approach (CSS modules, Tailwind, styled-components)\n6. Component test plan\n\nDo NOT write code yet.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44789,7 +44885,6 @@
           "label": "Implement UI",
           "config": {
             "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n5. Run tests: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44818,7 +44913,6 @@
           "label": "Verify & PR",
           "config": {
             "prompt": "## Phase: Visual Verification\n\n1. Run the full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify components render correctly\n4. Check responsive breakpoints\n5. Verify accessibility (screen reader, keyboard)\n6. Push changes and create/update PR",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44935,7 +45029,6 @@
           "label": "Plan Architecture",
           "config": {
             "prompt": "## Phase: Architecture Planning\n\nAnalyse the task and produce a concrete plan covering:\n1. Backend changes: API routes, models, services, migrations\n2. Frontend changes: components, pages, state management\n3. Shared types / contracts between layers\n4. Test strategy for each layer\n5. Integration points and data flow\n\nDo NOT write code yet — produce only the plan.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44964,7 +45057,6 @@
           "label": "Implement Backend",
           "config": {
             "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n- Run tests: {{testCommand}}\n\nCommit backend changes separately.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -44993,7 +45085,6 @@
           "label": "Implement Frontend",
           "config": {
             "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n- Run build: {{buildCommand}}\n\nCommit frontend changes separately.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -45022,7 +45113,6 @@
           "label": "Integration Test",
           "config": {
             "prompt": "## Phase: Integration Testing\n\nVerify the full stack works end-to-end:\n1. Run the full test suite: {{testCommand}}\n2. Run the build: {{buildCommand}}\n3. Run lint: {{lintCommand}}\n4. Fix any integration issues between frontend and backend\n5. Ensure all tests pass before completing\n\nPush all changes and create/update the PR.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -47393,7 +47483,6 @@
             "maxParallel": "{{maxParallel}}",
             "pollIntervalMs": "{{pollIntervalMs}}",
             "statuses": [
-              "inreview",
               "todo"
             ],
             "filterCodexScoped": true,
@@ -47628,7 +47717,6 @@
           "label": "Agent Plan",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -47655,7 +47743,6 @@
           "label": "Agent Tests",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -47682,7 +47769,6 @@
           "label": "Agent Implement",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -47925,7 +48011,6 @@
           "label": "Auto Fix Validation",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 1. The previous pre-PR validation failed. Fix only the validation issue, then stop.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -48000,7 +48085,6 @@
           "label": "Auto Fix Validation 2",
           "config": {
             "prompt": "{{_taskPrompt}}\n\nExecution phase: validation autofix pass 2. Retry only the remaining validation failures, then stop.",
-            "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
             "agentProfile": "{{agentProfile}}",
@@ -48736,7 +48820,7 @@
           "type": "condition.expression",
           "label": "Retryable WT Failure?",
           "config": {
-            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false"
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable === true"
           },
           "position": {
             "x": 850,

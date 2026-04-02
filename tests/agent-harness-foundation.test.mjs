@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -108,11 +111,13 @@ describe("provider registry foundation", () => {
       providerId: "openai-codex-subscription",
       adapterName: "codex-sdk",
       selectionId: "openai-codex-subscription",
+      model: "gpt-5.4",
     });
     expect(resolveProviderSelection("codex-primary", options)).toEqual({
       providerId: "openai-codex-subscription",
       adapterName: "codex-sdk",
       selectionId: "codex-primary",
+      model: "gpt-5.4",
     });
 
     const registry = createProviderRegistry(options);
@@ -130,6 +135,7 @@ describe("provider registry foundation", () => {
     const registry = createProviderRegistry({
       adapters,
       includeBuiltins: true,
+      env: {},
       settings: {
         BOSUN_PROVIDER_DEFAULT: "openai-compatible",
         BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "true",
@@ -144,6 +150,13 @@ describe("provider registry foundation", () => {
       providerId: "openai-compatible",
       adapterId: "opencode-sdk",
     }));
+    expect(registry.contract).toEqual(expect.objectContaining({
+      listProviders: true,
+      listEnabledProviders: true,
+      getInventory: true,
+      resolveProviderRuntime: true,
+      discoverRuntimeCatalog: true,
+    }));
     expect(openaiCompatible).toEqual(expect.objectContaining({
       enabled: true,
       available: true,
@@ -151,6 +164,16 @@ describe("provider registry foundation", () => {
     expect(ollama).toEqual(expect.objectContaining({
       enabled: false,
       available: false,
+    }));
+    expect(registry.listEnabledProviders()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        providerId: "openai-compatible",
+      }),
+    ]));
+    expect(registry.getInventory()).toEqual(expect.objectContaining({
+      defaultProvider: expect.objectContaining({
+        providerId: "openai-compatible",
+      }),
     }));
   });
 });
@@ -582,6 +605,241 @@ describe("session manager foundation", () => {
       ],
     }));
   });
+
+  it("applies external continue, retry, resume, cancel, and finalize through canonical lifecycle state", async () => {
+    const testCacheDir = mkdtempSync(join(tmpdir(), "bosun-session-manager-"));
+    vi.stubEnv("BOSUN_TEST_CACHE_DIR", testCacheDir);
+    try {
+      const manager = createBosunSessionManager();
+
+      manager.beginExternalSession({
+        sessionId: "external-session",
+        scope: "workflow-task",
+        sessionType: "task",
+        taskKey: "external-task",
+        cwd: "C:/repo",
+        source: "workflow",
+      });
+      expect(manager.continueSession("external-session")).toEqual(expect.objectContaining({
+        sessionId: "external-session",
+        status: "running",
+      }));
+      expect(manager.retrySession("external-session")).toEqual(expect.objectContaining({
+        sessionId: "external-session",
+        status: "retrying",
+      }));
+      expect(manager.resumeSession("external-session")).toEqual(expect.objectContaining({
+        sessionId: "external-session",
+        status: "resuming",
+      }));
+
+      manager.registerExecution("external-session", {
+        sessionType: "task",
+        taskKey: "external-task",
+        cwd: "C:/repo",
+        status: "running",
+        threadId: "external-thread",
+        providerSelection: "codex",
+        adapterName: "codex",
+      });
+      const completed = manager.finalizeExternalExecution("external-session", {
+        success: true,
+        threadId: "external-thread",
+        result: { output: "done" },
+      });
+
+      expect(completed).toEqual(expect.objectContaining({
+        sessionId: "external-session",
+        status: "completed",
+        activeThreadId: "external-thread",
+      }));
+      expect(manager.cancelSession("external-session", "operator_stop")).toEqual(
+        expect.objectContaining({
+          sessionId: "external-session",
+          status: "aborted",
+          lastError: "operator_stop",
+        }),
+      );
+      expect(manager.getReplayState("external-session")).toEqual(expect.objectContaining({
+        sessionId: "external-session",
+        resumeFrom: expect.objectContaining({
+          threadId: "external-thread",
+          action: "session_aborted",
+        }),
+      }));
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(testCacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("projects parent-child lineage, thread ancestry, and subagent completion through canonical owners", async () => {
+    const testCacheDir = mkdtempSync(join(tmpdir(), "bosun-lineage-graph-"));
+    vi.stubEnv("BOSUN_TEST_CACHE_DIR", testCacheDir);
+    try {
+      const manager = createBosunSessionManager();
+
+      manager.beginExternalSession({
+        sessionId: "root-session",
+        scope: "workflow-task",
+        sessionType: "task",
+        taskKey: "root-task",
+        cwd: "C:/repo",
+        source: "workflow",
+      });
+      manager.registerExecution("root-session", {
+        sessionType: "task",
+        taskKey: "root-task",
+        cwd: "C:/repo",
+        status: "running",
+        threadId: "root-thread",
+        providerSelection: "codex",
+        adapterName: "codex",
+      });
+      manager.beginExternalSession({
+        sessionId: "child-session",
+        parentSessionId: "root-session",
+        scope: "workflow-task",
+        sessionType: "task",
+        taskKey: "child-task",
+        cwd: "C:/repo",
+        source: "workflow",
+      });
+      manager.registerExecution("child-session", {
+        sessionType: "task",
+        taskKey: "child-task",
+        cwd: "C:/repo",
+        status: "running",
+        threadId: "child-thread",
+        providerSelection: "codex",
+        adapterName: "codex",
+      });
+      manager.finalizeExternalExecution("child-session", {
+        success: true,
+        threadId: "child-thread",
+        result: { output: "child done" },
+      });
+
+      const childLineage = manager.getLineageView("child-session");
+      const rootLineage = manager.getLineageView("root-session");
+      const waited = await manager.waitForSubagent("child-session", { timeoutMs: 25 });
+
+      expect(childLineage.session).toEqual(expect.objectContaining({
+        sessionId: "child-session",
+        parentSessionId: "root-session",
+        rootSessionId: "root-session",
+      }));
+      expect(childLineage.rootSession || childLineage.root).toEqual(expect.objectContaining({
+        sessionId: "root-session",
+      }));
+      expect(childLineage.parent).toEqual(expect.objectContaining({
+        sessionId: "root-session",
+      }));
+      expect(childLineage.threadLineage).toEqual([
+        expect.objectContaining({ threadId: "root-thread" }),
+        expect.objectContaining({ threadId: "child-thread" }),
+      ]);
+      expect(rootLineage.session).toEqual(expect.objectContaining({
+        sessionId: "root-session",
+      }));
+      expect(rootLineage.descendants).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: "child-session",
+        }),
+      ]));
+      expect(rootLineage.subagents).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          childSessionId: "child-session",
+          status: "completed",
+        }),
+      ]));
+      expect(waited).toEqual(expect.objectContaining({
+        childSessionId: "child-session",
+        childThreadId: "child-thread",
+        status: "completed",
+      }));
+      expect(manager.getReplaySnapshot("child-session")).toEqual(expect.objectContaining({
+        sessionContract: expect.objectContaining({
+          sessionId: "child-session",
+          rootSessionId: "root-session",
+        }),
+      }));
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(testCacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies a canonical subagent pool when child harness sessions run concurrently", async () => {
+    const testCacheDir = mkdtempSync(join(tmpdir(), "bosun-subagent-pool-session-"));
+    vi.stubEnv("BOSUN_TEST_CACHE_DIR", testCacheDir);
+    const executionOrder = [];
+    try {
+      const manager = createHarnessSessionManager({
+        subagentMaxParallel: 1,
+        executeTurn: async ({ taskKey }) => {
+          executionOrder.push(`start:${taskKey}`);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          executionOrder.push(`end:${taskKey}`);
+          return {
+            success: true,
+            status: "completed",
+            outcome: "success",
+            output: taskKey,
+          };
+        },
+      });
+
+      manager.beginExternalSession({
+        sessionId: "root-session",
+        sessionType: "task",
+        taskKey: "root-task",
+      });
+
+      const first = manager.spawnSubagent({
+        name: "Subagent A",
+        taskKey: "subagent-a",
+        entryStageId: "task",
+        stages: [{ id: "task", type: "prompt", prompt: "Run A." }],
+      }, {
+        parentSessionId: "root-session",
+      });
+      const second = manager.spawnSubagent({
+        name: "Subagent B",
+        taskKey: "subagent-b",
+        entryStageId: "task",
+        stages: [{ id: "task", type: "prompt", prompt: "Run B." }],
+      }, {
+        parentSessionId: "root-session",
+      });
+
+      const [firstResult, secondResult] = await Promise.all([
+        first.run(),
+        second.run(),
+      ]);
+
+      expect(firstResult.success).toBe(true);
+      expect(secondResult.success).toBe(true);
+      expect(executionOrder).toEqual([
+        "start:subagent-a",
+        "end:subagent-a",
+        "start:subagent-b",
+        "end:subagent-b",
+      ]);
+      expect(manager.getSubagentPool().getPool("root-session")).toEqual(expect.objectContaining({
+        activeCount: 0,
+        queueDepth: 0,
+      }));
+      expect(manager.getReplayState(second.sessionId)).toEqual(expect.objectContaining({
+        latestSnapshot: expect.objectContaining({
+          action: expect.stringMatching(/subagent_slot_(queued|acquired|released)|session_completed/),
+        }),
+      }));
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(testCacheDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("provider kernel foundation", () => {
@@ -606,7 +864,7 @@ describe("provider kernel foundation", () => {
         },
       },
       config,
-      env: { ...process.env },
+      env: {},
     });
 
     expect(settings).toEqual(expect.objectContaining({
@@ -652,7 +910,7 @@ describe("provider kernel foundation", () => {
           },
         },
       },
-      env: { ...process.env },
+      env: {},
     });
 
     const session = kernel.createExecutionSession({
@@ -710,7 +968,7 @@ describe("provider kernel foundation", () => {
           },
         },
       },
-      env: { ...process.env },
+      env: {},
     });
 
     const session = kernel.createExecutionSession({

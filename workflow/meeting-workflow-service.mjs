@@ -360,6 +360,7 @@ export function createMeetingWorkflowService(dependencies = {}) {
     try {
       const result = await execPrimaryPrompt(message, {
         sessionId: meetingId,
+        scope: `meeting:${meetingId}`,
         sessionType: String(session.type || "primary"),
         mode: normalizeNonEmptyString(options.mode) || undefined,
         model: normalizeNonEmptyString(options.model) || undefined,

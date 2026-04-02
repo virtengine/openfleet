@@ -142,7 +142,7 @@ describe("gemini-shell", () => {
 
     await createSession("session-1");
     const sessions = await listSessions();
-    expect(sessions[0].id).toBe("session-1");
+    expect(sessions.some((entry) => entry.id === "session-1")).toBe(true);
 
     await execGeminiPrompt("hello", { sessionId: "session-1" });
     const info = getSessionInfo();

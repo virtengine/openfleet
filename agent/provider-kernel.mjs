@@ -1,6 +1,11 @@
 import { createProviderRegistry } from "./provider-registry.mjs";
 import { createProviderSession } from "./provider-session.mjs";
 import { getBuiltInProviderDriver, normalizeProviderDefinitionId } from "./providers/index.mjs";
+import { ProviderConfigurationError } from "./providers/provider-errors.mjs";
+import {
+  normalizeProviderSelection,
+  normalizeProviderSessionInput,
+} from "./providers/provider-contract.mjs";
 
 function setProviderSetting(target, key, value) {
   if (value === undefined || value === null || value === "") return;
@@ -44,7 +49,34 @@ export function buildProviderKernelSettings(config = {}) {
   return flattened;
 }
 
+function renderProviderMessage(message = {}) {
+  const role = String(message?.role || "user").trim().toUpperCase() || "USER";
+  const lines = [];
+  const text = String(
+    message?.text
+    || message?.content?.find?.((entry) => entry?.type === "text")?.text
+    || "",
+  ).trim();
+  if (text) {
+    lines.push(`${role}: ${text}`);
+  }
+  for (const entry of Array.isArray(message?.toolCalls) ? message.toolCalls : []) {
+    lines.push(`${role} TOOL_CALL ${String(entry?.name || entry?.id || "tool").trim()}: ${JSON.stringify(entry?.input ?? {})}`);
+  }
+  for (const entry of Array.isArray(message?.toolResults) ? message.toolResults : []) {
+    lines.push(`TOOL_RESULT ${String(entry?.name || entry?.toolCallId || "tool").trim()}: ${JSON.stringify(entry?.output ?? {})}`);
+  }
+  return lines.join("\n");
+}
+
 function extractMessageFromPayload(payload = {}) {
+  if (Array.isArray(payload.messages) && payload.messages.length > 0) {
+    const transcript = payload.messages
+      .map((message) => renderProviderMessage(message))
+      .filter(Boolean)
+      .join("\n\n");
+    if (transcript) return transcript;
+  }
   return payload.prompt
     || payload.messages?.at(-1)?.text
     || payload.messages?.at(-1)?.content?.find?.((entry) => entry?.type === "text")?.text
@@ -64,6 +96,9 @@ function resolveKernelConfig(options = {}) {
 
 function createRegistryFactory(options = {}) {
   return () => {
+    if (options.providerRegistry && typeof options.providerRegistry.listProviders === "function") {
+      return options.providerRegistry;
+    }
     const config = resolveKernelConfig(options);
     const configExecutors = Array.isArray(config?.executorConfig?.executors)
       ? config.executorConfig.executors
@@ -92,38 +127,57 @@ export function createProviderKernel(options = {}) {
   function resolveRuntime(selectionId = "", adapterName = "") {
     const registry = createRegistryInstance();
     const normalizedSelectionId = String(selectionId || "").trim();
-    const normalizedAdapterName = String(adapterName || "").trim();
-    const resolvedSelection = normalizedSelectionId
-      ? registry.resolveSelection(normalizedSelectionId)
-      : null;
-    const providerEntry = resolvedSelection
-      ? registry.getProvider(resolvedSelection.selectionId) || registry.getProvider(resolvedSelection.providerId)
-      : registry.getDefaultProvider();
+    const resolvedRuntime = normalizedSelectionId
+      ? (
+        typeof registry.resolveProviderRuntime === "function"
+          ? registry.resolveProviderRuntime(normalizedSelectionId)
+          : {
+              selection: registry.resolveSelection?.(normalizedSelectionId) || null,
+              provider:
+                registry.getProvider?.(normalizedSelectionId)
+                || registry.getProvider?.(registry.resolveSelection?.(normalizedSelectionId)?.providerId)
+                || registry.getDefaultProvider?.()
+                || null,
+            }
+      )
+      : { selection: null, provider: registry.getDefaultProvider() };
+    const resolvedSelection = normalizeProviderSelection(resolvedRuntime.selection || {});
+    const providerEntry = resolvedRuntime.provider || registry.getDefaultProvider();
     const providerId =
       providerEntry?.providerId
-      || normalizeProviderDefinitionId(normalizedSelectionId || normalizedAdapterName, "")
+      || normalizeProviderDefinitionId(normalizedSelectionId || adapterName, "")
       || null;
-    const driver = providerEntry?.providerId
-      ? getBuiltInProviderDriver(providerEntry.providerId)
-      : null;
+    const driver = providerId ? getBuiltInProviderDriver(providerId) : null;
     const providerSettings = providerEntry?.auth?.settings && typeof providerEntry.auth.settings === "object"
       ? providerEntry.auth.settings
       : {};
-    const providerConfig = driver
-      ? driver.createSessionConfig({
-          env: options.env || process.env,
-          model: providerSettings.defaultModel || providerEntry?.defaultModel || null,
-          authMode: providerSettings.authMode || providerEntry?.auth?.preferredMode || null,
-          endpoint: providerSettings.endpoint || null,
-          baseUrl: providerSettings.baseUrl || null,
-          deployment: providerSettings.deployment || null,
-          apiVersion: providerSettings.apiVersion || null,
-          workspace: providerSettings.workspace || null,
-          settings: {
-            defaultModel: providerSettings.defaultModel || providerEntry?.defaultModel || null,
-            authMode: providerSettings.authMode || null,
-          },
-        })
+    const providerOverrides = {
+      model: providerSettings.defaultModel || providerEntry?.defaultModel || resolvedSelection.model || null,
+      authMode: providerSettings.authMode || providerEntry?.auth?.preferredMode || null,
+      endpoint: providerSettings.endpoint || null,
+      baseUrl: providerSettings.baseUrl || null,
+      deployment: providerSettings.deployment || null,
+      apiVersion: providerSettings.apiVersion || null,
+      workspace: providerSettings.workspace || null,
+    };
+    const providerConfig = providerEntry?.providerId
+      ? (
+        typeof registry.buildSessionConfig === "function"
+          ? registry.buildSessionConfig(providerEntry.providerId, providerOverrides)
+          : driver?.createSessionConfig({
+              env: options.env || process.env,
+              ...providerOverrides,
+              settings: {
+                defaultModel: providerSettings.defaultModel || providerEntry?.defaultModel || null,
+                authMode: providerSettings.authMode || null,
+                endpoint: providerSettings.endpoint || null,
+                baseUrl: providerSettings.baseUrl || null,
+                deployment: providerSettings.deployment || null,
+                apiVersion: providerSettings.apiVersion || null,
+                workspace: providerSettings.workspace || null,
+              },
+            })
+      )
       : null;
 
     return {
@@ -141,10 +195,6 @@ export function createProviderKernel(options = {}) {
   }
 
   function withRuntimeOptions(adapterName, selectionId, runtimeOptions = {}) {
-    const normalizedAdapterName = String(adapterName || "").trim();
-    if (normalizedAdapterName !== "opencode-sdk") {
-      return runtimeOptions;
-    }
     const runtime = resolveRuntime(selectionId, adapterName);
     if (!runtime.providerId || !runtime.providerConfig) {
       return runtimeOptions;
@@ -157,10 +207,23 @@ export function createProviderKernel(options = {}) {
   }
 
   function createExecutionSession(input = {}) {
-    const adapterName = String(input.adapterName || "").trim();
-    const selectionId = String(input.selectionId || "").trim();
+    const normalizedInput = normalizeProviderSessionInput({
+      providerId: input.provider || input.selectionId,
+      sessionId: input.sessionId,
+      threadId: input.threadId,
+      model: input.model,
+      metadata: input.metadata || {},
+    });
+    const requestedAdapterName = String(input.adapterName || "").trim();
+    const selectionId = String(input.selectionId || input.provider || "").trim();
+    const runtime = resolveRuntime(selectionId, requestedAdapterName);
+    const adapterName = requestedAdapterName || runtime.providerEntry?.adapterId || "";
     const targetAdapter = options.adapters?.[adapterName] || null;
-    const runtime = resolveRuntime(selectionId, adapterName);
+    if (!runtime.providerEntry && !targetAdapter) {
+      throw new ProviderConfigurationError(`Unknown provider selection "${selectionId || adapterName || "default"}"`, {
+        providerId: selectionId || null,
+      });
+    }
     const explicitProviderId =
       String(input.provider || runtime.providerId || "").trim() || runtime.providerId || null;
     const explicitProviderConfig =
@@ -170,44 +233,70 @@ export function createProviderKernel(options = {}) {
     return createProviderSession(runtime.providerId, {
       providerRegistry: runtime.registry,
       adapter: targetAdapter,
-      sessionId: input.sessionId || null,
-      threadId: input.threadId || input.sessionId || null,
-      model: input.model || null,
-      metadata: input.metadata || {},
-      getProviderRunner: () => async (payload, runnerOptions = {}) => {
-        const execOptions = withRuntimeOptions(adapterName, selectionId, {
-          ...runnerOptions,
-          sessionId: payload.sessionId || runnerOptions.sessionId || null,
-          threadId: payload.threadId || runnerOptions.threadId || payload.sessionId || runnerOptions.sessionId || null,
-          model: payload.model || runnerOptions.model || null,
-          metadata: payload.metadata || runnerOptions.metadata || {},
-        });
-        const mergedProviderConfig =
-          explicitProviderConfig || execOptions.providerConfig
-            ? {
-                ...(execOptions.providerConfig || {}),
-                ...(explicitProviderConfig || {}),
-              }
-            : undefined;
-        return targetAdapter.exec(extractMessageFromPayload(payload), {
-          ...execOptions,
-          ...(explicitProviderId ? { provider: explicitProviderId } : {}),
-          ...(mergedProviderConfig ? { providerConfig: mergedProviderConfig } : {}),
-        });
-      },
+      sessionId: normalizedInput.sessionId,
+      threadId: normalizedInput.threadId,
+      model: normalizedInput.model,
+      metadata: normalizedInput.metadata,
+      getProviderRunner:
+        typeof options.getProviderRunner === "function"
+          ? options.getProviderRunner
+          : (
+            targetAdapter && typeof targetAdapter.exec === "function"
+              ? () => async (payload, runnerOptions = {}) => {
+                  const execOptions = withRuntimeOptions(adapterName, selectionId, {
+                    ...runnerOptions,
+                    sessionId: payload.sessionId || runnerOptions.sessionId || null,
+                    threadId: payload.threadId || runnerOptions.threadId || payload.sessionId || runnerOptions.sessionId || null,
+                    model: payload.model || runnerOptions.model || null,
+                    metadata: payload.metadata || runnerOptions.metadata || {},
+                  });
+                  const mergedProviderConfig =
+                    explicitProviderConfig || execOptions.providerConfig
+                      ? {
+                          ...(execOptions.providerConfig || {}),
+                          ...(explicitProviderConfig || {}),
+                          model:
+                            payload.model
+                            || runnerOptions.model
+                            || normalizedInput.model
+                            || execOptions.providerConfig?.model
+                            || explicitProviderConfig?.model
+                            || null,
+                        }
+                      : undefined;
+                  return targetAdapter.exec(extractMessageFromPayload(payload), {
+                    ...execOptions,
+                    ...(explicitProviderId ? { provider: explicitProviderId } : {}),
+                    ...(mergedProviderConfig ? { providerConfig: mergedProviderConfig } : {}),
+                  });
+                }
+              : null
+          ),
     });
   }
 
   return {
     createRegistry: createRegistryInstance,
+    getInventory() {
+      return createRegistryInstance().getInventory();
+    },
     listProviders() {
       return createRegistryInstance().listProviders();
+    },
+    listEnabledProviders() {
+      return createRegistryInstance().listEnabledProviders();
+    },
+    getRegistrySnapshot() {
+      return createRegistryInstance().getRegistrySnapshot();
     },
     resolveSelection(name) {
       return createRegistryInstance().resolveSelection(name);
     },
     resolveRuntime,
     withRuntimeOptions,
+    createSession(input = {}) {
+      return createExecutionSession(input);
+    },
     createExecutionSession,
   };
 }

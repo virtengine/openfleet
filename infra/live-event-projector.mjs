@@ -1,12 +1,11 @@
+import { SessionProjectionStore } from "./session-projection-store.mjs";
+import { ApprovalProjectionStore } from "./approval-projection-store.mjs";
+import { SubagentProjectionStore } from "./subagent-projection-store.mjs";
+
 function asText(value) {
   if (value == null) return null;
   const text = String(value).trim();
   return text || null;
-}
-
-function asNumber(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function cloneValue(value) {
@@ -40,10 +39,6 @@ function sortByUpdatedAtDescending(left, right) {
   return rightTime - leftTime;
 }
 
-function pickIdentity(event = {}) {
-  return asText(event.sessionId || event.threadId || event.taskId);
-}
-
 function hasArtifactIdentity(event = {}) {
   return Boolean(
     asText(event.artifactId)
@@ -53,26 +48,16 @@ function hasArtifactIdentity(event = {}) {
   );
 }
 
-function hasSubagentIdentity(event = {}) {
-  return Boolean(
-    asText(event.subagentId)
-    || asText(event.childSessionId)
-    || asText(event.childTaskId)
-    || asText(event.childRunId),
-  );
-}
-
 export class LiveEventProjector {
   constructor(options = {}) {
     this._recentLimit = Math.max(10, Math.trunc(Number(options.recentLimit) || 100));
     this._recentEvents = [];
-    this._sessions = new Map();
-    this._runs = new Map();
+    this._sessionStore = new SessionProjectionStore();
+    this._approvalStore = new ApprovalProjectionStore();
+    this._subagentStore = new SubagentProjectionStore();
     this._providers = new Map();
     this._tools = new Map();
-    this._approvals = new Map();
     this._artifacts = new Map();
-    this._subagents = new Map();
   }
 
   record(event = {}) {
@@ -101,98 +86,9 @@ export class LiveEventProjector {
       summary: asText(event.summary || event.reason || event.message),
     }, this._recentLimit);
 
-    const sessionKey = pickIdentity(event);
-    if (sessionKey) {
-      const sessionEntry = this._sessions.get(sessionKey) || {
-        id: sessionKey,
-        sessionId: asText(event.sessionId) || sessionKey,
-        taskId: asText(event.taskId),
-        threadId: asText(event.threadId),
-        runId: asText(event.runId),
-        rootRunId: asText(event.rootRunId),
-        workflowId: asText(event.workflowId),
-        workflowName: asText(event.workflowName),
-        providerId: asText(event.providerId),
-        modelId: asText(event.modelId),
-        status: null,
-        updatedAt: timestamp,
-        totalEvents: 0,
-        totalTokens: 0,
-        totalCostUsd: 0,
-        totalRetries: 0,
-        artifactMutations: 0,
-        subagentEvents: 0,
-        lastEventType: null,
-        lastToolName: null,
-        lastApprovalId: null,
-        lastArtifactPath: null,
-        childSessionIds: [],
-        childTaskIds: [],
-        childRunIds: [],
-      };
-      sessionEntry.updatedAt = timestamp;
-      sessionEntry.status = asText(event.status) || sessionEntry.status;
-      sessionEntry.providerId = asText(event.providerId) || sessionEntry.providerId;
-      sessionEntry.modelId = asText(event.modelId) || sessionEntry.modelId;
-      sessionEntry.lastEventType = asText(event.eventType || event.type) || sessionEntry.lastEventType;
-      sessionEntry.lastToolName = asText(event.toolName || event.toolId) || sessionEntry.lastToolName;
-      sessionEntry.lastApprovalId = asText(event.approvalId) || sessionEntry.lastApprovalId;
-      sessionEntry.totalEvents += 1;
-      sessionEntry.totalTokens += Number(event.tokenUsage?.totalTokens || 0);
-      sessionEntry.totalCostUsd += Number(event.costUsd || 0);
-      sessionEntry.totalRetries += Number(event.retryCount || 0);
-      if (hasArtifactIdentity(event)) {
-        sessionEntry.artifactMutations += 1;
-        sessionEntry.lastArtifactPath = asText(event.filePath || event.artifactPath) || sessionEntry.lastArtifactPath;
-      }
-      if (hasSubagentIdentity(event)) {
-        sessionEntry.subagentEvents += 1;
-        uniquePush(sessionEntry.childSessionIds, event.childSessionId);
-        uniquePush(sessionEntry.childTaskIds, event.childTaskId);
-        uniquePush(sessionEntry.childRunIds, event.childRunId);
-      }
-      this._sessions.set(sessionKey, sessionEntry);
-    }
-
-    const runKey = asText(event.runId || event.rootRunId || event.childRunId);
-    if (runKey) {
-      const runEntry = this._runs.get(runKey) || {
-        runId: runKey,
-        rootRunId: asText(event.rootRunId) || runKey,
-        parentRunId: asText(event.parentRunId),
-        threadId: asText(event.threadId),
-        sessionId: asText(event.sessionId),
-        workflowId: asText(event.workflowId),
-        workflowName: asText(event.workflowName),
-        status: null,
-        updatedAt: timestamp,
-        totalEvents: 0,
-        toolCalls: 0,
-        approvalCount: 0,
-        artifactMutations: 0,
-        subagentEvents: 0,
-        childSessionIds: [],
-        childTaskIds: [],
-        childRunIds: [],
-      };
-      runEntry.updatedAt = timestamp;
-      runEntry.status = asText(event.status) || runEntry.status;
-      runEntry.threadId = asText(event.threadId) || runEntry.threadId;
-      runEntry.sessionId = asText(event.sessionId) || runEntry.sessionId;
-      runEntry.totalEvents += 1;
-      if (asText(event.toolName || event.toolId)) runEntry.toolCalls += 1;
-      if (asText(event.approvalId)) runEntry.approvalCount += 1;
-      if (hasArtifactIdentity(event)) {
-        runEntry.artifactMutations += 1;
-      }
-      if (hasSubagentIdentity(event)) {
-        runEntry.subagentEvents += 1;
-        uniquePush(runEntry.childSessionIds, event.childSessionId);
-        uniquePush(runEntry.childTaskIds, event.childTaskId);
-        uniquePush(runEntry.childRunIds, event.childRunId);
-      }
-      this._runs.set(runKey, runEntry);
-    }
+    this._sessionStore.record(event);
+    this._approvalStore.record(event);
+    this._subagentStore.record(event);
 
     const providerKey = asText(event.providerId || event.modelId);
     if (providerKey) {
@@ -207,6 +103,8 @@ export class LiveEventProjector {
         totalLatencyMs: 0,
       };
       providerEntry.updatedAt = timestamp;
+      providerEntry.providerId = asText(event.providerId) || providerEntry.providerId;
+      providerEntry.modelId = asText(event.modelId) || providerEntry.modelId;
       providerEntry.totalEvents += 1;
       providerEntry.totalTokens += Number(event.tokenUsage?.totalTokens || 0);
       providerEntry.totalCostUsd += Number(event.costUsd || 0);
@@ -224,29 +122,18 @@ export class LiveEventProjector {
         totalCalls: 0,
         totalLatencyMs: 0,
         totalRetries: 0,
+        sessionIds: [],
+        runIds: [],
       };
       toolEntry.updatedAt = timestamp;
+      toolEntry.toolId = asText(event.toolId) || toolEntry.toolId;
+      toolEntry.toolName = asText(event.toolName || event.toolId) || toolEntry.toolName;
       toolEntry.totalCalls += 1;
       toolEntry.totalLatencyMs += Number(event.latencyMs || event.durationMs || 0);
       toolEntry.totalRetries += Number(event.retryCount || 0);
+      uniquePush(toolEntry.sessionIds, event.sessionId);
+      uniquePush(toolEntry.runIds, event.runId);
       this._tools.set(toolKey, toolEntry);
-    }
-
-    const approvalKey = asText(event.approvalId);
-    if (approvalKey) {
-      const approvalEntry = this._approvals.get(approvalKey) || {
-        approvalId: approvalKey,
-        sessionId: asText(event.sessionId),
-        runId: asText(event.runId),
-        taskId: asText(event.taskId),
-        status: null,
-        updatedAt: timestamp,
-        decisions: 0,
-      };
-      approvalEntry.updatedAt = timestamp;
-      approvalEntry.status = asText(event.status) || approvalEntry.status;
-      approvalEntry.decisions += 1;
-      this._approvals.set(approvalKey, approvalEntry);
     }
 
     const artifactKey = asText(event.artifactId || event.filePath || event.artifactPath || event.patchHash);
@@ -274,61 +161,37 @@ export class LiveEventProjector {
       artifactEntry.artifactPath = asText(event.artifactPath) || artifactEntry.artifactPath;
       artifactEntry.filePath = asText(event.filePath || event.artifactPath) || artifactEntry.filePath;
       artifactEntry.patchHash = asText(event.patchHash) || artifactEntry.patchHash;
+      artifactEntry.taskId = asText(event.taskId) || artifactEntry.taskId;
+      artifactEntry.sessionId = asText(event.sessionId) || artifactEntry.sessionId;
+      artifactEntry.runId = asText(event.runId) || artifactEntry.runId;
+      artifactEntry.workflowId = asText(event.workflowId) || artifactEntry.workflowId;
       this._artifacts.set(artifactKey, artifactEntry);
-    }
-
-    const subagentKey = asText(event.subagentId || event.childSessionId || event.childTaskId || event.childRunId);
-    if (subagentKey) {
-      const subagentEntry = this._subagents.get(subagentKey) || {
-        key: subagentKey,
-        subagentId: asText(event.subagentId),
-        childSessionId: asText(event.childSessionId),
-        childTaskId: asText(event.childTaskId),
-        childRunId: asText(event.childRunId),
-        parentSessionId: asText(event.parentSessionId || event.sessionId),
-        parentTaskId: asText(event.parentTaskId || event.taskId),
-        runId: asText(event.runId),
-        workflowId: asText(event.workflowId),
-        updatedAt: timestamp,
-        totalEvents: 0,
-        lastEventType: null,
-        status: null,
-      };
-      subagentEntry.updatedAt = timestamp;
-      subagentEntry.totalEvents += 1;
-      subagentEntry.lastEventType = asText(event.eventType || event.type) || subagentEntry.lastEventType;
-      subagentEntry.status = asText(event.status) || subagentEntry.status;
-      subagentEntry.subagentId = asText(event.subagentId) || subagentEntry.subagentId;
-      subagentEntry.childSessionId = asText(event.childSessionId) || subagentEntry.childSessionId;
-      subagentEntry.childTaskId = asText(event.childTaskId) || subagentEntry.childTaskId;
-      subagentEntry.childRunId = asText(event.childRunId) || subagentEntry.childRunId;
-      subagentEntry.parentSessionId = asText(event.parentSessionId || event.sessionId) || subagentEntry.parentSessionId;
-      subagentEntry.parentTaskId = asText(event.parentTaskId || event.taskId) || subagentEntry.parentTaskId;
-      this._subagents.set(subagentKey, subagentEntry);
+    } else if (hasArtifactIdentity(event)) {
+      // Defensive no-op to keep artifact handling explicit when identifiers are partial.
     }
   }
 
   getSnapshot() {
+    const sessionSnapshot = this._sessionStore.getSnapshot();
     return {
-      sessions: Array.from(this._sessions.values()).sort(sortByUpdatedAtDescending).map(cloneValue),
-      runs: Array.from(this._runs.values()).sort(sortByUpdatedAtDescending).map(cloneValue),
+      sessions: sessionSnapshot.sessions,
+      runs: sessionSnapshot.runs,
       providers: Array.from(this._providers.values()).sort(sortByUpdatedAtDescending).map(cloneValue),
       tools: Array.from(this._tools.values()).sort(sortByUpdatedAtDescending).map(cloneValue),
-      approvals: Array.from(this._approvals.values()).sort(sortByUpdatedAtDescending).map(cloneValue),
+      approvals: this._approvalStore.getSnapshot(),
       artifacts: Array.from(this._artifacts.values()).sort(sortByUpdatedAtDescending).map(cloneValue),
-      subagents: Array.from(this._subagents.values()).sort(sortByUpdatedAtDescending).map(cloneValue),
+      subagents: this._subagentStore.getSnapshot(),
       recentEvents: this._recentEvents.map(cloneValue),
     };
   }
 
   reset() {
     this._recentEvents = [];
-    this._sessions.clear();
-    this._runs.clear();
+    this._sessionStore.reset();
+    this._approvalStore.reset();
+    this._subagentStore.reset();
     this._providers.clear();
     this._tools.clear();
-    this._approvals.clear();
     this._artifacts.clear();
-    this._subagents.clear();
   }
 }

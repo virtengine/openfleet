@@ -31,6 +31,7 @@ import {
   listHarnessTelemetryEvents,
   recordHarnessTelemetryEvent,
 } from "../infra/session-telemetry.mjs";
+import { normalizeCanonicalBusEvent } from "../infra/event-schema.mjs";
 
 const TAG = "[agent-event-bus]";
 
@@ -657,49 +658,10 @@ export class AgentEventBus {
   }
 
   _recordCanonicalEvent(event) {
-    const payload = event?.payload && typeof event.payload === "object" ? event.payload : {};
-    recordHarnessTelemetryEvent({
-      id: payload.eventId || payload.id || undefined,
-      timestamp: new Date(Number(event.ts || Date.now())).toISOString(),
-      ts: Number(event.ts || Date.now()),
-      type: event.type,
-      eventType: event.type,
-      source: "agent-event-bus",
-      category: "agent",
-      taskId: event.taskId,
-      sessionId: payload.sessionId || payload.threadId || event.taskId,
-      threadId: payload.threadId || null,
-      runId: payload.runId || null,
-      rootRunId: payload.rootRunId || null,
-      parentRunId: payload.parentRunId || null,
-      workflowId: payload.workflowId || null,
-      workflowName: payload.workflowName || null,
-      providerId: payload.providerId || payload.provider || payload.sdk || null,
-      providerKind: payload.providerKind || null,
-      modelId: payload.modelId || null,
-      requestId: payload.requestId || null,
-      traceId: payload.traceId || null,
-      spanId: payload.spanId || null,
-      parentSpanId: payload.parentSpanId || null,
-      toolId: payload.toolId || null,
-      toolName: payload.toolName || payload.hookId || null,
-      approvalId: payload.approvalId || payload.requestId || null,
-      actor: payload.actor || payload.source || "agent-event-bus",
-      status: payload.status || null,
-      attempt: payload.attempt || null,
-      retryCount: payload.retryCount || null,
-      durationMs: payload.durationMs || null,
-      latencyMs: payload.latencyMs || payload.durationMs || null,
-      costUsd: payload.costUsd || payload.cost || null,
-      tokenUsage: payload.tokenUsage || payload.usage || null,
-      summary: payload.summary || payload.title || null,
-      reason: payload.reason || payload.error || null,
-      message: payload.message || payload.error || null,
-      payload,
-      meta: {
-        source: "agent-event-bus",
-      },
-    }, { configDir: this._configDir });
+    recordHarnessTelemetryEvent(
+      normalizeCanonicalBusEvent(event),
+      { configDir: this._configDir },
+    );
   }
 
   _updateRetryQueue(action, meta = {}) {
@@ -1165,4 +1127,3 @@ export class AgentEventBus {
 export function createAgentEventBus(options) {
   return new AgentEventBus(options);
 }
-

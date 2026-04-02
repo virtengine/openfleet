@@ -19,6 +19,7 @@
 
 import { signal, computed } from "@preact/signals";
 import { apiFetch, onWsMessage } from "./api.js";
+import { buildHarnessTelemetryPath } from "./harness-client.js";
 import {
   buildSessionsApiPath,
   getSessionRuntimeState,
@@ -41,9 +42,9 @@ const LIVENESS_POLL_INTERVAL = 15_000;
 
 /** All event type prefixes we listen for on the WS */
 const AGENT_EVENT_PREFIX = "agent:";
-const HARNESS_EVENTS_PATH = "/api/telemetry/harness/events";
-const HARNESS_LIVE_PATH = "/api/telemetry/harness/live";
-const HARNESS_SUMMARY_PATH = "/api/telemetry/harness/summary";
+const HARNESS_EVENTS_PATH = buildHarnessTelemetryPath("events");
+const HARNESS_LIVE_PATH = buildHarnessTelemetryPath("live");
+const HARNESS_SUMMARY_PATH = buildHarnessTelemetryPath("summary");
 
 /* ══════════════════════════════════════════════════════════════
  *  REACTIVE SIGNALS — single source of truth for UI components
@@ -485,25 +486,6 @@ export async function fetchAgentEvents(filter = {}) {
       return res;
     }
   } catch {
-    // Fall through to the legacy bus endpoint below.
-  }
-
-  try {
-    const params = new URLSearchParams();
-    if (filter.taskId) params.set("taskId", filter.taskId);
-    if (filter.type) params.set("type", filter.type);
-    if (filter.since) params.set("since", String(filter.since));
-    if (filter.limit) params.set("limit", String(filter.limit));
-    const qs = params.toString();
-    const url = `/api/agents/events${qs ? "?" + qs : ""}`;
-    const res = await apiFetch(url, { _silent: true });
-    if (res?.ok && Array.isArray(res.events)) {
-      _setTrackedEvents(
-        res.events.map((entry) => _normalizeTrackedEvent(entry)).reverse(),
-      );
-    }
-    return res;
-  } catch {
     return null;
   }
 }
@@ -543,19 +525,6 @@ export async function fetchAgentErrors(taskId) {
       };
     }
   } catch {
-    // Fall through to the legacy bus endpoint below.
-  }
-
-  try {
-    const url = taskId
-      ? `/api/agents/events/errors?taskId=${encodeURIComponent(taskId)}`
-      : "/api/agents/events/errors";
-    const res = await apiFetch(url, { _silent: true });
-    if (res.ok && !taskId && res.patterns) {
-      agentErrors.value = res.patterns;
-    }
-    return res;
-  } catch {
     return null;
   }
 }
@@ -573,7 +542,7 @@ export async function fetchAgentLiveness() {
       return res;
     }
   } catch {
-    // Fall through to harness live / legacy liveness below.
+    // Fall through to harness live projection below.
   }
 
   try {
@@ -595,18 +564,6 @@ export async function fetchAgentLiveness() {
       return res;
     }
   } catch {
-    // Fall through to the legacy liveness endpoint below.
-  }
-
-  try {
-    const res = await apiFetch("/api/agents/events/liveness", {
-      _silent: true,
-    });
-    if (res.ok && Array.isArray(res.agents)) {
-      agentLiveness.value = res.agents;
-    }
-    return res;
-  } catch {
     return null;
   }
 }
@@ -623,18 +580,6 @@ export async function fetchEventBusStatus() {
       _setHarnessStatus(res.data);
       return res;
     }
-  } catch {
-    // Fall through to the legacy bus endpoint below.
-  }
-
-  try {
-    const res = await apiFetch("/api/agents/events/status", {
-      _silent: true,
-    });
-    if (res.ok) {
-      eventBusStatus.value = res;
-    }
-    return res;
   } catch {
     return null;
   }

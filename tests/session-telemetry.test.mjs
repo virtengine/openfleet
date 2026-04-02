@@ -9,6 +9,7 @@ import {
   flushHarnessTelemetryRuntimeForTests,
   resetHarnessObservabilitySpinesForTests,
 } from "../infra/session-telemetry.mjs";
+import { createReplayReader } from "../infra/replay-reader.mjs";
 
 describe("session telemetry spine", () => {
   const tempDirs = [];
@@ -286,6 +287,104 @@ describe("session telemetry spine", () => {
       processedEvents: 106,
       persistedEvents: 106,
       inMemoryEvents: 100,
+    }));
+  });
+
+  it("rebuilds the same live lineage projections from persisted canonical events", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "bosun-telemetry-replay-"));
+    tempDirs.push(configDir);
+    const spine = createHarnessObservabilitySpine({
+      persist: true,
+      configDir,
+      maxPersistBatchEvents: 2,
+    });
+
+    spine.recordEvent({
+      timestamp: "2026-04-03T09:00:00.000Z",
+      eventType: "provider.turn.completed",
+      source: "agent-event-bus",
+      taskId: "task-replay-1",
+      sessionId: "session-replay-1",
+      rootSessionId: "session-root-1",
+      runId: "run-replay-1",
+      rootRunId: "run-root-1",
+      providerId: "openai-api",
+      modelId: "gpt-5.4",
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+      },
+      costUsd: 0.03,
+      status: "completed",
+    });
+    spine.recordEvent({
+      timestamp: "2026-04-03T09:00:01.000Z",
+      eventType: "approval.requested",
+      source: "workflow-execution-ledger",
+      taskId: "task-replay-1",
+      sessionId: "session-replay-1",
+      rootSessionId: "session-root-1",
+      runId: "run-replay-1",
+      rootRunId: "run-root-1",
+      approvalId: "approval-replay-1",
+      toolId: "push_branch",
+      toolName: "push_branch",
+      actor: "operator",
+      status: "pending",
+    });
+    spine.recordEvent({
+      timestamp: "2026-04-03T09:00:02.000Z",
+      eventType: "subagent.completed",
+      source: "internal-harness-control-plane",
+      taskId: "task-replay-1",
+      sessionId: "session-replay-1",
+      rootSessionId: "session-root-1",
+      runId: "run-replay-1",
+      rootRunId: "run-root-1",
+      subagentId: "subagent-replay-1",
+      childSessionId: "session-child-replay-1",
+      childTaskId: "task-child-replay-1",
+      childRunId: "run-child-replay-1",
+      status: "completed",
+    });
+
+    await flushHarnessTelemetryRuntimeForTests();
+
+    const live = spine.getLiveSnapshot();
+    const replay = createReplayReader({ configDir }).readTelemetryProjection({
+      sessionId: "session-replay-1",
+    });
+
+    expect(replay.live.sessions).toEqual(live.sessions);
+    expect(replay.live.runs).toEqual(live.runs);
+    expect(replay.live.approvals).toEqual(live.approvals);
+    expect(replay.live.subagents).toEqual(live.subagents);
+    expect(replay.providers).toEqual(spine.getProviderUsageSummary());
+    expect(replay.live.sessions[0]).toEqual(expect.objectContaining({
+      sessionId: "session-replay-1",
+      rootSessionId: "session-root-1",
+      providerIds: ["openai-api"],
+      approvalIds: ["approval-replay-1"],
+      subagentIds: ["subagent-replay-1"],
+    }));
+    expect(replay.live.approvals[0]).toEqual(expect.objectContaining({
+      approvalId: "approval-replay-1",
+      sessionId: "session-replay-1",
+      rootSessionId: "session-root-1",
+      runId: "run-replay-1",
+      rootRunId: "run-root-1",
+      toolName: "push_branch",
+    }));
+    expect(replay.live.subagents[0]).toEqual(expect.objectContaining({
+      subagentId: "subagent-replay-1",
+      childSessionId: "session-child-replay-1",
+      childTaskId: "task-child-replay-1",
+      childRunId: "run-child-replay-1",
+      parentSessionId: "session-replay-1",
+      rootSessionId: "session-root-1",
+      runId: "run-replay-1",
+      rootRunId: "run-root-1",
     }));
   });
 });

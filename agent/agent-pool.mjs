@@ -6,6 +6,11 @@
 /**
  * agent-pool.mjs — Universal SDK-Aware Ephemeral Agent Pool
  *
+ * Transitional architecture note:
+ * Harness lifecycle ownership is canonical in `session-manager.mjs`,
+ * `internal-harness-runtime.mjs`, and `agent/harness/*`. Keep the harness
+ * exports in this file as compatibility wrappers only.
+ *
  * WHY THIS EXISTS:
  * ────────────────
  * The primary agent in monitor.mjs is a long-lived singleton thread.
@@ -69,7 +74,11 @@ import {
   normalizeContextShreddingSessionType,
 } from "../workspace/context-cache.mjs";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
-import { createInternalHarnessSession as createHarnessRuntimeSession } from "./internal-harness-runtime.mjs";
+import {
+  buildInternalHarnessTurnExecutor,
+  createInternalHarnessSession as createHarnessRuntimeSession,
+} from "./internal-harness-runtime.mjs";
+import { buildHarnessCompileOptions } from "./harness/runtime-config.mjs";
 import {
   createCompiledHarnessSession as createManagedCompiledHarnessSession,
   getBosunSessionManager,
@@ -87,18 +96,18 @@ import {
 } from "./subagent-control.mjs";
 import {
   clearThreadRegistry as clearManagedThreadRegistry,
+  deleteThreadRecord as deleteManagedThreadRecord,
   ensureThreadRegistryLoaded as ensureManagedThreadRegistryLoaded,
   getActiveThreads as getManagedActiveThreads,
   getThreadRecord as getManagedThreadRecord,
   invalidateThread as invalidateManagedThread,
   invalidateThreadAsync as invalidateManagedThreadAsync,
   MAX_THREAD_TURNS,
-  persistThreadRegistry,
   pruneAllExhaustedThreads as pruneManagedAllExhaustedThreads,
+  setThreadRecord as setManagedThreadRecord,
   sdkSupportsPersistentThreads,
   THREAD_MAX_ABSOLUTE_AGE_MS,
   THREAD_MAX_AGE_MS,
-  threadRegistry,
 } from "./thread-registry.mjs";
 import {
   bufferItemsWithBosunHotPathExec,
@@ -775,6 +784,12 @@ function truncateItemForStorage(item, maxChars) {
   }
 
   return next;
+}
+
+function clampNumeric(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
 }
 
 async function finalizeBufferedTurnItems(items, limits = {}) {
@@ -3823,8 +3838,51 @@ export async function execPooledPrompt(userMessage, options = {}) {
 
 const THREAD_EXHAUSTION_WARNING_THRESHOLD = Math.floor(MAX_THREAD_TURNS * 0.8);
 
-async function saveThreadRegistry() {
-  return persistThreadRegistry();
+function getPersistentThreadRecord(taskKey) {
+  return getManagedThreadRecord(taskKey);
+}
+
+function setPersistentThreadRecord(taskKey, record = {}) {
+  return setManagedThreadRecord(taskKey, record);
+}
+
+function deletePersistentThreadRecord(taskKey) {
+  return deleteManagedThreadRecord(taskKey);
+}
+
+function beginManagedExternalSession(sessionManager, sessionId, input = {}) {
+  if (!sessionId) return null;
+  return sessionManager.beginExternalSession({
+    sessionId,
+    parentSessionId: input.parentSessionId,
+    rootSessionId: input.rootSessionId,
+    scope: input.scope || "task",
+    sessionType: input.sessionType || "task",
+    providerSelection: input.providerSelection || "",
+    adapterName: input.adapterName || "",
+    taskKey: input.taskKey || sessionId,
+    cwd: input.cwd || "",
+    metadata: input.metadata,
+    source: input.source || "agent-pool",
+  });
+}
+
+function markManagedExternalSession(sessionManager, sessionId, input = {}) {
+  if (!sessionId) return null;
+  return sessionManager.continueSession(sessionId, {
+    lifecycleState: input.lifecycleState || "running",
+    action: input.action || "launch",
+  });
+}
+
+function registerManagedExternalExecution(sessionManager, sessionId, input = {}) {
+  if (!sessionId) return null;
+  return sessionManager.registerExecution(sessionId, input);
+}
+
+function finalizeManagedExternalExecution(sessionManager, sessionId, input = {}) {
+  if (!sessionId) return null;
+  return sessionManager.finalizeExternalExecution(sessionId, input);
 }
 
 export async function ensureThreadRegistryLoaded() {
@@ -4177,35 +4235,29 @@ export async function launchOrResumeThread(
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
   const sessionManager = getBosunSessionManager();
+  const existingThreadRecord = taskKey ? getPersistentThreadRecord(taskKey) : null;
   const managedSessionMetadata = {
     source: "agent-pool",
     ...toPlainObject(restExtra.metadata),
   };
   const managedSessionId = String(restExtra.sessionId || taskKey || "").trim() || null;
   if (managedSessionId) {
-    if (restExtra.parentSessionId) {
-      sessionManager.createChildSession(restExtra.parentSessionId, {
-        sessionId: managedSessionId,
-        scope: restExtra.sessionScope || "task",
-        sessionType: restExtra.sessionType || "task",
-        providerSelection: restExtra.sdk || "",
-        adapterName: restExtra.sdk || "",
-        taskKey,
-        cwd,
-        metadata: managedSessionMetadata,
-      });
-    } else {
-      sessionManager.ensureSession({
-        sessionId: managedSessionId,
-        scope: restExtra.sessionScope || "task",
-        sessionType: restExtra.sessionType || "task",
-        providerSelection: restExtra.sdk || "",
-        adapterName: restExtra.sdk || "",
-        taskKey,
-        cwd,
-        metadata: managedSessionMetadata,
-      });
-    }
+    beginManagedExternalSession(sessionManager, managedSessionId, {
+      parentSessionId: restExtra.parentSessionId,
+      rootSessionId: restExtra.rootSessionId,
+      scope: restExtra.sessionScope || "task",
+      sessionType: restExtra.sessionType || "task",
+      providerSelection: restExtra.sdk || "",
+      adapterName: restExtra.sdk || "",
+      taskKey,
+      cwd,
+      metadata: managedSessionMetadata,
+      source: "agent-pool",
+    });
+    markManagedExternalSession(sessionManager, managedSessionId, {
+      lifecycleState: existingThreadRecord?.alive && existingThreadRecord?.threadId ? "resuming" : "running",
+      action: existingThreadRecord?.alive && existingThreadRecord?.threadId ? "resume" : "launch",
+    });
   }
   const resolvedGithubToken = await resolveGithubSessionToken();
   const restBaseEnv =
@@ -4238,7 +4290,7 @@ export async function launchOrResumeThread(
   }
 
   // Check registry for existing thread
-  const existing = threadRegistry.get(taskKey);
+  const existing = getPersistentThreadRecord(taskKey);
   if (existing && existing.alive && existing.threadId) {
     const turnsRemaining = MAX_THREAD_TURNS - existing.turnCount;
     const shouldForceRefreshMonitorMonitorThread =
@@ -4249,8 +4301,7 @@ export async function launchOrResumeThread(
         `${TAG} proactively refreshing monitor-monitor thread with ${turnsRemaining} turns remaining (threshold=${MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING})`,
       );
       existing.alive = false;
-      threadRegistry.set(taskKey, existing);
-      saveThreadRegistry().catch(() => {});
+      setPersistentThreadRecord(taskKey, existing);
     }
 
     // Approaching-exhaustion warning (non-blocking — still proceeds with resume)
@@ -4270,8 +4321,7 @@ export async function launchOrResumeThread(
         `${TAG} thread for task "${taskKey}" exceeded ${MAX_THREAD_TURNS} turns (has ${existing.turnCount}) — invalidating and starting fresh`,
       );
       existing.alive = false;
-      threadRegistry.set(taskKey, existing);
-      saveThreadRegistry().catch(() => {});
+      setPersistentThreadRecord(taskKey, existing);
       // Fall through to fresh launch below
     } else if (
       existing.alive &&
@@ -4281,8 +4331,7 @@ export async function launchOrResumeThread(
         `${TAG} thread for task "${taskKey}" exceeded absolute age limit — invalidating and starting fresh`,
       );
       existing.alive = false;
-      threadRegistry.set(taskKey, existing);
-      saveThreadRegistry().catch(() => {});
+      setPersistentThreadRecord(taskKey, existing);
       // Fall through to fresh launch below
     } else {
       const sdkName = restExtra.sdk || existing.sdk || resolvePoolSdkName();
@@ -4306,8 +4355,16 @@ export async function launchOrResumeThread(
           existing.lastUsedAt = Date.now();
           existing.lastError = null;
           if (result.threadId) existing.threadId = result.threadId;
-          threadRegistry.set(taskKey, existing);
-          saveThreadRegistry().catch(() => {});
+          setPersistentThreadRecord(taskKey, existing);
+          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
+            success: true,
+            status: "completed",
+            threadId: existing.threadId,
+            result: {
+              ...result,
+              resumed: true,
+            },
+          });
           return { ...result, resumed: true };
         }
 
@@ -4321,16 +4378,15 @@ export async function launchOrResumeThread(
           console.warn(
             `${TAG} resume failed for task "${taskKey}" with stale or corrupted state: ${result.error}. Dropping cached thread metadata and starting fresh.`,
           );
-          threadRegistry.delete(taskKey);
+          deletePersistentThreadRecord(taskKey);
         } else {
           console.warn(
             `${TAG} resume failed for task "${taskKey}": ${result.error}. Starting fresh.`,
           );
           existing.alive = false;
           existing.lastError = result.error || existing.lastError || null;
-          threadRegistry.set(taskKey, existing);
+          setPersistentThreadRecord(taskKey, existing);
         }
-        saveThreadRegistry().catch(() => {});
       } else if (sdkName === "copilot" && existing.sdk === "copilot") {
         console.log(
           `${TAG} resuming Copilot session ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
@@ -4349,8 +4405,16 @@ export async function launchOrResumeThread(
           existing.lastError = null;
           if (result.threadId) existing.threadId = result.threadId;
           existing.alive = !!existing.threadId;
-          threadRegistry.set(taskKey, existing);
-          saveThreadRegistry().catch(() => {});
+          setPersistentThreadRecord(taskKey, existing);
+          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
+            success: true,
+            status: "completed",
+            threadId: existing.threadId,
+            result: {
+              ...result,
+              resumed: true,
+            },
+          });
           return { ...result, resumed: true };
         }
 
@@ -4359,8 +4423,7 @@ export async function launchOrResumeThread(
         );
         existing.alive = false;
         existing.lastError = result.error || existing.lastError || null;
-        threadRegistry.set(taskKey, existing);
-        saveThreadRegistry().catch(() => {});
+        setPersistentThreadRecord(taskKey, existing);
       } else if (sdkName === "claude" && existing.sdk === "claude") {
         console.log(
           `${TAG} resuming Claude session ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
@@ -4379,8 +4442,16 @@ export async function launchOrResumeThread(
           existing.lastError = null;
           if (result.threadId) existing.threadId = result.threadId;
           existing.alive = !!existing.threadId;
-          threadRegistry.set(taskKey, existing);
-          saveThreadRegistry().catch(() => {});
+          setPersistentThreadRecord(taskKey, existing);
+          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
+            success: true,
+            status: "completed",
+            threadId: existing.threadId,
+            result: {
+              ...result,
+              resumed: true,
+            },
+          });
           return { ...result, resumed: true };
         }
 
@@ -4389,8 +4460,7 @@ export async function launchOrResumeThread(
         );
         existing.alive = false;
         existing.lastError = result.error || existing.lastError || null;
-        threadRegistry.set(taskKey, existing);
-        saveThreadRegistry().catch(() => {});
+        setPersistentThreadRecord(taskKey, existing);
       } else if (sdkName === "opencode" && existing.sdk === "opencode") {
         console.log(
           `${TAG} resuming OpenCode session ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
@@ -4412,8 +4482,16 @@ export async function launchOrResumeThread(
           existing.lastError = null;
           if (result.threadId) existing.threadId = result.threadId;
           existing.alive = !!existing.threadId;
-          threadRegistry.set(taskKey, existing);
-          saveThreadRegistry().catch(() => {});
+          setPersistentThreadRecord(taskKey, existing);
+          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
+            success: true,
+            status: "completed",
+            threadId: existing.threadId,
+            result: {
+              ...result,
+              resumed: true,
+            },
+          });
           return { ...result, resumed: true };
         }
 
@@ -4422,16 +4500,14 @@ export async function launchOrResumeThread(
         );
         existing.alive = false;
         existing.lastError = result.error || existing.lastError || null;
-        threadRegistry.set(taskKey, existing);
-        saveThreadRegistry().catch(() => {});
+        setPersistentThreadRecord(taskKey, existing);
       } else if (existing.sdk !== sdkName) {
         // SDK changed — invalidate old thread
         console.log(
           `${TAG} SDK changed from ${existing.sdk} to ${sdkName} for task "${taskKey}", starting fresh`,
         );
         existing.alive = false;
-        threadRegistry.set(taskKey, existing);
-        saveThreadRegistry().catch(() => {});
+        setPersistentThreadRecord(taskKey, existing);
       } else {
         // Non-Codex SDK: use context-carry resume
         console.log(
@@ -4450,8 +4526,16 @@ export async function launchOrResumeThread(
           existing.turnCount += 1;
           existing.lastUsedAt = Date.now();
           existing.lastError = null;
-          threadRegistry.set(taskKey, existing);
-          saveThreadRegistry().catch(() => {});
+          setPersistentThreadRecord(taskKey, existing);
+          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
+            success: true,
+            status: "completed",
+            threadId: existing.threadId,
+            result: {
+              ...result,
+              resumed: true,
+            },
+          });
           return { ...result, resumed: true };
         }
 
@@ -4460,8 +4544,7 @@ export async function launchOrResumeThread(
         );
         existing.alive = false;
         existing.lastError = result.error || existing.lastError || null;
-        threadRegistry.set(taskKey, existing);
-        saveThreadRegistry().catch(() => {});
+        setPersistentThreadRecord(taskKey, existing);
       }
     } // close else for turn-count / absolute-age guard
   }
@@ -4479,10 +4562,10 @@ export async function launchOrResumeThread(
     const sdkCanPersist = sdkSupportsPersistentThreads(resolvedSdk);
 
     if (threadId && sdkCanPersist) {
-      const existing = threadRegistry.get(taskKey);
+      const existing = getPersistentThreadRecord(taskKey);
       const createdAt = existing?.createdAt || Date.now();
       const turnCount = Number(existing?.turnCount || 1);
-      threadRegistry.set(taskKey, {
+      setPersistentThreadRecord(taskKey, {
         threadId,
         sdk: resolvedSdk,
         taskKey,
@@ -4493,7 +4576,6 @@ export async function launchOrResumeThread(
         lastError: null,
         alive: true,
       });
-      saveThreadRegistry().catch(() => {});
     }
     if (callerOnThreadReady) {
       try {
@@ -4503,7 +4585,7 @@ export async function launchOrResumeThread(
       }
     }
     if (managedSessionId) {
-      sessionManager.registerExecution(managedSessionId, {
+      registerManagedExternalExecution(sessionManager, managedSessionId, {
         scope: launchExtra.sessionScope || "task",
         sessionType: launchExtra.sessionType || "task",
         providerSelection: resolvedSdk,
@@ -4525,7 +4607,7 @@ export async function launchOrResumeThread(
   );
 
   // Register/update thread record for future resume
-  const existingRecord = threadRegistry.get(taskKey);
+  const existingRecord = getPersistentThreadRecord(taskKey);
   const resultSdk =
     result.sdk ||
     launchExtra.sdk ||
@@ -4549,10 +4631,9 @@ export async function launchOrResumeThread(
     lastError: result.success ? null : result.error,
     alive: result.success && sdkCanPersist && !!finalThreadId,
   };
-  threadRegistry.set(taskKey, record);
-  saveThreadRegistry().catch(() => {});
+  setPersistentThreadRecord(taskKey, record);
   if (managedSessionId) {
-    sessionManager.registerExecution(managedSessionId, {
+    registerManagedExternalExecution(sessionManager, managedSessionId, {
       scope: restExtra.sessionScope || "task",
       sessionType: restExtra.sessionType || "task",
       providerSelection: resultSdk,
@@ -4564,6 +4645,16 @@ export async function launchOrResumeThread(
       error: result.success ? null : result.error,
       metadata: {
         ...managedSessionMetadata,
+        resumed: false,
+      },
+    });
+    finalizeManagedExternalExecution(sessionManager, managedSessionId, {
+      success: result.success,
+      status: result.success ? "completed" : "failed",
+      threadId: finalThreadId,
+      error: result.success ? null : result.error,
+      result: {
+        ...result,
         resumed: false,
       },
     });
@@ -5003,153 +5094,55 @@ function formatHarnessValidationError(validationReport) {
     .join("\n");
 }
 
-function buildHarnessCompileOptions(options = {}) {
-  return {
-    defaultAgentId: options.defaultAgentId,
-    defaultTaskKey: options.defaultTaskKey,
-    defaultSessionType: options.defaultSessionType || options.sessionType || "task",
-    defaultSdk: options.sdk,
-    defaultModel: options.model,
-    defaultCwd: options.cwd || REPO_ROOT,
-  };
-}
-
-function normalizeHarnessTurnResult(result, context = {}) {
-  const raw = result && typeof result === "object"
-    ? { ...result }
-    : {
-        output: result == null ? "" : String(result),
-      };
-  const success = raw.success !== false;
-  return {
-    ...raw,
-    success,
-    outcome: toTrimmedString(raw.outcome || raw.transitionOutcome || raw.status || (success ? "success" : "failure")).toLowerCase() || (success ? "success" : "failure"),
-    status: toTrimmedString(raw.status || (success ? "completed" : "failed")) || (success ? "completed" : "failed"),
-    stageId: toTrimmedString(raw.stageId || context.stageId || ""),
-    mode: toTrimmedString(raw.mode || context.mode || ""),
-    threadId: raw.threadId || null,
-  };
-}
-
 function buildHarnessTurnExecutor(options = {}) {
-  if (typeof options.turnExecutor === "function") {
-    return options.turnExecutor;
-  }
-
-  return async function executeHarnessTurn({
-    profile,
-    stage,
-    taskKey,
-    prompt,
-    mode,
-    timeoutMs,
-  }) {
-    const cwd = stage.cwd || options.cwd || profile.cwd || REPO_ROOT;
-    const rawTimeoutMs = timeoutMs || stage.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS;
-    const resolvedTimeoutMs = normalizeHarnessTimeoutMs(rawTimeoutMs) ?? DEFAULT_TIMEOUT_MS;
-    const sessionType = stage.sessionType || profile.sessionType || options.sessionType || "task";
-    const sdk = stage.sdk || options.sdk || profile.sdk || undefined;
-    const model = stage.model || options.model || profile.model || undefined;
-    const stageTaskKey = stage.taskKey || taskKey || profile.taskKey || profile.agentId || stage.id;
-    const sharedOptions = {
-      cwd,
-      timeoutMs: resolvedTimeoutMs,
-      sdk,
-      model,
-      mcpServers: options.mcpServers,
-      onEvent: options.onEvent,
-      sessionType,
-      forceContextShredding: options.forceContextShredding === true,
-      skipContextShredding: options.skipContextShredding === true,
-      compressEphemeralItems: options.compressEphemeralItems,
-      abortController: options.abortController || null,
-      slotOwnerKey: options.slotOwnerKey,
-      slotMeta: options.slotMeta,
-      slotMaxParallel: options.slotMaxParallel,
-      onSlotQueued: options.onSlotQueued,
-      onSlotAcquired: options.onSlotAcquired,
-      onSlotReleased: options.onSlotReleased,
-    };
-
-    if (mode === "initial") {
-      const result = await execWithRetry(prompt, {
-        ...sharedOptions,
-        taskKey: stageTaskKey,
-        maxRetries: stage.maxRetries,
-        maxContinues: stage.maxContinues,
-      });
-      return normalizeHarnessTurnResult(result, {
-        stageId: stage.id,
-        mode,
-      });
-    }
-
-    const result = await launchOrResumeThread(prompt, cwd, resolvedTimeoutMs, {
-      taskKey: stageTaskKey,
-      sdk: sharedOptions.sdk,
-      model: sharedOptions.model,
-      mcpServers: sharedOptions.mcpServers,
-      sessionType: sharedOptions.sessionType,
-      forceContextShredding: sharedOptions.forceContextShredding,
-      skipContextShredding: sharedOptions.skipContextShredding,
-      onEvent: sharedOptions.onEvent,
-      abortController: sharedOptions.abortController,
-      slotOwnerKey: sharedOptions.slotOwnerKey,
-      slotMeta: sharedOptions.slotMeta,
-      slotMaxParallel: sharedOptions.slotMaxParallel,
-      onSlotQueued: sharedOptions.onSlotQueued,
-      onSlotAcquired: sharedOptions.onSlotAcquired,
-      onSlotReleased: sharedOptions.onSlotReleased,
-      ignoreSdkCooldown: true,
-    });
-    return normalizeHarnessTurnResult(result, {
-      stageId: stage.id,
-      mode,
-    });
-  };
+  return buildInternalHarnessTurnExecutor({
+    ...options,
+    defaultCwd: options.cwd || REPO_ROOT,
+    defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+    normalizeTimeoutMs: normalizeHarnessTimeoutMs,
+    execWithRetry,
+    launchOrResumeThread,
+  });
 }
 
 export function compileInternalHarnessSource(source, options = {}) {
-  return compileInternalHarnessProfile(source, buildHarnessCompileOptions(options));
+  return compileInternalHarnessProfile(source, buildHarnessCompileOptions({
+    ...options,
+    cwd: options.cwd || REPO_ROOT,
+  }));
+}
+
+function buildHarnessFacadeOptions(options = {}, overrides = {}) {
+  return {
+    ...options,
+    ...overrides,
+    onHarnessEvent: overrides.onHarnessEvent ?? options.onHarnessEvent,
+    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
+    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
+  };
 }
 
 export function createCompiledInternalHarnessSession(compiledProfile, options = {}) {
   const normalizedTimeoutMs = normalizeHarnessTimeoutMs(options.timeoutMs);
-  return createManagedCompiledHarnessSession(compiledProfile, {
-    ...options,
+  return createManagedCompiledHarnessSession(compiledProfile, buildHarnessFacadeOptions(options, {
     timeoutMs: normalizedTimeoutMs ?? options.timeoutMs,
-    onHarnessEvent: options.onHarnessEvent,
-    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
-    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
-  });
+  }));
 }
 
 export function createInternalHarnessSession(profileSource, options = {}) {
-  return createManagedHarnessSession(profileSource, {
-    ...options,
+  return createManagedHarnessSession(profileSource, buildHarnessFacadeOptions(options, {
     compileHarnessSource: (source, compileOptions) => compileInternalHarnessSource(source, compileOptions),
-    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
-    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
-  });
+  }));
 }
 
 export async function runCompiledInternalHarnessProfile(compiledProfile, options = {}) {
-  return runManagedCompiledHarnessSession(compiledProfile, {
-    ...options,
-    onHarnessEvent: options.onHarnessEvent,
-    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
-    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
-  });
+  return runManagedCompiledHarnessSession(compiledProfile, buildHarnessFacadeOptions(options));
 }
 
 export async function runInternalHarnessProfile(profileSource, options = {}) {
-  return runManagedHarnessSession(profileSource, {
-    ...options,
+  return runManagedHarnessSession(profileSource, buildHarnessFacadeOptions(options, {
     compileHarnessSource: (source, compileOptions) => compileInternalHarnessSource(source, compileOptions),
-    steerActiveTurn: (taskKey, prompt) => steerActiveThread(taskKey, prompt),
-    buildTurnExecutor: (sessionOptions) => buildHarnessTurnExecutor(sessionOptions),
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -5199,7 +5192,7 @@ export function invalidateThread(taskKey) {
  * @param {string} reason
  */
 export function forceNewThread(taskKey, reason = "manual") {
-  const record = threadRegistry.get(taskKey);
+  const record = getPersistentThreadRecord(taskKey);
   if (record) {
     console.log(
       `${TAG} force-invalidating thread for task "${taskKey}": ${reason} (was turn ${record.turnCount})`,

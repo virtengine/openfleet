@@ -1,4 +1,7 @@
-import { normalizeProviderDefinitionId } from "../providers/index.mjs";
+import {
+  listBuiltInProviderDrivers,
+  normalizeProviderDefinitionId,
+} from "../providers/index.mjs";
 import { ANTHROPIC_API_KEY_AUTH_ADAPTER } from "./anthropic-api-key.mjs";
 import { AZURE_OPENAI_AUTH_ADAPTER } from "./azure-openai.mjs";
 import { CHATGPT_CODEX_SUBSCRIPTION_AUTH_ADAPTER } from "./chatgpt-codex-subscription.mjs";
@@ -19,16 +22,22 @@ export {
   OPENAI_COMPATIBLE_AUTH_ADAPTER,
 };
 
-const BUILTIN_PROVIDER_AUTH_ADAPTERS = Object.freeze([
-  OPENAI_API_KEY_AUTH_ADAPTER,
-  CHATGPT_CODEX_SUBSCRIPTION_AUTH_ADAPTER,
-  AZURE_OPENAI_AUTH_ADAPTER,
-  ANTHROPIC_API_KEY_AUTH_ADAPTER,
-  CLAUDE_SUBSCRIPTION_AUTH_ADAPTER,
-  OPENAI_COMPATIBLE_AUTH_ADAPTER,
-  OLLAMA_AUTH_ADAPTER,
-  COPILOT_OAUTH_AUTH_ADAPTER,
-]);
+const AUTH_ADAPTER_BY_PROVIDER_ID = Object.freeze({
+  "openai-responses": OPENAI_API_KEY_AUTH_ADAPTER,
+  "openai-codex-subscription": CHATGPT_CODEX_SUBSCRIPTION_AUTH_ADAPTER,
+  "azure-openai-responses": AZURE_OPENAI_AUTH_ADAPTER,
+  "anthropic-messages": ANTHROPIC_API_KEY_AUTH_ADAPTER,
+  "claude-subscription-shim": CLAUDE_SUBSCRIPTION_AUTH_ADAPTER,
+  "openai-compatible": OPENAI_COMPATIBLE_AUTH_ADAPTER,
+  ollama: OLLAMA_AUTH_ADAPTER,
+  "copilot-oauth": COPILOT_OAUTH_AUTH_ADAPTER,
+});
+
+const BUILTIN_PROVIDER_AUTH_ADAPTERS = Object.freeze(
+  listBuiltInProviderDrivers()
+    .map((entry) => AUTH_ADAPTER_BY_PROVIDER_ID[entry.id] || null)
+    .filter(Boolean),
+);
 
 export function listProviderAuthAdapters() {
   return BUILTIN_PROVIDER_AUTH_ADAPTERS.slice();

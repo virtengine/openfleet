@@ -441,3 +441,48 @@ export function hasWorkflowContract(projectRoot) {
 export function validateContract(projectRoot) {
   return validateWorkflowContract(projectRoot);
 }
+
+function normalizeLineageText(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function normalizeLineageInteger(value, fallback = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.trunc(parsed));
+}
+
+export function buildWorkflowLineageContract(input = {}) {
+  const runId = normalizeLineageText(input.runId);
+  const rootRunId = normalizeLineageText(input.rootRunId) || runId;
+  const sessionId = normalizeLineageText(input.sessionId);
+  const childSessionId = normalizeLineageText(input.childSessionId);
+  const resolvedSessionId = childSessionId || sessionId;
+  const rootSessionId = normalizeLineageText(input.rootSessionId) || resolvedSessionId;
+  const parentSessionId = normalizeLineageText(input.parentSessionId);
+  const taskId = normalizeLineageText(input.taskId);
+  const taskTitle = normalizeLineageText(input.taskTitle);
+  const nodeId = normalizeLineageText(input.nodeId);
+  const nodeLabel = normalizeLineageText(input.nodeLabel) || nodeId;
+  return {
+    runId,
+    workflowId: normalizeLineageText(input.workflowId),
+    workflowName: normalizeLineageText(input.workflowName),
+    rootRunId,
+    parentRunId: normalizeLineageText(input.parentRunId),
+    sessionId: resolvedSessionId,
+    rootSessionId,
+    parentSessionId,
+    childSessionId,
+    threadId: normalizeLineageText(input.threadId) || resolvedSessionId,
+    taskId,
+    taskTitle,
+    nodeId,
+    nodeLabel,
+    childRunId: normalizeLineageText(input.childRunId),
+    approvalRequestId: normalizeLineageText(input.approvalRequestId),
+    spawnId: normalizeLineageText(input.spawnId),
+    delegationDepth: normalizeLineageInteger(input.delegationDepth, 0),
+  };
+}

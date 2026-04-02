@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import {
+  createSubagentContract,
+  isTerminalSubagentStatus,
+  normalizeSubagentStatus,
+} from "./subagent-contract.mjs";
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
@@ -32,9 +37,7 @@ function createSpawnId() {
 }
 
 function normalizeStatus(value, fallback = "pending") {
-  const normalized = toTrimmedString(value).toLowerCase();
-  if (!normalized) return fallback;
-  return normalized.replace(/[^a-z0-9_-]+/g, "_");
+  return normalizeSubagentStatus(value, fallback);
 }
 
 function createEventEmitter(hooks = []) {
@@ -128,7 +131,25 @@ function notifyActiveSessionListeners(event, taskKey) {
 
 export function createSubagentControl(options = {}) {
   const records = new Map();
+  const waiters = new Map();
   const emitEvent = createEventEmitter([options.onEvent]);
+
+  function buildWaitKey(childSessionIdOrSpawnId) {
+    return toTrimmedString(childSessionIdOrSpawnId || "");
+  }
+
+  function resolveWaiters(record) {
+    const keys = uniqueStrings([record.spawnId, record.childSessionId]);
+    for (const key of keys) {
+      const bucket = waiters.get(key);
+      if (!bucket) continue;
+      waiters.delete(key);
+      for (const waiter of bucket) {
+        if (waiter?.timer) clearTimeout(waiter.timer);
+        waiter.resolve(cloneValue(record));
+      }
+    }
+  }
 
   function persist(record, eventType) {
     records.set(record.spawnId, record);
@@ -141,6 +162,9 @@ export function createSubagentControl(options = {}) {
       status: record.status,
       timestamp: record.updatedAt,
     });
+    if (isTerminalSubagentStatus(record.status)) {
+      resolveWaiters(record);
+    }
     return cloneValue(record);
   }
 
@@ -250,6 +274,59 @@ export function createSubagentControl(options = {}) {
     return cloneValue(spawn);
   }
 
+  function completeSubagent(childSessionIdOrSpawnId, patch = {}) {
+    return updateSubagent(childSessionIdOrSpawnId, {
+      ...patch,
+      status: "completed",
+      completedAt: patch.completedAt || nowIso(),
+      lastError: null,
+    });
+  }
+
+  function failSubagent(childSessionIdOrSpawnId, error, patch = {}) {
+    return updateSubagent(childSessionIdOrSpawnId, {
+      ...patch,
+      status: "failed",
+      completedAt: patch.completedAt || nowIso(),
+      lastError: toTrimmedString(error || patch.lastError || patch.error || "subagent_failed") || "subagent_failed",
+    });
+  }
+
+  function abortSubagent(childSessionIdOrSpawnId, reason = "aborted", patch = {}) {
+    return updateSubagent(childSessionIdOrSpawnId, {
+      ...patch,
+      status: "aborted",
+      completedAt: patch.completedAt || nowIso(),
+      lastError: toTrimmedString(reason || patch.lastError || patch.error || "aborted") || "aborted",
+    });
+  }
+
+  function waitForSubagent(childSessionIdOrSpawnId, options_ = {}) {
+    const key = buildWaitKey(childSessionIdOrSpawnId);
+    if (!key) {
+      return Promise.reject(new Error("waitForSubagent requires a child session id or spawn id"));
+    }
+    const existing = getSubagent(key);
+    if (existing && isTerminalSubagentStatus(existing.status)) {
+      return Promise.resolve(existing);
+    }
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject, timer: null };
+      if (!waiters.has(key)) {
+        waiters.set(key, []);
+      }
+      waiters.get(key).push(waiter);
+      const timeoutMs = Number.isFinite(Number(options_.timeoutMs)) ? Math.max(1, Number(options_.timeoutMs)) : 0;
+      if (timeoutMs > 0) {
+        waiter.timer = setTimeout(() => {
+          const bucket = waiters.get(key) || [];
+          waiters.set(key, bucket.filter((entry) => entry !== waiter));
+          reject(new Error(`Timed out waiting for subagent "${key}"`));
+        }, timeoutMs);
+      }
+    });
+  }
+
   function snapshot() {
     return {
       records: listChildren(),
@@ -267,11 +344,18 @@ export function createSubagentControl(options = {}) {
   }
 
   return {
+    createSubagentContract,
     planSubagentSpawn,
     registerSubagent,
     updateSubagent,
+    completeSubagent,
+    failSubagent,
+    abortSubagent,
+    waitForSubagent,
     getSubagent,
     getParent,
+    getSpawnState: getSubagent,
+    listSpawnRecords: listChildren,
     listChildren,
     snapshot,
     hydrate,
