@@ -811,6 +811,82 @@ describe("task-claims", () => {
     });
   });
 
+  describe("saveClaimsRegistry", () => {
+    beforeEach(() => {
+      vi.resetModules();
+    });
+
+    afterEach(() => {
+      vi.resetModules();
+      vi.doUnmock("node:fs/promises");
+    });
+
+    it("preserves the last good registry when atomic replace keeps failing", async () => {
+      const actualFs = await vi.importActual("node:fs/promises");
+      const renameMock = vi.fn(async (from, to) => {
+        if (String(to || "").endsWith("task-claims.json")) {
+          const err = new Error("busy");
+          err.code = "EINVAL";
+          throw err;
+        }
+        return actualFs.rename(from, to);
+      });
+      const copyFileMock = vi.fn(actualFs.copyFile);
+      const writeFileMock = vi.fn(actualFs.writeFile);
+
+      vi.doMock("node:fs/promises", () => ({
+        ...actualFs,
+        rename: renameMock,
+        copyFile: copyFileMock,
+        writeFile: writeFileMock,
+      }));
+
+      const { initTaskClaims, _test } = await import("../task/task-claims.mjs");
+      await initTaskClaims({ repoRoot: tempRoot });
+
+      const cacheDir = resolve(tempRoot, ".cache/bosun");
+      const registryPath = resolve(cacheDir, "task-claims.json");
+      await actualFs.writeFile(
+        registryPath,
+        JSON.stringify(
+          {
+            version: 1,
+            claims: {
+              existing: {
+                task_id: "existing",
+                instance_id: "instance-1",
+              },
+            },
+            updated_at: "2026-04-02T00:00:00.000Z",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      await expect(
+        _test.saveClaimsRegistry({
+          version: 1,
+          claims: {
+            replacement: {
+              task_id: "replacement",
+              instance_id: "instance-2",
+            },
+          },
+        }),
+      ).rejects.toThrow("Failed to replace claims registry atomically");
+
+      const persisted = JSON.parse(await actualFs.readFile(registryPath, "utf8"));
+      expect(persisted.claims.existing).toBeDefined();
+      expect(persisted.claims.replacement).toBeUndefined();
+      expect(copyFileMock).not.toHaveBeenCalled();
+
+      const remainingFiles = await actualFs.readdir(cacheDir);
+      expect(remainingFiles.some((name) => name.includes("task-claims.json.tmp-"))).toBe(false);
+    });
+  });
+
   describe("retryFsOperation", () => {
     let _test;
 

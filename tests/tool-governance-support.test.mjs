@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   buildToolExecutionEnvelope,
@@ -22,8 +25,25 @@ import {
   truncateText,
   truncateToolOutput,
 } from "../agent/tool-output-truncation.mjs";
+import {
+  getApprovalRequestById,
+  resolveApprovalRequest,
+} from "../workflow/approval-queue.mjs";
 
 describe("tool governance support", () => {
+  const tempRoots = [];
+
+  afterEach(() => {
+    while (tempRoots.length > 0) {
+      const root = tempRoots.pop();
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch {
+        // best effort cleanup
+      }
+    }
+  });
+
   it("normalizes runtime context and builds a stable execution envelope", () => {
     const context = normalizeToolRuntimeContext({
       sessionId: "session-1",
@@ -145,6 +165,63 @@ describe("tool governance support", () => {
       approvalRequired: false,
       approvalState: "not_required",
       blocked: false,
+    });
+  });
+
+  it("persists approval requests and reuses resolved queue state on the next evaluation", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bosun-tool-approval-"));
+    tempRoots.push(repoRoot);
+    const manager = createToolApprovalManager({
+      repoRoot,
+      timeoutMs: 60_000,
+    });
+    const riskyTool = { id: "push_branch", requiresApproval: true, riskLevel: "high" };
+    const requested = manager.request(riskyTool, {
+      runId: "run-tool-1",
+      repoRoot,
+      approval: {
+        mode: "manual",
+        scopeType: "harness-run",
+        scopeId: "run-tool-1:push_branch",
+      },
+    });
+
+    expect(requested.approval).toMatchObject({
+      blocked: true,
+      approvalState: "pending",
+      requestId: expect.stringMatching(/^harness-run:/),
+    });
+    expect(requested.request).toMatchObject({
+      status: "pending",
+      runId: "run-tool-1",
+      scopeId: "run-tool-1:push_branch",
+      stageType: "tool",
+    });
+    expect(getApprovalRequestById(requested.request.requestId, { repoRoot })).toMatchObject({
+      requestId: requested.request.requestId,
+      status: "pending",
+    });
+
+    resolveApprovalRequest(requested.request.requestId, {
+      repoRoot,
+      decision: "approved",
+      actorId: "operator:test",
+      note: "approved for execution",
+    });
+    const rechecked = manager.evaluate(riskyTool, {
+      repoRoot,
+      approval: {
+        mode: "manual",
+        requestId: requested.request.requestId,
+        scopeType: "harness-run",
+        scopeId: "run-tool-1:push_branch",
+      },
+    });
+
+    expect(rechecked).toMatchObject({
+      blocked: false,
+      approvalState: "approved",
+      requestId: requested.request.requestId,
     });
   });
 

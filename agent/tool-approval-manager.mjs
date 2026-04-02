@@ -1,3 +1,8 @@
+import {
+  getApprovalRequestById,
+  upsertApprovalRequest,
+} from "../workflow/approval-queue.mjs";
+
 function normalizeText(value) {
   return String(value ?? "").trim();
 }
@@ -46,6 +51,81 @@ function resolveScopeId(context = {}, defaults = {}) {
   ) || null;
 }
 
+function buildRequestId(tool = {}, context = {}, defaults = {}) {
+  const explicitRequestId = normalizeText(
+    context?.approval?.requestId || context.requestId || defaults.requestId,
+  );
+  if (explicitRequestId) return explicitRequestId;
+  const scopeType = resolveScopeType(context, defaults) || "harness-run";
+  const scopeId = resolveScopeId(context, defaults)
+    || normalizeText(tool?.id || tool?.name)
+    || "tool";
+  return `${scopeType}:${scopeId}`;
+}
+
+function lookupStoredApprovalState(context = {}, options = {}) {
+  const requestId = normalizeText(
+    context?.approval?.requestId || context.approvalRequestId || options.requestId,
+  );
+  if (!requestId) return null;
+  const repoRoot = normalizeText(options.repoRoot || context.repoRoot || context.cwd || process.cwd());
+  const stored = getApprovalRequestById(requestId, { repoRoot });
+  return normalizeApprovalState(stored?.status);
+}
+
+function buildApprovalRequest(tool = {}, context = {}, evaluation = {}, options = {}) {
+  const toolId = normalizeText(tool.id || tool.name || evaluation.toolId);
+  const scopeType = resolveScopeType(context, options);
+  const requestId = buildRequestId(tool, context, options);
+  const scopeId = normalizeText(
+    context?.approval?.scopeId
+    || context.approvalScopeId
+    || requestId.replace(/^[^:]+:/, "")
+    || requestId,
+  );
+  const runId = normalizeText(context.runId || context.sessionId || "");
+  const taskId = normalizeText(context.taskId || "");
+  const taskTitle = normalizeText(context.taskTitle || context.metadata?.taskTitle || "");
+  const requestedBy = normalizeText(
+    context?.approval?.requestedBy
+    || context.requestedBy
+    || options.requestedBy,
+  ) || "tool-orchestrator";
+  const reason = normalizeText(
+    tool.approvalReason
+    || context?.approval?.note
+    || options.pendingReason
+    || evaluation.reason,
+  ) || `Tool ${toolId || "execution"} requires operator approval.`;
+  const request = {
+    requestId,
+    scopeType,
+    scopeId,
+    reason,
+    requestedBy,
+    preview: normalizeText(options.preview || context?.approval?.preview || context.preview) || null,
+  };
+  if (scopeType === "workflow-action") {
+    request.runId = runId || normalizeText(options.runId);
+    request.nodeId = normalizeText(context.nodeId || options.nodeId || toolId);
+    request.nodeLabel = normalizeText(context.nodeLabel || options.nodeLabel || tool?.name || toolId) || null;
+    request.nodeType = normalizeText(context.nodeType || options.nodeType || "tool") || "tool";
+    request.actionKey = normalizeText(context.actionKey || options.actionKey || toolId) || null;
+    request.actionLabel = normalizeText(context.actionLabel || options.actionLabel || tool?.name || toolId) || null;
+    if (Number.isFinite(Number(options.timeoutMs))) request.timeoutMs = Math.max(0, Math.trunc(Number(options.timeoutMs)));
+    if (Number.isFinite(Number(options.pollIntervalMs))) request.pollIntervalMs = Math.max(1, Math.trunc(Number(options.pollIntervalMs)));
+    if (normalizeText(options.onTimeout)) request.onTimeout = normalizeText(options.onTimeout);
+  } else if (scopeType === "harness-run") {
+    request.runId = runId || scopeId;
+    request.taskId = taskId || null;
+    request.taskTitle = taskTitle || null;
+    request.stageId = normalizeText(context.stageId || options.stageId || `tool:${toolId}`) || `tool:${toolId}`;
+    request.stageType = normalizeText(context.stageType || options.stageType || "tool") || "tool";
+    if (Number.isFinite(Number(options.timeoutMs))) request.timeoutMs = Math.max(0, Math.trunc(Number(options.timeoutMs)));
+  }
+  return request;
+}
+
 export function evaluateToolApproval(tool = {}, context = {}, options = {}) {
   const toolId = normalizeText(tool.id || tool.name);
   const allowlisted = asSet(options.allowlistedTools);
@@ -62,6 +142,8 @@ export function evaluateToolApproval(tool = {}, context = {}, options = {}) {
     || context.approvalDecision
     || context.approvalState,
   );
+  const storedState = !currentState ? lookupStoredApprovalState(context, options) : null;
+  const effectiveState = currentState || storedState;
   const riskLevel = inferToolRiskLevel(tool);
   const policyRequiresApproval = context.executionPolicy?.approvalRequired === true;
   const needsApproval = (
@@ -74,7 +156,7 @@ export function evaluateToolApproval(tool = {}, context = {}, options = {}) {
     ))
   );
 
-  if (currentState === "approved") {
+  if (effectiveState === "approved") {
     return {
       toolId,
       approvalRequired: needsApproval,
@@ -85,21 +167,23 @@ export function evaluateToolApproval(tool = {}, context = {}, options = {}) {
       reason: null,
       scopeType: resolveScopeType(context, options),
       scopeId: resolveScopeId(context, options),
+      requestId: buildRequestId(tool, context, options),
     };
   }
 
-  if (currentState === "denied" || currentState === "expired") {
+  if (effectiveState === "denied" || effectiveState === "expired") {
     return {
       toolId,
       approvalRequired: needsApproval,
-      approvalState: currentState,
+      approvalState: effectiveState,
       blocked: true,
       mode,
       riskLevel,
       reason: normalizeText(context?.approval?.note || context.approvalNote)
-        || `Tool ${toolId || "execution"} was ${currentState}.`,
+        || `Tool ${toolId || "execution"} was ${effectiveState}.`,
       scopeType: resolveScopeType(context, options),
       scopeId: resolveScopeId(context, options),
+      requestId: buildRequestId(tool, context, options),
     };
   }
 
@@ -114,6 +198,7 @@ export function evaluateToolApproval(tool = {}, context = {}, options = {}) {
       reason: null,
       scopeType: resolveScopeType(context, options),
       scopeId: resolveScopeId(context, options),
+      requestId: buildRequestId(tool, context, options),
     };
   }
 
@@ -128,6 +213,7 @@ export function evaluateToolApproval(tool = {}, context = {}, options = {}) {
       || `Tool ${toolId || "execution"} requires operator approval.`,
     scopeType: resolveScopeType(context, options),
     scopeId: resolveScopeId(context, options),
+    requestId: buildRequestId(tool, context, options),
   };
 }
 
@@ -142,6 +228,27 @@ export function createToolApprovalManager(defaultOptions = {}) {
         throw new Error(result.reason || `Tool ${result.toolId || "execution"} is blocked pending approval.`);
       }
       return result;
+    },
+    request(tool, context = {}, options = {}) {
+      const mergedOptions = { ...defaultOptions, ...options };
+      const approval = evaluateToolApproval(tool, context, mergedOptions);
+      if (!approval.blocked) {
+        return { approval, request: null, persisted: false };
+      }
+      const repoRoot = normalizeText(mergedOptions.repoRoot || context.repoRoot || context.cwd || process.cwd());
+      const persisted = upsertApprovalRequest(
+        buildApprovalRequest(tool, context, approval, mergedOptions),
+        { repoRoot },
+      );
+      return {
+        approval: {
+          ...approval,
+          requestId: persisted?.request?.requestId || approval.requestId || null,
+          scopeId: persisted?.request?.scopeId || approval.scopeId || null,
+        },
+        request: persisted?.request || null,
+        persisted: Boolean(persisted?.ok),
+      };
     },
   };
 }

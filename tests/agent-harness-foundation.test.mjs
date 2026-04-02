@@ -11,6 +11,7 @@ import {
   createToolCapabilityManifest,
   createToolOrchestrator,
 } from "../agent/tool-orchestrator.mjs";
+import { createToolRunner } from "../agent/harness/tool-runner.mjs";
 import {
   createCompiledHarnessSession,
   createBosunSessionManager,
@@ -187,6 +188,211 @@ describe("tool orchestrator foundation", () => {
       "tool_execution_start",
       "tool_execution_end",
     ]);
+  });
+
+  it("blocks approval-gated tools before execution and emits an approval request event", async () => {
+    const events = [];
+    const executeTool = vi.fn(async () => ({ ok: true }));
+    const orchestrator = createToolOrchestrator({
+      onEvent: (event) => events.push(event),
+      toolSources: [{
+        source: "test",
+        definitions: [{
+          id: "push_branch",
+          requiresApproval: true,
+        }],
+      }],
+      executeTool,
+    });
+
+    await expect(orchestrator.execute("push_branch", { branch: "feature/test" }, {
+      sessionId: "session-approval",
+      approval: { mode: "manual" },
+    })).rejects.toThrow(/requires operator approval/i);
+
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "approval_requested",
+        toolName: "push_branch",
+        approval: expect.objectContaining({
+          blocked: true,
+          approvalState: "pending",
+          approvalRequired: true,
+        }),
+      }),
+    ]);
+  });
+
+  it("blocks disallowed network access before execution and emits an execution error event", async () => {
+    const events = [];
+    const executeTool = vi.fn(async () => ({ ok: true }));
+    const orchestrator = createToolOrchestrator({
+      onEvent: (event) => events.push(event),
+      toolSources: [{
+        source: "test",
+        definitions: [{
+          id: "fetch_remote_context",
+          networkAccess: "restricted",
+          allowedHosts: ["api.openai.com"],
+        }],
+      }],
+      executeTool,
+    });
+
+    await expect(orchestrator.execute("fetch_remote_context", {}, {
+      sessionId: "session-network",
+      requestedHosts: ["169.254.169.254"],
+    })).rejects.toThrow(/blocked by policy|not allowlisted/i);
+
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "tool_execution_error",
+        toolName: "fetch_remote_context",
+        error: expect.stringMatching(/blocked by policy|not allowlisted/i),
+      }),
+    ]);
+  });
+
+  it("emits truncated end-event payloads but returns the full tool result", async () => {
+    const events = [];
+    const longOutput = { lines: Array.from({ length: 20 }, (_, index) => `line-${index}-${"x".repeat(24)}`) };
+    const orchestrator = createToolOrchestrator({
+      onEvent: (event) => events.push(event),
+      toolSources: [{
+        source: "test",
+        definitions: [{
+          id: "collect_logs",
+          networkAccess: "allow",
+        }],
+      }],
+      truncation: { maxChars: 96, tailChars: 12 },
+      executeTool: vi.fn(async () => longOutput),
+    });
+
+    const result = await orchestrator.execute("collect_logs", {}, { sessionId: "session-truncation" });
+
+    expect(result).toEqual(longOutput);
+    expect(events.map((event) => event.type)).toEqual([
+      "tool_execution_start",
+      "tool_execution_end",
+    ]);
+    expect(events[1]).toEqual(expect.objectContaining({
+      type: "tool_execution_end",
+      result: expect.objectContaining({
+        truncated: true,
+        preview: expect.stringContaining("…truncated"),
+      }),
+    }));
+  });
+
+  it("emits execution error events when the tool hook throws", async () => {
+    const events = [];
+    const orchestrator = createToolOrchestrator({
+      onEvent: (event) => events.push(event),
+      toolSources: [{
+        source: "test",
+        definitions: [{ id: "run_failing_tool", networkAccess: "allow" }],
+      }],
+      executeTool: vi.fn(async () => {
+        throw new Error("tool exploded");
+      }),
+    });
+
+    await expect(orchestrator.execute("run_failing_tool", {}, {
+      sessionId: "session-error",
+    })).rejects.toThrow("tool exploded");
+
+    expect(events.map((event) => event.type)).toEqual([
+      "tool_execution_start",
+      "tool_execution_error",
+    ]);
+    expect(events[1]).toEqual(expect.objectContaining({
+      toolName: "run_failing_tool",
+      error: "tool exploded",
+    }));
+  });
+
+  it("retries transient tool failures and emits retry telemetry before succeeding", async () => {
+    const events = [];
+    const executeTool = vi.fn()
+      .mockRejectedValueOnce(new Error("transient failure"))
+      .mockResolvedValueOnce({ ok: true, recovered: true });
+    const orchestrator = createToolOrchestrator({
+      onEvent: (event) => events.push(event),
+      retryPolicy: {
+        maxAttempts: 2,
+      },
+      toolSources: [{
+        source: "test",
+        definitions: [{ id: "retryable_tool", networkAccess: "allow" }],
+      }],
+      executeTool,
+    });
+
+    const result = await orchestrator.execute("retryable_tool", {}, {
+      sessionId: "session-retry",
+    });
+
+    expect(result).toEqual({ ok: true, recovered: true });
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(events.map((event) => event.type)).toEqual([
+      "tool_execution_start",
+      "tool_execution_retry",
+      "tool_execution_end",
+    ]);
+    expect(events[1]).toEqual(expect.objectContaining({
+      toolName: "retryable_tool",
+      attempt: 1,
+      nextAttempt: 2,
+      error: "transient failure",
+    }));
+    expect(events[2]).toEqual(expect.objectContaining({
+      toolName: "retryable_tool",
+      attempt: 2,
+      attemptCount: 2,
+    }));
+  });
+});
+
+describe("tool runner bridge", () => {
+  it("delegates list and run calls through the orchestrator and forwards the event hook", async () => {
+    const executeTool = vi.fn(async () => ({ ok: true }));
+    const toolOrchestrator = {
+      listTools: vi.fn(() => [{ id: "list_tasks" }]),
+      executeTool,
+    };
+    const onEvent = vi.fn();
+    const runner = await createToolRunner({
+      toolOrchestrator,
+      onEvent,
+    });
+
+    const tools = runner.listTools();
+    const result = await runner.runTool("list_tasks", { limit: 2 }, {
+      sessionId: "runner-session",
+    });
+
+    expect(tools).toEqual([{ id: "list_tasks" }]);
+    expect(result).toEqual({ ok: true });
+    expect(toolOrchestrator.listTools).toHaveBeenCalledTimes(1);
+    expect(executeTool).toHaveBeenCalledWith("list_tasks", { limit: 2 }, {
+      sessionId: "runner-session",
+      onEvent,
+    });
+  });
+
+  it("fails fast when the orchestrator execute hook is missing", async () => {
+    const runner = await createToolRunner({
+      toolOrchestrator: {
+        listTools: () => [],
+      },
+    });
+
+    await expect(runner.runTool("list_tasks", {}, {})).rejects.toThrow(
+      "Tool orchestrator is not configured",
+    );
   });
 });
 

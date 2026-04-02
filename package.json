@@ -388,6 +388,7 @@
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
+    "@babel/runtime": "^7.29.2",
     "@github/copilot-sdk": "latest",
     "@google/genai": "^1.44.0",
     "@jridgewell/sourcemap-codec": "^1.5.5",

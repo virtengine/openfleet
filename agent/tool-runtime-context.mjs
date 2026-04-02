@@ -110,6 +110,7 @@ export function normalizeToolRuntimeContext(context = {}, defaults = {}) {
     taskId: normalizeOptionalText(context.taskId ?? defaults.taskId),
     taskKey: normalizeOptionalText(context.taskKey ?? defaults.taskKey),
     sessionType: normalizeOptionalText(context.sessionType ?? defaults.sessionType),
+    mode: normalizeOptionalText(context.mode ?? defaults.mode),
     surface: normalizeOptionalText(context.surface ?? defaults.surface),
     providerId: normalizeOptionalText(context.providerId ?? defaults.providerId),
     executor: normalizeOptionalText(context.executor ?? defaults.executor),

@@ -198,6 +198,34 @@ describe("manifest CRUD", () => {
     expect(getEntry(tmpDir, "nonexistent")).toBeNull();
   });
 
+  it("getEntryContent returns null instead of throwing for malformed manifest filenames", () => {
+    mkdirSync(resolve(tmpDir, SKILL_DIR), { recursive: true });
+    writeFileSync(resolve(tmpDir, SKILL_DIR, "broken.md"), "# Broken Skill\n", "utf8");
+    saveManifest(tmpDir, {
+      entries: [
+        {
+          id: "broken-skill",
+          type: "skill",
+          name: "Broken Skill",
+          filename: ["broken.md"],
+          description: "legacy malformed filename payload",
+          tags: [],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: "2026-04-02T00:00:00.000Z",
+          updatedAt: "2026-04-02T00:00:00.000Z",
+        },
+      ],
+      generated: "2026-04-02T00:00:00.000Z",
+    });
+
+    const entry = getEntry(tmpDir, "broken-skill");
+    expect(entry).not.toBeNull();
+    expect(() => getEntryContent(tmpDir, entry)).not.toThrow();
+    expect(getEntryContent(tmpDir, entry)).toBeNull();
+  });
+
   it("deleteEntry removes from manifest", () => {
     upsertEntry(tmpDir, { type: "prompt", name: "To Delete" }, "content");
     expect(loadManifest(tmpDir).entries).toHaveLength(1);
@@ -209,6 +237,31 @@ describe("manifest CRUD", () => {
 
   it("deleteEntry returns false for non-existent id", () => {
     expect(deleteEntry(tmpDir, "nope")).toBe(false);
+  });
+
+  it("deleteEntry tolerates malformed filenames when deleting files", () => {
+    mkdirSync(resolve(tmpDir, SKILL_DIR), { recursive: true });
+    saveManifest(tmpDir, {
+      entries: [
+        {
+          id: "broken-skill",
+          type: "skill",
+          name: "Broken Skill",
+          filename: ["broken.md"],
+          description: "legacy malformed filename payload",
+          tags: [],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: "2026-04-02T00:00:00.000Z",
+          updatedAt: "2026-04-02T00:00:00.000Z",
+        },
+      ],
+      generated: "2026-04-02T00:00:00.000Z",
+    });
+
+    expect(() => deleteEntry(tmpDir, "broken-skill", { deleteFile: true })).not.toThrow();
+    expect(loadManifest(tmpDir).entries).toHaveLength(0);
   });
 
   it("deleteEntry removes imported source artifacts and stale skill refs when deleting an imported skill", () => {
@@ -1338,4 +1391,3 @@ describe("renderPromptTemplate with library resolver", () => {
     expect(result).toBe("Hello World");
   });
 });
-

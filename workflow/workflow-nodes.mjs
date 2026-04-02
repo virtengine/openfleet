@@ -30,6 +30,7 @@ import {
   resolveApprovalRequest,
   upsertWorkflowGateApprovalRequest,
 } from "./approval-queue.mjs";
+import { createToolOrchestrator } from "../agent/tool-orchestrator.mjs";
 import { requireWorkflowActionApproval } from "./action-approval.mjs";
 import {
   _completedWithPR,
@@ -1977,7 +1978,7 @@ function summarizeAssistantUsage(data = {}) {
   return `Usage: ${parts.join(" ┬À ")}`;
 }
 
-function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
+function bindTaskContext(ctx, { taskId, taskTitle, task = null, branch = null, branchName = null } = {}) {
   if (!ctx || typeof ctx !== "object") return;
   if (!ctx.data || typeof ctx.data !== "object") {
     ctx.data = {};
@@ -1994,8 +1995,23 @@ function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
     ctx.data.taskTitle = normalizedTaskTitle;
   }
 
+  const normalizedBranch = String(
+    branchName ||
+    branch ||
+    task?.branchName ||
+    task?.branch ||
+    "",
+  ).trim();
+  if (normalizedBranch) {
+    ctx.data.branchName = normalizedBranch;
+    ctx.data.branch = normalizedBranch;
+  }
+
   if (task && typeof task === "object") {
-    ctx.data.task = task;
+    ctx.data.task = {
+      ...task,
+      ...(normalizedBranch ? { branch: normalizedBranch, branchName: normalizedBranch } : {}),
+    };
     const taskWorktreePath = String(
       task.worktreePath ||
       task.workspacePath ||
@@ -3334,23 +3350,85 @@ function getChildWorkflowLineage(ctx, childWorkflowId = "", extra = {}) {
 
 function applyChildWorkflowLineage(ctx, inputData = {}, childWorkflowId = "", extra = {}) {
   const lineage = getChildWorkflowLineage(ctx, childWorkflowId, extra);
-  const currentTaskId = String(
-    extra.taskId ??
-      ctx?.data?.taskId ??
+  const payload = inputData && typeof inputData === "object" ? { ...inputData } : {};
+  const taskPayloadCandidates = [
+    payload.currentTask,
+    payload.task,
+    payload.taskDetail,
+    payload.taskInfo,
+  ];
+  const childTask =
+    taskPayloadCandidates.find((entry) => entry && typeof entry === "object" && !Array.isArray(entry)) || null;
+  const pickText = (...values) => {
+    for (const value of values) {
+      const normalized = String(value ?? "").trim();
+      if (normalized) return normalized;
+    }
+    return null;
+  };
+  const resolvedTaskId = pickText(
+    extra.taskId,
+    childTask?.id,
+    childTask?.taskId,
+    childTask?.meta?.taskId,
+    payload.taskId,
+  );
+  const resolvedTaskTitle = pickText(
+    childTask?.title,
+    childTask?.taskTitle,
+    childTask?.meta?.taskTitle,
+    payload.taskTitle,
+  );
+  const resolvedBranch = pickText(
+    childTask?.branch,
+    childTask?.branchName,
+    childTask?.meta?.branch,
+    childTask?.meta?.branchName,
+    payload.branch,
+    payload.branchName,
+  );
+  const resolvedRepository = pickText(
+    childTask?.repository,
+    childTask?.meta?.repository,
+    payload.repository,
+  );
+  const resolvedWorkspace = pickText(
+    childTask?.workspace,
+    childTask?.workspaceId,
+    childTask?.meta?.workspace,
+    childTask?.meta?.workspaceId,
+    payload.workspace,
+    payload.workspaceId,
+  );
+  const inheritedParentTaskId = String(
+    ctx?.data?.taskId ??
       ctx?.data?.task?.id ??
       ctx?.data?.taskInfo?.id ??
       ctx?.data?.taskDetail?.id ??
       "",
   ).trim() || null;
+  const currentTaskId = String(
+    resolvedTaskId ??
+      inheritedParentTaskId ??
+      "",
+  ).trim() || null;
+  const overridesInheritedTaskContext =
+    Boolean(currentTaskId) &&
+    Boolean(inheritedParentTaskId) &&
+    currentTaskId !== inheritedParentTaskId;
   const rootTaskId = String(
     extra.rootTaskId ??
-      ctx?.data?._workflowRootTaskId ??
+      (overridesInheritedTaskContext
+        ? currentTaskId
+        : ctx?.data?._workflowRootTaskId) ??
       currentTaskId ??
       "",
   ).trim() || currentTaskId || null;
   const parentTaskId = String(
     extra.parentTaskId ??
-      ctx?.data?._workflowParentTaskId ??
+      (overridesInheritedTaskContext
+        ? currentTaskId
+        : ctx?.data?._workflowParentTaskId) ??
       currentTaskId ??
       "",
   ).trim() || currentTaskId || null;
@@ -3360,6 +3438,7 @@ function applyChildWorkflowLineage(ctx, inputData = {}, childWorkflowId = "", ex
   ).trim() || null;
   const parentSessionId = String(
     extra.parentSessionId ??
+      (overridesInheritedTaskContext ? currentTaskId : null) ??
       currentSessionId ??
       ctx?.data?._workflowParentSessionId ??
       currentTaskId ??
@@ -3367,6 +3446,7 @@ function applyChildWorkflowLineage(ctx, inputData = {}, childWorkflowId = "", ex
   ).trim() || currentTaskId || null;
   const rootSessionId = String(
     extra.rootSessionId ??
+      (overridesInheritedTaskContext ? currentTaskId : null) ??
       ctx?.data?._workflowRootSessionId ??
       currentSessionId ??
       currentTaskId ??
@@ -3382,7 +3462,20 @@ function applyChildWorkflowLineage(ctx, inputData = {}, childWorkflowId = "", ex
     ? Math.max(0, Math.trunc(rawDelegationDepth))
     : 0;
   return {
-    ...(inputData && typeof inputData === "object" ? inputData : {}),
+    ...payload,
+    ...(resolvedTaskId ? { taskId: resolvedTaskId } : {}),
+    ...(resolvedTaskTitle ? { taskTitle: resolvedTaskTitle } : {}),
+    ...(resolvedBranch ? { branch: resolvedBranch, branchName: resolvedBranch } : {}),
+    ...(resolvedRepository ? { repository: resolvedRepository } : {}),
+    ...(resolvedWorkspace ? { workspace: resolvedWorkspace, workspaceId: resolvedWorkspace } : {}),
+    ...(childTask && !payload.task
+      ? {
+          task: {
+            ...childTask,
+            ...(resolvedTaskId && !childTask.id ? { id: resolvedTaskId } : {}),
+          },
+        }
+      : {}),
     _parentWorkflowId: lineage.parentWorkflowId || "",
     _workflowParentRunId: lineage.parentRunId,
     _workflowRootRunId: lineage.rootRunId,
@@ -7321,7 +7414,7 @@ registerBuiltinNodeType("action.update_task_status", {
         return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
       };
 
-      const branchForTask = normalizeString(
+      let branchForTask = normalizeString(
         node.config?.branchName ||
           node.config?.branch ||
           createPrOutput?.branch ||
@@ -7343,6 +7436,27 @@ registerBuiltinNodeType("action.update_task_status", {
           ctx.data?.prNumber ||
           ctx.data?.task?.prNumber,
       );
+      const canonicalBranchForTask = deriveTaskBranch({
+        id: taskId,
+        title:
+          taskTitle ||
+          currentTask?.title ||
+          currentTask?.taskTitle ||
+          ctx.data?.taskTitle ||
+          ctx.data?.task?.title ||
+          taskId,
+      });
+      if (prUrlForTask == null && prNumberForTask == null) {
+        if (!branchForTask && canonicalBranchForTask) {
+          branchForTask = canonicalBranchForTask;
+        } else if (branchForTask && canonicalBranchForTask && branchForTask !== canonicalBranchForTask) {
+          ctx.log(
+            node.id,
+            `Normalizing mismatched task branch ${branchForTask} -> ${canonicalBranchForTask}`,
+          );
+          branchForTask = canonicalBranchForTask;
+        }
+      }
 
       if (branchForTask) updateOptions.branchName = branchForTask;
       if (prUrlForTask) updateOptions.prUrl = prUrlForTask;
@@ -7383,12 +7497,14 @@ registerBuiltinNodeType("action.update_task_status", {
       bindTaskContext(ctx, {
         taskId,
         taskTitle,
+        ...(branchForTask ? { branch: branchForTask, branchName: branchForTask } : {}),
       });
       return {
         success: true,
         taskId,
         taskTitle: taskTitle || null,
         status,
+        ...(branchForTask ? { branchName: branchForTask, branch: branchForTask } : {}),
         workflowEvent: workflowEvent || null,
       };
     }
@@ -13295,6 +13411,31 @@ registerBuiltinNodeType("action.bosun_tool", {
         default: 60000,
         description: "Maximum execution time in milliseconds",
       },
+      requireApproval: {
+        type: "boolean",
+        default: false,
+        description: "Force operator approval before the tool is executed.",
+      },
+      approvalReason: {
+        type: "string",
+        description: "Optional operator-facing reason shown when the tool is blocked for approval.",
+      },
+      approvalTimeoutMs: {
+        type: "number",
+        default: 900000,
+        description: "Maximum time to wait for operator approval before failing.",
+      },
+      approvalPollIntervalMs: {
+        type: "number",
+        default: 5000,
+        description: "Polling interval used while waiting for operator approval.",
+      },
+      approvalOnTimeout: {
+        type: "string",
+        enum: ["fail", "proceed"],
+        default: "fail",
+        description: "Behavior when operator approval is not provided before the timeout.",
+      },
       parseJson: {
         type: "boolean",
         default: true,
@@ -13342,6 +13483,7 @@ registerBuiltinNodeType("action.bosun_tool", {
     if (!toolId) throw new Error("action.bosun_tool: 'toolId' is required");
 
     const rootDir = resolveBosunNativeRootDir(ctx, engine);
+    const repoRoot = rootDir;
     const cwd = ctx.resolve(node.config?.cwd || "") || rootDir;
     const timeoutMs = node.config?.timeoutMs || 60000;
 
@@ -13403,10 +13545,93 @@ registerBuiltinNodeType("action.bosun_tool", {
     // Execute tool
     let toolResult;
     try {
-      toolResult = await toolsMod.invokeCustomTool(rootDir, toolId, resolvedArgs, {
-        timeout: timeoutMs,
+      const orchestrator = createToolOrchestrator({
+        cwd,
+        repoRoot,
+        approvalOptions: {
+          repoRoot,
+          approvalScopeType: "workflow-action",
+          timeoutMs: node.config?.approvalTimeoutMs,
+          pollIntervalMs: node.config?.approvalPollIntervalMs,
+          onTimeout: node.config?.approvalOnTimeout,
+          nodeId: node.id,
+          nodeLabel: node.label || node.id,
+          nodeType: node.type,
+        },
+        truncation: {
+          maxChars: 4000,
+          tailChars: 400,
+        },
+        toolSources: [{
+          source: "bosun-custom-tool",
+          definitions: [{
+            id: toolId,
+            name: toolInfo.entry?.title || toolId,
+            description: toolInfo.entry?.description || null,
+            requiresApproval: node.config?.requireApproval === true || toolInfo.entry?.requiresApproval === true,
+            approvalReason: node.config?.approvalReason || null,
+            sandbox: "inherit",
+            handler: async (executionArgs = {}) => toolsMod.invokeCustomTool(rootDir, toolId, executionArgs.args || [], {
+              timeout: executionArgs.timeoutMs || timeoutMs,
+              cwd: executionArgs.cwd || cwd,
+              env: executionArgs.env || envOverrides,
+            }),
+          }],
+        }],
+        onEvent: (event) => {
+          const eventType = String(event?.type || "").trim();
+          if (!eventType) return;
+          if (eventType === "approval_requested") {
+            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+              eventType: "tool.approval_requested",
+              ...bosunToolLedgerRef,
+              toolId,
+              toolName: toolId,
+              status: "blocked",
+              meta: {
+                provider: "bosun",
+                cwd,
+                requestId: event?.request?.requestId || event?.approval?.requestId || null,
+              },
+            }));
+            return;
+          }
+          if (eventType === "tool_execution_retry") {
+            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+              eventType: "tool.retry",
+              ...bosunToolLedgerRef,
+              toolId,
+              toolName: toolId,
+              status: "retrying",
+              meta: {
+                provider: "bosun",
+                cwd,
+                attempt: event?.attempt || null,
+                nextAttempt: event?.nextAttempt || null,
+              },
+            }));
+          }
+        },
+      });
+      toolResult = await orchestrator.execute(toolId, {
+        args: resolvedArgs,
         cwd,
         env: envOverrides,
+        timeoutMs,
+      }, {
+        repoRoot,
+        runId: String(ctx.data?._runId || ctx.data?._workflowRunId || "").trim() || null,
+        workflowId: String(ctx.data?._workflowId || "").trim() || null,
+        taskId: String(ctx.data?.taskId || ctx.data?.task?.id || "").trim() || null,
+        taskTitle: String(ctx.data?.taskTitle || ctx.data?.task?.title || "").trim() || null,
+        nodeId: node.id,
+        nodeLabel: node.label || node.id,
+        nodeType: node.type,
+        sessionId: String(ctx.data?._workflowSessionId || ctx.data?._sessionId || "").trim() || null,
+        requestedBy: "workflow",
+        approval: {
+          scopeType: "workflow-action",
+        },
       });
     } catch (err) {
       ctx.log(node.id, `Tool execution failed: ${err.message}`, "error");
@@ -17120,7 +17345,9 @@ registerBuiltinNodeType("action.claim_task", {
     ).trim();
     const effectiveTransitionKey = transitionKey || idempotencyKey;
 
-    if (!taskId) throw new Error("action.claim_task: taskId is required");
+    if (!taskId || isUnresolvedTemplateToken(taskId)) {
+      throw new Error("action.claim_task: resolved taskId is required");
+    }
 
     const replayGuard = effectiveTransitionKey && typeof ctx?.getDelegationTransitionGuard === "function"
       ? ctx.getDelegationTransitionGuard(effectiveTransitionKey)

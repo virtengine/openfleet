@@ -1311,7 +1311,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
   }, [isSessionTab, sessionId, session?.taskId, session?.branch, lifecycle.isActive]);
 
   useEffect(() => {
-    if (!isSessionTab || !sessionId) {
+    if (!isSessionTab || !sessionId || !session) {
       setInsights(null);
       setInsightState("idle");
       return;
@@ -1365,7 +1365,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
       active = false;
       stop();
     };
-  }, [isSessionTab, sessionId, workspaceHint]);
+  }, [isSessionTab, session?.id, sessionId, workspaceHint]);
 
   const insightsTotals = insights?.totals || null;
   const insightsFileCounts = insights?.fileCounts || null;

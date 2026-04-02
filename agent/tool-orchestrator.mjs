@@ -5,9 +5,59 @@ import { evaluateToolNetworkPolicy } from "./tool-network-policy.mjs";
 import { buildToolExecutionEnvelope } from "./tool-runtime-context.mjs";
 import { createToolRegistry } from "./tool-registry.mjs";
 import { truncateToolOutput } from "./tool-output-truncation.mjs";
+import { randomUUID } from "node:crypto";
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
+}
+
+function normalizePositiveInteger(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : fallback;
+}
+
+function emitToolEvents(context = {}, ...hooks) {
+  const listeners = [
+    ...hooks,
+    context?.onEvent,
+  ].filter((hook) => typeof hook === "function");
+  return (event) => {
+    for (const listener of listeners) {
+      try {
+        listener(event);
+      } catch {
+        // Tool telemetry must never break execution.
+      }
+    }
+  };
+}
+
+function buildToolError(message, detail = {}) {
+  const error = new Error(message);
+  for (const [key, value] of Object.entries(detail || {})) {
+    error[key] = value;
+  }
+  return error;
+}
+
+function resolveRetryConfig(toolDefinition = {}, context = {}, options = {}) {
+  const merged = {
+    ...((options && typeof options === "object") ? options : {}),
+    ...((toolDefinition?.retry && typeof toolDefinition.retry === "object") ? toolDefinition.retry : {}),
+    ...((context?.retry && typeof context.retry === "object") ? context.retry : {}),
+  };
+  return {
+    maxAttempts: normalizePositiveInteger(
+      merged.maxAttempts ?? merged.attempts,
+      1,
+    ),
+    backoffMs: Math.max(0, normalizePositiveInteger(merged.backoffMs, 0)),
+  };
+}
+
+async function sleep(ms) {
+  if (!(ms > 0)) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function resolveToolRootDir(cwd = "") {
@@ -65,7 +115,6 @@ export function buildToolCapabilityContract(options = {}) {
 }
 
 export function createToolOrchestrator(options = {}) {
-  const onEvent = typeof options.onEvent === "function" ? options.onEvent : null;
   const approvalManager = createToolApprovalManager(options.approvalOptions || {});
   const registry = options.registry || createToolRegistry(options.toolSources || []);
   const orchestrator = {
@@ -77,43 +126,126 @@ export function createToolOrchestrator(options = {}) {
       return registryTools.length > 0 ? registryTools : configured;
     },
     async execute(toolName, args = {}, context = {}) {
-      if (typeof options.executeTool !== "function") {
+      const executeTool = typeof options.executeTool === "function"
+        ? options.executeTool
+        : (typeof registry.execute === "function"
+            ? registry.execute.bind(registry)
+            : null);
+      if (typeof executeTool !== "function") {
         throw new Error("Tool orchestrator executeTool hook is not configured");
       }
       const toolDefinition = registry.getTool(toolName) || { id: toTrimmedString(toolName) };
       const envelope = buildToolExecutionEnvelope(toolName, args, context, {
         cwd: toTrimmedString(options.cwd),
+        repoRoot: toTrimmedString(options.repoRoot),
         agentProfileId: toTrimmedString(options.agentProfileId) || null,
       });
-      const approval = approvalManager.evaluate(toolDefinition, envelope.context);
+      const executionId = toTrimmedString(envelope.context.requestId) || `tool-${randomUUID()}`;
+      envelope.context.requestId = executionId;
+      const emitEvent = emitToolEvents(envelope.context, options.onEvent);
+      const approvalOutcome = approvalManager.request(toolDefinition, envelope.context, {
+        ...options.approvalOptions,
+        repoRoot: envelope.context.repoRoot || envelope.context.cwd || options.repoRoot || options.cwd,
+        preview: JSON.stringify(args ?? {}),
+      });
+      const approval = approvalOutcome?.approval || approvalManager.evaluate(toolDefinition, envelope.context);
       if (approval.blocked) {
-        onEvent?.({ type: "approval_requested", toolName: envelope.toolName, context: envelope.context, approval });
-        throw new Error(approval.reason || `Tool ${envelope.toolName} is blocked pending approval.`);
+        emitEvent({
+          type: "approval_requested",
+          toolName: envelope.toolName,
+          args: envelope.args,
+          context: envelope.context,
+          executionId,
+          approval,
+          request: approvalOutcome?.request || null,
+        });
+        throw buildToolError(
+          approval.reason || `Tool ${envelope.toolName} is blocked pending approval.`,
+          {
+            code: "tool_approval_required",
+            approval,
+            request: approvalOutcome?.request || null,
+            toolName: envelope.toolName,
+            executionId,
+          },
+        );
       }
       const network = evaluateToolNetworkPolicy(toolDefinition, envelope.context, options.networkPolicy || {});
       if (network.blocked) {
-        onEvent?.({ type: "tool_execution_error", toolName: envelope.toolName, args: envelope.args, context: envelope.context, error: network.reason });
-        throw new Error(network.reason || `Network access is blocked for ${envelope.toolName}.`);
+        emitEvent({
+          type: "tool_execution_error",
+          toolName: envelope.toolName,
+          args: envelope.args,
+          context: envelope.context,
+          executionId,
+          error: network.reason,
+          network,
+        });
+        throw buildToolError(
+          network.reason || `Network access is blocked for ${envelope.toolName}.`,
+          {
+            code: "tool_network_blocked",
+            network,
+            toolName: envelope.toolName,
+            executionId,
+          },
+        );
       }
+      const retry = resolveRetryConfig(toolDefinition, envelope.context, options.retryPolicy || {});
       const eventBase = {
         toolName: envelope.toolName,
         args: envelope.args,
         context: envelope.context,
+        approval,
+        executionId,
+        retry,
       };
-      onEvent?.({ type: "tool_execution_start", ...eventBase });
-      try {
-        const result = await options.executeTool(toolName, args, envelope.context, toolDefinition);
-        const truncated = truncateToolOutput(result, options.truncation || {});
-        onEvent?.({ type: "tool_execution_end", ...eventBase, result: truncated });
-        return result;
-      } catch (error) {
-        onEvent?.({
-          type: "tool_execution_error",
-          ...eventBase,
-          error: String(error?.message || error),
-        });
-        throw error;
+      emitEvent({ type: "tool_execution_start", ...eventBase });
+      let attempt = 0;
+      let lastError = null;
+      while (attempt < retry.maxAttempts) {
+        attempt += 1;
+        try {
+          const result = await executeTool(toolName, args, envelope.context, toolDefinition);
+          const truncated = truncateToolOutput(result, options.truncation || {});
+          emitEvent({
+            type: "tool_execution_end",
+            ...eventBase,
+            attempt,
+            attemptCount: attempt,
+            result: truncated,
+            truncation: {
+              truncated: truncated.truncated,
+              originalBytes: truncated.originalBytes,
+              retainedBytes: truncated.retainedBytes,
+            },
+          });
+          return result;
+        } catch (error) {
+          lastError = error;
+          const errorMessage = String(error?.message || error);
+          if (attempt < retry.maxAttempts) {
+            emitEvent({
+              type: "tool_execution_retry",
+              ...eventBase,
+              attempt,
+              nextAttempt: attempt + 1,
+              error: errorMessage,
+            });
+            await sleep(retry.backoffMs);
+            continue;
+          }
+          emitEvent({
+            type: "tool_execution_error",
+            ...eventBase,
+            attempt,
+            attemptCount: attempt,
+            error: errorMessage,
+          });
+          throw error;
+        }
       }
+      throw lastError || new Error(`Tool ${envelope.toolName} failed.`);
     },
   };
   orchestrator.executeTool = orchestrator.execute;

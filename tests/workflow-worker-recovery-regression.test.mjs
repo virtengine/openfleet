@@ -12,6 +12,17 @@ describe("workflow worker recovery regressions", () => {
     expect(workerSource).toContain("setTimeout(() => engine.resumeInterruptedRuns().catch(() => {}), 0);");
   });
 
+  it("gives workflow workers a longer default startup window before falling back in-process", () => {
+    expect(uiServerSource).toContain("BOSUN_WORKFLOW_WORKER_START_TIMEOUT_MS");
+    expect(uiServerSource).toContain("|| 15000");
+  });
+
+  it("deduplicates expensive status payload assembly behind a longer cache window", () => {
+    expect(uiServerSource).toContain('getOrComputeCachedApiResponse("status", 15000');
+    expect(uiServerSource).toContain("const monitor = buildCurrentTuiMonitorStats();");
+    expect(uiServerSource).toContain("const durableRuntime = buildDurableRuntimeSurface(monitor);");
+  });
+
   it("returns retry payloads with retryRunId for worker-backed workflow actions", () => {
     expect(workerSource).toContain('case "retryRun": {');
     expect(workerSource).toContain("retryRunId: retryResult?.retryRunId || retryResult?.ctx?.id || null");
@@ -29,9 +40,12 @@ describe("workflow worker recovery regressions", () => {
 
   it("forwards agent pool bridge calls with the current prompt-plus-options signatures", () => {
     expect(workerSource).toContain('async launchOrResumeThread(prompt, cwd, timeout, opts) {');
+    expect(workerSource).toContain("function sanitiseServiceArgs(value, depth = 0, seen = new WeakSet()) {");
+    expect(workerSource).toContain("if (typeof value === \"function\") return undefined;");
     expect(workerSource).toContain('return callMainService("agentPool.launchOrResumeThread", [prompt, cwd, timeout, opts]);');
     expect(workerSource).toContain('async execWithRetry(prompt, opts) {');
     expect(workerSource).toContain('return callMainService("agentPool.execWithRetry", [prompt, opts]);');
+    expect(workerSource).toContain("args: sanitiseServiceArgs(args),");
     expect(uiServerSource).toContain("_normalizeAgentPoolBridgeArgs(fn, args = [])");
     expect(uiServerSource).toContain("options.slotMeta?.taskKey ||");
     expect(uiServerSource).toContain("options.targetTaskKey ||");

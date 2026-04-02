@@ -117,6 +117,15 @@ function normalizeWorkflowRunText(value) {
   return repairCommonMojibake(normalized);
 }
 
+const UNRESOLVED_WORKFLOW_TEMPLATE_TOKEN_RE = /\{\{[^{}]+\}\}/;
+
+function normalizeWorkflowIdentityText(value) {
+  const normalized = normalizeWorkflowRunText(value).trim();
+  if (!normalized) return "";
+  if (UNRESOLVED_WORKFLOW_TEMPLATE_TOKEN_RE.test(normalized)) return "";
+  return normalized;
+}
+
 function normalizeWorkflowRunTimestampMs(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const text = String(value || "").trim();
@@ -1899,7 +1908,7 @@ function collectValidationFailures(detail = {}) {
 function collectRunTaskIds(detail = {}) {
   const ids = new Set();
   const push = (value) => {
-    const normalized = String(value || "").trim();
+    const normalized = normalizeWorkflowIdentityText(value);
     if (normalized) ids.add(normalized);
   };
 
@@ -1925,16 +1934,37 @@ function resolveRunTaskTitle(detail = {}) {
     detail?.data?.taskInfo?.title,
     detail?.data?.taskDetail?.title,
   ]
-    .map((value) => String(value || "").trim())
+    .map((value) => normalizeWorkflowIdentityText(value))
     .find(Boolean);
   if (direct) return direct;
 
   for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
-    const title = String(event?.taskTitle || "").trim();
+    const title = normalizeWorkflowIdentityText(event?.taskTitle);
     if (title) return title;
   }
 
   return null;
+}
+
+function resolveWorkflowTemplateSource(runSummary = null, detail = null) {
+  return normalizeWorkflowIdentityText(
+    detail?.workflowDefinition?.metadata?.installedFrom ||
+      detail?.data?._workflowDefinitionSnapshot?.metadata?.installedFrom ||
+      runSummary?.metadata?.installedFrom ||
+      "",
+  ).toLowerCase();
+}
+
+function isConcreteTaskIdentityRequired(runSummary = null, detail = null) {
+  const templateSource = resolveWorkflowTemplateSource(runSummary, detail);
+  if (templateSource === "template-task-lifecycle") return true;
+  const workflowName = normalizeWorkflowIdentityText(
+    detail?.workflowName ||
+      detail?.data?._workflowName ||
+      runSummary?.workflowName ||
+      "",
+  ).toLowerCase();
+  return workflowName === "task lifecycle";
 }
 
 function collectRunSessionIds(detail = {}) {
@@ -4366,9 +4396,18 @@ export class WorkflowEngine extends EventEmitter {
         workspaceSummary = wsMgr.getWorkspaceStateSummary(configDir);
       } catch { /* workspace manager not available — skip workspace filtering */ }
     }
+    const batchDispatcherEnabled = Array.from(this._workflows.values()).some(
+      (workflow) =>
+        workflow?.enabled !== false &&
+        String(workflow?.metadata?.installedFrom || "").trim() === "template-task-batch-processor",
+    );
 
     for (const [id, def] of this._workflows) {
       if (def.enabled === false) continue;
+      const templateId = String(def?.metadata?.installedFrom || "").trim();
+      if (batchDispatcherEnabled && templateId === "template-task-lifecycle") {
+        continue;
+      }
 
       // ── Workspace gate ──────────────────────────────────────────────
       const wfWorkspaceId = def.workspaceId || def.workspace || null;
@@ -4446,6 +4485,23 @@ export class WorkflowEngine extends EventEmitter {
     const normalizedLimit = Number.isFinite(Number(limit)) && Number(limit) > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(Number(limit))))
       : MAX_PERSISTED_RUNS;
+    const indexedRuns = this._readRunIndex()
+      .map((entry) => this._normalizeRunSummary(entry))
+      .filter(Boolean);
+    if (indexedRuns.length > 0) {
+      const filtered = workflowId
+        ? indexedRuns.filter((entry) => entry.workflowId === workflowId)
+        : indexedRuns;
+      filtered.sort(
+        (a, b) =>
+          normalizeWorkflowRunTimestampMs(b?.startedAt || b?.updatedAt)
+          - normalizeWorkflowRunTimestampMs(a?.startedAt || a?.updatedAt),
+      );
+      return {
+        runs: filtered.slice(0, normalizedLimit),
+        total: filtered.length,
+      };
+    }
     try {
       const page = listWorkflowRunSummariesPageFromStateLedger({
         anchorPath: this.runsDir,
@@ -4481,6 +4537,31 @@ export class WorkflowEngine extends EventEmitter {
     const limit = Number.isFinite(rawLimit) && rawLimit > 0
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
       : 20;
+    const indexedRuns = this._readRunIndex()
+      .map((entry) => this._normalizeRunSummary(entry))
+      .filter(Boolean);
+    if (indexedRuns.length > 0) {
+      const filtered = workflowId
+        ? indexedRuns.filter((entry) => entry.workflowId === workflowId)
+        : indexedRuns;
+      filtered.sort(
+        (a, b) =>
+          normalizeWorkflowRunTimestampMs(b?.startedAt || b?.updatedAt)
+          - normalizeWorkflowRunTimestampMs(a?.startedAt || a?.updatedAt),
+      );
+      const runs = filtered.slice(offset, offset + limit);
+      const total = filtered.length;
+      const nextOffset = offset + runs.length;
+      return {
+        runs,
+        total,
+        offset,
+        limit,
+        count: runs.length,
+        hasMore: nextOffset < total,
+        nextOffset: nextOffset < total ? nextOffset : null,
+      };
+    }
     try {
       const page = listWorkflowRunSummariesPageFromStateLedger({
         anchorPath: this.runsDir,
@@ -7274,11 +7355,18 @@ export class WorkflowEngine extends EventEmitter {
         const normalizedRunId = String(runId || "").trim();
         if (!normalizedRunId || interrupted.some((entry) => entry.runId === normalizedRunId)) return;
         let summary = runsById.get(normalizedRunId) || null;
+        let detail = null;
+        const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
+        if (existsSync(detailPath)) {
+          try {
+            detail = JSON.parse(readFileSync(detailPath, "utf8"));
+          } catch {
+            detail = null;
+          }
+        }
         if (!summary) {
-          const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
-          if (existsSync(detailPath)) {
+          if (detail) {
             try {
-              const detail = JSON.parse(readFileSync(detailPath, "utf8"));
               summary = this._buildSummaryFromDetail({
                 runId: normalizedRunId,
                 workflowId: workflowId || detail?.data?._workflowId || null,
@@ -7293,8 +7381,11 @@ export class WorkflowEngine extends EventEmitter {
             }
           }
         }
-        const wantsResumable = options?.resumable !== false;
-        const forceResumable = options?.forceResumable === true;
+        const missingConcreteTaskIdentity =
+          isConcreteTaskIdentityRequired(summary, detail) &&
+          !this._resolveRunTaskIdentity(summary, detail)?.taskId;
+        const wantsResumable = options?.resumable !== false && !missingConcreteTaskIdentity;
+        const forceResumable = options?.forceResumable === true && !missingConcreteTaskIdentity;
         const canResume = wantsResumable && (forceResumable || resumableStaleRunsAssigned < maxResumableStaleRuns);
         if (summary) {
           summary.status = WorkflowStatus.PAUSED;
@@ -7304,7 +7395,11 @@ export class WorkflowEngine extends EventEmitter {
           if (!Number.isFinite(Number(summary.endedAt))) {
             summary.endedAt = now;
           }
-          if (!canResume) summary.resumeResult = "recovery_cap_exceeded";
+          if (!canResume) {
+            summary.resumeResult = missingConcreteTaskIdentity
+              ? "invalid_task_identity"
+              : "recovery_cap_exceeded";
+          }
         }
         if (canResume && !forceResumable) resumableStaleRunsAssigned += 1;
         interrupted.push({
@@ -7474,6 +7569,10 @@ export class WorkflowEngine extends EventEmitter {
       for (const run of runs) {
         // Skip runs that were marked as duplicates above
         const _runDetail = runDetailCache.get(run.runId);
+        if (isConcreteTaskIdentityRequired(run, _runDetail) && !this._resolveRunTaskIdentity(run, _runDetail)?.taskId) {
+          this._markRunUnresumable(run.runId, "invalid_task_identity");
+          continue;
+        }
         const _tid = this._resolveRunTaskIdentity(run, _runDetail)?.taskId || "";
         if (_tid) {
           const latest = latestByTaskId.get(_tid);
@@ -7538,30 +7637,49 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _resolveRunTaskIdentity(runSummary, detail = null) {
-    const detailTaskId = String(
+    const detailTaskId = normalizeWorkflowIdentityText(
       detail?.data?.taskId || detail?.inputData?.taskId || detail?.taskId || "",
-    ).trim();
+    );
     if (detailTaskId) {
       return {
         taskId: detailTaskId,
-        taskTitle: String(detail?.data?.taskTitle || detail?.inputData?.taskTitle || "").trim() || null,
+        taskTitle: normalizeWorkflowIdentityText(
+          detail?.data?.taskTitle || detail?.inputData?.taskTitle || "",
+        ) || null,
         source: "detail",
       };
     }
-    const topologyTaskId = String(
+    const topologyTaskId = normalizeWorkflowIdentityText(
       detail?.delegationTopology?.taskId ||
         detail?.data?._delegationTopology?.taskId ||
         "",
-    ).trim();
+    );
     if (topologyTaskId) {
       return {
         taskId: topologyTaskId,
-        taskTitle: String(detail?.taskTitle || detail?.data?.taskTitle || "").trim() || null,
+        taskTitle: normalizeWorkflowIdentityText(
+          detail?.taskTitle || detail?.data?.taskTitle || "",
+        ) || null,
         source: "topology",
       };
     }
+    const summaryTaskId = normalizeWorkflowIdentityText(runSummary?.taskId || "");
+    if (summaryTaskId) {
+      return {
+        taskId: summaryTaskId,
+        taskTitle: normalizeWorkflowIdentityText(runSummary?.taskTitle || "") || null,
+        source: "summary",
+      };
+    }
     const ledgerIdentity = this._executionLedger.getTaskIdentity(runSummary?.runId || detail?.id || "");
-    if (ledgerIdentity?.taskId) return ledgerIdentity;
+    const ledgerTaskId = normalizeWorkflowIdentityText(ledgerIdentity?.taskId || "");
+    if (ledgerTaskId) {
+      return {
+        ...ledgerIdentity,
+        taskId: ledgerTaskId,
+        taskTitle: normalizeWorkflowIdentityText(ledgerIdentity?.taskTitle || "") || null,
+      };
+    }
     return null;
   }
 

@@ -33,7 +33,6 @@
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
 import {
-  copyFile,
   mkdir,
   readFile,
   rename,
@@ -71,6 +70,8 @@ const CACHE_DIR = ".cache/bosun";
 const DEFAULT_OWNER_STALE_TTL_MS = 10 * 60 * 1000;
 const FS_RETRY_DELAY_MS = 40;
 const FS_RETRY_MAX = 4;
+const CLAIMS_REPLACE_RETRY_DELAY_MS = 100;
+const CLAIMS_REPLACE_RETRY_MAX = 20;
 
 // Shared state configuration from environment
 const SHARED_STATE_ENABLED = process.env.SHARED_STATE_ENABLED !== "false"; // default true
@@ -309,36 +310,41 @@ async function saveClaimsRegistry(registry) {
   const tmpPath = `${state.claimsPath}.tmp-${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
   await writeFile(tmpPath, payload, { encoding: "utf8", flush: true });
   try {
-    await retryFsOperation(() => rename(tmpPath, state.claimsPath));
+    await retryFsOperation(
+      () => rename(tmpPath, state.claimsPath),
+      { maxRetries: CLAIMS_REPLACE_RETRY_MAX, delayMs: CLAIMS_REPLACE_RETRY_DELAY_MS },
+    );
     persisted = true;
   } catch (err) {
     const reason = err?.message || err;
-    // On Windows, rename can fail when the destination file is in use.
     try {
-      await retryFsOperation(() => copyFile(tmpPath, state.claimsPath));
-      persisted = true;
-      console.warn(
-        `[task-claims] Atomic rename failed (${reason}); copied temp file into place.`,
-      );
-    } catch (copyErr) {
-      const copyReason = copyErr?.message || copyErr;
-      await retryFsOperation(() =>
-        writeFile(state.claimsPath, payload, { encoding: "utf8", flush: true }),
-      );
-      persisted = true;
-      console.warn(
-        `[task-claims] Atomic rename failed (${reason}); copy fallback failed (${copyReason}); wrote registry directly.`,
-      );
-    } finally {
-      try {
-        await unlink(tmpPath);
-      } catch {
-        /* best effort */
-      }
+      await unlink(tmpPath);
+    } catch {
+      /* best effort */
     }
+    throw new Error(
+      `[task-claims] Failed to replace claims registry atomically (${reason}). Refusing non-atomic overwrite to avoid corrupting ${state.claimsPath}.`,
+    );
   }
 
-  if (!persisted) return;
+  if (!persisted) {
+    try {
+      await unlink(tmpPath);
+    } catch {
+      /* best effort */
+    }
+    return;
+  }
+
+  try {
+    await unlink(tmpPath);
+  } catch (err) {
+    if (err?.code !== "ENOENT") {
+      console.warn(
+        `[task-claims] Temporary registry cleanup warning: ${err?.message || err}`,
+      );
+    }
+  }
   try {
     syncTaskClaimsRegistryToStateLedger(registry, { repoRoot: state.repoRoot });
   } catch (err) {
@@ -1181,4 +1187,3 @@ export const _test = {
   retryFsOperation,
   isRetriableFsError,
 };
-

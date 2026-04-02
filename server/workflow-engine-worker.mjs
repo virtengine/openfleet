@@ -30,11 +30,37 @@ const repoRoot = workerData?.repoRoot || resolve(__dirname, "..");
 // ── Pending service calls (worker awaiting main-thread response) ──────────────
 const pendingSvcCalls = new Map();
 
+function sanitiseServiceArgs(value, depth = 0, seen = new WeakSet()) {
+  if (depth > 8 || value === null || value === undefined) return value;
+  if (typeof value === "function") return undefined;
+  if (typeof value !== "object") return value;
+  if (value instanceof Date) return value;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const out = value.map((entry) => sanitiseServiceArgs(entry, depth + 1, seen));
+    seen.delete(value);
+    return out;
+  }
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const next = sanitiseServiceArgs(entry, depth + 1, seen);
+    if (next !== undefined) out[key] = next;
+  }
+  seen.delete(value);
+  return out;
+}
+
 function callMainService(method, args) {
   return new Promise((resolve, reject) => {
     const callId = randomUUID();
     pendingSvcCalls.set(callId, { resolve, reject });
-    parentPort.postMessage({ type: "svc-call", callId, method, args });
+    parentPort.postMessage({
+      type: "svc-call",
+      callId,
+      method,
+      args: sanitiseServiceArgs(args),
+    });
   });
 }
 

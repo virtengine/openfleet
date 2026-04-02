@@ -107,6 +107,19 @@ function sessionPath(id, action = "") {
   return buildSessionApiPath(id, action, { workspace });
 }
 
+function clearUnavailableSelectedSession(targetSessionId) {
+  const normalizedTargetSessionId = String(targetSessionId || "").trim();
+  if (!normalizedTargetSessionId) return;
+  if (String(selectedSessionId.peek() || "").trim() === normalizedTargetSessionId) {
+    selectedSessionId.value = null;
+  }
+  if (String(sessionMessagesSessionId.peek() || "").trim() === normalizedTargetSessionId) {
+    sessionMessagesSessionId.value = "";
+    sessionMessages.value = [];
+    sessionPagination.value = null;
+  }
+}
+
 /* ─── Data loaders ─── */
 export async function loadSessions(filter = {}, _opts = {}) {
   const normalizedFilter = {
@@ -124,6 +137,9 @@ export async function loadSessions(filter = {}, _opts = {}) {
       params.set(key, String(value));
     }
     const currentSelectedSessionId = String(selectedSessionId.value || "").trim();
+    const previousSessionIds = new Set(
+      (sessionsData.peek() || []).map((session) => String(session?.id || "")).filter(Boolean),
+    );
     const res = await apiFetch(`/api/sessions?${params}`, { _silent: true });
     if (res?.sessions) {
       sessionsData.value = res.sessions;
@@ -134,6 +150,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
       const shouldRetainScopedSelection =
         Boolean(currentSelectedSessionId) &&
         workspaceScope !== "all" &&
+        previousSessionIds.has(currentSelectedSessionId) &&
         !sessionIds.has(currentSelectedSessionId);
       const selectedSessionStillExists =
         !currentSelectedSessionId ||
@@ -234,12 +251,16 @@ export async function loadSessionMessages(id, opts = {}) {
       sessionMessagesSessionId.value = targetSessionId;
     }
     return { ok: false, error: "empty" };
-  } catch {
+  } catch (error) {
+    const errorState = classifySessionRequestError(error);
+    if (errorState.isNotFound) {
+      clearUnavailableSelectedSession(targetSessionId);
+    }
     if (!opts.prepend) {
       _bindSessionStore(targetSessionId, [], null);
       sessionMessagesSessionId.value = targetSessionId;
     }
-    return { ok: false, error: "unavailable" };
+    return { ok: false, error: errorState.isNotFound ? "not_found" : "unavailable" };
   }
 }
 
@@ -603,12 +624,15 @@ function getSessionStatusKey(session) {
   return getSessionLifecycleState(session).key;
 }
 
-function isActiveSession(session) {
-  return getSessionLifecycleState(session).isActive;
+function isInProgressSession(session) {
+  const lifecycle = getSessionLifecycleState(session);
+  if (!lifecycle.isActive) return false;
+  const runtime = getSessionRuntimeState(session);
+  return runtime.isLive || runtime.key === "running" || runtime.key === "queued";
 }
 
 function isHistoricSession(session) {
-  return !isActiveSession(session);
+  return !isInProgressSession(session);
 }
 
 /* ─── Swipeable Session Item ─── */
@@ -981,7 +1005,7 @@ export function SessionList({
 
   const viewFiltered = archivedFiltered.filter((s) => {
     if (resolvedSessionView === SESSION_VIEW_FILTER.active) {
-      return isActiveSession(s);
+      return isInProgressSession(s);
     }
     if (resolvedSessionView === SESSION_VIEW_FILTER.historic) {
       return isHistoricSession(s);
@@ -997,16 +1021,16 @@ export function SessionList({
       )
     : viewFiltered;
 
-  const active = filtered.filter((s) => isActiveSession(s));
+  const active = filtered.filter((s) => isInProgressSession(s));
   const archived = filtered.filter((s) => getSessionStatusKey(s) === "archived");
   const recent = filtered.filter(
     (s) =>
-      !isActiveSession(s) && getSessionStatusKey(s) !== "archived",
+      !isInProgressSession(s) && getSessionStatusKey(s) !== "archived",
   );
 
   const archivedCount = typeFiltered.filter((s) => getSessionStatusKey(s) === "archived").length;
   const allCount = archivedFiltered.length;
-  const activeCount = archivedFiltered.filter((s) => isActiveSession(s)).length;
+  const activeCount = archivedFiltered.filter((s) => isInProgressSession(s)).length;
   const historicCount = archivedFiltered.filter((s) => isHistoricSession(s)).length;
 
   const handleSelect = useCallback(
@@ -1129,14 +1153,14 @@ export function SessionList({
   const emptyTitle = hasSearch
     ? "No matching sessions"
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "No lifecycle-active sessions"
+      ? "No in-progress sessions"
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "No historic sessions"
         : "No sessions yet";
   const emptyHint = hasSearch
     ? "Try a different keyword or clear the search."
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "Start a new session or switch to All lifecycle states."
+      ? "Sessions with live work appear here."
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "Historic sessions appear after they finish."
         : "Create a session to get started.";
@@ -1326,7 +1350,7 @@ export function SessionList({
           clickable
         />
         <${Chip}
-          label=${`Lifecycle Active (${activeCount})`}
+          label=${`In Progress (${activeCount})`}
           size="small"
           variant=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "filled" : "outlined"}
           color=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "primary" : "default"}
@@ -1352,7 +1376,7 @@ export function SessionList({
           html`
             <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1.5, pb: 0.5 }}>
               <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
-                Lifecycle Active
+                In Progress
               </${Typography}>
             </${ListItem}>
             ${active.map(renderSessionItem)}
@@ -1449,4 +1473,3 @@ export function SessionList({
     </${Paper}>
   `;
 }
-

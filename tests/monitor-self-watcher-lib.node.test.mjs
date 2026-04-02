@@ -23,3 +23,13 @@ test("self restart watcher snapshots mtimes and logs repo-relative changed paths
   assert.match(src, /const restartLabel = formatSelfWatcherLabel\(fullPath\);/);
   assert.match(src, /queueSelfRestart\(restartLabel\);/);
 });
+
+test("monitor schedules periodic stale helper-process reaping", () => {
+  assert.match(src, /reapStaleBosunHelperProcesses/);
+  assert.match(src, /const HELPER_PROCESS_REAP_INTERVAL_MS = Math\.max\(/);
+  assert.match(src, /const HELPER_PROCESS_MAX_AGE_MS = Math\.max\(/);
+  assert.match(
+    src,
+    /safeSetInterval\("helper-process-reaper", \(\) => \{\s*try \{\s*reapStaleBosunHelperProcesses\(HELPER_PROCESS_MAX_AGE_MS\);/s,
+  );
+});

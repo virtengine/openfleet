@@ -24,6 +24,7 @@ import {
   getNodeType,
 } from "../workflow/workflow-nodes.mjs";
 import { registerCustomTool } from "../agent/agent-custom-tools.mjs";
+import { listApprovalRequests } from "../workflow/approval-queue.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -241,6 +242,53 @@ describe("action.bosun_tool", () => {
         toolId: "nonexistent-tool-xyz",
       }),
     );
+  });
+
+  it("queues workflow-action approval requests before running an approval-gated Bosun tool", async () => {
+    const handler = getNodeType("action.bosun_tool");
+    const repoRoot = makeTmpDir();
+    registerCustomTool(repoRoot, {
+      id: "approval-tool",
+      title: "Approval Tool",
+      description: "Should be blocked until approved",
+      category: "utility",
+      lang: "mjs",
+      script: "console.log('should-not-run');",
+    });
+    const ctx = new WorkflowContext({
+      repoRoot,
+      _runId: "run-approval-1",
+      _workflowId: "wf-approval-1",
+    });
+    const node = {
+      id: "t-approval",
+      type: "action.bosun_tool",
+      config: {
+        toolId: "approval-tool",
+        requireApproval: true,
+        approvalReason: "operator review required",
+      },
+    };
+
+    const result = await handler.execute(node, ctx);
+    const approvals = listApprovalRequests({
+      repoRoot,
+      scopeType: "workflow-action",
+      status: "pending",
+      includeResolved: true,
+      limit: 10,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/requires operator approval/i);
+    expect(approvals.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scopeType: "workflow-action",
+        runId: "run-approval-1",
+        nodeId: "t-approval",
+        status: "pending",
+      }),
+    ]));
   });
 });
 

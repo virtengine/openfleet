@@ -51,6 +51,7 @@ describe("monitor workflow startup guards", () => {
 
   it("forces agent session monitor template reconciliation on startup", () => {
     expect(monitorSource).toContain('forceUpdateTemplateIds: [');
+    expect(monitorSource).toContain('"template-task-batch-processor"');
     expect(monitorSource).toContain('"template-agent-session-monitor"');
     expect(monitorSource).toContain('"template-github-kanban-sync"');
     expect(monitorSource).toContain("Number(reconcile?.autoUpdated || 0) > 0");
@@ -244,6 +245,7 @@ describe("monitor workflow startup guards", () => {
 
 describe("task-executor in-progress recovery owner_mismatch guards", () => {
   const executorSource = readFileSync(resolve(process.cwd(), "task/task-executor.mjs"), "utf8");
+  const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
   it("skips resumable dispatch in workflow-owned mode when workflow liveness evidence exists", () => {
     // When workflowOwnsTaskLifecycle is true and either the workflow run
@@ -251,10 +253,18 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
     // or the agent thread is still alive,
     // recovery must NOT add the task to resumable (which calls executeTask()
     // and fires task.assigned, launching a second competing workflow run).
+    // Stale shared-state alone is only allowed to override a lingering thread
+    // record; it must not override active workflow-run evidence.
     expect(executorSource).toContain("if (this.workflowOwnsTaskLifecycle) {");
     expect(executorSource).toContain("const hasRecentWorkflowRunEvidence =");
+    expect(executorSource).toContain("const hasWorkflowEvidence =");
+    expect(executorSource).toContain("const hasWorkflowLiveness =");
+    expect(executorSource).toContain("this._findRecentWorkflowEvidenceRunIdByTaskId(taskId)");
     expect(executorSource).toContain(
-      "if (hasWorkflowRun || hasRecentWorkflowRunEvidence || hasThread) {",
+      "if (hasWorkflowEvidence) {",
+    );
+    expect(executorSource).toContain(
+      "if (hasWorkflowLiveness) {",
     );
     // The skip branch must appear BEFORE the resumable.push call
     const wfGuardPos = executorSource.indexOf("if (this.workflowOwnsTaskLifecycle) {");
@@ -262,11 +272,19 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
     expect(wfGuardPos).toBeLessThan(resumablePushPos);
   });
 
+  it("falls back to the workflow run index when task metadata has not yet recorded latestRunId", () => {
+    expect(executorSource).toContain("_findRecentWorkflowEvidenceRunIdByTaskId(taskId)");
+    expect(executorSource).toContain('const WORKFLOW_RUNS_HISTORY_INDEX = "index.json";');
+    expect(executorSource).toContain("const indexPath = resolve(this.workflowRunsDir, WORKFLOW_RUNS_HISTORY_INDEX);");
+    expect(executorSource).toContain("entry?.taskId ||");
+  });
+
   it("resets ownerless workflow-owned tasks instead of skipping them on freshness alone", () => {
     // Fresh inprogress rows are only safe to keep when a workflow run, thread,
     // or shared-state owner still exists. Otherwise the task is stranded and
     // should be reset back to todo for clean re-dispatch.
-    expect(executorSource).toContain("source: \"task-executor-recovery-missing-workflow-run\"");
+    expect(executorSource).toContain("task-executor-recovery-missing-workflow-run");
+    expect(executorSource).toContain("bypassWorkflowOwnership: true");
   });
 
   it("uses stale threshold of 600s so recovery interval cannot race heartbeat renewal", () => {
@@ -285,6 +303,12 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
     // path when their heartbeat was stale.  The simplified guard accepts any
     // non-stale owner.
     expect(executorSource).not.toContain("ownerId !== this._instanceId");
+  });
+
+  it("lets recovery bypass workflow-owned transition delegation when the workflow itself is being repaired", () => {
+    expect(monitorSource).toContain("if (payload.bypassWorkflowOwnership === true) {");
+    expect(monitorSource).toContain("return updateTaskStatus(normalizedTaskId, normalizedStatus, {");
+    expect(monitorSource).toContain("bypassWorkflowOwnership: true");
   });
 });
 

@@ -798,3 +798,97 @@
     - `node --test tests/monitor-self-watcher-lib.node.test.mjs`
   - build passed:
     - `npm run build`
+
+## 2026-04-02 - chat session 404 cleanup and active-session accuracy
+
+- Goal:
+  - stop repeated chat/session `404` requests for stale or synthetic session ids such as `chat-idle`, `chat-replay`, `chat-1`, and `primary-stale-empty-hidden`, and make the chat sidebar reflect real in-progress work instead of merely lifecycle-active placeholders.
+- Source changes:
+  - `server/ui-server.mjs`
+  - `ui/components/session-list.js`
+  - `site/ui/components/session-list.js`
+  - `ui/tabs/chat.js`
+  - `site/ui/tabs/chat.js`
+  - `ui/app.js`
+  - `site/ui/app.js`
+  - `tests/ui-server.test.mjs`
+  - `tests/chat-session-regressions.test.mjs`
+  - `tests/session-history-filter-render.test.mjs`
+  - `tests/session-runtime-label-render.test.mjs`
+- Behavioral change:
+  - default session lists now suppress synthetic persisted chat fixture ids (`chat-idle`, `chat-replay`, `chat-1`, etc.) when they have no real workspace binding.
+  - session-list refreshes no longer keep an unknown selected session alive just because the request was workspace-scoped; retention now only preserves selections that were already present in the prior cached list.
+  - message/detail loaders now clear the selected session when both scoped and `workspace=all` fetches end in a real `404`, which stops repeated polling for dead session ids.
+  - chat route hydration now clears stale `sessionId` URL params once the sidebar has loaded and the referenced session is not present.
+  - sidebar “Lifecycle Active” filtering was tightened to real runtime activity and relabeled to `In Progress`, using runtime/live state instead of lifecycle status alone.
+  - session insights polling now bails out when there is no resolved session object, preventing background inspector fetch loops for invalid ids.
+- Validation:
+  - syntax checks passed for touched UI/server files with `node --check`.
+  - focused session/server regressions passed:
+    - `npx vitest run tests/ui-server.test.mjs tests/chat-session-regressions.test.mjs tests/session-history-filter-render.test.mjs tests/session-runtime-label-render.test.mjs`
+  - build passed:
+    - `npm run build`
+  - broader suite status:
+    - `npm test` cleared grouped batches `1/21` through `21/21` with no failures observed before the final isolated `tests/ui-server.test.mjs` rerun phase began.
+
+## 2026-04-02 - workflow approval orphan cleanup and workflow card layout stabilization
+
+- Goal:
+  - stop operator inbox / approval queue entries from surfacing dead workflow-run approvals like `workflow-run:run-approval-1`, and fix the installed-workflow card layout so badge rows and action buttons do not collapse into each other on narrower widths.
+- Source changes:
+  - `workflow/approval-queue.mjs`
+  - `server/ui-server.mjs`
+  - `ui/tabs/workflows.js`
+  - `tests/workflow-approval-queue.test.mjs`
+  - `tests/ui-server.test.mjs`
+  - `tests/workflow-run-history-ui-regression.test.mjs`
+- Findings:
+  - the repo-local durable queue already contained a stale pending request in `.bosun/approvals/requests.json` for `workflow-run:run-approval-1`.
+  - workflow approval listing reconciled neither missing workflow runs nor `status=all` / `scopeType=all` correctly; `listApprovalRequests()` treated `"all"` as a literal filter value and hid repaired rows from the `all` view.
+  - `site/ui/tabs/workflows.js` already had a safer wrapped workflow-card layout than `ui/tabs/workflows.js`; the main UI copy had drifted and still used a single dense inline footer/action row.
+- Behavioral change:
+  - workflow approval listing now reconciles pending workflow-run approvals against real run detail before responding.
+  - orphaned workflow-run approvals are auto-marked `expired` with `actorId=system:reconcile` instead of continuing to appear as live pending approvals.
+  - `listApprovalRequests()` now treats `status=all` and `scopeType=all` as “no filter” instead of filtering to impossible literal values.
+  - the installed workflow cards in the main UI now use wrapped header/footer regions and nowrap button labels, matching the safer layout already present in the `site/ui` copy.
+- Validation:
+  - syntax check passed:
+    - `node --check workflow/approval-queue.mjs`
+  - focused approval/layout regressions passed:
+    - `npx vitest run tests/workflow-approval-queue.test.mjs -t "expires orphaned workflow-run approvals during reconciliation when the run detail is gone"`
+    - `npx vitest run tests/ui-server.test.mjs -t "hides orphaned workflow-run approvals from the pending queue and expires them durably"`
+    - `npx vitest run tests/workflow-run-history-ui-regression.test.mjs -t "keeps workflow cards wrapped into stable header and action regions"`
+  - browser-tooling blocker:
+    - `npx --yes @playwright/cli open http://127.0.0.1:4400` failed immediately with `Daemon process exited with code 1`, so live browser validation is still blocked by the Playwright CLI runtime rather than the Bosun route itself.
+
+## 2026-04-02 - stale helper/debug Node and Playwright process reaper hardening
+
+- Goal:
+  - stop leaked Bosun-local helper/debug `node.exe` and Playwright temp-profile browser processes from accumulating memory and causing Bosun UI/API stalls.
+- Source changes:
+  - `infra/maintenance.mjs`
+  - `infra/monitor.mjs`
+  - `tests/maintenance-helper-reaper.node.test.mjs`
+  - `tests/monitor-self-watcher-lib.node.test.mjs`
+- Findings:
+  - the host had dropped to roughly `2.15 GB` free RAM before cleanup, and multiple stale helper/debug processes were consuming several gigabytes each.
+  - the original helper reaper only matched visible helper children and Windows `killPid()` logged success without checking whether `taskkill` had actually succeeded.
+  - some orphaned Playwright trees kept a blank-command root `node.exe` / `chrome.exe` pair alive, which continued respawning small temp-profile Chrome children even after visible GPU/utility children were killed.
+- Behavioral change:
+  - maintenance now classifies Bosun-local UI probe helpers and Playwright temp-profile browsers, captures parent PID + process name, walks up orphaned Playwright helper ancestry, and tree-kills the root of that stale helper tree instead of only trimming child browser processes.
+  - Windows process killing now verifies the real result and falls back from `taskkill /T` to `Stop-Process -Force` instead of falsely reporting success.
+  - monitor runtime now schedules a lightweight `helper-process-reaper` interval every `5m` with a default stale threshold of `10m`, so Bosun no longer waits for the once-daily workspace hygiene workflow to reclaim leaked helper/browser processes.
+- Live remediation / evidence:
+  - manual helper cleanup reaped `9` stale helper processes first, then `2` remaining temp-profile browser children, then the final orphaned Playwright root after switching to the stronger Windows fallback.
+  - after cleanup, process scans for `playwright`, `startTelegramUiServer`, `ui-server.mjs`, and `playwright_*dev_profile` returned empty.
+  - free RAM improved from roughly `2.15 GB` to roughly `12.4-13.3 GB` during remediation.
+- Validation:
+  - syntax checks passed:
+    - `node --check infra/maintenance.mjs`
+    - `node --check infra/monitor.mjs`
+    - `node --check tests/maintenance-helper-reaper.node.test.mjs`
+    - `node --check tests/monitor-self-watcher-lib.node.test.mjs`
+  - focused node tests passed:
+    - `node --test tests/maintenance-helper-reaper.node.test.mjs tests/monitor-self-watcher-lib.node.test.mjs`
+  - live cleanup re-check passed:
+    - `node -e "import('./infra/maintenance.mjs').then(async (m) => { const result = m.reapStaleBosunHelperProcesses(60 * 1000); console.log(JSON.stringify({ result }, null, 2)); })"` returned `{ "result": 0 }` after remediation.

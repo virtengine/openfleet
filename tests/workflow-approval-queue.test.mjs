@@ -8,6 +8,7 @@ import {
   expireApprovalRequest,
   getApprovalRequest,
   getHarnessRunApprovalRequest,
+  reconcileWorkflowRunApprovalRequests,
   resolveApprovalQueuePath,
   resolveApprovalRequest,
   upsertWorkflowRunApprovalRequest,
@@ -329,6 +330,53 @@ describe("workflow approval queue", () => {
           blocked: false,
         }),
       },
+    });
+  });
+
+  it("expires orphaned workflow-run approvals during reconciliation when the run detail is gone", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bosun-workflow-approval-reconcile-"));
+    tempRoots.push(repoRoot);
+
+    const created = upsertWorkflowRunApprovalRequest({
+      runId: "run-missing-1",
+      workflowId: "wf-missing-1",
+      workflowName: "Missing Approval Workflow",
+      taskId: "task-missing-1",
+      taskTitle: "Missing approval task",
+      executionPolicy: {
+        mode: "manual",
+        approvalRequired: true,
+        approvalState: "pending",
+        blocked: true,
+      },
+      policyOutcome: {
+        blocked: true,
+        status: "blocked",
+      },
+    }, { repoRoot });
+
+    expect(created.request).toMatchObject({
+      requestId: "workflow-run:run-missing-1",
+      status: "pending",
+    });
+
+    const reconciled = reconcileWorkflowRunApprovalRequests({ repoRoot });
+    const reconciledRequest = reconciled.requests.find((entry) => entry.requestId === "workflow-run:run-missing-1");
+
+    expect(reconciled.repaired).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requestId: "workflow-run:run-missing-1",
+        runId: "run-missing-1",
+        status: "expired",
+      }),
+    ]));
+    expect(reconciledRequest).toMatchObject({
+      requestId: "workflow-run:run-missing-1",
+      status: "expired",
+      resolution: expect.objectContaining({
+        actorId: "system:reconcile",
+        note: "Workflow run run-missing-1 no longer exists.",
+      }),
     });
   });
 });

@@ -27,8 +27,10 @@ describe("chat session regressions", () => {
     expect(source).toContain("getSessionListState");
     expect(source).toContain("sessionsError.value = hasCachedData ? null : nextErrorState;");
     expect(source).toContain("const shouldRetainScopedSelection =");
+    expect(source).toContain("previousSessionIds.has(currentSelectedSessionId)");
     expect(source).toContain('workspaceScope !== "all"');
     expect(source).toContain("selectedSessionId.value = selectedSessionStillExists ? currentSelectedSessionId : null;");
+    expect(source).toContain("clearUnavailableSelectedSession(targetSessionId);");
 
     const loadMessagesPattern = /export async function loadSessionMessages[\s\S]*?\n}\n\nfunction normalizePreview/;
     const loadMessagesBlock = loadMessagesPattern.exec(source)?.[0] || "";
@@ -36,6 +38,7 @@ describe("chat session regressions", () => {
     expect(loadMessagesBlock).not.toContain("sessionPagination.value = null;");
     expect(loadMessagesBlock).toContain("const shouldRetryAll = shouldFallbackToAllSessions(err, baseUrl, fallbackUrl);");
     expect(loadMessagesBlock).toContain("res = await fetchSessionAtPath(fallbackUrl, limit, opts.offset);");
+    expect(loadMessagesBlock).toContain('return { ok: false, error: errorState.isNotFound ? "not_found" : "unavailable" };');
     expect(source).toContain("const freshCandidates = existing");
     expect(source).toContain("const reuseCheck = reusePath");
     expect(source).toContain("reused: true");
@@ -53,6 +56,7 @@ describe("chat session regressions", () => {
 
   it("retries inspector full-session fetches against workspace=all when scoped lookups 404", () => {
     const source = read("ui/app.js");
+    expect(source).toContain("if (!isSessionTab || !sessionId || !session) {");
     expect(source).toContain("const fallbackSessionPath = buildSessionApiPath(sessionId, \"\", {");
     expect(source).toContain('workspace: "all"');
     expect(source).toContain("const shouldRetryAll = shouldFallbackToAllSessions(");
@@ -80,6 +84,15 @@ describe("chat session regressions", () => {
     expect(source).toContain("turnCount <= 0");
     expect(source).toContain("totalEvents <= 0");
     expect(source).toContain("if (staleEmptyPrimarySession) return true;");
+    expect(source).toContain("const syntheticChatFixtureIdentifier = identifiers.some((value) =>");
+    expect(source).toContain("chat-(?:idle|stalled|runtime|replay|\\d+)");
+  });
+
+  it("clears stale route-selected chat ids once the session list finishes loading", () => {
+    const source = read("ui/tabs/chat.js");
+    expect(source).toContain("const isLoadingSessionList = sessionsLoading.value === true;");
+    expect(source).toContain("const listedRouteSession = (sessionsData.value || []).some(");
+    expect(source).toContain("setRouteParams({}, { replace: true, skipGuard: true });");
   });
 });
 

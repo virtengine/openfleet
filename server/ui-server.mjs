@@ -1432,7 +1432,7 @@ class WorkflowEngineProxy {
 
       const workerStartTimeoutMs = Math.max(
         250,
-        Math.trunc(Number(process.env.BOSUN_WORKFLOW_WORKER_START_TIMEOUT_MS) || 4000),
+        Math.trunc(Number(process.env.BOSUN_WORKFLOW_WORKER_START_TIMEOUT_MS) || 15000),
       );
       let settled = false;
       let startTimer = null;
@@ -10765,6 +10765,17 @@ function shouldHideSessionFromDefaultList(session) {
     Number.isFinite(createdAtMs) &&
     (Date.now() - createdAtMs) >= staleEmptyPrimaryAgeMs;
   if (staleEmptyPrimarySession) return true;
+  const syntheticChatFixtureIdentifier = identifiers.some((value) =>
+    /^(?:chat-(?:idle|stalled|runtime|replay|\d+))$/i.test(String(value || "").trim()),
+  );
+  if (
+    syntheticChatFixtureIdentifier &&
+    !normalizedWorkspaceId &&
+    !normalizedWorkspaceDir &&
+    !normalizedWorkspaceRoot
+  ) {
+    return true;
+  }
   if (!looksTemporaryWorkspace) return false;
   // Sessions with an explicit workspace assignment are intentional, not leaked fixtures.
   if (normalizedWorkspaceId) return false;
@@ -14387,10 +14398,12 @@ function buildCurrentTuiMonitorStats() {
   });
 }
 
-function buildDurableRuntimeSurface() {
+function buildDurableRuntimeSurface(monitor = null) {
   const runtimeStats = getRuntimeStats() || {};
-  const monitor = buildCurrentTuiMonitorStats();
-  const monitorSessions = Array.isArray(monitor?.sessions) ? monitor.sessions : [];
+  const currentMonitor = monitor && typeof monitor === "object"
+    ? monitor
+    : buildCurrentTuiMonitorStats();
+  const monitorSessions = Array.isArray(currentMonitor?.sessions) ? currentMonitor.sessions : [];
   const activeSessionCount = monitorSessions.filter((entry) => entry?.live === true).length;
   const completedSessionCount = Number(runtimeStats?.sessionCount || 0);
   const totalSessionCount = activeSessionCount + completedSessionCount;
@@ -18100,29 +18113,34 @@ async function handleApi(req, res, url) {
     return;
   }
   if (path === "/api/status") {
-    const cached = getCachedApiResponse("status", 2000);
-    if (cached) { jsonResponse(res, 200, cached); return; }
-    const workspaceContext = resolveActiveWorkspaceExecutionContext();
-    const serverState = await readServerStateSnapshot({
-      repoRoot: workspaceContext?.workspaceDir || repoRoot,
-      details: false,
+    const payload = await getOrComputeCachedApiResponse("status", 15000, async () => {
+      const workspaceContext = resolveActiveWorkspaceExecutionContext();
+      const [serverState, rawData] = await Promise.all([
+        readServerStateSnapshot({
+          repoRoot: workspaceContext?.workspaceDir || repoRoot,
+          details: false,
+        }),
+        readStatusSnapshot(),
+      ]);
+      const monitor = buildCurrentTuiMonitorStats();
+      const durableRuntime = buildDurableRuntimeSurface(monitor);
+      const harness = durableRuntime?.harness && typeof durableRuntime.harness === "object"
+        ? durableRuntime.harness
+        : buildHarnessOverview();
+      const data = serverState?.enabled === true
+        ? {
+            ...(rawData && typeof rawData === "object" ? rawData : {}),
+            ...durableRuntime,
+            serverState,
+            harness,
+          }
+        : {
+            ...((rawData && typeof rawData === "object") ? rawData : {}),
+            ...durableRuntime,
+            harness,
+          };
+      return { ok: true, data };
     });
-    const rawData = await readStatusSnapshot();
-    const durableRuntime = buildDurableRuntimeSurface();
-    const data = serverState?.enabled === true
-      ? {
-          ...(rawData && typeof rawData === "object" ? rawData : {}),
-          ...durableRuntime,
-          serverState,
-          harness: buildHarnessOverview(),
-        }
-      : {
-          ...((rawData && typeof rawData === "object") ? rawData : {}),
-          ...durableRuntime,
-          harness: buildHarnessOverview(),
-        };
-    const payload = { ok: true, data };
-    setCachedApiResponse("status", payload);
     jsonResponse(res, 200, payload);
     return;
   }
@@ -24176,7 +24194,12 @@ if (path === "/api/agent-logs/context") {
         || workspaceContext?.workspaceId
         || "default",
       ).trim().toLowerCase();
-      const { listApprovalRequests, upsertWorkflowRunApprovalRequest, isWorkflowRunApprovalPending } =
+      const {
+        listApprovalRequests,
+        reconcileWorkflowRunApprovalRequests,
+        upsertWorkflowRunApprovalRequest,
+        isWorkflowRunApprovalPending,
+      } =
         await import("../workflow/approval-queue.mjs");
       const rawLimit = Number(url.searchParams.get("limit"));
       const limit = Number.isFinite(rawLimit) && rawLimit > 0
@@ -24186,6 +24209,13 @@ if (path === "/api/agent-logs/context") {
       const scopeTypeFilter = String(url.searchParams.get("scopeType") || "").trim().toLowerCase();
       const repoRootForApprovals = workspacePaths.workspaceRoot || repoRoot;
       const payload = await getOrComputeCachedApiResponse(`workflows:approvals:${workspaceCacheKey}:${url.search}`, 5000, async () => {
+        if (
+          (!scopeTypeFilter || scopeTypeFilter === "workflow-run")
+          && (!statusFilter || statusFilter === "pending" || statusFilter === "all")
+        ) {
+          reconcileWorkflowRunApprovalRequests({ repoRoot: repoRootForApprovals });
+        }
+
         let listing = listApprovalRequests({
           repoRoot: repoRootForApprovals,
           status: statusFilter,

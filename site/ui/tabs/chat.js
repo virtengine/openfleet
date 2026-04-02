@@ -40,6 +40,7 @@ import {
   SessionList,
   SESSION_VIEW_FILTER,
   loadSessions,
+  sessionsLoading,
   selectedSessionId,
   sessionsData,
   createSession,
@@ -392,6 +393,7 @@ export function ChatTab() {
   const [queueCount, setQueueCount] = useState(0);
   const [stoppingAgent, setStoppingAgent] = useState(false);
   const routeSessionId = String(routeParams.value?.sessionId || "").trim();
+  const isLoadingSessionList = sessionsLoading.value === true;
 
   const getWorkspaceScopeForView = useCallback((view) => {
     const normalized = String(view || "").toLowerCase();
@@ -550,9 +552,19 @@ export function ChatTab() {
 
   useEffect(() => {
     if (!routeSessionId) return;
+    const listedRouteSession = (sessionsData.value || []).some(
+      (entry) => String(entry?.id || "").trim() === routeSessionId,
+    );
+    if (!isLoadingSessionList && !listedRouteSession) {
+      if (String(selectedSessionId.value || "").trim() === routeSessionId) {
+        selectedSessionId.value = null;
+      }
+      setRouteParams({}, { replace: true, skipGuard: true });
+      return;
+    }
     if (sessionId === routeSessionId) return;
     selectedSessionId.value = routeSessionId;
-  }, [routeSessionId]);
+  }, [isLoadingSessionList, routeSessionId, sessionId]);
 
   useEffect(() => {
     if (sessionId) {

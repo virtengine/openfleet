@@ -18,6 +18,8 @@ function extractFunctionSource(source, functionName, nextFunctionName) {
 describe("workflow run history UI pagination", () => {
   const uiSource = readFileSync(resolve(process.cwd(), "ui/tabs/workflows.js"), "utf8");
   const siteSource = readFileSync(resolve(process.cwd(), "site/ui/tabs/workflows.js"), "utf8");
+  const uiWorkflowListSource = extractFunctionSource(uiSource, "WorkflowListView", "RunHistoryView");
+  const siteWorkflowListSource = extractFunctionSource(siteSource, "WorkflowListView", "RunHistoryView");
   const uiRunHistorySource = extractFunctionSource(uiSource, "RunHistoryView", "WorkflowCodeView");
   const siteRunHistorySource = extractFunctionSource(siteSource, "RunHistoryView", "WorkflowCodeView");
 
@@ -156,6 +158,18 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("updateEdgePortMapping");
       expect(source).toContain("Select source port");
       expect(source).toContain("Select target port");
+    });
+  }
+
+  for (const [label, source] of [
+    ["ui", uiWorkflowListSource],
+    ["site", siteWorkflowListSource],
+  ]) {
+    it(`${label} keeps workflow cards wrapped into stable header and action regions`, () => {
+      expect(source).toContain("display: flex; flex-direction: column; gap: 8px;");
+      expect(source).toContain("display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;");
+      expect(source).toContain("justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 2px;");
+      expect(source).toContain("whiteSpace: 'nowrap'");
     });
   }
 

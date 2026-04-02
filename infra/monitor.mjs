@@ -39,6 +39,15 @@ const heartbeatRuntimeState = {
   current: null,
 };
 
+const HELPER_PROCESS_REAP_INTERVAL_MS = Math.max(
+  60_000,
+  Number(process.env.BOSUN_HELPER_PROCESS_REAP_INTERVAL_MS || "300000") || 300000,
+);
+const HELPER_PROCESS_MAX_AGE_MS = Math.max(
+  60_000,
+  Number(process.env.BOSUN_HELPER_PROCESS_MAX_AGE_MS || "600000") || 600000,
+);
+
 /**
  * Non-blocking async shell exec — avoids blocking the HTTP server event loop.
  * Use instead of execSync/spawnSync in timer callbacks and request handlers.
@@ -62,7 +71,10 @@ function execAsync(cmd, { cwd, timeout = 30_000, encoding = "utf8" } = {}) {
 }
 
 
-import { acquireMonitorLock } from "./maintenance.mjs";
+import {
+  acquireMonitorLock,
+  reapStaleBosunHelperProcesses,
+} from "./maintenance.mjs";
 
 import {
   attemptAutoFix,
@@ -1016,6 +1028,7 @@ async function ensureWorkflowAutomationEngine() {
         const reconcile = workflowTemplates.reconcileInstalledTemplates(engine, {
           autoUpdateUnmodified: true,
           forceUpdateTemplateIds: [
+            "template-task-batch-processor",
             "template-task-lifecycle",
             "template-task-finalization-guard",
             "template-agent-session-monitor",
@@ -1974,6 +1987,13 @@ function configureExecutorTaskStatusTransitions() {
     if (!normalizedTaskId || !normalizedStatus) return false;
     const payload =
       options && typeof options === "object" ? { ...options } : {};
+
+    if (payload.bypassWorkflowOwnership === true) {
+      return updateTaskStatus(normalizedTaskId, normalizedStatus, {
+        ...payload,
+        bypassWorkflowOwnership: true,
+      });
+    }
 
     queueWorkflowEvent(
       "task.transition.requested",
@@ -14116,6 +14136,14 @@ try {
 }
 
 console.log("[monitor] legacy maintenance sweep removed — use workflow schedules");
+
+safeSetInterval("helper-process-reaper", () => {
+  try {
+    reapStaleBosunHelperProcesses(HELPER_PROCESS_MAX_AGE_MS);
+  } catch (err) {
+    console.warn(`[monitor] helper-process reaper error: ${err?.message || err}`);
+  }
+}, HELPER_PROCESS_REAP_INTERVAL_MS);
 
 safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 

@@ -1396,6 +1396,34 @@ describe("action.claim_task", () => {
     }
   });
 
+  it("rejects unresolved taskId placeholders before touching claim storage", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-placeholder",
+    });
+
+    try {
+      const ctx = makeCtx({});
+      const node = makeNode("action.claim_task", {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        renewIntervalMs: 0,
+      });
+
+      await expect(nt.execute(node, ctx)).rejects.toThrow(
+        "action.claim_task: resolved taskId is required",
+      );
+      expect(initSpy).not.toHaveBeenCalled();
+      expect(claimSpy).not.toHaveBeenCalled();
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
+
   it("uses renewClaim fallback when renewTaskClaim is unavailable", async () => {
     vi.useFakeTimers();
     const nt = getNodeType("action.claim_task");
@@ -4114,6 +4142,53 @@ describe("action.update_task_status", () => {
         prUrl: "https://github.com/virtengine/bosun/pull/321",
       }),
     );
+  });
+
+  it("normalizes mismatched inprogress branch linkage back to the current task branch", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const updateTask = vi.fn().mockResolvedValue(true);
+    const getTask = vi.fn().mockResolvedValue({
+      id: "taskid123456",
+      title: "Normalize Branch Persistence",
+      status: "todo",
+      branchName: "task/other123456-wrong-task",
+    });
+    const ctx = makeCtx({
+      taskId: "taskid123456",
+      taskTitle: "Normalize Branch Persistence",
+      branchName: "task/other123456-wrong-task",
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{taskId}}",
+      status: "inprogress",
+      taskTitle: "{{taskTitle}}",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { getTask, updateTaskStatus, updateTask },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.branchName).toBe("task/taskid123456-normalize-branch-persistence");
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "taskid123456",
+      "inprogress",
+      expect.objectContaining({
+        source: "workflow",
+        branchName: "task/taskid123456-normalize-branch-persistence",
+      }),
+    );
+    expect(updateTask).toHaveBeenCalledWith(
+      "taskid123456",
+      expect.objectContaining({
+        branchName: "task/taskid123456-normalize-branch-persistence",
+      }),
+    );
+    expect(ctx.data.branchName).toBe("task/taskid123456-normalize-branch-persistence");
+    expect(ctx.data.branch).toBe("task/taskid123456-normalize-branch-persistence");
   });
 
   it("allows workflows to set blocked status", async () => {

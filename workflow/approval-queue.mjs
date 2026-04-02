@@ -75,6 +75,122 @@ function resolveRunIndexPath(repoRoot) {
   return resolve(resolveWorkflowRunsDir(repoRoot), "index.json");
 }
 
+function readWorkflowRunApprovalDetail(repoRoot, runId) {
+  const normalizedRunId = normalizeText(runId);
+  if (!normalizedRunId) return null;
+  const detailPath = resolveRunDetailPath(repoRoot, normalizedRunId);
+  if (existsSync(detailPath)) {
+    const detail = readJsonFile(detailPath, null);
+    return detail && typeof detail === "object" ? detail : null;
+  }
+  const detail = getWorkflowRunDetailFromStateLedger(
+    normalizedRunId,
+    resolveWorkflowLedgerOptions(repoRoot),
+  );
+  return detail && typeof detail === "object" ? detail : null;
+}
+
+function getWorkflowRunApprovalPolicy(detail = {}) {
+  if (!detail || typeof detail !== "object") return null;
+  return detail?.executionPolicy && typeof detail.executionPolicy === "object"
+    ? detail.executionPolicy
+    : (detail?.data?._executionPolicy && typeof detail.data._executionPolicy === "object"
+        ? detail.data._executionPolicy
+        : (detail?.data?.executionPolicy && typeof detail.data.executionPolicy === "object"
+            ? detail.data.executionPolicy
+            : null));
+}
+
+function getReconciledWorkflowRunApprovalDecision(detail = {}) {
+  const approvalState = normalizeApprovalRequestStatus(
+    getWorkflowRunApprovalPolicy(detail)?.approvalState,
+    "",
+  );
+  if (approvalState === "approved" || approvalState === "denied" || approvalState === "expired") {
+    return approvalState;
+  }
+  return "expired";
+}
+
+function persistWorkflowRunApprovalDetailSnapshot(repoRoot, run = {}) {
+  const runId = normalizeText(run?.runId);
+  const providedDetail = run?.detail;
+  if (!runId || !providedDetail || typeof providedDetail !== "object") return;
+
+  const existingDetail = readWorkflowRunApprovalDetail(repoRoot, runId);
+  const nextDetail = cloneJson(
+    existingDetail && typeof existingDetail === "object"
+      ? existingDetail
+      : providedDetail,
+  ) || {};
+  const providedData = providedDetail?.data && typeof providedDetail.data === "object"
+    ? providedDetail.data
+    : null;
+  if (!nextDetail.data || typeof nextDetail.data !== "object") {
+    nextDetail.data = providedData ? cloneJson(providedData) : {};
+  }
+  if (providedData) {
+    nextDetail.data = {
+      ...nextDetail.data,
+      ...cloneJson(providedData),
+    };
+  }
+
+  const executionPolicy = cloneJson(
+    run?.executionPolicy
+      || getWorkflowRunApprovalPolicy(providedDetail)
+      || getWorkflowRunApprovalPolicy(nextDetail)
+      || null,
+  );
+  if (executionPolicy) {
+    nextDetail.executionPolicy = cloneJson(executionPolicy);
+    nextDetail.data.executionPolicy = cloneJson(executionPolicy);
+    nextDetail.data._executionPolicy = cloneJson(executionPolicy);
+  }
+
+  const policyOutcome = cloneJson(
+    run?.policyOutcome
+      || providedDetail?.policyOutcome
+      || providedDetail?.data?.policyOutcome
+      || nextDetail?.policyOutcome
+      || nextDetail?.data?.policyOutcome
+      || null,
+  );
+  if (policyOutcome) {
+    nextDetail.policyOutcome = cloneJson(policyOutcome);
+    nextDetail.data.policyOutcome = cloneJson(policyOutcome);
+  }
+
+  if (!normalizeText(nextDetail?.data?._workflowId) && normalizeText(run?.workflowId)) {
+    nextDetail.data._workflowId = normalizeText(run.workflowId);
+  }
+  if (!normalizeText(nextDetail?.data?._workflowName) && normalizeText(run?.workflowName)) {
+    nextDetail.data._workflowName = normalizeText(run.workflowName);
+  }
+  if (!normalizeText(nextDetail?.data?.taskId) && normalizeText(run?.taskId)) {
+    nextDetail.data.taskId = normalizeText(run.taskId);
+  }
+  if (!normalizeText(nextDetail?.data?.taskTitle) && normalizeText(run?.taskTitle)) {
+    nextDetail.data.taskTitle = normalizeText(run.taskTitle);
+  }
+  if (!normalizeText(nextDetail?.runId)) nextDetail.runId = runId;
+  if (!normalizeText(nextDetail?.status) && normalizeText(run?.status)) {
+    nextDetail.status = normalizeText(run.status);
+  }
+  if (!normalizeText(nextDetail?.startedAt) && normalizeText(run?.startedAt)) {
+    nextDetail.startedAt = normalizeText(run.startedAt);
+  }
+  if (!normalizeText(nextDetail?.endedAt) && normalizeText(run?.endedAt)) {
+    nextDetail.endedAt = normalizeText(run.endedAt);
+  }
+  if (!normalizeText(nextDetail?.updatedAt)) {
+    nextDetail.updatedAt = normalizeTimestamp(run?.updatedAt || run?.endedAt || run?.startedAt);
+  }
+
+  writeJsonFile(resolveRunDetailPath(repoRoot, runId), nextDetail);
+  writeWorkflowRunDetailToStateLedger(runId, nextDetail, resolveWorkflowLedgerOptions(repoRoot));
+}
+
 export function resolveApprovalQueuePath(repoRoot) {
   return resolve(String(repoRoot || process.cwd()), ...APPROVAL_QUEUE_RELATIVE_PATH);
 }
@@ -312,12 +428,13 @@ function normalizeWorkflowActionApprovalRequest(request = {}, existing = null) {
 }
 
 function normalizeHarnessRunApprovalRequest(request = {}, existing = null) {
-  const runId = normalizeText(request?.runId || existing?.scopeId);
+  const runId = normalizeText(request?.runId || existing?.runId || existing?.scopeId);
+  const scopeId = normalizeText(request?.scopeId || existing?.scopeId || runId);
   const base = buildApprovalRequestBase({
     ...request,
     scopeType: "harness-run",
-    scopeId: runId,
-    requestId: runId ? `harness-run:${runId}` : existing?.requestId,
+    scopeId,
+    requestId: scopeId ? `harness-run:${scopeId}` : existing?.requestId,
     requestedAt: request?.requestedAt || request?.updatedAt || existing?.requestedAt,
     runId,
     taskId: request?.taskId || existing?.taskId,
@@ -334,6 +451,7 @@ function normalizeHarnessRunApprovalRequest(request = {}, existing = null) {
     : (normalizeText(request?.expiresAt || existing?.expiresAt) || null);
   return {
     ...base,
+    runId: runId || null,
     stageId: normalizeText(request?.stageId || existing?.stageId) || null,
     stageType: normalizeText(request?.stageType || existing?.stageType) || null,
     agentId: normalizeText(request?.agentId || existing?.agentId) || null,
@@ -554,6 +672,7 @@ export function upsertApprovalRequest(request = {}, options = {}) {
 export function upsertWorkflowRunApprovalRequest(run = {}, options = {}) {
   const repoRoot = resolve(String(options.repoRoot || process.cwd()));
   if (!isWorkflowRunApprovalPending(run)) return { ok: false, request: null, path: resolveApprovalQueuePath(repoRoot) };
+  persistWorkflowRunApprovalDetailSnapshot(repoRoot, run);
   return upsertApprovalRequest({
     scopeType: "workflow-run",
     ...run,
@@ -598,8 +717,10 @@ export function getHarnessRunApprovalRequest(runId, options = {}) {
 
 export function listApprovalRequests(options = {}) {
   const repoRoot = resolve(String(options.repoRoot || process.cwd()));
-  const status = normalizeText(options.status).toLowerCase();
-  const scopeType = normalizeText(options.scopeType).toLowerCase();
+  const requestedStatus = normalizeText(options.status).toLowerCase();
+  const requestedScopeType = normalizeText(options.scopeType).toLowerCase();
+  const status = requestedStatus === "all" ? "" : requestedStatus;
+  const scopeType = requestedScopeType === "all" ? "" : requestedScopeType;
   const includeResolved = options.includeResolved === true;
   const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.min(500, Math.trunc(Number(options.limit)))) : 100;
   let requests = [];
@@ -634,6 +755,65 @@ export function listApprovalRequests(options = {}) {
     ok: true,
     path: resolveApprovalQueuePath(repoRoot),
     requests: requests.slice(0, limit).map((entry) => cloneJson(entry)),
+  };
+}
+
+export function reconcileWorkflowRunApprovalRequests(options = {}) {
+  const repoRoot = resolve(String(options.repoRoot || process.cwd()));
+  const queue = readApprovalQueue(repoRoot);
+  const requests = Array.isArray(queue.data.requests) ? queue.data.requests.slice() : [];
+  const now = new Date().toISOString();
+  const repaired = [];
+  let changed = false;
+
+  const nextRequests = requests.map((entry) => {
+    if (normalizeText(entry?.scopeType) !== "workflow-run") return entry;
+    if (normalizeApprovalRequestStatus(entry?.status, "pending") !== "pending") return entry;
+
+    const runId = normalizeText(entry?.scopeId || entry?.runId);
+    const detail = readWorkflowRunApprovalDetail(repoRoot, runId);
+    const pending = detail
+      ? isWorkflowRunApprovalPending({
+          runId,
+          executionPolicy: detail?.executionPolicy,
+          policyOutcome: detail?.policyOutcome,
+          detail,
+        })
+      : false;
+    if (pending) return entry;
+
+    let note = "Workflow run is no longer awaiting operator approval.";
+    if (!runId) {
+      note = "Workflow approval request is missing its run identifier.";
+    } else if (!detail) {
+      note = `Workflow run ${runId} no longer exists.`;
+    }
+    const next = applyApprovalResolutionRecord(entry, {
+      decision: detail ? getReconciledWorkflowRunApprovalDecision(detail) : "expired",
+      actorId: "system:reconcile",
+      note,
+      resolvedAt: now,
+    });
+    upsertApprovalRequestToStateLedger(next, resolveWorkflowLedgerOptions(repoRoot));
+    repaired.push({
+      requestId: next.requestId,
+      runId,
+      status: next.status,
+      note,
+    });
+    changed = true;
+    return next;
+  });
+
+  if (changed) {
+    writeApprovalQueue(repoRoot, nextRequests);
+  }
+
+  return {
+    ok: true,
+    path: queue.path,
+    requests: nextRequests.map((entry) => cloneJson(entry)),
+    repaired,
   };
 }
 

@@ -133,7 +133,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
               taskId: t.id,
               taskTitle: t.title || t.id,
               status: t.status,
-              branch: t.branch || t.metadata?.branch || null,
+              branch: t.branch || t.branchName || t.metadata?.branch || t.metadata?.branchName || null,
               scope: t.scope || t.metadata?.scope || null,
               repository: typeof t?.repository === "string" ? t.repository.trim() : null,
               workspace: typeof t?.workspace === "string" ? t.workspace.trim() : null,
@@ -258,7 +258,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
             console.log(JSON.stringify(batch.map(t => ({
               taskId: t.id,
               taskTitle: t.title || t.id,
-              branch: t.branch || t.metadata?.branch || null,
+              branch: t.branch || t.branchName || t.metadata?.branch || t.metadata?.branchName || null,
               repository: typeof t?.repository === "string" ? t.repository.trim() : null,
               workspace: typeof t?.workspace === "string" ? t.workspace.trim() : null,
             }))));

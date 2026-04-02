@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +28,39 @@ vi.mock("../voice/voice-relay.mjs", () => ({
 }));
 
 const { analyzeVisionFrame } = await import("../voice/voice-relay.mjs");
+
+function requestJson(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const req = httpRequest({
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method: options.method || "GET",
+      headers: options.headers || {},
+    }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        body += chunk;
+      });
+      res.on("end", () => {
+        resolve({
+          status: Number(res.statusCode || 0),
+          async json() {
+            return body ? JSON.parse(body) : null;
+          },
+          async text() {
+            return body;
+          },
+        });
+      });
+    });
+    req.on("error", reject);
+    if (options.body) req.write(options.body);
+    req.end();
+  });
+}
 
 describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
   const ENV_KEYS = [
@@ -113,7 +147,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     const { port } = await startServer();
     const sessionId = `primary-voice-http-${Date.now()}`;
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/voice/transcript`, {
+    const res = await requestJson(`http://127.0.0.1:${port}/api/voice/transcript`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -128,7 +162,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     expect(res.status).toBe(200);
     expect(data.ok).toBe(true);
 
-    const assistantRes = await fetch(`http://127.0.0.1:${port}/api/voice/transcript`, {
+    const assistantRes = await requestJson(`http://127.0.0.1:${port}/api/voice/transcript`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -167,7 +201,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     sharedEngine.evaluateTriggers.mockResolvedValue([]);
 
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/voice/transcript`, {
+      const res = await requestJson(`http://127.0.0.1:${port}/api/voice/transcript`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -226,7 +260,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
       { eventType: "turn_end", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
     ];
 
-    const ingestRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace`, {
+    const ingestRes = await requestJson(`http://127.0.0.1:${port}/api/voice/trace`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -241,7 +275,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     expect(ingestJson.stored).toBe(events.length);
     expect(String(ingestJson?.latest?.eventType || "")).toBe("turn_end");
 
-    const listRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace?sessionId=${encodeURIComponent(sessionId)}&limit=10`);
+    const listRes = await requestJson(`http://127.0.0.1:${port}/api/voice/trace?sessionId=${encodeURIComponent(sessionId)}&limit=10`);
     const listJson = await listRes.json();
     expect(listRes.status).toBe(200);
     expect(listJson.ok).toBe(true);
@@ -253,7 +287,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
       turnId: "turn-1",
     });
 
-    const latestRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace?sessionId=${encodeURIComponent(sessionId)}&latest=1`);
+    const latestRes = await requestJson(`http://127.0.0.1:${port}/api/voice/trace?sessionId=${encodeURIComponent(sessionId)}&latest=1`);
     const latestJson = await latestRes.json();
     expect(latestRes.status).toBe(200);
     expect(latestJson.ok).toBe(true);
@@ -269,7 +303,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     const sessionId = `primary-vision-http-${Date.now()}`;
     const frameDataUrl = "data:image/jpeg;base64,dGVzdA==";
 
-    const first = await fetch(`http://127.0.0.1:${port}/api/vision/frame`, {
+    const first = await requestJson(`http://127.0.0.1:${port}/api/vision/frame`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -288,7 +322,7 @@ describeVoiceHttpRoutes("ui-server voice + vision routes", () => {
     expect(firstJson.summary).toContain("failing test");
     expect(vi.mocked(analyzeVisionFrame)).toHaveBeenCalledTimes(1);
 
-    const second = await fetch(`http://127.0.0.1:${port}/api/vision/frame`, {
+    const second = await requestJson(`http://127.0.0.1:${port}/api/vision/frame`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

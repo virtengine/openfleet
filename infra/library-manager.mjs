@@ -1294,6 +1294,22 @@ function extForType(type) {
   return ".md";
 }
 
+function normalizeEntryFilename(value) {
+  const filename = typeof value === "string" ? value.trim() : "";
+  return filename || null;
+}
+
+function resolveEntryFileLocation(rootDir, type, filename) {
+  if (!RESOURCE_TYPES.includes(type)) return null;
+  const normalizedFilename = normalizeEntryFilename(filename);
+  if (!normalizedFilename) return null;
+  const dir = dirForType(rootDir, type);
+  const filePath = resolve(dir, normalizedFilename);
+  // Prevent path traversal — resolved path must stay within the type directory.
+  if (!filePath.startsWith(dir + sep) && filePath !== dir) return null;
+  return { dir, filePath, filename: normalizedFilename };
+}
+
 /**
  * List all entries from the manifest, optionally filtered.
  */
@@ -1332,10 +1348,9 @@ export function getEntry(rootDir, id) {
  */
 export function getEntryContent(rootDir, entry) {
   if (!entry) return null;
-  const dir = dirForType(rootDir, entry.type);
-  const filePath = resolve(dir, entry.filename);
-  // Prevent path traversal — resolved path must stay within the type directory
-  if (!filePath.startsWith(dir + sep) && filePath !== dir) return null;
+  const location = resolveEntryFileLocation(rootDir, entry.type, entry.filename);
+  if (!location) return null;
+  const { filePath } = location;
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf8");
@@ -1371,7 +1386,10 @@ export function upsertEntry(rootDir, data, content, options = {}) {
     type: data.type,
     name: data.name,
     description: data.description || existing?.description || "",
-    filename: data.filename || existing?.filename || `${id}${extForType(data.type)}`,
+    filename:
+      normalizeEntryFilename(data.filename)
+      || normalizeEntryFilename(existing?.filename)
+      || `${id}${extForType(data.type)}`,
     tags: data.tags || existing?.tags || [],
     scope: data.scope || existing?.scope || "global",
     workspace: data.workspace ?? existing?.workspace ?? null,
@@ -1382,9 +1400,12 @@ export function upsertEntry(rootDir, data, content, options = {}) {
 
   // Write content file
   if (content !== undefined) {
-    const dir = ensureDir(dirForType(rootDir, entry.type));
-    const filePath = resolve(dir, entry.filename);
-    // Prevent path traversal — resolved path must stay within the type directory
+    const location = resolveEntryFileLocation(rootDir, entry.type, entry.filename);
+    if (!location) {
+      throw new Error(`Invalid entry filename for ${entry.type}:${entry.id}`);
+    }
+    const { dir, filePath } = location;
+    ensureDir(dir);
     if (!filePath.startsWith(dir + sep) && filePath !== dir) {
       throw new Error(`Path traversal blocked: ${entry.filename}`);
     }
@@ -1511,7 +1532,9 @@ export function deleteEntry(rootDir, id, { deleteFile = false, syncIndexes = tru
 
   if (deleteFile) {
     for (const removedEntry of removedEntries) {
-      const filePath = resolve(dirForType(rootDir, removedEntry.type), removedEntry.filename);
+      const location = resolveEntryFileLocation(rootDir, removedEntry.type, removedEntry.filename);
+      if (!location) continue;
+      const { filePath } = location;
       try {
         unlinkSync(filePath);
       } catch { /* file may not exist */ }
